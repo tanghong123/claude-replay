@@ -569,6 +569,7 @@ mod tests {
         crate::remove_test_scratch(&root);
     }
 
+    #[cfg(unix)]
     #[test]
     fn server_command_preserves_ssh_and_shell_without_session_overrides() {
         if std::env::var("NATIVE_COMMAND_ENV_TEST").as_deref() != Ok("child") {
@@ -582,7 +583,8 @@ mod tests {
                 .env("RUST_LOG", "trace")
                 .output().unwrap();
             assert!(
-                output.status.success(),
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("1 passed;"),
                 "{}\n{}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
@@ -590,7 +592,16 @@ mod tests {
             return;
         }
         let (root, runtime) = fixture();
-        let command = runtime.server_command().unwrap();
+        // Execute a harmless fixture at the configured binary path. It ignores
+        // the app-server arguments and reports the actual inherited environment.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(&runtime.config.binary, "#!/bin/sh\nexec /usr/bin/env\n").unwrap();
+        std::fs::set_permissions(
+            &runtime.config.binary,
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let mut command = runtime.server_command().unwrap();
         let values: std::collections::BTreeMap<_, _> = command.get_envs().collect();
         for (name, expected) in [
             ("SSH_AUTH_SOCK", "/synthetic/ssh-agent.sock"),
@@ -601,6 +612,27 @@ mod tests {
         }
         for name in ["CODEX_THREAD_ID", "RUST_LOG", "NATIVE_COMMAND_ENV_TEST"] {
             assert!(!values.contains_key(std::ffi::OsStr::new(name)));
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        let environment = String::from_utf8(output.stdout).unwrap();
+        for expected in [
+            "SSH_AUTH_SOCK=/synthetic/ssh-agent.sock",
+            "SHELL=/bin/zsh",
+            "TERM=xterm-256color",
+        ] {
+            assert!(
+                environment.lines().any(|line| line == expected),
+                "Missing expected variable: {expected}"
+            );
+        }
+        for name in ["CODEX_THREAD_ID", "RUST_LOG", "NATIVE_COMMAND_ENV_TEST"] {
+            assert!(
+                !environment
+                    .lines()
+                    .any(|line| line.starts_with(&format!("{name}="))),
+                "Session override leaked: {name}"
+            );
         }
         crate::remove_test_scratch(&root);
     }
@@ -663,13 +695,30 @@ mod tests {
     fn slow_activation_does_not_hold_runtime_state_mutex() {
         let (root, runtime) = fixture();
         let listener = std::net::TcpListener::bind(runtime.addresses[0]).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let accept = || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => return stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "Activation did not reach the mock listener within 3 seconds"
+                        );
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("Accept activation connection: {error}"),
+                }
+            }
+        };
         let target = runtime.clone();
         let activation = std::thread::spawn(move || target.activate(false));
         // The first connection is only the listener probe. Hold the authentication
         // exchange open while checking the independent state and status readers.
-        let (probe, _) = listener.accept().unwrap();
+        let probe = accept();
         drop(probe);
-        let (handshake, _) = listener.accept().unwrap();
+        let handshake = accept();
         let start = Instant::now();
         assert!(runtime.gateway().is_none());
         assert!(runtime.status()["serverListening"].as_bool().unwrap());

@@ -64,6 +64,9 @@ fn relative_state_paths_leave_cwd_and_parent_untouched() {
             for path in [&parent, &cwd] {
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o2775)).unwrap();
             }
+            // The kernel may clear setgid when the directory's group is not ours.
+            let parent_mode = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o7777;
+            let cwd_mode = std::fs::metadata(&cwd).unwrap().permissions().mode() & 0o7777;
             let output = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
@@ -76,14 +79,17 @@ fn relative_state_paths_leave_cwd_and_parent_untouched() {
                 .output()
                 .unwrap();
             let untouched = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o7777
-                == 0o2775
-                && std::fs::metadata(&cwd).unwrap().permissions().mode() & 0o7777 == 0o2775
+                == parent_mode
+                && std::fs::metadata(&cwd).unwrap().permissions().mode() & 0o7777 == cwd_mode
                 && std::fs::read_dir(&parent).unwrap().count() == 1
                 && std::fs::read_dir(&cwd).unwrap().count() == 0;
-            if !output.status.success() || !untouched {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let executed =
+                stdout.contains(&format!("entry={entry},")) && stdout.contains("1 passed;");
+            if !output.status.success() || !executed || !untouched {
                 failures.push(format!(
-                    "{entry} {input}: untouched={untouched}\n{}\n{}",
-                    String::from_utf8_lossy(&output.stdout),
+                    "{entry} {input}: executed={executed}, untouched={untouched}\n{}\n{}",
+                    stdout,
                     String::from_utf8_lossy(&output.stderr)
                 ));
             }

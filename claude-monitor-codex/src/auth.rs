@@ -59,10 +59,12 @@ impl ServerToken {
             }
             directory.sync()
         })();
-        directory
-            .remove(&temporary)
-            .context("Remove temporary native credential")?;
-        publish?;
+        finish_publication(
+            publish,
+            directory
+                .remove(&temporary)
+                .context("Remove temporary native credential"),
+        )?;
         Self::read(&directory)
     }
 
@@ -189,7 +191,14 @@ impl CredentialDirectory {
                 Err(std::io::Error::last_os_error())
             } else {
                 // SAFETY: openat returned a new owned descriptor; File closes it exactly once.
-                Ok(unsafe { File::from_raw_fd(fd) })
+                let file = unsafe { File::from_raw_fd(fd) };
+                if create {
+                    use std::os::unix::fs::PermissionsExt;
+                    // Creation modes are filtered by umask; restore owner read/write
+                    // through the new descriptor before publishing any credential.
+                    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+                }
+                Ok(file)
             }
         };
         #[cfg(not(unix))]
@@ -206,13 +215,14 @@ impl CredentialDirectory {
         {
             use std::os::fd::AsRawFd;
             let name = std::ffi::CString::new(temporary).expect("generated credential basename");
+            let token_name = std::ffi::CString::new(TOKEN_NAME).expect("credential basename");
             // SAFETY: both names are valid basenames relative to the same live directory.
             if unsafe {
                 libc::linkat(
                     self.file.as_raw_fd(),
                     name.as_ptr(),
                     self.file.as_raw_fd(),
-                    c"codex-server.token".as_ptr(),
+                    token_name.as_ptr(),
                     0,
                 )
             } != 0
@@ -250,6 +260,16 @@ impl CredentialDirectory {
     }
 }
 
+// Always attempt cleanup, but retain publication as the primary error if both fail.
+fn finish_publication(publish: Result<()>, cleanup: Result<()>) -> Result<()> {
+    match (publish, cleanup) {
+        (Err(publish), Err(cleanup)) => Err(publish).context(format!(
+            "Temporary native credential cleanup also failed: {cleanup:#}"
+        )),
+        (publish, cleanup) => publish.and(cleanup),
+    }
+}
+
 fn supported_directory_sync(result: std::io::Result<()>) -> std::io::Result<()> {
     match result {
         #[cfg(unix)]
@@ -280,6 +300,7 @@ mod tests {
         let unrelated = root.join("unrelated");
         fs::create_dir_all(&unrelated).unwrap();
         fs::set_permissions(&unrelated, fs::Permissions::from_mode(0o2775)).unwrap();
+        let unrelated_mode = fs::metadata(&unrelated).unwrap().permissions().mode() & 0o7777;
         let directory = CredentialDirectory::open(&state).unwrap();
         fs::set_permissions(&state, fs::Permissions::from_mode(0o775)).unwrap();
         fs::rename(&state, &moved).unwrap();
@@ -302,7 +323,7 @@ mod tests {
         );
         assert_eq!(
             fs::metadata(&unrelated).unwrap().permissions().mode() & 0o7777,
-            0o2775
+            unrelated_mode
         );
         assert_eq!(fs::read_dir(&unrelated).unwrap().count(), 0);
         assert!(moved.join(TOKEN_NAME).exists());
@@ -325,6 +346,65 @@ mod tests {
             );
         }
         assert!(supported_directory_sync(Ok(())).is_ok());
+    }
+
+    #[test]
+    fn publication_failure_remains_the_cause_when_cleanup_also_fails() {
+        let publication = || Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
+        let cleanup = || Err(anyhow::anyhow!("synthetic cleanup failure"));
+        let error = finish_publication(publication(), cleanup()).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert!(format!("{error:#}").contains("synthetic cleanup failure"));
+        assert!(finish_publication(publication(), Ok(())).is_err());
+        assert!(finish_publication(Ok(()), cleanup()).is_err());
+        assert!(finish_publication(Ok(()), Ok(())).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restrictive_umask_still_creates_a_reusable_private_credential() {
+        use std::os::unix::fs::PermissionsExt;
+        if std::env::var("NATIVE_TOKEN_UMASK_TEST").as_deref() != Ok("child") {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "auth::tests::restrictive_umask_still_creates_a_reusable_private_credential",
+                    "--nocapture",
+                ])
+                .env("NATIVE_TOKEN_UMASK_TEST", "child")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed;"),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        // This process runs only this test, so the process-wide umask is isolated.
+        unsafe {
+            libc::umask(0o277);
+        }
+        let root = std::env::temp_dir().join(format!("native-auth-umask-{}", std::process::id()));
+        let path = root.join("receipts.sqlite3");
+        let token = ServerToken::load_or_create(&path).unwrap();
+        assert_eq!(
+            fs::metadata(ServerToken::path(&path).unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            ServerToken::load_or_create(&path).unwrap().bearer(),
+            token.bearer()
+        );
+        crate::remove_test_scratch(&root);
     }
 
     #[cfg(unix)]
