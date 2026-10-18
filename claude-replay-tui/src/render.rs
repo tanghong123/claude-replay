@@ -708,6 +708,13 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                 if !p.description.is_empty() {
                     out.push(Line::styled(format!("    {}", p.description), theme::dim()));
                 }
+                // #s155: what the publish removed from the artifact, which nothing else shows.
+                if !p.removed.is_empty() {
+                    out.push(Line::styled(
+                        format!("    {}", crate::present::removed_files_note(&p.removed)),
+                        theme::dim(),
+                    ));
+                }
                 return out;
             }
             let token = highlight::token_for_target(target);

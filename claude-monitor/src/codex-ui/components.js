@@ -327,9 +327,8 @@ export function renderUnit(unit, state) {
     html = `<div class="turn peer" style="--peer-hue:${peerHue(peer.from)}" data-kind="peer" data-record-kind="peer" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="peer-card"><div class="peer-head"><span class="peer-glyph" aria-hidden="true">⇄</span><span class="peer-from">${escapeText(peer.from)}</span><span class="peer-what">another session</span>${peer.mode ? `<span class="peer-mode" title="The sending session's permission mode">${escapeText(peer.mode)}</span>` : ""}</div><div class="body markdown">${unit.view.html}</div>${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}</div>`;
   }
   else if (unit.type === "user") {
-    const long = promptShouldCollapse(unit.view.html);
-    const expanded = state.promptExpanded.has(unit.key);
-    html = `<div class="turn user" data-kind="user" data-record-kind="user" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt ${long ? "prompt-collapsible" : ""}"><div class="prompt-copy-shell ${long && !expanded ? "collapsed" : "expanded"}"><div class="body markdown">${body}</div>${long ? `<button class="prompt-expand" type="button" data-prompt-toggle="${escapeText(unit.key)}" aria-expanded="${expanded}">${expanded ? "Show fewer" : "Show the whole prompt"}<span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>` : ""}</div>${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}${rawToggle}</div>`;
+    // Drawn whole: whether it collapses is measured once it is mounted (`clampPrompts`, #s139).
+    html = `<div class="turn user" data-kind="user" data-record-kind="user" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt"><div class="prompt-copy-shell" data-prompt-key="${escapeText(unit.key)}"><div class="body markdown">${body}</div></div>${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}${rawToggle}</div>`;
   }
   else if (unit.type === "assistant") {
     const final = unit.view.phase === "final";
@@ -345,7 +344,44 @@ export function renderUnit(unit, state) {
   return root;
 }
 
-export const promptShouldCollapse = html => strip(html).length > 560;
+// #s139: a long prompt is clamped by MEASURE, as the classic page's `clampBatch` does — never by
+// its character count, which cannot know the bubble's width: 600 characters were 7 lines in a
+// desktop bubble, under the old 246px clamp, so "Show fewer" hid one faded line (the owner); on a
+// phone the same prompt is 14. A prompt collapses to PROMPT_CLAMP_LINES only when that hides at
+// least PROMPT_MIN_HIDDEN more, so a collapse always buys real room.
+export const PROMPT_CLAMP_LINES = 8;
+export const PROMPT_MIN_HIDDEN = 4;
+/** The lines a collapse would hide, for a prompt of `lines` line-heights — 0 when it should not. */
+export function promptHiddenLines(lines) {
+  const hidden = Math.round(lines - PROMPT_CLAMP_LINES);
+  return hidden >= PROMPT_MIN_HIDDEN ? hidden : 0;
+}
+export const promptExpanderHtml = (key, expanded, hidden) => `<button class="prompt-expand" type="button" data-prompt-toggle="${escapeText(key)}" aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more lines`}</span>${svg("chev")}</button>`;
+
+/** The viewport's `afterMount`: attached, and before the engine measures (the classic page's rule —
+ *  a clamp written after the measure would shrink a unit the engine had already placed). Every
+ *  read first, in one layout pass, then every write. A re-render (a toggle) mounts afresh and is
+ *  decided again, with the reader's choice in `state.promptExpanded`. */
+export function clampPrompts(roots, state) {
+  const reads = [];
+  for (const root of roots) {
+    for (const shell of root.querySelectorAll(".turn.user:not(.command) .prompt-copy-shell[data-prompt-key]")) {
+      const body = shell.firstElementChild, style = getComputedStyle(body);
+      const lh = parseFloat(style.lineHeight) || 23, top = parseFloat(style.paddingTop) || 0;
+      reads.push({ shell, top, lines: (body.scrollHeight - top - (parseFloat(style.paddingBottom) || 0)) / lh });
+    }
+  }
+  for (const { shell, top, lines } of reads) {
+    const hidden = promptHiddenLines(lines);
+    if (!hidden) continue;
+    const key = shell.dataset.promptKey, expanded = state.promptExpanded.has(key);
+    shell.parentElement.classList.add("prompt-collapsible");
+    shell.style.setProperty("--prompt-pad-top", `${top}px`);
+    shell.style.setProperty("--prompt-lines", String(PROMPT_CLAMP_LINES));
+    if (!expanded) shell.classList.add("collapsed");
+    shell.insertAdjacentHTML("beforeend", promptExpanderHtml(key, expanded, hidden));
+  }
+}
 
 function renderPromptAttachments(attachments = []) {
   if (!attachments.length) return "";

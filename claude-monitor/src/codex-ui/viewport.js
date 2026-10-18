@@ -1,4 +1,4 @@
-import { renderUnit } from "./components.js";
+import { clampPrompts, renderUnit } from "./components.js";
 // The window's arithmetic — the sums, the search, the ranges, the pads, the anchor correction,
 // the follow rule — is the shared module's (#107, html/shared/virtual-window.js): one set of
 // scroll rules for both pages. What reads layout and what writes the DOM stays here.
@@ -256,7 +256,10 @@ export class Viewport extends VirtualWindow {
     for (const [key, height] of this.state.heights) this.state.heights.set(key, Math.max(ESTIMATE, height * ratio));
   }
   renderItem(index) { return this.stampNeighbours(renderUnit(this.units[index], this.state), index); }
-  afterMount(fresh) { fresh.forEach(root => renderMermaid(root, () => this.readerReshaped())); }
+  afterMount(fresh) {
+    clampPrompts(fresh, this.state);
+    fresh.forEach(root => renderMermaid(root, () => this.readerReshaped()));
+  }
 
   /** What the cascade may read of a unit's NEIGHBOURS comes from the model, not from what happens
    *  to be mounted (#201). A rule keyed on a mounted sibling — the demo's

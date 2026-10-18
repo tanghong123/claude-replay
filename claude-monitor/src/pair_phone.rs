@@ -144,50 +144,136 @@ pub fn listed_hosts(value: &str) -> Vec<String> {
 /// machine's tailnet name) to read a file or to write: the names `tailscale serve` relays to THIS
 /// port, and any `AGENT_MONITOR_TRUSTED_HOSTS` lists — nothing broader (no `*.ts.net`), since the
 /// check is the DNS-rebinding and cross-site guard. The serve can be set up after the monitor
-/// starts, so the tailnet's names are read lazily and read again on a miss, at most every 30 s:
-/// a stranger's Host costs one `tailscale` call per half-minute, whatever the rate.
+/// starts, so the tailnet's names are read again on a miss, at most every 30 s: a stranger's Host
+/// costs one `tailscale` read per half-minute, whatever the rate.
+///
+/// No request waits on `tailscale` (#s151): the names are read in the background, starting now,
+/// each read bounded at 3 s (`TAILSCALE_TIMEOUT`), and a check answers from the last names read.
+/// Only a check in the first 2 s after this call (`FIRST_WAIT`) waits for the first read, and no
+/// longer; a read that timed out keeps the names read before it.
 pub fn trusted_hosts(port: u16) -> claude_replay_html::HostCheck {
     let listed = std::env::var("AGENT_MONITOR_TRUSTED_HOSTS")
         .map(|v| listed_hosts(&v))
         .unwrap_or_default();
-    let tailnet = std::sync::Mutex::new((Vec::<String>::new(), None::<std::time::Instant>));
+    trusted_hosts_from(
+        listed,
+        std::sync::Arc::new(move || tailnet_hosts(port)),
+        REFRESH_AFTER,
+        FIRST_WAIT,
+    )
+}
+
+/// How old the tailnet's names may be before a miss reads them again.
+const REFRESH_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long a check made just after startup waits for the first read of the tailnet's names.
+const FIRST_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long one `tailscale` status read may take before it is abandoned (#s151). Measured on
+/// hong-devserver: 74 ms for both reads together.
+const TAILSCALE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// A lookup of the tailnet's names: `None` when it could not finish (a read timed out), which
+/// keeps the names read before.
+type Lookup = std::sync::Arc<dyn Fn() -> Option<Vec<String>> + Send + Sync>;
+
+struct Tailnet {
+    state: std::sync::Mutex<TailnetState>,
+    read: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct TailnetState {
+    hosts: Vec<String>,
+    /// When the last read finished; `None` before the first.
+    read_at: Option<std::time::Instant>,
+    reading: bool,
+}
+
+impl Tailnet {
+    /// Start a read in the background unless one is under way.
+    fn refresh(self: &std::sync::Arc<Self>, state: &mut TailnetState, lookup: &Lookup) {
+        if state.reading {
+            return;
+        }
+        state.reading = true;
+        let (tailnet, lookup) = (self.clone(), lookup.clone());
+        std::thread::spawn(move || {
+            // A read that panicked is one that gave no names; `reading` must still clear.
+            let hosts = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lookup()))
+                .ok()
+                .flatten();
+            let mut state = tailnet.state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(hosts) = hosts {
+                state.hosts = hosts;
+            }
+            state.read_at = Some(std::time::Instant::now());
+            state.reading = false;
+            tailnet.read.notify_all();
+        });
+    }
+}
+
+/// [`trusted_hosts`] over any lookup and timings, which is what the cases drive.
+fn trusted_hosts_from(
+    listed: Vec<String>,
+    lookup: Lookup,
+    refresh_after: std::time::Duration,
+    first_wait: std::time::Duration,
+) -> claude_replay_html::HostCheck {
+    let tailnet = std::sync::Arc::new(Tailnet {
+        state: std::sync::Mutex::new(TailnetState::default()),
+        read: std::sync::Condvar::new(),
+    });
+    let first_by = std::time::Instant::now() + first_wait;
+    {
+        let mut state = tailnet.state.lock().unwrap_or_else(|e| e.into_inner());
+        tailnet.refresh(&mut state, &lookup);
+    }
     std::sync::Arc::new(move |host: &str| {
         if listed.iter().any(|h| h == host) {
             return true;
         }
-        let mut cache = tailnet.lock().unwrap_or_else(|e| e.into_inner());
-        if cache.0.iter().any(|h| h == host) {
+        let mut state = tailnet.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.hosts.iter().any(|h| h == host) {
             return true;
         }
-        if cache
-            .1
-            .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(30))
+        if state
+            .read_at
+            .is_some_and(|at| at.elapsed() >= refresh_after)
         {
-            return false;
+            tailnet.refresh(&mut state, &lookup);
         }
-        cache.0 = tailnet_hosts(port);
-        cache.1 = Some(std::time::Instant::now());
-        cache.0.iter().any(|h| h == host)
+        while state.read_at.is_none() {
+            let left = first_by.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            state = tailnet
+                .read
+                .wait_timeout(state, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        state.hosts.iter().any(|h| h == host)
     })
 }
 
 /// The hosts this machine's `tailscale serve` relays to 127.0.0.1:`port` — none when Tailscale is
-/// not here, not running, or serves nothing to this port.
-fn tailnet_hosts(port: u16) -> Vec<String> {
+/// not here, not running, or serves nothing to this port; `None` when a read timed out.
+fn tailnet_hosts(port: u16) -> Option<Vec<String>> {
     let Some(bin) = tailscale() else {
-        return Vec::new();
+        return Some(Vec::new());
     };
-    let status = tailscale_json(&bin, &["status", "--json"]).unwrap_or(Value::Null);
+    let status = tailscale_json_within(&bin, &["status", "--json"], TAILSCALE_TIMEOUT)?;
     let dns = status
         .pointer("/Self/DNSName")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
     if dns.is_empty() {
-        return Vec::new();
+        return Some(Vec::new());
     }
-    let serve = tailscale_json(&bin, &["serve", "status", "--json"]).unwrap_or(Value::Null);
-    hosts_of(&serve_bases(&serve, &dns, port))
+    let serve = tailscale_json_within(&bin, &["serve", "status", "--json"], TAILSCALE_TIMEOUT)?;
+    Some(hosts_of(&serve_bases(&serve, &dns, port)))
 }
 
 /// The serve this tool recommends: tailnet `port` → localhost `port`, over HTTPS when the tailnet
@@ -218,6 +304,54 @@ fn tailscale_json(bin: &std::path::Path, args: &[&str]) -> Option<Value> {
         return None;
     }
     serde_json::from_slice(&out.stdout).ok()
+}
+
+/// [`tailscale_json`] bounded by `limit` (#s151): `None` when the read did not finish in time (the
+/// process is killed and reaped), else the JSON it printed, `Null` for a failed read.
+fn tailscale_json_within(
+    bin: &std::path::Path,
+    args: &[&str],
+    limit: std::time::Duration,
+) -> Option<Value> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let Ok(mut child) = std::process::Command::new(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return Some(Value::Null);
+    };
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        stdout.read_to_end(&mut out).map(|_| out)
+    });
+    let deadline = std::time::Instant::now() + limit;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    let out = reader.join().ok().and_then(Result::ok).unwrap_or_default();
+    if !status.success() {
+        return Some(Value::Null);
+    }
+    Some(serde_json::from_slice(&out).unwrap_or(Value::Null))
 }
 
 /// A QR code for `text`, drawn with half-block characters so it fits a terminal. With `paint`,
@@ -400,6 +534,148 @@ pub const PAIR_CODES_FILE: &str = "pair-codes";
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    /// A lookup the case drives: each read takes the next answer the case sends, and waits for it,
+    /// as a hung `tailscale` would; `reads` counts the reads started.
+    fn driven_lookup() -> (
+        Lookup,
+        std::sync::mpsc::Sender<Option<Vec<String>>>,
+        std::sync::Arc<AtomicUsize>,
+    ) {
+        let (send, answers) = std::sync::mpsc::channel::<Option<Vec<String>>>();
+        let answers = std::sync::Mutex::new(answers);
+        let reads = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = reads.clone();
+        let lookup: Lookup = std::sync::Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            answers.lock().unwrap().recv().ok().flatten()
+        });
+        (lookup, send, reads)
+    }
+
+    fn eventually(what: &str, mut done: impl FnMut() -> bool) {
+        let until = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < until, "{what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// #s151: a `tailscale` that never answers holds a check only through the first wait after
+    /// startup, and no check after it; the names count once the read does finish.
+    #[test]
+    fn a_hung_tailscale_holds_no_check_past_the_first_wait() {
+        let (lookup, send, reads) = driven_lookup();
+        let check = trusted_hosts_from(
+            vec!["listed.example".into()],
+            lookup,
+            Duration::from_secs(30),
+            Duration::from_millis(300),
+        );
+        assert!(check("listed.example"), "a listed host needs no read");
+        let started = Instant::now();
+        assert!(!check("box.tail0.ts.net:2727"));
+        let first = started.elapsed();
+        assert!(
+            first >= Duration::from_millis(250) && first < Duration::from_secs(2),
+            "the first check waits for the first read, and no longer than the first wait: {first:?}"
+        );
+        let started = Instant::now();
+        assert!(!check("box.tail0.ts.net:2727"));
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "after the first wait a check never waits: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            1,
+            "one read, started with the gate"
+        );
+        send.send(Some(vec!["box.tail0.ts.net:2727".into()]))
+            .unwrap();
+        eventually("the names count once read", || {
+            check("box.tail0.ts.net:2727")
+        });
+    }
+
+    /// #s151: a miss on stale names reads them again in the background and answers from the names
+    /// it has; one read at a time; a read that timed out keeps the names read before it.
+    #[test]
+    fn a_stale_miss_reads_again_in_the_background_and_a_timed_out_read_keeps_the_names() {
+        let (lookup, send, reads) = driven_lookup();
+        send.send(Some(vec!["a.ts.net".into()])).unwrap();
+        let check = trusted_hosts_from(Vec::new(), lookup, Duration::ZERO, Duration::from_secs(2));
+        assert!(check("a.ts.net"), "the first read's names");
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "a hit reads nothing");
+
+        let started = Instant::now();
+        assert!(!check("b.ts.net"));
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "a miss does not wait for the read it starts: {:?}",
+            started.elapsed()
+        );
+        eventually("the miss started a read", || {
+            reads.load(Ordering::SeqCst) == 2
+        });
+        assert!(!check("c.ts.net"));
+        assert!(check("a.ts.net"), "the names already read still count");
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            2,
+            "no second read while one is under way"
+        );
+
+        send.send(None).unwrap();
+        eventually("a miss after the timed-out read reads again", || {
+            check("d.ts.net");
+            reads.load(Ordering::SeqCst) == 3
+        });
+        assert!(check("a.ts.net"), "the timed-out read kept the names");
+        send.send(Some(vec!["a.ts.net".into(), "b.ts.net".into()]))
+            .unwrap();
+        eventually("a name served later counts once read", || check("b.ts.net"));
+    }
+
+    /// #s151: a status read that does not finish in time is abandoned, its process killed.
+    #[cfg(unix)]
+    #[test]
+    fn a_tailscale_read_that_runs_too_long_is_abandoned() {
+        let dir = std::env::temp_dir().join(format!("cr-tailscale-slow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("tailscale");
+        std::fs::write(&bin, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = Instant::now();
+        let read = tailscale_json_within(&bin, &["status", "--json"], Duration::from_millis(200));
+        assert!(read.is_none(), "a read past its limit gives no names");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\necho '{\"Self\":{\"DNSName\":\"box.\"}}'\n",
+        )
+        .unwrap();
+        let read = tailscale_json_within(&bin, &["status", "--json"], Duration::from_secs(5));
+        assert_eq!(
+            read.and_then(|v| v.pointer("/Self/DNSName").cloned()),
+            Some(Value::from("box."))
+        );
+        std::fs::write(&bin, "#!/bin/sh\nexit 1\n").unwrap();
+        let read = tailscale_json_within(&bin, &["status", "--json"], Duration::from_secs(5));
+        assert_eq!(read, Some(Value::Null), "a failed read is a finished one");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// #331: the hosts a relayed request carries — the `Host` a browser sends for each address the
     /// serve relays to this port, `name:port` or `name` on a default port — and the names an

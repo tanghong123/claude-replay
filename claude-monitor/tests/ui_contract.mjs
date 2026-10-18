@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
-import { promptShouldCollapse, rawTurnHtml, rendererStartsClosed, changeBadgeHtml } from "../../claude-monitor/src/codex-ui/components.js";
+import { PROMPT_CLAMP_LINES, PROMPT_MIN_HIDDEN, promptExpanderHtml, promptHiddenLines, rawTurnHtml, rendererStartsClosed, changeBadgeHtml } from "../../claude-monitor/src/codex-ui/components.js";
 import { attachmentCapability, canReveal, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
 import { costDisplay, reportedCostDisplay } from "../../claude-replay-html/src/html/shared/cost-display.js";
 import { fleetGroups } from "../../claude-replay-html/src/html/shared/fleet.js";
@@ -80,8 +80,16 @@ assert.match(appSource, /SIDEBAR_SESSION_LIMIT = 5/, "the sidebar must initially
 assert.match(previewSource, /setSession\(sessionId\)/, "preview tabs must be scoped by session");
 assert.match(previewSource, /SESSION_CACHE_LIMIT = 6/, "restored preview state must remain session-bounded");
 assert.match(previewSource, /SESSION_CACHE_BYTES = 12 \* 1024 \* 1024/, "restored preview payloads must have a memory budget");
-assert.equal(promptShouldCollapse("short prompt"), false);
-assert.equal(promptShouldCollapse("x".repeat(561)), true);
+// #s139: a prompt collapses by its MEASURED lines, and only when that hides PROMPT_MIN_HIDDEN or more.
+assert.equal(promptHiddenLines(3), 0, "a short prompt never collapses");
+assert.equal(promptHiddenLines(PROMPT_CLAMP_LINES + 1), 0, "a prompt one line over the clamp is shown whole");
+assert.equal(promptHiddenLines(PROMPT_CLAMP_LINES + PROMPT_MIN_HIDDEN - 0.6), 0, "…and so is one that would hide fewer than the minimum");
+assert.equal(promptHiddenLines(PROMPT_CLAMP_LINES + PROMPT_MIN_HIDDEN), PROMPT_MIN_HIDDEN);
+assert.equal(promptHiddenLines(30), 30 - PROMPT_CLAMP_LINES);
+assert.ok(PROMPT_MIN_HIDDEN >= 3, "a collapse buys several lines, not one");
+assert.match(promptExpanderHtml("user:1", false, 9), /aria-expanded="false"><span>Show 9 more lines<\/span><svg class="icon"/, "the collapsed expander names what a click shows");
+assert.match(promptExpanderHtml("user:1", true, 9), /aria-expanded="true"><span>Show fewer<\/span>/);
+assert.doesNotMatch(productionCss, /\.prompt-expand\{[^}]*var\(--mono\)/, "#s140: the expander is set in the bubble's face, not monospace");
 assert.equal(rendererStartsClosed({ renderer: "bash", running: false, interaction: null }), true);
 assert.equal(rendererStartsClosed({ renderer: "read", running: true, interaction: null }), false);
 assert.equal(rendererStartsClosed({ renderer: "tool", running: false, interaction: { kind: "request_user_input" } }), false);

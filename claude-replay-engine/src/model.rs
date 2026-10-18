@@ -88,6 +88,12 @@ pub struct Published {
     pub description: String,
     /// The emoji the call chose as a favicon, if any — shown as the roster's bullet.
     pub icon: String,
+    /// The files this call REMOVED from the artifact (#s155), as its result recorded them —
+    /// relative paths, in order. A removed file has no home to link, and neither the card's link
+    /// nor the result's prose says this call removed it, so this is the only record of it. Empty
+    /// for every publish that removed nothing (nearly all of them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<String>,
 }
 
 /// The questions a call put to the reader, with every option it offered (#255) — and, once the

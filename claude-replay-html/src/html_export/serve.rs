@@ -2432,14 +2432,18 @@ fn serve_connection<R: Into<HttpReply>>(
 
     // The write-route verdicts (#133): a valid TOKEN was presented (not merely same-user),
     // and the Host/Origin are ours. `deny_write` on the Request enforces both + POST.
+    // #s151: the Request is built only for a request a route will answer. The Host/Origin
+    // verdict can ask the host's trusted-hosts check, and nothing a refusal or a public file
+    // sends depends on it, so neither waits on that check. A public read is told the origin is
+    // not ours: its route serves bytes that need no origin, and the verdict only ever refuses.
     let local_port = local.map(|l| l.port()).unwrap_or(0);
-    let req = Request {
+    let request = || Request {
         method: &method,
         name,
         query,
         body: &body,
         authenticated: gate.token_ok(presented.as_deref()),
-        origin_ok: origin_ok(&headers, local_port, gate.trusted_hosts.as_ref()),
+        origin_ok: !public && origin_ok(&headers, local_port, gate.trusted_hosts.as_ref()),
     };
 
     let (r, set_cookie, redirect_root) = match access {
@@ -2473,7 +2477,7 @@ fn serve_connection<R: Into<HttpReply>>(
         ),
         Access::Ok if oversized => (too_large().into(), None, false),
         Access::Ok => (
-            handler(&req).into(),
+            handler(&request()).into(),
             if migrate { presented.clone() } else { None },
             false,
         ),
@@ -2493,7 +2497,7 @@ fn serve_connection<R: Into<HttpReply>>(
             } else if oversized {
                 (too_large().into(), Some(tok), false)
             } else {
-                (handler(&req).into(), Some(tok), false)
+                (handler(&request()).into(), Some(tok), false)
             }
         }
     };
@@ -4013,6 +4017,66 @@ mod tests {
             let reply = send(refused);
             assert!(reply.starts_with("HTTP/1.1 401"), "{refused}: {reply}");
         }
+    }
+
+    /// #s151: the trusted-hosts check is asked only for a request a route answers. A refusal and a
+    /// public file go out without it, so a slow check (the monitor's looks the tailnet's names up)
+    /// cannot hold them; an admitted request with a foreign Host is still judged by it.
+    #[test]
+    fn only_an_admitted_request_asks_the_trusted_hosts_check() {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let asked = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = asked.clone();
+        let check: HostCheck = std::sync::Arc::new(move |host: &str| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            host == "box.tail0.ts.net:2727"
+        });
+        let handler: RouteHandler = std::sync::Arc::new(|req: &Request| {
+            HttpResponse::ok(
+                TEXT_PLAIN,
+                format!("origin_ok={}", req.origin_ok).into_bytes(),
+            )
+        });
+        let gate = AuthGate::for_test(Some("t0k"))
+            .with_public(&["icon.png"])
+            .with_trusted_hosts(check);
+        let port = spawn_listener_gated(0, handler, gate).unwrap();
+        let send = |line: &str, host: &str, auth: &str| -> String {
+            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.write_all(
+                format!("{line} HTTP/1.1\r\nHost: {host}\r\n{auth}Connection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .unwrap();
+            let mut raw = String::new();
+            s.read_to_string(&mut raw).unwrap();
+            raw
+        };
+        let refused = send("GET /api/sessions", "box.tail0.ts.net:2727", "");
+        assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+        let icon = send("GET /icon.png", "box.tail0.ts.net:2727", "");
+        assert!(icon.starts_with("HTTP/1.1 200"), "{icon}");
+        assert!(icon.ends_with("origin_ok=false"), "{icon}");
+        assert_eq!(asked.load(Ordering::SeqCst), 0, "neither asked the check");
+
+        let bearer = "Authorization: Bearer t0k\r\n";
+        let ours = send("GET /api/sessions", "box.tail0.ts.net:2727", bearer);
+        assert!(ours.ends_with("origin_ok=true"), "{ours}");
+        let foreign = send("GET /api/sessions", "evil.example:2727", bearer);
+        assert!(foreign.ends_with("origin_ok=false"), "{foreign}");
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            2,
+            "each admitted foreign Host asked once"
+        );
+        let loopback = send("GET /api/sessions", &format!("127.0.0.1:{port}"), bearer);
+        assert!(loopback.ends_with("origin_ok=true"), "{loopback}");
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            2,
+            "the loopback needs no check"
+        );
     }
 
     /// #11: a phone pairs by a one-time code, over HTTP, against the foreign-euid test gate (so the

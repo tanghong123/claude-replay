@@ -1682,6 +1682,19 @@ impl Emitter<'_> {
                             "desc": p.description,
                         }),
                     );
+                    // #s155: a publish that REMOVED files from the artifact says so, as a change
+                    // does — the count on the head, so a closed card shows it, and the names in
+                    // the body. A removed file has nowhere to link, so they are plain words.
+                    if !p.removed.is_empty() {
+                        push_chip(
+                            &mut head,
+                            chip_class("del", crate::present::removed_files_chip(p.removed.len())),
+                        );
+                        body.push(json!({
+                            "p": "note",
+                            "x": crate::present::removed_files_note(&p.removed),
+                        }));
+                    }
                 }
                 let token = highlight::token_for_target(target);
                 match kind {
@@ -4590,6 +4603,52 @@ mod tests {
             sent: None,
             saved_output: None,
         }
+    }
+
+    /// #s155: a publish that removed files from its artifact carries the count on its head, as a
+    /// change does, and the names in a note; a publish that removed nothing carries neither.
+    #[test]
+    fn an_artifact_publish_that_removed_files_says_so() {
+        let publish = |removed: Vec<String>| Block::ToolUse {
+            name: "Artifact".into(),
+            target: "Deck".into(),
+            diffs: vec![],
+            output: None,
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: Some(Box::new(crate::model::Published {
+                name: "Deck".into(),
+                url: "https://example.test/artifact/x".into(),
+                description: String::new(),
+                icon: String::new(),
+                removed,
+            })),
+            asked: None,
+            delivered: Vec::new(),
+            sent: None,
+            saved_output: None,
+        };
+        let out = stream(
+            &[
+                publish(vec!["old/a.json".into(), "old/b.json".into()]),
+                publish(vec![]),
+            ],
+            &FoldPolicy::pages_default(),
+        );
+        assert_eq!(
+            out[0]["head"]["chips"],
+            json!([{ "c": "del", "x": "−2 files" }]),
+            "the count on the head"
+        );
+        assert_eq!(
+            out[0]["body"],
+            json!([{ "p": "note", "x": "Removed from the artifact: old/a.json, old/b.json" }]),
+            "the names in the body"
+        );
+        assert!(out[1]["head"].get("chips").is_none(), "{}", out[1]["head"]);
+        assert_eq!(out[1]["body"], json!([]));
     }
 
     #[test]

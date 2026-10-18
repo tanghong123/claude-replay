@@ -310,11 +310,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// "omitted"`, which headless sessions ask for) is a "[thinking not returned]" Thinking block in
 /// the work span. A v63 stream dropped it, so the turn showed no reasoning between its calls.
 ///
+/// v65: #s155 — an Artifact publish that removed files from the artifact (Claude Code 2.1.296's
+/// `files_removed`) carries them (`Published::removed`), and its card says so. A v64 stream holds
+/// the publish with no trace of the removal.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 64;
+pub const FOLD_VERSION: u16 = 65;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

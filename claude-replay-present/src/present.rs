@@ -135,6 +135,32 @@ pub fn file_edit_summary(file: &str, adds: usize, dels: usize) -> String {
     }
 }
 
+/// How many names [`removed_files_note`] spells out before it counts the rest.
+pub const REMOVED_FILES_SHOWN: usize = 10;
+
+/// #s155: the chip an Artifact publish wears when it removed files from the artifact, in a
+/// change's own words: `−4 files`, `−1 file`.
+pub fn removed_files_chip(n: usize) -> String {
+    format!("−{n} file{}", if n == 1 { "" } else { "s" })
+}
+
+/// #s155: the files an Artifact publish removed, for the terminal and the pages alike —
+/// `Removed from the artifact: data/a.json, data/b.json`. Each path as the result recorded it,
+/// relative to the artifact, since two removed files may share a name; past
+/// [`REMOVED_FILES_SHOWN`] the rest are counted (`… and 3 more`).
+pub fn removed_files_note(files: &[String]) -> String {
+    let shown = files
+        .iter()
+        .take(REMOVED_FILES_SHOWN)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    match files.len().saturating_sub(REMOVED_FILES_SHOWN) {
+        0 => format!("Removed from the artifact: {shown}"),
+        rest => format!("Removed from the artifact: {shown} and {rest} more"),
+    }
+}
+
 /// #s83: a SendMessage receipt as the reader should see it, for the terminal and the pages alike.
 /// The client writes it as the JSON of its result (`{"success":true,"message":"…","msg_id":"…"}`),
 /// whose `message` is the sentence that says where the message went ("… in that session's inbox,
@@ -299,6 +325,29 @@ pub fn run_changes(tools: &[Block]) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #s155: a publish's removed files in a change's words — one, several, and past the names
+    /// it spells out, where the rest are counted.
+    #[test]
+    fn removed_files_chip_and_note() {
+        assert_eq!(removed_files_chip(1), "−1 file");
+        assert_eq!(removed_files_chip(4), "−4 files");
+        let files = |n: usize| (1..=n).map(|i| format!("old/{i}.json")).collect::<Vec<_>>();
+        assert_eq!(
+            removed_files_note(&files(1)),
+            "Removed from the artifact: old/1.json"
+        );
+        assert_eq!(
+            removed_files_note(&files(2)),
+            "Removed from the artifact: old/1.json, old/2.json"
+        );
+        let many = removed_files_note(&files(REMOVED_FILES_SHOWN + 3));
+        assert!(
+            many.ends_with(&format!("old/{REMOVED_FILES_SHOWN}.json and 3 more")),
+            "{many}"
+        );
+        assert!(!many.contains(&format!("old/{}.json", REMOVED_FILES_SHOWN + 1)));
+    }
 
     /// #s23: what a call changed, and a run: a fresh Write adds its lines, an Edit counts its
     /// diff, a shell command counts the diff it recorded, a failed edit and any other call count

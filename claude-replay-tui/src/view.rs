@@ -3145,6 +3145,52 @@ mod tests {
         );
     }
 
+    /// #s155: an Artifact publish that removed files from its artifact names them under its URL,
+    /// and one that removed nothing draws no such line.
+    #[test]
+    fn an_artifact_publish_names_the_files_it_removed() {
+        let publish = |removed: Vec<String>| Block::ToolUse {
+            name: "Artifact".into(),
+            target: "Deck".into(),
+            diffs: Vec::new(),
+            output: None,
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: Some(Box::new(crate::model::Published {
+                name: "Deck".into(),
+                url: "https://example.test/artifact/x".into(),
+                description: String::new(),
+                icon: String::new(),
+                removed,
+            })),
+            asked: None,
+            delivered: Vec::new(),
+            sent: None,
+            saved_output: None,
+        };
+        let screen = |b: Block| {
+            let mut v = View::new(vec![b], "s", false, FoldPolicy::none());
+            let buf = draw(&mut v, 90, 8);
+            (0..buf.area.height)
+                .map(|y| row(&buf, y))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let removing = screen(publish(vec!["old/a.json".into(), "old/b.json".into()]));
+        assert!(
+            removing.contains("https://example.test/artifact/x")
+                && removing.contains("Removed from the artifact: old/a.json, old/b.json"),
+            "{removing}"
+        );
+        let plain = screen(publish(vec![]));
+        assert!(
+            plain.contains("https://example.test/artifact/x") && !plain.contains("Removed"),
+            "{plain}"
+        );
+    }
+
     fn draw(v: &mut View, w: u16, h: u16) -> Buffer {
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
         t.draw(|f| v.draw(f)).unwrap();
