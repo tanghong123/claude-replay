@@ -264,10 +264,10 @@ pub fn status_code(port: u16) -> Option<u16> {
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(400)).ok()?;
     s.set_read_timeout(Some(Duration::from_millis(1500))).ok()?;
     s.set_write_timeout(Some(Duration::from_millis(500))).ok()?;
-    // HTTP/1.0 with `Connection: close`: no keep-alive to unwind, and the monitor's listener
-    // parses only the request line anyway.
-    s.write_all(b"GET / HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-        .ok()?;
+    // Name the listener's full authority: Monitor validates Host before pairing.
+    // Connection: close avoids retaining a health-check connection.
+    let request = format!("GET / HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    s.write_all(request.as_bytes()).ok()?;
     let mut head = [0u8; 64];
     let n = s.read(&mut head).ok()?;
     let line = String::from_utf8_lossy(&head[..n]);
@@ -372,6 +372,43 @@ mod tests {
         });
         assert!(!serves_http(port), "silence is not a reply");
         t.join().unwrap();
+    }
+
+    #[test]
+    fn protected_monitor_probe_names_the_listener_authority() {
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let request = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 128];
+            while !request.ends_with(b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).unwrap();
+                assert!(count > 0 && request.len() + count <= 4096);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let request = String::from_utf8(request).unwrap();
+            let authority = format!("Host: 127.0.0.1:{port}");
+            if request.lines().any(|line| line == authority) {
+                stream
+                    .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+                    .unwrap();
+            }
+            request
+        });
+        let status = status_code(port);
+        let request = request.join().unwrap();
+        assert!(request
+            .lines()
+            .any(|line| line == format!("Host: 127.0.0.1:{port}")));
+        assert_eq!(
+            status,
+            Some(401),
+            "a pairing challenge proves HTTP is available"
+        );
     }
 
     #[test]
