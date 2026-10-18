@@ -1,6 +1,7 @@
 # Annotation replies as quotations
 
-*Reading model, implementation status updated 2026-10-16 after review. The first delivery
+*Reading model, documentation reconciled with the landed implementation on 2026-10-18.
+The first delivery
 covers Agent Monitor's App shell Turns list and opened user messages, including phone
 portrait/landscape layouts in both themes. The recognition rules and additive data
 contract below define the implementation contract. Standalone export is the remaining
@@ -33,18 +34,18 @@ the viewer must preserve that text without claiming to know its scope.
 
 ---
 
-## What is there today
+## The original reading problem
 
-The screenshot shows this in the Turns list:
+Before the first delivery, the Turns list showed:
 
 ```text
 18 · # Response annotations: Each item...
 ```
 
-The useful comment is inside the message, after the explanatory text and the
-annotation packaging. The reader has to open it and find their own words again.
-Several annotation replies can therefore have almost identical list entries,
-even when the comments ask different questions.
+The useful comment was inside the message, after the explanatory text and the
+annotation packaging. The reader had to open it and find their own words again.
+Several annotation replies could therefore have almost identical list entries,
+even when the comments asked different questions.
 
 The goal is to make the comment recognizable from the list and to make the
 quotation/comment relationship readable when the message is opened.
@@ -74,11 +75,19 @@ The [quoted-user-reply validation cases](../docs/adapter-rendering-validation.md
 contain the complete synthetic examples, exact envelopes, version evidence, and
 positive/negative controls. Their prose and identifiers are invented for public
 documentation; the packaging follows the observed clients. They are not real
-conversations, nor evidence that the proposal is already implemented.
+conversations. The implementation landed separately in
+[MR 30504564](https://code.alibaba-inc.com/project-h/claude-replay/codereview/30504564);
+the examples themselves are format evidence, not a runtime verification receipt.
+The guide also records key-only capture inventories and a reproduction procedure.
 
 File selections, ordinary Markdown blockquotes, and other contextual attachments
 do not independently qualify as assistant-answer replies. Context attached to a
 recognized reply must still remain visible.
+
+The Codex sibling envelopes `# Selected text:`, `# Diff comments:`,
+`# Browser comments:`, and `# Failing PR checks:` are outside this recognizer.
+They remain on their existing ordinary-input paths. Selected text is a possible
+later extension of the reading model; it is not an alias for response annotations.
 
 ---
 
@@ -196,10 +205,19 @@ Examples record format evidence; the rules here decide which inputs qualify.
   Source offsets do not establish how to slice raw Markdown from another JSONL
   assistant message, so never reconstruct the quote from them.
 - Preserve the complete tail after the closing tag, including file and attachment
-  context. An explicit `## My request:` boundary can identify an overall request;
-  other context may precede it. Extract that request only when the tail can be
-  partitioned without hiding or duplicating anything. A comment and an overall
-  request are both optional.
+  context. The implemented request boundary is exactly LF, `## My request:`, LF,
+  occurring once, with a nonempty request and no triple-backtick or triple-tilde
+  fence marker in the preceding tail. Otherwise retain the complete tail as
+  context. A comment and an overall request are both optional.
+- The reviewer reported that Codex App's bundled code-review plugin
+  `26.930.51102` accepts both `## My request:` and `## My request for Codex:` and
+  keeps text after the last match. That plugin observation is not a new capture
+  of this response-annotation producer. The reply adapter deliberately retains
+  its narrower, lossless partition: the alternate heading is preserved in context,
+  not extracted as `request`; repeated standard headings also remain context.
+  Neither case loses text or prevents an otherwise exact annotation envelope
+  from being recognized. Extending extraction needs a measured producer case
+  and controls for repeated headings and literal heading text.
 
 ### Claude exact match
 
@@ -245,8 +263,15 @@ accepted package at the beginning of a message. Its bytes are indistinguishable
 from client-generated text, so it may receive special presentation. A format
 change can conversely cause a false negative and show the full ordinary message.
 Exact matching reduces accidental matches; it cannot authenticate a UI gesture.
-`--unknown` scans record shapes and will not catch these changes inside an already
-known text field. Versioned examples and negative controls are required instead.
+Record-shape scanning alone cannot catch these changes inside a known text field.
+The adapters therefore also call `note_unknown` for a recognizable opening that
+fails the full reply match: `text.envelope / response_annotations` for Codex and
+`text.envelope / quoted_reply` for Claude. This feeds the existing `--unknown`
+sweep without copying the message text into the diagnostic. Valid replies and
+later literal mentions in ordinary prose or fenced code do not report drift.
+The diagnostic's prefix check is broader than the exact recognizer; it never
+authorizes partial conversion. Versioned examples and negative controls remain
+necessary, and a completely unrelated new prefix may still escape this check.
 
 ---
 
@@ -257,7 +282,7 @@ normalize the result into an agent-neutral addition to the shared `Message`/`Blo
 model. The HTML emitter serializes that data; App shell consumes it without
 repeating Codex- or Claude-specific text matching in JavaScript.
 
-The proposed HTML record keeps `kind: "user"`, supported `md`/`raw` body parts,
+The HTML record keeps `kind: "user"`, supported `md`/`raw` body parts,
 and the original source text, and adds optional `reply_context`. This is
 a new viewer field, not a field emitted by either agent client. The following
 fragment illustrates the addition, not a complete HTML record; a response and an
@@ -288,6 +313,24 @@ omits `response`. Codex `source` data is optional positioning evidence: display
 the supplied quote text, not text reconstructed from offsets into another JSONL
 message. Navigating to that source is outside this proposal.
 
+Claude's quotation is already Markdown. The App shell reuses the existing
+blockquote and paragraph styles rather than adding a second quotation design.
+The smaller alternative of stripping marker lines in the adapter would improve
+ordinary Markdown readers, but would also change their canonical body. The
+landed implementation retains additive metadata for Claude as well as Codex:
+it preserves the original envelope, explicit pair boundaries, and Claude's
+undelimited following text while leaving existing body readers intact. This is
+the chosen compatibility tradeoff, not a claim that Claude needs a new wire
+field merely to draw a bar.
+
+`prompt_label` in `claude-replay-html/src/html_export/mod.rs` chooses the first
+item's response text, falling back to its quote, and shortens it in Rust. Both pages'
+Turns lists and sticky labels consume that shared label. App-shell JavaScript
+does not derive a second label from the client envelope. This follows the
+v1.370.0 adapter precedent for `<cross-session-message>` and `<pasted_content>`
+described in [CLAUDE.md](../CLAUDE.md#when-the-transcript-format-moves): use
+structured evidence where it exists and keep client normalization in the adapter.
+
 | Consumer or boundary | Required behavior |
 | --- | --- |
 | Rust adapters | Preserve the full native input before existing text cleanup. Only add reply metadata after a complete exact match; otherwise keep the complete message in the ordinary path. |
@@ -307,12 +350,12 @@ trailing context remain available. If the implementation cannot partition them
 without omission or duplication, it must
 omit `reply_context` for the whole message and use the ordinary presentation.
 
-When implemented, changes to cached canonical data require `FOLD_VERSION` to
+Changes to cached canonical data require `FOLD_VERSION` to
 advance; changes to HTML records require the corresponding `RECORD_SCHEMA`
 invalidation. The live `RecordStore` persists rendered records, so changing the
 parser without invalidating incompatible records can still serve old output.
-This documentation change does not change either version or claim that the Rust
-parser or App shell already supports this field.
+The first delivery already advanced those versions. This documentation correction
+changes neither version nor runtime behavior.
 
 ---
 
@@ -335,6 +378,15 @@ and negative cases through Rust normalization, emitted records, and the actual
 App shell renderer. Synthetic examples define controlled cases; a private
 native-session smoke test provides
 separate evidence that the current clients still generate the accepted formats.
+
+The two-page rendering audit still governs shared labels, turn identity and
+complete readable content. App-shell-only opened-body presentation is an explicit
+difference: compare its quotation styling with an ordinary Markdown blockquote,
+while Classic must keep the complete ordinary body. Do not require DOM equality
+between these different body representations or exempt shared labels from parity.
+Phone portrait and landscape in both themes belong to this first delivery,
+including the iOS Simulator release walk; no new phone design is needed. A
+documentation check or desktop browser run does not establish that iOS result.
 
 ---
 

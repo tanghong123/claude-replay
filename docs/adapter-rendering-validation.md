@@ -300,6 +300,42 @@ The inspected clients are Codex App `26.1007.21159` (build `20052`) and Claude D
 `entrypoint: "claude-desktop"`, identifying a Claude Desktop Code-session envelope. A separate
 Claude Code CLI capture has not been verified for this envelope.
 
+#### Retained record keys and reproduction
+
+The following key inventories were rechecked on 2026-10-18 against retained
+2026-10-10 quote records. They contain no conversation values. They describe those
+captures, not every client version or an authenticated quote-UI discriminator:
+
+| Capture boundary | Keys |
+| --- | --- |
+| Claude user record | `cwd`, `entrypoint`, `gitBranch`, `isSidechain`, `message`, `origin`, `parentUuid`, `permissionMode`, `promptId`, `promptSource`, `sessionId`, `timestamp`, `turnOrigin`, `turnPosition`, `type`, `userType`, `uuid`, `version` |
+| Claude `message` | `content`, `role`; `content` is a string in the inspected records |
+| Claude `origin` | `kind`; no quotation pairs or selected-text offsets in this object |
+| Retained Codex `response_item` row | `metadata`, `ordinal`, `payload`, `timestamp`, `type` |
+| Codex `payload` | `content`, `id`, `internal_chat_message_metadata_passthrough`, `role`, `type` |
+| Codex `payload.content[]` | `text`, `type` |
+| Codex `internal_chat_message_metadata_passthrough` | `content_item_kinds`, `create_time`, `turn_id` |
+| Retained Codex `metadata` | `client_authored`, `inherited_user_message`, `mcp_attribution`, `retained_source`, `user_input_order` |
+
+The retained Codex row includes recorder metadata; this inventory does not claim
+that every key was emitted by the originally observed desktop build. Neither
+inspected record exposes structured quotation pairs outside the user-input text.
+Claude's `origin` is present, but it does not carry the `name`/`body` evidence used
+for peer messages. Do not infer reply intent merely from its presence.
+
+To obtain a fresh comparison capture, use an existing assistant answer in the
+named desktop client. In Claude Desktop's Code session, select a passage, invoke
+the selection's reply action, enter a short comment and send; repeat with two
+selected passages in one message to check the second layout. In Codex App, select
+text in an assistant response, add an annotation/comment, then send the composed
+message; add an overall request to exercise the tail. Use the client UI, not a
+terminal prompt that manually pastes the envelope. Inspect the resulting Claude
+user record or Codex user `response_item`, retain the original privately, and
+publish only key names plus a hand-written synthetic example. If the action or
+envelope differs in a newer build, record that difference rather than relaxing
+the matcher. This is a reproduction procedure; no fresh UI send or native-client
+session was performed for the 2026-10-18 documentation correction.
+
 The following examples substitute synthetic prose into the observed envelopes. They show the
 text extracted from native user-input records, not complete JSONL records or real conversations.
 The message id and offsets are also synthetic; no real assistant message is referenced. When
@@ -389,6 +425,9 @@ The checked-in regression coverage is:
   positive and negative controls, original text, quote-only input, literal markers,
   multiline selections, request/context partitioning, partial JSONL writes, and actual
   durable-cache resume versus a cold parse.
+- `claude-replay-agents/tests/reply_diagnostics.rs`: known-prefix rejection reports
+  through `note_unknown`, complete fallback, and no drift report for valid replies
+  or later literal mentions in prose/code.
 - `claude-replay-html/src/html_export/mod.rs`: additive wire metadata, unchanged supported
   body parts, byte-preserved source, and unchanged turn identity.
 - `claude-monitor/tests/quoted_replies.mjs`: metadata validation, ordinary fallback,
@@ -403,6 +442,7 @@ Run the adapter and browser cases explicitly during iteration:
 
 ```sh
 cargo test -p claude-replay-agents --test quoted_replies
+cargo test -p claude-replay-agents --test reply_diagnostics
 node claude-monitor/tests/quoted_replies.mjs
 cargo build --release -p claude-monitor -p claude-monitor-v2
 cargo test -p claude-replay-browser-tests --test quoted_replies -- --ignored
@@ -452,10 +492,25 @@ re-enable caching for the explicit regression controls. Run the repository gates
 intentional baseline changes as in the workflow above. These are implementation checks to perform,
 not checks reported as passed by this proposed case study.
 
-`--unknown` inventories record/content types and keys; it does not detect changed prose inside a
-known user-text field. Include a preamble/marker mutation that leaves the surrounding record shape
-unchanged, and inspect adapter output and full fallback directly instead of treating an unchanged
-`--unknown` report as evidence that the quote recognizer still works.
+`--unknown` also receives the adapters' content-free `text.envelope` observations:
+`response_annotations` for Codex and `quoted_reply` for Claude. Include a known-prefix
+preamble/marker mutation that leaves the surrounding record shape unchanged, and require both
+the diagnostic and complete ordinary fallback. Require no such diagnostic for valid envelopes
+or later literal mentions. An entirely changed prefix can evade this narrow detector, so a quiet
+sweep alone is not evidence that the current client's quote UI still matches.
+
+Exercise tail classification separately from envelope recognition. The current Codex adapter
+extracts a unique exact `## My request:` boundary under the RFC's fence/content conditions.
+`## My request for Codex:` and repeated standard headings stay visible in context rather than
+being extracted; the plugin's reported last-match rule is not applied here. The sibling envelopes
+`# Selected text:`, `# Diff comments:`, `# Browser comments:` and `# Failing PR checks:` remain
+outside reply recognition. The RFC records that scope and its provenance limitation.
+
+The shared `prompt_label` assertion covers both pages' labels. For opened messages, the App-shell
+quotation case uses an ordinary Markdown blockquote as its style reference, while unadapted
+consumers must retain complete ordinary content. Keep existing phone portrait/landscape and both
+themes in first-delivery coverage; the iOS Simulator release walk remains separate from Chrome
+emulation and from documentation validation.
 
 ## Review checklist
 
