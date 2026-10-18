@@ -309,6 +309,8 @@ mod tests {
     fn replaced_directory_path_cannot_redirect_permissions_or_credential_operations() {
         use std::os::unix::fs::PermissionsExt;
         if std::env::var("NATIVE_TOKEN_REPLACED_DIRECTORY_UMASK_TEST").as_deref() == Ok("child") {
+            // A separate Cargo target directory may leave the shared scratch parent absent.
+            fs::create_dir_all(std::env::temp_dir()).unwrap();
             // Only this test runs in the child; do not change the parent suite's umask.
             unsafe {
                 libc::umask(0o277);
@@ -456,6 +458,8 @@ mod tests {
             );
             return;
         }
+        // Prepare the shared scratch parent before removing its owner write bit at creation.
+        fs::create_dir_all(std::env::temp_dir()).unwrap();
         // This process runs only this test, so the process-wide umask is isolated.
         unsafe {
             libc::umask(0o277);
@@ -475,6 +479,38 @@ mod tests {
             ServerToken::load_or_create(&path).unwrap().bearer(),
             token.bearer()
         );
+        crate::remove_test_scratch(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restrictive_umask_tests_leave_a_missing_temp_parent_writable() {
+        let root =
+            std::env::temp_dir().join(format!("native-auth-temp-parent-{}", std::process::id()));
+        crate::remove_test_scratch(&root);
+        fs::create_dir_all(&root).unwrap();
+        for name in [
+            "replaced_directory_path_cannot_redirect_permissions_or_credential_operations",
+            "restrictive_umask_still_creates_a_reusable_private_credential",
+        ] {
+            let temp = root.join(name);
+            assert!(!temp.exists());
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &format!("auth::tests::{name}"), "--nocapture"])
+                .env("TMPDIR", &temp)
+                .env_remove("NATIVE_TOKEN_REPLACED_DIRECTORY_UMASK_TEST")
+                .env_remove("NATIVE_TOKEN_UMASK_TEST")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed;"),
+                "{name}: {stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            // A later test must still be able to create scratch files in the shared parent.
+            fs::write(temp.join("later-test"), b"writable").unwrap();
+        }
         crate::remove_test_scratch(&root);
     }
 
