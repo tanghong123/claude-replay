@@ -572,13 +572,18 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn server_command_preserves_ssh_and_shell_without_session_overrides() {
+        use std::os::unix::ffi::OsStringExt;
         if std::env::var("NATIVE_COMMAND_ENV_TEST").as_deref() != Ok("child") {
             let output = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "runtime::tests::server_command_preserves_ssh_and_shell_without_session_overrides", "--nocapture"])
+                .env_clear()
+                .env("TMPDIR", std::env::temp_dir())
                 .env("NATIVE_COMMAND_ENV_TEST", "child")
                 .env("SSH_AUTH_SOCK", "/synthetic/ssh-agent.sock")
                 .env("SHELL", "/bin/zsh")
                 .env("TERM", "xterm-256color")
+                .env("OPENAI_API_KEY", "synthetic-key")
+                .env("HTTPS_PROXY", std::ffi::OsString::from_vec(b"synthetic-\xff".to_vec()))
                 .env("CODEX_THREAD_ID", "must-not-inherit")
                 .env("RUST_LOG", "trace")
                 .output().unwrap();
@@ -615,11 +620,15 @@ mod tests {
         }
         let output = command.output().unwrap();
         assert!(output.status.success());
-        let environment = String::from_utf8(output.stdout).unwrap();
+        // An inherited Unix value need not be UTF-8. Never panic with the full
+        // environment bytes, which could include credentials, as the error value.
+        let environment = String::from_utf8_lossy(&output.stdout);
         for expected in [
             "SSH_AUTH_SOCK=/synthetic/ssh-agent.sock",
             "SHELL=/bin/zsh",
             "TERM=xterm-256color",
+            "HTTPS_PROXY=synthetic-\u{fffd}",
+            "OPENAI_API_KEY=synthetic-key",
         ] {
             assert!(
                 environment.lines().any(|line| line == expected),
@@ -697,14 +706,15 @@ mod tests {
         let listener = std::net::TcpListener::bind(runtime.addresses[0]).unwrap();
         listener.set_nonblocking(true).unwrap();
         let accept = || {
-            let deadline = Instant::now() + Duration::from_secs(3);
+            // Credential publication between the probe and handshake includes two fsyncs.
+            let deadline = Instant::now() + Duration::from_secs(15);
             loop {
                 match listener.accept() {
                     Ok((stream, _)) => return stream,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         assert!(
                             Instant::now() < deadline,
-                            "Activation did not reach the mock listener within 3 seconds"
+                            "Activation did not reach the mock listener within 15 seconds"
                         );
                         std::thread::sleep(Duration::from_millis(10));
                     }

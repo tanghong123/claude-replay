@@ -20,6 +20,24 @@ impl ServerToken {
     }
 
     pub fn load_or_create(receipts: &Path) -> Result<Self> {
+        Self::load_or_create_with_permissions(receipts, |file| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                // Creation modes are filtered by umask; restore owner read/write
+                // through the new descriptor before writing any credential.
+                file.set_permissions(fs::Permissions::from_mode(0o600))?;
+            }
+            #[cfg(not(unix))]
+            let _ = file;
+            Ok(())
+        })
+    }
+
+    fn load_or_create_with_permissions(
+        receipts: &Path,
+        set_permissions: impl FnOnce(&File) -> std::io::Result<()>,
+    ) -> Result<Self> {
         let path = Self::path(receipts)?;
         let parent = path.parent().expect("token has a state directory");
         let directory = CredentialDirectory::open(parent)?;
@@ -50,6 +68,8 @@ impl ServerToken {
         let temporary = format!(".codex-server-token-{nonce}");
         let mut file = directory.open_file(&temporary, true)?;
         let publish = (|| -> Result<()> {
+            // Permission failures must reach the same cleanup as write/sync failures.
+            set_permissions(&file).context("Restrict temporary native credential")?;
             file.write_all(value.as_bytes())?;
             file.sync_all()?;
             match directory.publish(&temporary) {
@@ -191,14 +211,7 @@ impl CredentialDirectory {
                 Err(std::io::Error::last_os_error())
             } else {
                 // SAFETY: openat returned a new owned descriptor; File closes it exactly once.
-                let file = unsafe { File::from_raw_fd(fd) };
-                if create {
-                    use std::os::unix::fs::PermissionsExt;
-                    // Creation modes are filtered by umask; restore owner read/write
-                    // through the new descriptor before publishing any credential.
-                    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-                }
-                Ok(file)
+                Ok(unsafe { File::from_raw_fd(fd) })
             }
         };
         #[cfg(not(unix))]
@@ -358,9 +371,38 @@ mod tests {
             std::io::ErrorKind::PermissionDenied
         );
         assert!(format!("{error:#}").contains("synthetic cleanup failure"));
+        assert!(format!("{error:#}").contains(&std::io::ErrorKind::PermissionDenied.to_string()));
         assert!(finish_publication(publication(), Ok(())).is_err());
         assert!(finish_publication(Ok(()), cleanup()).is_err());
         assert!(finish_publication(Ok(()), Ok(())).is_ok());
+    }
+
+    #[test]
+    fn permission_failure_removes_the_empty_temporary_credential() {
+        let root =
+            std::env::temp_dir().join(format!("native-auth-permissions-{}", std::process::id()));
+        crate::remove_test_scratch(&root);
+        let receipts = root.join("receipts.sqlite3");
+        let error = ServerToken::load_or_create_with_permissions(&receipts, |file| {
+            assert_eq!(file.metadata()?.len(), 0, "No secret may be written yet");
+            assert_eq!(fs::read_dir(&root)?.count(), 1, "Temporary file must exist");
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .err()
+        .expect("permission failure must prevent publication");
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert!(format!("{error:#}").contains("Restrict temporary native credential"));
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        let token = ServerToken::load_or_create(&receipts).unwrap();
+        assert_eq!(
+            ServerToken::load_or_create(&receipts).unwrap().bearer(),
+            token.bearer()
+        );
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        crate::remove_test_scratch(&root);
     }
 
     #[cfg(unix)]
