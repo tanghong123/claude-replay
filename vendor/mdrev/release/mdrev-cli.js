@@ -395,7 +395,7 @@ var require_format = __commonJS({
 
 // packages/cli/dist/cli.js
 import { homedir as homedir3, hostname as hostname5, userInfo as userInfo4 } from "node:os";
-import { readFileSync as readFileSync6 } from "node:fs";
+import { readFileSync as readFileSync7 } from "node:fs";
 import { join as join11 } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { timingSafeEqual } from "node:crypto";
@@ -807,19 +807,17 @@ var GitBlobSource = class {
    * showed a range with nothing in it — a plausible answer to a question
    * nobody asked, which is worse than an error. What an unparseable spec does
    * do is resolve to the current second, so this asks for a spec KNOWN to be
-   * unparseable alongside the real one: git prints a --max-age for each, both
-   * from one clock read, and a spec that lands on the control never parsed.
+   * unparseable alongside the real one, and judges git's answer by
+   * `sinceWasRead`, below.
    *
    * `now` is the one spec that legitimately means the current second; a spec
-   * that spells it another way ("0 seconds ago") is refused, which is the
-   * corner this trades for catching every typo.
+   * within two seconds of now spelled another way ("0 seconds ago", "2 seconds
+   * ago") is refused, which is the corner this trades for catching every typo.
    */
   async readsAsDate(spec) {
     if (/^now$/i.test(spec.trim()))
       return true;
-    const out = await this.git("rev-parse", "--since=zzzz-not-a-date-zzzz", `--since=${spec}`);
-    const [control, mine] = out.split("\n").map((line) => line.trim());
-    return Boolean(mine) && mine !== control;
+    return sinceWasRead(await this.git("rev-parse", "--since=zzzz-not-a-date-zzzz", `--since=${spec}`));
   }
   async commitInfo(sha) {
     let hit = this.commits.get(sha);
@@ -1653,10 +1651,15 @@ async function openRepo(path2) {
     return new FileSource(path2);
   }
 }
+var SINCE_SLACK_S = 2;
+function sinceWasRead(answer) {
+  const [control, mine] = answer.split("\n").map((line) => Number(/^--max-age=(\d+)$/.exec(line.trim())?.[1]));
+  return Number.isFinite(control) && Number.isFinite(mine) && Math.abs(mine - control) > SINCE_SLACK_S;
+}
 
 // packages/core/dist/notify.js
 import { spawn as spawn2 } from "node:child_process";
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync as readFileSync2, statSync } from "node:fs";
 
 // packages/core/dist/project-file.js
 import { execFileSync } from "node:child_process";
@@ -1714,9 +1717,36 @@ function readNotify(root5) {
   }
   return { channels, ...link3 ? { link: link3 } : {}, refused };
 }
-function linkTo(pattern, commit, path2) {
+function linkTo(pattern, commit, path2, at = {}) {
   const encoded = path2.split("/").map(encodeURIComponent).join("/");
-  return pattern.replaceAll("{commit}", encodeURIComponent(commit)).replaceAll("{path}", encoded);
+  return pattern.replaceAll("{commit}", encodeURIComponent(commit)).replaceAll("{path}", encoded).replaceAll("{ref}", encodeURIComponent(at.ref ?? "")).replaceAll("{note}", encodeURIComponent(at.note ?? ""));
+}
+function hostNotify(file = process.env.MDREV_NOTIFY_FILE) {
+  if (!file)
+    return { host: null };
+  let doc;
+  try {
+    doc = JSON.parse(readFileSync2(file, "utf8"));
+  } catch (e) {
+    return { host: null, error: `the host's notification settings (MDREV_NOTIFY_FILE) could not be read: ${e.message.split("\n")[0]}` };
+  }
+  const d = doc;
+  if (!d || typeof d !== "object")
+    return { host: null, error: "the host's notification settings (MDREV_NOTIFY_FILE) are not an object" };
+  const host = {};
+  if (d.env !== void 0) {
+    if (!d.env || typeof d.env !== "object" || Object.values(d.env).some((v) => typeof v !== "string"))
+      return { host: null, error: "the host's notification settings name an environment that is not one (MDREV_NOTIFY_FILE)" };
+    host.env = d.env;
+  }
+  if (d.link !== void 0) {
+    if (typeof d.link !== "string" || !/^(https:\/\/|http:\/\/(127\.0\.0\.1|localhost|\[::1\])[:/])[^\s]+$/.test(d.link))
+      return { host: null, error: "the host's notification settings name a link that is not an https pattern (MDREV_NOTIFY_FILE)" };
+    host.link = d.link;
+  }
+  if (Array.isArray(d.quiet))
+    host.quiet = d.quiet.filter((e) => typeof e === "string").map((e) => e.trim().toLowerCase());
+  return { host };
 }
 function launcherDirs(script = process.argv[1] ?? "") {
   if (!isAbsolute(script))
@@ -1777,9 +1807,14 @@ function linkFor(remote) {
 }
 function runTool(tool, input, timeoutMs) {
   return new Promise((done) => {
+    const { host, error } = hostNotify();
+    if (error) {
+      done({ code: null, out: "", err: error, timedOut: false });
+      return;
+    }
     let child;
     try {
-      child = spawn2(tool, [], { stdio: ["pipe", "pipe", "pipe"] });
+      child = spawn2(tool, [], { stdio: ["pipe", "pipe", "pipe"], ...host?.env ? { env: host.env } : {} });
     } catch (e) {
       done({ code: null, out: "", err: e.message, timedOut: false });
       return;
@@ -32887,12 +32922,12 @@ function agentLabel(a) {
 init_annotations();
 import { spawn as spawn5 } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync3, readdirSync as readdirSync3, renameSync as renameSync2, rmSync as rmSync2, statSync as statSync3, unlinkSync as unlinkSync2, writeFileSync } from "node:fs";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync4, readdirSync as readdirSync3, renameSync as renameSync2, rmSync as rmSync2, statSync as statSync3, unlinkSync as unlinkSync2, writeFileSync } from "node:fs";
 import { homedir, hostname as hostname2, userInfo } from "node:os";
 import { basename as basename2, join as join7 } from "node:path";
 
 // packages/core/dist/events.js
-import { appendFileSync, mkdirSync, readdirSync as readdirSync2, readFileSync as readFileSync2, renameSync, statSync as statSync2, unlinkSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync as readdirSync2, readFileSync as readFileSync3, renameSync, statSync as statSync2, unlinkSync } from "node:fs";
 import { join as join5 } from "node:path";
 var EVENTS_FILE = "events.jsonl";
 var EVENTS_MAX_BYTES = 1e6;
@@ -33274,7 +33309,7 @@ function logEvent(kind, fields) {
 function machineId() {
   const file = join7(stateHome(), "machine-id");
   try {
-    const id2 = readFileSync3(file, "utf8").trim();
+    const id2 = readFileSync4(file, "utf8").trim();
     if (/^[0-9a-f]{12}$/.test(id2))
       return id2;
   } catch {
@@ -33287,7 +33322,7 @@ function machineId() {
     return id;
   } catch {
     try {
-      const theirs = readFileSync3(file, "utf8").trim();
+      const theirs = readFileSync4(file, "utf8").trim();
       if (/^[0-9a-f]{12}$/.test(theirs))
         return theirs;
     } catch {
@@ -33454,7 +33489,7 @@ async function withLock(dir, fn, waitMs = 75e3) {
     }
     let holder = {};
     try {
-      holder = JSON.parse(readFileSync3(file, "utf8"));
+      holder = JSON.parse(readFileSync4(file, "utf8"));
     } catch {
     }
     const age = Date.now() - (statSync3(file, { throwIfNoEntry: false })?.mtimeMs ?? Date.now());
@@ -33474,7 +33509,7 @@ async function withLock(dir, fn, waitMs = 75e3) {
     return await fn();
   } finally {
     try {
-      if (readFileSync3(file, "utf8") === me)
+      if (readFileSync4(file, "utf8") === me)
         unlinkSync2(file);
     } catch {
     }
@@ -33587,7 +33622,7 @@ var SharedStore = class {
   /** The pushed records as of the last fetch. */
   cache() {
     try {
-      const c = JSON.parse(readFileSync3(this.cacheFile, "utf8"));
+      const c = JSON.parse(readFileSync4(this.cacheFile, "utf8"));
       if (c.rewritten && !statSync3(c.rewritten.aside, { throwIfNoEntry: false }))
         delete c.rewritten;
       if (Array.isArray(c.records))
@@ -33607,7 +33642,7 @@ var SharedStore = class {
     const out = [];
     for (const n of names) {
       try {
-        const e = JSON.parse(readFileSync3(join7(this.outboxDir, n), "utf8"));
+        const e = JSON.parse(readFileSync4(join7(this.outboxDir, n), "utf8"));
         if (e?.record?.id)
           out.push(e);
       } catch {
@@ -33626,7 +33661,7 @@ var SharedStore = class {
     const out = [];
     for (const n of names) {
       try {
-        const e = JSON.parse(readFileSync3(join7(this.quietDir, n), "utf8"));
+        const e = JSON.parse(readFileSync4(join7(this.quietDir, n), "utf8"));
         if (e?.record?.id)
           out.push(e);
       } catch {
@@ -33741,7 +33776,7 @@ var SharedStore = class {
   /** A pushed record of this machine's that its push has already announced (H2): told once, whichever push found it in the store. */
   wasNotified(id) {
     try {
-      return JSON.parse(readFileSync3(join7(this.outboxDir, "sent", `${id}.json`), "utf8")).notified === true;
+      return JSON.parse(readFileSync4(join7(this.outboxDir, "sent", `${id}.json`), "utf8")).notified === true;
     } catch {
       return false;
     }
@@ -33749,7 +33784,7 @@ var SharedStore = class {
   markNotified(id) {
     const file = join7(this.outboxDir, "sent", `${id}.json`);
     try {
-      const e = JSON.parse(readFileSync3(file, "utf8"));
+      const e = JSON.parse(readFileSync4(file, "utf8"));
       writeAtomic(file, JSON.stringify({ ...e, notified: true }, null, 2));
     } catch {
     }
@@ -33762,7 +33797,7 @@ var SharedStore = class {
   }
   quietFailedAt() {
     try {
-      return Date.parse(JSON.parse(readFileSync3(join7(this.quietDir, "failed.json"), "utf8")).at) || null;
+      return Date.parse(JSON.parse(readFileSync4(join7(this.quietDir, "failed.json"), "utf8")).at) || null;
     } catch {
       return null;
     }
@@ -33793,7 +33828,7 @@ var SharedStore = class {
    */
   pairing() {
     try {
-      const p2 = JSON.parse(readFileSync3(join7(this.dir, "pairing.json"), "utf8"));
+      const p2 = JSON.parse(readFileSync4(join7(this.dir, "pairing.json"), "utf8"));
       return sameRepository(p2.remote) === sameRepository(this.pointer.remote) && p2.branch === this.pointer.branch && typeof p2.email === "string" && p2.email ? p2 : null;
     } catch {
       return null;
@@ -33845,7 +33880,7 @@ var SharedStore = class {
    */
   pairRequest() {
     try {
-      const r = JSON.parse(readFileSync3(join7(this.dir, "pair-request.json"), "utf8"));
+      const r = JSON.parse(readFileSync4(join7(this.dir, "pair-request.json"), "utf8"));
       if (Date.now() - Date.parse(r.at) > 24 * 36e5)
         return null;
       return sameRepository(r.remote) === sameRepository(this.pointer.remote) && r.branch === this.pointer.branch ? { email: r.email, name: r.name, at: r.at, ...r.check ? { check: r.check } : {} } : null;
@@ -33873,7 +33908,7 @@ var SharedStore = class {
       const file = join7(this.outboxDir, `${id}.json`);
       let entry;
       try {
-        entry = JSON.parse(readFileSync3(file, "utf8"));
+        entry = JSON.parse(readFileSync4(file, "utf8"));
       } catch {
         logEvent("review.edit-too-late", { store: this.pointer.remote, id });
         throw new StoreError(`${id} has been pushed: it cannot be edited now, only answered (C5)`, "other");
@@ -34305,6 +34340,7 @@ function foldThreads(records, me, read) {
       rev: r.commit ?? WORKTREE2,
       ...r.blob ? { blob: r.blob } : {},
       ...r.fromRev ? { fromRev: r.fromRev } : {},
+      ...typeof r.ref === "string" && r.ref ? { ref: r.ref } : {},
       created: r.at,
       author: r.author.name || r.author.email,
       type: "comment",
@@ -34401,7 +34437,7 @@ async function writePointer(root5, storeUrl, change, who) {
     await agentMayName(root5, p2.remote, change);
   let doc = {};
   try {
-    doc = JSON.parse(readFileSync3(file, "utf8"));
+    doc = JSON.parse(readFileSync4(file, "utf8"));
   } catch {
   }
   const was = JSON.stringify(doc);
@@ -34548,7 +34584,7 @@ async function pairedElsewhere(root5, now) {
     if (dir === now.dir)
       continue;
     try {
-      const p2 = JSON.parse(readFileSync3(join7(dir, "pairing.json"), "utf8"));
+      const p2 = JSON.parse(readFileSync4(join7(dir, "pairing.json"), "utf8"));
       if (p2.project && p2.project === project2 || !p2.project && remotes.has(sameRepository(p2.remote)))
         return { remote: p2.remote, branch: p2.branch };
     } catch {
@@ -34596,7 +34632,7 @@ async function projectPairings(root5, except) {
     if (dir === except)
       continue;
     try {
-      const p2 = JSON.parse(readFileSync3(join7(dir, "pairing.json"), "utf8"));
+      const p2 = JSON.parse(readFileSync4(join7(dir, "pairing.json"), "utf8"));
       if (p2.email && p2.project && p2.project === project2)
         out.push({ dir, pairing: p2 });
     } catch {
@@ -34638,7 +34674,7 @@ async function probeKept(p2, fresh) {
   const file = join7(stateHome(), "review", ".probes.json");
   let memo = {};
   try {
-    memo = JSON.parse(readFileSync3(file, "utf8"));
+    memo = JSON.parse(readFileSync4(file, "utf8"));
   } catch {
   }
   const key2 = storeKey(p2);
@@ -34727,7 +34763,7 @@ function formatFollowed(p2) {
 }
 function movedAwaitingPairing(store) {
   try {
-    const p2 = JSON.parse(readFileSync3(join7(store.dir, "pairing.moved.json"), "utf8"));
+    const p2 = JSON.parse(readFileSync4(join7(store.dir, "pairing.moved.json"), "utf8"));
     const last = p2.moved?.at(-1);
     return last ? { from: last.from, why: p2.why ?? "" } : null;
   } catch {
@@ -34868,7 +34904,7 @@ function machineConfigPath() {
 }
 function machineConfig() {
   try {
-    const c = JSON.parse(readFileSync3(machineConfigPath(), "utf8"));
+    const c = JSON.parse(readFileSync4(machineConfigPath(), "utf8"));
     return c && typeof c === "object" && !Array.isArray(c) ? c : {};
   } catch {
     return {};
@@ -35141,6 +35177,7 @@ async function shareNote(source, note, who) {
     path: note.path,
     blob: note.blob,
     ...note.anchor.side === "from" && note.fromRev ? { fromRev: note.fromRev } : {},
+    ...note.ref ? { ref: note.ref } : {},
     anchor: note.anchor
   };
   store.write(record, local(who, source.repoRoot));
@@ -35297,7 +35334,7 @@ async function shareDrafts(source, noteId, edits, who) {
       else if (!body3)
         refused.push(`${d.id}: a new thread needs words`);
       else
-        planned.push({ ...base2("note", id, id, null, me, body3, { via: "cli" }, commit), ...from, path: found.path, blob: note.blob, ...note.anchor.side === "from" && note.fromRev ? { fromRev: note.fromRev } : {}, anchor: note.anchor });
+        planned.push({ ...base2("note", id, id, null, me, body3, { via: "cli" }, commit), ...from, path: found.path, blob: note.blob, ...note.anchor.side === "from" && note.fromRev ? { fromRev: note.fromRev } : {}, ...note.ref ? { ref: note.ref } : {}, anchor: note.anchor });
       continue;
     }
     const t = d.re ? threadFor(store, me.email, d.re) : null;
@@ -35534,7 +35571,7 @@ async function otherOutboxes(root5, except) {
       continue;
     let theirs = null;
     try {
-      const e = JSON.parse(readFileSync3(join7(dir, "outbox", files[0]), "utf8"));
+      const e = JSON.parse(readFileSync4(join7(dir, "outbox", files[0]), "utf8"));
       theirs = await commonDir(e.local.root);
     } catch {
       continue;
@@ -35543,7 +35580,7 @@ async function otherOutboxes(root5, except) {
       continue;
     let store = n;
     try {
-      store = JSON.parse(readFileSync3(join7(dir, "store.json"), "utf8")).remote ?? n;
+      store = JSON.parse(readFileSync4(join7(dir, "store.json"), "utf8")).remote ?? n;
     } catch {
     }
     out.push({ store, count: files.length });
@@ -35569,13 +35606,21 @@ async function reviewPush(source, ids, who, opts = {}) {
   }
   const result = await store.push(ids, who);
   await store.sendQuiet(who, true).catch(() => null);
-  const { me } = await pairedStore(source.repoRoot);
-  result.notified = await notifyPush(source, store, me, [...result.sent, ...result.already]).catch((e) => ({ sent: [], failed: [{ error: e.message }] }));
+  if (opts.notify !== false) {
+    const { me } = await pairedStore(source.repoRoot);
+    result.notified = await notifyPush(source, store, me, [...result.sent, ...result.already]).catch((e) => ({ sent: [], failed: [{ error: e.message }] }));
+  }
   if (pushedCode) {
     result.code = pushedCode;
     result.warnings = [];
   }
   return result;
+}
+async function reviewNotify(source, ids, who) {
+  if (who.via !== "viewer" && who.via !== "person")
+    throw new StoreError("telling people of a push is the pusher's act (D1): it follows their Push", "other");
+  const { store, me } = await pairedStore(source.repoRoot);
+  return notifyPush(source, store, me, ids).catch((e) => ({ sent: [], failed: [{ error: e.message }] }));
 }
 async function reviewFetch(source, who) {
   const { store, me } = await pairedStore(source.repoRoot);
@@ -35635,7 +35680,7 @@ async function subscribe(source, opts, who) {
 async function sendCode(source, store, me, want) {
   const file = join7(store.dir, "subscribe-request.json");
   try {
-    const was = JSON.parse(readFileSync3(file, "utf8"));
+    const was = JSON.parse(readFileSync4(file, "utf8"));
     if (was.email === want.email && Date.now() - Date.parse(was.at) < CODE_LIFE_MS) {
       throw new StoreError(`a code went to ${want.email} at ${was.at.slice(11, 16)}: type it, or wait ten minutes for another`, "other");
     }
@@ -35667,7 +35712,7 @@ async function confirmSubscription(source, code4, who) {
   const file = join7(store.dir, "subscribe-request.json");
   let want;
   try {
-    want = JSON.parse(readFileSync3(file, "utf8"));
+    want = JSON.parse(readFileSync4(file, "utf8"));
   } catch {
     throw new StoreError("no code is waiting: subscribe again to have one sent", "other");
   }
@@ -35717,6 +35762,9 @@ async function notifyPush(source, store, me, landed) {
   if (fresh.length === 0)
     return { sent: [], failed: [] };
   const notify = readNotify(source.repoRoot);
+  const { host } = hostNotify();
+  const pattern = host?.link ?? notify.link;
+  const quiet = new Set(host?.quiet ?? []);
   const stamp2 = () => {
     for (const r of fresh)
       store.markNotified(r.id);
@@ -35731,7 +35779,7 @@ async function notifyPush(source, store, me, landed) {
     const note = noteOf(r);
     if (!note?.path)
       continue;
-    const d = docs.get(note.path) ?? { path: note.path, ...note.commit ? { commit: note.commit } : {}, notes: 0, replies: 0, agent: false };
+    const d = docs.get(note.path) ?? { path: note.path, ...note.commit ? { commit: note.commit } : {}, thread: r.thread, ...note.ref ? { ref: note.ref } : {}, notes: 0, replies: 0, agent: false };
     if (r.kind === "note")
       d.notes++;
     else
@@ -35747,7 +35795,7 @@ async function notifyPush(source, store, me, landed) {
   for (const r of fresh) {
     const note = noteOf(r);
     for (const email of mentionsIn(r.body)) {
-      if (mine.has(email))
+      if (mine.has(email) || quiet.has(email))
         continue;
       const p2 = people.get(email);
       if (p2?.why === "mentioned") {
@@ -35755,11 +35803,11 @@ async function notifyPush(source, store, me, landed) {
           p2.docs.add(note.path);
         continue;
       }
-      people.set(email, { why: "mentioned", docs: new Set(note?.path ? [note.path] : []), snippet: mentionSnippet(r.body, email), ...r.agent ? { agent: true } : {}, ...note?.path ? { on: note.path } : {} });
+      people.set(email, { why: "mentioned", docs: new Set(note?.path ? [note.path] : []), snippet: mentionSnippet(r.body, email), ...r.agent ? { agent: true } : {}, ...note?.path ? { on: note.path } : {}, thread: r.thread, ...note?.ref ? { ref: note.ref } : {} });
     }
   }
   for (const s2 of subs) {
-    if (mine.has(s2.email) || mine.has(s2.author))
+    if (mine.has(s2.email) || mine.has(s2.author) || quiet.has(s2.email))
       continue;
     const theirs = [...docs.keys()].filter((path2) => !s2.path || s2.path === path2);
     if (theirs.length === 0)
@@ -35777,6 +35825,7 @@ async function notifyPush(source, store, me, landed) {
     return { sent: [], failed: [] };
   }
   const from = { name: me.name, email: me.email };
+  const linkOf = (d, thread, ref) => pattern && d && (d.commit || !pattern.includes("{commit}")) ? linkTo(pattern, d.commit ?? "", d.path, { ref: ref ?? d.ref, note: thread ?? d.thread }) : void 0;
   const docLines = (paths) => [...paths].flatMap((path2) => {
     const d = docs.get(path2);
     if (!d)
@@ -35784,14 +35833,14 @@ async function notifyPush(source, store, me, landed) {
     const n = d.notes + d.replies;
     return [
       `${n} new note${n === 1 ? "" : "s"} on ${path2} from ${me.name}${d.agent ? " (agent-assisted)" : ""} \u2014 ${d.notes} new thread${d.notes === 1 ? "" : "s"}, ${d.replies} repl${d.replies === 1 ? "y" : "ies"}`,
-      `  ${d.commit ? `at ${d.commit.slice(0, 8)} \xB7 ` : ""}open it: mdrev ${path2}${notify.link && d.commit ? ` \xB7 ${linkTo(notify.link, d.commit, path2)}` : ""}`
+      `  ${d.commit ? `at ${d.commit.slice(0, 8)} \xB7 ` : ""}open it: mdrev ${path2}${linkOf(d) ? ` \xB7 ${linkOf(d)}` : ""}`
     ];
   });
   const messages2 = [...people.entries()].map(([to, p2]) => {
     const paths = [...p2.docs];
     const first = paths[0] ?? "";
     const d = docs.get(first);
-    const link3 = notify.link && d?.commit ? linkTo(notify.link, d.commit, first) : void 0;
+    const link3 = p2.why === "mentioned" ? linkOf(d, p2.thread, p2.ref) : linkOf(d);
     if (p2.why === "mentioned") {
       const head2 = `${me.name} mentioned you on ${p2.on ?? first}: ${p2.snippet ?? ""}${p2.agent ? " (agent-assisted)" : ""}`;
       return { to, why: "mentioned", subject: `${me.name} mentioned you on ${p2.on ?? first}`, text: [head2, "", ...docLines(paths)].join("\n"), path: first, ...d?.commit ? { commit: d.commit } : {}, ...link3 ? { link: link3 } : {} };
@@ -36683,7 +36732,9 @@ var Review = class {
         ...fromRev ? { fromRev } : {},
         ...base3.uncommitted ? { uncommitted: true } : {},
         anchor: canonical2 ?? given,
-        body: String(args.annotation.body ?? "")
+        body: String(args.annotation.body ?? ""),
+        // the page's branch, when its host says it (the service's ref, #s148)
+        ...typeof args.annotation.ref === "string" ? { ref: args.annotation.ref } : {}
       }, args.who ?? { via: "viewer" });
     }
     return appendAnnotation(source.notesHome, args.path, {
@@ -36961,7 +37012,7 @@ function isNoteOp(v) {
 init_annotations();
 import { execFile as execFile2 } from "node:child_process";
 import { createHash as createHash2 } from "node:crypto";
-import { chmodSync, closeSync, mkdirSync as mkdirSync3, openSync, readFileSync as readFileSync4, readdirSync as readdirSync4, renameSync as renameSync3, rmSync as rmSync3, statSync as statSync4, writeFileSync as writeFileSync2 } from "node:fs";
+import { chmodSync, closeSync, mkdirSync as mkdirSync3, openSync, readFileSync as readFileSync5, readdirSync as readdirSync4, renameSync as renameSync3, rmSync as rmSync3, statSync as statSync4, writeFileSync as writeFileSync2 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { dirname as dirname4, join as join8 } from "node:path";
 var ASK_MS = 2e3;
@@ -36972,7 +37023,7 @@ var serviceDir = () => join8(process.env.MDREV_STATE_DIR ?? join8(homedir2(), ".
 var repoDir = (id) => join8(serviceDir(), String(id));
 function readJoined() {
   try {
-    const j = JSON.parse(readFileSync4(joinedFile(), "utf8"));
+    const j = JSON.parse(readFileSync5(joinedFile(), "utf8"));
     return typeof j.url === "string" && typeof j.token === "string" && typeof j.device === "string" ? j : null;
   } catch {
     return null;
@@ -36980,7 +37031,7 @@ function readJoined() {
 }
 function readJson(file) {
   try {
-    return JSON.parse(readFileSync4(file, "utf8"));
+    return JSON.parse(readFileSync5(file, "utf8"));
   } catch {
     return null;
   }
@@ -37265,6 +37316,13 @@ async function pull(mode, timeoutMs = ASK_MS) {
   });
 }
 var quietFile = (id) => join8(repoDir(id), "quiet.json");
+function silence(mode) {
+  const quiet = readJson(quietFile(mode.repo.id));
+  if (!quiet || Date.now() - quiet.at >= QUIET_MS)
+    return null;
+  const s2 = readJson(checkoutFile(mode.repo.id, mode.root));
+  return { asOf: s2?.answered ? new Date(s2.answered).toISOString().replace(/\.\d+Z$/, "Z") : "never" };
+}
 async function sync(mode, o = {}) {
   const quiet = readJson(quietFile(mode.repo.id));
   const state = readJson(checkoutFile(mode.repo.id, mode.root));
@@ -37982,6 +38040,16 @@ var InService = class _InService {
       return done;
     });
   }
+  /**
+   * NO SUCH NOTE, WHILE THE SERVICE IS SILENT (B5; #s150): this computer's copy
+   * is as of the last answer, so a note filed since — the one a person has just
+   * told their agent to act on — is not in it yet. Said, so the agent knows to
+   * list again in a minute rather than conclude the note is gone.
+   */
+  missing(id) {
+    const s2 = silence(this.mode);
+    return s2 ? `no note '${id}' in this computer's copy, synced as of ${s2.asOf}: the service did not answer then, so a note filed since may not be here yet \u2014 list the notes again in a minute` : `no note '${id}'`;
+  }
   /** A note filed here, under the lock: written, then queued whole. */
   async adding(file) {
     return withLock2(this.mode.repo.id, async () => {
@@ -38029,6 +38097,30 @@ var InService = class _InService {
       return { ...r, notPushed: { on, ...r.resolvedBy?.at ? { at: r.resolvedBy.at } : {} } };
     });
   }
+  /**
+   * C6 ON A LAPTOP (docs/personal-service.md, "Branches"; #s148): in service
+   * mode a thread is drawn where its opening note's commit is — in this
+   * checkout's history — as the service draws it; one whose commit this
+   * checkout lacks is on its `ref`, or the default branch without one. Out of
+   * service mode every thread is on every revision, as shared review has it.
+   */
+  async placeThreads(threads) {
+    if (threads.length === 0)
+      return threads;
+    const branch = await this.branch();
+    const out = [];
+    for (const t of threads) {
+      const commit = t.shared?.commit ?? t.rev;
+      if (!commit || commit === "WORKTREE") {
+        out.push(t);
+        continue;
+      }
+      const has = (await git2(this.mode.root, ["cat-file", "-e", `${commit}^{commit}`])).code === 0;
+      if (has ? (await git2(this.mode.root, ["merge-base", "--is-ancestor", commit, "HEAD"])).code === 0 : (t.ref ?? this.mode.repo.defaultBranch ?? "main") === branch)
+        out.push(t);
+    }
+    return out;
+  }
   /** The line a listing ends with: what waits for `mdrev --push`. */
   async waiting() {
     const n = (await waitingForPush(this.mode)).length;
@@ -38037,14 +38129,14 @@ var InService = class _InService {
 };
 
 // packages/cli/dist/version.js
-import { readFileSync as readFileSync5 } from "node:fs";
+import { readFileSync as readFileSync6 } from "node:fs";
 import { dirname as dirname5, join as join10 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 function mdrevVersion() {
   const here = dirname5(fileURLToPath2(import.meta.url));
   for (const candidate of [join10(here, "package.json"), join10(here, "..", "package.json")]) {
     try {
-      const { version } = JSON.parse(readFileSync5(candidate, "utf8"));
+      const { version } = JSON.parse(readFileSync6(candidate, "utf8"));
       if (typeof version === "string" && version)
         return version;
     } catch {
@@ -38094,7 +38186,9 @@ var USAGE = `mdrev-cli \u2014 mdrev's store, from the command line, for a host a
                                                 person's tree, in order, each once (docs/service-devices.md)
   mdrev-cli notes thread ID                     a shared thread (docs/shared-review.md beside mdrev-cli), as a note
   mdrev-cli review status [--fetch]             the review store: where, as whom, what is unpushed
-  mdrev-cli review push [--ids A,B]             send the unpushed shared records (only these, given --ids); lists them and the destination
+  mdrev-cli review push [--ids A,B] [--no-notify]   send the unpushed shared records (only these, given --ids); lists them and the destination;
+                                                --no-notify leaves telling people to review notify, for a host that answers first
+  mdrev-cli review notify --ids A,B             a viewer's (--viewer): tell the people a push concerns, of these landed records, each once
   mdrev-cli review fetch                        bring the machine's copy of the store up to date \u2014 and, for a viewer
                                                 (--viewer) or a person at their terminal, send the read marks and
                                                 subscriptions due to go (draft 8, H7)
@@ -38158,7 +38252,7 @@ Environment:
 Exit codes: 0 done \xB7 1 error (message on stderr) \xB7 2 no such note or document
 `;
 function parse5(argv) {
-  const o = { all: false, json: false, text: false, records: false, follow: false, headers: {}, version: false, viewer: false, fetch: false, confirm: false, prepare: false, override: false, keepName: false, quick: false, now: false, withCode: false, positional: [] };
+  const o = { all: false, json: false, text: false, records: false, follow: false, headers: {}, version: false, viewer: false, fetch: false, confirm: false, prepare: false, override: false, keepName: false, quick: false, now: false, withCode: false, noNotify: false, positional: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next2 = () => {
@@ -38251,6 +38345,8 @@ function parse5(argv) {
       o.quick = true;
     else if (a === "--with-code")
       o.withCode = true;
+    else if (a === "--no-notify")
+      o.noNotify = true;
     else if (a === "--header") {
       const h2 = next2();
       const colon = h2.indexOf(":");
@@ -38468,7 +38564,8 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
             if (o.records) {
               const records = await recordsFor(source, { path: o.path, all: o.all, revs, upgrade: o.path !== void 0 });
               const local2 = side ? await side.markNotPushed(records) : records;
-              emit([...local2, ...o.viewer ? await threadsFor(source, { path: o.path, all: o.all }) : []]);
+              const threads = o.viewer ? await threadsFor(source, { path: o.path, all: o.all }) : [];
+              emit([...local2, ...side ? await side.placeThreads(threads) : threads]);
               return 0;
             }
             const views = await collectNotes(source, { path: o.path, all: o.all, revs, upgrade: o.path !== void 0 });
@@ -38521,6 +38618,11 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
             if (side && agentHere)
               throw new UsageError("in service mode an agent does not file notes: it replies to and closes its person's (B10)");
             const personalNote = side && record.shared !== true;
+            if (side && record.shared === true && record.ref === void 0) {
+              const ref = await side.branch();
+              if (ref)
+                record.ref = ref;
+            }
             if (personalNote) {
               const ref = await side.branch();
               Object.assign(record, { personal: true, device: side.mode.joined.device, ...ref ? { ref } : {} });
@@ -38551,7 +38653,7 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
             const body3 = need(o.body, "--body");
             const answer = side ? await side.changing(which, () => replyToNote(source, which, body3, author, who)) : await replyToNote(source, which, body3, author, who);
             if (!answer)
-              throw new NotFound(`no note '${which}'`);
+              throw new NotFound(side ? side.missing(which) : `no note '${which}'`);
             if (o.text)
               said(`${which} answered`, answer.path, body3);
             else
@@ -38569,7 +38671,7 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
             const close2 = () => closeNote(source, which, sub === "resolve" ? "resolved" : "wontfix", o.note, author, who);
             const done = side ? await side.changing(which, close2) : await close2();
             if (!done)
-              throw new NotFound(`no note '${which}'`);
+              throw new NotFound(side ? side.missing(which) : `no note '${which}'`);
             if (o.text)
               said(`${which} ${sub === "resolve" ? "resolved" : "wontfix"}`, done.path, done.annotation.body);
             else
@@ -38580,7 +38682,7 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
             const which = need(id, "the note id");
             const back = side ? await side.changing(which, () => reopenNote(source, which, o.note, author, who)) : await reopenNote(source, which, o.note, author, who);
             if (!back)
-              throw new NotFound(`no note '${which}'`);
+              throw new NotFound(side ? side.missing(which) : `no note '${which}'`);
             if (o.text)
               said(`${which} reopened`, back.path, back.annotation.body);
             else
@@ -38618,7 +38720,7 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
             const which = need(id, "the note id");
             const edited = side ? await side.changing(which, () => editNote(source, which, need(o.body, "--body"), who)) : await editNote(source, which, need(o.body, "--body"), who);
             if (!edited)
-              throw new NotFound(`no note '${which}'`);
+              throw new NotFound(side ? side.missing(which) : `no note '${which}'`);
             emit(edited.annotation);
             return 0;
           }
@@ -38648,7 +38750,7 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
               throw new UsageError("in service mode an agent does not delete its person's note: close it, with --wontfix and why");
             const gone = side ? await side.changing(which, () => dropNote(source, which, who)) : await dropNote(source, which, who);
             if (!gone)
-              throw new NotFound(`no note '${which}'`);
+              throw new NotFound(side ? side.missing(which) : `no note '${which}'`);
             if (o.text)
               said(`${which} deleted`, gone.path, gone.annotation.body);
             else
@@ -38901,7 +39003,7 @@ ${formatCodeOffer(before.code).join("\n")}
               rl.close();
             }
           }
-          const pushed = await reviewPush(source, o.ids ?? before.pending.map((p2) => p2.id), personal, { withCode: o.withCode });
+          const pushed = await reviewPush(source, o.ids ?? before.pending.map((p2) => p2.id), personal, { withCode: o.withCode, ...o.noNotify ? { notify: false } : {} });
           if (o.text) {
             if (personal.via !== "person")
               out(`${formatPending(before.pending.filter((p2) => !o.ids || o.ids.includes(p2.id))).join("\n")}
@@ -38917,6 +39019,12 @@ ${formatCodeOffer(before.code).join("\n")}
 `);
           } else
             emit({ ...pushed, pending: before.pending });
+          return 0;
+        }
+        case "notify": {
+          if (!o.ids?.length)
+            throw new UsageError("review notify needs --ids, the records a push landed");
+          emit(await reviewNotify(source, o.ids, personal));
           return 0;
         }
         default:
@@ -38944,7 +39052,7 @@ function viewerKeyOk() {
   const given = process.env.MDREV_VIEWER_KEY ?? "";
   let token = "";
   try {
-    token = readFileSync6(join11(process.env.MDREV_STATE_DIR ?? join11(homedir3(), ".mdrev"), "token"), "utf8").trim();
+    token = readFileSync7(join11(process.env.MDREV_STATE_DIR ?? join11(homedir3(), ".mdrev"), "token"), "utf8").trim();
   } catch {
     return false;
   }
