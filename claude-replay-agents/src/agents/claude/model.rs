@@ -1658,10 +1658,24 @@ const QWENWORK_FILE_EDIT_SHAPE: &[&str] = &[
 /// with the client), plus `status` 2).
 const SKILL_SHAPE: &[&str] = &["allowedTools", "commandName", "status", "success"];
 
+/// Every key a CronCreate result was met with (#277; `nextFireAt` since client 2.1.300, #s166).
+/// CronDelete returns `{id}` alone, which the shape holds too.
+const CRON_CREATE_SHAPE: &[&str] = &["durable", "humanSchedule", "id", "nextFireAt", "recurring"];
+
 const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
-    // CronCreate returns all four and CronDelete `{id}` alone; the result text already states the
-    // job id, its schedule in words, whether it recurs and whether it is session-only.
-    ("id", &["durable", "humanSchedule", "id", "recurring"]),
+    // CronCreate returns `{id, humanSchedule, recurring, durable}` and CronDelete `{id}` alone; the
+    // result text already states the job id, its schedule in words, whether it recurs and whether
+    // it is session-only.
+    ("id", CRON_CREATE_SHAPE),
+    // #s166 (client 2.1.300): CronCreate adds `nextFireAt`, the next firing in epoch milliseconds
+    // (two results measured 2026-10-18, one session on this machine). It is not the cron slot: for
+    // an hourly schedule it fell 16 and 29 minutes after it, the client's own jitter, and the
+    // result text gained the matching "Next run: <local date and time>." sentence, so the page
+    // already states it. Without it in the shape the result left it, and `id` came back beside
+    // it. REVISIT: the text gives the next run in the client's local time with no zone or year,
+    // and this value could put a next-run line on the CronCreate card in the reader's own zone,
+    // a RENDER question for the owner, not decided here.
+    ("nextFireAt", CRON_CREATE_SHAPE),
     // Read's `file_unchanged` (`{type, file, source}`): `source: "seeded"` says the file was in
     // context from seeding (a CLAUDE.md) rather than from an earlier Read. The page already draws
     // the file_unchanged result, whose text says the file is in context; the provenance word
@@ -7056,8 +7070,8 @@ mod tests {
     /// GENERIC names are known only in the shape they were judged in. `id` on the ignored list
     /// would have silenced it from every tool added after this; scoped to the Cron result, a new
     /// tool that returns an `id` of its own is still reported, as any new key is. The shapes
-    /// are the measured ones: CronCreate `{id, humanSchedule, recurring, durable}`, CronDelete
-    /// `{id}`, Read's `file_unchanged` `{type, file, source}`, SendMessage `{success, message,
+    /// are the measured ones: CronCreate `{id, humanSchedule, recurring, durable}` and, since client
+    /// 2.1.300, the same with `nextFireAt` (#s166), CronDelete `{id}`, Read's `file_unchanged` `{type, file, source}`, SendMessage `{success, message,
     /// display, msg_id}`.
     /// #290: the shapes client 2.1.283 began writing, each looked at and found to carry nothing the
     /// page draws — and `jobs`, a generic name, known only as the whole of a CronList result.
@@ -7167,7 +7181,7 @@ mod tests {
         );
         let cron_list = serde_json::json!({"jobs": [{"id": "12b4386c", "cron": "17 * * * *",
             "humanSchedule": "Every hour at :17", "prompt": "check", "recurring": true,
-            "durable": false}]});
+            "durable": false, "nextFireAt": 1760000000000_u64}]});
         assert_eq!(
             unknown(&cron_list),
             Vec::<String>::new(),
@@ -7218,6 +7232,8 @@ mod tests {
         };
         for known in [
             serde_json::json!({"id": "12b4386c", "humanSchedule": "Every hour at :17", "recurring": true, "durable": false}),
+            // #s166: CronCreate as client 2.1.300 writes it.
+            serde_json::json!({"id": "12b4386c", "humanSchedule": "Every hour at :17", "recurring": true, "durable": false, "nextFireAt": 1760000000000_u64}),
             serde_json::json!({"id": "12b4386c"}),
             serde_json::json!({"type": "file_unchanged", "file": {"filePath": "/w/CLAUDE.md"}, "source": "seeded"}),
             serde_json::json!({"success": true, "message": "sent", "display": "sent", "msg_id": "6a90484e"}),
@@ -7237,6 +7253,11 @@ mod tests {
             unknown(&serde_json::json!({"source": "seeded", "stdout": "ok"})),
             vec!["source".to_string()],
             "…and so is `source` outside Read's file_unchanged"
+        );
+        assert_eq!(
+            unknown(&serde_json::json!({"nextFireAt": 1, "aKeyFromTheFuture": 1})),
+            vec!["aKeyFromTheFuture".to_string(), "nextFireAt".to_string()],
+            "…and `nextFireAt` outside CronCreate's own shape (#s166)"
         );
         // #285, #315, #349: Grep, in each shape it was met in — content mode, limited and not and
         // paged by an offset (client 2.1.285), count mode, and files_with_matches (client 2.1.283).
