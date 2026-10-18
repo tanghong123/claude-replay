@@ -817,6 +817,18 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             "turnOrigin",
             "serverClassifierContext",
             "queueSkipAttachments",
+            // #s165 (client 2.1.300): a boolean on a prompt the client took from its queue rather
+            // than from the composer — a message from another session (`promptSource: "system"`,
+            // `turnOrigin: "peer"`, #s79), a cron firing (`scheduledTaskId`), or a prompt typed while
+            // the agent was busy (`promptSource: "queued"`). Measured 2026-10-18: 53 records in 3
+            // sessions on this machine, `true` in every one, never on a typed prompt or a task
+            // notification, and no flagged prompt's text begins with "/": the client did not read
+            // the dequeued text as a slash command. Queue bookkeeping, like its siblings here; the
+            // prompt is drawn from text the flag does not change. REVISIT: the first flagged prompt
+            // whose text begins with "/" (the client then did not run a slash token the prompt card
+            // draws as plain text, and whether the card says so is a RENDER question for the owner,
+            // never decided here), and the first value other than `true`.
+            "queueSkipSlashCommands",
             "isMeta",
             "turnCompanion",
             "queuePriority",
@@ -7401,6 +7413,25 @@ mod tests {
         let seen: Vec<_> = unknown_shapes()
             .into_iter()
             .filter(|s| s.example.as_deref() == Some("s-s88"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+    }
+
+    /// #s165: the 2.1.300 queue flag on a dequeued prompt — a queued human prompt and a message
+    /// from another session — is known, not reported while the sweep asks. Removing the key from
+    /// the user arm of the census turns this red.
+    #[test]
+    fn a_queued_prompt_s_queue_skip_slash_commands_is_known() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.300","sessionId":"s-s165","uuid":"u1","promptSource":"typed","turnOrigin":"human","message":{"content":"tidy the deck"}}
+{"type":"user","version":"2.1.300","sessionId":"s-s165","uuid":"u2","promptSource":"queued","queueSkipSlashCommands":true,"turnOrigin":"human","message":{"content":"and the notes too"}}
+{"type":"user","version":"2.1.300","sessionId":"s-s165","uuid":"u3","isMeta":true,"promptSource":"system","queueSkipSlashCommands":true,"turnOrigin":"peer","origin":{"kind":"peer","name":"tern-steward","fromMode":"bypass","body":"the deck is ready"},"message":{"content":"<cross-session-message from=\"uds:/tmp/x.sock\" from-name=\"tern-steward\" from-mode=\"bypass\">\nthe deck is ready\n</cross-session-message>"}}
+"##;
+        let _ = parse(jsonl);
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s165"))
             .collect();
         assert!(seen.is_empty(), "nothing reported: {seen:?}");
     }
