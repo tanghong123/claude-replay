@@ -177,9 +177,9 @@ USAGE:
                     qwenwork.
   --no-open         Print the URL instead of opening a browser.
   --codex-server-url URL
-                    Native endpoint: unix:// (default on Unix, in Codex home),
-                    unix:///path.sock, or ws://127.0.0.1:PORT (Bearer).
-                    Other platforms: ws://127.0.0.1:4500.
+                    Default: ws://127.0.0.1:4500 (Bearer authentication).
+                    Explicit Unix sharing: unix:// (in Codex home), or
+                    unix:///path.sock. Other ports: ws://127.0.0.1:PORT.
                     Configuring an endpoint does not start a server.
                     Enable Write mode, then Codex native in the browser.
   --codex-allowed-root PATH
