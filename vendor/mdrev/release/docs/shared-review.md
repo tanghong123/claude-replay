@@ -666,6 +666,24 @@ repository or branch is a different store and needs pairing again, unless it
 is the same store, moved. Pairing again changes the email or the display
 name.
 
+**Pairing on a team's mdrev service** ([personal-service.md](personal-service.md),
+"Shared review"; #s128) asks E3's question with another source. The service
+keeps a state directory of its own for each person — the machine's copy of
+each store they pair with, their outbox and their read marks, as
+`~/.mdrev/review/` holds them on a machine — and each store is fetched and
+pushed with the person's own linked code server token, so who may read or
+write it is the code server's answer, as for any fetch. The email is the one
+their single sign-on names, checked against the account that token signs in
+as, as the server check above does for a machine's credential; the display
+name is "<their name>-on-service", with one machine id for the person's state
+directory, so a thread shows which records were written there. The person
+pairs in a page on the service (a repository's page, or Home's **Pair**, for
+a store not paired yet); their agent, which has no hands on the service,
+pairs nothing there. With a token that cannot write, the service offers no
+Push and the records wait in that outbox until one that can is linked. A
+laptop joined to the service (`mdrev --join`) keeps its own pairing and
+outbox, as any machine does: each outbox is pushed from where it was written.
+
 ### A store that moves
 
 Repositories move: a group renamed, a project transferred to another team,
@@ -780,12 +798,13 @@ A record is a JSON file, `records/<id>.json` in the store:
   "re": null,
   "path": "docs/plan.md",
   "commit": "8c1e2f…",
+  "ref": "main",
   "blob": "41a9c0…",
   "author": {"name": "Bob-on-desktop", "email": "bob@example.com"},
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.53",
+  "mdrev": "1.1.55",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
@@ -804,6 +823,14 @@ A record is a JSON file, `records/<id>.json` in the store:
   struck text. A blob survives a rebase that loses the commit. Every record
   carries `commit`: for a note, the commit whose text it was written on;
   otherwise HEAD of the writer's checkout.
+- `ref`, optional, is the branch a note was written on, as its writer's
+  checkout or page named it (#s148). It matters only where notes are placed
+  by branch (a team's mdrev service, below): a reader whose copy lacks the
+  note's `commit` places the thread on `ref`, or on the default branch when
+  there is none. Elsewhere it is carried and not read.
+- `drafted`, optional, names the computer whose agent drafted the record, on
+  one made from a draft (#s128, G); wherever its person shared it, it says
+  where the words came from.
 - Ids start `shr-`, so every command can tell a shared id from a local
   `ann-` one without looking it up.
 - A record with an unknown `v` or `kind`, that does not parse, whose id or
@@ -831,6 +858,17 @@ viewer draws it with the code it has:
 - renames: a thread follows its document by the walk local notes use, at
   read time;
 - it is marked shared, and each entry unpushed until it is.
+
+**Which revisions draw it.** A thread is drawn on every revision of its
+document, as a local note is, by the same rule of a note's future
+([anchoring.md](anchoring.md)). Where notes are placed by branch — a page on a
+team's mdrev service, or `mdrev` on a computer joined to one, in a checkout of
+a repository registered there ([personal-service.md](personal-service.md),
+C6; #s148) — a thread goes where its opening note's `commit` is: a branch
+draws the threads whose commit is in its history, every record with them, and
+its state is the thread's, one on every branch (C3). A thread whose commit the
+copy lacks yet counts as on its `ref`, or the default branch without one, and
+is placed by its quote, marked approximate, until the commit arrives (D4).
 
 What the viewer adds: the **Share** control in the composer, the shared and
 unpushed markings, the two-part reply box on an open thread (an
@@ -1129,6 +1167,19 @@ the person it runs for — their own mailbox, their own chat account — never
 as a bot, and mdrev hands it no credentials. mdrev asks `lookup` when a
 subscription is made, when a mention is typed (once the typing stops), and
 before every send.
+
+**On a team's mdrev service** ([personal-service.md](personal-service.md),
+"Notifications"; #s129) the same tools tell people, as the person who pushed,
+through a sign-in of that person's own the service keeps for them. The
+service answers Push once the records are in the store; then it renews that
+sign-in and runs `mdrev-cli review notify`, which decides whom and what as a
+push on a machine does, with `MDREV_NOTIFY_FILE` naming three things only the
+service knows: the tools' whole environment (that person's sign-in, never
+mdrev-cli's own), a link to the service's page at the thread on its branch in
+place of the project's `link`, and the people who turned the service's
+messages off (they are still told of what a colleague pushes from their own
+machine). A tool's protocol does not change; the page shows "telling…", then
+whom it told.
 
 ### An organisation's plugin
 

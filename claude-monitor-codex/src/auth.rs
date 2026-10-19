@@ -20,6 +20,24 @@ impl ServerToken {
     }
 
     pub fn load_or_create(receipts: &Path) -> Result<Self> {
+        Self::load_or_create_with_permissions(receipts, |file| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                // Creation modes are filtered by umask; restore owner read/write
+                // through the new descriptor before writing any credential.
+                file.set_permissions(fs::Permissions::from_mode(0o600))?;
+            }
+            #[cfg(not(unix))]
+            let _ = file;
+            Ok(())
+        })
+    }
+
+    fn load_or_create_with_permissions(
+        receipts: &Path,
+        set_permissions: impl FnOnce(&File) -> std::io::Result<()>,
+    ) -> Result<Self> {
         let path = Self::path(receipts)?;
         let parent = path.parent().expect("token has a state directory");
         let directory = CredentialDirectory::open(parent)?;
@@ -50,6 +68,8 @@ impl ServerToken {
         let temporary = format!(".codex-server-token-{nonce}");
         let mut file = directory.open_file(&temporary, true)?;
         let publish = (|| -> Result<()> {
+            // Permission failures must reach the same cleanup as write/sync failures.
+            set_permissions(&file).context("Restrict temporary native credential")?;
             file.write_all(value.as_bytes())?;
             file.sync_all()?;
             match directory.publish(&temporary) {
@@ -59,10 +79,12 @@ impl ServerToken {
             }
             directory.sync()
         })();
-        directory
-            .remove(&temporary)
-            .context("Remove temporary native credential")?;
-        publish?;
+        finish_publication(
+            publish,
+            directory
+                .remove(&temporary)
+                .context("Remove temporary native credential"),
+        )?;
         Self::read(&directory)
     }
 
@@ -166,6 +188,9 @@ impl CredentialDirectory {
         Ok(())
     }
 
+    /// On Unix, creation requests mode 0600, filtered by umask. The caller must restore
+    /// exact permissions through the returned descriptor inside its cleanup
+    /// boundary before writing credential bytes.
     fn open_file(&self, name: &str, create: bool) -> Result<File> {
         #[cfg(unix)]
         let result = {
@@ -206,13 +231,14 @@ impl CredentialDirectory {
         {
             use std::os::fd::AsRawFd;
             let name = std::ffi::CString::new(temporary).expect("generated credential basename");
+            let token_name = std::ffi::CString::new(TOKEN_NAME).expect("credential basename");
             // SAFETY: both names are valid basenames relative to the same live directory.
             if unsafe {
                 libc::linkat(
                     self.file.as_raw_fd(),
                     name.as_ptr(),
                     self.file.as_raw_fd(),
-                    c"codex-server.token".as_ptr(),
+                    token_name.as_ptr(),
                     0,
                 )
             } != 0
@@ -250,6 +276,16 @@ impl CredentialDirectory {
     }
 }
 
+// Always attempt cleanup, but retain publication as the primary error if both fail.
+fn finish_publication(publish: Result<()>, cleanup: Result<()>) -> Result<()> {
+    match (publish, cleanup) {
+        (Err(publish), Err(cleanup)) => Err(publish).context(format!(
+            "Temporary native credential cleanup also failed: {cleanup:#}"
+        )),
+        (publish, cleanup) => publish.and(cleanup),
+    }
+}
+
 fn supported_directory_sync(result: std::io::Result<()>) -> std::io::Result<()> {
     match result {
         #[cfg(unix)]
@@ -272,14 +308,41 @@ mod tests {
     #[test]
     fn replaced_directory_path_cannot_redirect_permissions_or_credential_operations() {
         use std::os::unix::fs::PermissionsExt;
+        if std::env::var("NATIVE_TOKEN_REPLACED_DIRECTORY_UMASK_TEST").as_deref() == Ok("child") {
+            // A separate Cargo target directory may leave the shared scratch parent absent.
+            fs::create_dir_all(std::env::temp_dir()).unwrap();
+            // Only this test runs in the child; do not change the parent suite's umask.
+            unsafe {
+                libc::umask(0o277);
+            }
+        } else {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "auth::tests::replaced_directory_path_cannot_redirect_permissions_or_credential_operations",
+                    "--nocapture",
+                ])
+                .env("NATIVE_TOKEN_REPLACED_DIRECTORY_UMASK_TEST", "child")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed;"),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         let root =
             std::env::temp_dir().join(format!("native-auth-replaced-{}", std::process::id()));
         crate::remove_test_scratch(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
         let state = root.join("state");
         let moved = root.join("original");
         let unrelated = root.join("unrelated");
         fs::create_dir_all(&unrelated).unwrap();
         fs::set_permissions(&unrelated, fs::Permissions::from_mode(0o2775)).unwrap();
+        let unrelated_mode = fs::metadata(&unrelated).unwrap().permissions().mode() & 0o7777;
         let directory = CredentialDirectory::open(&state).unwrap();
         fs::set_permissions(&state, fs::Permissions::from_mode(0o775)).unwrap();
         fs::rename(&state, &moved).unwrap();
@@ -287,6 +350,8 @@ mod tests {
         directory.restrict().unwrap();
         let temporary = ".codex-server-token-0123456789abcdef0123456789abcdef";
         let mut file = directory.open_file(temporary, true).unwrap();
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .unwrap();
         file.write_all("a".repeat(64).as_bytes()).unwrap();
         file.sync_all().unwrap();
         directory.publish(temporary).unwrap();
@@ -302,7 +367,7 @@ mod tests {
         );
         assert_eq!(
             fs::metadata(&unrelated).unwrap().permissions().mode() & 0o7777,
-            0o2775
+            unrelated_mode
         );
         assert_eq!(fs::read_dir(&unrelated).unwrap().count(), 0);
         assert!(moved.join(TOKEN_NAME).exists());
@@ -325,6 +390,128 @@ mod tests {
             );
         }
         assert!(supported_directory_sync(Ok(())).is_ok());
+    }
+
+    #[test]
+    fn publication_failure_remains_the_cause_when_cleanup_also_fails() {
+        let publication = || Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
+        let cleanup = || Err(anyhow::anyhow!("synthetic cleanup failure"));
+        let error = finish_publication(publication(), cleanup()).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert!(format!("{error:#}").contains("synthetic cleanup failure"));
+        assert!(format!("{error:#}").contains(&std::io::ErrorKind::PermissionDenied.to_string()));
+        assert!(finish_publication(publication(), Ok(())).is_err());
+        assert!(finish_publication(Ok(()), cleanup()).is_err());
+        assert!(finish_publication(Ok(()), Ok(())).is_ok());
+    }
+
+    #[test]
+    fn permission_failure_removes_the_empty_temporary_credential() {
+        let root =
+            std::env::temp_dir().join(format!("native-auth-permissions-{}", std::process::id()));
+        crate::remove_test_scratch(&root);
+        let receipts = root.join("receipts.sqlite3");
+        let error = ServerToken::load_or_create_with_permissions(&receipts, |file| {
+            assert_eq!(file.metadata()?.len(), 0, "No secret may be written yet");
+            assert_eq!(fs::read_dir(&root)?.count(), 1, "Temporary file must exist");
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .err()
+        .expect("permission failure must prevent publication");
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert!(format!("{error:#}").contains("Restrict temporary native credential"));
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        let token = ServerToken::load_or_create(&receipts).unwrap();
+        assert_eq!(
+            ServerToken::load_or_create(&receipts).unwrap().bearer(),
+            token.bearer()
+        );
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        crate::remove_test_scratch(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restrictive_umask_still_creates_a_reusable_private_credential() {
+        use std::os::unix::fs::PermissionsExt;
+        if std::env::var("NATIVE_TOKEN_UMASK_TEST").as_deref() != Ok("child") {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "auth::tests::restrictive_umask_still_creates_a_reusable_private_credential",
+                    "--nocapture",
+                ])
+                .env("NATIVE_TOKEN_UMASK_TEST", "child")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed;"),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        // Prepare the shared scratch parent before removing its owner write bit at creation.
+        fs::create_dir_all(std::env::temp_dir()).unwrap();
+        // This process runs only this test, so the process-wide umask is isolated.
+        unsafe {
+            libc::umask(0o277);
+        }
+        let root = std::env::temp_dir().join(format!("native-auth-umask-{}", std::process::id()));
+        let path = root.join("receipts.sqlite3");
+        let token = ServerToken::load_or_create(&path).unwrap();
+        assert_eq!(
+            fs::metadata(ServerToken::path(&path).unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            ServerToken::load_or_create(&path).unwrap().bearer(),
+            token.bearer()
+        );
+        crate::remove_test_scratch(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restrictive_umask_tests_leave_a_missing_temp_parent_writable() {
+        let root =
+            std::env::temp_dir().join(format!("native-auth-temp-parent-{}", std::process::id()));
+        crate::remove_test_scratch(&root);
+        fs::create_dir_all(&root).unwrap();
+        for name in [
+            "replaced_directory_path_cannot_redirect_permissions_or_credential_operations",
+            "restrictive_umask_still_creates_a_reusable_private_credential",
+        ] {
+            let temp = root.join(name);
+            assert!(!temp.exists());
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &format!("auth::tests::{name}"), "--nocapture"])
+                .env("TMPDIR", &temp)
+                .env_remove("NATIVE_TOKEN_REPLACED_DIRECTORY_UMASK_TEST")
+                .env_remove("NATIVE_TOKEN_UMASK_TEST")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed;"),
+                "{name}: {stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            // A later test must still be able to create scratch files in the shared parent.
+            fs::write(temp.join("later-test"), b"writable").unwrap();
+        }
+        crate::remove_test_scratch(&root);
     }
 
     #[cfg(unix)]

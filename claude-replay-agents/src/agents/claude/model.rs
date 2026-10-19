@@ -817,6 +817,18 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             "turnOrigin",
             "serverClassifierContext",
             "queueSkipAttachments",
+            // #s165 (client 2.1.300): a boolean on a prompt the client took from its queue rather
+            // than from the composer — a message from another session (`promptSource: "system"`,
+            // `turnOrigin: "peer"`, #s79), a cron firing (`scheduledTaskId`), or a prompt typed while
+            // the agent was busy (`promptSource: "queued"`). Measured 2026-10-18: 53 records in 3
+            // sessions on this machine, `true` in every one, never on a typed prompt or a task
+            // notification, and no flagged prompt's text begins with "/": the client did not read
+            // the dequeued text as a slash command. Queue bookkeeping, like its siblings here; the
+            // prompt is drawn from text the flag does not change. REVISIT: the first flagged prompt
+            // whose text begins with "/" (the client then did not run a slash token the prompt card
+            // draws as plain text, and whether the card says so is a RENDER question for the owner,
+            // never decided here), and the first value other than `true`.
+            "queueSkipSlashCommands",
             "isMeta",
             "turnCompanion",
             "queuePriority",
@@ -1646,10 +1658,24 @@ const QWENWORK_FILE_EDIT_SHAPE: &[&str] = &[
 /// with the client), plus `status` 2).
 const SKILL_SHAPE: &[&str] = &["allowedTools", "commandName", "status", "success"];
 
+/// Every key a CronCreate result was met with (#277; `nextFireAt` since client 2.1.300, #s166).
+/// CronDelete returns `{id}` alone, which the shape holds too.
+const CRON_CREATE_SHAPE: &[&str] = &["durable", "humanSchedule", "id", "nextFireAt", "recurring"];
+
 const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
-    // CronCreate returns all four and CronDelete `{id}` alone; the result text already states the
-    // job id, its schedule in words, whether it recurs and whether it is session-only.
-    ("id", &["durable", "humanSchedule", "id", "recurring"]),
+    // CronCreate returns `{id, humanSchedule, recurring, durable}` and CronDelete `{id}` alone; the
+    // result text already states the job id, its schedule in words, whether it recurs and whether
+    // it is session-only.
+    ("id", CRON_CREATE_SHAPE),
+    // #s166 (client 2.1.300): CronCreate adds `nextFireAt`, the next firing in epoch milliseconds
+    // (two results measured 2026-10-18, one session on this machine). It is not the cron slot: for
+    // an hourly schedule it fell 16 and 29 minutes after it, the client's own jitter, and the
+    // result text gained the matching "Next run: <local date and time>." sentence, so the page
+    // already states it. Without it in the shape the result left it, and `id` came back beside
+    // it. REVISIT: the text gives the next run in the client's local time with no zone or year,
+    // and this value could put a next-run line on the CronCreate card in the reader's own zone,
+    // a RENDER question for the owner, not decided here.
+    ("nextFireAt", CRON_CREATE_SHAPE),
     // Read's `file_unchanged` (`{type, file, source}`): `source: "seeded"` says the file was in
     // context from seeding (a CLAUDE.md) rather than from an earlier Read. The page already draws
     // the file_unchanged result, whose text says the file is in context; the provenance word
@@ -7044,8 +7070,8 @@ mod tests {
     /// GENERIC names are known only in the shape they were judged in. `id` on the ignored list
     /// would have silenced it from every tool added after this; scoped to the Cron result, a new
     /// tool that returns an `id` of its own is still reported, as any new key is. The shapes
-    /// are the measured ones: CronCreate `{id, humanSchedule, recurring, durable}`, CronDelete
-    /// `{id}`, Read's `file_unchanged` `{type, file, source}`, SendMessage `{success, message,
+    /// are the measured ones: CronCreate `{id, humanSchedule, recurring, durable}` and, since client
+    /// 2.1.300, the same with `nextFireAt` (#s166), CronDelete `{id}`, Read's `file_unchanged` `{type, file, source}`, SendMessage `{success, message,
     /// display, msg_id}`.
     /// #290: the shapes client 2.1.283 began writing, each looked at and found to carry nothing the
     /// page draws — and `jobs`, a generic name, known only as the whole of a CronList result.
@@ -7155,7 +7181,7 @@ mod tests {
         );
         let cron_list = serde_json::json!({"jobs": [{"id": "12b4386c", "cron": "17 * * * *",
             "humanSchedule": "Every hour at :17", "prompt": "check", "recurring": true,
-            "durable": false}]});
+            "durable": false, "nextFireAt": 1760000000000_u64}]});
         assert_eq!(
             unknown(&cron_list),
             Vec::<String>::new(),
@@ -7206,6 +7232,8 @@ mod tests {
         };
         for known in [
             serde_json::json!({"id": "12b4386c", "humanSchedule": "Every hour at :17", "recurring": true, "durable": false}),
+            // #s166: CronCreate as client 2.1.300 writes it.
+            serde_json::json!({"id": "12b4386c", "humanSchedule": "Every hour at :17", "recurring": true, "durable": false, "nextFireAt": 1760000000000_u64}),
             serde_json::json!({"id": "12b4386c"}),
             serde_json::json!({"type": "file_unchanged", "file": {"filePath": "/w/CLAUDE.md"}, "source": "seeded"}),
             serde_json::json!({"success": true, "message": "sent", "display": "sent", "msg_id": "6a90484e"}),
@@ -7225,6 +7253,11 @@ mod tests {
             unknown(&serde_json::json!({"source": "seeded", "stdout": "ok"})),
             vec!["source".to_string()],
             "…and so is `source` outside Read's file_unchanged"
+        );
+        assert_eq!(
+            unknown(&serde_json::json!({"nextFireAt": 1, "aKeyFromTheFuture": 1})),
+            vec!["aKeyFromTheFuture".to_string(), "nextFireAt".to_string()],
+            "…and `nextFireAt` outside CronCreate's own shape (#s166)"
         );
         // #285, #315, #349: Grep, in each shape it was met in — content mode, limited and not and
         // paged by an offset (client 2.1.285), count mode, and files_with_matches (client 2.1.283).
@@ -7401,6 +7434,25 @@ mod tests {
         let seen: Vec<_> = unknown_shapes()
             .into_iter()
             .filter(|s| s.example.as_deref() == Some("s-s88"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+    }
+
+    /// #s165: the 2.1.300 queue flag on a dequeued prompt — a queued human prompt and a message
+    /// from another session — is known, not reported while the sweep asks. Removing the key from
+    /// the user arm of the census turns this red.
+    #[test]
+    fn a_queued_prompt_s_queue_skip_slash_commands_is_known() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.300","sessionId":"s-s165","uuid":"u1","promptSource":"typed","turnOrigin":"human","message":{"content":"tidy the deck"}}
+{"type":"user","version":"2.1.300","sessionId":"s-s165","uuid":"u2","promptSource":"queued","queueSkipSlashCommands":true,"turnOrigin":"human","message":{"content":"and the notes too"}}
+{"type":"user","version":"2.1.300","sessionId":"s-s165","uuid":"u3","isMeta":true,"promptSource":"system","queueSkipSlashCommands":true,"turnOrigin":"peer","origin":{"kind":"peer","name":"tern-steward","fromMode":"bypass","body":"the deck is ready"},"message":{"content":"<cross-session-message from=\"uds:/tmp/x.sock\" from-name=\"tern-steward\" from-mode=\"bypass\">\nthe deck is ready\n</cross-session-message>"}}
+"##;
+        let _ = parse(jsonl);
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s165"))
             .collect();
         assert!(seen.is_empty(), "nothing reported: {seen:?}");
     }
