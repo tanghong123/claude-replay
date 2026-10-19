@@ -192,7 +192,9 @@ why the gate must know the tailnet name (#331): `origin_ok` (the DNS-rebinding a
 every file read and every write asks) knew only the loopback, so a PAIRED phone was told "reading
 local files requires pairing". Both binaries now hand the gate `pair_phone::trusted_hosts(port)`: the
 names this machine's `tailscale serve` relays to THIS port, plus any `AGENT_MONITOR_TRUSTED_HOSTS`
-lists — never a `*.ts.net` wildcard. No reply waits on `tailscale` (#s151): the names are read in the
+lists — never a `*.ts.net` wildcard, and only a relay the tailnet alone reaches that serves the monitor
+alone (#s170, the owner: no setup opens it to Funnel, and nothing else is served at its name and port,
+across the background and every foreground serve; another app there would share the monitor's origin). No reply waits on `tailscale` (#s151): the names are read in the
 background from startup and again on a miss at most every 30 s, each read bounded at 3 s and a failed or
 timed-out one keeping the names before it; only a check in the first 2 s waits, for the first read. And the
 verdict is asked only for a request a route answers — a refusal or a public file goes out without it. On Linux the gate

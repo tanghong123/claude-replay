@@ -38,17 +38,93 @@ pub fn serve_bases(serve: &Value, dns_name: &str, port: u16) -> Vec<String> {
     out
 }
 
-fn serve_bases_of(cfg: &Value, dns_name: &str, port: u16, out: &mut Vec<String>) {
-    let local = |target: &str| {
-        let t = target
-            .trim_start_matches("http://")
-            .trim_start_matches("https+insecure://")
-            .trim_start_matches("tcp://")
-            .trim_end_matches('/');
-        t == format!("127.0.0.1:{port}")
-            || t == format!("localhost:{port}")
-            || t == port.to_string()
+/// Whether a serve target (a web handler's `Proxy`, a TCP entry's `TCPForward`) is this monitor
+/// at 127.0.0.1:`port`.
+fn targets_monitor(target: &str, port: u16) -> bool {
+    let t = target
+        .trim_start_matches("http://")
+        .trim_start_matches("https+insecure://")
+        .trim_start_matches("tcp://")
+        .trim_end_matches('/');
+    t == format!("127.0.0.1:{port}") || t == format!("localhost:{port}") || t == port.to_string()
+}
+
+/// The addresses of [`serve_bases`] the gate may take as the monitor's own (#s170, the owner's
+/// yes on s171, 2026-10-19): those the tailnet alone reaches and that serve the monitor alone.
+/// tailscaled serves the background setup and every foreground one together, so both tests run
+/// across all of them: an address is private only if no setup opens it to Funnel (from the
+/// internet), and the monitor's alone only if every handler any setup has at that name and port
+/// is the monitor — another app's pages there would share the monitor's origin, and with it the
+/// pairing cookie.
+pub fn trusted_bases(serve: &Value, dns_name: &str, port: u16) -> Vec<String> {
+    let mut setups = vec![serve];
+    if let Some(sessions) = serve.get("Foreground").and_then(Value::as_object) {
+        setups.extend(sessions.values());
+    }
+    serve_bases(serve, dns_name, port)
+        .into_iter()
+        .filter(|base| {
+            let Some((host, tport)) = base_hostport(base) else {
+                return false;
+            };
+            let hostport = format!("{host}:{tport}");
+            let funnel = setups.iter().any(|setup| {
+                setup
+                    .get("AllowFunnel")
+                    .and_then(|f| f.get(&hostport))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            });
+            !funnel
+                && setups
+                    .iter()
+                    .all(|setup| serves_only_monitor(setup, &hostport, tport, port))
+        })
+        .collect()
+}
+
+/// The `name:port` a [`serve_bases`] address is configured under, the scheme's default port
+/// written out as tailscale keys it.
+fn base_hostport(base: &str) -> Option<(&str, u16)> {
+    let (rest, default) = if let Some(r) = base.strip_prefix("https://") {
+        (r, 443)
+    } else {
+        (base.strip_prefix("http://")?, 80)
     };
+    let rest = rest.trim_end_matches('/');
+    match rest.rsplit_once(':') {
+        Some((host, p)) => Some((host, p.parse().ok()?)),
+        None => Some((rest, default)),
+    }
+}
+
+/// Whether one serve setup has nothing at `hostport` (on tailnet port `tport`) but this monitor at
+/// 127.0.0.1:`port`, or nothing there at all.
+fn serves_only_monitor(setup: &Value, hostport: &str, tport: u16, port: u16) -> bool {
+    let Some(entry) = setup.get("TCP").and_then(|t| t.get(tport.to_string())) else {
+        return true;
+    };
+    if let Some(forward) = entry
+        .get("TCPForward")
+        .and_then(Value::as_str)
+        .filter(|f| !f.is_empty())
+    {
+        return targets_monitor(forward, port);
+    }
+    setup
+        .get("Web")
+        .and_then(|w| w.get(hostport))
+        .and_then(|site| site.get("Handlers"))
+        .and_then(Value::as_object)
+        .is_none_or(|handlers| {
+            handlers.values().all(|h| {
+                targets_monitor(h.get("Proxy").and_then(Value::as_str).unwrap_or(""), port)
+            })
+        })
+}
+
+fn serve_bases_of(cfg: &Value, dns_name: &str, port: u16, out: &mut Vec<String>) {
+    let local = |target: &str| targets_monitor(target, port);
     let address = |https: bool, host: &str, p: &str| {
         let (scheme, default) = if https {
             ("https", "443")
@@ -142,7 +218,8 @@ pub fn listed_hosts(value: &str) -> Vec<String> {
 /// The monitor's own hosts beyond the loopback (#331), for [`claude_replay_html::AuthGate`]'s
 /// `origin_ok`, which refused every request a phone made through `tailscale serve` (Host: the
 /// machine's tailnet name) to read a file or to write: the names `tailscale serve` relays to THIS
-/// port, and any `AGENT_MONITOR_TRUSTED_HOSTS` lists — nothing broader (no `*.ts.net`), since the
+/// port privately and to the monitor alone ([`trusted_bases`], #s170), and any
+/// `AGENT_MONITOR_TRUSTED_HOSTS` lists — nothing broader (no `*.ts.net`), since the
 /// check is the DNS-rebinding and cross-site guard. The serve can be set up after the monitor
 /// starts, so the tailnet's names are read again on a miss, at most every 30 s: a stranger's Host
 /// costs one `tailscale` read per half-minute, whatever the rate.
@@ -274,7 +351,7 @@ fn tailnet_hosts(port: u16) -> Option<Vec<String>> {
         return Some(Vec::new());
     }
     let serve = tailscale_json_within(&bin, &["serve", "status", "--json"], TAILSCALE_TIMEOUT)?;
-    Some(hosts_of(&serve_bases(&serve, &dns, port)))
+    Some(hosts_of(&trusted_bases(&serve, &dns, port)))
 }
 
 /// The serve this tool recommends: tailnet `port` → localhost `port`, over HTTPS when the tailnet
@@ -496,7 +573,8 @@ pub fn run(token: Option<&str>, port: u16, url: Option<String>, yes: bool) -> Re
                 .is_some_and(|d| !d.is_empty());
             let serve = tailscale_json(&bin, &["serve", "status", "--json"]).unwrap_or(Value::Null);
             let bases = serve_bases(&serve, &dns, port);
-            let Some(first) = bases.first().cloned() else {
+            let trusted = trusted_bases(&serve, &dns, port);
+            let Some(first) = trusted.first().or(bases.first()).cloned() else {
                 let name = dns.trim_end_matches('.');
                 println!(
                     "The monitor is not served to your tailnet yet. Serve it once with:\n\n    \
@@ -516,6 +594,16 @@ pub fn run(token: Option<&str>, port: u16, url: Option<String>, yes: bool) -> Re
             println!("tailscale serve relays this monitor (127.0.0.1:{port}) at:");
             for b in &bases {
                 println!("    {b}");
+            }
+            let untrusted: Vec<&String> = bases.iter().filter(|b| !trusted.contains(b)).collect();
+            if !untrusted.is_empty() {
+                println!(
+                    "\nA phone there can read the page but not files, and cannot write, because the \
+                     address is open to Funnel (the internet) or serves something else as well:"
+                );
+                for b in untrusted {
+                    println!("    {b}");
+                }
             }
             let own = format!(":{port}/");
             if !first.ends_with(&own) {
@@ -789,6 +877,117 @@ mod tests {
                 "phone.test:2805".to_string(),
                 "proxy.example:8443".to_string()
             ]
+        );
+    }
+
+    /// #s170 (the owner's yes on s171): the gate trusts a relay only when the tailnet alone reaches
+    /// it and it serves the monitor alone, judged across the background and every foreground setup.
+    #[test]
+    fn only_a_private_relay_serving_the_monitor_alone_is_trusted() {
+        use serde_json::json;
+        let monitor = json!({"Handlers": {"/": {"Proxy": "http://127.0.0.1:2727"}}});
+        let base = |extra: serde_json::Value| {
+            let mut serve = json!({
+                "TCP": {"2727": {"HTTPS": true}, "4600": {"HTTPS": true}},
+                "Web": {
+                    "box.tail0.ts.net:2727": monitor.clone(),
+                    "box.tail0.ts.net:4600": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:4600"}}}
+                }
+            });
+            if let (Some(s), Some(e)) = (serve.as_object_mut(), extra.as_object()) {
+                for (k, v) in e {
+                    s.insert(k.clone(), v.clone());
+                }
+            }
+            serve
+        };
+        let trusted = |serve: &serde_json::Value| trusted_bases(serve, "box.tail0.ts.net.", 2727);
+        let ours = vec!["https://box.tail0.ts.net:2727/".to_string()];
+
+        assert_eq!(
+            trusted(&base(json!({}))),
+            ours,
+            "private, the monitor alone; another tool's port is no matter"
+        );
+        assert_eq!(
+            trusted(&base(
+                json!({"AllowFunnel": {"box.tail0.ts.net:2727": true}})
+            )),
+            Vec::<String>::new(),
+            "open to Funnel"
+        );
+        assert_eq!(
+            trusted(&base(
+                json!({"AllowFunnel": {"box.tail0.ts.net:4600": true}})
+            )),
+            ours,
+            "Funnel on another port changes nothing"
+        );
+        let mut shared = base(json!({}));
+        shared["Web"]["box.tail0.ts.net:2727"]["Handlers"]["/other"] =
+            json!({"Proxy": "http://127.0.0.1:9000"});
+        assert_eq!(
+            trusted(&shared),
+            Vec::<String>::new(),
+            "another app under the same name and port"
+        );
+        let mut own_path = base(json!({}));
+        own_path["Web"]["box.tail0.ts.net:2727"]["Handlers"]["/m"] =
+            json!({"Proxy": "http://127.0.0.1:2727"});
+        assert_eq!(
+            trusted(&own_path),
+            ours,
+            "a second mount of the monitor itself is still the monitor alone"
+        );
+        let mut text = base(json!({}));
+        text["Web"]["box.tail0.ts.net:2727"]["Handlers"]["/hi"] = json!({"Text": "hello"});
+        assert_eq!(
+            trusted(&text),
+            Vec::<String>::new(),
+            "a text handler beside it is something else"
+        );
+
+        let foreground_app = base(json!({"Foreground": {"s1": {
+            "TCP": {"2727": {"HTTPS": true}},
+            "Web": {"box.tail0.ts.net:2727": {"Handlers": {"/other": {"Proxy": "http://127.0.0.1:9000"}}}}
+        }}}));
+        assert_eq!(
+            trusted(&foreground_app),
+            Vec::<String>::new(),
+            "a terminal's serve of another app at the same address counts"
+        );
+        let foreground_funnel = base(json!({"Foreground": {"s1": {
+            "AllowFunnel": {"box.tail0.ts.net:2727": true}
+        }}}));
+        assert_eq!(
+            trusted(&foreground_funnel),
+            Vec::<String>::new(),
+            "Funnel from a terminal's serve counts too"
+        );
+
+        let tcp = json!({"TCP": {"2727": {"TCPForward": "127.0.0.1:2727"}}});
+        assert_eq!(
+            trusted_bases(&tcp, "box.tail0.ts.net.", 2727),
+            vec!["http://box.tail0.ts.net:2727/".to_string()],
+            "a raw TCP forward to the monitor is the monitor alone"
+        );
+        let tcp_funnel = json!({
+            "TCP": {"2727": {"TCPForward": "127.0.0.1:2727"}},
+            "AllowFunnel": {"box.tail0.ts.net:2727": true}
+        });
+        assert_eq!(
+            trusted_bases(&tcp_funnel, "box.tail0.ts.net.", 2727),
+            Vec::<String>::new()
+        );
+        let default_port = json!({
+            "TCP": {"443": {"HTTPS": true}},
+            "Web": {"box.tail0.ts.net:443": monitor.clone()},
+            "AllowFunnel": {"box.tail0.ts.net:443": true}
+        });
+        assert_eq!(
+            trusted_bases(&default_port, "box.tail0.ts.net.", 2727),
+            Vec::<String>::new(),
+            "the default port is keyed as :443 for Funnel too"
         );
     }
 
