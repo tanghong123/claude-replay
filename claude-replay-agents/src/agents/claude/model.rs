@@ -1375,6 +1375,12 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "results",
     "resumedAgentId",
     "retrieval_status",
+    // #s181 (client 2.1.303, 8 SendMessage results in one session, measured 2026-10-19): the result
+    // is now `{success, message, resumedAgentId, revivedAgentId, pin}`, and `revivedAgentId` equals
+    // `resumedAgentId` in all 8. The receipt the card draws (the tool_result text) already says
+    // "Resuming agent" with the short id. REVISIT: the two differ, or `resumedAgentId` stops
+    // arriving (a rename completing).
+    "revivedAgentId",
     "runId",
     "scheduledFor",
     "scope",
@@ -1469,7 +1475,11 @@ const GLOB_SHAPE: &[&str] = &[
 /// also lists: the type's reference documents handed to the agent at creation, the same class as
 /// `instructions`. `after_quickstart` was `{}`, the last key, on a create that followed an Artifact
 /// quickstart call in the same turn. REVISIT: an `after_quickstart` that arrives non-empty, or an
-/// `init_references` with a key other than `docs`.
+/// `init_references` with a key other than `docs`. Since client 2.1.302 a create also carries
+/// `owned` (#s181, 2 creates in two sessions, clients 2.1.302 and 2.1.303, measured 2026-10-19): a
+/// boolean, true in both, saying the caller owns this instance (a type file read back is marked
+/// `foreign`, plausibly its counterpart). The rest of both creates was unchanged: `after_quickstart`
+/// still `{}`, `init_references` still `{docs}`. REVISIT: `owned` arriving false.
 const ARTIFACT_CREATE_SHAPE: &[&str] = &[
     "after_quickstart",
     "auto_open",
@@ -1479,6 +1489,7 @@ const ARTIFACT_CREATE_SHAPE: &[&str] = &[
     "instructions_chars",
     "liveSubscription",
     "own_files",
+    "owned",
     "provisioned",
     "title",
     "type",
@@ -1526,15 +1537,24 @@ const ARTIFACT_PUBLISH_SHAPE: &[&str] = &[
 /// recorded `url` and drops the output, so none of these reaches the reader; the removal shows only
 /// in the raw toggle, since the result text names none (#s152 answers whether the card should).
 /// REVISIT: a `files_written` or `files_removed` that differs from the call input's `files` map.
+/// Since client 2.1.302 every one also carries `owned` (#s181, 17 records in two sessions, clients
+/// 2.1.302 and 2.1.303, measured 2026-10-19), true in all 17, as in a create; `carried`,
+/// `preferredContract` and `read` sit inside `stored`, not beside it. One of the 17 ends with
+/// `editsApplied`, an edit of the artifact by `old_str`/`new_str` (client 2.1.303): it is in this
+/// array so that record stays in the shape, but it has no row below and so stays reported until
+/// its card draws it. REVISIT: `owned` arriving false, or a plain publish from a file
+/// ([`ARTIFACT_PUBLISH_SHAPE`]) reporting `owned` beside `icon`, which no client has written yet.
 const ARTIFACT_TYPED_PUBLISH_SHAPE: &[&str] = &[
     "artifact_id",
     "audience",
     "capabilities",
     "contract",
+    "editsApplied",
     "files_removed",
     "files_written",
     "liveSubscription",
     "own_files",
+    "owned",
     "path",
     "seq",
     "stored",
@@ -1554,6 +1574,16 @@ const ARTIFACT_TYPED_PUBLISH_SHAPE: &[&str] = &[
 /// and this result's `title` is the only place the artifact is named: a label question, not a
 /// shape one.
 const ARTIFACT_OPEN_SHAPE: &[&str] = &["artifact_id", "opened", "title", "url"];
+
+/// The whole of an Artifact `read` result (#s181, client 2.1.303, one record, measured 2026-10-19;
+/// the call input is `{action: "read", url, paths}` with 2 paths): `{files_read: {url, title, ver,
+/// saved_dir, files: [{path, saved_to, size_bytes, content_type, source, foreign}], cowritten,
+/// from_type, type}}`. Both files were type reference documents (text/markdown, about 16,000 and
+/// 11,100 bytes) that the client copied into the session's scratchpad. The card draws the result
+/// TEXT, 29,717 characters, which names the saved directory and both files and, by its size,
+/// carries both whole. REVISIT: a read whose text does not carry the files (a binary or a very
+/// large file), where `saved_to` would be the reader's only handle and the card should offer it.
+const ARTIFACT_READ_SHAPE: &[&str] = &["files_read"];
 
 /// Every key an Artifact list result was met with (#s62, client 2.1.288, one record): `{artifacts:
 /// array, scope: string, pins_enabled: boolean}`. `pins_enabled` is a service feature flag (whether
@@ -1707,6 +1737,10 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // which came back beside them.
     ("after_quickstart", ARTIFACT_CREATE_SHAPE),
     ("init_references", ARTIFACT_CREATE_SHAPE),
+    // #s181 (client 2.1.302): a create's `owned`, true in both met, says the caller owns the
+    // instance. A generic word, so known only in the create's shape; adding it silences the keys
+    // above again, which came back beside it.
+    ("owned", ARTIFACT_CREATE_SHAPE),
     // Grep (#285, #315): `mode` is a generic word, and `totalFiles` could mean anything in another
     // tool, so each is known only when every key of the result is Grep's; a key that is not is
     // reported with them beside it.
@@ -1737,6 +1771,13 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     ("files_removed", ARTIFACT_TYPED_PUBLISH_SHAPE),
     ("own_files", ARTIFACT_TYPED_PUBLISH_SHAPE),
     ("type_files", ARTIFACT_TYPED_PUBLISH_SHAPE),
+    // #s181 (client 2.1.302): `owned` on a publish into a typed artifact, true in all 17 met, as in
+    // a create. Known only in this shape. `editsApplied` is in the shape's array but has no row:
+    // it stays reported until the card reads it.
+    ("owned", ARTIFACT_TYPED_PUBLISH_SHAPE),
+    // #s181 (client 2.1.303): an Artifact read's whole result is `{files_read}`, whose text the card
+    // draws in full. Known only as the whole result, as CronList's `jobs` is.
+    ("files_read", ARTIFACT_READ_SHAPE),
     // Artifact's list result (#s62): `pins_enabled` is an account's feature flag, and a word
     // another tool could use for anything, so it is known only in the list's own shape.
     ("pins_enabled", ARTIFACT_LIST_SHAPE),
@@ -7237,6 +7278,8 @@ mod tests {
             serde_json::json!({"id": "12b4386c"}),
             serde_json::json!({"type": "file_unchanged", "file": {"filePath": "/w/CLAUDE.md"}, "source": "seeded"}),
             serde_json::json!({"success": true, "message": "sent", "display": "sent", "msg_id": "6a90484e"}),
+            // #s181: a SendMessage that resumed an agent, as client 2.1.303 writes it.
+            serde_json::json!({"success": true, "message": "Resuming agent", "resumedAgentId": "a1b2c3", "revivedAgentId": "a1b2c3", "pin": {"id": "p", "name": "n", "ref": "r"}}),
         ] {
             assert_eq!(
                 unknown(&known),
@@ -8658,6 +8701,19 @@ mod tests {
             "a whole create with reference documents is known: {:?}",
             unknown_tool_result_keys(&create)
         );
+        // #s181: client 2.1.302 adds `owned`, and the create stays known whole.
+        let mut owned = create.clone();
+        owned["owned"] = serde_json::json!(true);
+        assert!(
+            unknown_tool_result_keys(&owned).is_empty(),
+            "a create that says it is owned is known: {:?}",
+            unknown_tool_result_keys(&owned)
+        );
+        assert_eq!(
+            unknown_tool_result_keys(&serde_json::json!({"owned": true, "stdout": "ok"})),
+            vec!["owned"],
+            "outside the Artifact shapes, owned is reported"
+        );
         assert_eq!(
             unknown_tool_result_keys(
                 &serde_json::json!({"init_references": {"docs": []}, "stdout": "ok"})
@@ -8737,12 +8793,52 @@ mod tests {
             "…and so is one that removed files: {:?}",
             unknown_tool_result_keys(&removing)
         );
+        // #s181: client 2.1.302 adds `owned` to every such publish, and one that edited the
+        // artifact ends with `editsApplied`, which stays reported alone until its card reads it.
+        let mut owned = publish.clone();
+        owned["owned"] = serde_json::json!(true);
+        assert!(
+            unknown_tool_result_keys(&owned).is_empty(),
+            "a publish that says it is owned is known: {:?}",
+            unknown_tool_result_keys(&owned)
+        );
+        let mut edited = owned.clone();
+        edited["editsApplied"] = serde_json::json!(1);
+        assert_eq!(
+            unknown_tool_result_keys(&edited),
+            vec!["editsApplied"],
+            "an edit stays in the shape, so editsApplied alone is reported"
+        );
         assert_eq!(
             unknown_tool_result_keys(
                 &serde_json::json!({"files_removed": [], "own_files": [], "type_files": [], "stdout": "ok"})
             ),
             vec!["files_removed", "own_files", "type_files"],
             "outside the typed publish's shape, its keys are reported"
+        );
+    }
+
+    /// #s181: an Artifact read result (client 2.1.303) is one key, `files_read`, known as the whole
+    /// result; beside any other key it is reported. Hand-written: no real ids, URLs or paths.
+    #[test]
+    fn an_artifact_read_result_is_known_only_as_the_whole_result() {
+        let read = serde_json::json!({"files_read": {
+            "url": "https://example.test/artifact/x", "title": "X", "ver": "v1",
+            "saved_dir": "/w/scratch/artifact-files/one",
+            "files": [{"path": "artifact-type/reference/a.md", "saved_to": "/w/scratch/artifact-files/one/a.md",
+                       "size_bytes": 12, "content_type": "text/markdown", "source": "type", "foreign": true}],
+            "cowritten": false, "from_type": true,
+            "type": {"url": "https://example.test/types/doc", "title": "Doc", "foreign": true}
+        }});
+        assert!(
+            unknown_tool_result_keys(&read).is_empty(),
+            "a whole read result is known: {:?}",
+            unknown_tool_result_keys(&read)
+        );
+        assert_eq!(
+            unknown_tool_result_keys(&serde_json::json!({"files_read": {}, "stdout": "ok"})),
+            vec!["files_read"],
+            "beside another key, files_read is reported"
         );
     }
 
