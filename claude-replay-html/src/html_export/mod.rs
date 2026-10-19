@@ -1682,6 +1682,23 @@ impl Emitter<'_> {
                             "desc": p.description,
                         }),
                     );
+                    // #s182: a publish that EDITED a file of the artifact in place carries the
+                    // edit's hunks, drawn as an Edit card draws them: the change on the head, its
+                    // summary and the diff in the body. When the result applied fewer edits than
+                    // were sent, the note says so and the head claims no count, since which edits
+                    // took is not recorded; the diff below is then what was asked for.
+                    if let Some((part, adds, dels)) = diff_part(b) {
+                        match crate::present::edits_applied_note(p.edits_applied, diffs.len()) {
+                            Some(short) => body.push(json!({ "p": "note", "x": short })),
+                            None => {
+                                for chip in change_chips(adds, dels) {
+                                    push_chip(&mut head, chip);
+                                }
+                                body.push(json!({ "p": "note", "x": edit_summary(adds, dels) }));
+                            }
+                        }
+                        body.push(part);
+                    }
                     // #s155: a publish that REMOVED files from the artifact says so, as a change
                     // does — the count on the head, so a closed card shows it, and the names in
                     // the body. A removed file has nowhere to link, so they are plain words.
@@ -4624,6 +4641,7 @@ mod tests {
                 description: String::new(),
                 icon: String::new(),
                 removed,
+                edits_applied: None,
             })),
             asked: None,
             delivered: Vec::new(),
@@ -4649,6 +4667,65 @@ mod tests {
         );
         assert!(out[1]["head"].get("chips").is_none(), "{}", out[1]["head"]);
         assert_eq!(out[1]["body"], json!([]));
+    }
+
+    /// #s182: an Artifact publish that edited a file of the artifact draws the edit as an Edit
+    /// card does — the change on the head, its summary and the diff in the body — and, when the
+    /// result applied fewer edits than were sent, says so and claims no count on the head.
+    #[test]
+    fn an_artifact_edit_draws_its_diff_and_says_when_fewer_were_applied() {
+        let edit = |applied: Option<usize>| Block::ToolUse {
+            name: "Artifact".into(),
+            target: "Deck".into(),
+            diffs: vec![
+                ("title: Draft\n".into(), "title: Final\n".into()),
+                ("v: 1\n".into(), "v: 2\n".into()),
+            ],
+            output: None,
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: Some(Box::new(crate::model::Published {
+                name: "Deck".into(),
+                url: "https://example.test/artifact/x".into(),
+                description: String::new(),
+                icon: String::new(),
+                removed: Vec::new(),
+                edits_applied: applied,
+            })),
+            asked: None,
+            delivered: Vec::new(),
+            sent: None,
+            saved_output: None,
+        };
+        let out = stream(
+            &[edit(Some(2)), edit(Some(1))],
+            &FoldPolicy::pages_default(),
+        );
+        assert_eq!(
+            out[0]["head"]["artifact"]["url"],
+            "https://example.test/artifact/x"
+        );
+        assert_eq!(
+            out[0]["head"]["chips"],
+            json!([{ "c": "add", "x": "+2" }, { "c": "del", "x": "−2" }]),
+            "the change on the head"
+        );
+        let body = out[0]["body"].as_array().unwrap();
+        assert_eq!(
+            body[0],
+            json!({ "p": "note", "x": "Added 2 lines, removed 2 lines" })
+        );
+        assert_eq!(body[1]["p"], "diff", "{}", out[0]["body"]);
+        assert!(
+            out[1]["head"].get("chips").is_none(),
+            "short: no count claimed, {}",
+            out[1]["head"]
+        );
+        let body = out[1]["body"].as_array().unwrap();
+        assert_eq!(body[0], json!({ "p": "note", "x": "Applied 1 of 2 edits" }));
+        assert_eq!(body[1]["p"], "diff", "the diff asked for, under the note");
     }
 
     #[test]

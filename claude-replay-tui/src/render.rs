@@ -708,6 +708,19 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                 if !p.description.is_empty() {
                     out.push(Line::styled(format!("    {}", p.description), theme::dim()));
                 }
+                // #s182: an edit of a file in the artifact draws its diff as an Edit does — its
+                // summary, or the note that fewer edits were applied than sent, then the hunks.
+                if !diffs.is_empty() {
+                    let (adds, dels) = diffs
+                        .iter()
+                        .map(|(o, n)| diff_counts(o, n))
+                        .fold((0usize, 0usize), |(a, d), (x, y)| (a + x, d + y));
+                    let said = crate::present::edits_applied_note(p.edits_applied, diffs.len())
+                        .unwrap_or_else(|| edit_summary(adds, dels));
+                    out.push(Line::styled(format!("    {said}"), theme::dim()));
+                    let token = highlight::token_for_target(target);
+                    render_diff(diffs, patch.as_deref(), token, hl, &mut out);
+                }
                 // #s155: what the publish removed from the artifact, which nothing else shows.
                 if !p.removed.is_empty() {
                     out.push(Line::styled(

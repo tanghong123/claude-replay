@@ -7201,6 +7201,152 @@ fn app_shell_an_artifact_publish_says_what_it_removed() {
     scenario_an_artifact_publish_says_what_it_removed(&page.tab, Surface::AppShell);
 }
 
+// ── scenario: an Artifact edit draws its diff (#s182) ─────────────────────────────────────────
+
+/// #s182's fixture: "Deck", an artifact made from a type, edited in place twice by `edits:
+/// [{old_str, new_str}]` (Claude Code 2.1.303). The first result applied both edits, the second
+/// only one of two. Then a plain republish with no edits. Hand-written: no real ids, URLs or paths.
+fn fixture_artifact_edited(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut jsonl = long_session(6, Shape::default());
+    let url = "https://claude.ai/code/artifact/dddd-s182";
+    let publish = |id: &str, ts: &str, input: serde_json::Value, result: serde_json::Value| {
+        let call = serde_json::json!({"type": "assistant", "timestamp": ts, "message": {"role": "assistant", "content": [{"type": "tool_use", "id": id, "name": "Artifact", "input": input}]}});
+        let reply = serde_json::json!({"type": "user", "timestamp": ts, "toolUseResult": result, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": format!("Updated {url}")}]}});
+        format!("{call}\n{reply}\n")
+    };
+    let result = |applied: Option<u64>| {
+        let mut r = serde_json::json!({"url": url, "path": "/w/deck/data.json", "artifact_id": "dddd-s182", "title": "Deck", "updated": true, "owned": true, "files_written": [{"path": "data.json", "sha256": "00"}]});
+        if let Some(n) = applied {
+            r["editsApplied"] = serde_json::json!(n);
+        }
+        r
+    };
+    let edits = |a: &str, b: &str| {
+        serde_json::json!([
+            {"old_str": format!("title: {a}"), "new_str": format!("title: {b}")},
+            {"old_str": "version: 1", "new_str": "version: 2"}
+        ])
+    };
+    jsonl += &user_at("question 6: retitle the deck", "2026-09-01T04:00:00.000Z");
+    jsonl += &publish(
+        "e1",
+        "2026-09-01T04:00:01.000Z",
+        serde_json::json!({"url": url, "root": "/w/deck", "file_path": "data.json", "edits": edits("Draft", "Final")}),
+        result(Some(2)),
+    );
+    jsonl += &publish(
+        "e2",
+        "2026-09-01T04:00:02.000Z",
+        serde_json::json!({"url": url, "root": "/w/deck", "file_path": "data.json", "edits": edits("Final", "Shipped")}),
+        result(Some(1)),
+    );
+    jsonl += &publish(
+        "e3",
+        "2026-09-01T04:00:03.000Z",
+        serde_json::json!({"url": url, "root": "/w/deck", "file_path": "data.json", "title": "Deck"}),
+        result(None),
+    );
+    jsonl += &assistant_at("answer 6: retitled", "2026-09-01T04:00:05.000Z");
+    for i in 7..12u32 {
+        jsonl += &user_at(
+            &format!("question {i}: {}", "lorem ipsum dolor sit amet. ".repeat(6)),
+            &format!("2026-09-01T04:0{}:00.000Z", i - 6),
+        );
+        jsonl += &assistant_at(
+            &format!("answer {i}: {}", "sed do eiusmod tempor. ".repeat(8)),
+            &format!("2026-09-01T04:0{}:05.000Z", i - 6),
+        );
+    }
+    let path = stores.claude_session(SID, &jsonl);
+    Fixture {
+        base,
+        path,
+        turns: 12,
+    }
+}
+
+/// #s182: an Artifact publish that edited a file of the artifact draws the edit as an Edit card
+/// does — its change on the head, its summary and its diff in the body — and one whose result
+/// applied fewer edits than were sent says so and claims no count. The plain republish carries
+/// none of it. Before this, an edit of a shared artifact showed only its link.
+fn scenario_an_artifact_edit_draws_its_diff(tab: &headless_chrome::Tab, surface: Surface) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    // Each publish's card as [its head's change chips, its body's text, added rows, deleted rows].
+    let cards_js = match surface {
+        Surface::Classic => "JSON.stringify([...document.querySelectorAll('#stream .fold')].filter(function (f) { return !!f.querySelector('.fold-h .artifact-link'); }).map(function (f) { var b = f.querySelector('.fold-b'); return [[...f.querySelectorAll('.fold-h .chip.add, .fold-h .chip.del')].map(function (c) { return c.textContent; }).join(' '), b.textContent, b.querySelectorAll('.diff .nrow.add').length, b.querySelectorAll('.diff .nrow.del').length]; }))".to_string(),
+        Surface::AppShell => {
+            // The shell folds a publish into its process: the roster's jump opens the chain.
+            eval(tab, "document.getElementById('previewBtn').click(); 'ok'");
+            until(
+                tab,
+                "document.querySelectorAll('#previewBody .artifacts-row .artifacts-jump').length === 1",
+                "the roster to list the artifact",
+                Duration::from_secs(20),
+                "document.getElementById('previewBody').textContent.slice(0, 200)",
+            );
+            eval(tab, "document.querySelector('#previewBody .artifacts-row .artifacts-jump').click(); 'ok'");
+            "JSON.stringify([...document.querySelectorAll('[data-renderer][data-renderer-kind=\"tool\"]')].filter(function (r) { var t = r.querySelector('.renderer-title'); return t && t.textContent === 'Artifact'; }).map(function (r) { return [[...r.querySelectorAll('.renderer-head .renderer-change .add, .renderer-head .renderer-change .del')].map(function (c) { return c.textContent; }).join(' '), r.textContent, r.querySelectorAll('.line.add').length, r.querySelectorAll('.line.del').length]; }))".to_string()
+        }
+    };
+    until(
+        tab,
+        &format!("JSON.parse({cards_js}).length === 3"),
+        "the three publishes' cards to render",
+        Duration::from_secs(20),
+        &cards_js,
+    );
+    let cards: serde_json::Value =
+        serde_json::from_str(eval(tab, &cards_js).as_str().unwrap()).unwrap();
+    let text = |i: usize| cards[i][1].as_str().unwrap_or("").to_string();
+    assert_eq!(
+        cards[0][0], "+2 −2",
+        "{surface:?}: the edit's change is on its head: {cards}"
+    );
+    assert!(
+        text(0).contains("Added 2 lines, removed 2 lines") && text(0).contains("title: Final"),
+        "{surface:?}: …and its summary and diff in its body: {cards}"
+    );
+    assert_eq!(
+        (cards[0][2].as_u64(), cards[0][3].as_u64()),
+        (Some(2), Some(2)),
+        "{surface:?}: two lines added and two removed are drawn as a diff: {cards}"
+    );
+    assert_eq!(
+        cards[1][0], "",
+        "{surface:?}: an edit the result applied only in part claims no count: {cards}"
+    );
+    assert!(
+        text(1).contains("Applied 1 of 2 edits") && !text(1).contains("Added 2 lines"),
+        "{surface:?}: …and says how many were applied: {cards}"
+    );
+    assert_eq!(
+        (cards[2][0].as_str(), cards[2][2].as_u64()),
+        (Some(""), Some(0)),
+        "{surface:?}: the plain republish draws no diff: {cards}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_an_artifact_edit_draws_its_diff() {
+    let _serial = serial();
+    let fx = fixture_artifact_edited("scenario-art-edit-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_an_artifact_edit_draws_its_diff(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn app_shell_an_artifact_edit_draws_its_diff() {
+    let _serial = serial();
+    let fx = fixture_artifact_edited("scenario-art-edit-app");
+    let page = open(Surface::AppShell, &fx, 3098);
+    scenario_an_artifact_edit_draws_its_diff(&page.tab, Surface::AppShell);
+}
+
 // ── scenario: descending from a fleet row leaves a way back (#143) ────────────────────────────
 
 /// #143: the app shell navigates IN-PAGE, so the way back to a parent is a hint recorded at the

@@ -94,6 +94,12 @@ pub struct Published {
     /// for every publish that removed nothing (nearly all of them).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removed: Vec<String>,
+    /// How many of the call's `edits` the result says it APPLIED (#s182, `editsApplied`, Claude
+    /// Code 2.1.303): an edit of a file in the artifact by `old_str`/`new_str`, whose hunks the
+    /// block's `diffs` carry. The result is the fact and the input the request, so a count below
+    /// the edits sent is said on the card. `None` for a publish that sent no edits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edits_applied: Option<usize>,
 }
 
 /// The questions a call put to the reader, with every option it offered (#255) — and, once the
