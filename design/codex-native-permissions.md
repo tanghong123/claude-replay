@@ -43,8 +43,9 @@ advertised settings, manage queued input, interrupt, and answer pending requests
 
 The host chooses the executable, Codex home, endpoint and allowed roots. Browsers
 cannot replace them. Monitor canonicalizes execution directories, including
-symlinks, before native project operations. A home-directory root grants broad
-project scope. Pairing does not grant arbitrary shell access or bypass another
+symlinks, before native project operations.
+Without `--codex-allowed-root`, the allowed root defaults to `$HOME`.
+A home-directory root grants broad project scope. Pairing does not grant arbitrary shell access or bypass another
 thread's pending-request identity checks.
 
 ## Monitor-to-server authentication: loopback WebSocket
@@ -182,9 +183,13 @@ detaching an external server, whose work keeps running. This observation covers
 threads attached to Monitor, not unrelated work invisible to its connection.
 Cancel and Escape leave the server and both modes on.
 An unavailable ownership check never silently proceeds with shutdown.
-Monitor handles SIGTERM and SIGINT on its main thread: it fences activation,
+Monitor handles SIGTERM, SIGINT and SIGHUP on its main thread: it fences activation,
 waits for an owned startup to unwind, then closes the gateway and reaps its owned
-process group. Dropping the runtime also cleans up an owned child. An independently
+process group. After the first signal, default signal behavior is restored so a
+second signal can force exit; that forced exit may leave an owned process behind.
+Orderly cleanup can exceed a service manager's grace period while startup or RPC
+drain is pending; this change does not promise a 20-second shutdown deadline.
+Dropping the runtime also cleans up an owned child. An independently
 started server is externally managed: Monitor closes only its own connection.
 SIGKILL and host power loss cannot run cleanup; an orphan left by either event is
 not adopted or killed merely because its endpoint matches. Its original launcher
@@ -262,16 +267,20 @@ paired, same-origin GET `/api/codex/receipt?actionId=...`; this lookup never cla
 an identity, connects to native RPC, or executes a send. Missing or expired receipts
 remain unresolved, including after replacement of the gateway's receipt database.
 Matching text in newly observed JSONL history is presented as evidence to review,
-not proof that this specific action succeeded. Image-only and initially unread
-history remain explicit review cases. After inspecting the conversation, the user
+not proof that this specific action succeeded. For uncertain attempts, image-only
+and initially unread history remain explicit review cases. After inspecting the conversation, the user
 can confirm retirement of an uncertain attempt without sending anything; a later
 intentional send gets a new ID and may duplicate a previously delivered message.
 The server never replays its stored uncertain receipt.
 
-Accepted previews are retired after history or queue reconciliation. Unresolved
-previews require explicit review; the browser refuses more than 64 outstanding
-previews rather than silently discarding recovery identities. Browser storage may
-contain message text and images; it contains no native or browser pairing tokens.
+Accepted previews are retired after history or queue reconciliation, or oldest
+first once 32 accepted previews are retained. This includes image-only messages
+and conversations that are no longer open. Only unresolved attempts count toward
+the 64-attempt send limit; their recovery identities are never silently evicted.
+Drafts from other page sessions expire after seven days without an edit when the
+journal is next used. Legacy drafts receive that grace period on first read. The
+current page session keeps its draft; expiry never deletes unresolved attempts.
+Browser storage may contain message text and images; it contains no native or browser pairing tokens.
 This storage is native-only and does not change the read-only export format.
 
 ## Native phone layout

@@ -950,6 +950,12 @@ fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
         .unwrap(),
     )
     .unwrap();
+    // The jump is centred on phones; it must sit above both native input and dock.
+    eval(
+        tab,
+        "document.getElementById('jumpToBottom').classList.add('show');true",
+    );
+    wait(tab, "(()=>{const j=document.getElementById('jumpToBottom').getBoundingClientRect(),d=document.getElementById('phoneDock').getBoundingClientRect();return j.height>0 && j.bottom<=d.top;})()");
     tap(tab, ".header-searchbox");
     wait(
         tab,
@@ -967,14 +973,27 @@ fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
         tab,
         "document.getElementById('app').classList.contains('keyboard-up')",
     );
-    let geometry = probe(tab, "(()=>{const r=document.getElementById('composer').getBoundingClientRect();const i=document.getElementById('composeInput').getBoundingClientRect();return {left:r.left,right:r.right,bottom:r.bottom,input:i.height,width:innerWidth,height:visualViewport.height};})()");
+    // Model Safari's page scroll AND viewport offsets, including the observed 337 px.
+    // All assertions use the app box, as do the shell's phone-top/phone-bottom rules.
+    eval(tab, "(()=>{Object.defineProperty(visualViewport,'offsetTop',{configurable:true,get:()=>337});Object.defineProperty(visualViewport,'pageTop',{configurable:true,get:()=>337});visualViewport.dispatchEvent(new Event('scroll'));return true;})()");
+    let geometry_script = "(()=>{const a=document.getElementById('app').getBoundingClientRect(),c=document.getElementById('composer').getBoundingClientRect(),i=document.getElementById('composeInput').getBoundingClientRect(),b=document.getElementById('sendBtn').getBoundingClientRect(),j=document.getElementById('jumpToBottom').getBoundingClientRect();return {left:c.left,right:c.right,bottom:c.bottom-a.top,input:i.height,button:b.height,contained:b.top>=c.top&&b.bottom<=c.bottom+1,jumpClear:j.bottom<=c.top,width:innerWidth,height:visualViewport.height};})()";
+    until(tab, &format!("(()=>{{const g={geometry_script};return g.input>=30 && g.button>=44 && g.contained && g.jumpClear && g.bottom<=g.height+1;}})()"),
+        "native input and send controls remain visible after Safari keyboard scrolling", Duration::from_secs(10), geometry_script);
+    let geometry = probe(tab, geometry_script);
+    std::fs::write(
+        root.join("native-keyboard-geometry.json"),
+        serde_json::to_vec_pretty(&geometry).unwrap(),
+    )
+    .unwrap();
     assert!(
         geometry["left"].as_f64().unwrap() >= 0.0
-            && geometry["right"].as_f64().unwrap() <= geometry["width"].as_f64().unwrap()
-            && geometry["bottom"].as_f64().unwrap() <= geometry["height"].as_f64().unwrap() + 1.0
-            && geometry["input"].as_f64().unwrap() >= 30.0,
+            && geometry["right"].as_f64().unwrap() <= geometry["width"].as_f64().unwrap(),
         "{geometry}"
     );
+    // The offset probe above shadows Safari's scroll coordinates without physically
+    // scrolling Chrome. Restore those shadows for a screenshot/hit test in its real viewport.
+    eval(tab, "(()=>{delete visualViewport.offsetTop;delete visualViewport.pageTop;visualViewport.dispatchEvent(new Event('scroll'));document.getElementById('jumpToBottom').classList.add('show');return true;})()");
+    wait(tab, "(()=>{const b=document.getElementById('sendBtn'),r=b.getBoundingClientRect(),j=document.getElementById('jumpToBottom'),c=document.getElementById('composer').getBoundingClientRect();return r.height>=44 && r.bottom<=visualViewport.height && b.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)) && j.getBoundingClientRect().bottom<=c.top;})()");
     std::fs::write(
         root.join("native-keyboard.png"),
         tab.capture_screenshot(
@@ -988,7 +1007,7 @@ fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
     .unwrap();
     eval(tab, "(()=>{Object.defineProperty(visualViewport,'scale',{configurable:true,get:()=>2});Object.defineProperty(visualViewport,'pageTop',{configurable:true,get:()=>120});visualViewport.dispatchEvent(new Event('scroll'));return true;})()");
     wait(tab, "document.getElementById('app').style.transform==='' && !document.getElementById('app').classList.contains('keyboard-up')");
-    eval(tab, "(()=>{delete visualViewport.height;delete visualViewport.scale;delete visualViewport.pageTop;document.activeElement.blur();visualViewport.dispatchEvent(new Event('resize'));return true;})()");
+    eval(tab, "(()=>{delete visualViewport.height;delete visualViewport.scale;delete visualViewport.pageTop;delete visualViewport.offsetTop;document.activeElement.blur();visualViewport.dispatchEvent(new Event('resize'));return true;})()");
 }
 /// Reload uses the real browser journal and gateway receipts, including an accepted
 /// response lost by the network and an independent second tab claiming the same input.

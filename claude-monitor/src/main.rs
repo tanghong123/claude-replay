@@ -508,7 +508,7 @@ fn main() -> Result<()> {
     }
     #[cfg(all(unix, feature = "codex-native"))]
     {
-        shutdown.wait();
+        shutdown.wait()?;
         native_runtime
             .shutdown()
             .context("Close native runtime before Monitor exits")?;

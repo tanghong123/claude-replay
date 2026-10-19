@@ -38,3 +38,15 @@ test("the native queue takes over accepted previews, including later cancellatio
   assert.deepEqual(messages.list("t", [{ clientUserMessageId: "a" }]), []);
   assert.deepEqual(messages.list("t", []), []);
 });
+
+test("old accepted previews retire even without text or a visited conversation", () => {
+  const messages = new OutgoingMessages();
+  messages.begin("uncertain", payload, snapshot()); messages.settle("uncertain", "uncertain");
+  for (let i = 0; i < 80; i++) {
+    messages.begin(`accepted-${i}`, { threadId: `other-${i}`, text: "", images: ["data:image/png;base64,aA=="] }, { ready: false });
+    messages.settle(`accepted-${i}`, "accepted");
+  }
+  assert.equal(messages.entries.size, 33);
+  assert.equal(messages.list("t")[0].status, "uncertain");
+  assert.equal(messages.takeRetired().length, 48);
+});

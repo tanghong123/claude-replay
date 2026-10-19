@@ -65,3 +65,31 @@ test("confirming an earlier prompt does not retire a replacement draft", async (
   assert.equal(f.input.value, "Replacement draft"); assert.equal(f.closed, 0);
   assert.equal(f.native.drafts.get("claude"), "Replacement draft");
 });
+
+for (const nativeWrapper of [false, true]) test(`session navigation preserves the send target and retires its draft (wrapper=${nativeWrapper})`, async () => {
+  const f = fixture();
+  if (!nativeWrapper) delete f.ordinary.actions.captureComposer;
+  const pending = f.ordinary.send("Claude send");
+  f.indexState.selected = "another-session";
+  assert.equal(f.controlState.row.id, "claude");
+  f.finish(); await pending;
+  assert.equal(f.payload.target, "claude");
+  assert.equal(f.input.value, ""); assert.equal(f.closed, 1);
+  assert.equal(f.send.disabled, false);
+});
+test("opening another ordinary editor preserves its replacement draft", async () => {
+  const f = fixture(); delete f.ordinary.actions.captureComposer;
+  const pending = f.ordinary.send("Claude send");
+  f.indexState.selected = "other"; f.controlState.row = { id: "other" }; f.input.value = "Other draft";
+  f.finish(); await pending;
+  assert.equal(f.input.value, "Other draft"); assert.equal(f.closed, 0);
+});
+
+for (const nativeWrapper of [false, true]) test(`closing and then navigating retires the unmodified completed draft (wrapper=${nativeWrapper})`, async () => {
+  const f = fixture();
+  if (!nativeWrapper) delete f.ordinary.actions.captureComposer;
+  const pending = f.ordinary.send("Claude send");
+  f.controlState.row = null; f.indexState.selected = "other";
+  f.finish(); await pending;
+  assert.equal(f.input.value, ""); assert.equal(f.closed, 1);
+});

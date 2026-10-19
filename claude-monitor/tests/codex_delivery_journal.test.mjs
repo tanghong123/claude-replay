@@ -68,3 +68,44 @@ test("capacity refusal preserves every outstanding delivery identity", async () 
   assert.equal((await journal.prepare("retry", payloadWithText("message-0"), preview)).id, "action-0");
 });
 function payloadWithText(text) { return { ...payload, text }; }
+
+test("accepted image-only and unread previews cannot exhaust unresolved capacity", async () => {
+  const journal = new DeliveryJournal("scope", "tab", storage());
+  await journal.prepare("unresolved", payload, preview);
+  for (let i = 0; i < 80; i++) {
+    await journal.prepare(`accepted-${i}`, { ...payload, threadId: `other-${i}`, text: "" }, { ...preview, canReconcile: false });
+    await journal.settle(`accepted-${i}`, "accepted");
+  }
+  const saved = await journal.load();
+  assert.equal(saved.attempts.filter(entry => entry.status === "accepted").length, 32);
+  assert.equal(saved.attempts[0].id, "unresolved");
+  assert.equal(saved.attempts[1].id, "accepted-48");
+  assert.equal((await journal.prepare("next", { ...payload, text: "next" }, preview)).id, "next");
+});
+test("a late uncertainty cannot downgrade another tab's accepted receipt", async () => {
+  const journal = new DeliveryJournal("scope", "tab", storage());
+  await journal.prepare("one", payload, preview); await journal.settle("one", "accepted");
+  await journal.settle("one", "uncertain");
+  assert.equal((await journal.load()).attempts[0].status, "accepted");
+});
+test("old other-tab drafts expire without dropping current drafts or unresolved sends", async () => {
+  let now = 1000;
+  const disk = storage(), old = new DeliveryJournal("scope", "old", disk, () => now);
+  await old.draft("t", { text: "old", images: ["data:image/png;base64,fixture"] });
+  await old.prepare("pending", payload, preview);
+  const current = new DeliveryJournal("scope", "current", disk, () => now);
+  await current.draft("t", { text: "keep", images: [] });
+  now += 8 * 24 * 60 * 60 * 1000;
+  const saved = await current.load();
+  assert.deepEqual(Object.keys(saved.drafts), [JSON.stringify(["current", "t"])]);
+  assert.equal(saved.attempts[0].id, "pending");
+});
+test("legacy drafts receive a grace period before another tab expires them", async () => {
+  let now = 1000;
+  const disk = storage();
+  await disk.change("scope", value => { value.drafts[JSON.stringify(["old", "t"])] = { text: "legacy", images: [] }; });
+  const journal = new DeliveryJournal("scope", "current", disk, () => now);
+  assert.equal(Object.keys((await journal.load()).drafts).length, 1);
+  now += 8 * 24 * 60 * 60 * 1000;
+  assert.equal(Object.keys((await journal.load()).drafts).length, 0);
+});

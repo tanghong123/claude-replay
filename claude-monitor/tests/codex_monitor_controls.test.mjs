@@ -721,3 +721,28 @@ test("browser storage refusal prevents the first HTTP send", async () => {
   await assert.rejects(controller.perform("send", { threadId: "t", text: "hello", intent: "next" }), failure);
   assert.equal(sent, 0); assert.equal(controller.pending, false);
 });
+
+test("phone composer fitting uses the app box after Safari keyboard page scrolling", () => {
+  const previous = { window: globalThis.window, innerHeight: globalThis.innerHeight, matchMedia: globalThis.matchMedia, getComputedStyle: globalThis.getComputedStyle, querySelector: document.querySelector };
+  try {
+    nodes.clear(); globalThis.innerHeight = 706; globalThis.matchMedia = () => ({ matches: true });
+    globalThis.window = { visualViewport: { height: 377, offsetTop: 337, pageTop: 337 } };
+    globalThis.getComputedStyle = () => ({ getPropertyValue: () => "0", minHeight: "44", paddingTop: "8", paddingBottom: "8" });
+    const controller = Object.assign(Object.create(MonitorControls.prototype), { active: true });
+    for (const origin of [0, 337]) {
+      node("app").getBoundingClientRect = () => ({ top: origin, height: 706 });
+      node("composer").getBoundingClientRect = () => ({ top: origin + 259, bottom: origin + 369, height: 110 });
+      node("composeInput").getBoundingClientRect = () => ({ height: 44 });
+      node("composeInput").scrollHeight = 44;
+      document.querySelector = () => ({ getBoundingClientRect: () => ({ bottom: origin + 48 }) });
+      controller.fitComposer();
+      assert.equal(node("composer").style.maxHeight, "317px");
+      assert.equal(node("composeInput").style.height, "44px");
+    }
+  } finally {
+    for (const key of ["window", "innerHeight", "matchMedia", "getComputedStyle"]) {
+      if (previous[key] === undefined) delete globalThis[key]; else globalThis[key] = previous[key];
+    }
+    document.querySelector = previous.querySelector;
+  }
+});

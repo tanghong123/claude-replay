@@ -259,8 +259,11 @@ export class MonitorControls {
     if (matchMedia(PHONE_QUERY).matches) {
       const view = window.visualViewport, style = getComputedStyle(composer);
       const safe = edge => parseFloat(style.getPropertyValue(`--shared-safe-${edge}`)) || 0;
-      const top = (view?.offsetTop || 0) + safe("top");
-      const bottom = (view?.offsetTop || 0) + (view?.height || innerHeight) - safe("bottom") - 8;
+      // Safari scrolls the page as the keyboard opens. The shell already moves
+      // the app over that scroll, so every edge must use the same app box.
+      const app = byId("app").getBoundingClientRect();
+      const top = app.top + safe("top");
+      const bottom = app.top + Math.min(app.height, view?.height || app.height) - safe("bottom") - 8;
       const box = composer.getBoundingClientRect(), field = input.getBoundingClientRect();
       const header = document.querySelector(".workspace>.topbar")?.getBoundingClientRect().bottom || top;
       let available = Math.max(0, Math.min(box.bottom, bottom) - Math.max(top, header) - 4);

@@ -77,9 +77,10 @@ export class NativeModeControls {
     byId("sidebarMiniWrite").onclick = event => this.enabled && controlState.write && (!selectedRow() || isCodexSession(selectedRow()))
       ? this.newSession() : originalMiniWrite(event);
     byId("composeInput").addEventListener("input", () => {
-      if (!this.nativeActive && indexState.selected) {
-        this.drafts.set(indexState.selected, byId("composeInput").value);
-        this.draftRevisions.set(indexState.selected, (this.draftRevisions.get(indexState.selected) || 0) + 1);
+      const session = controlState.row?.id || indexState.selected;
+      if (!this.nativeActive && session) {
+        this.drafts.set(session, byId("composeInput").value);
+        this.draftRevisions.set(session, (this.draftRevisions.get(session) || 0) + 1);
       }
     });
     this.paint();
@@ -87,13 +88,16 @@ export class NativeModeControls {
   get enabled() { return ["on", "confirming", "disabling"].includes(this.mode); }
   /** A late ordinary response may retire its own revision, never another controller's editor. */
   captureOrdinarySend() {
-    const session = indexState.selected, generation = this.composerGeneration, revision = this.draftRevisions.get(session) || 0;
+    const session = controlState.row?.id || indexState.selected, generation = this.composerGeneration, revision = this.draftRevisions.get(session) || 0;
+    const isCurrent = () => !this.nativeActive && this.composerGeneration === generation
+      && (controlState.row?.id === session || !controlState.row)
+      && (this.draftRevisions.get(session) || 0) === revision;
     return {
-      isCurrent: () => !this.nativeActive && indexState.selected === session && this.composerGeneration === generation && (this.draftRevisions.get(session) || 0) === revision,
+      isCurrent,
       accepted: () => {
         if ((this.draftRevisions.get(session) || 0) !== revision) return;
         this.drafts.delete(session);
-        if (!this.nativeActive && indexState.selected === session) byId("composeInput").value = "";
+        if (isCurrent()) byId("composeInput").value = "";
       }
     };
   }

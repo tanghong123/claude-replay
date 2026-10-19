@@ -368,7 +368,7 @@ it does not authenticate a particular executable or create a native Bearer token
 
 Use `--codex-server-url unix://` to choose Unix sharing explicitly. CLI options take
 precedence over `CODEX_NATIVE_SERVER_URL`; either explicit configuration overrides
-the platform default. WebSocket requires capability-token authentication, including
+the token-authenticated WebSocket default. WebSocket requires capability-token authentication, including
 on reconnect. There is no automatic fallback to WebSocket if Unix fails.
 The HTTP gateway is retained in both modes: browsers and phones still
 use Monitor's paired HTTP API, not the native socket or native Bearer credential.

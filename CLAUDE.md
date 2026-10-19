@@ -89,7 +89,7 @@ warning above) — riding the keyboard by `--phone-kb` like the find pill, the t
 jump stepping aside (`#app.composing`). Its ✕ keeps the draft and a dot on ✎ says one is waiting;
 on a wide phone held sideways it spans the session's column
 (`a_phone_writes_from_the_dock_and_keeps_the_draft`). The desktop's card and button are unchanged.
-**Codex native mode's composer is resident** (!30465274, the owner): once native mode is
+**Codex native mode's composer is resident** (the owner): once native mode is
 enabled, its compact composer stays visible on desktop and phone with no close action;
 thread text and image drafts belong to the selected thread. The ordinary writer keeps the
 dock's close and reopen, and the generated reference shell is untouched.

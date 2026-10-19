@@ -45,7 +45,7 @@ export class ControlStore {
   paint() {
     const row = selectedRow();
     const available = canCompose(row);
-    byId("sendBtn").disabled = !!this.pendingSends?.has(row?.id);
+    byId("sendBtn").disabled = !!this.pendingSends?.has(controlState.row?.id);
     byId("writeSwitch").setAttribute("aria-checked", String(controlState.write));
     byId("writeBtn").classList.toggle("on", controlState.write);
     byId("sidebarMiniWrite").classList.toggle("on", controlState.write);
@@ -119,8 +119,10 @@ export class ControlStore {
     this.pendingSends.set(target, pending);
     const submittedDraft = byId("composeInput").value;
     const owner = this.actions.captureComposer?.();
-    // Closing the editor does not change the selected session or its draft.
-    const ownsComposer = () => selectedRow()?.id === target && (!owner || owner.isCurrent());
+    // The ordinary editor keeps its target when the reader selects another session.
+    // A closed editor has no row; native mode supplies its own generation fence.
+    const ownsComposer = () => owner ? owner.isCurrent()
+      : controlState.row?.id === target || !controlState.row;
     byId("sendBtn").disabled = true;
     try {
       const result = await runSend({ target, mode, consented, prompt: text, passcode, post });

@@ -1,3 +1,5 @@
+export const ACCEPTED_PREVIEW_LIMIT = 32;
+
 /**
  * Local delivery previews, separate from authoritative history and delivery receipts.
  * Reconciliation only retires a preview: it never proves delivery or replays an action.
@@ -23,7 +25,7 @@ export class OutgoingMessages {
     const entry = this.entries.get(id);
     if (!entry) return;
     if (status === "rejected") this.entries.delete(id);
-    else { entry.status = status; this.reconcile(entry.session); }
+    else { if (entry.status !== "accepted") entry.status = status; this.reconcile(entry.session); }
   }
   dismiss(id) { this.entries.delete(id); this.prune(); }
   observe(session, records) {
@@ -41,6 +43,10 @@ export class OutgoingMessages {
     this.consumed.set(session, used); this.prune();
   }
   prune() {
+    const accepted = [...this.entries.values()].filter(entry => entry.status === "accepted");
+    for (const entry of accepted.slice(0, -ACCEPTED_PREVIEW_LIMIT)) {
+      this.entries.delete(entry.id); this.retired.push(entry.id);
+    }
     const sessions = new Set([...this.entries.values()].map(entry => entry.session));
     for (const key of this.observed.keys()) if (!sessions.has(key)) this.observed.delete(key);
     for (const key of this.consumed.keys()) if (!sessions.has(key)) this.consumed.delete(key);
