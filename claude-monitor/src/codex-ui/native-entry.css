@@ -49,7 +49,7 @@
 .native-project-new>.icon{width:15px;height:15px}
 .native-project-add:hover,.native-project-new:hover{background:var(--hover);color:var(--ink)}
 .native-project-add:focus-visible,.native-project-new:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
-@media(max-width:760px),(pointer:coarse){.native-project-add,.native-project-new{width:44px;height:44px}.agent-label:has(.native-project-add){min-height:44px}.tree-row.project:has(.native-project-new){min-height:44px}}
+@media(max-width:760px),(pointer:coarse) and (max-height:500px){.native-project-add,.native-project-new{width:44px;height:44px}.agent-label:has(.native-project-add){min-height:44px}.tree-row.project:has(.native-project-new){min-height:44px}}
 @media(prefers-reduced-motion:reduce){.native-project-add,.native-project-new{transition:none}}
 
 /* Stopping an owned server also disconnects Codex App: disclose that before the request. */
@@ -65,3 +65,14 @@
 .production-native-stop button:focus-visible{outline:2px solid var(--primary);outline-offset:3px}
 @media(max-width:400px){.production-native-stop{padding:20px}.production-native-stop-actions button{flex:1}}
 @media(prefers-reduced-motion:reduce){.production-native-stop button{transition:none}}
+
+/* Touch hover must not leave a pressed tint after the finger lifts. */
+@media(hover:none){
+ #writeBtn .production-native-trigger:hover{background:transparent}
+ #writeBtn .production-native-trigger[aria-expanded="true"]{background:var(--hover)}
+ #app .nav .production-native-new:hover{background:color-mix(in srgb,var(--bg) 70%,transparent)}
+ .production-native-menu .production-native-toggle:hover{background:var(--panel)}
+ .native-project-add:hover,.native-project-new:hover{background:transparent;color:var(--sub)}
+ .production-native-stop button:hover{background:var(--panel)}
+ .production-native-stop #nativeStopConfirm:hover{background:var(--primary)}
+}

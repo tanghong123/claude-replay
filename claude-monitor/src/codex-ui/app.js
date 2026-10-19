@@ -274,7 +274,7 @@ const sessionIndex = new SessionIndexStore({
       if (first) selectSession(first, false);
     }
   },
-  error: () => toast("Session scan failed — retrying")
+  error: error => { console.warn("Session index refresh failed", error); toast("Session scan failed — retrying"); }
 });
 const recordStore = new RecordStore({
   reset: () => { lastRecordCount = -1; heldRecords = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
@@ -3658,7 +3658,7 @@ var phoneDock;
       if (controls.nativeActive && PHONE.matches) {
         const frame = sharedKeyboardFrame(app.getBoundingClientRect().height, viewport2);
         // Keep one containing block even at zero offset; Safari pans during keyboard animation.
-        app.style.transform = `translateY(${frame.shift}px)`;
+        app.style.transform = Math.abs(viewport2.scale - 1) < 0.01 ? `translateY(${frame.shift}px)` : "";
         app.classList.toggle("keyboard-up", frame.keyboardOpen);
         root.style.setProperty("--phone-kb", `${frame.inset}px`);
         place();

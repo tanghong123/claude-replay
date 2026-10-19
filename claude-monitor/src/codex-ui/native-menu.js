@@ -11,6 +11,8 @@ export async function readNativeStatus(fetcher, { timeoutMs = 30_000, schedule =
     const status = await response.json();
     if (!status || typeof status !== "object" || Array.isArray(status) || status.ok !== true
         || typeof status.serverListening !== "boolean" || !["stopped", "available", "activated"].includes(status.runtime)) throw new Error("Native status returned an invalid response envelope");
+    if (status.activeWork !== undefined && typeof status.activeWork !== "boolean"
+        || status.activeTurns !== undefined && (!Array.isArray(status.activeTurns) || status.activeTurns.some(turn => !turn || typeof turn.threadId !== "string" || typeof turn.threadName !== "string" || turn.turnId !== null && typeof turn.turnId !== "string"))) throw new Error("Native status returned invalid active-work metadata");
     return status;
   };
   try { return await Promise.race([read(), deadline]); }
@@ -22,17 +24,23 @@ export function ownsNativeServer(status) {
 }
 
 /** Cancel and Escape keep the server running. The caller sends Stop only after confirmation. */
-export function confirmNativeShutdown(document, returnFocus) {
+export function confirmNativeShutdown(document, returnFocus, { owned = true, activeTurns = [] } = {}) {
   const dialog = document.createElement("dialog");
   dialog.id = "nativeStopDialog"; dialog.className = "production-native-stop";
   dialog.setAttribute("aria-labelledby", "nativeStopTitle");
   dialog.setAttribute("aria-describedby", "nativeStopDescription");
-  const title = document.createElement("h2"); title.id = "nativeStopTitle"; title.textContent = "Stop Codex server?";
+  const title = document.createElement("h2"); title.id = "nativeStopTitle"; title.textContent = owned ? "Stop Codex server?" : "Disconnect Codex native?";
   const description = document.createElement("p"); description.id = "nativeStopDescription";
-  description.textContent = "Connected Codex apps will disconnect, and running tasks will be interrupted. Saved conversation history will remain available.";
+  const turns = activeTurns.map(turn => turn.turnId
+    ? `Turn ${turn.turnId} in ${turn.threadName || turn.threadId}`
+    : `Active conversation ${turn.threadName || turn.threadId} (turn identity unavailable)`);
+  const running = turns.length ? `Running: ${turns.join("; ")}. ` : "";
+  description.textContent = running + (owned
+    ? "Connected Codex apps will disconnect, and running tasks will be interrupted. Saved conversation history will remain available."
+    : "Monitor will disconnect while native work is active or pending. The external server and its turns keep running. In-flight sends may have an uncertain result; check their receipts before sending again.");
   const actions = document.createElement("div"); actions.className = "production-native-stop-actions";
   const cancel = document.createElement("button"); cancel.type = "button"; cancel.id = "nativeStopCancel"; cancel.textContent = "Cancel"; cancel.autofocus = true;
-  const stop = document.createElement("button"); stop.type = "button"; stop.id = "nativeStopConfirm"; stop.textContent = "Stop server";
+  const stop = document.createElement("button"); stop.type = "button"; stop.id = "nativeStopConfirm"; stop.textContent = owned ? "Stop server" : "Disconnect";
   actions.append(cancel, stop); dialog.append(title, description, actions);
   return new Promise(resolve => {
     let settled = false;

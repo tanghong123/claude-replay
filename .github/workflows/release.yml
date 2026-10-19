@@ -30,7 +30,7 @@ jobs:
   build-binaries:
     name: Build ${{ matrix.target }}
     needs: github-release
-    # Run even when github-release is skipped (branch push / dry-run) so the
+    # Run even when github-release is skipped (manual branch dry-run) so the
     # cross-builds still get exercised in CI.
     if: always() && (needs.github-release.result == 'success' || needs.github-release.result == 'skipped')
     strategy:
@@ -52,7 +52,7 @@ jobs:
       # installs the target (using `cross` for aarch64-musl), builds --release,
       # tars the binary as `agent-replay-<target>.tar.gz`, emits a .sha256, and
       # uploads both to the release. `dry-run` builds+archives without uploading,
-      # so branch pushes verify the cross-builds without needing a release.
+      # so manual branch runs verify the cross-builds without creating a release.
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: agent-replay
@@ -78,8 +78,8 @@ jobs:
           bin: agent-monitor
           manifest-path: claude-monitor/Cargo.toml
           features: codex-native
-          # The QoderWork title reader (#119) is compiled in by `cfg(target_os = "macos")`
-          # is platform-specific. Native control additionally bundles SQLite on both platforms.
+          # The QoderWork title reader (#119) is macOS-only.
+          # Native control additionally bundles SQLite on both platforms.
           target: ${{ matrix.target }}
           archive: $bin-$target
           checksum: sha256

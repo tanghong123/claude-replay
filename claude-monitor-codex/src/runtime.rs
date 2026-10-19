@@ -7,7 +7,10 @@ use std::fs::OpenOptions;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::time::{Duration, Instant};
 
 /// Host configuration is trusted CLI input; browsers cannot replace binary, home or scope.
@@ -26,6 +29,7 @@ pub struct NativeRuntime {
     addresses: Vec<SocketAddr>,
     state: Mutex<RuntimeState>,
     transition: Mutex<()>,
+    shutting_down: AtomicBool,
 }
 
 #[derive(Default)]
@@ -92,6 +96,7 @@ impl NativeRuntime {
             addresses,
             state: Mutex::new(RuntimeState::default()),
             transition: Mutex::new(()),
+            shutting_down: AtomicBool::new(false),
         }))
     }
 
@@ -196,6 +201,21 @@ impl NativeRuntime {
         let _transition = self.transition.try_lock().map_err(|_| {
             crate::DisconnectError::Busy("A native lifecycle transition is already running".into())
         })?;
+        self.close_owned()
+    }
+
+    /// Host termination fences new activation and waits for any owned startup to unwind.
+    /// External servers are detached, never signalled.
+    pub fn shutdown(&self) -> std::result::Result<Value, crate::DisconnectError> {
+        self.shutting_down.store(true, Ordering::SeqCst);
+        let _transition = self
+            .transition
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.close_owned()
+    }
+
+    fn close_owned(&self) -> std::result::Result<Value, crate::DisconnectError> {
         let closed = self.gateway().map(|gateway| gateway.close()).transpose();
         // A subscription failure must not strand an owned server. Independently
         // started servers have no Child handle here and are never signalled.
@@ -258,6 +278,9 @@ impl NativeRuntime {
             .transition
             .try_lock()
             .map_err(|_| anyhow::anyhow!("A native lifecycle transition is already running"))?;
+        if self.shutting_down.load(Ordering::SeqCst) {
+            bail!("Monitor is shutting down; native activation refused");
+        }
         if self.gateway().is_some() {
             return Ok(());
         }
@@ -297,6 +320,9 @@ impl NativeRuntime {
             let child = startup.0.as_mut().expect("owned startup child");
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
+                if self.shutting_down.load(Ordering::SeqCst) {
+                    bail!("Monitor stopped during native startup");
+                }
                 if let Some(exit) = child.try_wait()? {
                     bail!(
                         "Codex server exited with {exit}; inspect {}",
@@ -334,6 +360,12 @@ impl NativeRuntime {
                 return Err(error);
             }
         };
+        if self.shutting_down.load(Ordering::SeqCst) {
+            gateway
+                .close()
+                .context("Close native connection during Monitor shutdown")?;
+            bail!("Monitor stopped during native activation");
+        }
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.gateway = Some(gateway);
         if startup.0.is_some() {
@@ -390,7 +422,7 @@ impl NativeRuntime {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
-            // The authenticated server outlives Monitor; failed startup owns the whole group.
+            // Isolate the owned process group for bounded startup and Monitor-exit cleanup.
             unsafe {
                 command.pre_exec(|| {
                     if libc::setsid() < 0 {
@@ -423,6 +455,25 @@ impl NativeRuntime {
             .env_clear();
         inherit_server_environment(&mut command, std::env::vars_os());
         Ok(command)
+    }
+}
+
+impl Drop for NativeRuntime {
+    fn drop(&mut self) {
+        // Last-owner cleanup also covers library users and failed host setup.
+        // External servers have no Child handle and are never signalled.
+        let state = self
+            .state
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(gateway) = state.gateway.take() {
+            if let Err(error) = gateway.close() {
+                eprintln!("warning: close native gateway during runtime drop: {error}");
+            }
+        }
+        if let Err(error) = StartupChild(state.child.take()).stop_gracefully() {
+            eprintln!("warning: stop owned Codex server during runtime drop: {error:#}");
+        }
     }
 }
 
@@ -890,6 +941,42 @@ mod tests {
         assert_eq!(runtime.deactivate().unwrap()["serverListening"], true);
         drop(listener);
         assert_eq!(runtime.status()["runtime"], "stopped");
+        crate::remove_test_scratch(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_the_runtime_reaps_only_its_owned_process_group() {
+        use std::os::unix::process::CommandExt;
+        let (root, runtime) = fixture();
+        let external = std::net::TcpListener::bind(runtime.addresses[0]).unwrap();
+        let mut command = Command::new("/bin/sleep");
+        command.arg("60");
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let child = command.spawn().unwrap();
+        let pid = child.id();
+        runtime.state.lock().unwrap().child = Some(child);
+        drop(runtime);
+        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
+        assert!(TcpStream::connect(external.local_addr().unwrap()).is_ok());
+        crate::remove_test_scratch(&root);
+    }
+
+    #[test]
+    fn host_shutdown_fences_later_activation() {
+        let (root, runtime) = fixture();
+        runtime.shutdown().unwrap();
+        let error = runtime.activate(false).unwrap_err();
+        assert!(format!("{error:#}").contains("shutting down"));
+        assert!(runtime.gateway().is_none());
+        assert!(runtime.state.lock().unwrap().child.is_none());
         crate::remove_test_scratch(&root);
     }
 

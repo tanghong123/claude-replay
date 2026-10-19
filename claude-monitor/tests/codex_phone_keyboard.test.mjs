@@ -3,7 +3,7 @@ import test from "node:test";
 import { sharedKeyboardFrame } from "../src/codex-ui/phone-keyboard.js";
 
 test("phone controls retain their visible-bottom inset across keyboard focus scale changes", () => {
-  for (const scale of [1, 1.009, 1.015, 1.1, 1.25]) {
+  for (const scale of [1, 1.009]) {
     const height = 508 / scale;
     const frame = sharedKeyboardFrame(844, { height, scale, pageTop: 144 });
     assert.equal(frame.inset, 844 - height);
@@ -18,11 +18,17 @@ test("phone controls use their actual containing block rather than the root heig
 
 test("keyboard close and user zoom preserve pan without falsely declaring a keyboard", () => {
   assert.deepEqual(sharedKeyboardFrame(844, { height: 844, scale: 1, pageTop: 144 }), { inset: 0, shift: 144, keyboardOpen: false });
-  assert.deepEqual(sharedKeyboardFrame(844, { height: 422, scale: 2, pageTop: 96 }), { inset: 422, shift: 96, keyboardOpen: false });
+  assert.deepEqual(sharedKeyboardFrame(844, { height: 422, scale: 2, pageTop: 96 }), { inset: 0, shift: 0, keyboardOpen: false });
 });
 
 test("invalid transient viewport measurements fall back without invalid CSS coordinates", () => {
   assert.deepEqual(sharedKeyboardFrame(844, { height: NaN, scale: 0, pageTop: -8 }), { inset: 0, shift: 0, keyboardOpen: false });
   assert.deepEqual(sharedKeyboardFrame(844, { height: 900, scale: Infinity, pageTop: NaN }), { inset: 0, shift: 0, keyboardOpen: false });
   for (const height of [0, -1, NaN, Infinity]) assert.throws(() => sharedKeyboardFrame(height, { height: 1, scale: 1, pageTop: 0 }), RangeError);
+});
+
+test("pinch panning is never counter-translated, including a zoomed keyboard", () => {
+  for (const scale of [1.015, 1.1, 1.25, 2]) {
+    assert.deepEqual(sharedKeyboardFrame(844, { height: 508 / scale, scale, pageTop: 144 }), { inset: 0, shift: 0, keyboardOpen: false });
+  }
 });

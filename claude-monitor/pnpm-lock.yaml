@@ -8,24 +8,11 @@ importers:
 
   .:
     devDependencies:
-      playwright:
-        specifier: ^1.64.0
-        version: 1.64.0
       ws:
         specifier: ^8.22.0
         version: 8.22.0
 
 packages:
-
-  playwright-core@1.64.0:
-    resolution: {integrity: sha512-T9r+MZkTECl2+oUcZ26YgZzTrYidTsIhYYkJix+6iDOymOb1FB2RLLSOxRGnZGv5DStt+aduIVbt+E8WygXYpg==}
-    engines: {node: '>=20'}
-    hasBin: true
-
-  playwright@1.64.0:
-    resolution: {integrity: sha512-kVzTnYFYEyQ9RGzBjNCd2+yEqWmVbxl3AHPynv3qQ6JTjv4a+kwRcnqQwIpuP3NnrnIrE/Q6wWAIAvMfIE2/Yg==}
-    engines: {node: '>=20'}
-    hasBin: true
 
   ws@8.22.0:
     resolution: {integrity: sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==}
@@ -40,11 +27,5 @@ packages:
         optional: true
 
 snapshots:
-
-  playwright-core@1.64.0: {}
-
-  playwright@1.64.0:
-    dependencies:
-      playwright-core: 1.64.0
 
   ws@8.22.0: {}

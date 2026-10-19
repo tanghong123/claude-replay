@@ -199,9 +199,10 @@ export class NativeModeControls {
     try {
       // Refresh ownership: a previously external endpoint may now be Monitor-owned.
       this.status = await readNativeStatus(fetch);
-      if (ownsNativeServer(this.status)) {
+      const owned = ownsNativeServer(this.status);
+      if (owned || this.status.activeWork || this.status.activeTurns?.length) {
         if (this.menu.matches(":popover-open")) this.menu.hidePopover();
-        if (!await confirmNativeShutdown(document, returnFocus)) return false;
+        if (!await confirmNativeShutdown(document, returnFocus, { owned, activeTurns: this.status.activeTurns || [] })) return false;
       }
       this.mode = "disabling"; this.actions.pauseIndex?.(); paused = true;
       if (this.native) { this.native.closing = true; this.native.suspendEvents(); }

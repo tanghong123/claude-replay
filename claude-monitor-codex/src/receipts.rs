@@ -104,6 +104,33 @@ impl std::fmt::Display for ActionConflict {
 impl std::error::Error for ActionConflict {}
 
 impl Receipts {
+    /// Inspect a receipt without claiming an identity or executing native work.
+    pub fn lookup(&self, id: &str) -> Result<Option<Value>> {
+        let response: Option<String> = self
+            .0
+            .query_row(
+                "SELECT response FROM actions WHERE action_id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("Read native action receipt")?;
+        if let Some(response) = response {
+            return Ok(Some(serde_json::from_str(&response)?));
+        }
+        let retired: bool = self
+            .0
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM retired_actions WHERE action_id=?1)",
+                [id],
+                |row| row.get(0),
+            )
+            .context("Read retired native action identity")?;
+        Ok(retired.then(|| json!({"ok":false,"error":{"code":"receipt_expired",
+            "message":"The receipt expired. Review native history; this lookup did not resend the action."},
+            "receipt":{"actionId":id,"status":"expired"}})))
+    }
+
     /// Count both stores in one SQLite read snapshot, including retired action identities.
     pub fn usage(&self) -> Result<crate::ReceiptUsage> {
         let (actions, queue_steers): (i64, i64) = self

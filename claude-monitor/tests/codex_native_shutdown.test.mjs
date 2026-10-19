@@ -78,12 +78,35 @@ for (const route of ["native", "write"]) {
     assert.deepEqual(f.events, ["pause", "suspend", "resume"]);
   });
 
-  test(`${route}: external server detaches without opening a shutdown confirmation`, async () => {
+  test(`${route}: an idle external server detaches without a shutdown confirmation`, async () => {
     const f = fixture(external); f.controller.status = owned;
     const pending = f.invoke(route); await tick();
     assert.equal(f.nodes.has("nativeStopDialog"), false); assert.equal(f.stopCalls().length, 1);
     f.complete(); await pending; assert.equal(f.controller.enabled, false);
     assert.equal(f.controlState.write, route === "native");
+  });
+
+  for (const server of [owned, external]) test(`${route}: active ${server === owned ? "owned" : "external"} work is named before closing`, async () => {
+    const f = fixture({ ...server, activeWork: true, activeTurns: [{ threadId: "project-thread", threadName: "Review fixture", turnId: "turn-fixture-7" }] });
+    const pending = f.invoke(route); await tick();
+    assert.equal(f.stopCalls().length, 0);
+    assert.match(f.nodes.get("nativeStopDescription").textContent, /Turn turn-fixture-7 in Review fixture/);
+    assert.equal(f.nodes.get("nativeStopConfirm").textContent, server === owned ? "Stop server" : "Disconnect");
+    if (server === external) assert.match(f.nodes.get("nativeStopDescription").textContent, /external server and its turns keep running/);
+    f.nodes.get("nativeStopCancel").onclick(); await pending;
+    assert.equal(f.controller.enabled, true); assert.equal(f.stopCalls().length, 0);
+    const confirmed = f.invoke(route); await tick();
+    f.nodes.get("nativeStopConfirm").onclick(); await tick();
+    assert.equal(f.stopCalls().length, 1); f.complete(); await confirmed;
+    assert.equal(f.controller.enabled, false);
+  });
+
+  test(`${route}: pending external work still requires confirmation when its turn is not known`, async () => {
+    const f = fixture({ ...external, activeWork: true, activeTurns: [] });
+    const pending = f.invoke(route); await tick();
+    assert.equal(f.stopCalls().length, 0);
+    assert.match(f.nodes.get("nativeStopDescription").textContent, /active or pending/);
+    f.nodes.get("nativeStopCancel").onclick(); await pending;
   });
 
   test(`${route}: failed shutdown preserves enabled switches and exposes the failure`, async () => {

@@ -52,6 +52,7 @@ pub struct NativeServer {
     pub calls: Arc<Mutex<Vec<String>>>,
     pub active: Arc<AtomicBool>,
     pub occupied: Arc<AtomicBool>,
+    pub disconnected: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
     socket_directory: Option<std::path::PathBuf>,
@@ -98,6 +99,9 @@ impl NativeServer {
         let busy = active.clone();
         let occupied = Arc::new(AtomicBool::new(false));
         let owned = occupied.clone();
+        let disconnected = Arc::new(AtomicBool::new(false));
+        let disconnect = disconnected.clone();
+        let queue = Arc::new(Mutex::new(Vec::<Value>::new()));
         let created = Arc::new(AtomicBool::new(false));
         let sent = Arc::new(AtomicBool::new(false));
         let root = root.to_owned();
@@ -112,6 +116,8 @@ impl NativeServer {
                         let log = log.clone();
                         let busy = busy.clone();
                         let owned = owned.clone();
+                        let disconnect = disconnect.clone();
+                        let queue = queue.clone();
                         let created = created.clone();
                         let sent = sent.clone();
                         let root = root.clone();
@@ -129,6 +135,7 @@ impl NativeServer {
                             }) else { return; };
                             if socket.get_ref().timeout(Duration::from_millis(150)).is_err() { return; }
                             while !quit.load(Ordering::SeqCst) {
+                                if disconnect.load(Ordering::SeqCst) { let _ = socket.close(None); break; }
                                 let message = match socket.read() {
                                     Ok(message) => message,
                                     Err(tungstenite::Error::Io(error)) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
@@ -147,12 +154,12 @@ impl NativeServer {
                                     continue;
                                 }
                                 let status = if busy.load(Ordering::SeqCst) { "active" } else { "idle" };
-                                let thread = json!({"id":"native-owned","cwd":root,"preview":"Native review fixture","createdAt":1,"updatedAt":2,"status":{"type":status},"turns":[],"path":rollout});
+                                let thread = json!({"id":"native-owned","cwd":root,"preview":"Native review fixture","createdAt":1,"updatedAt":2,"status":{"type":status},"turns":if busy.load(Ordering::SeqCst) { json!([{"id":"active-turn","status":"inProgress","items":[]}]) } else { json!([]) },"path":rollout});
                                 let created_path = rollout.with_file_name("rollout-native-created.jsonl");
                                 let turns = if sent.load(Ordering::SeqCst) { json!([{"id":"first-turn","status":"completed","items":[]}]) } else { json!([]) };
                                 let new_thread = json!({"id":"native-created","cwd":root,"preview":"New synthetic session","createdAt":3,"updatedAt":4,"status":{"type":"idle"},"turns":turns,"path":created_path});
                                 let selected = if request["params"]["threadId"] == "native-created" || method == "thread/start" { new_thread.clone() } else { thread.clone() };
-                                if method == "thread/queue/add" {
+                                if method == "thread/queue/add" && request["params"]["threadId"] == "native-created" {
                                     sent.store(true, Ordering::SeqCst);
                                     socket.send(tungstenite::Message::Text(json!({"method":"turn/started","params":{"threadId":"native-created","turn":{"id":"first-turn","status":"inProgress","items":[]}}}).to_string().into())).unwrap();
                                 }
@@ -166,13 +173,26 @@ impl NativeServer {
                                     "thread/read" => json!({"thread":selected}),
                                     "thread/start" => { created.store(true, Ordering::SeqCst); json!({"thread":selected,"cwd":root,"model":"fixture-model","reasoningEffort":"low","serviceTier":null}) },
                                     "thread/resume" => json!({"thread":selected,"cwd":root,"model":"fixture-model","reasoningEffort":"low","serviceTier":null}),
-                                    "thread/queue/add" => json!({"queuedSubmission":{"id":"submission","clientUserMessageId":request["params"]["clientUserMessageId"],"input":request["params"]["input"]}}),
+                                    "thread/queue/add" => {
+                                        let entry=json!({"id":"submission","clientUserMessageId":request["params"]["clientUserMessageId"],"input":request["params"]["input"]});
+                                        if request["params"]["threadId"] == "native-owned" { queue.lock().unwrap().push(entry.clone()); }
+                                        json!({"queuedSubmission":entry})
+                                    },
+                                    "turn/interrupt" => { busy.store(false,Ordering::SeqCst); json!({}) },
+                                    "thread/queue/delete" => { queue.lock().unwrap().clear(); json!({"deleted":true}) },
                                     "thread/queue/start" => json!({}),
                                     "thread/unsubscribe" => json!({}),
-                                    "thread/queue/list" => json!({"data":[],"nextCursor":null}),
+                                    "thread/queue/list" => json!({"data":if request["params"]["threadId"] == "native-owned" { queue.lock().unwrap().clone() } else { vec![] },"nextCursor":null}),
                                     _ => { let _ = socket.send(tungstenite::Message::Text(json!({"id":request["id"],"error":{"code":-32601,"message":format!("Unsupported fixture method {method}")}}).to_string().into())); continue; }
                                 };
                                 if socket.send(tungstenite::Message::Text(json!({"id":request["id"],"result":result}).to_string().into())).is_err() { break; }
+                                let event = if matches!(method, "thread/queue/add" | "thread/queue/delete") && request["params"]["threadId"] == "native-owned" {
+                                    Some(json!({"method":"thread/queue/changed","params":{"threadId":"native-owned"}}))
+                                } else if method == "turn/interrupt" {
+                                    Some(json!({"method":"turn/completed","params":{"threadId":"native-owned","turn":{"id":"active-turn","status":"interrupted","items":[]}}}))
+                                } else { None };
+                                if let Some(event)=event { if socket.send(tungstenite::Message::Text(event.to_string().into())).is_err(){break;} }
+
                             }
                         }));
                     }
@@ -191,6 +211,7 @@ impl NativeServer {
             calls,
             active,
             occupied,
+            disconnected,
             stop,
             worker: Some(worker),
             socket_directory,

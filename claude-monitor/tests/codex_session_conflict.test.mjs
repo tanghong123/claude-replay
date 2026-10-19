@@ -22,18 +22,16 @@ test("Unix setup copies actual socket/home context without unrelated secrets or 
   assert.doesNotMatch(setup.prompt, /NEVER_COPY_THIS|personal-model|Fast|Bearer/);
   assert.equal(setup.rows[1][1], "/tmp/host/rpc.sock");
 });
-test("WebSocket setup provides actual port and token file, and states App compatibility limits", () => {
+test("authenticated WebSocket does not offer App sharing or a token setup prompt", () => {
   const setup = sharedServerSetup({ transport: "websocket", endpoint: "ws://127.0.0.1:49123", codexHome: "/tmp/home", authentication: { type: "bearer", tokenFile: "/tmp/state/server.token", token: "NEVER_COPY_THIS" } });
-  assert.match(setup.prompt, /49123/); assert.match(setup.prompt, /\/tmp\/state\/server.token/);
-  assert.match(setup.prompt, /Authorization: Bearer/); assert.match(setup.prompt, /user-run migration.*private Unix socket/);
-  assert.doesNotMatch(setup.prompt, /NEVER_COPY_THIS/);
+  assert.equal(setup, null);
 });
-test("both setup prompts hand off a runnable command without stopping their own Codex chat", () => {
+test("the explicit Unix setup hands off a runnable command without stopping its own Codex chat", () => {
   for (const status of [
     { transport: "unix", endpoint: "unix:///tmp/home/rpc.sock", socketPath: "/tmp/home/rpc.sock", codexHome: "/tmp/home", authentication: { type: "unix-permissions" } },
-    { transport: "websocket", endpoint: "ws://127.0.0.1:49123", codexHome: "/tmp/home", authentication: { type: "bearer", tokenFile: "/tmp/state/server.token" } },
   ]) {
-    const { prompt } = sharedServerSetup(status);
+    const { prompt, description } = sharedServerSetup(status);
+    assert.match(description, /trusts every program running as your OS user/);
     assert.match(prompt, /one-line terminal command/);
     assert.match(prompt, /Do not execute it or quit\/stop any App or server from this chat/);
     assert.match(prompt, /save work and confirm any restart/);

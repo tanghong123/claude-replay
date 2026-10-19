@@ -117,8 +117,10 @@ export class ControlStore {
     if (this.pendingSends.has(target)) return;
     const pending = {};
     this.pendingSends.set(target, pending);
+    const submittedDraft = byId("composeInput").value;
     const owner = this.actions.captureComposer?.();
-    const ownsComposer = () => controlState.row?.id === target && (!owner || owner.isCurrent());
+    // Closing the editor does not change the selected session or its draft.
+    const ownsComposer = () => selectedRow()?.id === target && (!owner || owner.isCurrent());
     byId("sendBtn").disabled = true;
     try {
       const result = await runSend({ target, mode, consented, prompt: text, passcode, post });
@@ -129,8 +131,9 @@ export class ControlStore {
         return;
       }
       if (result.outcome.kind !== "sent") { this.actions.toast(result.outcome.kind === "no-consent" ? "This pane needs consent again" : result.outcome.message); return; }
-      const retireVisibleDraft = ownsComposer() && byId("composeInput").value === text;
-      owner?.accepted();
+      const submittedMatches = submittedDraft.trim() === text;
+      const retireVisibleDraft = submittedMatches && ownsComposer() && byId("composeInput").value === submittedDraft;
+      if (submittedMatches) owner?.accepted();
       if (retireVisibleDraft) { byId("composeInput").value = ""; this.close(); }
       this.actions.toast(mode === "tmux" ? "Sent to the pane" : "Resuming the session");
       this.actions.refreshIndex();

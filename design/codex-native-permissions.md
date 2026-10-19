@@ -88,13 +88,14 @@ TCP loopback authentication does not authenticate the server to Monitor: a
 malicious local listener could impersonate the 401 challenge. Same-user processes
 with access to this credential remain trusted. Codex App sharing through this
 transport requires an App that can supply the Bearer header; an endpoint override
-alone does not establish that support. Setup help exposes the Token file path,
-never the credential, and recommends private Unix sharing when the App cannot
-send the header. Authentication failure never triggers an unauthenticated retry.
+alone does not establish that support. This authenticated WebSocket is the default
+transport. App-sharing setup is offered only for an explicitly selected Unix
+socket; neither the native credential nor its file path is part of a setup prompt.
+Authentication failure never triggers an unauthenticated retry.
 
 ## Monitor-to-server authentication: private Unix socket
 
-On macOS and Linux, the default host configuration selects `unix://` for
+On macOS and Linux, explicitly selecting `unix://` uses
 `$CODEX_HOME/app-server-control/app-server-control.sock`; an absolute
 `unix:///path.sock` selects a different socket. An explicit CLI endpoint takes
 precedence over `CODEX_NATIVE_SERVER_URL`; existing WebSocket configurations remain
@@ -174,10 +175,20 @@ Cleanup failure retains the handle for retry and is reported. History and alread
 delivered messages are preserved. Stopping this shared process interrupts its work
 and disconnects other clients. Turning off Native, or Write with Native enabled,
 refreshes ownership and requires an explicit shutdown confirmation for a
-Monitor-owned process. Cancel and Escape leave the server and both modes on.
+Monitor-owned process. The gateway status includes known running thread/turn
+identities from its canonical snapshots and notifications; confirmation names
+those turns. Active or pending gateway work also requires confirmation before
+detaching an external server, whose work keeps running. This observation covers
+threads attached to Monitor, not unrelated work invisible to its connection.
+Cancel and Escape leave the server and both modes on.
 An unavailable ownership check never silently proceeds with shutdown.
-A server merely discovered at the endpoint, including one retained across a
-Monitor restart, is externally managed: Monitor closes only its own connection.
+Monitor handles SIGTERM and SIGINT on its main thread: it fences activation,
+waits for an owned startup to unwind, then closes the gateway and reaps its owned
+process group. Dropping the runtime also cleans up an owned child. An independently
+started server is externally managed: Monitor closes only its own connection.
+SIGKILL and host power loss cannot run cleanup; an orphan left by either event is
+not adopted or killed merely because its endpoint matches. Its original launcher
+or operator remains responsible for stopping it.
 It never signals that process, interrupts another client's turn, deletes queued
 messages from that server, removes writer locks or edits Codex storage.
 
@@ -232,3 +243,45 @@ database. Same-version concurrent writers are supported. Before enablement, reta
 a consistent backup for rollback with all writers stopped; restoring old receipt
 state after new native actions risks duplicate delivery and requires reconciliation.
 No production Codex store is read or migrated by this library.
+
+
+## Browser delivery recovery
+
+The native controller stores drafts (including ready images), exact send payloads,
+action IDs and outgoing previews in this browser origin's IndexedDB before a send.
+It scopes records by the configured endpoint, Codex home and allowed roots; each
+page session's draft is separate. Browser Duplicate Tab may copy that page-session
+identity and its draft; independent tabs receive different identities. A single
+read/write transaction makes identical unresolved
+sends from two tabs share one action identity. Storage failure prevents a new send.
+Clearing site data or using another browser loses this local recovery evidence;
+it does not undo a delivered message or remove the gateway's SQLite receipts.
+
+On reload, an in-flight send is shown as uncertain. Checking its receipt uses the
+paired, same-origin GET `/api/codex/receipt?actionId=...`; this lookup never claims
+an identity, connects to native RPC, or executes a send. Missing or expired receipts
+remain unresolved, including after replacement of the gateway's receipt database.
+Matching text in newly observed JSONL history is presented as evidence to review,
+not proof that this specific action succeeded. Image-only and initially unread
+history remain explicit review cases. After inspecting the conversation, the user
+can confirm retirement of an uncertain attempt without sending anything; a later
+intentional send gets a new ID and may duplicate a previously delivered message.
+The server never replays its stored uncertain receipt.
+
+Accepted previews are retired after history or queue reconciliation. Unresolved
+previews require explicit review; the browser refuses more than 64 outstanding
+previews rather than silently discarding recovery identities. Browser storage may
+contain message text and images; it contains no native or browser pairing tokens.
+This storage is native-only and does not change the read-only export format.
+
+## Native phone layout
+
+The resident native composer keeps reading tools behind a 44px **Reader tools**
+button in the top bar. The existing dock is hidden until that button is opened;
+its search, filter and pane controls are reused rather than duplicated. Focusing
+the composer closes those tools. This differs from the ordinary phone reader's
+always-visible dock and remains a product design choice for maintainer acceptance.
+Portrait and landscape Chrome tests cover the composer, touch targets and dock;
+these do not establish iOS Safari keyboard, sticky-hover or Home Screen behavior.
+Pinch zoom leaves viewport panning to the browser; keyboard compensation applies
+only at scale 1 (within the existing 0.01 tolerance).

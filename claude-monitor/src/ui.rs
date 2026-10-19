@@ -674,8 +674,21 @@ mod tests {
         let mut phones = 0;
         let mut wides = 0;
         let mut wide_phones = 0;
-        for name in ["monitor-ui/reference.css", "monitor-ui/production.css"] {
-            let css = body(name);
+        for (name, css) in [
+            ("monitor-ui/reference.css", body("monitor-ui/reference.css")),
+            (
+                "monitor-ui/production.css",
+                body("monitor-ui/production.css"),
+            ),
+            (
+                "monitor-ui/native-entry.css",
+                include_str!("codex-ui/native-entry.css").to_owned(),
+            ),
+            (
+                "codex-workspace/monitor.css",
+                include_str!("codex-workspace/monitor.css").to_owned(),
+            ),
+        ] {
             for prelude in css
                 .split("@media")
                 .skip(1)

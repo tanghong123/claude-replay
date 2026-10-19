@@ -8,6 +8,9 @@
 //! (§3): a session's durable entry is written by VISITING it, and the rail's counters read
 //! that entry's meta stream lock-free.
 
+#[cfg(all(unix, feature = "codex-native"))]
+mod shutdown;
+
 use claude_monitor::control::{
     ensure_token, read_token, set_passcode_interactive, tokened_url, Attempts,
 };
@@ -443,6 +446,8 @@ fn main() -> Result<()> {
         },
     );
 
+    #[cfg(all(unix, feature = "codex-native"))]
+    let shutdown = shutdown::ShutdownSignals::install()?;
     #[cfg(feature = "codex-native")]
     let public_assets = claude_monitor::codex_workspace::PUBLIC_ASSETS;
     #[cfg(not(feature = "codex-native"))]
@@ -501,6 +506,15 @@ fn main() -> Result<()> {
     if open_browser {
         open_url(&url);
     }
+    #[cfg(all(unix, feature = "codex-native"))]
+    {
+        shutdown.wait();
+        native_runtime
+            .shutdown()
+            .context("Close native runtime before Monitor exits")?;
+        Ok(())
+    }
+    #[cfg(not(all(unix, feature = "codex-native")))]
     loop {
         std::thread::park();
     }

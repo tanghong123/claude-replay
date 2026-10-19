@@ -355,15 +355,18 @@ cargo build --release -p claude-monitor --features codex-native
 agent-monitor --pair --no-open --codex-allowed-root /path/to/project
 ```
 
-On macOS and Linux, the default is `unix://`, which selects
-`$CODEX_HOME/app-server-control/app-server-control.sock`; an explicit
+The default is `ws://127.0.0.1:4500` with Monitor's independent capability token.
+Codex App cannot directly share this endpoint unless its local connection can
+supply the required Bearer header; an endpoint override alone is insufficient.
+App sharing is an explicit Unix option on macOS and Linux. `unix://` selects
+`$CODEX_HOME/app-server-control/app-server-control.sock`, and
 `unix:///absolute/path.sock` selects a different socket. Monitor uses WebSocket
 frames over that private Unix socket. Each connection verifies the socket and
 physical parent are owner-only, validates any rendezvous alias, and checks the
-server's OS user. It does not create a native Bearer token in this mode.
+server's OS user. This option trusts every program running as that OS user;
+it does not authenticate a particular executable or create a native Bearer token.
 
-The existing `--codex-server-url ws://127.0.0.1:4500` mode remains an explicit
-option (and the default on platforms without Unix sockets). CLI options take
+Use `--codex-server-url unix://` to choose Unix sharing explicitly. CLI options take
 precedence over `CODEX_NATIVE_SERVER_URL`; either explicit configuration overrides
 the platform default. WebSocket requires capability-token authentication, including
 on reconnect. There is no automatic fallback to WebSocket if Unix fails.
@@ -383,9 +386,10 @@ retain their existing controls and transport.
 for background reads or active sessions to become idle. If this Monitor started
 `codex app-server`, it stops and reaps that process and its running work; connected
 Codex apps disconnect too. Turning off Native, or Write while Native is enabled,
-asks for confirmation before stopping a Monitor-owned server. Cancel keeps both
-modes on. An independently started server keeps running without a stop
-confirmation. History
+asks for confirmation before stopping a Monitor-owned server. The confirmation
+names known running turns. Active or pending work also requires confirmation
+before detaching from an external server, whose turns continue running. Cancel
+keeps both modes on. An idle external server detaches without confirmation. History
 and already delivered messages are retained; closing the mode never retries them.
 Paired clients can share live sessions through this server.
 
@@ -397,9 +401,9 @@ To keep using App and Monitor together, the help panel includes a short setup
 prompt with the actual endpoint, configured Codex home and authentication method.
 Unix sharing requires an App version and configuration that select that same
 socket; starting the App alone does not prove sharing, because it may fall back
-to its own stdio server. WebSocket help gives the Token file location without
-copying its contents. An App that cannot send the Bearer header needs a supported
-Unix connection instead. The prompt asks the coding agent to inspect the local
+to its own stdio server. App-sharing setup appears only after choosing Unix;
+no native token or token-file path appears in a setup prompt. The prompt asks
+the coding agent to inspect the local
 installation and prepare a one-line terminal command or a local launcher with
 a one-line invocation. The agent must not execute it or stop its own App/server.
 The user saves their work, runs the command outside Codex, and confirms any restart;

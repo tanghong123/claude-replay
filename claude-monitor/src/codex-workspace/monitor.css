@@ -66,7 +66,7 @@ body[data-shared-codex] button:disabled{opacity:.45;cursor:default}
 
 
 .shared-runtime{flex-shrink:0;max-height:32dvh;overflow:auto}.shared-runtime:not(:has(.shared-requests:not(:empty),.shared-queue:not(:empty),.shared-outgoing:not(:empty))){display:none}
-@media(min-width:900px) and (pointer:coarse) and (max-height:500px){body[data-shared-codex] #app:not(.phone-column-off) .shared-runtime{left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 12px)}}
+@media(pointer:coarse) and (max-height:500px) and (min-width:900px){body[data-shared-codex] #app:not(.phone-column-off) .shared-runtime{left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 12px)}}
 
 /* Align the resident composer with the transcript, independently of the outline width. */
 @media(min-width:761px) and (min-height:501px),(min-width:761px) and (pointer:fine){
@@ -150,4 +150,6 @@ body[data-shared-codex] #app #composer[data-session-conflict="true"] .shared-com
 .shared-outgoing-status button:focus-visible{outline:2px solid var(--primary)}
 .shared-outgoing-images{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap}
 .shared-outgoing-images img{width:48px;height:48px;object-fit:cover;border-radius:6px}
-@media(max-width:760px),(pointer:coarse){.shared-outgoing-status button{width:44px;height:44px}.shared-outgoing-text{max-height:72px}.shared-outgoing-message{padding:6px 12px}}
+@media(max-width:760px),(pointer:coarse) and (max-height:500px){.shared-outgoing-status button{width:44px;height:44px}.shared-outgoing-text{max-height:72px}.shared-outgoing-message{padding:6px 12px}}
+
+.shared-outgoing-status button[data-check-outgoing]{width:auto;min-width:44px;font-size:12px;padding:0 6px}

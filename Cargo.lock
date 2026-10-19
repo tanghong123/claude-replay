@@ -270,6 +270,7 @@ dependencies = [
  "claude-replay-core",
  "claude-replay-html",
  "claude-replay-present",
+ "libc",
  "mdrev",
  "qrcode",
  "serde_json",

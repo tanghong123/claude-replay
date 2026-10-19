@@ -163,7 +163,33 @@ impl State {
     }
 
     pub fn status(&self) -> Value {
-        json!({"connection":self.connection.as_str(),"connectionError":self.connection_error,"epoch":self.epoch,"sequence":self.sequence})
+        let mut active_turns = Vec::new();
+        for (id, thread) in &self.threads {
+            let name: String = thread["name"]
+                .as_str()
+                .unwrap_or(id)
+                .chars()
+                .take(160)
+                .collect();
+            let mut found = false;
+            if let Some(turns) = thread["turns"].as_array() {
+                for turn in turns.iter().filter(|turn| turn["status"] == "inProgress") {
+                    active_turns.push(json!({"threadId":id,"threadName":name,"turnId":turn["id"]}));
+                    found = true;
+                }
+            }
+            if !found && (thread["status"]["type"] == "active" || thread["status"] == "active") {
+                active_turns.push(json!({"threadId":id,"threadName":name,"turnId":null}));
+            }
+        }
+        active_turns.sort_by_key(|turn| {
+            (
+                turn["threadId"].as_str().unwrap_or("").to_owned(),
+                turn["turnId"].as_str().unwrap_or("").to_owned(),
+            )
+        });
+        json!({"connection":self.connection.as_str(),"connectionError":self.connection_error,"epoch":self.epoch,"sequence":self.sequence,
+            "activeWork":self.has_active_work(),"activeTurns":active_turns})
     }
 
     pub fn subscribe(&mut self) -> (Value, Receiver<Value>) {
@@ -1305,6 +1331,44 @@ pub(super) mod scope_fixture {
 mod tests {
     use super::scope_fixture::ScopeFixture;
     use super::*;
+
+    #[test]
+    fn status_names_canonical_active_turns_without_including_history_content() {
+        let mut state = State::connecting(vec![], "active-work-test".into());
+        state.threads.insert(
+            "b".into(),
+            json!({"id":"b","name":"Build fixture","status":{"type":"active"},"turns":[]}),
+        );
+        state.threads.insert(
+            "a".into(),
+            json!({"id":"a","name":"Review fixture","turns":[
+                {"id":"old","status":"completed","items":[{"text":"private sentinel"}]},
+                {"id":"current","status":"inProgress","items":[{"text":"private sentinel"}]}
+            ]}),
+        );
+        state.threads.insert(
+            "idle".into(),
+            json!({"id":"idle","status":{"type":"idle"},"turns":[]}),
+        );
+        let status = state.status();
+        assert_eq!(status["activeWork"], true);
+        assert_eq!(
+            status["activeTurns"],
+            json!([
+                {"threadId":"a","threadName":"Review fixture","turnId":"current"},
+                {"threadId":"b","threadName":"Build fixture","turnId":null}
+            ])
+        );
+        assert!(!status.to_string().contains("private sentinel"));
+        state.threads.clear();
+        assert_eq!(state.status()["activeWork"], false);
+        assert_eq!(state.status()["activeTurns"], json!([]));
+        state
+            .pending
+            .insert("approval".into(), json!({"params":{"threadId":"a"}}));
+        assert_eq!(state.status()["activeWork"], true);
+        assert_eq!(state.status()["activeTurns"], json!([]));
+    }
 
     #[test]
     fn validated_scope_reduction_is_independent_of_later_filesystem_changes() {

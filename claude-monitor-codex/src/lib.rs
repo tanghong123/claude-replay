@@ -734,6 +734,21 @@ impl Gateway {
     fn read_route(&self, route: &str, query: &str) -> RouteResult {
         let decoded = |key| query_get(query, key).map(decode_query);
         let result = match route {
+            "receipt" => {
+                let id = decoded("actionId")
+                    .ok_or_else(|| RouteError::Invalid("actionId is required".into()))?;
+                valid_identifier(&id, "actionId")?;
+                if id.len() > 256 {
+                    return Err(RouteError::Invalid("actionId is too long".into()));
+                }
+                let result = self
+                    .receipts
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .lookup(&id)
+                    .map_err(|e| RouteError::Internal(format!("Read native receipt: {e:#}")))?;
+                return Ok(json!({"ok":true,"result":result}));
+            }
             "status" => {
                 let mut status = self
                     .state
@@ -1920,6 +1935,66 @@ mod tests {
             }),
             receiver,
         )
+    }
+
+    #[test]
+    fn receipt_lookup_is_authenticated_read_only_and_never_claims_or_replays() {
+        let root = std::env::temp_dir().join(format!("receipt-read-{}", std::process::id()));
+        let (gateway, commands) = command_fixture(&root);
+        fn request(authenticated: bool, origin_ok: bool, query: &str) -> Request<'_> {
+            Request {
+                method: "GET",
+                name: "api/codex/receipt",
+                query,
+                body: &[],
+                authenticated,
+                origin_ok,
+            }
+        }
+        for (paired, origin, expected) in [
+            (false, true, "401 Unauthorized"),
+            (true, false, "403 Forbidden"),
+        ] {
+            assert_eq!(
+                gateway
+                    .route(&request(paired, origin, "actionId=missing"))
+                    .unwrap()
+                    .code,
+                expected
+            );
+        }
+        let read = |id: &str| {
+            let query = format!("actionId={id}");
+            let response = gateway.route(&request(true, true, &query)).unwrap();
+            serde_json::from_slice::<Value>(&response.body).unwrap()
+        };
+        assert_eq!(read("missing"), json!({"ok":true,"result":null}));
+        assert_eq!(gateway.receipt_usage().unwrap().action_identities, 0);
+        gateway
+            .receipts
+            .lock()
+            .unwrap()
+            .claim("pending", &gateway.endpoint, "send", &json!({}))
+            .unwrap();
+        assert_eq!(read("pending")["result"]["receipt"]["status"], "uncertain");
+        gateway
+            .receipts
+            .lock()
+            .unwrap()
+            .finish(
+                "pending",
+                "accepted",
+                &json!({"ok":true,"receipt":{"actionId":"pending","status":"accepted"}}),
+            )
+            .unwrap();
+        assert_eq!(read("pending")["result"]["receipt"]["status"], "accepted");
+        assert_eq!(gateway.receipt_usage().unwrap().action_identities, 1);
+        assert!(
+            commands.try_recv().is_err(),
+            "Receipt reads never contact the native runtime"
+        );
+        drop(gateway);
+        crate::remove_test_scratch(&root);
     }
 
     fn answer_call(receiver: &Receiver<Command>, expected: &str, result: Value) {

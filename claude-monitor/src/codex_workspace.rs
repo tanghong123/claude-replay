@@ -15,10 +15,9 @@ pub const PUBLIC_ASSETS: &[&str] = &[
     "favicon.svg",
     "favicon.ico",
     "apple-touch-icon.png",
+    "apple-touch-icon-precomposed.png",
     "icon-192.png",
     "icon-512.png",
-    "icon-192-maskable.png",
-    "icon-512-maskable.png",
     "manifest.webmanifest",
     "codex-workspace/manifest.webmanifest",
     "codex-workspace/icon.svg",
@@ -175,12 +174,7 @@ pub fn configured_runtime(
         Some(endpoint) => endpoint,
         None => match std::env::var("CODEX_NATIVE_SERVER_URL") {
             Ok(endpoint) => endpoint,
-            Err(std::env::VarError::NotPresent) => if cfg!(unix) {
-                "unix://"
-            } else {
-                "ws://127.0.0.1:4500"
-            }
-            .to_owned(),
+            Err(std::env::VarError::NotPresent) => "ws://127.0.0.1:4500".to_owned(),
             Err(error) => {
                 return Err(anyhow::Error::new(error).context("Read CODEX_NATIVE_SERVER_URL"))
             }
@@ -315,6 +309,14 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "application/javascript; charset=utf-8",
             include_bytes!("codex-workspace/monitor-controls.js"),
         ),
+        "codex-workspace/native-page-store.js" => (
+            "application/javascript; charset=utf-8",
+            include_bytes!("codex-workspace/native-page-store.js"),
+        ),
+        "codex-workspace/delivery-journal.js" => (
+            "application/javascript; charset=utf-8",
+            include_bytes!("codex-workspace/delivery-journal.js"),
+        ),
         "codex-workspace/outgoing.js" => (
             "application/javascript; charset=utf-8",
             include_bytes!("codex-workspace/outgoing.js"),
@@ -410,14 +412,7 @@ mod tests {
             let status = runtime.status();
             let home = std::path::PathBuf::from(std::env::var_os("CODEX_HOME").unwrap());
             let (endpoint, transport) = match case {
-                "absent" => (
-                    format!(
-                        "unix://{}",
-                        home.join("app-server-control/app-server-control.sock")
-                            .display()
-                    ),
-                    "unix",
-                ),
+                "absent" => ("ws://127.0.0.1:4500".to_owned(), "websocket"),
                 "unix" => (
                     format!("unix://{}", home.join("custom.sock").display()),
                     "unix",
@@ -513,6 +508,15 @@ mod tests {
 
     #[test]
     fn only_install_icons_and_manifest_are_public() {
+        for name in crate::ui::PUBLIC_ASSETS {
+            assert!(PUBLIC_ASSETS.contains(name), "Native must preserve {name}");
+        }
+        for name in PUBLIC_ASSETS {
+            assert!(
+                asset(name).or_else(|| crate::ui::asset(name)).is_some(),
+                "Public asset {name} must be served"
+            );
+        }
         let manifest: Value =
             serde_json::from_slice(&asset("codex-workspace/manifest.webmanifest").unwrap().body)
                 .unwrap();

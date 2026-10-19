@@ -19,15 +19,8 @@ export function sharedServerSetup(status) {
   if (status.transport === "unix" && status.authentication?.type === "unix-permissions" && text(status.socketPath)) {
     return {
       rows: [["Connection", "Private Unix socket"], ["Socket", status.socketPath], ["Codex home", home]],
-      description: "Give this prompt to Codex on the computer running Monitor. It will prepare a terminal command for you to run after saving your work, without restarting itself. This private Unix connection needs no Bearer token.",
+      description: "This Unix socket trusts every program running as your OS user. Give this prompt to Codex on the computer running Monitor to prepare a command you can run after saving your work. This connection needs no Bearer token.",
       prompt: `Prepare to connect Codex App to Agent Monitor's private Unix server.\n${context}\nSocket: ${JSON.stringify(status.socketPath)}\n${handoff}`,
-    };
-  }
-  if (status.transport === "websocket" && status.authentication?.type === "bearer" && text(status.authentication.tokenFile)) {
-    return {
-      rows: [["Connection", "WebSocket · Bearer authentication"], ["Server", endpoint], ["Token file", status.authentication.tokenFile], ["Codex home", home]],
-      description: "This explicit WebSocket connection requires a Bearer header that Codex App may not support. Give the prompt to Codex to prepare a Unix migration command for you to run after saving your work.",
-      prompt: `Prepare a user-run migration from this Bearer WebSocket connection to a private Unix socket shared by Codex App and Agent Monitor.\n${context}\nToken file (Authorization: Bearer): ${JSON.stringify(status.authentication.tokenFile)}\nKeep credentials private. ${handoff}`,
     };
   }
   return null;
@@ -73,6 +66,7 @@ export class SessionConflict {
     const alternative = make("p", "shared-connection-alternative", "You can also keep working there, or ");
     alternative.append(button("sharedConflictNew", "start a new session", () => { this.dialog.close(); newSession(); }));
     const sharing = make("details", "shared-connection-sharing");
+    this.sharing = sharing;
     sharing.append(make("summary", "", "Use Codex App and Monitor together"),
       make("p", "", "Connecting both clients to one server lets you continue the same session from either place without competing for it."),
     );
@@ -92,6 +86,7 @@ export class SessionConflict {
   }
   setConnection(status) {
     const setup = sharedServerSetup(status);
+    this.sharing.hidden = !setup;
     this.connectionDetails.replaceChildren();
     for (const [label, value] of setup?.rows || []) {
       this.connectionDetails.append(make("dt", "", label), make("dd", "", value));

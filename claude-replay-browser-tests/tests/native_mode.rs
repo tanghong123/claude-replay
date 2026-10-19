@@ -2,7 +2,9 @@
 mod harness;
 #[path = "harness/native.rs"]
 mod native;
-use harness::{base, chrome_tab, eval, phone, probe, serial, until, Kind, Monitor, Stores};
+use harness::{
+    base, chrome_tab, eval, finger_tap, phone, probe, serial, until, Kind, Monitor, Stores,
+};
 use std::{sync::atomic::Ordering, time::Duration};
 
 fn wait(tab: &headless_chrome::Tab, condition: &str) {
@@ -20,6 +22,27 @@ fn click(tab: &headless_chrome::Tab, selector: &str) {
         tab,
         &format!("document.querySelector({selector:?}).click(); true"),
     );
+}
+fn tap(tab: &headless_chrome::Tab, selector: &str) {
+    wait(tab, &format!("(() => {{const e=document.querySelector({selector:?});if(!e || e.disabled)return false;const r=e.getBoundingClientRect();return r.width>0 && r.height>0 && r.left>=0 && r.top>=0 && r.right<=innerWidth && r.bottom<=innerHeight && e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}})()"));
+    let point = probe(tab, &format!("(() => {{const r=document.querySelector({selector:?}).getBoundingClientRect();return {{x:r.x+r.width/2,y:r.y+r.height/2}};}})()"));
+    if selector == "#composeInput" {
+        // The synthetic gesture API rejects this lower-field point on macOS
+        // Chrome despite a successful viewport hit test. Dispatch the established
+        // touch/down/up and delayed compatibility-click sequence instead.
+        harness::finger_tap_late_click(
+            tab,
+            point["x"].as_f64().unwrap(),
+            point["y"].as_f64().unwrap(),
+            Duration::from_millis(20),
+        );
+    } else {
+        finger_tap(
+            tab,
+            point["x"].as_f64().unwrap(),
+            point["y"].as_f64().unwrap(),
+        );
+    }
 }
 
 /// Exercise the real controller/dialog against synthetic ownership and stop failures.
@@ -39,7 +62,7 @@ fn shutdown_confirmation(tab: &headless_chrome::Tab, root: &std::path::Path) {
         const response = await window.shutdownFetch(url, options);
         if (String(url) !== '/api/codex/status') return response;
         const status = await response.json();
-        return new Response(JSON.stringify({...status,homeProvenance:'monitor-started',ownedServerPid:123}),{status:response.status});
+        return new Response(JSON.stringify({...status,homeProvenance:'monitor-started',ownedServerPid:123,activeWork:true,activeTurns:[{threadId:'review-thread',threadName:'Synthetic review',turnId:'review-turn-7'}]}),{status:response.status});
       }; return true;
     })()"#,
     );
@@ -57,6 +80,7 @@ fn shutdown_confirmation(tab: &headless_chrome::Tab, root: &std::path::Path) {
             "document.getElementById('nativeStopDialog')?.open === true",
         );
         assert_eq!(eval(tab, "document.activeElement.id"), "nativeStopCancel");
+        assert_eq!(eval(tab, "document.getElementById('nativeStopDescription').innerText.includes('review-turn-7') && document.getElementById('nativeStopDescription').innerText.includes('Synthetic review')"), true);
         assert_eq!(eval(tab, "window.shutdownStops"), 0);
         assert_eq!(
             eval(
@@ -169,12 +193,18 @@ fn shutdown_confirmation(tab: &headless_chrome::Tab, root: &std::path::Path) {
     eval(tab, "window.fetch = window.shutdownFetch; true");
 }
 fn run(mobile: bool, unix: bool) {
+    run_sized(mobile, unix, 390, 844);
+}
+
+fn run_sized(mobile: bool, unix: bool, width: u32, height: u32) {
     let _serial = serial();
-    let root = base(match (mobile, unix) {
-        (false, false) => "native-desktop",
-        (true, false) => "native-phone",
-        (false, true) => "native-unix-desktop",
-        (true, true) => "native-unix-phone",
+    let root = base(match (mobile, unix, width > height) {
+        (false, false, _) => "native-desktop",
+        (true, false, false) => "native-phone",
+        (true, false, true) => "native-phone-landscape",
+        (false, true, _) => "native-unix-desktop",
+        (true, true, false) => "native-unix-phone",
+        (true, true, true) => "native-unix-phone-landscape",
     });
     let stores = Stores::new(&root);
     let project = root.join("project");
@@ -196,7 +226,7 @@ fn run(mobile: bool, unix: bool) {
         &rollout,
         unix,
     );
-    // Unix cases exercise the real default, with no endpoint flag or inherited override.
+    // Unix sharing is explicitly selected; default endpoint selection has a separate configuration probe.
     let expected_endpoint = if unix {
         let socket = stores
             .root
@@ -208,16 +238,12 @@ fn run(mobile: bool, unix: bool) {
     } else {
         native.endpoint.clone()
     };
-    let args = if unix {
-        vec!["--codex-allowed-root", project.to_str().unwrap()]
-    } else {
-        vec![
-            "--codex-server-url",
-            native.endpoint.as_str(),
-            "--codex-allowed-root",
-            project.to_str().unwrap(),
-        ]
-    };
+    let args = vec![
+        "--codex-server-url",
+        expected_endpoint.as_str(),
+        "--codex-allowed-root",
+        project.to_str().unwrap(),
+    ];
     let monitor = Monitor::spawn_with_args(
         Kind::V1,
         if mobile { 19842 } else { 19841 },
@@ -233,9 +259,17 @@ fn run(mobile: bool, unix: bool) {
         ],
         &args,
     );
-    let (_browser, tab) = chrome_tab();
+    let (browser, tab) = chrome_tab();
     if mobile {
-        phone(&tab, 390, 844);
+        phone(&tab, width, height);
+        harness::safe_area(
+            &tab,
+            if width > height {
+                harness::SIDEWAYS_INSETS
+            } else {
+                harness::PORTRAIT_INSETS
+            },
+        );
     }
     monitor.pair(&tab);
     monitor.open(&tab, "/?ui=app");
@@ -287,7 +321,13 @@ fn run(mobile: bool, unix: bool) {
     eval(
         &tab,
         r#"(() => {
-      window.nativeTestFetch = window.fetch; window.heldNativeScans = []; window.holdNativeScans = false; window.heldNativeSends = []; window.holdNativeSends = false;
+      window.nativeIndexResponses = []; window.nativeIndexErrors = [];
+      const originalWarn = console.warn; console.warn = (...args) => { window.nativeIndexErrors.push(args.map(a=>a?.stack || String(a)).join(' ')); originalWarn(...args); };
+      const originalFetch = window.fetch; window.nativeTestFetch = async (...args) => {
+        const response = await originalFetch(...args);
+        if (String(args[0]) === '/api/sessions') window.nativeIndexResponses.push({status:response.status,body:await response.clone().text()});
+        return response;
+      }; window.heldNativeScans = []; window.holdNativeScans = false; window.heldNativeSends = []; window.holdNativeSends = false;
       window.initialNativeMenu = document.getElementById('codexNativeMenu'); window.nativeMenuCloses = 0;
       window.initialNativeMenu.addEventListener('beforetoggle', e => { if (e.newState === 'closed') window.nativeMenuCloses++; });
       window.fetch = (url, options) => window.holdNativeScans && String(url).startsWith('/api/codex/threads')
@@ -342,6 +382,9 @@ fn run(mobile: bool, unix: bool) {
         ),
         false
     );
+    if mobile {
+        phone_native_controls(&tab, &root);
+    }
     click(&tab, "#sharedModelPicker");
     wait(
         &tab,
@@ -421,11 +464,22 @@ fn run(mobile: bool, unix: bool) {
     let before = native.calls.lock().unwrap().len();
     click(&tab, "#sharedConflictRetry");
     wait(&tab, "document.getElementById('sharedConflictRetry')?.disabled === false && !document.getElementById('sharedSessionConflict').hidden");
+    let retry_calls = native.calls.lock().unwrap()[before..].to_vec();
     assert!(
-        native.calls.lock().unwrap()[before..]
-            .iter()
-            .all(|method| matches!(method.as_str(), "thread/read" | "thread/resume")),
-        "retry only checks ownership"
+        retry_calls.iter().any(|method| method == "thread/resume"),
+        "retry must check ownership: {retry_calls:?}"
+    );
+    assert!(
+        retry_calls.iter().all(|method| matches!(
+            method.as_str(),
+            "thread/read"
+                | "thread/resume"
+                | "thread/list"
+                | "thread/queue/list"
+                | "model/list"
+                | "project/list"
+        )),
+        "retry and background polling must not mutate work: {retry_calls:?}"
     );
     click(&tab, "#sharedConflictHelp");
     wait(
@@ -457,54 +511,73 @@ fn run(mobile: bool, unix: bool) {
         .unwrap(),
     )
     .unwrap();
-    click(&tab, ".shared-connection-sharing summary");
-    let prompt = eval(
-        &tab,
-        "document.querySelector('.shared-connection-prompt').value",
-    )
-    .as_str()
-    .unwrap()
-    .to_owned();
-    assert!(prompt.contains(&expected_endpoint));
-    assert!(prompt.contains(stores.root.join("codex").to_str().unwrap()));
-    assert_eq!(prompt.contains("Authorization: Bearer"), !unix);
-    assert!(prompt.contains("one-line terminal command"));
-    assert!(prompt.contains("Do not execute it or quit/stop any App or server from this chat"));
-    let token_file = root
-        .join(if mobile { "state-19842" } else { "state-19841" })
-        .join("codex-server.token");
     if unix {
-        assert!(!token_file.exists());
-    } else {
-        assert!(prompt.contains(token_file.to_str().unwrap()));
-        assert!(!prompt.contains(std::fs::read_to_string(&token_file).unwrap().trim()));
-    }
-    eval(&tab, "Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.copiedSetupPrompt=text}}});true");
-    click(&tab, "#sharedCopySetup");
-    wait(
-        &tab,
-        "document.querySelector('.shared-copy-status').textContent === 'Copied'",
-    );
-    assert_eq!(eval(&tab, "window.copiedSetupPrompt"), prompt);
-    eval(
-        &tab,
-        "document.querySelector('.shared-connection-sharing').scrollIntoView({block:'start'});true",
-    );
-    std::fs::write(
-        root.join("native-setup.png"),
-        tab.capture_screenshot(
-            headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
-            None,
-            None,
-            true,
+        click(&tab, ".shared-connection-sharing summary");
+        let prompt = eval(
+            &tab,
+            "document.querySelector('.shared-connection-prompt').value",
         )
-        .unwrap(),
-    )
-    .unwrap();
-    eval(&tab, "Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw new Error('HTTP clipboard unavailable')}}});true");
-    click(&tab, "#sharedCopySetup");
-    wait(&tab, "document.querySelector('.shared-copy-status').textContent === 'Select and copy the prompt above.'");
-    assert_eq!(eval(&tab, "(() => {const p=document.querySelector('.shared-connection-prompt');return p.selectionEnd-p.selectionStart===p.value.length;})()"), true);
+        .as_str()
+        .unwrap()
+        .to_owned();
+        assert!(prompt.contains(&expected_endpoint));
+        assert!(prompt.contains(stores.root.join("codex").to_str().unwrap()));
+        assert!(!prompt.contains("Bearer") && !prompt.contains("tokenFile"));
+        assert!(prompt.contains("one-line terminal command"));
+        assert!(prompt.contains("Do not execute it or quit/stop any App or server from this chat"));
+        let token_file = root
+            .join(if mobile { "state-19842" } else { "state-19841" })
+            .join("codex-server.token");
+        assert!(!token_file.exists());
+        eval(&tab, "Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.copiedSetupPrompt=text}}});true");
+        click(&tab, "#sharedCopySetup");
+        wait(
+            &tab,
+            "document.querySelector('.shared-copy-status').textContent === 'Copied'",
+        );
+        assert_eq!(eval(&tab, "window.copiedSetupPrompt"), prompt);
+        eval(
+            &tab,
+            "document.querySelector('.shared-connection-sharing').scrollIntoView({block:'start'});true",
+        );
+        std::fs::write(
+            root.join("native-setup.png"),
+            tab.capture_screenshot(
+                headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
+                None,
+                None,
+                true,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        eval(&tab, "Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw new Error('HTTP clipboard unavailable')}}});true");
+        click(&tab, "#sharedCopySetup");
+        wait(&tab, "document.querySelector('.shared-copy-status').textContent === 'Select and copy the prompt above.'");
+        assert_eq!(eval(&tab, "(() => {const p=document.querySelector('.shared-connection-prompt');return p.selectionEnd-p.selectionStart===p.value.length;})()"), true);
+    } else {
+        assert_eq!(
+            eval(
+                &tab,
+                "document.querySelector('.shared-connection-sharing').hidden"
+            ),
+            true
+        );
+        assert_eq!(
+            eval(
+                &tab,
+                "document.querySelector('.shared-connection-prompt').value"
+            ),
+            ""
+        );
+        assert_eq!(
+            eval(
+                &tab,
+                "document.getElementById('sharedConnectionHelp').innerText.includes('Token file')"
+            ),
+            false
+        );
+    }
     native.occupied.store(false, Ordering::SeqCst);
     click(&tab, "#sharedConnectionRetry");
     wait(&tab, "document.getElementById('sharedSessionConflict').hidden && !document.getElementById('sharedModelPicker').disabled");
@@ -668,7 +741,7 @@ fn run(mobile: bool, unix: bool) {
         eval(&tab, "window.nativeUiErrors.length"),
         0,
         "{:?}",
-        eval(&tab, "window.nativeUiErrors")
+        probe(&tab, "({ui:window.nativeUiErrors,index:window.nativeIndexErrors,responses:window.nativeIndexResponses.slice(-2)})")
     );
     let new_history = history
         .replace("native-owned", "native-created")
@@ -735,8 +808,42 @@ fn run(mobile: bool, unix: bool) {
         "(() => { window.heldNativeScans=[]; window.holdNativeScans=true; return true; })()",
     );
     wait(&tab, "window.heldNativeScans.length > 0");
+    eval(&tab, "(() => {window.externalCloseFetch=window.fetch;window.fetch=async(url,options)=>{const response=await window.externalCloseFetch(url,options);if(String(url)!=='/api/codex/status')return response;const status=await response.json();return new Response(JSON.stringify({...status,activeWork:true,activeTurns:[{threadId:'native-created',threadName:'Synthetic external work',turnId:'external-turn-9'}]}),{status:response.status});};return true;})()");
     click(&tab, "#nativeEnable");
+    wait(
+        &tab,
+        "document.getElementById('nativeStopDialog')?.open === true",
+    );
+    assert_eq!(eval(&tab, "document.getElementById('nativeStopDescription').innerText.includes('external-turn-9') && document.getElementById('nativeStopDescription').innerText.includes('external server and its turns keep running')"), true);
+    std::fs::write(
+        root.join("native-external-confirmation.png"),
+        tab.capture_screenshot(
+            headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
+            None,
+            None,
+            true,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    click(&tab, "#nativeStopCancel");
+    wait(&tab, "!document.getElementById('nativeStopDialog') && !document.getElementById('codexNativeButton').disabled");
+    assert_eq!(
+        eval(
+            &tab,
+            "document.getElementById('codexNativeButton').dataset.nativeEnabled"
+        ),
+        "true"
+    );
+    click(&tab, "#codexNativeButton");
+    click(&tab, "#nativeEnable");
+    wait(
+        &tab,
+        "document.getElementById('nativeStopDialog')?.open === true",
+    );
+    click(&tab, "#nativeStopConfirm");
     wait(&tab, "document.getElementById('codexNativeButton')?.dataset.nativeEnabled === 'false' && !document.body.hasAttribute('data-shared-codex')");
+    eval(&tab, "window.fetch=window.externalCloseFetch;true");
     eval(&tab, "(() => {window.holdNativeScans=false;for(const r of window.heldNativeScans) r.reject(new Error('Stopped native scan'));return true;})()");
     wait(
         &tab,
@@ -798,6 +905,266 @@ fn run(mobile: bool, unix: bool) {
             >= 2
     );
     shutdown_confirmation(&tab, &root);
+    if !mobile && !unix {
+        delivery_recovery(&browser, &tab, &monitor, &native, &root);
+    }
+}
+/// Chrome models viewport geometry and touch events; iOS keyboard/hover acceptance
+/// still requires a device or simulator and is not inferred from these checks.
+fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
+    assert!(
+        eval(
+            tab,
+            "parseFloat(getComputedStyle(document.getElementById('composeInput')).fontSize)"
+        )
+        .as_f64()
+        .unwrap()
+            >= 16.0
+    );
+    assert_eq!(
+        eval(
+            tab,
+            "getComputedStyle(document.getElementById('phoneDock')).display"
+        ),
+        "none"
+    );
+    tap(tab, "#sharedReaderTools");
+    wait(tab, "document.body.hasAttribute('data-shared-reader-open') && document.getElementById('phoneDock').checkVisibility()");
+    let dock = probe(tab, "(()=>{const d=document.getElementById('phoneDock'),r=d.getBoundingClientRect();const sides=innerWidth>innerHeight?62:0;return {height:r.height,left:r.left,right:r.right,width:innerWidth,sides,overflow:d.scrollWidth>d.clientWidth+1};})()");
+    assert!(
+        dock["height"].as_f64().unwrap() <= 72.0
+            && dock["left"].as_f64().unwrap() >= dock["sides"].as_f64().unwrap()
+            && dock["right"].as_f64().unwrap()
+                <= dock["width"].as_f64().unwrap() - dock["sides"].as_f64().unwrap()
+            && dock["overflow"] == false,
+        "single-row dock inside safe areas: {dock}"
+    );
+    std::fs::write(
+        root.join("native-reader-tools.png"),
+        tab.capture_screenshot(
+            headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
+            None,
+            None,
+            true,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    tap(tab, ".header-searchbox");
+    wait(
+        tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open')",
+    );
+    tap(tab, "#filterTranscriptBtn");
+    wait(
+        tab,
+        "document.getElementById('filterTranscriptBtn').getAttribute('aria-expanded')==='true'",
+    );
+    tap(tab, "#composeInput");
+    wait(tab, "!document.body.hasAttribute('data-shared-reader-open') && document.getElementById('filterTranscriptBtn').getAttribute('aria-expanded')!=='true'");
+    eval(tab, "(()=>{Object.defineProperty(visualViewport,'height',{configurable:true,get:()=>innerHeight-Math.min(300,innerHeight/3)});visualViewport.dispatchEvent(new Event('resize'));return true;})()");
+    wait(
+        tab,
+        "document.getElementById('app').classList.contains('keyboard-up')",
+    );
+    let geometry = probe(tab, "(()=>{const r=document.getElementById('composer').getBoundingClientRect();const i=document.getElementById('composeInput').getBoundingClientRect();return {left:r.left,right:r.right,bottom:r.bottom,input:i.height,width:innerWidth,height:visualViewport.height};})()");
+    assert!(
+        geometry["left"].as_f64().unwrap() >= 0.0
+            && geometry["right"].as_f64().unwrap() <= geometry["width"].as_f64().unwrap()
+            && geometry["bottom"].as_f64().unwrap() <= geometry["height"].as_f64().unwrap() + 1.0
+            && geometry["input"].as_f64().unwrap() >= 30.0,
+        "{geometry}"
+    );
+    std::fs::write(
+        root.join("native-keyboard.png"),
+        tab.capture_screenshot(
+            headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
+            None,
+            None,
+            true,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    eval(tab, "(()=>{Object.defineProperty(visualViewport,'scale',{configurable:true,get:()=>2});Object.defineProperty(visualViewport,'pageTop',{configurable:true,get:()=>120});visualViewport.dispatchEvent(new Event('scroll'));return true;})()");
+    wait(tab, "document.getElementById('app').style.transform==='' && !document.getElementById('app').classList.contains('keyboard-up')");
+    eval(tab, "(()=>{delete visualViewport.height;delete visualViewport.scale;delete visualViewport.pageTop;document.activeElement.blur();visualViewport.dispatchEvent(new Event('resize'));return true;})()");
+}
+/// Reload uses the real browser journal and gateway receipts, including an accepted
+/// response lost by the network and an independent second tab claiming the same input.
+fn delivery_recovery(
+    browser: &headless_chrome::Browser,
+    tab: &headless_chrome::Tab,
+    monitor: &Monitor,
+    native: &native::NativeServer,
+    root: &std::path::Path,
+) {
+    fn enable(tab: &headless_chrome::Tab) {
+        wait(tab, "!!document.getElementById('codexNativeButton')");
+        if eval(
+            tab,
+            "document.getElementById('writeSwitch').getAttribute('aria-checked')",
+        ) != "true"
+        {
+            click(tab, "#writeSwitch");
+        }
+        click(tab, "#codexNativeButton");
+        click(tab, "#nativeEnable");
+        wait(
+            tab,
+            "document.getElementById('codexNativeButton').dataset.nativeEnabled === 'true'",
+        );
+        eval(
+            tab,
+            "document.getElementById('codexNativeMenu').hidePopover();true",
+        );
+        wait(
+            tab,
+            "!!document.querySelector('[data-session=rollout-native-created]')",
+        );
+        click(tab, "[data-session=rollout-native-created]");
+        wait(
+            tab,
+            "document.getElementById('sharedModelPicker')?.disabled === false",
+        );
+    }
+    let count = || {
+        native
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| m.as_str() == "thread/queue/add")
+            .count()
+    };
+    monitor.open(tab, "/?ui=app&session=rollout-native-created");
+    eval(
+        tab,
+        r#"(() => {
+      const original=window.fetch; window.missingReceipt=true;
+      window.fetch=async(url,options)=>{
+        if(String(url).startsWith('/api/codex/receipt') && window.missingReceipt) return new Response(JSON.stringify({ok:true,result:null}));
+        const response=await original(url,options);
+        if(String(url)==='/api/codex/send') {await response.clone().json(); throw new TypeError('Synthetic lost HTTP response after acceptance');}
+        return response;
+      }; return true;
+    })()"#,
+    );
+    enable(tab);
+    let before = count();
+    eval(
+        tab,
+        r#"(() => {
+      const input=document.getElementById('composeInput'); input.value='Synthetic lost receipt'; input.dispatchEvent(new Event('input'));
+      const bytes=Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jBz8AAAAASUVORK5CYII='),c=>c.charCodeAt(0));
+      const files=new DataTransfer(); files.items.add(new File([bytes],'recovery.png',{type:'image/png'}));
+      const picker=document.getElementById('sharedImageInput');picker.files=files.files;picker.dispatchEvent(new Event('change'));return true;
+    })()"#,
+    );
+    wait(tab, "document.querySelectorAll('#sharedImages img').length===1 && !document.getElementById('sendBtn').disabled");
+    click(tab, "#sendBtn");
+    wait(tab, "!!document.querySelector('[data-outgoing-state=uncertain]') && !document.getElementById('sendBtn').disabled");
+    assert_eq!(count(), before + 1);
+    let id = eval(
+        tab,
+        "document.querySelector('[data-check-outgoing]').dataset.checkOutgoing",
+    );
+    click(tab, "[data-check-outgoing]");
+    wait(
+        tab,
+        "document.getElementById('sharedError').innerText.includes('No receipt was found')",
+    );
+    assert_eq!(count(), before + 1, "missing receipts never replay a send");
+    let second = browser.new_tab().unwrap();
+    monitor.open(&second, "/?ui=app");
+    let claimed = eval(
+        &second,
+        r#"(async()=>{
+      const {DeliveryJournal}=await import('/codex-workspace/delivery-journal.js');
+      const {createActionId}=await import('/codex-workspace/api.js');
+      const s=await (await fetch('/api/codex/status')).json();
+      const j=new DeliveryJournal(JSON.stringify([s.endpoint,s.codexHome,s.allowedRoots]),DeliveryJournal.tab(createActionId));
+      const saved=await j.load();const entry=saved.attempts.find(e=>e.payload.text==='Synthetic lost receipt');
+      if(!entry) throw new Error('Missing durable attempt');
+      const claim=await j.prepare(createActionId(),entry.payload,entry.preview);
+      return claim.recovered && claim.id;
+    })()"#,
+    );
+    assert_eq!(
+        claimed, id,
+        "second tab atomically reuses the durable action ID"
+    );
+    second.close(true).unwrap();
+    monitor.open(tab, "/?ui=app&session=rollout-native-created");
+    enable(tab);
+    wait(tab, "!!document.querySelector('[data-outgoing-state=uncertain]') && document.querySelectorAll('#sharedImages img').length===1");
+    assert_eq!(
+        eval(
+            tab,
+            "document.querySelector('[data-check-outgoing]').dataset.checkOutgoing"
+        ),
+        id
+    );
+    assert_eq!(
+        eval(tab, "document.getElementById('composeInput').value"),
+        "Synthetic lost receipt"
+    );
+    assert_eq!(count(), before + 1, "reload restores state without sending");
+    click(tab, "[data-check-outgoing]");
+    wait(tab, "!!document.querySelector('[data-outgoing-state=accepted]') && document.getElementById('composeInput').value==='' && document.querySelectorAll('#sharedImages img').length===0");
+    assert_eq!(count(), before + 1, "receipt recovery is read-only");
+    std::fs::write(
+        root.join("native-recovered.png"),
+        tab.capture_screenshot(
+            headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
+            None,
+            None,
+            true,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    // Repeating accepted text is a deliberate new action, not an old receipt lookup.
+    eval(tab, "(()=>{const i=document.getElementById('composeInput');i.value='Synthetic lost receipt';i.dispatchEvent(new Event('input'));return true;})()");
+    click(tab, "#sendBtn");
+    wait(tab, "document.getElementById('composeInput').value==='' && !document.querySelector('[data-outgoing-state=sending]')");
+    assert_eq!(count(), before + 2);
+    eval(tab, "(()=>{const i=document.getElementById('composeInput');i.value='Keep through disconnect';i.dispatchEvent(new Event('input'));return true;})()");
+    native.disconnected.store(true, Ordering::SeqCst);
+    wait(tab, "document.getElementById('sharedControlStatus').hidden===false && document.getElementById('sendBtn').disabled");
+    native.disconnected.store(false, Ordering::SeqCst);
+    click(tab, "#sharedControlStatus button");
+    wait(tab, "document.getElementById('sharedModelPicker').disabled===false && document.getElementById('sendBtn').disabled===false");
+    assert_eq!(
+        eval(tab, "document.getElementById('composeInput').value"),
+        "Keep through disconnect"
+    );
+    assert_eq!(count(), before + 2, "reconnect never replays accepted work");
+    native.active.store(true, Ordering::SeqCst);
+    click(tab, "[data-session=rollout-native-owned]");
+    wait(tab,"!document.getElementById('sharedInterrupt').hidden && !document.getElementById('sharedInterrupt').disabled");
+    eval(tab,"(()=>{document.querySelectorAll('.shared-image-remove').forEach(b=>b.click());const i=document.getElementById('composeInput');i.value='Synthetic queued message';i.dispatchEvent(new Event('input'));return true;})()");
+    click(tab, "#sendBtn");
+    wait(tab,"document.getElementById('sharedQueue').innerText.includes('Synthetic queued message') && !document.getElementById('sharedInterrupt').disabled");
+    click(tab, "#sharedInterrupt");
+    wait(tab, "document.getElementById('sharedInterrupt').hidden");
+    assert!(native
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|m| m == "turn/interrupt"));
+    click(tab, "[data-queue-action=cancel]");
+    wait(
+        tab,
+        "document.getElementById('sharedQueue').children.length===0",
+    );
+    assert!(native
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|m| m == "thread/queue/delete"));
 }
 #[test]
 #[ignore = "requires release native Monitor and Chrome"]
@@ -844,4 +1211,15 @@ fn native_unix_desktop_lifecycle() {
 #[ignore = "requires release native Monitor and Chrome"]
 fn native_unix_phone_lifecycle() {
     run(true, true);
+}
+
+#[test]
+#[ignore = "requires release native Monitor and Chrome"]
+fn native_phone_landscape_lifecycle() {
+    run_sized(true, false, 844, 390);
+}
+#[test]
+#[ignore = "requires release native Monitor and Chrome"]
+fn native_wide_phone_unix_lifecycle() {
+    run_sized(true, true, 926, 428);
 }

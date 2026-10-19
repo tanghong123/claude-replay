@@ -4,6 +4,7 @@ import { requestHtml, requestResponsePayload, questionResponse, permissionRespon
 import { ImageAttachmentDrafts, IMAGE_TYPES } from "./attachments.js";
 import { monitorSessionId, nativeSessionGroups, nativeSessionTree, nativeProjectTree } from "./monitor-model.js";
 import { OutgoingMessages } from "./outgoing.js";
+import { DeliveryJournal } from "./delivery-journal.js";
 import { ProjectPicker } from "./project-picker.js";
 import { SessionConflict, isThreadInUse } from "./session-conflict.js";
 import { PHONE_QUERY } from "/monitor-ui/shared/capabilities.js";
@@ -24,8 +25,8 @@ export class MonitorControls {
     this.browserAccess = "paired"; this.catalogEpoch = null; this.observedEpoch = null; this.connectionEpoch = null; this.latestError = null;
     this.initialThread = new URL(location.href).searchParams.get("thread");
     this.threads = []; this.drafts = new Map(); this.draftRevisions = new Map(); this.imageErrors = new Map(); this.uncertainSendPayloads = new Map(); this.sendDrafts = new Map(); this.requestDrafts = new Map(); this.uncertainActions = new Map(); this.selected = null; this.generation = 0; this.pending = false; this.creating = false; this.archived = false; this.projectId = "";
-    this.outgoing = new OutgoingMessages();
-    this.attachments = new ImageAttachmentDrafts(undefined, thread => { this.touchDraft(thread); if (thread === this.selected) this.paint(); });
+    this.outgoing = new OutgoingMessages(); this.journalRequired = true;
+    this.attachments = new ImageAttachmentDrafts(undefined, thread => { this.touchDraft(thread); void this.persistDraft(thread).catch(() => {}); if (thread === this.selected) this.paint(); });
     this.bind();
     this.open();
     new ResizeObserver(entries => {
@@ -42,6 +43,7 @@ export class MonitorControls {
 
     this.recovery = new WorkspaceRecovery({ loadStatus: async () => {
       const status = await this.api.read("status");
+      await this.restoreJournal(status);
       this.sessionConflict.setConnection(status);
       this.browserAccess = "paired"; this.observedEpoch = status.epoch;
       if (this.catalogEpoch !== status.epoch) { this.models = []; this.catalogEpoch = null; }
@@ -104,7 +106,7 @@ export class MonitorControls {
     }); foot.insertBefore(this.archiveSessionButton, byId("sendBtn"));
     this.runtimePanel = make("section", "shared-runtime"); byId("composer").before(this.runtimePanel);
     this.outgoingRoot = make("section", "shared-outgoing"); this.outgoingRoot.id = "sharedOutgoing"; this.outgoingRoot.setAttribute("aria-label", "Outgoing messages"); this.runtimePanel.append(this.outgoingRoot);
-    this.outgoingRoot.onclick = event => { const button = event.target.closest("[data-dismiss-outgoing]"); if (button) { this.outgoing.dismiss(button.dataset.dismissOutgoing); this.paint(); } };
+    this.outgoingRoot.onclick = event => { const check = event.target.closest("[data-check-outgoing]"); if (check) { this.run(() => this.checkOutgoing(check.dataset.checkOutgoing)); return; } const button = event.target.closest("[data-dismiss-outgoing]"); if (button) { this.run(() => this.reviewOutgoing(button.dataset.dismissOutgoing)); } };
     this.requests = make("section", "shared-requests"); this.requests.id = "sharedRequests"; this.runtimePanel.append(this.requests);
     this.queue = make("section", "shared-queue"); this.queue.id = "sharedQueue"; this.runtimePanel.append(this.queue);
     this.queue.onclick = event => {
@@ -125,7 +127,7 @@ export class MonitorControls {
       if (text) { input.setRangeText(text, input.selectionStart, input.selectionEnd, "end"); input.dispatchEvent(new Event("input", { bubbles: true })); }
       this.addImages(files);
     };
-    byId("composeInput").oninput = () => { if (this.selected) { this.drafts.set(this.selected, byId("composeInput").value); this.touchDraft(this.selected); } this.paint(); };
+    byId("composeInput").oninput = () => { if (this.selected) { this.drafts.set(this.selected, byId("composeInput").value); this.touchDraft(this.selected); void this.persistDraft(this.selected).catch(() => {}); } this.paint(); };
     byId("composeInput").onkeydown = event => { if (event.key === "Enter" && !event.shiftKey && (event.ctrlKey || event.metaKey)) { event.preventDefault(); this.send("next"); } };
     this.requests.onclick = event => { const button = event.target.closest("[data-decision]"); if (!button) return; const card = button.closest("[data-request-index]"), request = this.state.pending[Number(card.dataset.requestIndex)]; if (request?.requestToken !== card.dataset.requestToken) return; this.answer(request, request.method === "item/permissions/requestApproval" ? permissionResponse(request, button.dataset.decision === "accept") : { decision: button.dataset.decision }); };
     this.requests.onsubmit = event => { event.preventDefault(); const card = event.target.closest("[data-request-index]"), request = this.state.pending[Number(card?.dataset.requestIndex)]; if (!request || request.requestToken !== card.dataset.requestToken) return;
@@ -153,7 +155,7 @@ export class MonitorControls {
   }
   currentModel() { return this.models.find(model => model.id === this.state.settings.model || model.model === this.state.settings.model); }
   canControl() { return !this.closing && this.state.thread?.id === this.selected && !!this.selected && !isThreadInUse(this.latestError, this.selected) && this.state.connection === "connected" && !["pairing-required", "forbidden"].includes(this.browserAccess) && !this.state.needsSnapshot && this.state.accessMode !== "archived" && !this.pending && !this.creating; }
-  ready() { return this.canControl() && this.catalogEpoch === this.state.epoch && effectiveCapabilities(this.models, this.state.settings).ready; }
+  ready() { return (!this.journalRequired || !!this.journal) && this.canControl() && this.catalogEpoch === this.state.epoch && effectiveCapabilities(this.models, this.state.settings).ready; }
   projectChoices(emptyLabel) { return [{ id: "", label: emptyLabel }, ...this.projects.map(project => ({ id: project.id, label: project.name, detail: project.roots?.[0]?.path }))]; }
   paintProjects() { this.projectPicker.setOptions(this.projectChoices("All projects"), this.projectId); this.projectId = this.projectPicker.value; }
   paint() {
@@ -367,36 +369,117 @@ export class MonitorControls {
       if (this.opening === read) this.opening = null;
     }
   }
+  async restoreJournal(status) {
+    const scope = JSON.stringify([status.endpoint, status.codexHome, status.allowedRoots]);
+    if (this.journal?.scope === scope) return;
+    if (this.journal) throw new Error("The native runtime changed. Reload before sending to another runtime.");
+    const tab = DeliveryJournal.tab(createActionId);
+    const journal = new DeliveryJournal(scope, tab), saved = await journal.load();
+    for (const [key, draft] of Object.entries(saved.drafts)) {
+      const [owner, thread] = JSON.parse(key);
+      if (owner !== tab || this.drafts.has(thread)) continue;
+      this.drafts.set(thread, draft.text); this.draftRevisions.set(thread, draft.revision);
+      this.attachments.threads.set(thread, draft.images);
+      this.attachments.nextId = Math.max(this.attachments.nextId, ...draft.images.map(image => image.id));
+      if (this.selected === thread) byId("composeInput").value = draft.text;
+    }
+    for (const entry of saved.attempts) {
+      this.outgoing.restore(entry);
+      if (entry.status !== "accepted") {
+        const key = `send:${JSON.stringify(entry.payload)}`;
+        this.uncertainActions.set(key, entry.id); this.uncertainSendPayloads.set(key, entry.payload);
+      }
+    }
+    this.journal = journal;
+    for (const entry of this.outgoing.entries.values()) if (entry.status === "accepted") this.retireAcceptedDraft(entry);
+  }
+  retireAcceptedDraft(entry) {
+    if (entry.draftTab !== this.journal?.tab || entry.draftRevision !== this.draftRevision(entry.threadId)) return;
+    const text = this.drafts.get(entry.threadId) || "";
+    if (text.trim() !== entry.text) return;
+    this.drafts.delete(entry.threadId);
+    if (this.selected === entry.threadId && byId("composeInput").value.trim() === entry.text) byId("composeInput").value = "";
+    this.attachments.accepted(entry.threadId, entry.draftImages || []);
+    void this.persistDraft(entry.threadId).catch(() => {});
+  }
+  persistDraft(thread) {
+    if (!this.journal || !thread) return Promise.resolve();
+    const draft = { text: this.drafts.get(thread) || "", revision: this.draftRevision(thread),
+      images: this.attachments.items(thread).filter(image => image.status === "ready") };
+    return this.journal.draft(thread, draft).catch(error => { this.report(error); throw error; });
+  }
+  async readReceipt(actionId) {
+    const response = await this.api.read("receipt", { actionId });
+    const result = response.result;
+    if (!result) throw new GatewayError("No receipt was found. Review the conversation before retiring this attempt; it has not been resent.", "uncertain");
+    if (!result.ok) throw new GatewayError(result.error?.message || "Delivery remains unconfirmed.", result.error?.code === "receipt_expired" ? "uncertain" : result.error?.code || "uncertain", result.receipt);
+    return result;
+  }
   async perform(route, payload) {
     if (this.pending) throw new Error("Wait for the current action to finish.");
     const key = `${route}:${JSON.stringify(payload)}`;
-    const recoveringReceipt = this.uncertainActions.has(key), actionId = this.uncertainActions.get(key) || createActionId();
+    let recoveringReceipt = this.uncertainActions.has(key), actionId = this.uncertainActions.get(key) || createActionId();
     const id = this.selected, generation = this.generation;
-    if (route === "send" && this.outgoing) {
-      const snapshot = this.actions.recordSnapshot?.();
-      this.outgoing.begin(actionId, payload, snapshot && { ...snapshot,
-        ready: snapshot.records.length > 0 || this.isEmptySession(snapshot.session) });
-    }
-    this.pending = true; this.paint();
+    this.pending = true;
     try {
-      const result = await this.api.action(route, payload, actionId);
+      if (route === "send" && this.journal) {
+        await this.persistDraft(payload.threadId);
+        const snapshot = this.actions.recordSnapshot?.();
+        const preview = { session: snapshot?.session, baseline: (snapshot?.records || []).filter(record => record.kind === "user").map(record => JSON.stringify([record.id, record.src, record.ts])),
+          canReconcile: !!snapshot && (snapshot.records.length > 0 || this.isEmptySession(snapshot.session)),
+          draftTab: this.journal.tab, draftRevision: this.draftRevision(payload.threadId), draftImages: this.attachments.snapshot(payload.threadId) };
+        const entry = await this.journal.prepare(actionId, payload, preview);
+        actionId = entry.id; recoveringReceipt ||= !!entry.recovered; this.outgoing.restore(entry);
+      } else if (route === "send" && this.journalRequired) throw new Error("Wait for delivery recovery before sending.");
+      if (route === "send" && this.outgoing) {
+        const snapshot = this.actions.recordSnapshot?.();
+        this.outgoing.begin(actionId, payload, snapshot && { ...snapshot, ready: snapshot.records.length > 0 || this.isEmptySession(snapshot.session) });
+      }
+      this.paint();
+      // Recovered sends only read receipts. An absent/replaced receipt database cannot replay one.
+      const result = route === "send" && this.journal && recoveringReceipt
+        ? await this.readReceipt(actionId) : await this.api.action(route, payload, actionId);
+      if (route === "send") {
+        try { await this.journal?.settle(actionId, "accepted"); }
+        catch (cause) { throw new GatewayError("The send was accepted, but local recovery storage failed. Check its receipt before sending again.", "uncertain", null, cause); }
+        this.outgoing?.settle(actionId, "accepted");
+      }
       this.uncertainActions.delete(key); this.uncertainSendPayloads?.delete(key);
-      if (route === "send") this.outgoing?.settle(actionId, "accepted");
       if (id === this.selected && generation === this.generation && result.snapshot?.thread?.id === id) {
         if (result.snapshot.epoch === this.state.epoch && result.snapshot.sequence >= this.state.sequence) this.state = applySnapshot(this.state, result.snapshot);
         else this.recovery.recover({ thread: true });
       }
       return result;
     } catch (error) {
-      // A manual retry checks the original durable receipt; it must not submit a second action.
       if (error.code === "uncertain" || recoveringReceipt && !error.receipt) {
         this.uncertainActions.set(key, actionId);
         if (route === "send") { this.uncertainSendPayloads ||= new Map(); this.uncertainSendPayloads.set(key, payload); }
       } else { this.uncertainActions.delete(key); this.uncertainSendPayloads?.delete(key); }
-      if (route === "send") this.outgoing?.settle(actionId, this.uncertainActions.has(key) ? "uncertain" : "rejected");
+      if (route === "send") {
+        const status = this.uncertainActions.has(key) ? "uncertain" : "rejected";
+        this.outgoing?.settle(actionId, status);
+        try { await this.journal?.settle(actionId, status); } catch (cause) { this.report(cause); }
+      }
       if (id === this.selected && error.code === "uncertain") { this.state.needsSnapshot = true; this.recovery.recover({ thread: true }); }
       throw error;
     } finally { this.pending = false; this.paint(); }
+  }
+  async checkOutgoing(id) {
+    const entry = this.outgoing.entries.get(id);
+    if (!entry || this.pending) return;
+    const result = await this.readReceipt(id);
+    await this.journal?.settle(id, "accepted");
+    for (const [key, value] of this.uncertainActions) if (value === id) { this.uncertainActions.delete(key); this.uncertainSendPayloads.delete(key); this.sendDrafts.delete(key); }
+    this.retireAcceptedDraft(entry); this.outgoing.settle(id, "accepted"); this.report(null); this.paint();
+    return result;
+  }
+  async reviewOutgoing(id) {
+    const entry = this.outgoing.entries.get(id);
+    if (!entry) return;
+    if (entry.status === "uncertain" && !globalThis.confirm("This message may already have been delivered. Review the conversation first. Retiring this attempt will allow a new send, which could duplicate it. Retire without sending?")) return;
+    await this.journal?.retire(id);
+    for (const [key, value] of this.uncertainActions) if (value === id) { this.uncertainActions.delete(key); this.uncertainSendPayloads.delete(key); this.sendDrafts.delete(key); }
+    this.outgoing.dismiss(id); this.report(null); this.paint();
   }
   send(intent) { return this.run(async () => {
     const threadId = this.selected, text = byId("composeInput").value.trim(), turn = activeTurn(this.state.thread);
@@ -418,6 +501,7 @@ export class MonitorControls {
     } finally {
       if (!this.uncertainActions?.has(key)) this.sendDrafts.delete(key);
     }
+    await this.persistDraft(threadId);
     this.actions.refreshIndex(); this.paint();
   }); }
   performSettings(settings) { return this.run(async () => {
@@ -496,11 +580,24 @@ export class MonitorControls {
     }; paint(); this.newDialog.showModal();
   }
   async loadSessions() {
-    const [legacy, initialThreads] = await Promise.all([this.api.readMonitorIndex(), readAllPages(this.api, "threads", { archived: this.archived, projectId: this.projectId })]).catch(error => {
+    const legacy = await this.api.readMonitorIndex().catch(error => {
+      if (["pairing_required", "forbidden"].includes(error.code)) this.report(error);
+      throw error;
+    });
+    // Native startup/reconnect is independent of the ordinary JSONL scan. Keep the
+    // readable index and previous native rows while WorkspaceRecovery retries it.
+    if (this.state?.connection && this.state.connection !== "connected") return nativeSessionGroups(legacy, this.threads || [], this.projects);
+    const initialThreads = await readAllPages(this.api, "threads", { archived: this.archived, projectId: this.projectId }).catch(error => {
+      if (error.code === "unavailable") {
+        this.state = { ...this.state, connection: "reconnecting", needsSnapshot: true };
+        this.report(error); this.recovery?.recover({ thread: true });
+        return null;
+      }
       // The ordinary index store owns scan retries, but shared access refusals must fence native controls immediately.
       if (["pairing_required", "forbidden"].includes(error.code)) this.report(error);
       throw error;
     });
+    if (initialThreads === null) return nativeSessionGroups(legacy, this.threads || [], this.projects);
     let threads = initialThreads;
     if (this.initialThread && !threads.some(thread => thread.id === this.initialThread)) {
       // Native list omits a newly started session before its first persisted turn.
@@ -544,7 +641,8 @@ export class MonitorControls {
   paintOutgoing() {
     if (!this.outgoingRoot) return;
     const entries = this.outgoing.list(this.selected, this.state.queue);
-    const html = entries.map(entry => `<div class="shared-outgoing-message" data-outgoing-state="${entry.status}"><div class="shared-outgoing-text">${escapeText(entry.text)}${entry.images.length ? `<div class="shared-outgoing-images">${entry.images.map(url => `<img src="${escapeText(url)}" alt="Outgoing image">`).join("")}</div>` : ""}</div><div class="shared-outgoing-status"><span role="status">${entry.status === "sending" ? "Sending…" : entry.status === "uncertain" ? "Delivery not confirmed · retry from the composer" : "Sent · syncing history"}</span>${entry.status !== "sending" ? `<button type="button" data-dismiss-outgoing="${escapeText(entry.id)}" aria-label="Dismiss message preview" title="Dismiss preview">×</button>` : ""}</div></div>`).join("");
+    for (const id of this.outgoing.takeRetired()) void this.journal?.retire(id).catch(error => this.report(error));
+    const html = entries.map(entry => `<div class="shared-outgoing-message" data-outgoing-state="${entry.status}"><div class="shared-outgoing-text">${escapeText(entry.text)}${entry.images.length ? `<div class="shared-outgoing-images">${entry.images.map(url => `<img src="${escapeText(url)}" alt="Outgoing image">`).join("")}</div>` : ""}</div><div class="shared-outgoing-status"><span role="status">${entry.status === "sending" ? "Sending…" : entry.status === "uncertain" ? (entry.historyMatch ? "Matching text found in history · review delivery" : "Delivery not confirmed · check receipt or review history") : "Sent · syncing history"}</span>${entry.status === "uncertain" ? `<button type="button" data-check-outgoing="${escapeText(entry.id)}">Check receipt</button>` : ""}${entry.status !== "sending" ? `<button type="button" data-dismiss-outgoing="${escapeText(entry.id)}" aria-label="${entry.status === "uncertain" ? "Review and retire send attempt" : "Dismiss message preview"}" title="${entry.status === "uncertain" ? "Review and retire attempt" : "Dismiss preview"}">×</button>` : ""}</div></div>`).join("");
     if (html !== this.outgoingHtml) { this.outgoingRoot.innerHTML = html; this.outgoingHtml = html; }
   }
   newProject() {

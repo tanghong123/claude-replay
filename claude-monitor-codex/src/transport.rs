@@ -148,7 +148,10 @@ mod unix {
         // Codex's own rendezvous alias resolves to a short, private physical path.
         let physical = path
             .canonicalize()
-            .context("Resolve private Codex socket")?;
+            .with_context(|| format!(
+                "Resolve private Codex socket {}. If this is a stale link, restart the Codex daemon or App that owns it from a terminal, or select a different private socket with --codex-server-url. Monitor leaves the entry unchanged",
+                path.display()
+            ))?;
         let parent = physical
             .parent()
             .context("Unix socket has no physical parent")?;
@@ -461,7 +464,10 @@ mod tests {
         fs::set_permissions(&physical.0, fs::Permissions::from_mode(0o700)).unwrap();
         fs::remove_file(&path).unwrap();
         assert!(connect_unix(&alias).is_err());
-        assert!(check_start_path(&alias).is_err());
+        let error = format!("{:#}", check_start_path(&alias).unwrap_err());
+        assert!(error.contains(&alias.display().to_string()));
+        assert!(error.contains("restart the Codex daemon or App"));
+        assert!(error.contains("--codex-server-url"));
         assert!(fs::symlink_metadata(&alias)
             .unwrap()
             .file_type()

@@ -684,3 +684,40 @@ test("send preview is visible before HTTP settles and follows the receipt's exac
   assert.deepEqual(outgoing.list("b"), []);
   assert.equal(outgoing.list("a")[0].status, "accepted");
 });
+
+
+test("native initialization and transport loss preserve the ordinary session index", async () => {
+  let reads = 0, recovered = 0; const reports = [];
+  const controller = Object.assign(Object.create(MonitorControls.prototype), {
+    state: { connection: "connecting" }, initialThread: "requested", threads: [], projects: [],
+    api: { readMonitorIndex: async () => ({ groups: [{ kind: "project", rows: [{ id: "ordinary", agent: "claude" }] }] }),
+      read: async () => { reads++; throw new GatewayError("Reconnecting", "unavailable"); } },
+    report: error => reports.push(error.message), recovery: { recover: () => { recovered++; } },
+  });
+  assert.equal((await controller.loadSessions()).groups[0].rows[0].id, "ordinary");
+  assert.equal(reads, 0); assert.equal(controller.initialThread, "requested");
+  controller.state.connection = "connected";
+  assert.equal((await controller.loadSessions()).groups[0].rows[0].id, "ordinary");
+  assert.equal(reads, 1); assert.equal(recovered, 1); assert.equal(controller.state.needsSnapshot, true);
+  assert.deepEqual(reports, ["Reconnecting"]); assert.equal(controller.initialThread, "requested");
+});
+
+test("an expired server receipt remains uncertain and cannot authorize a new send", async () => {
+  const controller = Object.assign(Object.create(MonitorControls.prototype), {
+    api: { read: async () => ({ ok: true, result: { ok: false, error: { code: "receipt_expired", message: "Review history" }, receipt: { actionId: "saved", status: "expired" } } }) },
+  });
+  await assert.rejects(controller.readReceipt("saved"), error => error.code === "uncertain" && error.receipt.actionId === "saved");
+});
+
+test("browser storage refusal prevents the first HTTP send", async () => {
+  let sent = 0;
+  const failure = new Error("Storage quota exceeded");
+  const controller = Object.assign(Object.create(MonitorControls.prototype), {
+    selected: "t", generation: 0, pending: false, uncertainActions: new Map(), uncertainSendPayloads: new Map(),
+    journal: { tab: "tab", prepare: async () => { throw failure; }, settle: async () => {} },
+    persistDraft: async () => {}, draftRevision: () => 0, attachments: { snapshot: () => [] },
+    actions: {}, paint: () => {}, api: { action: async () => { sent++; } },
+  });
+  await assert.rejects(controller.perform("send", { threadId: "t", text: "hello", intent: "next" }), failure);
+  assert.equal(sent, 0); assert.equal(controller.pending, false);
+});
