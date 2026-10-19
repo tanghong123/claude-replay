@@ -598,10 +598,10 @@ fn run(mobile: bool, unix: bool) {
         &tab,
         r#"(() => {
       window.heldNativeScans = []; window.holdNativeScans = true;
-      window.nativeUiErrors = [];
+      window.nativeUiErrors = []; window.nativeUiStarted = performance.now();
       new MutationObserver(() => {
         const error = document.body.innerText.match(/Cannot read this session|The monitor will retry|Session scan failed/);
-        if (error) window.nativeUiErrors.push(error[0]);
+        if (error) window.nativeUiErrors.push({message:error[0], afterMs:performance.now()-window.nativeUiStarted});
       }).observe(document.body, {childList:true,subtree:true,characterData:true});
       return true;
     })()"#,
@@ -616,6 +616,14 @@ fn run(mobile: bool, unix: bool) {
         &tab,
         "document.getElementById('transcript').innerText.includes('Start this session')",
     );
+    assert_eq!(
+        eval(&tab, "window.heldNativeScans.length > 0"),
+        true,
+        "Creation finished while its index read was held"
+    );
+    // This barrier tests creation independence. Release it before screenshot/send
+    // work so an unrelated held scan cannot time out on a slower browser host.
+    eval(&tab, "(() => {window.holdNativeScans=false; for(const r of window.heldNativeScans) window.nativeTestFetch(r.url,r.options).then(r.resolve,r.reject);return true;})()");
     // Send through the real HTTP gateway to a synthetic native server, never an LLM.
     eval(&tab, "(() => {const i=document.getElementById('composeInput');i.value='Synthetic first message';i.dispatchEvent(new Event('input',{bubbles:true}));return true;})()");
     eval(&tab, "(() => {window.holdNativeSends=true;document.getElementById('sendBtn').addEventListener('click',()=>{window.previewClickAt=performance.now();},{once:true,capture:true});new MutationObserver(()=>{if(window.previewDelayMs==null && document.querySelector('[data-outgoing-state=sending]')) window.previewDelayMs=performance.now()-window.previewClickAt;}).observe(document.getElementById('sharedOutgoing'),{childList:true,subtree:true});return true;})()");
@@ -656,17 +664,16 @@ fn run(mobile: bool, unix: bool) {
         "document.getElementById('transcript').innerText.includes('Loading session history…')",
     );
     wait(&tab, "document.getElementById('sharedOutgoing').innerText.includes('Synthetic first message') && document.getElementById('sharedOutgoing').innerText.includes('Sent')");
-    assert_eq!(eval(&tab, "window.nativeUiErrors.length"), 0);
     assert_eq!(
-        eval(&tab, "window.heldNativeScans.length > 0"),
-        true,
-        "Creation finished while its index read was held"
+        eval(&tab, "window.nativeUiErrors.length"),
+        0,
+        "{:?}",
+        eval(&tab, "window.nativeUiErrors")
     );
     let new_history = history
         .replace("native-owned", "native-created")
         .replace("Review the workspace changes.", "Synthetic first message");
     stores.codex_session("native-created", &new_history);
-    eval(&tab, "(() => {window.holdNativeScans=false; for(const r of window.heldNativeScans) window.nativeTestFetch(r.url,r.options).then(r.resolve,r.reject);return true;})()");
     wait(
         &tab,
         "document.getElementById('transcript').innerText.includes('Synthetic first message') && document.getElementById('sharedOutgoing').children.length === 0",
