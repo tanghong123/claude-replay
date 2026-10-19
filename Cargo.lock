@@ -266,6 +266,7 @@ name = "claude-monitor"
 version = "1.392.0"
 dependencies = [
  "anyhow",
+ "claude-monitor-codex",
  "claude-replay-core",
  "claude-replay-html",
  "claude-replay-present",
@@ -348,6 +349,7 @@ dependencies = [
  "claude-replay-present",
  "headless_chrome",
  "serde_json",
+ "tungstenite",
 ]
 
 [[package]]

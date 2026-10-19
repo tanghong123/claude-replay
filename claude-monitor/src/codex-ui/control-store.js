@@ -45,6 +45,7 @@ export class ControlStore {
   paint() {
     const row = selectedRow();
     const available = canCompose(row);
+    byId("sendBtn").disabled = !!this.pendingSends?.has(row?.id);
     byId("writeSwitch").setAttribute("aria-checked", String(controlState.write));
     byId("writeBtn").classList.toggle("on", controlState.write);
     byId("sidebarMiniWrite").classList.toggle("on", controlState.write);
@@ -111,19 +112,32 @@ export class ControlStore {
     byId("confirmLayer").classList.add("production-open"); input.focus();
   }
   async send(text, passcode = "") {
+    const target = controlState.row.id, mode = controlState.mode, consented = controlState.consented;
+    this.pendingSends ||= new Map();
+    if (this.pendingSends.has(target)) return;
+    const pending = {};
+    this.pendingSends.set(target, pending);
+    const owner = this.actions.captureComposer?.();
+    const ownsComposer = () => controlState.row?.id === target && (!owner || owner.isCurrent());
     byId("sendBtn").disabled = true;
     try {
-      const result = await runSend({ target: controlState.row.id, mode: controlState.mode, consented: controlState.consented, prompt: text, passcode, post });
-      controlState.consented = result.consented;
+      const result = await runSend({ target, mode, consented, prompt: text, passcode, post });
+      if (ownsComposer()) controlState.consented = result.consented;
       if (result.step === "grant") {
-        if (["passcode-required", "bad-passcode"].includes(result.outcome.kind)) { this.askPasscode(result.outcome); return; }
+        if (["passcode-required", "bad-passcode"].includes(result.outcome.kind) && ownsComposer()) { this.askPasscode(result.outcome); return; }
         this.actions.toast(result.outcome.kind === "unreachable" ? result.outcome.message : (result.outcome.message || "Grant failed"));
         return;
       }
       if (result.outcome.kind !== "sent") { this.actions.toast(result.outcome.kind === "no-consent" ? "This pane needs consent again" : result.outcome.message); return; }
-      byId("composeInput").value = "";
-      this.actions.toast(controlState.mode === "tmux" ? "Sent to the pane" : "Resuming the session");
-      this.close(); this.actions.refreshIndex();
-    } finally { byId("sendBtn").disabled = false; }
+      const retireVisibleDraft = ownsComposer() && byId("composeInput").value === text;
+      owner?.accepted();
+      if (retireVisibleDraft) { byId("composeInput").value = ""; this.close(); }
+      this.actions.toast(mode === "tmux" ? "Sent to the pane" : "Resuming the session");
+      this.actions.refreshIndex();
+    } finally {
+      if (this.pendingSends.get(target) === pending) this.pendingSends.delete(target);
+      if (ownsComposer()) byId("sendBtn").disabled = false;
+      else this.actions.repaintComposer?.();
+    }
   }
 }

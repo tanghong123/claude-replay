@@ -1,0 +1,15 @@
+{
+  "id": "/codex-workspace",
+  "name": "Codex Workspace · Agent Monitor",
+  "short_name": "Codex Workspace",
+  "start_url": "/codex-workspace",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#eaf3fb",
+  "icons": [
+    { "src": "/codex-workspace/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/codex-workspace/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/codex-workspace/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

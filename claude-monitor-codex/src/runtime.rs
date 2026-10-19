@@ -1,6 +1,6 @@
 //! Explicit activation of a shared Codex runtime. Construction and status never spawn work.
 
-use crate::{auth::ServerToken, validate_endpoint, validate_state_path, Config, Gateway};
+use crate::{auth::ServerToken, transport::Endpoint, validate_state_path, Config, Gateway};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
@@ -21,6 +21,8 @@ pub struct RuntimeConfig {
 /// A lazy client/lifecycle boundary. Only `activate` may start a process or RPC worker.
 pub struct NativeRuntime {
     config: RuntimeConfig,
+    endpoint: Endpoint,
+    token_file: Option<PathBuf>,
     addresses: Vec<SocketAddr>,
     state: Mutex<RuntimeState>,
     transition: Mutex<()>,
@@ -31,39 +33,62 @@ struct RuntimeState {
     gateway: Option<Arc<Gateway>>,
     child: Option<Child>,
     last_error: Option<String>,
+    shutdown_warnings: Vec<String>,
 }
 
 impl NativeRuntime {
     /// Validate inert configuration, including the absolute receipt database path.
     /// This opens no connection, directory, database or process.
-    pub fn new(config: RuntimeConfig) -> Result<Arc<Self>> {
+    pub fn new(mut config: RuntimeConfig) -> Result<Arc<Self>> {
         validate_state_path(&config.gateway.state_path)?;
-        validate_endpoint(&config.gateway.endpoint)?;
-        let uri: tungstenite::http::Uri = config.gateway.endpoint.parse()?;
-        let authority = uri.authority().context("Codex endpoint has no authority")?;
-        let addresses: Vec<_> = authority
-            .as_str()
-            .to_socket_addrs()
-            .context("Resolve configured loopback Codex address")?
-            .filter(|address| address.ip().is_loopback())
-            .collect();
-        if addresses.is_empty() {
-            bail!("Codex address did not resolve to loopback");
+        if config.gateway.endpoint == "unix://" {
+            config.gateway.endpoint = format!(
+                "unix://{}",
+                config
+                    .home
+                    .join("app-server-control/app-server-control.sock")
+                    .display()
+            );
         }
-        if uri.port_u16().is_none_or(|port| port == 0) {
-            bail!("Native Codex endpoint needs an explicit nonzero port");
-        }
-        if uri.path() != "/" {
-            bail!("Native Codex endpoint cannot include a path");
-        }
+        let endpoint = Endpoint::parse(&config.gateway.endpoint)?;
+        let addresses = match &endpoint {
+            Endpoint::PrivateUnix(_) => Vec::new(),
+            Endpoint::AuthenticatedWebSocket(value) => {
+                let uri: tungstenite::http::Uri = value.parse()?;
+                let authority = uri.authority().context("Codex endpoint has no authority")?;
+                let addresses: Vec<_> = authority
+                    .as_str()
+                    .to_socket_addrs()
+                    .context("Resolve configured loopback Codex address")?
+                    .filter(|address| address.ip().is_loopback())
+                    .collect();
+                if addresses.is_empty() {
+                    bail!("Codex address did not resolve to loopback");
+                }
+                if uri.port_u16().is_none_or(|port| port == 0) {
+                    bail!("Native Codex endpoint needs an explicit nonzero port");
+                }
+                if uri.path() != "/" {
+                    bail!("Native Codex endpoint cannot include a path");
+                }
+                addresses
+            }
+        };
         if !config.home.is_absolute() || !config.log_path.is_absolute() {
             bail!("Native Codex home and log path must be absolute");
         }
         if config.gateway.allowed_roots.is_empty() {
             bail!("Native Codex mode needs an allowed project root");
         }
+        let token_file = if endpoint.is_unix() {
+            None
+        } else {
+            Some(ServerToken::path(&config.gateway.state_path)?)
+        };
         Ok(Arc::new(Self {
             config,
+            endpoint,
+            token_file,
             addresses,
             state: Mutex::new(RuntimeState::default()),
             transition: Mutex::new(()),
@@ -85,7 +110,7 @@ impl NativeRuntime {
             .clone()
     }
 
-    /// Observe a listener and current client state. A TCP probe is not a native handshake.
+    /// Observe a listener and current client state. A connection probe is not an RPC handshake.
     pub fn status(&self) -> Value {
         let listening = self.listening();
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
@@ -116,6 +141,18 @@ impl NativeRuntime {
         result["serverListening"] = json!(listening);
         result["endpoint"] = json!(self.config.gateway.endpoint);
         result["codexHome"] = json!(self.config.home);
+        result["transport"] = json!(if self.endpoint.is_unix() {
+            "unix"
+        } else {
+            "websocket"
+        });
+        result["socketPath"] = json!(self.endpoint.socket_path());
+        result["authentication"] = match &self.endpoint {
+            Endpoint::PrivateUnix(_) => json!({"type":"unix-permissions"}),
+            Endpoint::AuthenticatedWebSocket(_) => {
+                json!({"type":"bearer","tokenFile":self.token_file})
+            }
+        };
         result["homeProvenance"] = json!(if state.child.is_some() {
             "monitor-started"
         } else {
@@ -123,10 +160,15 @@ impl NativeRuntime {
         });
         result["ownedServerPid"] = json!(state.child.as_ref().map(Child::id));
         result["lastStartupError"] = json!(state.last_error);
+        result["shutdownWarnings"] = json!(state.shutdown_warnings);
         result
     }
 
     fn listening(&self) -> bool {
+        #[cfg(unix)]
+        if let Endpoint::PrivateUnix(path) = &self.endpoint {
+            return crate::transport::connect_unix(path).is_ok();
+        }
         self.addresses
             .iter()
             .any(|address| TcpStream::connect_timeout(address, Duration::from_millis(150)).is_ok())
@@ -135,7 +177,7 @@ impl NativeRuntime {
     /// Explicitly connect, starting a server only when requested and the endpoint is absent.
     /// Callers must enforce authenticated POST and same-origin checks before this method.
     /// Serialized activation/retry never creates a second worker or process. A successfully
-    /// started shared server outlives this client; closing Write/native mode does not kill it.
+    /// started server is stopped when this runtime's native mode is switched off.
     pub fn activate(&self, start_if_missing: bool) -> Result<Value> {
         let result = self.activate_inner(start_if_missing);
         if let Err(error) = &result {
@@ -148,10 +190,45 @@ impl NativeRuntime {
         Ok(self.status())
     }
 
-    /// Disconnect an idle gateway while retaining the server. The HTTP caller must
+    /// Close the gateway and stop/reap only this runtime's owned server. The HTTP caller must
     /// enforce pairing, POST and Origin before invoking this process-level method.
     pub fn deactivate(&self) -> std::result::Result<Value, crate::DisconnectError> {
-        self.deactivate_inner(false)
+        let _transition = self.transition.try_lock().map_err(|_| {
+            crate::DisconnectError::Busy("A native lifecycle transition is already running".into())
+        })?;
+        let closed = self.gateway().map(|gateway| gateway.close()).transpose();
+        // A subscription failure must not strand an owned server. Independently
+        // started servers have no Child handle here and are never signalled.
+        let mut owned = StartupChild(
+            self.state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .child
+                .take(),
+        );
+        let stopped = owned.stop_gracefully();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.child = owned.0.take();
+        if let Ok(warnings) = &closed {
+            state.gateway = None;
+            state.shutdown_warnings = warnings.clone().unwrap_or_default();
+        }
+        drop(state);
+        match (closed, stopped) {
+            (Err(close), Err(stop)) => {
+                return Err(crate::DisconnectError::Worker(format!(
+                    "{close}; stopping the Monitor-owned Codex server also failed: {stop:#}"
+                )))
+            }
+            (Err(close), Ok(())) => return Err(close),
+            (Ok(_), Err(stop)) => {
+                return Err(crate::DisconnectError::Worker(format!(
+                    "Stop Monitor-owned Codex server: {stop:#}"
+                )))
+            }
+            (Ok(_), Ok(())) => (),
+        }
+        Ok(self.status())
     }
 
     /// Explicit recovery when the server/project has disappeared. Never interrupts work
@@ -197,7 +274,14 @@ impl NativeRuntime {
                 bail!("Native project root {} is not a directory", root.display());
             }
         }
-        let token = ServerToken::load_or_create(&self.config.gateway.state_path)?;
+        #[cfg(unix)]
+        if let Endpoint::PrivateUnix(path) = &self.endpoint {
+            crate::transport::check_start_path(path)?;
+        }
+        let connection = crate::client::NativeConnection::configured(
+            &self.config.gateway.endpoint,
+            &self.config.gateway.state_path,
+        )?;
         let mut startup = StartupChild(None);
         if !listening {
             {
@@ -233,8 +317,7 @@ impl NativeRuntime {
             }
         }
         let activated = (|| -> Result<Arc<Gateway>> {
-            crate::client::verify_auth(&self.config.gateway.endpoint, &token)
-                .map_err(anyhow::Error::msg)?;
+            connection.verify().map_err(anyhow::Error::msg)?;
             Gateway::start(Config {
                 endpoint: self.config.gateway.endpoint.clone(),
                 allowed_roots: self.config.gateway.allowed_roots.clone(),
@@ -257,6 +340,7 @@ impl NativeRuntime {
             state.child = startup.0.take();
         }
         state.last_error = None;
+        state.shutdown_warnings.clear();
         Ok(())
     }
 
@@ -327,16 +411,13 @@ impl NativeRuntime {
 
     fn server_command(&self) -> Result<Command> {
         let mut command = Command::new(&self.config.binary);
+        command.args(["app-server", "--listen", &self.config.gateway.endpoint]);
+        if !self.endpoint.is_unix() {
+            command
+                .args(["--ws-auth", "capability-token", "--ws-token-file"])
+                .arg(ServerToken::path(&self.config.gateway.state_path)?);
+        }
         command
-            .args([
-                "app-server",
-                "--listen",
-                &self.config.gateway.endpoint,
-                "--ws-auth",
-                "capability-token",
-                "--ws-token-file",
-            ])
-            .arg(ServerToken::path(&self.config.gateway.state_path)?)
             .args(["-c", "service_tier=\"default\""])
             .current_dir(&self.config.gateway.allowed_roots[0])
             .env_clear();
@@ -384,6 +465,53 @@ fn inherit_server_environment(
 struct StartupChild(Option<Child>);
 
 impl StartupChild {
+    /// TERM first, then a bounded KILL escalation for the entire owned group.
+    fn stop_gracefully(&mut self) -> Result<()> {
+        let Some(child) = self.0.as_mut() else {
+            return Ok(());
+        };
+        #[cfg(unix)]
+        {
+            let group = -(child.id() as i32);
+            for signal in [libc::SIGTERM, libc::SIGKILL] {
+                if unsafe { libc::kill(group, signal) } != 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.raw_os_error() != Some(libc::ESRCH) {
+                        return Err(error).context("Signal owned Codex process group");
+                    }
+                }
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while Instant::now() < deadline {
+                    let exited = child
+                        .try_wait()
+                        .context("Reap owned Codex server")?
+                        .is_some();
+                    let absent = unsafe { libc::kill(group, 0) } != 0
+                        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+                    if exited && absent {
+                        self.0 = None;
+                        return Ok(());
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+            bail!("Owned Codex process group did not exit after TERM and KILL");
+        }
+        #[cfg(not(unix))]
+        {
+            child.kill().context("Stop owned Codex server")?;
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < deadline {
+                if child.try_wait()?.is_some() {
+                    self.0 = None;
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            bail!("Owned Codex server did not exit");
+        }
+    }
+
     fn stop(&mut self) -> Result<()> {
         if let Some(mut child) = self.0.take() {
             #[cfg(unix)]
@@ -461,6 +589,49 @@ mod tests {
         assert!(!root.join("receipts.sqlite3").exists());
         assert!(!root.join("codex-home").exists());
         assert!(!root.join("native.log").exists());
+        crate::remove_test_scratch(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_configuration_resolves_home_without_creating_a_token_or_server() {
+        let (root, original) = fixture();
+        let runtime = NativeRuntime::new(RuntimeConfig {
+            gateway: Config {
+                endpoint: "unix://".into(),
+                allowed_roots: vec![root.clone()],
+                state_path: root.join("unix-receipts.sqlite3"),
+            },
+            binary: original.config.binary.clone(),
+            home: root.join("codex-home"),
+            log_path: root.join("unix.log"),
+        })
+        .unwrap();
+        let status = runtime.status();
+        assert_eq!(status["transport"], "unix");
+        assert_eq!(status["authentication"], json!({"type":"unix-permissions"}));
+        assert_eq!(
+            status["socketPath"],
+            json!(root.join("codex-home/app-server-control/app-server-control.sock"))
+        );
+        assert_eq!(status["runtime"], "stopped");
+        assert!(runtime
+            .activate(false)
+            .unwrap_err()
+            .to_string()
+            .contains("not running"));
+        let command = runtime.server_command().unwrap();
+        let args: Vec<_> = command
+            .get_args()
+            .map(|value| value.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args[0], "app-server");
+        assert!(args[2].starts_with("unix:///"));
+        assert!(!args.iter().any(|a| a.starts_with("--ws-")));
+        assert!(args.iter().any(|a| a == "service_tier=\"default\""));
+        assert!(!root.join("codex-server.token").exists());
+        assert!(!root.join("codex-home").exists());
+        assert!(!root.join("unix-receipts.sqlite3").exists());
         crate::remove_test_scratch(&root);
     }
 
@@ -679,6 +850,46 @@ mod tests {
             "A failed reconnect must not terminate the retained shared process"
         );
         drop(reaper);
+        crate::remove_test_scratch(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_toggle_stops_and_reaps_its_server_but_preserves_external_listeners() {
+        use std::os::unix::process::CommandExt;
+        let (root, runtime) = fixture();
+        let listener = std::net::TcpListener::bind(runtime.addresses[0]).unwrap();
+        for _ in 0..2 {
+            let mut command = Command::new("/bin/sleep");
+            command.arg("60");
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let child = command.spawn().unwrap();
+            let pid = child.id();
+            runtime.state.lock().unwrap().child = Some(child);
+            assert_eq!(runtime.status()["ownedServerPid"], pid);
+            let status = runtime.deactivate().unwrap();
+            assert!(status["ownedServerPid"].is_null());
+            assert_eq!(
+                unsafe { libc::kill(pid as i32, 0) },
+                -1,
+                "Owned server must be reaped"
+            );
+            assert_eq!(
+                status["serverListening"], true,
+                "Independent listener is preserved"
+            );
+            assert_eq!(status["runtime"], "available");
+        }
+        assert_eq!(runtime.deactivate().unwrap()["serverListening"], true);
+        drop(listener);
+        assert_eq!(runtime.status()["runtime"], "stopped");
         crate::remove_test_scratch(&root);
     }
 

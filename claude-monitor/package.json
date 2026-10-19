@@ -1,0 +1,13 @@
+{
+  "name": "agent-monitor-frontend-tests",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/codex_*.test.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.0",
+    "ws": "^8.22.0"
+  },
+  "type": "module",
+  "packageManager": "pnpm@11.25.0"
+}

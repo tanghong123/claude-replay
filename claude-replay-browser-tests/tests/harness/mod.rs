@@ -1344,6 +1344,7 @@ pub fn configure_monitor_environment(
     let state = base.join(format!("state-{port}"));
     let cache = base.join(format!("cache-{port}"));
     cmd.env("HOME", base.join("home"))
+        .env_remove("CODEX_NATIVE_SERVER_URL")
         .env("XDG_CONFIG_HOME", base.join("config"))
         .env("XDG_DATA_HOME", base.join("data"))
         .env("XDG_STATE_HOME", base.join("xdg-state"))
@@ -1389,6 +1390,19 @@ impl Monitor {
         paired: bool,
         env: &[(&str, &str)],
     ) -> Monitor {
+        Self::spawn_with_args(kind, port, base, stores, paired, env, &[])
+    }
+
+    /// Existing hermetic monitor launcher with explicit process arguments for optional modes.
+    pub fn spawn_with_args(
+        kind: Kind,
+        port: u16,
+        base: &Path,
+        stores: Option<&Stores>,
+        paired: bool,
+        env: &[(&str, &str)],
+        args: &[&str],
+    ) -> Monitor {
         let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -1430,6 +1444,7 @@ impl Monitor {
                 }
             }
         }
+        cmd.args(args);
         let child = Reap(
             cmd.spawn()
                 .unwrap_or_else(|e| panic!("{} starts: {e}", kind.binary())),

@@ -68,6 +68,8 @@ impl Connection {
 
 #[derive(Default)]
 pub(super) struct State {
+    pub stopping: bool,
+    pub shutdown_warnings: Vec<String>,
     pub request_namespace: String,
     pub connection: Connection,
     pub connection_error: Option<String>,

@@ -1,10 +1,10 @@
 # Codex native permissions and process lifetime
 
-This stage ships only the `claude-monitor-codex` library. Neither Monitor binary
-links it or exposes an activation control yet. The crate is a default workspace
-test member so ordinary Cargo gates exercise it. Later HTTP/UI wiring must keep
-construction, session reading and ordinary Write mode inert until explicit native
-activation. Do not start a runtime simply because its endpoint is configured.
+The optional `codex-native` feature wires `claude-monitor-codex` into
+`agent-monitor`. The crate is a default workspace test member so ordinary Cargo
+gates exercise it. Construction, session reading and ordinary Write mode remain
+inert until explicit native activation. Configuring an endpoint does not start a
+runtime or enable pairing. Retiring Monitor entrypoints do not add native controls.
 
 ## Caller wiring contract
 
@@ -47,7 +47,7 @@ symlinks, before native project operations. A home-directory root grants broad
 project scope. Pairing does not grant arbitrary shell access or bypass another
 thread's pending-request identity checks.
 
-## Monitor-to-server authentication
+## Monitor-to-server authentication: loopback WebSocket
 
 On first explicit activation, Monitor generates an independent random 256-bit
 credential. It publishes `codex-server.token` atomically beside the receipt
@@ -84,14 +84,56 @@ An open server is refused before native initialization. TCP listener probes do
 not establish authentication. Handshake failures report status without headers
 or response bodies, which could echo the credential.
 
-The supported transport remains loopback WebSocket. A private Unix socket would
-also prevent another account squatting the port, but requires a Unix transport
-adapter and an explicit supported-runtime contract. Revisit it before supporting
-mutually untrusted local accounts: TCP loopback authentication does not authenticate
-the server to Monitor, and a malicious local listener could impersonate the 401
-challenge. Same-user processes with access to this credential remain trusted.
-Codex App sharing is not supported until its client can present this credential;
-there are no unauthenticated App launcher instructions in the runtime response.
+TCP loopback authentication does not authenticate the server to Monitor: a
+malicious local listener could impersonate the 401 challenge. Same-user processes
+with access to this credential remain trusted. Codex App sharing through this
+transport requires an App that can supply the Bearer header; an endpoint override
+alone does not establish that support. Setup help exposes the Token file path,
+never the credential, and recommends private Unix sharing when the App cannot
+send the header. Authentication failure never triggers an unauthenticated retry.
+
+## Monitor-to-server authentication: private Unix socket
+
+On macOS and Linux, the default host configuration selects `unix://` for
+`$CODEX_HOME/app-server-control/app-server-control.sock`; an absolute
+`unix:///path.sock` selects a different socket. An explicit CLI endpoint takes
+precedence over `CODEX_NATIVE_SERVER_URL`; existing WebSocket configurations remain
+valid. Unix failure never selects WebSocket implicitly. This carries WebSocket
+HTTP Upgrade and frames over a Unix stream, retaining the same RPC, receipts,
+approvals and reconnect rules. It needs
+a Codex CLI that supports Unix listeners. Monitor does not weaken WebSocket
+authentication when Unix is selected and does not create a native Token file.
+
+Before every connection, Monitor checks the advertised endpoint belongs to its
+effective OS user and is a socket or symlink. Codex's macOS rendezvous alias may
+resolve to a short physical path. The resolved socket and its physical parent
+must belong to the same user and have no group/other permissions (normally 0600
+and 0700). Canonical ancestors must be owned by that user or root and must not be
+writable by other users, except root-owned sticky directories such as `/tmp`.
+The connected peer UID must match via `getpeereid` or `SO_PEERCRED`. A second path
+inspection checks device/inode identity after connecting. An invalid, replaced,
+public or dangling endpoint is refused, not unlinked or chmodded by Monitor.
+
+This authorizes an OS user, not particular executables. Other processes belonging
+to that user and privileged processes remain trusted. A native App connecting
+directly to the socket has Codex's native authority; Monitor's allowed-root scope
+only governs requests through its HTTP gateway. Browser pairing, Origin checks,
+method checks, project scope and approval identity checks remain mandatory for
+both native transports. Browsers never connect directly to the Unix socket.
+
+Monitor can attach to an existing native daemon. Explicit **Start and enable**
+uses the existing owned foreground-listener lifecycle with `--listen unix://...`,
+without TCP auth flags. It does not stop or manage another daemon. App transport
+selection is version/configuration dependent; verify actual attachment instead
+of assuming that opening the App connected it to this socket. No automatic App
+launcher or permission-changing migration is included.
+
+The setup prompt asks the coding agent to prepare a user-run terminal command
+or local launcher, without executing it or stopping any App/server from the chat.
+The generated launcher must let the user save work and confirm any restart,
+preserve unrelated instances, and verify the actual shared connection. A copied
+prompt is preparation guidance, not proof that a compatible launcher was produced
+or that Codex App has switched transports.
 
 ## Codex policy and process context
 
@@ -118,25 +160,31 @@ paths must choose that explicit location; there is no automatic cwd migration.
 
 ## Disconnect and recovery
 
-Only attached threads are restricted from ordinary sending. Normal disconnect
-verifies native idleness and empty queues without holding the lifecycle lock
-across RPC. A short final lock rechecks connection/event/action generations before
-releasing ownership; the worker join happens outside that lock. Status and exact
-ownership checks remain available during slow probes. Runtime startup/shutdown
-transitions are serialized separately from its state mutex.
+Only attached threads are restricted from ordinary sending. The native toggle's
+`deactivate` transition fences new requests first, closes the gateway worker and
+releases its subscriptions with one three-second deadline. In-flight delivered
+RPCs become uncertain; they are never replayed. The transition then drains local
+response handlers before clearing ownership. Background reads, pending approvals
+and active sessions cannot veto the user's explicit close. Worker/handler drain
+is bounded at 15 seconds; a failed drain keeps the fence and can be retried.
 
-A deleted project directory does not prevent an idle check. If native reads fail
-or the server disappears, an explicit force disconnect releases the gateway
-without sending an interrupt, killing a process or replaying an action. It refuses
-known active turns/approvals while connected and all in-flight HTTP actions.
-When disconnected, cached active flags are stale; force disconnect accepts that
-execution may still exist elsewhere. The host must explain this uncertainty and
-require an explicit recovery action. It does not claim the native work stopped.
+If this runtime holds the child handle from activation, it stops the owned process
+group with TERM (three seconds), then KILL (three seconds), and reaps the child.
+Cleanup failure retains the handle for retry and is reported. History and already
+delivered messages are preserved. Stopping this shared process interrupts its work
+and disconnects other clients. Turning off Native, or Write with Native enabled,
+refreshes ownership and requires an explicit shutdown confirmation for a
+Monitor-owned process. Cancel and Escape leave the server and both modes on.
+An unavailable ownership check never silently proceeds with shutdown.
+A server merely discovered at the endpoint, including one retained across a
+Monitor restart, is externally managed: Monitor closes only its own connection.
+It never signals that process, interrupts another client's turn, deletes queued
+messages from that server, removes writer locks or edits Codex storage.
 
-On Unix the authenticated server uses `setsid` and survives successful Monitor
-disconnection/exit. Every failed startup cleans the entire newly owned process
-group and reaps its direct child, including launcher-shim descendants. A server
-from an earlier activation or another process is never killed by that cleanup.
+The standalone Gateway's `disconnect` and `force_disconnect` APIs retain their
+non-interrupting contract for other hosts. Runtime startup/shutdown transitions
+are serialized separately from status reads. Failed startup still cleans the
+entire newly owned process group, including launcher-shim descendants.
 
 ## Durable receipts and compatibility
 

@@ -166,6 +166,33 @@ impl SendRefusal {
     }
 }
 
+/// A host-installed ownership view. Inactive runtimes own no ordinary session.
+pub trait NativeSessions: Send + Sync {
+    fn is_active(&self) -> bool;
+    fn owns_session(&self, session_id: &str) -> bool;
+}
+
+#[derive(Clone, Default)]
+enum LegacySendPolicy {
+    #[default]
+    Standalone,
+    SharedCodexRuntime(std::sync::Arc<dyn NativeSessions>),
+}
+
+impl LegacySendPolicy {
+    fn allow_session(&self, agent: Agent, session_id: &str) -> Result<(), SendRefusal> {
+        match (self, agent) {
+            (Self::SharedCodexRuntime(owner), Agent::CODEX) if owner.owns_session(session_id) => {
+                Err(SendRefusal::SessionIsLive)
+            }
+            _ => Ok(()),
+        }
+    }
+    fn native_active(&self) -> bool {
+        matches!(self, Self::SharedCodexRuntime(owner) if owner.is_active())
+    }
+}
+
 pub struct Index {
     /// The monitor's OWN durable root (R5) — counters are read from `html/<sid>/meta.jsonl`
     /// under it; an entry existing at all is what "visited" means.
@@ -184,6 +211,7 @@ pub struct Index {
 
 #[derive(Default)]
 struct State {
+    legacy_send_policy: LegacySendPolicy,
     rows: HashMap<String, Row>,
     scanned_at: Option<Instant>,
     snapshot: String,
@@ -502,6 +530,34 @@ impl Index {
         }
     }
 
+    /// Install the host's live native ownership view without activating a runtime.
+    pub fn require_shared_codex_runtime(&self, owner: std::sync::Arc<dyn NativeSessions>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .legacy_send_policy = LegacySendPolicy::SharedCodexRuntime(owner);
+    }
+
+    /// Rebuild the filtered inventory after an explicit native transition.
+    pub fn native_sessions_changed(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .scanned_at = None;
+    }
+
+    /// Refuse only a Codex session currently attached to this gateway.
+    pub fn shared_codex_required(&self, sid: &str) -> bool {
+        self.agent_for_session(sid) == Some(Agent::CODEX)
+            && self
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .legacy_send_policy
+                .allow_session(Agent::CODEX, sid)
+                .is_err()
+    }
+
     /// This index's hide list — under the state dir it was CONSTRUCTED with (#153).
     fn hide_list(&self) -> PathBuf {
         self.state_dir.join("ignored.json")
@@ -535,6 +591,15 @@ impl Index {
         json!({ "ok": true, "ignored": st.ignored.len() }).to_string()
     }
 
+    /// Identify a stored session without interpreting process liveness as writer
+    /// ownership. Shared Codex mode uses this before every legacy write route.
+    pub fn agent_for_session(&self, sid: &str) -> Option<Agent> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        self.scan(&mut state, &|_| {});
+        state.scanned_at = Some(Instant::now());
+        state.rows.get(sid).map(|row| row.agent)
+    }
+
     /// Resolve a send-prompt target (#133 idle slice): the session must EXIST, have NO live
     /// attributed process, and its PROJECT (cwd) must have no active session — so a resume
     /// never forks off shared history that a live session is still writing, and never
@@ -549,6 +614,7 @@ impl Index {
         let row = st.rows.get(sid).ok_or(SendRefusal::NoSuchSession)?;
         let agent = row.agent;
         let cwd = row.cwd.clone();
+        st.legacy_send_policy.allow_session(agent, sid)?;
         // Only claude and codex have a verified headless resume shape (agent-jdi); others
         // are refused rather than driven with an unverified CLI.
         if agent != Agent::CLAUDE && agent != Agent::CODEX {
@@ -589,6 +655,7 @@ impl Index {
             let row = st.rows.get(sid).ok_or(SendRefusal::NoSuchSession)?;
             (row.agent, row.cwd.clone())
         };
+        st.legacy_send_policy.allow_session(agent, sid)?;
         let link = st.send_links.get(sid).cloned().unwrap_or_default();
         let (pid, sock, pane) = tmux_target_from(agent, &link)?;
         // The project must have no OTHER live session — else injecting here while another
@@ -644,7 +711,10 @@ impl Index {
         // Discovery: every agent's machine-wide store (R1).
         let mut seen: Vec<String> = Vec::new();
         for a in adapters() {
-            if !self.only.is_empty() && !self.only.contains(&a.agent()) {
+            if !self.only.is_empty()
+                && !self.only.contains(&a.agent())
+                && !(a.agent() == Agent::CODEX && st.legacy_send_policy.native_active())
+            {
                 continue;
             }
             for path in a.store_transcripts() {
@@ -2665,6 +2735,16 @@ pub fn xdg_cache_root() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    struct TestNativeOwner;
+    impl super::NativeSessions for TestNativeOwner {
+        fn is_active(&self) -> bool {
+            true
+        }
+        fn owns_session(&self, _: &str) -> bool {
+            true
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -2815,6 +2895,249 @@ mod tests {
         // A live session in ANOTHER project does not block this one.
         live.remove("live-b");
         assert!(send_liveness_ok("idle-c", Some("/proj"), &live, cwd_of, |_| None).is_ok());
+    }
+
+    #[test]
+    fn native_send_restrictions_follow_live_ownership_and_release_after_disconnect() {
+        struct Owner(std::sync::atomic::AtomicBool);
+        impl NativeSessions for Owner {
+            fn is_active(&self) -> bool {
+                self.0.load(std::sync::atomic::Ordering::SeqCst)
+            }
+            fn owns_session(&self, id: &str) -> bool {
+                self.is_active() && id == "owned"
+            }
+        }
+        let owner = std::sync::Arc::new(Owner(std::sync::atomic::AtomicBool::new(false)));
+        let policy = LegacySendPolicy::SharedCodexRuntime(owner.clone());
+        assert!(policy.allow_session(Agent::CODEX, "owned").is_ok());
+        owner.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(policy.allow_session(Agent::CODEX, "owned").is_err());
+        assert!(policy.allow_session(Agent::CODEX, "unrelated").is_ok());
+        assert!(policy.allow_session(Agent::CLAUDE, "owned").is_ok());
+        owner.0.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(policy.allow_session(Agent::CODEX, "owned").is_ok());
+    }
+
+    #[test]
+    fn shared_runtime_refuses_codex_materialized_after_legacy_ownership_scan() {
+        struct RestoreStores([(&'static str, Option<std::ffi::OsString>); 3]);
+        impl Drop for RestoreStores {
+            fn drop(&mut self) {
+                for (name, previous) in &self.0 {
+                    match previous {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("Read the clock for isolated legacy send fixtures")
+            .as_nanos();
+        let scratch = std::env::temp_dir().join(format!(
+            "cm-shared-legacy-send-{}-{nonce}",
+            std::process::id()
+        ));
+        // StateEnv holds the process-global environment lock until the store
+        // overrides have also been restored. No real transcript store is read.
+        let _state_env = StateEnv::set(scratch.join("state"));
+        let variables = ["CLAUDE_PROJECTS_DIR", "CODEX_HOME", "CODEX_SESSIONS_DIR"];
+        let _restore_stores = RestoreStores(variables.map(|name| (name, std::env::var_os(name))));
+        let claude_store = scratch.join("claude/projects");
+        let codex_home = scratch.join("codex");
+        let codex_store = codex_home.join("sessions/2026/01/01");
+        for directory in [&claude_store, &codex_store] {
+            std::fs::create_dir_all(directory).expect("Create isolated legacy send fixture store");
+        }
+        std::env::set_var("CLAUDE_PROJECTS_DIR", &claude_store);
+        std::env::set_var("CODEX_HOME", &codex_home);
+        std::env::set_var("CODEX_SESSIONS_DIR", codex_home.join("sessions"));
+        let standalone = Index::new(
+            scratch.join("standalone-cache"),
+            scratch.join("state"),
+            vec![Agent::CLAUDE, Agent::CODEX],
+        );
+        let shared = Index::new(
+            scratch.join("shared-cache"),
+            scratch.join("state"),
+            vec![Agent::CLAUDE, Agent::CODEX],
+        );
+        shared.require_shared_codex_runtime(std::sync::Arc::new(TestNativeOwner));
+        let filtered = Index::new(
+            scratch.join("claude-only-cache"),
+            scratch.join("state"),
+            vec![Agent::CLAUDE],
+        );
+        let thread_id = "9ff12aca-681c-48c2-a1d9-61f777c795e1";
+        // The legacy Index keys rows by the complete filename stem, which is
+        // different from the native app-server thread UUID.
+        let sid = format!("rollout-2026-01-01T00-00-00-{thread_id}");
+        assert_eq!(standalone.agent_for_session(&sid), None);
+        assert_eq!(shared.agent_for_session(&sid), None);
+
+        // This file appears between the HTTP ownership lookup above and the
+        // transport's fresh scan below. Metadata alone makes it discoverable.
+        let metadata = json!({
+            "timestamp":"2026-01-01T00:00:00Z",
+            "type":"session_meta",
+            "payload":{"id":thread_id,"cwd":scratch.join("codex-project")}
+        });
+        std::fs::write(
+            codex_store.join(format!("{sid}.jsonl")),
+            format!("{metadata}\n"),
+        )
+        .expect("Materialize the Codex rollout after its first ownership scan");
+
+        assert_eq!(filtered.agent_for_session(&sid), None);
+        filtered.require_shared_codex_runtime(std::sync::Arc::new(TestNativeOwner));
+        assert_eq!(filtered.agent_for_session(&sid), Some(Agent::CODEX));
+        let listed = filtered.sessions_json(|_| {});
+        assert!(
+            listed.contains(&sid),
+            "Native activation must invalidate the filtered snapshot"
+        );
+
+        // Standalone mode still permits the historical command shape. Inspect
+        // it without spawning a CLI or sending anything to a live terminal.
+        let target = standalone
+            .resolve_send(&sid)
+            .expect("Standalone mode resolves the newly discovered Codex rollout");
+        assert_eq!(target.agent, Agent::CODEX);
+        assert_eq!(target.sid, sid);
+        let (program, arguments) = crate::control::resume_command(&target, "fixture prompt")
+            .expect("Codex retains its legacy standalone resume command");
+        assert_eq!(program, "codex");
+        assert_eq!(&arguments[..3], &["exec", "resume", sid.as_str()]);
+
+        // Assert the resolver refusal before exercising HTTP: even a regression
+        // cannot make this test reach spawn_resume with an eligible Codex target.
+        assert!(matches!(
+            shared.resolve_send(&sid),
+            Err(SendRefusal::SessionIsLive)
+        ));
+        assert!(matches!(
+            shared.resolve_tmux_send(&sid),
+            Err(SendRefusal::SessionIsLive)
+        ));
+        assert_eq!(shared.agent_for_session(&sid), Some(Agent::CODEX));
+        let query = format!("target={sid}");
+        let request = claude_replay_html::Request {
+            method: "POST",
+            name: "api/send",
+            query: &query,
+            body: b"fixture prompt",
+            authenticated: true,
+            origin_ok: true,
+        };
+        let assert_shared_refusal = |response: claude_replay_html::HttpResponse, route: &str| {
+            assert_eq!(response.code, "409 Conflict");
+            let body: Value = serde_json::from_slice(&response.body).unwrap();
+            assert_eq!(body["code"], "shared_runtime_required");
+            assert_eq!(
+                body["error"].as_str(),
+                Some("Enable Codex native mode under Write mode to use this shared server.")
+            );
+            // Feed each real route's response to the unchanged shared JS
+            // consumers used by the classic rail, app shell, and v2 shell.
+            let script = r#"
+                import assert from 'node:assert/strict';
+                import { pathToFileURL } from 'node:url';
+                const { grantOutcome, sendOutcome, runSend } = await import(pathToFileURL(process.argv[1]));
+                const response = JSON.parse(process.argv[2]);
+                const route = process.argv[3];
+                const message = 'Enable Codex native mode under Write mode to use this shared server.';
+                const readOutcome = data => route === 'send' ? sendOutcome(data, 'resume') : grantOutcome(data);
+                assert.deepEqual(readOutcome(response), { kind: 'error', tone: 'err', message });
+                assert.equal(String(readOutcome(response).message), message);
+                const calls = [];
+                const flow = await runSend({ target: 'shared', mode: route === 'send' ? 'resume' : 'tmux',
+                    consented: false, prompt: 'fixture prompt', post: async url => { calls.push(url); return response; } });
+                assert.equal(flow.step, route === 'send' ? 'send' : 'grant');
+                assert.equal(flow.outcome.message, message);
+                assert.equal(flow.consented, false);
+                assert.deepEqual(calls, [`/api/${route}?target=shared`]);
+                // The former object-shaped error loses the visible message in
+                // these actual consumers, so the string assertion is material.
+                const incompatible = { ok: false, error: { code: response.code, message } };
+                assert.equal(String(readOutcome(incompatible).message), '[object Object]');
+            "#;
+            let module = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../claude-replay-html/src/html/shared/control-protocol.js");
+            let result = std::process::Command::new("node")
+                .args(["--input-type=module", "--eval", script])
+                .arg(&module)
+                .arg(body.to_string())
+                .arg(route)
+                .output();
+            let output = match result {
+                Ok(output) => output,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    eprintln!("skip: no `node` on PATH for {route} legacy consumer verification");
+                    return;
+                }
+                Err(error) => panic!(
+                    "Run legacy {route} consumer with {}: {error}",
+                    module.display()
+                ),
+            };
+            assert!(
+                output.status.success(),
+                "Legacy {route} consumer rejected the real route response:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        assert_shared_refusal(crate::control::send_route(&shared, &request), "send");
+        let consent_request = claude_replay_html::Request {
+            name: "api/consent",
+            ..request
+        };
+        assert_shared_refusal(
+            crate::control::consent_route(
+                &shared,
+                &consent_request,
+                &std::sync::Mutex::new(crate::control::Attempts::default()),
+            ),
+            "consent",
+        );
+        let injection_reply = crate::control::send_tmux(&shared, &sid, "fixture prompt");
+        assert_eq!(injection_reply["code"], "shared_runtime_required");
+        assert!(injection_reply["error"].is_string());
+
+        // The shared policy targets Codex rather than denying every legacy agent.
+        let claude_sid = "76dd16b2-c492-4285-bef0-5198f4064517";
+        let claude_project = claude_store.join("fixture-project");
+        std::fs::create_dir_all(&claude_project)
+            .expect("Create the isolated Claude fixture project");
+        let user = json!({
+            "sessionId":claude_sid,"type":"user",
+            "cwd":scratch.join("claude-project"),"timestamp":"2026-01-01T00:00:00Z",
+            "message":{"role":"user","content":"fixture history"}
+        });
+        std::fs::write(
+            claude_project.join(format!("{claude_sid}.jsonl")),
+            format!("{user}\n"),
+        )
+        .expect("Write the isolated Claude fixture history");
+        let claude_target = shared
+            .resolve_send(claude_sid)
+            .expect("Shared Codex mode preserves legacy Claude send eligibility");
+        assert_eq!(claude_target.agent, Agent::CLAUDE);
+        assert_eq!(
+            crate::control::resume_command(&claude_target, "fixture prompt")
+                .unwrap()
+                .0,
+            "claude"
+        );
+        std::fs::remove_dir_all(&scratch).unwrap_or_else(|error| {
+            panic!(
+                "Remove isolated legacy send fixture {}: {error}",
+                scratch.display()
+            )
+        });
     }
 
     /// #133 tmux slice — the §3.1 refusal ladder (pure): only a live, PROVEN, in-tmux,

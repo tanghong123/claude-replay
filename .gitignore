@@ -35,3 +35,6 @@
 /compare-scroll.py
 /stitch-frames.py
 .claude/worktrees/
+
+# Declared frontend test dependencies are restored through pnpm.
+/claude-monitor/node_modules/

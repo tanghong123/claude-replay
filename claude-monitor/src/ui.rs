@@ -243,6 +243,22 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/viewport.js").as_slice(),
         ),
+        "monitor-ui/native-policy.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/native-policy.js").as_slice(),
+        ),
+        "monitor-ui/native-menu.js" => (
+            "application/javascript; charset=utf-8",
+            include_bytes!("codex-ui/native-menu.js").as_slice(),
+        ),
+        "monitor-ui/native-mode.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/native-mode.js").as_slice(),
+        ),
+        "monitor-ui/phone-keyboard.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/phone-keyboard.js").as_slice(),
+        ),
         "monitor-ui/control-store.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/control-store.js").as_slice(),
@@ -426,6 +442,12 @@ mod tests {
     fn every_module_the_shell_imports_is_served() {
         let sources: &[(&str, &str)] = &[
             ("app.js", include_str!("codex-ui/app.js")),
+            ("native-mode.js", include_str!("codex-ui/native-mode.js")),
+            ("native-menu.js", include_str!("codex-ui/native-menu.js")),
+            (
+                "native-policy.js",
+                include_str!("codex-ui/native-policy.js"),
+            ),
             (
                 "attachment-viewer.js",
                 include_str!("codex-ui/attachment-viewer.js"),
@@ -538,6 +560,10 @@ mod tests {
             ("view-memory.js", include_str!("codex-ui/view-memory.js")),
             ("view-model.js", include_str!("codex-ui/view-model.js")),
             ("viewport.js", include_str!("codex-ui/viewport.js")),
+            (
+                "phone-keyboard.js",
+                include_str!("codex-ui/phone-keyboard.js"),
+            ),
         ];
         let mut seen = std::collections::BTreeSet::new();
         let mut todo = vec!["app.js".to_string()];

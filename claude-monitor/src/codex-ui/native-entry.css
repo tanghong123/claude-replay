@@ -1,0 +1,67 @@
+/* Native is an optional mode inside the existing Write row, not a second navigation row. */
+#writeBtn .production-native-trigger{display:grid;place-items:center;flex:none;width:28px;min-height:32px;padding:0;border:0;border-radius:7px;background:transparent;color:var(--sub);cursor:pointer;transition:background .16s,color .16s}
+#writeBtn .production-native-trigger[hidden]{display:none}
+.production-native-trigger svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;transition:transform .16s}
+#writeBtn .production-native-trigger[data-native-enabled="true"]{color:var(--primary)}
+#writeBtn .production-native-trigger:hover,#writeBtn .production-native-trigger[aria-expanded="true"]{background:var(--hover)}
+.production-native-trigger[aria-expanded="true"] svg{transform:rotate(180deg)}
+.production-native-choice{padding:5px 0 3px}
+.production-native-choice[hidden]{display:none!important}
+#app .nav .production-native-new{width:100%;height:40px;gap:9px;background:color-mix(in srgb,var(--bg) 70%,transparent);color:var(--ink);font-weight:500;transition:background .16s}
+#app .nav .production-native-new:hover{background:var(--bg)}
+.production-native-new span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.production-native-new .icon{width:18px;height:18px;color:var(--sub);flex:none}
+.production-native-menu{--safe-top:env(safe-area-inset-top,0px);--safe-right:env(safe-area-inset-right,0px);--safe-bottom:env(safe-area-inset-bottom,0px);--safe-left:env(safe-area-inset-left,0px);box-sizing:border-box;position:fixed;inset:auto;margin:0;width:272px;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px);overflow:auto;padding:12px;border:1px solid var(--line);border-radius:14px;background:var(--bg);color:var(--ink);box-shadow:0 10px 30px #20324c20;font:13px/1.5 var(--sans)}
+.production-native-menu>strong{display:block;margin:0 6px 6px;font-size:12px;font-weight:500;color:var(--sub)}
+.production-native-menu p{margin:9px 6px 2px;color:var(--sub);font-size:12px;line-height:1.5}
+.production-server-status{margin-top:12px;padding:12px 10px;border-radius:10px;background:var(--panel)}
+.production-server-heading{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:5px 10px;font-size:12px}
+.production-server-heading>span{font-weight:500}
+.production-server-heading>strong{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:500;color:var(--sub)}
+.production-server-heading>strong::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+.production-server-status[data-state="running"] .production-server-heading>strong{color:var(--primary)}
+.production-server-status[data-state="error"] .production-server-heading>strong{color:var(--danger,#bd3545)}
+.production-native-menu .production-server-status p{margin:7px 0 0;color:var(--ink)}
+.production-server-transport{display:block;margin-top:5px;font-size:12px;color:var(--sub)}
+.production-native-menu .production-server-status .production-server-note{margin-top:9px;color:var(--sub)}
+.production-native-menu .production-native-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px;width:100%;min-height:44px;padding:8px 9px;border:0;border-radius:9px;background:var(--panel);color:var(--ink);font:500 14px/1.4 var(--sans);text-align:left;cursor:pointer;transition:background .16s}
+.production-native-toggle:hover{background:var(--hover)}
+.production-native-track{display:flex;align-items:center;flex:none;box-sizing:border-box;width:32px;height:20px;padding:3px;border-radius:20px;background:var(--line);transition:background .16s}
+.production-native-track>span{width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .16s}
+.production-native-toggle[aria-checked="true"] .production-native-track{background:var(--primary)}
+.production-native-toggle[aria-checked="true"] .production-native-track>span{transform:translateX(12px)}
+.production-native-menu button:disabled{opacity:.5;cursor:wait}
+.production-native-trigger:focus-visible,.production-native-new:focus-visible,.production-native-menu button:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.production-native-menu details{margin-top:12px;font-size:12px}
+.production-native-menu summary{cursor:pointer}
+.production-native-menu pre,.production-native-menu code{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px}
+@media(max-width:760px),(pointer:coarse) and (max-height:500px){#writeBtn .production-native-trigger{width:44px;min-height:44px}#app .nav .production-native-new{height:44px}.production-native-menu summary{display:flex;align-items:center;min-height:44px}}
+@media(prefers-reduced-motion:reduce){#writeBtn .production-native-trigger,.production-native-trigger svg,#app .nav .production-native-new,.production-native-toggle,.production-native-track,.production-native-track>span{transition:none}}
+
+#nativeConnectionHelp{display:block;width:100%;margin-top:8px;padding:9px 6px;min-height:44px;border:0;border-top:1px solid var(--line);background:none;color:var(--primary);text-align:start;font:inherit;cursor:pointer}
+
+/* Project actions are quiet utilities; selected sessions and the filter own emphasis. */
+.agent-label:has(.native-project-add){display:flex;align-items:center;gap:8px}
+.agent-label:has(.native-project-add)::after{margin-left:0}
+.native-project-add,.native-project-new{display:inline-flex;align-items:center;justify-content:center;flex:none;position:relative;width:30px;height:30px;padding:0;border:0;border-radius:7px;background:transparent;color:var(--sub);cursor:pointer;transition:background .16s,color .16s}
+.native-project-add{margin-left:auto;margin-right:14px}
+.native-project-add>.icon{width:16px;height:16px}
+.native-project-new>.icon{width:15px;height:15px}
+.native-project-add:hover,.native-project-new:hover{background:var(--hover);color:var(--ink)}
+.native-project-add:focus-visible,.native-project-new:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
+@media(max-width:760px),(pointer:coarse){.native-project-add,.native-project-new{width:44px;height:44px}.agent-label:has(.native-project-add){min-height:44px}.tree-row.project:has(.native-project-new){min-height:44px}}
+@media(prefers-reduced-motion:reduce){.native-project-add,.native-project-new{transition:none}}
+
+/* Stopping an owned server also disconnects Codex App: disclose that before the request. */
+.production-native-stop{box-sizing:border-box;width:calc(100% - 32px);max-width:400px;max-height:calc(100dvh - 32px);overflow:auto;padding:24px;border:1px solid var(--line);border-radius:16px;background:var(--bg);color:var(--ink);box-shadow:0 16px 48px #20324c26;font:14px/1.55 var(--sans)}
+.production-native-stop::backdrop{background:#17243955}
+.production-native-stop h2{margin:0 0 10px;font-size:19px;line-height:1.3;font-weight:600;letter-spacing:-.02em}
+.production-native-stop p{margin:0;color:var(--sub)}
+.production-native-stop-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:22px}
+.production-native-stop button{min-height:44px;padding:9px 15px;border:0;border-radius:9px;background:var(--panel);color:var(--ink);font:500 14px/1.4 var(--sans);cursor:pointer;transition:background .16s}
+.production-native-stop button:hover{background:var(--hover)}
+.production-native-stop #nativeStopConfirm{background:var(--primary);color:#fff}
+.production-native-stop #nativeStopConfirm:hover{background:color-mix(in srgb,var(--primary),#000 12%)}
+.production-native-stop button:focus-visible{outline:2px solid var(--primary);outline-offset:3px}
+@media(max-width:400px){.production-native-stop{padding:20px}.production-native-stop-actions button{flex:1}}
+@media(prefers-reduced-motion:reduce){.production-native-stop button{transition:none}}

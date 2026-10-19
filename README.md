@@ -343,6 +343,84 @@ Codex integration is validated against CLI 0.145.0: authentication uses
 interactive takeover uses `codex resume`, and fresh-run identity is read from the
 JSON `thread.started.thread_id` event (with rollout-marker discovery as a fallback).
 
+## Codex native mode — optional shared runtime
+
+Build `agent-monitor` with `--features codex-native` to offer native Codex controls.
+The ordinary reader and Claude writer stay unchanged until you enable Write and
+then Codex native. Only `agent-monitor` integrates this mode; retiring monitor
+entrypoints receive no native extension.
+
+```sh
+cargo build --release -p claude-monitor --features codex-native
+agent-monitor --pair --no-open --codex-allowed-root /path/to/project
+```
+
+On macOS and Linux, the default is `unix://`, which selects
+`$CODEX_HOME/app-server-control/app-server-control.sock`; an explicit
+`unix:///absolute/path.sock` selects a different socket. Monitor uses WebSocket
+frames over that private Unix socket. Each connection verifies the socket and
+physical parent are owner-only, validates any rendezvous alias, and checks the
+server's OS user. It does not create a native Bearer token in this mode.
+
+The existing `--codex-server-url ws://127.0.0.1:4500` mode remains an explicit
+option (and the default on platforms without Unix sockets). CLI options take
+precedence over `CODEX_NATIVE_SERVER_URL`; either explicit configuration overrides
+the platform default. WebSocket requires capability-token authentication, including
+on reconnect. There is no automatic fallback to WebSocket if Unix fails.
+The HTTP gateway is retained in both modes: browsers and phones still
+use Monitor's paired HTTP API, not the native socket or native Bearer credential.
+
+Install the Codex CLI and make `codex` available on PATH, or explicitly set
+`CODEX_NATIVE_BINARY`. The server uses `CODEX_HOME` (normally the Codex CLI's own
+home). Configuring the endpoint does not start a process or silently enable
+pairing. The **Codex native** switch starts or connects to the selected server;
+its menu stays open to show the resulting connection status.
+Native controls include projects, models, effort, speed, history, text/images,
+queue steering, interrupt, approvals, and questions. Ordinary Claude sessions
+retain their existing controls and transport.
+
+**Turn off native mode** releases Monitor's session connections without waiting
+for background reads or active sessions to become idle. If this Monitor started
+`codex app-server`, it stops and reaps that process and its running work; connected
+Codex apps disconnect too. Turning off Native, or Write while Native is enabled,
+asks for confirmation before stopping a Monitor-owned server. Cancel keeps both
+modes on. An independently started server keeps running without a stop
+confirmation. History
+and already delivered messages are retained; closing the mode never retries them.
+Paired clients can share live sessions through this server.
+
+If a session is open in another Codex server, its history stays readable. The
+composer shows **Session open elsewhere**, with **Try again** and **How to resolve**.
+Finish the current turn and quit the owning App instance or CLI session, then
+retry. Monitor does not stop other processes or send the draft during recovery.
+To keep using App and Monitor together, the help panel includes a short setup
+prompt with the actual endpoint, configured Codex home and authentication method.
+Unix sharing requires an App version and configuration that select that same
+socket; starting the App alone does not prove sharing, because it may fall back
+to its own stdio server. WebSocket help gives the Token file location without
+copying its contents. An App that cannot send the Bearer header needs a supported
+Unix connection instead. The prompt asks the coding agent to inspect the local
+installation and prepare a one-line terminal command or a local launcher with
+a one-line invocation. The agent must not execute it or stop its own App/server.
+The user saves their work, runs the command outside Codex, and confirms any restart;
+the launcher must preserve unrelated instances and verify the shared connection.
+Monitor does not launch or reconfigure the App itself.
+
+The CLI must support the selected `app-server --listen` transport. Monitor can
+connect to an existing private native daemon or explicitly start a foreground
+listener with the same endpoint. It preserves independently managed daemons and
+does not run `daemon stop`. Invalid socket entries fail closed; Monitor never
+deletes or changes permissions on an existing socket to force attachment.
+
+Open `/codex-workspace` for the same app shell on desktop or phone. Its manifest
+scope includes `/pair`, so a Home Screen app can pair in its own browser storage.
+See [the native permission model](design/codex-native-permissions.md) for the
+capabilities and policy inherited from Codex.
+
+Native Node tests run through `cargo test` and CI. Real Chrome cases live in
+`claude-replay-browser-tests` and use the repository's hermetic Monitor/Stores/
+phone harness; no private App runtime is required.
+
 ## `agent-monitor-fleet` — several machines' monitors on one page
 
 The workspace also builds **`agent-monitor`**: one loopback page showing every agent

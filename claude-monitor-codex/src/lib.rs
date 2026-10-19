@@ -11,6 +11,7 @@ mod input;
 mod receipts;
 pub mod runtime;
 mod state;
+mod transport;
 
 use anyhow::{bail, Context, Result};
 use base64::Engine;
@@ -32,7 +33,7 @@ use std::time::{Duration, Instant};
 /// and its AuthGate before body reads; this constant alone changes no HTTP limit.
 pub const SEND_BODY_LIMIT: usize = 12 * 1024 * 1024;
 
-/// Trusted loopback endpoint, canonical project scope and durable receipt location.
+/// Trusted private Unix or loopback WebSocket endpoint, project scope and receipt location.
 pub struct Config {
     pub endpoint: String,
     pub allowed_roots: Vec<PathBuf>,
@@ -99,6 +100,7 @@ pub enum DisconnectError {
 enum RouteError {
     Invalid(String),
     Conflict(String),
+    ThreadInUse(String),
     Runtime(Failure),
     Internal(String),
 }
@@ -182,6 +184,7 @@ impl RouteError {
         match self {
             Self::Invalid(message) => ("invalid_input", message),
             Self::Conflict(message) => ("action_conflict", message),
+            Self::ThreadInUse(message) => ("thread_in_use", message),
             Self::Runtime(error) => (error.code(), error.message()),
             Self::Internal(message) => ("gateway_error", message),
         }
@@ -194,6 +197,7 @@ impl RouteError {
         match self {
             Self::Invalid(_) => "400 Bad Request",
             Self::Conflict(_)
+            | Self::ThreadInUse(_)
             | Self::Runtime(Failure::Rejected(_) | Failure::RpcRejected { .. }) => "409 Conflict",
             Self::Runtime(Failure::Unavailable(_) | Failure::Uncertain(_)) => {
                 "503 Service Unavailable"
@@ -253,7 +257,8 @@ impl Gateway {
                 config.state_path.display()
             )
         })?;
-        let token = auth::ServerToken::load_or_create(&config.state_path)?;
+        let connection =
+            client::NativeConnection::configured(&config.endpoint, &config.state_path)?;
         // Native server request IDs restart at zero. A new Gateway instance must
         // also invalidate old browser controls even if its epoch restarts at one.
         let mut namespace = [0_u8; 16];
@@ -268,7 +273,7 @@ impl Gateway {
         let endpoint = config.endpoint.clone();
         let worker = std::thread::Builder::new()
             .name("codex-gateway-rpc".to_owned())
-            .spawn(move || client::run(endpoint, token, worker_state, receiver))
+            .spawn(move || client::run(endpoint, connection, worker_state, receiver))
             .context("start Codex native RPC worker")?;
         Ok(Arc::new(Self {
             lifecycle: RwLock::new(GatewayLifecycle::Active),
@@ -318,6 +323,52 @@ impl Gateway {
     /// Callers must enforce pairing, POST and Origin and explain this recovery boundary.
     pub fn force_disconnect(&self) -> std::result::Result<(), DisconnectError> {
         self.disconnect_inner(true)
+    }
+
+    /// Explicit mode shutdown: fence new requests, release this connection's
+    /// subscriptions and cancel in-flight RPC waits. Delivered actions remain
+    /// uncertain, never replayed. An independently managed server keeps its work.
+    pub fn close(&self) -> std::result::Result<Vec<String>, DisconnectError> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stopping = true;
+        let _ = self.commands.send(Command::Stop);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut worker = self.worker.lock().unwrap_or_else(|e| e.into_inner());
+        while worker.as_ref().is_some_and(|worker| !worker.is_finished()) {
+            if Instant::now() >= deadline {
+                return Err(DisconnectError::Worker(
+                    "Closing the native connection timed out; retry turning off native mode."
+                        .into(),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if let Some(worker) = worker.take() {
+            worker
+                .join()
+                .map_err(|_| DisconnectError::Worker("RPC worker panicked while closing".into()))?;
+        }
+        // Responses already being handled must finish storing their receipts before
+        // clearing ownership. The admission fence prevents reader starvation here.
+        let mut lifecycle = loop {
+            match self.lifecycle.try_write() {
+                Ok(guard) => break guard,
+                Err(TryLockError::Poisoned(error)) => break error.into_inner(),
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(_) => return Err(DisconnectError::Worker(
+                    "Waiting for pending native requests to settle; retry turning off native mode."
+                        .into(),
+                )),
+            }
+        };
+        *lifecycle = GatewayLifecycle::Disconnected;
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.deactivate();
+        Ok(state.shutdown_warnings.clone())
     }
 
     fn disconnect_inner(&self, force: bool) -> std::result::Result<(), DisconnectError> {
@@ -454,6 +505,17 @@ impl Gateway {
             response.headers.push("Cache-Control: no-store".to_owned());
             return Some(response);
         }
+        // Refuse polling before acquiring a reader lock, so even continuous reads
+        // cannot starve close's final ownership transition. Recheck under the lock
+        // below to fence a close racing this admission check.
+        if self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stopping
+        {
+            return Some(native_disabled_response());
+        }
         let lifecycle = match self.lifecycle.try_read() {
             Ok(guard) => guard,
             Err(TryLockError::Poisoned(error)) => error.into_inner(),
@@ -463,10 +525,14 @@ impl Gateway {
                 return Some(response);
             }
         };
-        if *lifecycle == GatewayLifecycle::Disconnected {
-            let mut response = HttpResponse::json(json!({"ok":false,"error":{"code":"native_not_enabled","message":"Native mode was disconnected; enable it again before sending."}}).to_string());
-            response.code = "409 Conflict";
-            return Some(response);
+        if *lifecycle == GatewayLifecycle::Disconnected
+            || self
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .stopping
+        {
+            return Some(native_disabled_response());
         }
         self.activity.fetch_add(1, Ordering::SeqCst);
         let result = if write {
@@ -822,6 +888,13 @@ impl Gateway {
                 )?;
             }
             Err(error) => {
+                // Only this exact resume refusal identifies another writer. Other
+                // RPC failures must retain their own recovery and delivery semantics.
+                if matches!(&error, RouteError::Runtime(failure) if failure.is_rpc_rejection(-32600,
+                    &format!("thread {thread_id} already has an active writer")))
+                {
+                    return Err(RouteError::ThreadInUse(error.details().1.to_owned()));
+                }
                 if matches!(&error, RouteError::Runtime(failure) if archived_rejection(failure, thread_id))
                 {
                     return self.open_archived(thread_id, epoch, sequence);
@@ -1583,6 +1656,12 @@ impl Drop for Gateway {
     }
 }
 
+fn native_disabled_response() -> HttpResponse {
+    let mut response = HttpResponse::json(json!({"ok":false,"error":{"code":"native_not_enabled","message":"Native mode is closing or disconnected; enable it again before sending."}}).to_string());
+    response.code = "409 Conflict";
+    response
+}
+
 fn success(mut result: Value) -> Value {
     if let Some(object) = result.as_object_mut() {
         object.insert("ok".to_owned(), json!(true));
@@ -1690,24 +1769,7 @@ fn canonical_directory(roots: &[PathBuf], value: &str) -> Result<PathBuf> {
 }
 
 fn validate_endpoint(endpoint: &str) -> Result<()> {
-    let uri: tungstenite::http::Uri = endpoint
-        .parse()
-        .context("Parse shared Codex WebSocket endpoint")?;
-    if uri.scheme_str() != Some("ws")
-        || !matches!(
-            uri.host(),
-            Some("127.0.0.1" | "localhost" | "[::1]" | "::1")
-        )
-    {
-        bail!("Shared Codex WebSocket endpoint must use ws:// on loopback");
-    }
-    if uri
-        .path_and_query()
-        .is_some_and(|path| path.as_str().contains('?'))
-    {
-        bail!("Codex endpoint cannot include query credentials");
-    }
-    Ok(())
+    transport::Endpoint::parse(endpoint).map(|_| ())
 }
 
 fn validate_response(
@@ -1867,6 +1929,78 @@ mod tests {
                 answer.send(Ok(result)).unwrap();
             }
             _ => panic!("expected native call {expected}"),
+        }
+    }
+
+    #[test]
+    fn resume_writer_refusal_has_a_typed_http_error_without_masking_other_failures() {
+        for (index, code, message, expected) in [
+            (
+                0,
+                -32600,
+                "thread t already has an active writer",
+                "thread_in_use",
+            ),
+            (
+                1,
+                -32601,
+                "thread t already has an active writer",
+                "rejected",
+            ),
+            (
+                2,
+                -32600,
+                "thread other already has an active writer",
+                "rejected",
+            ),
+            (3, -32600, "session t is unavailable", "rejected"),
+        ] {
+            let root =
+                std::env::temp_dir().join(format!("gateway-writer-{}-{index}", std::process::id()));
+            let (gateway, receiver) = command_fixture(&root);
+            let target = Arc::clone(&gateway);
+            let request = std::thread::spawn(move || {
+                target
+                    .route(&Request {
+                        method: "POST",
+                        name: "api/codex/open",
+                        query: "",
+                        body: br#"{"threadId":"t"}"#,
+                        authenticated: true,
+                        origin_ok: true,
+                    })
+                    .unwrap()
+            });
+            answer_call(
+                &receiver,
+                "thread/read",
+                json!({"thread":{"id":"t","cwd":root}}),
+            );
+            let rpc = json!({"code":code,"message":message});
+            let details = format!("thread/resume: {rpc}");
+            match receiver.recv_timeout(Duration::from_secs(2)).unwrap() {
+                Command::Call { method, answer, .. } => {
+                    assert_eq!(method, "thread/resume");
+                    answer
+                        .send(Err(Failure::RpcRejected {
+                            details: details.clone(),
+                            error: rpc,
+                        }))
+                        .unwrap();
+                }
+                _ => panic!("expected resume"),
+            }
+            let response = request.join().unwrap();
+            assert_eq!(response.code, "409 Conflict");
+            let result: Value = serde_json::from_slice(&response.body).unwrap();
+            assert_eq!(result["error"]["code"], expected);
+            assert_eq!(result["error"]["message"], details, "preserve diagnostics");
+            assert!(
+                receiver.try_recv().is_err(),
+                "a refusal must never interrupt or send"
+            );
+            drop(gateway);
+            remove_test_scratch(&root);
         }
     }
 
@@ -3614,6 +3748,47 @@ mod tests {
             remove_test_scratch(&root);
         }
     }
+    #[test]
+    fn explicit_mode_close_clears_busy_ownership_and_fences_polling() {
+        let root = std::env::temp_dir().join(format!("gateway-mode-close-{}", std::process::id()));
+        let (gateway, receiver) = command_fixture(&root);
+        {
+            let mut state = gateway.state.lock().unwrap();
+            state.threads.get_mut("t").unwrap()["status"] = json!({"type":"active"});
+            state.pending.insert(
+                "approval".into(),
+                json!({"method":"item/commandExecution/requestApproval"}),
+            );
+        }
+        let current_read = gateway.lifecycle.read().unwrap();
+        let target = gateway.clone();
+        let closed = std::thread::spawn(move || target.close());
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Command::Stop
+        ));
+        for _ in 0..100 {
+            let response = gateway
+                .route(&Request {
+                    method: "GET",
+                    name: "api/codex/models",
+                    query: "",
+                    body: &[],
+                    authenticated: true,
+                    origin_ok: true,
+                })
+                .unwrap();
+            assert_eq!(response.code, "409 Conflict");
+        }
+        drop(current_read);
+        assert!(closed.join().unwrap().unwrap().is_empty());
+        assert!(!gateway.owns_thread("t"));
+        assert!(gateway.state.lock().unwrap().pending.is_empty());
+        assert!(gateway.close().is_ok());
+        drop(gateway);
+        remove_test_scratch(&root);
+    }
+
     #[test]
     fn disconnect_is_scoped_guarded_and_invalidates_stale_gateway_handles() {
         let root = std::env::temp_dir().join(format!("gateway-disconnect-{}", std::process::id()));

@@ -345,10 +345,21 @@ pub fn tmux_send(target: &crate::index::TmuxTarget, prompt: &str) -> Result<()> 
 /// invalidation of §3.4. The distinct `"code":"no-consent"` lets the rail offer a grant button
 /// instead of showing a dead-end refusal.
 pub fn send_tmux(idx: &crate::index::Index, sid: &str, prompt: &str) -> serde_json::Value {
-    let target = match idx.resolve_tmux_send(sid) {
-        Ok(t) => t,
-        Err(reason) => return json!({"ok": false, "error": reason.as_str()}),
-    };
+    send_tmux_checked(idx, sid, prompt).unwrap_or_else(|reason| {
+        if idx.shared_codex_required(sid) {
+            shared_runtime_body()
+        } else {
+            send_refusal_body(reason)
+        }
+    })
+}
+
+fn send_tmux_checked(
+    idx: &crate::index::Index,
+    sid: &str,
+    prompt: &str,
+) -> Result<serde_json::Value, index::SendRefusal> {
+    let target = idx.resolve_tmux_send(sid)?;
     let store = crate::consent::ConsentStore::open();
     if !store.is_granted(
         target.sock.as_deref(),
@@ -356,16 +367,45 @@ pub fn send_tmux(idx: &crate::index::Index, sid: &str, prompt: &str) -> serde_js
         &target.sid,
         target.pid,
     ) {
-        return json!({
+        return Ok(json!({
             "ok": false,
             "error": crate::index::SendRefusal::NoConsent.as_str(),
             "code": "no-consent",
-        });
+        }));
     }
-    match tmux_send(&target, prompt) {
+    Ok(match tmux_send(&target, prompt) {
         Ok(()) => json!({"ok": true, "sid": sid, "via": "tmux"}),
         Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
+    })
+}
+
+fn send_refusal_body(reason: index::SendRefusal) -> serde_json::Value {
+    json!({"ok":false,"error":reason.as_str()})
+}
+
+/// The shared-runtime refusal used by both the HTTP ownership guard and the
+/// legacy transport resolver. No CLI process or pane injection has run.
+pub(crate) fn shared_runtime_required() -> HttpResponse {
+    let mut reply = HttpResponse::json(shared_runtime_body().to_string());
+    reply.code = "409 Conflict";
+    reply
+}
+
+fn shared_runtime_body() -> serde_json::Value {
+    json!({"ok":false,"code":"shared_runtime_required",
+        "error":"Enable Codex native mode under Write mode to use this shared server."})
+}
+
+fn checked_send_refusal(idx: &index::Index, sid: &str, reason: index::SendRefusal) -> HttpResponse {
+    if idx.shared_codex_required(sid) {
+        shared_runtime_required()
+    } else {
+        send_refusal_response(reason)
     }
+}
+
+fn send_refusal_response(reason: index::SendRefusal) -> HttpResponse {
+    HttpResponse::json(send_refusal_body(reason).to_string())
 }
 
 ///
@@ -389,8 +429,13 @@ pub fn send_route(idx: &index::Index, req: &claude_replay_html::Request) -> Http
             // Live session → the tmux transport (4), but ONLY for a proven
             // pane link AND standing consent. A live session with no proven
             // link, not in tmux, or not consented is refused with its reason.
-            Err(crate::index::SendRefusal::SessionIsLive) => send_tmux(idx, &sid, &prompt),
-            Err(reason) => json!({"ok": false, "error": reason.as_str()}),
+            Err(crate::index::SendRefusal::SessionIsLive) => {
+                match send_tmux_checked(idx, &sid, &prompt) {
+                    Ok(body) => body,
+                    Err(reason) => return checked_send_refusal(idx, &sid, reason),
+                }
+            }
+            Err(reason) => return checked_send_refusal(idx, &sid, reason),
         },
     };
     HttpResponse::json(resp.to_string())
@@ -423,9 +468,7 @@ pub fn consent_route(
     // never prompts.
     let target = match idx.resolve_tmux_send(&sid) {
         Ok(t) => t,
-        Err(reason) => {
-            return HttpResponse::json(json!({"ok": false, "error": reason.as_str()}).to_string())
-        }
+        Err(reason) => return checked_send_refusal(idx, &sid, reason),
     };
     // The passcode gate (#133): when set, arming a pane requires it — the
     // "something you know" on top of the cookie's "something you have".

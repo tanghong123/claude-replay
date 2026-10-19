@@ -19,6 +19,8 @@ export class RecordStore {
   constructor(handlers, options = {}) {
     this.handlers = handlers;
     this.tailBudget = options.tailBudget || 0;
+    this.emptySession = options.emptySession;
+    this.sessionFailure = options.sessionFailure;
     // The head still to come after a tail-first open: `{ count, len, epoch }`, or null.
     this.head = null;
     this.session = "";
@@ -28,7 +30,7 @@ export class RecordStore {
     this.generation = 0;
     this.timer = 0;
     // Whether this session's first reply has been applied — `handlers.opened` fires once per open.
-    this.shown = false;
+    this.shown = false; this.confirmedEmpty = false; this.missingSince = null;
   }
 
   open(session) {
@@ -37,7 +39,7 @@ export class RecordStore {
     this.records = [];
     this.meta = null;
     this.cursor = freshCursor();
-    this.shown = false;
+    this.shown = false; this.confirmedEmpty = false; this.missingSince = null;
     this.head = null;
     const generation = ++this.generation;
     this.handlers.reset?.();
@@ -54,8 +56,26 @@ export class RecordStore {
     this.handlers.reset?.();
   }
 
+  /** Show an authoritative native empty session even while its first JSONL pull is pending. */
+  refreshEmpty() {
+    if (this.records.length || !this.session || !this.emptySession?.(this.session)) return false;
+    this.confirmedEmpty = true; this.missingSince = null;
+    this.handlers.empty?.();
+    if (!this.shown) { this.shown = true; this.handlers.opened?.(); }
+    return true;
+  }
+
+  /** Surface a definite native read failure without waiting for a missing JSONL pull. */
+  refreshFailure() {
+    if (this.records.length || !this.session) return false;
+    const failure = this.sessionFailure?.(this.session);
+    if (!failure) return false;
+    this.handlers.error?.(new Error(failure.message), false);
+    return true;
+  }
+
   async poll(generation) {
-    if (generation !== this.generation || !this.session) return;
+    if (generation !== this.generation || !this.session || this.refreshFailure()) return;
     // #221: the FIRST pull on a session with no cache blocks for as long as the server takes to
     // fold and highlight the whole transcript — measured at 86 s for 400 MB, against 0.4 s once
     // the cache is warm. The page had nothing on it for all of that, which a reader cannot tell
@@ -64,6 +84,7 @@ export class RecordStore {
     let waited = 0;
     if (!this.records.length) {
       waited = setTimeout(() => {
+        if (generation !== this.generation || this.refreshFailure() || this.refreshEmpty()) return;
         if (generation === this.generation && !this.records.length) this.handlers.waiting?.();
       }, WAITING_AFTER_MS);
     }
@@ -71,8 +92,20 @@ export class RecordStore {
       // Only a store that holds nothing asks for the tail: a fresh open, or one that recovered.
       const tail = this.tailBudget && !this.records.length ? `&tail=${this.tailBudget}` : "";
       const response = await fetch(`/pull?${pullQuery(this.session, this.cursor)}${tail}`, { cache: "no-store" });
+      if (generation !== this.generation) return;
+      if (response.status === 404) {
+        if (this.refreshEmpty()) return;
+        // A turn arrives over the native stream before its first rollout reaches the
+        // reader index. Only a previously confirmed empty session gets this grace period.
+        if (this.confirmedEmpty && !this.records.length) {
+          this.missingSince ??= Date.now();
+          if (Date.now() - this.missingSince < 10_000) { this.handlers.materializing?.(); return; }
+        }
+      }
       if (!response.ok) throw new Error(`pull HTTP ${response.status}`);
       const reply = await response.json();
+      if (generation !== this.generation) return;
+      this.confirmedEmpty = false; this.missingSince = null;
       if (reply.t === "redirect" && reply.url) { location.assign(reply.url); return; }
       if (reply.t === "error") throw new Error(reply.message || "Session stream unavailable");
       if (reply.committed_ext?.len) {

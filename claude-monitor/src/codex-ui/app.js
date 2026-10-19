@@ -19,6 +19,7 @@ import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, quer
 import { parseJumpQuery } from "./jump-query.js";
 import { agentRecordTargets, currentTurnIndex, escapeText, peerHue, peerLabelRest, plainText, recordForSearch, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
 import { Viewport } from "./viewport.js";
+import { sharedKeyboardFrame } from "./phone-keyboard.js";
 import { revealMermaidSource } from "./shared/mermaid.js";
 
 // The outline row currently marked (#52) — declared ahead of the init code below, which
@@ -250,7 +251,9 @@ const paneLayoutChanged = () => {
 };
 const preview = new Preview({ layoutChanged: paneLayoutChanged, toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => viewport.jumpToRecord(at, "artifact") });
 const attachmentViewer = new AttachmentViewer({ openPreview: item => preview.open(item), toast });
-const controls = new ControlStore({ toast, refreshIndex: loadSessions });
+const controlActions = { renderTree, recordSnapshot: () => ({ session: recordState.session, records: recordState.records }), toast, refreshIndex: loadSessions, pauseIndex: () => sessionIndex.stop(), resumeIndex: () => sessionIndex.start(), selectSession, refreshEmpty: () => recordStore.refreshEmpty() };
+const ordinaryControls = new ControlStore(controlActions);
+let controls = ordinaryControls;
 const sessionIndex = new SessionIndexStore({
   update: () => {
     if (indexState.selected && indexState.selectedWasRow && !selectedRow()) sessionGone();
@@ -262,7 +265,11 @@ const sessionIndex = new SessionIndexStore({
       // A requested id is honoured even when it is not a list row: a sub-agent child never is,
       // and a link to one must open it, not the first session. A bad id shows "Cannot read
       // this session" from the record store rather than silently opening something else.
-      const requested = new URLSearchParams(location.search).get("session");
+      const query = new URLSearchParams(location.search);
+      const requested = query.get("session") || controls.sessionIdForThread?.(query.get("thread"));
+      // A native UUID needs the explicitly enabled catalog before it can resolve to a rollout.
+      // Keep ordinary session links authoritative and never silently replace a native link.
+      if (query.get("thread") && !query.get("session") && !requested) return;
       const first = requested || [...indexState.rows.values()].find(row => !row.hidden && !row.startedBy)?.id;
       if (first) selectSession(first, false);
     }
@@ -270,8 +277,10 @@ const sessionIndex = new SessionIndexStore({
   error: () => toast("Session scan failed — retrying")
 });
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = -1; heldRecords = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; recordState.records = []; recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; heldRecords = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
+  empty: () => viewport.showEmpty("Start this session", "Send the first message below. Codex runs in the selected directory."),
+  materializing: () => viewport.showEmpty("Loading session history…", "Waiting for the latest messages to become available."),
   // #221: a first open with no cache waits on the server folding the whole transcript. Say so,
   // rather than leaving a blank page a reader cannot tell from a hang, and say that it is a
   // one-off — the same session opens in a couple of seconds afterwards.
@@ -279,7 +288,13 @@ const recordStore = new RecordStore({
     "Reading this session for the first time",
     "The whole transcript is being folded and cached. A long one takes a while; every open after this is immediate.",
   ),
-  error: (error, hasRecords) => { sessionLoading?.hide(); if (hasRecords) toast(`${error.message}；retrying`); else viewport.showEmpty("Cannot read this session", `${error.message}；The monitor will retry.`, true); },
+  error: (error, hasRecords) => {
+    sessionLoading?.hide();
+    const unavailable = controls.sessionReadFailure?.(recordState.session);
+    if (unavailable) viewport.showEmpty("Cannot resume this session", `${unavailable.message}. Choose a saved session or create a new session.`, true);
+    else if (hasRecords) toast(`${error.message}；retrying`);
+    else viewport.showEmpty("Cannot read this session", `${error.message}；The monitor will retry.`, true);
+  },
   // #313: how much of a first open has arrived, and that it has — the veil over the session
   // area says the first and goes on the second.
   progress: (got, total) => sessionLoading?.progress(got, total),
@@ -293,7 +308,7 @@ const recordStore = new RecordStore({
 // #314 (design/tail-first-open.md): a first open asks for the last 512 KB of the committed log and
 // draws it, then reads the head behind it; the server sends a log under twice that whole. A case
 // sets `?tailBudget=` so a small fixture exercises it, as `?trace=` and `?historyMs=` serve cases.
-}, { tailBudget: Number(new URLSearchParams(location.search).get("tailBudget")) || 512 * 1024 });
+}, { tailBudget: Number(new URLSearchParams(location.search).get("tailBudget")) || 512 * 1024, emptySession: null, sessionFailure: null });
 
 function toast(message) {
   const element = byId("toast"); element.textContent = message; element.classList.add("show");
@@ -354,7 +369,7 @@ function agentProjectsHtml(agent) {
   for (const project of agent.projects) {
     const rows = project.rows;
     const projectKey = `p:${project.id}`, openProject = !indexState.collapsed.has(projectKey);
-    html += `<div class="tree-row project ${project.hidden ? "is-hidden" : ""}" role="treeitem" tabindex="0" data-toggle="${escapeText(projectKey)}" aria-expanded="${openProject}" title="${escapeText(project.path)}">${svg("folder")}<span class="tree-title">${escapeText(project.name)}</span>${project.ignoreKey ? treeAction(project, project.kind) : ""}</div>`;
+    html += `<div class="tree-row project ${project.hidden ? "is-hidden" : ""}" role="treeitem" tabindex="0" data-toggle="${escapeText(projectKey)}" aria-expanded="${openProject}" title="${escapeText(project.path)}">${svg("folder")}<span class="tree-title">${escapeText(project.name)}</span>${agent.id === "codex" && controls.projectActions ? `<button class="native-project-new" type="button" data-native-project="${escapeText(project.nativeProjectId || "")}" data-native-cwd="${escapeText(project.path)}" aria-label="New session in ${escapeText(project.name)}" title="New session in ${escapeText(project.name)}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>` : ""}${project.ignoreKey ? treeAction(project, project.kind) : ""}</div>`;
     if (!openProject) continue;
     const overflowKey = `${agent.id}:${project.id}`;
     const expanded = indexState.expandedProjects.has(overflowKey);
@@ -382,12 +397,13 @@ function renderTree() {
   const counts = { recent: 0, blocked: 0, idle: 0 }; let total = 0;
   indexState.rows.forEach(row => { if (row.startedBy || (row.hidden && !indexState.showHidden)) return; total++; for (const bucket of bucketsOf(row)) counts[bucket]++; });
   const filtered = bucketFilterActive();
-  const shownAgents = visibleTree(agents, { showHidden: indexState.showHidden, buckets: filtered ? indexState.buckets : null, bucketsOf });
+  const filteredAgents = visibleTree(agents, { showHidden: indexState.showHidden, buckets: filtered ? indexState.buckets : null, bucketsOf });
+  const shownAgents = controls.projectTree?.(filteredAgents, agents) || filteredAgents;
   const shown = shownAgents.reduce((n, agent) => n + agent.projects.reduce((m, project) => m + project.rows.length, 0), 0);
   lastShownAgents = shownAgents;
   for (const agent of shownAgents) {
     const agentKey = `a:${agent.id}`, openAgent = !indexState.collapsed.has(agentKey);
-    html += `<div class="agent-label" role="treeitem" tabindex="0" data-toggle="${escapeText(agentKey)}" aria-expanded="${openAgent}">${escapeText(agent.name)}</div>`;
+    html += `<div class="agent-label" role="treeitem" tabindex="0" data-toggle="${escapeText(agentKey)}" aria-expanded="${openAgent}">${escapeText(agent.name)}${agent.id === "codex" && controls.projectActions ? `<button class="native-project-add" type="button" data-native-add-project aria-label="Add Codex project" title="Add project"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 19H3V5h6l2 2h10v5M17 14v8m-4-4h8"/></svg></button>` : ""}</div>`;
     if (!openAgent) continue;
     html += agentProjectsHtml(agent);
   }
@@ -603,6 +619,10 @@ async function applyIgnore(op, key) {
 }
 
 tree.onclick = event => {
+  const addProject = event.target.closest("[data-native-add-project]");
+  if (addProject) { event.stopPropagation(); controls.newSession?.("add"); return; }
+  const newSession = event.target.closest("[data-native-project]");
+  if (newSession) { event.stopPropagation(); controls.newSession?.({ id: newSession.dataset.nativeProject, cwd: newSession.dataset.nativeCwd }); return; }
   const action = event.target.closest("[data-ignore-op]"); if (action) { event.stopPropagation(); applyIgnore(action.dataset.ignoreOp, action.dataset.ignoreKey); return; }
   const forks = event.target.closest("[data-family-toggle]"); if (forks) { event.stopPropagation(); const key = forks.dataset.familyToggle; indexState.openFamilies.has(key) ? indexState.openFamilies.delete(key) : indexState.openFamilies.add(key); renderTree(); return; }
   const session = event.target.closest("[data-session]"); if (session) { selectSession(session.dataset.session, true); return; }
@@ -747,6 +767,7 @@ function applyRecords({ records, meta, changedFrom, prepended }) {
   const before = lastRecordCount; const wasFollowing = recordState.following;
   const metaArrived = meta && meta !== recordState.meta;
   recordState.records = records; recordState.meta = meta;
+  controls.observeRecords?.(recordState.session, records);
   // The haystack's size per record (#104), kept in step with the store's truncate/append.
   const sizes = recordState.recSizes;
   sizes.length = Math.min(sizes.length, changedFrom, records.length);
@@ -2633,7 +2654,8 @@ function toggleSidebar(open) { if (open && !railFlyout.hidden) closeRailFlyout(f
 byId("sidebarCollapse").onclick = () => toggleSidebar(false); byId("sidebarMiniExpand").onclick = () => toggleSidebar(true); byId("sidebarReopen").onclick = () => toggleSidebar(true);
 // The rail's write button reaches the write switch itself (#54): the demo clicks the write
 // BUTTON, whose handler ignores a click that lands on a button — a programmatic click does.
-byId("sidebarMiniWrite").onclick = () => byId("writeSwitch").click();
+// Shared Controls already binds this rail action to native session creation.
+if (!controls.nativeActive) byId("sidebarMiniWrite").onclick = () => byId("writeSwitch").click();
 byId("sidebarCollapse").title = `Collapse the sidebar into its icon rail  ( ${hintFor("sidebar-toggle")} )`;
 byId("sidebarMiniExpand").title = `Expand the sidebar  ( ${hintFor("sidebar-toggle")} )`;
 // #96: the session list is resizable, the way the preview pane is — a handle on the sidebar's
@@ -3361,6 +3383,7 @@ var phoneDock;
   composer.prepend(composeNote);
   // The field grows with its text to five lines, then scrolls.
   const fitCompose = () => {
+    if (controls.nativeActive) { controls.fitComposer(); return; }
     composeInput.style.height = "";
     if (PHONE.matches && composer.classList.contains("production-show")) composeInput.style.height = `${Math.min(composeInput.scrollHeight, 132)}px`;
   };
@@ -3369,13 +3392,22 @@ var phoneDock;
     const draft = !!composeInput.value.trim();
     dockCompose.classList.toggle("has-draft", draft);
     dockCompose.setAttribute("aria-label", draft ? "Write to this session — a draft is waiting" : "Write to this session");
-    app.classList.toggle("composing", PHONE.matches && composer.classList.contains("production-show"));
-    composeNote.textContent = `To ${byId("composeTarget").textContent}${composer.classList.contains("live") ? " · writes to the live session" : ""}`;
+    const keyboardOpen = innerHeight - (window.visualViewport?.height || innerHeight) > 80;
+    // Moving a pending button on focus would move it between pointerdown and click.
+    const sharedFocus = !!controls.nativeActive && (document.activeElement === composeInput || keyboardOpen && (composer.contains(document.activeElement) || controls.runtimePanel?.contains(document.activeElement)));
+    app.classList.toggle("composing", PHONE.matches && composer.classList.contains("production-show") && (!controls.nativeActive || sharedFocus));
+    if (controls.nativeActive) { controls.fitComposer(); return; }
+    const target = byId("composeTarget").textContent;
+    composeNote.textContent = `To ${target}${composer.classList.contains("live") ? " · writes to the live session" : ""}`;
     fitCompose();
   };
   new MutationObserver(paintCompose).observe(composeFab, { attributes: true, attributeFilter: ["class"] });
   new MutationObserver(paintCompose).observe(composer, { attributes: true, attributeFilter: ["class"] });
   composeInput.addEventListener("input", paintCompose);
+  // Native request cards are installed lazily; delegate focus from their stable workspace.
+  composer.closest(".workspace").addEventListener("focusin", paintCompose);
+  composer.closest(".workspace").addEventListener("focusout", () => requestAnimationFrame(paintCompose));
+  window.visualViewport?.addEventListener("resize", paintCompose);
   const placeToolbar = () => {
     if (PHONE.matches) {
       dockPill.append(readingCluster);
@@ -3623,6 +3655,17 @@ var phoneDock;
   if (viewport2) {
     const root = document.documentElement;
     const ride = () => {
+      if (controls.nativeActive && PHONE.matches) {
+        const frame = sharedKeyboardFrame(app.getBoundingClientRect().height, viewport2);
+        // Keep one containing block even at zero offset; Safari pans during keyboard animation.
+        app.style.transform = `translateY(${frame.shift}px)`;
+        app.classList.toggle("keyboard-up", frame.keyboardOpen);
+        root.style.setProperty("--phone-kb", `${frame.inset}px`);
+        place();
+        // The shared listener can run first; fit again after applying the current viewport frame.
+        controls.fitComposer();
+        return;
+      }
       const steady = PHONE.matches && Math.abs(viewport2.scale - 1) < 0.01;
       const covered = steady ? Math.max(0, Math.round(root.clientHeight - viewport2.height)) : 0;
       const shift = steady ? Math.max(0, Math.round(viewport2.pageTop)) : 0;
@@ -3671,3 +3714,23 @@ renderHeader(); renderNavigator(); paintJump(); sessionIndex.start();
 // the position (the debounced save may not have run yet).
 addEventListener("pagehide", () => viewport.remember());
 document.addEventListener("visibilitychange", () => { if (document.hidden) viewport.remember(); });
+
+/** Install native routing only after an explicit server activation succeeds. */
+export async function installNativeController(Controller, status, onDisabled, nativeStyles) {
+  const controller = new Controller(ordinaryControls, { ...controlActions, nativeStyles,
+    nativeDisabled: () => {
+      sessionIndex.load = null; sessionIndex.group = null;
+      recordStore.emptySession = null; recordStore.sessionFailure = null;
+      onDisabled();
+    },
+    nativeEnabled: () => {
+      sessionIndex.load = () => controller.loadSessions();
+      sessionIndex.group = (groups, build) => controller.groupSessions(groups, build);
+      recordStore.emptySession = session => controller.isEmptySession(session);
+      recordStore.sessionFailure = session => controller.sessionReadFailure(session);
+    }
+  });
+  controls = controller;
+  await controller.adopt(status);
+  return controller;
+}

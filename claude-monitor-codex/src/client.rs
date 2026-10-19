@@ -2,8 +2,10 @@
 
 use super::auth::ServerToken;
 use super::state::{id_key, Connection, State};
+use super::transport::{Endpoint, NativeStream};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -331,7 +333,7 @@ impl From<std::io::Error> for ConnectError {
 fn handshake(
     endpoint: &str,
     token: Option<&ServerToken>,
-) -> Result<WebSocket<TcpStream>, ConnectError> {
+) -> Result<WebSocket<NativeStream>, ConnectError> {
     let mut request = endpoint
         .into_client_request()
         .map_err(|_| ConnectError::Other("Invalid WebSocket endpoint".into()))?;
@@ -357,33 +359,34 @@ fn handshake(
     let config = WebSocketConfig::default()
         .max_frame_size(Some(NATIVE_RPC_BYTES))
         .max_message_size(Some(NATIVE_RPC_BYTES));
-    let (socket, _) = client_with_config(request, stream, Some(config)).map_err(|error| {
-        // A peer can echo a credential in headers/body. Never include handshake data in logs.
-        match error {
-            tungstenite::HandshakeError::Failure(Error::Http(response))
-                if response.status() == tungstenite::http::StatusCode::UNAUTHORIZED =>
-            {
-                ConnectError::Unauthorized
+    let (socket, _) = client_with_config(request, NativeStream::Tcp(stream), Some(config))
+        .map_err(|error| {
+            // A peer can echo a credential in headers/body. Never include handshake data in logs.
+            match error {
+                tungstenite::HandshakeError::Failure(Error::Http(response))
+                    if response.status() == tungstenite::http::StatusCode::UNAUTHORIZED =>
+                {
+                    ConnectError::Unauthorized
+                }
+                tungstenite::HandshakeError::Failure(Error::Http(response)) => {
+                    ConnectError::Other(format!(
+                        "Native WebSocket handshake refused with HTTP {}",
+                        response.status().as_u16()
+                    ))
+                }
+                tungstenite::HandshakeError::Failure(Error::Io(error)) => {
+                    ConnectError::Other(error.to_string())
+                }
+                _ => ConnectError::Other("Native WebSocket handshake failed".into()),
             }
-            tungstenite::HandshakeError::Failure(Error::Http(response)) => {
-                ConnectError::Other(format!(
-                    "Native WebSocket handshake refused with HTTP {}",
-                    response.status().as_u16()
-                ))
-            }
-            tungstenite::HandshakeError::Failure(Error::Io(error)) => {
-                ConnectError::Other(error.to_string())
-            }
-            _ => ConnectError::Other("Native WebSocket handshake failed".into()),
-        }
-    })?;
+        })?;
     socket
         .get_ref()
         .set_read_timeout(Some(Duration::from_millis(40)))?;
     Ok(socket)
 }
 
-fn socket(endpoint: &str, token: &ServerToken) -> Result<WebSocket<TcpStream>, String> {
+fn socket(endpoint: &str, token: &ServerToken) -> Result<WebSocket<NativeStream>, String> {
     // Recheck on EVERY connection, including reconnects after a process replacement.
     match handshake(endpoint, None) {
         Ok(mut socket) => {
@@ -401,24 +404,72 @@ fn socket(endpoint: &str, token: &ServerToken) -> Result<WebSocket<TcpStream>, S
     })
 }
 
-pub(super) fn verify_auth(endpoint: &str, token: &ServerToken) -> Result<(), String> {
-    let mut socket = socket(endpoint, token)?;
-    socket
-        .close(None)
-        .map_err(|_| "Close native authentication probe".to_owned())
+/// Credential choice is bound to its endpoint, never inferred from a failed handshake.
+pub(super) enum NativeConnection {
+    WebSocket {
+        endpoint: String,
+        token: ServerToken,
+    },
+    Unix {
+        path: std::path::PathBuf,
+    },
+}
+impl NativeConnection {
+    pub fn configured(endpoint: &str, state: &Path) -> anyhow::Result<Self> {
+        Ok(match Endpoint::parse(endpoint)? {
+            Endpoint::AuthenticatedWebSocket(endpoint) => Self::WebSocket {
+                endpoint,
+                token: ServerToken::load_or_create(state)?,
+            },
+            Endpoint::PrivateUnix(path) => Self::Unix { path },
+        })
+    }
+    fn connect(&self) -> Result<WebSocket<NativeStream>, String> {
+        match self {
+            Self::WebSocket { endpoint, token } => socket(endpoint, token),
+            Self::Unix { path } => {
+                #[cfg(unix)]
+                {
+                    let stream =
+                        super::transport::connect_unix(path).map_err(|e| format!("{e:#}"))?;
+                    let config = WebSocketConfig::default()
+                        .max_frame_size(Some(NATIVE_RPC_BYTES))
+                        .max_message_size(Some(NATIVE_RPC_BYTES));
+                    let (socket, _) =
+                        client_with_config("ws://localhost/rpc", stream, Some(config))
+                            .map_err(|_| "Private Unix WebSocket handshake failed".to_owned())?;
+                    socket
+                        .get_ref()
+                        .set_read_timeout(Some(Duration::from_millis(40)))
+                        .map_err(|e| e.to_string())?;
+                    Ok(socket)
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = path;
+                    Err("Unix sockets are unsupported on this platform".into())
+                }
+            }
+        }
+    }
+    pub fn verify(&self) -> Result<(), String> {
+        self.connect()?
+            .close(None)
+            .map_err(|_| "Close native connection probe".into())
+    }
 }
 
 fn idle(error: &Error) -> bool {
     matches!(error, Error::Io(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut))
 }
 
-fn write(socket: &mut WebSocket<TcpStream>, value: Value) -> Result<(), String> {
+fn write<S: Read + Write>(socket: &mut WebSocket<S>, value: Value) -> Result<(), String> {
     socket
         .send(Message::Text(value.to_string().into()))
         .map_err(|e| e.to_string())
 }
 
-fn receive(socket: &mut WebSocket<TcpStream>) -> Result<Option<Value>, String> {
+fn receive<S: Read + Write>(socket: &mut WebSocket<S>) -> Result<Option<Value>, String> {
     match socket.read() {
         Ok(Message::Text(text)) => {
             let packet: Value =
@@ -435,8 +486,8 @@ fn receive(socket: &mut WebSocket<TcpStream>) -> Result<Option<Value>, String> {
     }
 }
 
-fn bootstrap_call(
-    socket: &mut WebSocket<TcpStream>,
+fn bootstrap_call<S: Read + Write>(
+    socket: &mut WebSocket<S>,
     state: &Mutex<State>,
     id: &str,
     method: &str,
@@ -446,6 +497,9 @@ fn bootstrap_call(
         .map_err(Failure::Unavailable)?;
     let deadline = Instant::now() + RPC_TIMEOUT;
     while Instant::now() < deadline {
+        if state.lock().unwrap_or_else(|e| e.into_inner()).stopping {
+            return Err(Failure::Unavailable("Native mode is closing".into()));
+        }
         if let Some(message) = receive(socket).map_err(Failure::Unavailable)? {
             if message["id"] == id
                 && (message.get("result").is_some() || message.get("error").is_some())
@@ -464,11 +518,10 @@ fn bootstrap_call(
 }
 
 fn bootstrap(
-    endpoint: &str,
-    token: &ServerToken,
+    connection: &NativeConnection,
     state: &Mutex<State>,
-) -> Result<WebSocket<TcpStream>, String> {
-    let mut socket = socket(endpoint, token)?;
+) -> Result<WebSocket<NativeStream>, String> {
+    let mut socket = connection.connect()?;
     bootstrap_call(
         &mut socket,
         state,
@@ -576,17 +629,74 @@ fn bootstrap(
     Ok(socket)
 }
 
+/// Release only subscriptions acquired by this connection. Use one shared deadline
+/// so an unresponsive server or a large history cannot trap the mode switch.
+fn release_subscriptions<S: Read + Write>(socket: &mut WebSocket<S>, state: &Mutex<State>) {
+    let threads: Vec<String> = state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .subscribed
+        .iter()
+        .cloned()
+        .collect();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut waiting = HashMap::new();
+    let result = (|| -> Result<(), String> {
+        for (index, thread) in threads.iter().enumerate() {
+            if Instant::now() >= deadline {
+                return Err("Timed out releasing native subscriptions".into());
+            }
+            let id = format!("gateway-unsubscribe-{index}");
+            write(
+                socket,
+                json!({"id":id,"method":"thread/unsubscribe","params":{"threadId":thread}}),
+            )?;
+            waiting.insert(id, thread);
+        }
+        while !waiting.is_empty() && Instant::now() < deadline {
+            if let Some(message) = receive(socket)? {
+                if let Some(id) = message["id"].as_str() {
+                    if waiting.contains_key(id)
+                        && (message.get("result").is_some() || message.get("error").is_some())
+                    {
+                        waiting.remove(id);
+                        if message.get("error").is_some() {
+                            return Err("Server refused a native subscription release".into());
+                        }
+                    }
+                }
+            }
+        }
+        if !waiting.is_empty() {
+            return Err("Timed out releasing native subscriptions".into());
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .shutdown_warnings
+            .push(format!(
+                "{error}; Monitor closed its connection. Work on an external server may continue."
+            ));
+    }
+}
+
 /// Reconnect and recover subscriptions before accepting writes. Any call sent on a lost
 /// connection is uncertain, even when the server may already have committed its action.
 pub(super) fn run(
     endpoint: String,
-    token: ServerToken,
+    connection: NativeConnection,
     state: Arc<Mutex<State>>,
     receiver: Receiver<Command>,
 ) {
     let mut next_id = 0_u64;
     loop {
-        let mut socket = match bootstrap(&endpoint, &token, &state) {
+        if state.lock().unwrap_or_else(|e| e.into_inner()).stopping {
+            return;
+        }
+        let mut socket = match bootstrap(&connection, &state) {
             Ok(socket) => socket,
             Err(message) => {
                 state
@@ -605,7 +715,21 @@ pub(super) fn run(
         };
         let mut pending: HashMap<String, Pending> = HashMap::new();
         let disconnected = 'connected: loop {
+            if state.lock().unwrap_or_else(|e| e.into_inner()).stopping {
+                release_subscriptions(&mut socket, &state);
+                for (_, call) in pending.drain() {
+                    finalize_resume(&state, call, Err(Failure::Uncertain(
+                        "Native mode closed after delivery; check the saved action receipt before retrying".into(),
+                    )));
+                }
+                let _ = socket.close(None);
+                return;
+            }
             while let Ok(command) = receiver.try_recv() {
+                if state.lock().unwrap_or_else(|e| e.into_inner()).stopping {
+                    unavailable(command, "Native mode is closing");
+                    break;
+                }
                 match command {
                     Command::Stop => {
                         let _ = socket.close(None);
@@ -929,6 +1053,64 @@ mod tests {
         socket
     }
 
+    #[test]
+    fn mode_shutdown_releases_only_its_subscription_and_preserves_uncertain_delivery() {
+        for release in ["success", "rejected", "timeout"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+            let (delivered, received) = mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let mut socket = initialize(&listener);
+                let pending_request = request(&mut socket);
+                assert_eq!(pending_request["method"], "model/list");
+                delivered.send(()).unwrap(); // Deliberately leave the reply pending.
+                let subscription = request(&mut socket);
+                assert_eq!(subscription["method"], "thread/unsubscribe");
+                assert_eq!(subscription["params"]["threadId"], "owned");
+                match release {
+                "success" => write(&mut socket, json!({"id":subscription["id"],"result":{}})).unwrap(),
+                "rejected" => write(&mut socket, json!({"id":subscription["id"],"error":{"code":-32601,"message":"Unsupported unsubscribe"}})).unwrap(),
+                _ => (),
+            }
+                assert!(matches!(socket.read(), Ok(Message::Close(_)) | Err(_)));
+            });
+            let state = Arc::new(Mutex::new(State::default()));
+            let (sender, receiver) = mpsc::channel();
+            let target = state.clone();
+            let worker = std::thread::spawn(move || {
+                run(
+                    endpoint.clone(),
+                    NativeConnection::WebSocket {
+                        endpoint,
+                        token: ServerToken::fixture(),
+                    },
+                    target,
+                    receiver,
+                )
+            });
+            await_epoch(&state, 0);
+            let epoch = {
+                let mut state = state.lock().unwrap();
+                state.subscribed.insert("owned".into());
+                state.epoch
+            };
+            let calls = sender.clone();
+            let read = std::thread::spawn(move || call(&calls, "model/list", json!({}), epoch));
+            received.recv_timeout(Duration::from_secs(5)).unwrap();
+            let start = Instant::now();
+            state.lock().unwrap().stopping = true;
+            sender.send(Command::Stop).unwrap();
+            worker.join().unwrap();
+            assert!(start.elapsed() < Duration::from_secs(5));
+            assert!(matches!(read.join().unwrap(), Err(Failure::Uncertain(_))));
+            assert_eq!(
+                state.lock().unwrap().shutdown_warnings.is_empty(),
+                release == "success"
+            );
+            server.join().unwrap();
+        }
+    }
+
     fn await_epoch(state: &Mutex<State>, epoch: u64) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
@@ -991,7 +1173,15 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
         let worker = std::thread::spawn(move || {
-            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+            run(
+                endpoint.clone(),
+                NativeConnection::WebSocket {
+                    endpoint,
+                    token: ServerToken::fixture(),
+                },
+                worker_state,
+                receiver,
+            )
         });
         await_epoch(&state, 1);
         let resumed = call(&sender, "thread/resume", json!({"threadId":"large"}), 1).unwrap();
@@ -1045,8 +1235,11 @@ mod tests {
             let worker_endpoint = endpoint.clone();
             let worker = std::thread::spawn(move || {
                 run(
-                    worker_endpoint,
-                    ServerToken::fixture(),
+                    worker_endpoint.clone(),
+                    NativeConnection::WebSocket {
+                        endpoint: worker_endpoint,
+                        token: ServerToken::fixture(),
+                    },
                     worker_state,
                     receiver,
                 )
@@ -1175,7 +1368,15 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
         let worker = std::thread::spawn(move || {
-            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+            run(
+                endpoint.clone(),
+                NativeConnection::WebSocket {
+                    endpoint,
+                    token: ServerToken::fixture(),
+                },
+                worker_state,
+                receiver,
+            )
         });
         await_epoch(&state, 1);
         state.lock().unwrap().remember(
@@ -1281,7 +1482,15 @@ mod tests {
             let (sender, receiver) = mpsc::channel();
             let worker_state = Arc::clone(&state);
             let worker = std::thread::spawn(move || {
-                run(endpoint, ServerToken::fixture(), worker_state, receiver)
+                run(
+                    endpoint.clone(),
+                    NativeConnection::WebSocket {
+                        endpoint,
+                        token: ServerToken::fixture(),
+                    },
+                    worker_state,
+                    receiver,
+                )
             });
             await_epoch(&state, 1);
             let mut cached = canonical.clone();
@@ -1418,7 +1627,15 @@ mod tests {
             let (sender, receiver) = mpsc::channel();
             let worker_state = Arc::clone(&state);
             let worker = std::thread::spawn(move || {
-                run(endpoint, ServerToken::fixture(), worker_state, receiver)
+                run(
+                    endpoint.clone(),
+                    NativeConnection::WebSocket {
+                        endpoint,
+                        token: ServerToken::fixture(),
+                    },
+                    worker_state,
+                    receiver,
+                )
             });
             await_epoch(&state, 1);
             let resume_sender = sender.clone();
@@ -1499,7 +1716,15 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
         let worker = std::thread::spawn(move || {
-            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+            run(
+                endpoint.clone(),
+                NativeConnection::WebSocket {
+                    endpoint,
+                    token: ServerToken::fixture(),
+                },
+                worker_state,
+                receiver,
+            )
         });
         wait_ready.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(state.lock().unwrap().connection != Connection::Connected);
@@ -1563,7 +1788,15 @@ mod tests {
             let (sender, receiver) = mpsc::channel();
             let worker_state = Arc::clone(&state);
             let worker = std::thread::spawn(move || {
-                run(endpoint, ServerToken::fixture(), worker_state, receiver)
+                run(
+                    endpoint.clone(),
+                    NativeConnection::WebSocket {
+                        endpoint,
+                        token: ServerToken::fixture(),
+                    },
+                    worker_state,
+                    receiver,
+                )
             });
             await_epoch(&state, 1);
             let resume_sender = sender.clone();
@@ -1625,7 +1858,15 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
         let worker = std::thread::spawn(move || {
-            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+            run(
+                endpoint.clone(),
+                NativeConnection::WebSocket {
+                    endpoint,
+                    token: ServerToken::fixture(),
+                },
+                worker_state,
+                receiver,
+            )
         });
         await_epoch(&state, 1);
         let (answer, result) = mpsc::channel();
@@ -1671,7 +1912,15 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
         let worker = std::thread::spawn(move || {
-            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+            run(
+                endpoint.clone(),
+                NativeConnection::WebSocket {
+                    endpoint,
+                    token: ServerToken::fixture(),
+                },
+                worker_state,
+                receiver,
+            )
         });
         await_epoch(&state, 1);
         assert_eq!(
@@ -1718,7 +1967,15 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
         let worker = std::thread::spawn(move || {
-            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+            run(
+                endpoint.clone(),
+                NativeConnection::WebSocket {
+                    endpoint,
+                    token: ServerToken::fixture(),
+                },
+                worker_state,
+                receiver,
+            )
         });
         await_epoch(&state, 1);
         let error = call(&sender, "thread/resume", json!({"threadId":"t"}), 1).unwrap_err();
@@ -1768,7 +2025,15 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
         let worker = std::thread::spawn(move || {
-            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+            run(
+                endpoint.clone(),
+                NativeConnection::WebSocket {
+                    endpoint,
+                    token: ServerToken::fixture(),
+                },
+                worker_state,
+                receiver,
+            )
         });
         await_epoch(&state, 1);
         state
@@ -1839,7 +2104,15 @@ mod tests {
             let (sender, receiver) = mpsc::channel();
             let worker_state = Arc::clone(&state);
             let worker = std::thread::spawn(move || {
-                run(endpoint, ServerToken::fixture(), worker_state, receiver)
+                run(
+                    endpoint.clone(),
+                    NativeConnection::WebSocket {
+                        endpoint,
+                        token: ServerToken::fixture(),
+                    },
+                    worker_state,
+                    receiver,
+                )
             });
             await_epoch(&state, 1);
             {
@@ -1936,7 +2209,15 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
         let worker = std::thread::spawn(move || {
-            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+            run(
+                endpoint.clone(),
+                NativeConnection::WebSocket {
+                    endpoint,
+                    token: ServerToken::fixture(),
+                },
+                worker_state,
+                receiver,
+            )
         });
         await_epoch(&state, 1);
         {
@@ -1984,7 +2265,15 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
         let worker = std::thread::spawn(move || {
-            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+            run(
+                endpoint.clone(),
+                NativeConnection::WebSocket {
+                    endpoint,
+                    token: ServerToken::fixture(),
+                },
+                worker_state,
+                receiver,
+            )
         });
         await_epoch(&state, 1);
         let response = call(&sender, "thread/resume", json!({"threadId":"t"}), 1).unwrap();
@@ -2025,7 +2314,15 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
         let worker = std::thread::spawn(move || {
-            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+            run(
+                endpoint.clone(),
+                NativeConnection::WebSocket {
+                    endpoint,
+                    token: ServerToken::fixture(),
+                },
+                worker_state,
+                receiver,
+            )
         });
         await_epoch(&state, 1);
         for method in [
@@ -2084,7 +2381,15 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
         let worker = std::thread::spawn(move || {
-            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+            run(
+                endpoint.clone(),
+                NativeConnection::WebSocket {
+                    endpoint,
+                    token: ServerToken::fixture(),
+                },
+                worker_state,
+                receiver,
+            )
         });
         await_epoch(&state, 1);
         let (old_token, token) = {
@@ -2150,7 +2455,15 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let worker_state = Arc::clone(&state);
         let worker = std::thread::spawn(move || {
-            run(endpoint, ServerToken::fixture(), worker_state, receiver)
+            run(
+                endpoint.clone(),
+                NativeConnection::WebSocket {
+                    endpoint,
+                    token: ServerToken::fixture(),
+                },
+                worker_state,
+                receiver,
+            )
         });
         await_epoch(&state, 1);
         let resume_sender = sender.clone();

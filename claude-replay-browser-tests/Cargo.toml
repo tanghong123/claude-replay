@@ -30,3 +30,5 @@ claude-replay-present = { path = "../claude-replay-present", features = ["cli"] 
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 headless_chrome = "1.0.22"
+
+tungstenite = "0.29"

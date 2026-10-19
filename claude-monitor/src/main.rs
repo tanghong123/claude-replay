@@ -95,6 +95,17 @@ fn open_url(url: &str) {
         .spawn();
 }
 
+/// Endpoint metadata is advisory after the listener has bound. A write failure must
+/// not turn a working Monitor into a failed startup.
+fn publish_runtime_note(root: &std::path::Path, ownership: serde_json::Value) {
+    if let Err(error) = claude_replay_present::cache::lock::publish(root, ownership) {
+        eprintln!(
+            "warning: publish Monitor endpoint and runtime identity to {}: {error:#}",
+            root.join("LOCK").display()
+        );
+    }
+}
+
 #[cfg(test)]
 fn classic_ui_requested(query: &str) -> bool {
     claude_monitor::ui::resolve(query) == claude_monitor::ui::Shell::Classic
@@ -153,6 +164,7 @@ USAGE:
   agent-monitor --set-passcode
   agent-monitor --pair-phone [--port N] [--url ADDRESS] [--yes]
   agent-monitor --version
+  agent-monitor --codex-server-url URL --codex-allowed-root PATH [--no-open]
 
   --pair            Require a token to reach the monitor — a 0600 secret, minted
                     once. Run it on a SHARED machine; it prints the URL to open,
@@ -161,6 +173,16 @@ USAGE:
   --agents LIST     Only these agents: claude, codex, qoder, qoderwork,
                     qwenwork.
   --no-open         Print the URL instead of opening a browser.
+  --codex-server-url URL
+                    Native endpoint: unix:// (default on Unix, in Codex home),
+                    unix:///path.sock, or ws://127.0.0.1:PORT (Bearer).
+                    Other platforms: ws://127.0.0.1:4500.
+                    Configuring an endpoint does not start a server.
+                    Enable Write mode, then Codex native in the browser.
+  --codex-allowed-root PATH
+                    Allow host directories below PATH; repeat for more roots.
+  --codex-state-file PATH
+                    Store durable action receipts here (default: state dir).
   --pair-phone      Let a phone on your tailnet into a PAIRED monitor. Finds
                     the `tailscale serve` address for this monitor (or says
                     how to serve it), confirms it, then prints a QR code and
@@ -172,7 +194,9 @@ USAGE:
                     unattended machine. Terminal-only on purpose, so an open
                     browser cannot lift the gate meant to stop it.
 
-Serves http://127.0.0.1:{DEFAULT_PORT} — loopback only, read-only.
+Serves http://127.0.0.1:{DEFAULT_PORT} — loopback only.
+Codex native is optional and starts only after an explicit browser action;
+the existing readers remain at `/?ui=app` and `/?ui=classic`.
 
 TWO INTERFACES, one of them DEPRECATED:
   the app shell (default) and the classic rail-and-iframe page, which goes in
@@ -215,6 +239,9 @@ fn main() -> Result<()> {
     let mut only: Vec<Agent> = Vec::new();
     let mut open_browser = true;
     let mut do_pair = false;
+    let mut codex_server_url: Option<String> = None;
+    let mut codex_allowed_roots: Vec<std::path::PathBuf> = Vec::new();
+    let mut codex_state_file: Option<std::path::PathBuf> = None;
     let mut pair_phone: Option<(Option<String>, bool)> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -254,6 +281,23 @@ fn main() -> Result<()> {
                 }
             }
             "--no-open" => open_browser = false,
+            "--codex-server-url" => {
+                codex_server_url = Some(args.next().context("--codex-server-url needs a URL")?);
+            }
+            "--codex-allowed-root" => {
+                codex_allowed_roots.push(
+                    args.next()
+                        .context("--codex-allowed-root needs a path")?
+                        .into(),
+                );
+            }
+            "--codex-state-file" => {
+                codex_state_file = Some(
+                    args.next()
+                        .context("--codex-state-file needs a path")?
+                        .into(),
+                );
+            }
             "--help" | "-h" => {
                 print!("{}", help_text());
                 return Ok(());
@@ -268,6 +312,15 @@ fn main() -> Result<()> {
         }
     }
 
+    let native_options =
+        codex_server_url.is_some() || !codex_allowed_roots.is_empty() || codex_state_file.is_some();
+    anyhow::ensure!(!native_options || cfg!(feature = "codex-native"), "This build does not include Codex native support; use the native-enabled Monitor distribution");
+    #[cfg(feature = "codex-native")]
+    let native_runtime = claude_monitor::codex_workspace::configured_runtime(
+        codex_server_url,
+        codex_allowed_roots,
+        codex_state_file,
+    )?;
     let root = index::default_root()?;
     if let Some((url, yes)) = pair_phone {
         return claude_monitor::pair_phone::run(read_token(&root).as_deref(), port, url, yes);
@@ -283,6 +336,13 @@ fn main() -> Result<()> {
     // is where the user wants to go (#166), so open it and stop rather than fail. The hand-off
     // URL carries the token too: the second invocation is the same user, who can read the file.
     if let Claimed::Served(url) = claim_root(&root)? {
+        #[cfg(feature = "codex-native")]
+        if native_options {
+            let receipt: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.join("LOCK"))?)?;
+            anyhow::ensure!(receipt["note"]["native"] == native_runtime.identity(),
+                "The running Monitor has different or absent native configuration. Use its matching native settings or a separate AGENT_MONITOR_CACHE; no server was started.");
+        }
         // The bare URL, deliberately: which shell `/` serves is the REMEMBERED preference
         // (`ui::resolve`), and the running monitor is the one that answers it. Pinning a `ui=`
         // here would override the user's own choice on every hand-off.
@@ -383,6 +443,12 @@ fn main() -> Result<()> {
         },
     );
 
+    #[cfg(feature = "codex-native")]
+    let public_assets = claude_monitor::codex_workspace::PUBLIC_ASSETS;
+    #[cfg(not(feature = "codex-native"))]
+    let public_assets = claude_monitor::ui::PUBLIC_ASSETS;
+    #[cfg(feature = "codex-native")]
+    let handler = claude_monitor::codex_workspace::handler(handler, native_runtime.clone(), idx);
     // #196 §4.2: paired ⇒ the token gate (same-user OR the token); unpaired ⇒ D3b same-user.
     let gate = match &token {
         Some(t) => claude_replay_html::AuthGate::with_token(t.as_str())
@@ -390,16 +456,31 @@ fn main() -> Result<()> {
         None => claude_replay_html::AuthGate::same_user(),
     }
     // #320: the icons and the manifest, which a phone reads to put the page on its Home Screen.
-    .with_public(claude_monitor::ui::PUBLIC_ASSETS)
+    .with_public(public_assets)
     // #331: the tailnet name `tailscale serve` relays to this port is the monitor's own too.
     .with_trusted_hosts(claude_monitor::pair_phone::trusted_hosts(port));
+    #[cfg(feature = "codex-native")]
+    let bound = claude_replay_html::spawn_streaming_listener_gated(
+        port,
+        handler,
+        gate.with_body_limit(
+            "api/codex/send",
+            claude_monitor::codex_workspace::SEND_BODY_LIMIT,
+        )?,
+    )
+    .with_context(|| format!("bind 127.0.0.1:{port} (is another monitor running?)"))?;
+    #[cfg(not(feature = "codex-native"))]
     let bound = claude_replay_html::spawn_listener_gated(port, handler, gate)
         .with_context(|| format!("bind 127.0.0.1:{port} (is another monitor running?)"))?;
     service.set_port(bound);
     // Now the root lock can say where we serve, so the next invocation's refusal names a URL
     // instead of just a pid (#160). Only reachable once bound — the same reason the html
     // server publishes its per-session notes late.
-    let _ = claude_replay_present::cache::lock::publish(&root, serde_json::json!({"port": bound}));
+    #[cfg(feature = "codex-native")]
+    let ownership = serde_json::json!({"port":bound,"native":native_runtime.identity()});
+    #[cfg(not(feature = "codex-native"))]
+    let ownership = serde_json::json!({"port":bound});
+    publish_runtime_note(&root, ownership);
     let base = format!("http://127.0.0.1:{bound}/");
     let url = with_token(&base);
     if token.is_some() {
@@ -427,6 +508,18 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn optional_runtime_note_failure_does_not_abort_a_bound_listener() {
+        let root = std::env::temp_dir().join(format!("monitor-note-file-{}", std::process::id()));
+        std::fs::write(&root, "a file cannot contain LOCK").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        super::publish_runtime_note(&root, serde_json::json!({"port":address.port()}));
+        assert!(std::net::TcpStream::connect(address).is_ok());
+        assert!(root.is_file());
+        std::fs::remove_file(root).unwrap();
+    }
 
     #[test]
     fn app_shell_is_the_default_and_classic_stays_reachable() {

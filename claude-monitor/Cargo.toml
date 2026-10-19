@@ -17,6 +17,10 @@ path = "src/lib.rs"
 name = "agent-monitor"
 path = "src/main.rs"
 
+[features]
+default = []
+codex-native = ["dep:claude-monitor-codex"]
+
 [dependencies]
 claude-replay-core = { path = "../claude-replay-core" }
 claude-replay-present = { path = "../claude-replay-present" }
@@ -26,6 +30,7 @@ claude-replay-html = { path = "../claude-replay-html" }
 mdrev = { path = "../vendor/mdrev" }
 anyhow = "1"
 serde_json = "1"
+claude-monitor-codex = { path = "../claude-monitor-codex", optional = true }
 # Salted hash for the optional injection passcode (#133 grant gate). Small, audited; a
 # security feature earns a crypto primitive rather than a hand-rolled hash.
 sha2 = "0.10"

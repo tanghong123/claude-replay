@@ -6,6 +6,10 @@
 //! `Index`, `ConsentStore`, `Passcode` and send transports through here. Splitting the crate
 //! this way is what keeps ONE implementation of "may this prompt be injected into that pane".
 
+#[cfg(feature = "codex-native")]
+pub use claude_monitor_codex as codex_gateway;
+#[cfg(feature = "codex-native")]
+pub mod codex_workspace;
 pub mod consent;
 pub mod control;
 pub mod cost;
