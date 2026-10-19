@@ -92,6 +92,11 @@ export function mountNativeMenu(onOpen) {
   menu.id = "codexNativeMenu"; menu.setAttribute("popover", "auto"); menu.setAttribute("role", "dialog");
   menu.setAttribute("aria-label", "Write mode options"); document.body.append(menu);
   menu.addEventListener("toggle", event => button.setAttribute("aria-expanded", String(event.newState === "open")));
+  menu.addEventListener("keydown", event => {
+    if (event.key !== "Escape") return;
+    // Consume Escape here rather than letting the browser stop a loading event stream.
+    event.preventDefault(); event.stopPropagation(); menu.hidePopover(); button.focus();
+  });
   return { button, menu };
 }
 
