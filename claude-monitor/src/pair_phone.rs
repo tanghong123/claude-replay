@@ -150,7 +150,7 @@ pub fn listed_hosts(value: &str) -> Vec<String> {
 /// No request waits on `tailscale` (#s151): the names are read in the background, starting now,
 /// each read bounded at 3 s (`TAILSCALE_TIMEOUT`), and a check answers from the last names read.
 /// Only a check in the first 2 s after this call (`FIRST_WAIT`) waits for the first read, and no
-/// longer; a read that timed out keeps the names read before it.
+/// longer; a read that failed or timed out keeps the names read before it (#s170).
 pub fn trusted_hosts(port: u16) -> claude_replay_html::HostCheck {
     let listed = std::env::var("AGENT_MONITOR_TRUSTED_HOSTS")
         .map(|v| listed_hosts(&v))
@@ -171,8 +171,8 @@ const FIRST_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// hong-devserver: 74 ms for both reads together.
 const TAILSCALE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// A lookup of the tailnet's names: `None` when it could not finish (a read timed out), which
-/// keeps the names read before.
+/// A lookup of the tailnet's names: `None` when a read failed or timed out, which keeps the names
+/// read before (#s170: a `tailscale` restarting must not cost the phone its writes for 30 s).
 type Lookup = std::sync::Arc<dyn Fn() -> Option<Vec<String>> + Send + Sync>;
 
 struct Tailnet {
@@ -258,7 +258,8 @@ fn trusted_hosts_from(
 }
 
 /// The hosts this machine's `tailscale serve` relays to 127.0.0.1:`port` — none when Tailscale is
-/// not here, not running, or serves nothing to this port; `None` when a read timed out.
+/// not here, is logged out, or serves nothing to this port; `None` when a read failed or timed
+/// out, so the names read before stay (#s170).
 fn tailnet_hosts(port: u16) -> Option<Vec<String>> {
     let Some(bin) = tailscale() else {
         return Some(Vec::new());
@@ -283,19 +284,50 @@ pub fn serve_command(port: u16, https: bool) -> String {
     format!("tailscale serve --bg {mode} {port} {port}")
 }
 
-/// The `tailscale` CLI: on PATH, else the macOS app's bundled one.
+/// The `tailscale` CLI: on PATH, else where Homebrew and `go install` put it, else the macOS app's
+/// bundled one.
 fn tailscale() -> Option<std::path::PathBuf> {
-    for dir in std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .unwrap_or_default()
+    let var = |name: &str| std::env::var_os(name);
+    tailscale_places(var("PATH"), var("GOBIN"), var("GOPATH"), var("HOME"))
+        .into_iter()
+        .find(|bin| bin.is_file())
+}
+
+/// Where [`tailscale`] looks, in order (#s170). A service launchd starts has PATH
+/// `/usr/bin:/bin:/usr/sbin:/sbin`, so a Homebrew, `/usr/local/bin` or `go install` build was
+/// never found there and no tailnet name was trusted. Absolute places only: a relative PATH entry
+/// would find whatever `tailscale` sits in the directory the monitor was started from.
+fn tailscale_places(
+    path: Option<std::ffi::OsString>,
+    gobin: Option<std::ffi::OsString>,
+    gopath: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let split = |v: Option<std::ffi::OsString>| -> Vec<PathBuf> {
+        v.map(|v| std::env::split_paths(&v).collect())
+            .unwrap_or_default()
+    };
+    let mut dirs = split(path);
+    dirs.push(PathBuf::from("/opt/homebrew/bin"));
+    dirs.push(PathBuf::from("/usr/local/bin"));
+    dirs.extend(gobin.map(PathBuf::from));
+    dirs.extend(split(gopath).into_iter().map(|d| d.join("bin")));
+    dirs.extend(home.map(|h| PathBuf::from(h).join("go/bin")));
+    let mut places: Vec<PathBuf> = Vec::new();
+    for bin in dirs
+        .into_iter()
+        .filter(|d| d.is_absolute())
+        .map(|d| d.join("tailscale"))
     {
-        let bin = dir.join("tailscale");
-        if bin.is_file() {
-            return Some(bin);
+        if !places.contains(&bin) {
+            places.push(bin);
         }
     }
-    let app = std::path::PathBuf::from("/Applications/Tailscale.app/Contents/MacOS/Tailscale");
-    app.is_file().then_some(app)
+    places.push(PathBuf::from(
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    ));
+    places
 }
 
 fn tailscale_json(bin: &std::path::Path, args: &[&str]) -> Option<Value> {
@@ -306,8 +338,8 @@ fn tailscale_json(bin: &std::path::Path, args: &[&str]) -> Option<Value> {
     serde_json::from_slice(&out.stdout).ok()
 }
 
-/// [`tailscale_json`] bounded by `limit` (#s151): `None` when the read did not finish in time (the
-/// process is killed and reaped), else the JSON it printed, `Null` for a failed read.
+/// [`tailscale_json`] bounded by `limit` (#s151): the JSON it printed, or `None` when the read
+/// failed, printed no JSON, or did not finish in time (the process is then killed and reaped).
 fn tailscale_json_within(
     bin: &std::path::Path,
     args: &[&str],
@@ -322,7 +354,7 @@ fn tailscale_json_within(
         .stderr(Stdio::null())
         .spawn()
     else {
-        return Some(Value::Null);
+        return None;
     };
     let Some(mut stdout) = child.stdout.take() else {
         let _ = child.kill();
@@ -347,11 +379,11 @@ fn tailscale_json_within(
             }
         }
     };
-    let out = reader.join().ok().and_then(Result::ok).unwrap_or_default();
+    let out = reader.join().ok().and_then(Result::ok)?;
     if !status.success() {
-        return Some(Value::Null);
+        return None;
     }
-    Some(serde_json::from_slice(&out).unwrap_or(Value::Null))
+    serde_json::from_slice(&out).ok()
 }
 
 /// A QR code for `text`, drawn with half-block characters so it fits a terminal. With `paint`,
@@ -641,6 +673,53 @@ mod tests {
         eventually("a name served later counts once read", || check("b.ts.net"));
     }
 
+    /// #s170: tailscale is found where a service launchd started can't see it on PATH — Homebrew,
+    /// /usr/local/bin, GOBIN, each GOPATH's bin, ~/go/bin, then the app — and a relative PATH
+    /// entry is never searched.
+    #[test]
+    fn tailscale_is_looked_for_beyond_a_service_s_path() {
+        use std::path::PathBuf;
+        let places = tailscale_places(
+            Some("/usr/bin:relative/bin:/bin".into()),
+            Some("/g/bin".into()),
+            Some("/p1:/p2".into()),
+            Some("/Users/someone".into()),
+        );
+        let expect: Vec<PathBuf> = [
+            "/usr/bin",
+            "/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/g/bin",
+            "/p1/bin",
+            "/p2/bin",
+            "/Users/someone/go/bin",
+        ]
+        .iter()
+        .map(|d| PathBuf::from(d).join("tailscale"))
+        .chain([PathBuf::from(
+            "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+        )])
+        .collect();
+        assert_eq!(places, expect);
+        let launchd = tailscale_places(
+            Some("/usr/bin:/bin:/usr/sbin:/sbin".into()),
+            None,
+            None,
+            None,
+        );
+        assert!(launchd.contains(&PathBuf::from("/opt/homebrew/bin/tailscale")));
+        let twice = tailscale_places(Some("/opt/homebrew/bin".into()), None, None, None);
+        assert_eq!(
+            twice
+                .iter()
+                .filter(|p| p.starts_with("/opt/homebrew"))
+                .count(),
+            1,
+            "a place is listed once"
+        );
+    }
+
     /// #s151: a status read that does not finish in time is abandoned, its process killed.
     #[cfg(unix)]
     #[test]
@@ -673,7 +752,13 @@ mod tests {
         );
         std::fs::write(&bin, "#!/bin/sh\nexit 1\n").unwrap();
         let read = tailscale_json_within(&bin, &["status", "--json"], Duration::from_secs(5));
-        assert_eq!(read, Some(Value::Null), "a failed read is a finished one");
+        assert_eq!(
+            read, None,
+            "a failed read gives no names, so the names before it stay (#s170)"
+        );
+        std::fs::write(&bin, "#!/bin/sh\necho 'not json'\n").unwrap();
+        let read = tailscale_json_within(&bin, &["status", "--json"], Duration::from_secs(5));
+        assert_eq!(read, None, "nor does a read that prints no JSON");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
