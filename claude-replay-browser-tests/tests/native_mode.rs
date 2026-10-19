@@ -302,6 +302,17 @@ fn run(mobile: bool, unix: bool) {
         "document.getElementById('codexNativeButton')?.dataset.nativeEnabled === 'true'",
     );
     wait(&tab, "document.getElementById('codexNativeMenu').matches(':popover-open') && document.getElementById('nativeEnable').getAttribute('aria-checked') === 'true' && !document.getElementById('nativeEnable').disabled && document.getElementById('nativeServerStatus').dataset.state === 'running'");
+    std::fs::write(
+        root.join("native-enabled-menu.png"),
+        tab.capture_screenshot(
+            headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
+            None,
+            None,
+            true,
+        )
+        .unwrap(),
+    )
+    .unwrap();
     wait(
         &tab,
         "!!document.querySelector('[data-session=rollout-native-owned]')",
