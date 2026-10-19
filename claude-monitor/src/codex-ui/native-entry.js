@@ -38,9 +38,11 @@ async function openMenu() {
         const activated = await new GatewayApi().request("start", { writeMode: true, startIfMissing: true });
         await nativeStyles();
         const { NativeModeControls } = await import("./native-mode.js");
-        menu.hidePopover(); button.remove(); menu.remove();
         byId("writeSwitch").onclick = originalSwitch;
-        await installNativeController(NativeModeControls, activated, () => byId("codexNativeStyles")?.remove(), nativeStyles);
+        // Keep the open surface through controller installation. A user who
+        // dismissed it during startup must not have it reopened afterward.
+        const controller = await installNativeController(NativeModeControls, activated, () => byId("codexNativeStyles")?.remove(), nativeStyles, { button, menu });
+        if (menu.matches(":popover-open")) controller.showMenu();
       } catch (error) {
         renderNativeServerStatus(menu, { enabled: false, status, activationFailed: true });
         toast(error.message); enable.disabled = false;

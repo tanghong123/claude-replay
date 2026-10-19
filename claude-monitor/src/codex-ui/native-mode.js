@@ -57,12 +57,13 @@ class NativePresentation {
 
 /** Compose ordinary controls with an explicitly enabled Codex controller. */
 export class NativeModeControls {
-  constructor(ordinary, actions) {
+  constructor(ordinary, actions, menuMount = null) {
     this.ordinary = ordinary; this.actions = actions; this.mode = "off"; this.view = "ordinary";
     this.intent = "none"; this.status = null; this.drafts = new Map(); this.draftRevisions = new Map(); this.composerGeneration = 0;
     ordinary.actions = { ...ordinary.actions, captureComposer: () => this.captureOrdinarySend(), repaintComposer: () => this.paint() };
     this.lastOrdinarySession = indexState.selected;
-    ({ button: this.button, menu: this.menu } = mountNativeMenu(() => this.openMenu()));
+    ({ button: this.button, menu: this.menu } = menuMount || mountNativeMenu(() => this.openMenu()));
+    if (menuMount) this.button.onclick = () => this.menu.matches(":popover-open") ? this.menu.hidePopover() : this.openMenu();
     new ResizeObserver(() => this.positionMenu()).observe(this.menu);
     visualViewport?.addEventListener("resize", () => this.positionMenu());
     visualViewport?.addEventListener("scroll", () => this.positionMenu());
@@ -150,6 +151,9 @@ export class NativeModeControls {
   async openMenu() {
     if (!controlState.write || this.pending) return;
     await this.checkStatus();
+    this.showMenu();
+  }
+  showMenu() {
     const action = renderNativeMenu(this.menu, { enabled: this.enabled, status: this.status, pending: this.pending },
       () => this.enabled ? this.disable() : this.status?.statusError ? this.openMenu() : this.enable());
     this.appendConnectionHelp();

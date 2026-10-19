@@ -3716,7 +3716,7 @@ addEventListener("pagehide", () => viewport.remember());
 document.addEventListener("visibilitychange", () => { if (document.hidden) viewport.remember(); });
 
 /** Install native routing only after an explicit server activation succeeds. */
-export async function installNativeController(Controller, status, onDisabled, nativeStyles) {
+export async function installNativeController(Controller, status, onDisabled, nativeStyles, menuMount = null) {
   const controller = new Controller(ordinaryControls, { ...controlActions, nativeStyles,
     nativeDisabled: () => {
       sessionIndex.load = null; sessionIndex.group = null;
@@ -3729,7 +3729,7 @@ export async function installNativeController(Controller, status, onDisabled, na
       recordStore.emptySession = session => controller.isEmptySession(session);
       recordStore.sessionFailure = session => controller.sessionReadFailure(session);
     }
-  });
+  }, menuMount);
   controls = controller;
   await controller.adopt(status);
   return controller;

@@ -288,6 +288,8 @@ fn run(mobile: bool, unix: bool) {
         &tab,
         r#"(() => {
       window.nativeTestFetch = window.fetch; window.heldNativeScans = []; window.holdNativeScans = false; window.heldNativeSends = []; window.holdNativeSends = false;
+      window.initialNativeMenu = document.getElementById('codexNativeMenu'); window.nativeMenuCloses = 0;
+      window.initialNativeMenu.addEventListener('beforetoggle', e => { if (e.newState === 'closed') window.nativeMenuCloses++; });
       window.fetch = (url, options) => window.holdNativeScans && String(url).startsWith('/api/codex/threads')
         ? new Promise((resolve, reject) => window.heldNativeScans.push({resolve,reject,url,options}))
         : window.holdNativeSends && String(url).endsWith("/api/codex/send")
@@ -302,6 +304,7 @@ fn run(mobile: bool, unix: bool) {
         "document.getElementById('codexNativeButton')?.dataset.nativeEnabled === 'true'",
     );
     wait(&tab, "document.getElementById('codexNativeMenu').matches(':popover-open') && document.getElementById('nativeEnable').getAttribute('aria-checked') === 'true' && !document.getElementById('nativeEnable').disabled && document.getElementById('nativeServerStatus').dataset.state === 'running'");
+    assert_eq!(eval(&tab, "document.getElementById('codexNativeMenu') === window.initialNativeMenu && window.nativeMenuCloses === 0"), true, "First activation retains the same open menu without a close/reopen flash");
     std::fs::write(
         root.join("native-enabled-menu.png"),
         tab.capture_screenshot(
@@ -317,6 +320,11 @@ fn run(mobile: bool, unix: bool) {
         &tab,
         "!!document.querySelector('[data-session=rollout-native-owned]')",
     );
+    tab.press_key("Escape").unwrap();
+    wait(
+        &tab,
+        "!document.getElementById('codexNativeMenu').matches(':popover-open')",
+    );
     click(&tab, "[data-session=rollout-native-owned]");
     assert_eq!(
         eval(
@@ -324,7 +332,7 @@ fn run(mobile: bool, unix: bool) {
             "document.getElementById('codexNativeMenu').matches(':popover-open')"
         ),
         false,
-        "Selecting a session still dismisses the menu"
+        "The user can dismiss the enabled menu with Escape"
     );
     wait(&tab, "document.body.dataset.sharedCodex === 'true' && document.getElementById('sharedModelPicker')?.disabled === false");
     assert_eq!(
