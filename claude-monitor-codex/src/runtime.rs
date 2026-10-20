@@ -369,6 +369,19 @@ impl NativeRuntime {
         )?;
         let mut startup = StartupChild(None);
         #[cfg(unix)]
+        if !listening
+            && self
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .ownership
+                .as_ref()
+                .is_some_and(ownership::Ownership::matches)
+        {
+            // Refuse a duplicate spawn without taking and dropping the live lease.
+            bail!("Recorded Codex process is still running but its endpoint is unavailable; retry after it recovers");
+        }
+        #[cfg(unix)]
         let mut ownership = if !listening {
             // A disconnected runtime may still hold a lease for an exited server.
             self.state

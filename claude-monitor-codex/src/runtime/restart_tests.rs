@@ -105,7 +105,7 @@ fn host_exit_preserves_server_and_restart_recovers_it_for_explicit_close() {
     let first = runtime.activate(true).unwrap();
     let pid = first["ownedServerPid"].as_u64().unwrap() as u32;
     let guard = Reap(pid);
-    let next = copy_runtime(&runtime);
+    let mut next = copy_runtime(&runtime);
     let observer = copy_runtime(&runtime);
     assert!(
         observer.activate(false).unwrap()["ownedServerPid"].is_null(),
@@ -119,6 +119,14 @@ fn host_exit_preserves_server_and_restart_recovers_it_for_explicit_close() {
     assert_eq!(status["ownedServerPid"], pid);
     assert_eq!(status["homeProvenance"], "monitor-started");
     next.force_deactivate().unwrap();
+    // Model a transiently unreachable listener without killing the owned process.
+    let addresses = std::mem::take(&mut Arc::get_mut(&mut next).unwrap().addresses);
+    assert!(next.activate(true).is_err());
+    assert!(
+        ownership::Ownership::claim(&next.config.gateway.state_path).is_err(),
+        "a failed reconnect must retain the existing ownership lease"
+    );
+    Arc::get_mut(&mut next).unwrap().addresses = addresses;
     assert_eq!(
         next.activate(false).unwrap()["ownedServerPid"],
         pid,
