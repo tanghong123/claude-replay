@@ -323,7 +323,7 @@ paired: you write as Hong-on-laptop <hong@example.com>
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.55",
+  "mdrev": "1.1.57",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
@@ -501,7 +501,43 @@ Hong 的裁定，2026-10-08：
 
 其中 `why` 是 `subscribed`、`mentioned` 或 `confirm`（验证码：唯一会发给工具未担保邮箱的消息，因为验证码本身就是证明）。工具以 0 退出，标准输出为空或为 `{"failed": [{"to": "…", "error": "…"}]}`；以其他值退出则全部失败，以标准错误的第一行为原因，截到 200 个字符。它以所服务的那个人的身份发送——他自己的邮箱、他自己的聊天账号——绝不以机器人身份，mdrev 也不交给它任何凭据。mdrev 在写入订阅时、输入提及时（停止输入之后）以及每次发送之前，都会调用 `lookup`。
 
-**在团队的 mdrev 服务上**（[personal-service.md](personal-service.md)，"Notifications"；#s129），同样的工具以推送者本人的身份通知别人，用的是服务为此人保留的、此人自己的登录。服务在记录进入评审库后就答复推送；然后续期那个登录，运行 `mdrev-cli review notify`——通知谁、说什么，和机器上的推送一样决定——由 `MDREV_NOTIFY_FILE` 给出只有服务知道的三件事：工具的完整环境（此人的登录，绝不是 mdrev-cli 自己的）、指向服务页面上该讨论串所在分支的链接（代替项目的 `link`），以及关掉了服务消息的人（同事从自己机器推送的内容，仍然会通知他们）。工具的协议不变；页面先显示"正在通知……"，再显示通知了谁。
+**在团队的 mdrev 服务上**（[personal-service.md](personal-service.md)，"Notifications"；#s129），同样的工具以推送者本人的身份通知别人，用的是服务为此人保留的、此人自己的登录。服务在记录进入评审库后就答复推送；然后续期那个登录，运行 `mdrev-cli review notify`——通知谁、说什么，和机器上的推送一样决定——由 `MDREV_NOTIFY_FILE` 给出只有服务知道的四件事：工具的完整环境（此人的登录，绝不是 mdrev-cli 自己的）、指向服务页面上该讨论串所在分支的链接（代替项目的 `link`）、关掉了服务消息的人（同事从自己机器推送的内容，仍然会通知他们），以及它通知别人用的渠道，不论项目的 `.mdrev.json` 怎么写——钉钉和邮件，公司的渠道，所以那里的通知总是开着的（#s186、#s187）。工具的协议不变；页面先显示"正在通知……"，再显示通知了谁。
+
+### 每台机器打开一次通知（提议；#s188）
+
+Hong，2026-10-19："On local device, turning on shared notes and turning on notifications are two steps. the former needs to be done per repo (initialization requires human, accept can be done via agent); turning on notification I think can be a one-off per box."（在本机上，打开共享批注和打开通知是两步：前者每个仓库做一次——初始化需要人来做，接受可以由智能体做；后者每台机器一次。）他在第八稿里就说过渠道设置放在哪："sure, both"：项目里，以及每台机器上（见上文）。
+
+**今天**，从一台机器推送时，只通过仓库提交的 `.mdrev.json` 里写的渠道通知别人（`--review-pointer --notify`，见上文），所以打开通知是一次提交，每个仓库一次，要有人去做、由仓库的负责人合并——在那之前，推送不通知任何人。
+
+**提议：机器自己的渠道。** 一个人一次写下这台机器通知别人用的渠道：
+
+```
+mdrev --channels dingtalk,email     # 这台机器上的每个项目都通过这些渠道通知
+mdrev --channels none               # 又不再通知任何人
+mdrev --channels                    # 现在写了什么，以及这台机器有哪些工具
+```
+
+保存在 `~/.mdrev/notify.json`（`{"channels": ["chat", "email"]}`）；每个名字都像项目里的一样检查。之后从这台机器推送时，通过以下渠道通知别人：
+
+1. **项目的文件写了渠道，就用项目的**——那是项目的团队选的，所以照旧以它为准；
+2. **项目的文件写了空列表，就谁也不通知**——那是项目说不要；
+3. **否则用机器的渠道**——没有 `notify`，或者 `notify` 里没有 `channels`——项目写了 `link` 就用它，否则像 `--notify` 一样从仓库的地址推出链接。
+
+所以，在一台机器上做一步，就为那里所有没有另作选择的仓库打开了通知；打开共享批注仍然是每个仓库一次，是另外一步。
+
+**`--notify none` 的变化，以及运行过它的项目。** 今天 `--notify none` 会从 `.mdrev.json` 里删掉 `notify`（"没有 `notify`：谁都不通知"，见上文）。按第 3 条，没有 `notify` 的项目跟着机器走，所以 `--notify none` 要改为写 `"channels": []`，让项目保持不通知。所有读这个文件的地方本来就把空列表当作不通知（core 的 `readNotify`），所以不需要任何读的一方改动。但以前运行过 `--notify none` 的项目已经没有 `notify` 了，一旦它的人写下机器的渠道，它就会开始通知别人。所以 `mdrev --channels` 第一次写下渠道时，会列出这台机器配对过的、文件里没有写渠道的项目——每次配对都记下它的项目，而没有配对就什么都推送不了（E3）——说明每一个从此会通知别人，并给出 `mdrev --review-pointer --notify none`，用于那些应该保持安静的项目。之后才配对的项目，会在配对时被告知。
+
+**谁来做这一步。** 消息以这个人的身份发出，用他自己的邮箱和聊天账号，所以写下机器的渠道由本人在自己的终端里做，和 `--notify`、`--link` 一样（E1）：智能体运行 `mdrev --channels <名字>` 或 `none` 会被拒绝，并得到给它的人运行的命令。只运行 `mdrev --channels` 是只读的，智能体可以运行。
+
+**提示。** 在没有写下渠道的机器上，在文件里没有写渠道的项目中第一次推送或配对时，会说一次（每台机器一次），并列出它有工具的渠道："这台机器推送时不通知任何人；`mdrev --channels dingtalk,email` 为这里的每个项目打开通知"——对智能体则说"请你的人运行"它。没有任何渠道工具的机器什么都不说。项目没有写渠道时，`--review-status`、不带参数的 `--review-pointer`、在终端里配对以及查看器的订阅面板，在机器没有写渠道时提供 `mdrev --channels`，并在旁边给出项目的 `--review-pointer --notify`。
+
+**在哪里能看到。** `--review-status` 说明项目的渠道从哪里来（"通过 dingtalk、email——这台机器的：项目没有写"），查看器的订阅面板在机器写了渠道时，不再说没有人会被通知。组织的插件可以在安装时提示这个命令（写在它的 formula 的 caveats 里）；mdrev 自己不点名任何渠道，和别处一样。
+
+**不变的。** 团队的 mdrev 服务，不论哪个文件怎么写，都通过公司的渠道通知（见上文）。在一台机器上，项目写了自己的渠道时，仍然以项目的为准。
+
+**它会修改的：** H5（"项目指明渠道"）；"渠道"一节里的"没有 `notify`：谁都不通知"和 `--notify none`；提供 `--review-pointer --notify` 的那些地方；`--review-status` 的几行；智能体规则表里 E1 那一行，加上 `--channels`；以及一个新命令 `mdrev --channels`。
+
+**待定（Hong，#s190）：** 智能体能不能凭它的人的一句话写下机器的渠道，就像它接受配对那样，还是只能由本人在自己的终端里做（如草稿所写）；另外两件草稿里有默认：项目的渠道是替代机器的渠道（草稿如此），还是加在上面；以及命令的名字。
 
 ### 组织的插件
 

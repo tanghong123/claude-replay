@@ -785,6 +785,40 @@ fn run_sized(mobile: bool, unix: bool, width: u32, height: u32) {
     std::fs::write(root.join("native-active.png"), shot).unwrap();
     println!("NATIVE_REVIEW_EVIDENCE {}", root.display());
     native.active.store(true, Ordering::SeqCst);
+    if mobile && width > height {
+        click(&tab, "[data-session=rollout-native-owned]");
+        wait(&tab, "!document.getElementById('sharedInterrupt').hidden && !document.getElementById('sharedInterrupt').disabled");
+        eval(&tab, "(()=>{const i=document.getElementById('composeInput');i.value='Synthetic landscape queue';i.dispatchEvent(new Event('input'));return true;})()");
+        tap(&tab, "#composeInput");
+        click(&tab, "#sendBtn");
+        wait(&tab, "document.getElementById('sharedQueue').innerText.includes('Synthetic landscape queue')");
+        eval(
+            &tab,
+            "document.getElementById('jumpToBottom').classList.add('show');true",
+        );
+        wait(&tab, "(()=>{const j=document.getElementById('jumpToBottom'),r=j.getBoundingClientRect();return r.height>0 && j.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2));})()");
+        std::fs::write(
+            root.join("native-queued-jump.png"),
+            tab.capture_screenshot(
+                headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
+                None,
+                None,
+                true,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        click(&tab, "[data-queue-action=cancel]");
+        wait(
+            &tab,
+            "document.getElementById('sharedQueue').children.length===0",
+        );
+        click(&tab, "[data-session=rollout-native-created]");
+        wait(
+            &tab,
+            "document.getElementById('sharedModelPicker').disabled===false",
+        );
+    }
     click(&tab, "#codexNativeButton");
     wait(
         &tab,
@@ -945,6 +979,17 @@ fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
             .unwrap(),
         )
         .unwrap();
+        // Portrait editing must not leave an unfocused composer expanded on rotation.
+        let width = eval(tab, "innerWidth").as_u64().unwrap() as u32;
+        let height = eval(tab, "innerHeight").as_u64().unwrap() as u32;
+        phone(tab, height, width);
+        tap(tab, "#composeInput");
+        eval(tab, "document.getElementById('composeInput').blur();true");
+        phone(tab, width, height);
+        wait(
+            tab,
+            "document.getElementById('composer').dataset.sharedCollapsed==='true'",
+        );
         tap(tab, "#composeInput");
         wait(tab, "document.getElementById('composer').dataset.sharedCollapsed==='false' && document.getElementById('sendBtn').checkVisibility() && document.activeElement.id==='composeInput' && !document.body.hasAttribute('data-shared-reader-open')");
         tap(tab, "#sharedReaderTools");
@@ -1039,6 +1084,15 @@ fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
     );
     if sideways {
         eval(tab, "document.getElementById('sharedReaderTools').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));true");
+        assert_eq!(
+            eval(
+                tab,
+                "document.getElementById('composer').dataset.sharedCollapsed"
+            ),
+            "false",
+            "starting a touch scroll cannot change transcript padding"
+        );
+        eval(tab, "document.getElementById('sharedReaderTools').dispatchEvent(new MouseEvent('click',{bubbles:true}));true");
         wait(
             tab,
             "document.getElementById('composer').dataset.sharedCollapsed==='true'",
@@ -1064,6 +1118,30 @@ fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
         .unwrap(),
     )
     .unwrap();
+    if sideways {
+        eval(tab, "(()=>{Object.defineProperty(visualViewport,'height',{configurable:true,get:()=>16});visualViewport.dispatchEvent(new Event('resize'));return true;})()");
+        let minimal = "(()=>{const a=document.getElementById('app').getBoundingClientRect(),c=document.getElementById('composer'),r=c.getBoundingClientRect();return {inputOnly:c.dataset.sharedInputOnly,top:r.top-a.top,bottom:r.bottom-a.top,height:r.height,send:document.getElementById('sendBtn').checkVisibility()};})()";
+        until(tab, &format!("(()=>{{const g={minimal};return g.inputOnly==='true' && g.top>=0 && g.bottom<=17 && g.height<=16 && !g.send && !document.querySelector('.workspace>.topbar').checkVisibility({{visibilityProperty:true}}) && (()=>{{const i=document.getElementById('composeInput'),r=i.getBoundingClientRect();return i.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2));}})();}})()"),
+            "tiny Safari viewport clips to one bottom input", Duration::from_secs(10), minimal);
+        std::fs::write(
+            root.join("native-tiny-keyboard-geometry.json"),
+            serde_json::to_vec_pretty(&probe(tab, minimal)).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("native-tiny-keyboard.png"),
+            tab.capture_screenshot(
+                headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
+                None,
+                None,
+                true,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        eval(tab, "(()=>{Object.defineProperty(visualViewport,'height',{configurable:true,get:()=>innerHeight-Math.min(300,innerHeight/3)});visualViewport.dispatchEvent(new Event('resize'));return true;})()");
+        wait(tab, "document.getElementById('composer').dataset.sharedInputOnly==='false' && document.getElementById('sendBtn').checkVisibility()");
+    }
     eval(tab, "(()=>{Object.defineProperty(visualViewport,'scale',{configurable:true,get:()=>2});Object.defineProperty(visualViewport,'pageTop',{configurable:true,get:()=>120});visualViewport.dispatchEvent(new Event('scroll'));return true;})()");
     wait(tab, "document.getElementById('app').style.transform==='' && !document.getElementById('app').classList.contains('keyboard-up')");
     eval(tab, "(()=>{delete visualViewport.height;delete visualViewport.scale;delete visualViewport.pageTop;delete visualViewport.offsetTop;document.activeElement.blur();visualViewport.dispatchEvent(new Event('resize'));return true;})()");

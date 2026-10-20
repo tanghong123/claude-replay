@@ -115,13 +115,26 @@ fn host_exit_preserves_server_and_restart_recovers_it_for_explicit_close() {
     drop(observer);
     assert_eq!(runtime.shutdown().unwrap()["serverListening"], true);
     drop(runtime);
+    // On the next host, a live receipt with an unavailable endpoint also names
+    // the PID without claiming ownership or spawning a duplicate server.
+    let addresses = std::mem::take(&mut Arc::get_mut(&mut next).unwrap().addresses);
+    assert!(next
+        .activate(true)
+        .unwrap_err()
+        .to_string()
+        .contains(&pid.to_string()));
+    Arc::get_mut(&mut next).unwrap().addresses = addresses;
     let status = next.activate(false).unwrap();
     assert_eq!(status["ownedServerPid"], pid);
     assert_eq!(status["homeProvenance"], "monitor-started");
     next.force_deactivate().unwrap();
     // Model a transiently unreachable listener without killing the owned process.
     let addresses = std::mem::take(&mut Arc::get_mut(&mut next).unwrap().addresses);
-    assert!(next.activate(true).is_err());
+    assert!(next
+        .activate(true)
+        .unwrap_err()
+        .to_string()
+        .contains(&pid.to_string()));
     assert!(
         ownership::Ownership::claim(&next.config.gateway.state_path).is_err(),
         "a failed reconnect must retain the existing ownership lease"
@@ -174,4 +187,48 @@ fn invalid_receipt_or_token_cannot_authorize_stopping_external_process() {
         drop(guard);
         crate::remove_test_scratch(&root);
     }
+}
+
+#[test]
+fn executable_removal_preserves_status_restart_and_explicit_stop() {
+    let (root, runtime) = super::tests::fixture();
+    install_fixture(&runtime);
+    // A package upgrade can unlink the executable while its server keeps running.
+    let executable = root.join("old-native-fixture");
+    std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+    let launcher = std::fs::read_to_string(&runtime.config.binary)
+        .unwrap()
+        .replace(
+            std::env::current_exe().unwrap().to_str().unwrap(),
+            executable.to_str().unwrap(),
+        );
+    std::fs::write(&runtime.config.binary, launcher).unwrap();
+    let pid = runtime.activate(true).unwrap()["ownedServerPid"]
+        .as_u64()
+        .unwrap() as u32;
+    let guard = Reap(pid);
+    runtime.shutdown().unwrap();
+    let next = copy_runtime(&runtime);
+    drop(runtime);
+    assert_eq!(next.activate(false).unwrap()["ownedServerPid"], pid);
+    std::fs::remove_file(executable).unwrap();
+    assert_eq!(
+        next.status()["ownedServerPid"],
+        pid,
+        "status must retain the lease after unlink"
+    );
+    assert!(ownership::Ownership::claim(&next.config.gateway.state_path).is_err());
+    next.shutdown().unwrap();
+    let recovered = copy_runtime(&next);
+    drop(next);
+    assert_eq!(
+        recovered.activate(false).unwrap()["ownedServerPid"],
+        pid,
+        "a fresh host must recover an authenticated server with a removed executable"
+    );
+    recovered.deactivate().unwrap();
+    assert!(!recovered.listening());
+    drop(recovered);
+    drop(guard);
+    crate::remove_test_scratch(&root);
 }

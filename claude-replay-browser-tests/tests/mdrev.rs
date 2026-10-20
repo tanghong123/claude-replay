@@ -968,6 +968,95 @@ fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
     );
 }
 
+/// #s185 (mdrev 1.1.57): mdrev-cli run with no terminal is taken for an AGENT, and an agent's close
+/// of a note its person has replied to since it last listed it is refused (exit 1), so it acts on
+/// those words first. The monitor runs mdrev-cli with no terminal for the READER, who closes a note
+/// they see whole in the pane, so the host passes `--force` (the embedding guide's notes table).
+/// Here the pane files a note and lists it, the person replies (a viewer's reply: the key in the
+/// case's own mdrev state directory), and the pane's resolve still closes it.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+fn the_reader_closes_a_note_the_person_has_answered() {
+    let _serial = serial();
+    let (base, stores, repo) = fixture("mdrev-reader-close");
+    let state = base.join("mdrev-state");
+    std::fs::create_dir_all(&state).unwrap();
+    let key = "5e5510a1c0ffee00000000000000000000000000000000000000000000000185";
+    std::fs::write(state.join("token"), key).unwrap();
+    let m = Monitor::spawn_with(
+        Kind::V1,
+        3099,
+        &base,
+        Some(&stores),
+        true,
+        &[("MDREV_STATE_DIR", &state.display().to_string())],
+    );
+    let (_browser, tab) = chrome_tab();
+    open_shell(&m, &tab);
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1')",
+        "the guide in the pane",
+        Duration::from_secs(30),
+        PANE,
+    );
+    // The pane's own routes, with its own document stamp: what its guest calls.
+    let route = |method: &str, tail: &str, body: &str| {
+        let js = format!(
+            "(async function(){{ var d = document.querySelector('.mdrev-pane').dataset; var q = 'root=' + encodeURIComponent(d.root) + '&path=' + encodeURIComponent(d.path) + '&cap=' + encodeURIComponent(d.cap); var o = {{method: {method:?}, headers: {{'Content-Type': 'application/json'}}}}; if ({body:?}) o.body = {body:?}; var r = await fetch(d.contract + '/annotations' + {tail:?} + '?' + q, o); return JSON.stringify([r.status, await r.text()]); }})()"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(eval(&tab, &js).as_str().unwrap_or("[0,\"\"]")).unwrap();
+        (
+            v[0].as_u64().unwrap_or(0),
+            v[1].as_str().unwrap_or("").to_string(),
+        )
+    };
+    let (code, filed) = route(
+        "POST",
+        "",
+        r#"{"body":"tighten this","anchor":{"exact":"bold"}}"#,
+    );
+    assert_eq!(code, 201, "the pane files a note: {filed}");
+    let id = serde_json::from_str::<serde_json::Value>(&filed).unwrap()["id"]
+        .as_str()
+        .expect("the note's id")
+        .to_string();
+    let (code, listed) = route("GET", "", "");
+    assert!(
+        code == 200 && listed.contains(&id),
+        "the pane lists it: {code} {listed}"
+    );
+    // The person's reply: a viewer's, with the key.
+    let out = mdrev_cli()
+        .args(["notes", "reply", &id, "--body", "keep the link", "--viewer"])
+        .args(["--root", &repo.display().to_string()])
+        .env("MDREV_STATE_DIR", &state)
+        .env("MDREV_VIEWER_KEY", key)
+        .output()
+        .expect("mdrev-cli runs");
+    assert!(
+        out.status.success(),
+        "the person replies: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let (code, closed) = route(
+        "PATCH",
+        &format!("/{id}"),
+        r#"{"status":"resolved","resolvedBy":{"note":"done"}}"#,
+    );
+    assert_eq!(
+        code, 200,
+        "the reader's close is theirs, so it is not refused as an agent's: {closed}"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&closed).unwrap()["status"],
+        "resolved",
+        "{closed}"
+    );
+}
+
 /// #s49, the owner on 1.360.0: "the layout of mdrev is messed up … I mean the tool bar area", upright
 /// and sideways, and sometimes it "could magically fix itself". mdrev's toolbar is a `header.topbar`, and
 /// the app shell's phone rules for its OWN top bar were written `#app .topbar` — an id that outranked

@@ -395,8 +395,8 @@ var require_format = __commonJS({
 
 // packages/cli/dist/cli.js
 import { homedir as homedir3, hostname as hostname5, userInfo as userInfo4 } from "node:os";
-import { readFileSync as readFileSync7 } from "node:fs";
-import { join as join11 } from "node:path";
+import { readFileSync as readFileSync8 } from "node:fs";
+import { join as join12 } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { timingSafeEqual } from "node:crypto";
 import { resolve as resolvePath2 } from "node:path";
@@ -1494,7 +1494,7 @@ ${staged}`;
       const rel2 = absOrRelPath.replace(/^(\.\/)+/, "");
       if (rel2.length === 0 || rel2.startsWith("/") || rel2.split("/").includes(".."))
         throw new GitError(`'${absOrRelPath}' is not a path in the repository`);
-      const there = await this.git("cat-file", "-e", `${this.copyRef}:${rel2}`).then(() => true, () => false);
+      const there = await this.git("--literal-pathspecs", "ls-tree", this.copyRef, "--", rel2).then((out2) => out2.trim().length > 0, () => false);
       if (!there)
         throw new GitError(`'${rel2}' does not exist on ${this.copyRef.replace(/^refs\/heads\//, "")}`);
       return rel2;
@@ -1699,7 +1699,10 @@ function readNotify(root5) {
   const n = doc?.notify;
   if (!n || typeof n !== "object")
     return { channels: [], refused: [] };
+  const said = n.channels !== void 0;
   const refused = [];
+  if (said && !Array.isArray(n.channels))
+    refused.push("channels: a list of channels' names");
   const channels = [];
   for (const c of Array.isArray(n.channels) ? n.channels : []) {
     if (typeof c === "string" && CHANNEL_NAME.test(c)) {
@@ -1716,6 +1719,13 @@ function readNotify(root5) {
       refused.push("link: an https pattern, with {commit} and {path}");
   }
   return { channels, ...link3 ? { link: link3 } : {}, refused };
+}
+function channelsFor(root5, file = process.env.MDREV_NOTIFY_FILE) {
+  const project2 = readNotify(root5);
+  const { host, error } = hostNotify(file);
+  if (error)
+    return { ...project2, refused: [...project2.refused, error] };
+  return host?.channels?.length ? { ...project2, channels: host.channels, byHost: true, refused: [] } : project2;
 }
 function linkTo(pattern, commit, path2, at = {}) {
   const encoded = path2.split("/").map(encodeURIComponent).join("/");
@@ -1746,6 +1756,12 @@ function hostNotify(file = process.env.MDREV_NOTIFY_FILE) {
   }
   if (Array.isArray(d.quiet))
     host.quiet = d.quiet.filter((e) => typeof e === "string").map((e) => e.trim().toLowerCase());
+  const c = d.channels;
+  if (c !== void 0) {
+    if (!Array.isArray(c) || c.some((x) => typeof x !== "string" || !CHANNEL_NAME.test(x)))
+      return { host: null, error: "the host's notification settings name channels that are not channels' names (MDREV_NOTIFY_FILE)" };
+    host.channels = [...new Set(c)];
+  }
   return { host };
 }
 function launcherDirs(script = process.argv[1] ?? "") {
@@ -2277,9 +2293,9 @@ var VFile = class {
    * @returns {undefined}
    *   Nothing.
    */
-  set dirname(dirname6) {
+  set dirname(dirname7) {
     assertPath(this.basename, "dirname");
-    this.path = default2.join(dirname6 || "", this.basename);
+    this.path = default2.join(dirname7 || "", this.basename);
   }
   /**
    * Get the extname (including dot) (example: `'.js'`).
@@ -22656,7 +22672,7 @@ function mergeDiagramLabels(before, after) {
       return null;
     let k = 0;
     let tooLong = false;
-    const join12 = (from, to) => {
+    const join13 = (from, to) => {
       const body3 = markChangedWords(from.trim(), to.trim());
       if (body3.split(LABEL_SEAM).join("").length > MAX_MERGED_LABEL)
         tooLong = true;
@@ -22669,7 +22685,7 @@ function mergeDiagramLabels(before, after) {
       }
       changed++;
       const i2 = colonAt(lineB);
-      const body3 = join12(was[0], now[0]);
+      const body3 = join13(was[0], now[0]);
       const line2 = `${lineB.slice(0, i2 + 1)} ${grammar === "quoted-colon" ? `"${body3.replace(/"/g, "'")}"` : body3}`;
       if (tooLong)
         return null;
@@ -22688,7 +22704,7 @@ function mergeDiagramLabels(before, after) {
         if (id)
           nodes.add(id[1]);
       }
-      return `${open}"${join12(from, to).replace(/"/g, "'")}"${close2}`;
+      return `${open}"${join13(from, to).replace(/"/g, "'")}"${close2}`;
     });
     if (tooLong)
       return null;
@@ -35006,7 +35022,7 @@ ${offer.skipped ? `  (${offer.skipped})
     io.say(`this machine's display name is now ${name} (${setMachineDisplayName(name)})
 `);
   }
-  const here = readNotify(root5).channels.length ? [] : channelsHere();
+  const here = channelsFor(root5).channels.length ? [] : channelsHere();
   if (here.length)
     io.say(`this project names no channel to tell people through; this machine has a tool for ${spoken(here)} \u2014 ${turnOn(here)} turns notifications on, and commits .mdrev.json
 `);
@@ -35688,7 +35704,7 @@ async function sendCode(source, store, me, want) {
     if (e instanceof StoreError)
       throw e;
   }
-  const notify = readNotify(source.repoRoot);
+  const notify = channelsFor(source.repoRoot);
   const channel = codeChannel(notify.channels);
   if (!channel)
     throw new StoreError(`${want.email} would need a code to confirm it, and this project names no channel to send one through (${turnOn()} names one): subscribe under your pairing's email`, "other");
@@ -35738,7 +35754,7 @@ async function unsubscribe(source, path2, who) {
 }
 async function lookupEmail(source, email) {
   const want = email.trim().toLowerCase();
-  const notify = readNotify(source.repoRoot);
+  const notify = channelsFor(source.repoRoot);
   const people = [];
   const unknown2 = [];
   await Promise.all(notify.channels.map(async (channel) => {
@@ -35761,7 +35777,7 @@ async function notifyPush(source, store, me, landed) {
   const fresh = landed.map((id) => byId.get(id)).filter((r) => r !== void 0 && (r.kind === "note" || r.kind === "reply") && !store.wasNotified(r.id));
   if (fresh.length === 0)
     return { sent: [], failed: [] };
-  const notify = readNotify(source.repoRoot);
+  const notify = channelsFor(source.repoRoot);
   const { host } = hostNotify();
   const pattern = host?.link ?? notify.link;
   const quiet = new Set(host?.quiet ?? []);
@@ -35882,7 +35898,7 @@ async function notifyPush(source, store, me, landed) {
 function draft8Status(root5, store, me) {
   const mine = me.email.toLowerCase();
   const subscriptions = subscriptionsIn(store).filter((s2) => s2.author === mine);
-  const notify = readNotify(root5);
+  const notify = channelsFor(root5);
   const fresh = {};
   if (store.hasReadMarks(me.email)) {
     for (const t of foldThreads(store.records(), mine, store.readBy(me.email))) {
@@ -35893,7 +35909,7 @@ function draft8Status(root5, store, me) {
   }
   return {
     ...subscriptions.length ? { subscriptions } : {},
-    ...notify.channels.length ? { channels: notify.channels.map((name) => ({ name, tool: toolFor(name) })) } : { channelsHere: channelsHere() },
+    ...notify.channels.length ? { channels: notify.channels.map((name) => ({ name, tool: toolFor(name) })), ...notify.byHost ? { channelsByHost: true } : {} } : { channelsHere: channelsHere() },
     ...notify.refused.length ? { channelsRefused: notify.refused } : {},
     ...Object.keys(fresh).length ? { fresh } : {}
   };
@@ -35982,7 +35998,7 @@ function formatStatus(s2) {
     else
       lines.push("subscribed to nothing here \u2014 mdrev --review-subscribe DOC, or --project");
     if (s2.channels?.length)
-      lines.push(`notifications: through ${s2.channels.map((c) => c.tool ? `${c.name} (${c.tool})` : `${c.name} (no tool on this machine \u2014 install your organisation's plugin)`).join(", ")}`);
+      lines.push(`notifications: through ${s2.channels.map((c) => c.tool ? `${c.name} (${c.tool})` : `${c.name} (no tool on this machine \u2014 install your organisation's plugin)`).join(", ")}${s2.channelsByHost ? ", the host's: they apply whatever the project's file names" : ""}`);
     else
       lines.push(`notifications: none \u2014 the project names no channel. ${turnOn(s2.channelsHere)} turns them on, and commits .mdrev.json${s2.channelsHere?.length ? ` (this machine has a tool for ${spoken(s2.channelsHere)})` : ""}`);
     for (const r of s2.channelsRefused ?? [])
@@ -36435,9 +36451,65 @@ function ellipsis(s2, n) {
   return flat.length <= n ? flat : `${flat.slice(0, n - 1)}\u2026`;
 }
 
+// packages/core/dist/agent-read.js
+init_annotations();
+import { mkdirSync as mkdirSync3, readFileSync as readFileSync5, renameSync as renameSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { dirname as dirname3, join as join8 } from "node:path";
+var ms = (at) => {
+  const t = Date.parse(at);
+  return Number.isNaN(t) ? 0 : t;
+};
+function personWords(a) {
+  const replies = (a.replies ?? []).filter((r) => !r.agent && !r.draft && r.body && (!r.event || r.event === "reopened")).map((r) => ({ kind: r.event === "reopened" ? "reopen" : "reply", at: r.at, author: r.author, body: r.body }));
+  const wordings = [...(a.edits ?? []).map((e) => e.body).slice(1), a.body];
+  const edits = (a.edits ?? []).map((e, i) => ({ kind: "edit", at: e.at, author: a.author, body: wordings[i] ?? a.body }));
+  return [...replies, ...edits].sort((x, y) => ms(x.at) - ms(y.at));
+}
+function personActivity(a) {
+  return [a.created ?? "", ...personWords(a).map((w) => w.at)].reduce((m, t) => ms(t) > ms(m) ? t : m, "");
+}
+function personNews(a, since) {
+  return personWords(a).filter((w) => since === null || ms(w.at) > ms(since));
+}
+function instructionOf(a) {
+  const said = personWords(a).filter((w) => w.kind !== "edit");
+  return [a.body, ...said.map((r) => `[${r.author.split("@")[0]} ${r.kind === "reopen" ? "reopened it" : "replied"}, ${r.at}] ${r.body}`)].join("\n\n");
+}
+var fileOf = (home) => join8(dirname3(sidecarPath(home, "x")), ".agent-read.json");
+var KEEP = 5e3;
+function readMarks(home) {
+  try {
+    const d = JSON.parse(readFileSync5(fileOf(home), "utf8"));
+    return d && typeof d === "object" && !Array.isArray(d) ? d : {};
+  } catch {
+    return {};
+  }
+}
+function agentRead(home, notes, now = /* @__PURE__ */ new Date()) {
+  if (notes.length === 0)
+    return;
+  const marks = readMarks(home);
+  const at = now.toISOString();
+  for (const a of notes)
+    marks[a.id] = { seen: personActivity(a), at };
+  const kept = Object.entries(marks).sort((x, y) => y[1].at.localeCompare(x[1].at)).slice(0, KEEP);
+  const file = fileOf(home);
+  try {
+    mkdirSync3(dirname3(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    writeFileSync2(tmp, `${JSON.stringify(Object.fromEntries(kept))}
+`);
+    renameSync3(tmp, file);
+  } catch {
+  }
+}
+function agentLastRead(home, id) {
+  return readMarks(home)[id]?.seen ?? null;
+}
+
 // packages/core/dist/review.js
 import { hostname as hostname4, userInfo as userInfo3 } from "node:os";
-import { dirname as dirname3, extname, resolve as resolvePath, sep } from "node:path";
+import { dirname as dirname4, extname, resolve as resolvePath, sep } from "node:path";
 init_annotations();
 var Lru = class {
   max;
@@ -36806,7 +36878,7 @@ var Review = class {
   }
   /** Adopt an already-opened source and record the document as recent. */
   async open(file) {
-    const source = await openRepo(dirname3(file));
+    const source = await openRepo(dirname4(file));
     this.registry.adopt(source);
     const path2 = await source.relPath(file);
     this.recents.note(source.repoRoot, path2);
@@ -37012,18 +37084,18 @@ function isNoteOp(v) {
 init_annotations();
 import { execFile as execFile2 } from "node:child_process";
 import { createHash as createHash2 } from "node:crypto";
-import { chmodSync, closeSync, mkdirSync as mkdirSync3, openSync, readFileSync as readFileSync5, readdirSync as readdirSync4, renameSync as renameSync3, rmSync as rmSync3, statSync as statSync4, writeFileSync as writeFileSync2 } from "node:fs";
+import { chmodSync, closeSync, mkdirSync as mkdirSync4, openSync, readFileSync as readFileSync6, readdirSync as readdirSync4, renameSync as renameSync4, rmSync as rmSync3, statSync as statSync4, writeFileSync as writeFileSync3 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { dirname as dirname4, join as join8 } from "node:path";
+import { dirname as dirname5, join as join9 } from "node:path";
 var ASK_MS = 2e3;
 var QUIET_MS = 6e4;
 var REPOS_MAX_AGE_MS = 10 * 6e4;
-var joinedFile = () => join8(homedir2(), ".config", "mdrev", "service");
-var serviceDir = () => join8(process.env.MDREV_STATE_DIR ?? join8(homedir2(), ".mdrev"), "service");
-var repoDir = (id) => join8(serviceDir(), String(id));
+var joinedFile = () => join9(homedir2(), ".config", "mdrev", "service");
+var serviceDir = () => join9(process.env.MDREV_STATE_DIR ?? join9(homedir2(), ".mdrev"), "service");
+var repoDir = (id) => join9(serviceDir(), String(id));
 function readJoined() {
   try {
-    const j = JSON.parse(readFileSync5(joinedFile(), "utf8"));
+    const j = JSON.parse(readFileSync6(joinedFile(), "utf8"));
     return typeof j.url === "string" && typeof j.token === "string" && typeof j.device === "string" ? j : null;
   } catch {
     return null;
@@ -37031,21 +37103,21 @@ function readJoined() {
 }
 function readJson(file) {
   try {
-    return JSON.parse(readFileSync5(file, "utf8"));
+    return JSON.parse(readFileSync6(file, "utf8"));
   } catch {
     return null;
   }
 }
 function writeJson(file, value2) {
-  mkdirSync3(dirname4(file), { recursive: true });
+  mkdirSync4(dirname5(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}`;
-  writeFileSync2(tmp, `${JSON.stringify(value2)}
+  writeFileSync3(tmp, `${JSON.stringify(value2)}
 `);
-  renameSync3(tmp, file);
+  renameSync4(tmp, file);
 }
 async function withLock2(id, fn, waitMs = 5e3) {
-  const file = join8(repoDir(id), "lock");
-  mkdirSync3(dirname4(file), { recursive: true });
+  const file = join9(repoDir(id), "lock");
+  mkdirSync4(dirname5(file), { recursive: true });
   const until = Date.now() + waitMs;
   for (; ; ) {
     try {
@@ -37100,8 +37172,8 @@ async function ask(joined, method, path2, body3, timeoutMs = ASK_MS) {
   return parsed;
 }
 async function registeredRepos(joined, o = {}) {
-  const file = join8(serviceDir(), "repos.json");
-  const quiet = join8(serviceDir(), "quiet.json");
+  const file = join9(serviceDir(), "repos.json");
+  const quiet = join9(serviceDir(), "quiet.json");
   const kept = readJson(file);
   const usable = kept && kept.url === joined.url ? kept : null;
   if (usable && !o.refresh && Date.now() - usable.at < REPOS_MAX_AGE_MS)
@@ -37164,9 +37236,9 @@ async function serviceRemote(root5, repos) {
 }
 async function notesOutOfGit(root5) {
   try {
-    statSync4(join8(root5, ".mdrev"));
+    statSync4(join9(root5, ".mdrev"));
   } catch {
-    mkdirSync3(join8(root5, ".mdrev"), { recursive: true });
+    mkdirSync4(join9(root5, ".mdrev"), { recursive: true });
     await ensureNotesIgnored(root5);
   }
   const tracked = await run3(root5, ["ls-files", "--", ".mdrev/annotations"]);
@@ -37201,14 +37273,14 @@ function modeLine(a) {
     return `service mode: ${a.mode.joined.url}; end the round with \`mdrev --push\``;
   return `not in service mode: ${a.not}`;
 }
-var queueDir = (id) => join8(repoDir(id), "queue");
+var queueDir = (id) => join9(repoDir(id), "queue");
 function enqueue(id, ops) {
   if (ops.length === 0)
     return;
   const dir = queueDir(id);
-  mkdirSync3(dir, { recursive: true });
+  mkdirSync4(dir, { recursive: true });
   for (const op of ops)
-    writeJson(join8(dir, `${Date.now().toString(36).padStart(10, "0")}-${op.op}.json`), op);
+    writeJson(join9(dir, `${Date.now().toString(36).padStart(10, "0")}-${op.op}.json`), op);
 }
 function queued(id) {
   const dir = queueDir(id);
@@ -37220,9 +37292,9 @@ function queued(id) {
   }
   const out = [];
   for (const n of names) {
-    const op = readJson(join8(dir, n));
+    const op = readJson(join9(dir, n));
     if (op)
-      out.push({ file: join8(dir, n), op });
+      out.push({ file: join9(dir, n), op });
   }
   return out;
 }
@@ -37240,10 +37312,10 @@ async function flush(mode, timeoutMs = ASK_MS) {
       answer = await ask(mode.joined, "POST", `/api/device/notes/${mode.repo.id}`, { ops: batch.map((w) => w.op) }, Math.max(1, until - Date.now()));
     } catch (e) {
       if (e instanceof ServiceError && e.status >= 400 && e.status !== 401 && e.status !== 404) {
-        const aside = join8(queueDir(mode.repo.id), "refused");
-        mkdirSync3(aside, { recursive: true });
+        const aside = join9(queueDir(mode.repo.id), "refused");
+        mkdirSync4(aside, { recursive: true });
         for (const w of batch) {
-          renameSync3(w.file, join8(aside, w.file.split("/").pop()));
+          renameSync4(w.file, join9(aside, w.file.split("/").pop()));
           dropped.push({ op: w.op, why: `the service refused it (${e.message}); kept in ${aside}` });
         }
         waiting = queued(mode.repo.id);
@@ -37270,7 +37342,7 @@ async function flush(mode, timeoutMs = ASK_MS) {
   }
   return { sent, dropped, ...cursor ? { cursor } : {} };
 }
-var checkoutFile = (id, root5) => join8(repoDir(id), "checkouts", `${createHash2("sha256").update(root5).digest("hex").slice(0, 16)}.json`);
+var checkoutFile = (id, root5) => join9(repoDir(id), "checkouts", `${createHash2("sha256").update(root5).digest("hex").slice(0, 16)}.json`);
 async function pull(mode, timeoutMs = ASK_MS) {
   if (queued(mode.repo.id).length > 0)
     return 0;
@@ -37315,7 +37387,7 @@ async function pull(mode, timeoutMs = ASK_MS) {
     return changed;
   });
 }
-var quietFile = (id) => join8(repoDir(id), "quiet.json");
+var quietFile = (id) => join9(repoDir(id), "quiet.json");
 function silence(mode) {
   const quiet = readJson(quietFile(mode.repo.id));
   if (!quiet || Date.now() - quiet.at >= QUIET_MS)
@@ -37833,13 +37905,13 @@ function formatChecks(checks2, opts) {
 
 // packages/cli/dist/notes-follow.js
 import { readFile as readFile3, readdir as readdir3, stat as stat3 } from "node:fs/promises";
-import { join as join9 } from "node:path";
+import { join as join10 } from "node:path";
 var FOLLOW_INTERVAL_MS = 1e3;
 function isAgentReply(reply) {
   return Boolean(reply.agent);
 }
 var replyKey = (reply) => JSON.stringify([reply.at, reply.author, reply.body, reply.agent ?? null]);
-var sidecarBase = (home) => typeof home === "string" ? join9(home, ".mdrev", "annotations") : home.dir;
+var sidecarBase = (home) => typeof home === "string" ? join10(home, ".mdrev", "annotations") : home.dir;
 async function sidecarFingerprint(source) {
   let home;
   try {
@@ -37859,10 +37931,10 @@ async function sidecarFingerprint(source) {
     }
     for (const e of entries) {
       if (e.isDirectory())
-        await walk(join9(dir, e.name), `${rel}${e.name}/`);
+        await walk(join10(dir, e.name), `${rel}${e.name}/`);
       else if (e.name.endsWith(".jsonl")) {
         try {
-          const s2 = await stat3(join9(dir, e.name), { bigint: true });
+          const s2 = await stat3(join10(dir, e.name), { bigint: true });
           parts.push(`${rel}${e.name} ${s2.size} ${s2.mtimeNs} ${s2.ctimeNs}`);
         } catch (e2) {
           if (e2.code !== "ENOENT")
@@ -37951,6 +38023,8 @@ async function followNotes(o) {
   const interval = o.intervalMs ?? FOLLOW_INTERVAL_MS;
   const follower = createFollower(o.source, o.query);
   let first = true;
+  const line = (v) => `${JSON.stringify({ ...v, ...o.extra?.(v) })}
+`;
   while (!o.signal?.aborted) {
     await o.beforePoll?.();
     const fresh = await follower.poll();
@@ -37959,20 +38033,20 @@ async function followNotes(o) {
     if (first) {
       first = false;
       o.write(o.text ? `${formatNotes(fresh)}
-` : fresh.map((v) => `${JSON.stringify(v)}
-`).join(""));
+` : fresh.map(line).join(""));
     } else {
       for (const v of fresh)
         o.write(o.text ? `${formatNotes([v])}
-` : `${JSON.stringify(v)}
-`);
+` : line(v));
     }
+    if (fresh.length > 0)
+      o.shown?.(fresh);
     if (o.signal?.aborted)
       break;
     await wait(interval, o.signal);
   }
 }
-function sleep(ms, signal) {
+function sleep(ms2, signal) {
   return new Promise((resolve2) => {
     if (signal?.aborted) {
       resolve2();
@@ -37984,7 +38058,7 @@ function sleep(ms, signal) {
       signal?.removeEventListener("abort", done);
       resolve2();
     };
-    timer = setTimeout(done, ms);
+    timer = setTimeout(done, ms2);
     signal?.addEventListener("abort", done, { once: true });
   });
 }
@@ -38129,14 +38203,14 @@ var InService = class _InService {
 };
 
 // packages/cli/dist/version.js
-import { readFileSync as readFileSync6 } from "node:fs";
-import { dirname as dirname5, join as join10 } from "node:path";
+import { readFileSync as readFileSync7 } from "node:fs";
+import { dirname as dirname6, join as join11 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 function mdrevVersion() {
-  const here = dirname5(fileURLToPath2(import.meta.url));
-  for (const candidate of [join10(here, "package.json"), join10(here, "..", "package.json")]) {
+  const here = dirname6(fileURLToPath2(import.meta.url));
+  for (const candidate of [join11(here, "package.json"), join11(here, "..", "package.json")]) {
     try {
-      const { version } = JSON.parse(readFileSync6(candidate, "utf8"));
+      const { version } = JSON.parse(readFileSync7(candidate, "utf8"));
       if (typeof version === "string" && version)
         return version;
     } catch {
@@ -38151,10 +38225,10 @@ function versionLine(program) {
 
 // packages/cli/dist/cli.js
 var FOLLOW_SERVICE_MS = 3e3;
-function throttled(ms, task) {
+function throttled(ms2, task) {
   let last = Date.now();
   return async () => {
-    if (Date.now() - last < ms)
+    if (Date.now() - last < ms2)
       return;
     last = Date.now();
     await task().catch(() => {
@@ -38175,8 +38249,9 @@ var USAGE = `mdrev-cli \u2014 mdrev's store, from the command line, for a host a
                                                        takes --follow
   mdrev-cli notes add    --path P  < record.json       file a note; the record is {body, anchor, type?, rev?}
   mdrev-cli notes reply  ID --body "\u2026"
-  mdrev-cli notes resolve ID [--note "\u2026"]
-  mdrev-cli notes wontfix ID [--note "\u2026"]
+  mdrev-cli notes resolve ID [--note "\u2026"] [--force]   an agent's close of a note its person has written on
+                                                       since it last listed it is refused; --force closes it
+  mdrev-cli notes wontfix ID [--note "\u2026"] [--force]
   mdrev-cli notes reopen  ID [--note "\u2026"]
   mdrev-cli notes delete  ID
   mdrev-cli notes delete-reply ID --at WHEN     one reply out of the thread; WHEN is the reply's "at"
@@ -38295,6 +38370,8 @@ function parse5(argv) {
       o.text = true;
     else if (a === "--records")
       o.records = true;
+    else if (a === "--force")
+      o.force = true;
     else if (a === "--follow")
       o.follow = true;
     else if (a === "--draft")
@@ -38551,7 +38628,10 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
                   signal: wired.signal,
                   // in service mode a note filed on the phone comes from the service: asked every few seconds
                   ...side ? { beforePoll: throttled(FOLLOW_SERVICE_MS, () => side.listing(() => {
-                  })) } : {}
+                  })) } : {},
+                  // the one-shot's fields, and an agent's read marks: a note re-shown for its person's reply is read (#s189)
+                  extra: (v) => ({ instruction: instructionOf(v.annotation), lastActivity: personActivity(v.annotation) }),
+                  ...agentHere ? { shown: (views2) => agentRead(source.notesHome, views2.map((v) => v.annotation)) } : {}
                 });
               } finally {
                 wired.off();
@@ -38569,11 +38649,13 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
               return 0;
             }
             const views = await collectNotes(source, { path: o.path, all: o.all, revs, upgrade: o.path !== void 0 });
+            if (agentHere)
+              agentRead(source.notesHome, views.map((v) => v.annotation));
             if (o.text)
               out(`${formatNotes(views, side ? { device: side.mode.joined.device } : {})}
 `);
             else
-              emit(views);
+              emit(views.map((v) => ({ ...v, instruction: instructionOf(v.annotation), lastActivity: personActivity(v.annotation) })));
             const left = side ? await side.waiting() : null;
             if (left)
               say(left);
@@ -38663,6 +38745,18 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
           case "resolve":
           case "wontfix": {
             const which = need(id, "the note id");
+            if (agentHere && !isSharedId(which) && !o.force) {
+              if (side)
+                await side.listing(say);
+              const found = await findAnnotation(source.notesHome, which).catch(() => null);
+              const news = found ? personNews(found.annotation, agentLastRead(source.notesHome, which)) : [];
+              if (news.length) {
+                const said2 = news.map((w) => `  ${w.kind === "edit" ? "the note now reads" : `${w.author.split("@")[0]} ${w.kind === "reopen" ? "reopened it" : "replied"}`} (${w.at}): ${w.body}`).join("\n");
+                throw new UsageError(`${which} has words from your person you have not acted on${agentLastRead(source.notesHome, which) === null ? " (you never listed it)" : " since you last listed it"}:
+${said2}
+act on them first, then close it \u2014 mdrev --notes shows the whole thread; --force closes it anyway`);
+              }
+            }
             if (side && sub === "resolve" && !o.viewer && !isSharedId(which)) {
               const found = await side.note(which);
               if (found && await side.uncommitted(found.path))
@@ -39052,7 +39146,7 @@ function viewerKeyOk() {
   const given = process.env.MDREV_VIEWER_KEY ?? "";
   let token = "";
   try {
-    token = readFileSync7(join11(process.env.MDREV_STATE_DIR ?? join11(homedir3(), ".mdrev"), "token"), "utf8").trim();
+    token = readFileSync8(join12(process.env.MDREV_STATE_DIR ?? join12(homedir3(), ".mdrev"), "token"), "utf8").trim();
   } catch {
     return false;
   }

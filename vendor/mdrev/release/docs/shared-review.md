@@ -804,7 +804,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.55",
+  "mdrev": "1.1.57",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
@@ -1173,13 +1173,107 @@ before every send.
 through a sign-in of that person's own the service keeps for them. The
 service answers Push once the records are in the store; then it renews that
 sign-in and runs `mdrev-cli review notify`, which decides whom and what as a
-push on a machine does, with `MDREV_NOTIFY_FILE` naming three things only the
+push on a machine does, with `MDREV_NOTIFY_FILE` naming four things only the
 service knows: the tools' whole environment (that person's sign-in, never
 mdrev-cli's own), a link to the service's page at the thread on its branch in
-place of the project's `link`, and the people who turned the service's
+place of the project's `link`, the people who turned the service's
 messages off (they are still told of what a colleague pushes from their own
-machine). A tool's protocol does not change; the page shows "telling…", then
+machine), and the channels it tells people through, whatever the project's
+`.mdrev.json` names — DingTalk and email, the company's, so notifications are
+simply on there (#s186, #s187). A tool's protocol does not change; the page shows "telling…", then
 whom it told.
+
+### Turning notifications on, once per machine (proposed; #s188)
+
+Hong, 2026-10-19: "On local device, turning on shared notes and turning on
+notifications are two steps. the former needs to be done per repo
+(initialization requires human, accept can be done via agent); turning on
+notification I think can be a one-off per box." He had said where channel
+settings live in draft 8: "sure, both": the project, and each machine (above).
+
+**Today** a push from a machine tells people only through the channels its
+repository's committed `.mdrev.json` names (`--review-pointer --notify`,
+above), so turning notifications on is a commit, per repository, which
+somebody has to make and its owners merge — and until then a push tells
+nobody.
+
+**Proposed: the machine's channels.** A person names, once, the channels this
+machine tells people through:
+
+```
+mdrev --channels dingtalk,email     # every project here tells people through these
+mdrev --channels none               # and tells nobody again
+mdrev --channels                    # what is set, and the tools this machine has
+```
+
+kept in `~/.mdrev/notify.json` (`{"channels": ["chat", "email"]}`); each
+name is checked as a project's is. A push from this machine then tells people
+through:
+
+1. **the project's channels, where its file names any** — its team chose them,
+   so they stand, as today;
+2. **nobody, where its file names an empty list** — the project's word for
+   none;
+3. **the machine's channels otherwise** — no `notify`, or one without
+   `channels` — with the project's `link` where it names one, else the link
+   read off its repository's address, as `--notify` derives it.
+
+So one step on a machine turns notifications on for every repository there
+that has not chosen otherwise, and turning on shared notes stays per
+repository, a step of its own.
+
+**A change to `--notify none`, and to projects that ran it.** Today
+`--notify none` removes `notify` from `.mdrev.json` ("No `notify`: nobody is
+told", above). Under rule 3, a project with no `notify` follows the machine,
+so `--notify none` would write `"channels": []` instead, which keeps it
+quiet. Every reader of a file already treats an empty list as none (core
+`readNotify`), so the change needs no reader to move. But a project that ran
+`--notify none` before has no `notify` left, and would start telling people
+the day its person names the machine's channels. So `mdrev --channels`, the
+first time it names any, lists the projects this machine is paired with whose
+file names none — each pairing records its project, and nothing is pushed
+without one (E3) — says each will now tell people, and gives `mdrev
+--review-pointer --notify none` for any that should stay quiet. A project
+paired after that is told so at its pairing.
+
+**Who takes the step.** The messages go out as the person, from their own
+mailbox and chat account, so naming the machine's channels is the person's
+to do at their own terminal, as `--notify` and `--link` are (E1): an agent
+that runs `mdrev --channels <names>` or `none` is refused, with the command
+for its person to run. A bare `mdrev --channels` only reads, and an agent may
+run it.
+
+**The hint.** On a machine whose channels are not named, the first push or
+pairing in a project whose file names none says, once for the machine, with
+the channels it has a tool for: "this machine tells nobody of your pushes;
+`mdrev --channels dingtalk,email` turns it on for every project here" — to an
+agent, "ask your person to run" it. A machine with no channel tools says
+nothing. Where a project names no channels, `--review-status`, a bare
+`--review-pointer`, pairing at a terminal and the viewer's subscribe panel
+offer `mdrev --channels` while the machine names none, and the project's
+`--review-pointer --notify` beside it.
+
+**What shows it.** `--review-status` names where a project's channels come
+from ("through dingtalk, email — this machine's: the project names none"),
+and the viewer's subscribe panel stops saying nobody is told where the
+machine names channels. An organisation's plugin may suggest the command
+when it is installed (its formula's caveats); mdrev itself names no channel,
+as everywhere else.
+
+**What does not change.** A team's mdrev service tells people through its
+company's channels whatever either file says (above). A project's own
+channels still decide on a machine where it names them.
+
+**What it would amend:** H5 ("the project names the channels"); "No `notify`:
+nobody is told" and `--notify none` under Channels; the places that offer
+`--review-pointer --notify`; the `--review-status` rows; E1's row in the agent
+table, which gains `--channels`; and a new command, `mdrev --channels`.
+
+**To decide (Hong, #s190):** whether an agent may name the machine's channels
+on its person's word, as it accepts a pairing, or only the person at their
+own terminal (as drafted); and, with defaults in the draft, whether a
+project's channels replace the machine's (drafted) or add to them, and the
+command's name.
 
 ### An organisation's plugin
 

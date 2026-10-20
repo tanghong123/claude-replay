@@ -143,9 +143,13 @@ export class MonitorControls {
     byId("previewBtn").before(this.readerButton);
     byId("composeInput").addEventListener("focus", () => { if (this.active !== false) { this.setReaderTools(false); this.setComposerExpanded(true); } });
     byId("composer").addEventListener("click", () => this.setComposerExpanded(true));
-    document.addEventListener("pointerdown", event => {
-      if (!byId("composer").contains(event.target) && !this.dialog.contains(event.target)) this.setComposerExpanded(false);
+    document.addEventListener("click", event => {
+      // A scrolling touch must not change transcript padding at pointerdown.
+      // Desktop clicks and an already folded editor need no layout work.
+      if (this.active !== false && this.composerExpanded && this.sidewaysComposer()
+        && !byId("composer").contains(event.target) && !this.dialog.contains(event.target)) this.setComposerExpanded(false);
     });
+    matchMedia("(orientation:landscape)").addEventListener("change", () => this.composerOrientationChanged());
     const reposition = () => { if (this.active === false) return; if (!matchMedia(PHONE_QUERY).matches) this.setReaderTools(false); this.fitComposer(); if (this.dialog.matches(":popover-open")) this.positionSettings(); };
     window.addEventListener("resize", reposition); window.visualViewport?.addEventListener("resize", reposition); window.visualViewport?.addEventListener("scroll", reposition);
     this.newDialog = make("dialog", "shared-dialog shared-new-dialog"); this.newDialog.id = "sharedNewDialog"; this.newDialog.setAttribute("aria-label", "New Codex session"); document.body.append(this.newDialog); this.newDialog.oncancel = event => { if (this.creating) event.preventDefault(); }; this.newDialog.addEventListener("close", () => { this.newProjectPicker?.destroy(); this.actions.nativeNewClosed?.(); });
@@ -154,6 +158,7 @@ export class MonitorControls {
   deactivate() {
     this.active = false; cancelAnimationFrame(this.composeFrame);
     byId("composer").removeAttribute("data-shared-collapsed");
+    byId("composer").removeAttribute("data-shared-input-only");
     if (this.selected) { this.drafts.set(this.selected, byId("composeInput").value); this.recovery.forget(this.selected); }
     this.clearSessionConflict();
     this.selected = null; this.generation++;
@@ -256,9 +261,14 @@ export class MonitorControls {
     this.composerExpanded = expanded;
     this.fitComposer();
   }
-  // Use the layout orientation, not visualViewport height: a portrait keyboard
-  // must never turn the upright composer into the sideways one-line variant.
-  sidewaysComposer() { return matchMedia(PHONE_QUERY).matches && matchMedia("(orientation:landscape)").matches; }
+  // Match the shell's short coarse-pointer viewport, never visualViewport height:
+  // a portrait keyboard must not enable the sideways one-line variant.
+  sidewaysComposer() { return matchMedia("(pointer:coarse) and (max-height:500px)").matches; }
+  composerOrientationChanged() {
+    if (this.active === false) return;
+    if (document.activeElement !== byId("composeInput")) this.composerExpanded = false;
+    this.fitComposer();
+  }
   /**
    * Fit the mounted composer and pending actions above the phone keyboard and below the header.
    * Text grows to 132 px; constrained body/pending content scrolls without losing draft bytes.
@@ -268,6 +278,8 @@ export class MonitorControls {
     if (this.active === false) return;
     const input = byId("composeInput"), composer = byId("composer");
     input.style.height = "auto"; composer.style.maxHeight = ""; composer.setAttribute("data-shared-constrained", "false");
+    composer.setAttribute("data-shared-input-only", "false");
+    composer.setAttribute("data-shared-header-covered", "false");
     if (this.runtimePanel) this.runtimePanel.style.maxHeight = "";
     const collapsed = this.sidewaysComposer() && !this.composerExpanded;
     composer.setAttribute("data-shared-collapsed", String(collapsed));
@@ -283,6 +295,17 @@ export class MonitorControls {
       const box = composer.getBoundingClientRect(), field = input.getBoundingClientRect();
       const header = document.querySelector(".workspace>.topbar")?.getBoundingClientRect().bottom || top;
       let available = Math.max(0, Math.min(box.bottom, bottom) - Math.max(top, header) - 4);
+      if (available < 40) {
+        // Safari can leave less than one input row. Clip to its visible bottom
+        // instead of letting flex children overflow above the app/header.
+        const height = Math.max(0, Math.min(24, view?.height ?? app.height));
+        composer.setAttribute("data-shared-input-only", "true");
+        composer.setAttribute("data-shared-header-covered", String(app.top + (view?.height ?? app.height) - height < header));
+        composer.style.setProperty("--shared-input-only-height", `${height}px`);
+        composer.style.maxHeight = `${height}px`; input.style.height = `${height}px`;
+        this.reserveComposerSpace(height);
+        return;
+      }
       const pending = this.runtimePanel?.querySelector(".shared-requests:not(:empty), .shared-queue:not(:empty), .shared-outgoing:not(:empty)");
       if (pending) {
         // Reserve the reader dock only while the user explicitly keeps it open.

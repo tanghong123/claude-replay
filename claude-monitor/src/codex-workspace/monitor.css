@@ -157,7 +157,7 @@ body[data-shared-codex] #app #composer[data-session-conflict="true"] .shared-com
 @media(hover:hover){.shared-project-trigger:hover{background:var(--bg);border-color:color-mix(in srgb,var(--primary) 28%,var(--line))}}
 
 /* Keep the native jump target above the resident composer and the optional reader dock. */
-body[data-shared-codex] #app #jumpToBottom{bottom:calc(var(--shared-composer-height,116px) + 32px)}
+body[data-shared-codex] #app #jumpToBottom{z-index:51;bottom:calc(var(--shared-composer-height,116px) + 32px)}
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){
  body[data-shared-codex] #app #jumpToBottom{bottom:calc(var(--shared-composer-height,116px) + var(--shared-reader-gap,0px) + var(--phone-kb,0px) + var(--shared-keyboard-safe-bottom,env(safe-area-inset-bottom,0px)) + 24px)}
 }
@@ -170,4 +170,21 @@ body[data-shared-codex] #app #jumpToBottom{bottom:calc(var(--shared-composer-hei
  body[data-shared-codex] #app #composer[data-shared-collapsed="true"] .shared-compose-body>:not(#composeInput){display:none!important}
  body[data-shared-codex] #app #composer[data-shared-collapsed="true"] .shared-compose-body{display:block;min-height:0;overflow:hidden}
  body[data-shared-codex] #app #composer[data-shared-collapsed="true"] #composeInput{height:24px!important;min-height:24px;max-height:24px;line-height:24px;padding-top:0;padding-bottom:0;overflow:hidden}
+}
+
+/* When Safari exposes less than one row, only the input fits at its visible bottom. */
+@media(max-width:760px),(pointer:coarse) and (max-height:500px){
+ body[data-shared-codex] #app .workspace #composer.production-show[data-shared-input-only="true"]{z-index:80;bottom:var(--phone-kb,0px);height:var(--shared-input-only-height);min-height:0;padding:0;gap:0;overflow:hidden}
+ body[data-shared-codex] #app #composer[data-shared-input-only="true"]>.compose-foot,
+ body[data-shared-codex] #app #composer[data-shared-input-only="true"]>.compose-note,
+ body[data-shared-codex] #app #composer[data-shared-input-only="true"]>.shared-error,
+ body[data-shared-codex] #app #composer[data-shared-input-only="true"] .shared-compose-body>:not(#composeInput){display:none!important}
+ body[data-shared-codex] #app #composer[data-shared-input-only="true"] .shared-compose-body{display:block;min-height:0;height:100%;overflow:hidden}
+ body[data-shared-codex] #app #composer[data-shared-input-only="true"] #composeInput{height:100%!important;min-height:0;max-height:100%;padding-top:0;padding-bottom:0;line-height:24px}
+ /* Suppress header paint only if it overlaps the sole available input row.
+    Retain its layout box so restoring height does not reflow the reader. */
+ body[data-shared-codex] #app:has(#composer[data-shared-input-only="true"][data-shared-header-covered="true"]) .workspace>.topbar{visibility:hidden}
+ body[data-shared-codex] #app:has(#composer[data-shared-input-only="true"]) .shared-runtime,
+ body[data-shared-codex] #app:has(#composer[data-shared-input-only="true"]) .phone-dock,
+ body[data-shared-codex] #app:has(#composer[data-shared-input-only="true"]) #jumpToBottom{display:none!important}
 }

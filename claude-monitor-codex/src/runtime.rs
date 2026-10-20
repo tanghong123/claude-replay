@@ -369,17 +369,17 @@ impl NativeRuntime {
         )?;
         let mut startup = StartupChild(None);
         #[cfg(unix)]
-        if !listening
-            && self
-                .state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
+        if !listening {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(pid) = state
                 .ownership
                 .as_ref()
-                .is_some_and(ownership::Ownership::matches)
-        {
-            // Refuse a duplicate spawn without taking and dropping the live lease.
-            bail!("Recorded Codex process is still running but its endpoint is unavailable; retry after it recovers");
+                .filter(|receipt| receipt.matches())
+                .and_then(ownership::Ownership::pid)
+            {
+                // Refuse a duplicate spawn without taking and dropping the live lease.
+                bail!("Recorded Codex process {pid} is still running but its endpoint is unavailable; retry after it recovers");
+            }
         }
         #[cfg(unix)]
         let mut ownership = if !listening {
@@ -397,11 +397,11 @@ impl NativeRuntime {
         };
         if !listening {
             #[cfg(unix)]
-            if ownership
+            if let Some(pid) = ownership
                 .as_ref()
-                .is_some_and(|receipt| receipt.has_live_record(&self.identity()))
+                .and_then(|receipt| receipt.live_record_pid(&self.identity()))
             {
-                bail!("Recorded Codex process is still running but its endpoint is unavailable; retry after it recovers");
+                bail!("Recorded Codex process {pid} is still running but its endpoint is unavailable; retry after it recovers");
             }
             {
                 let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -484,6 +484,10 @@ impl NativeRuntime {
                 .and_then(|receipt| receipt.recover(&self.identity()))
             {
                 Ok(receipt) => ownership = Some(receipt),
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) => {}
                 Err(error) => eprintln!("Native server remains external: {error:#}"),
             }
         }

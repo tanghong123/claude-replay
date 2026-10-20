@@ -19,6 +19,15 @@ impl ShutdownSignals {
             // Both structures are initialized before the OS reads them.
             let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
             let mut previous: libc::sigaction = unsafe { std::mem::zeroed() };
+            if unsafe { libc::sigaction(signal, std::ptr::null(), &mut previous) } != 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("Read inherited Monitor signal disposition");
+            }
+            // nohup and background shells deliberately ignore HUP/INT across exec.
+            // Preserve that contract, including after another signal starts cleanup.
+            if previous.sa_sigaction == libc::SIG_IGN {
+                continue;
+            }
             action.sa_sigaction = request_shutdown as *const () as usize;
             action.sa_flags = libc::SA_RESETHAND;
             unsafe { libc::sigemptyset(&mut action.sa_mask) };
@@ -149,5 +158,58 @@ mod repeat_tests {
         let output = child.wait_with_output().unwrap();
         assert_eq!(output.status.signal(), Some(libc::SIGINT));
         assert!(String::from_utf8_lossy(&output.stdout).contains("cleanup-started"));
+    }
+}
+
+#[cfg(test)]
+mod inherited_tests {
+    #[test]
+    fn ignored_terminal_signals_survive_install_and_cleanup() {
+        use std::os::unix::process::CommandExt;
+        let name =
+            "shutdown::inherited_tests::ignored_terminal_signals_survive_install_and_cleanup";
+        if let Ok(value) = std::env::var("MONITOR_IGNORED_SIGNAL_CHILD") {
+            let signal: i32 = value.parse().unwrap();
+            let signals = super::ShutdownSignals::install().unwrap();
+            assert!(!signals.0.iter().any(|(installed, _)| *installed == signal));
+            unsafe { libc::raise(signal) };
+            assert!(!super::REQUESTED.load(std::sync::atomic::Ordering::Relaxed));
+            unsafe { libc::raise(libc::SIGTERM) };
+            signals.wait().unwrap();
+            // Restoring defaults for cleanup must also preserve inherited ignores.
+            unsafe { libc::raise(signal) };
+            drop(signals);
+            unsafe { libc::raise(signal) };
+            return;
+        }
+        for signal in [libc::SIGHUP, libc::SIGINT] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", name, "--nocapture"])
+                .env("MONITOR_IGNORED_SIGNAL_CHILD", signal.to_string())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::signal(signal, libc::SIG_IGN) == libc::SIG_ERR {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let mut child = command.spawn().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while child.try_wait().unwrap().is_none() {
+                if std::time::Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("inherited signal probe exceeded five seconds");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed;"));
+        }
     }
 }

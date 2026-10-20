@@ -147,7 +147,7 @@ impl Ownership {
 
     /// A temporarily missing listener is not proof that its recorded process exited.
     /// This is only a spawn fence; endpoint authentication is still required to adopt.
-    pub fn has_live_record(&self, configuration: &Value) -> bool {
+    pub fn live_record_pid(&self, configuration: &Value) -> Option<u32> {
         let read = || -> Result<Value> {
             let mut bytes = Vec::new();
             private_file(&self.path, false)?
@@ -155,15 +155,13 @@ impl Ownership {
                 .read_to_end(&mut bytes)?;
             Ok(serde_json::from_slice(&bytes)?)
         };
-        read().ok().is_some_and(|record| {
-            record["version"] == 1
-                && &record["configuration"] == configuration
-                && record["process"]["pid"]
-                    .as_u64()
-                    .and_then(|pid| u32::try_from(pid).ok())
-                    .and_then(|pid| process_identity(pid).ok())
-                    .is_some_and(|process| process == record["process"])
-        })
+        let record = read().ok()?;
+        if record["version"] != 1 || &record["configuration"] != configuration {
+            return None;
+        }
+        let pid = u32::try_from(record["process"]["pid"].as_u64()?).ok()?;
+        let current = process_identity(pid).ok()?;
+        same_process(&record["process"], &current).then_some(pid)
     }
 
     pub fn pid(&self) -> Option<u32> {
@@ -173,7 +171,7 @@ impl Ownership {
     pub fn matches(&self) -> bool {
         self.pid()
             .and_then(|pid| process_identity(pid).ok())
-            .is_some_and(|current| current == self.record["process"])
+            .is_some_and(|current| same_process(&self.record["process"], &current))
     }
 
     pub fn clear(&self) -> Result<()> {
@@ -222,9 +220,25 @@ impl Ownership {
     }
 }
 
+// Process start identity is stable across package upgrades. The executable path
+// and file metadata are diagnostic: upgrading can remove or replace those bytes
+// while the original authenticated server is still running.
+fn same_process(record: &Value, current: &Value) -> bool {
+    ["pid", "group", "uid", "start"]
+        .iter()
+        .all(|key| current.get(key).is_some() && record.get(key) == current.get(key))
+        && record.get("boot") == current.get("boot")
+}
+
 fn executable_identity(path: PathBuf) -> Result<Value> {
     use std::os::unix::fs::MetadataExt;
-    let metadata = fs::metadata(&path)?;
+    let metadata = match fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(json!({"path":path}))
+        }
+        Err(error) => return Err(error).context("Inspect native executable"),
+    };
     Ok(
         json!({"path":path,"device":metadata.dev(),"inode":metadata.ino(),"modified":metadata.mtime(),"nanos":metadata.mtime_nsec()}),
     )
@@ -249,16 +263,21 @@ fn process_identity(pid: u32) -> Result<Value> {
     let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
     let read =
         unsafe { libc::proc_pidpath(pid as i32, path.as_mut_ptr().cast(), path.len() as u32) };
-    if read <= 0 {
-        bail!("Cannot identify native process executable");
-    }
-    path.truncate(
-        path.iter()
-            .position(|byte| *byte == 0)
-            .unwrap_or(read as usize),
-    );
-    use std::os::unix::ffi::OsStringExt;
-    let executable = executable_identity(PathBuf::from(std::ffi::OsString::from_vec(path)))?;
+    let executable = if read <= 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(error).context("Read native executable path");
+        }
+        Value::Null
+    } else {
+        path.truncate(
+            path.iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(read as usize),
+        );
+        use std::os::unix::ffi::OsStringExt;
+        executable_identity(PathBuf::from(std::ffi::OsString::from_vec(path)))?
+    };
     Ok(
         json!({"pid":pid,"group":info.pbi_pgid,"uid":info.pbi_uid,"start":[info.pbi_start_tvsec,info.pbi_start_tvusec],"executable":executable}),
     )
@@ -340,9 +359,9 @@ mod tests {
         drop(inherited_lease);
         assert_eq!(receipt.pid(), Some(pid));
         assert!(receipt.matches());
-        assert!(receipt.has_live_record(&configuration));
+        assert_eq!(receipt.live_record_pid(&configuration), Some(pid));
         drop(receipt);
-        for mutate in ["pid", "group", "start", "executable"] {
+        for mutate in ["pid", "group", "uid", "start"] {
             let mut record: Value = serde_json::from_slice(&bytes).unwrap();
             record["process"][mutate] = json!("different process identity");
             fs::write(&path, record.to_string()).unwrap();
@@ -355,6 +374,44 @@ mod tests {
             );
             assert!(child.0.as_mut().unwrap().try_wait().unwrap().is_none());
         }
+        // Model PID reuse with the same recorded PID but another live process's
+        // correctly typed start identity, rather than a malformed JSON field.
+        let mut reused: Value = serde_json::from_slice(&bytes).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut other, other_identity) = loop {
+            let mut command = std::process::Command::new("/bin/sleep");
+            command.arg("60");
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let other = super::super::StartupChild(Some(command.spawn().unwrap()));
+            let identity = process_identity(other.0.as_ref().unwrap().id()).unwrap();
+            if reused["process"]["start"] != identity["start"] {
+                break (other, identity);
+            }
+            // Some platforms report a coarser start clock; wait for a distinct
+            // real birth identity instead of assuming back-to-back forks differ.
+            drop(other);
+            assert!(
+                Instant::now() < deadline,
+                "no distinct process start within five seconds"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        reused["process"]["start"] = other_identity["start"].clone();
+        fs::write(&path, reused.to_string()).unwrap();
+        assert!(Ownership::claim(&state)
+            .unwrap()
+            .recover(&configuration)
+            .is_err());
+        assert!(child.0.as_mut().unwrap().try_wait().unwrap().is_none());
+        assert!(other.0.as_mut().unwrap().try_wait().unwrap().is_none());
+        drop(other);
         fs::write(&path, &bytes).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(Ownership::claim(&state)

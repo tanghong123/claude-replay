@@ -684,8 +684,8 @@
 .mdrev-host .ann-agent-draft .ann-agent-draft-words {box-sizing:border-box;width:100%;min-height:3.2em;font:inherit;margin-top:4px;font-size:12px}
 .mdrev-host .ann-share-row {justify-content:flex-end;align-items:center;gap:8px;margin:6px 0 2px;display:flex}
 .mdrev-host .ann-share-hint {color:var(--ink-soft);flex:1;min-width:0;font-size:11px}
-.mdrev-host .ann-share {font:inherit;border:1px solid var(--accent);background:var(--accent);color:var(--bg);cursor:pointer;border-radius:6px;padding:3px 12px;font-size:12px}
-.mdrev-host .ann-share:disabled {opacity:.55;cursor:progress}
+.mdrev-host button.ann-share {font:inherit;border:1px solid var(--accent);background:var(--accent);color:var(--bg);cursor:pointer;border-radius:6px;padding:3px 12px;font-size:12px}
+.mdrev-host button.ann-share:disabled {opacity:.55;cursor:progress}
 .mdrev-host .ann-close-mark {font-weight:700}
 .mdrev-host .ann-close-resolved .ann-close-mark:before {content:"✓";color:var(--ins-fg)}
 .mdrev-host .ann-close-wontfix .ann-close-mark:before {content:"⊘";color:var(--ink-faint)}

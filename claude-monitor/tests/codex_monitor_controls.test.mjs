@@ -752,8 +752,8 @@ test("only sideways phone layout folds the resident composer", () => {
   const controller = Object.create(MonitorControls.prototype);
   const previous = globalThis.matchMedia;
   try {
-    for (const [phone, sideways, expected] of [[true,true,true], [true,false,false], [false,true,false]]) {
-      globalThis.matchMedia = query => ({ matches: query === "(orientation:landscape)" ? sideways : phone });
+    for (const [coarseShort, expected] of [[true,true], [false,false]]) {
+      globalThis.matchMedia = query => ({ matches: query === "(pointer:coarse) and (max-height:500px)" && coarseShort });
       assert.equal(controller.sidewaysComposer(), expected);
     }
     let fits = 0;
@@ -766,4 +766,53 @@ test("only sideways phone layout folds the resident composer", () => {
     assert.equal(controller.composerExpanded, false);
     assert.equal(fits, 2, "inactive controllers cannot change an ordinary editor");
   } finally { globalThis.matchMedia = previous; }
+});
+
+test("orientation changes refold an unfocused draft and retain a focused editor", () => {
+  const previous = document.activeElement;
+  let fits = 0;
+  const controller = Object.assign(Object.create(MonitorControls.prototype), { composerExpanded: true, fitComposer() { fits++; } });
+  try {
+    document.activeElement = node("composeInput");
+    controller.composerOrientationChanged();
+    assert.equal(controller.composerExpanded, true);
+    document.activeElement = null;
+    controller.composerOrientationChanged();
+    assert.equal(controller.composerExpanded, false);
+    assert.equal(fits, 2);
+  } finally { document.activeElement = previous; }
+});
+
+test("a sixteen-pixel Safari viewport retains only the input at the visible bottom", () => {
+  const previous = { window: globalThis.window, innerHeight: globalThis.innerHeight, matchMedia: globalThis.matchMedia, getComputedStyle: globalThis.getComputedStyle, querySelector: document.querySelector };
+  try {
+    nodes.clear(); globalThis.innerHeight = 292; globalThis.matchMedia = () => ({ matches: true });
+    globalThis.window = { visualViewport: { height: 16, offsetTop: 337, pageTop: 337 } };
+    globalThis.getComputedStyle = () => ({ getPropertyValue: () => "0", minHeight: "44", paddingTop: "8", paddingBottom: "8" });
+    const attributes = {};
+    node("composer").style.setProperty = (key, value) => { node("composer").style[key] = value; };
+    node("composer").setAttribute = (key, value) => { attributes[key] = value; };
+    node("app").getBoundingClientRect = () => ({ top: 337, height: 292 });
+    node("composer").getBoundingClientRect = () => ({ bottom: 345, height: 110 });
+    node("composeInput").getBoundingClientRect = () => ({ height: 44 });
+    document.querySelector = () => ({ getBoundingClientRect: () => ({ bottom: 385 }) });
+    let reserved = 0;
+    const controller = Object.assign(Object.create(MonitorControls.prototype), { composerExpanded: true, reserveComposerSpace(height) { reserved = height; } });
+    controller.fitComposer();
+    assert.equal(attributes["data-shared-input-only"], "true");
+    assert.equal(node("composer").style.maxHeight, "16px");
+    assert.equal(node("composeInput").style.height, "16px");
+    assert.equal(reserved, 16);
+    assert.equal(attributes["data-shared-header-covered"], "true");
+    globalThis.window.visualViewport.height = 80;
+    node("composer").getBoundingClientRect = () => ({ bottom: 337 + 80 - 8, height: 110 });
+    controller.fitComposer();
+    assert.equal(attributes["data-shared-input-only"], "true");
+    assert.equal(attributes["data-shared-header-covered"], "false", "keep the header when a single row still fits below it");
+  } finally {
+    for (const key of ["window", "innerHeight", "matchMedia", "getComputedStyle"]) {
+      if (previous[key] === undefined) delete globalThis[key]; else globalThis[key] = previous[key];
+    }
+    document.querySelector = previous.querySelector;
+  }
 });

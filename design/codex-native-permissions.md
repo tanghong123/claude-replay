@@ -187,19 +187,25 @@ Monitor handles SIGTERM, SIGINT and SIGHUP on its main thread. After successful
 activation, its server stays running across host exit and upgrades, including
 active turns. Before activation succeeds, Monitor atomically saves and syncs a
 0600 ownership receipt beside its state database: process ID/group, start identity,
-executable identity and endpoint/home/scope configuration. It holds a private file
+executable diagnostics and endpoint/home/scope configuration. It holds a private file
 lease while managing that process, so another Monitor cannot claim it concurrently.
 On the next explicit activation, the configured transport must authenticate first
 (the existing bearer token for WebSocket; private Unix permissions and peer UID
-for explicit Unix mode). The receipt, live process start identity, executable and
-configuration must also match before the new Monitor reports the server as owned.
+for explicit Unix mode). The receipt, live PID/group/UID/start identity (and boot
+identity on Linux) and configuration must also match before the new Monitor reports
+the server as owned. Executable paths and file metadata are diagnostic only: a
+package upgrade can unlink or replace the old binary while its process and turns
+continue. Missing executable paths do not discard a verified live ownership lease;
+process identity and endpoint authentication remain required.
 Missing/unsafe receipts, reused PIDs and mismatches leave the server external; they
 never authorize a signal. Records contain no token contents.
 
 Explicit mode-off and abnormal runtime destruction still stop the owned server;
 startup failures still clean up their child. Orderly host shutdown only closes the
 gateway and releases the ownership lease. After the first terminal signal, default
-signal behavior is restored, so a second signal can end a slow drain. No fixed
+signal behavior is restored for installed handlers, so a second signal can end a
+slow drain. Inherited ignored signals remain ignored, preserving nohup and
+background-shell behavior across installation, cleanup and handler removal. No fixed
 20-second exit deadline is promised. SIGKILL cannot run cleanup, but an already
 persisted receipt can be verified on restart; interrupted startup before its receipt
 was persisted still needs operator recovery. Old versions leave this new receipt
