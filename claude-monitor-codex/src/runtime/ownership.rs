@@ -11,7 +11,21 @@ pub(super) struct Ownership {
     path: PathBuf,
     record: Value,
     // Keep one Monitor as owner even when several use the same state directory.
-    _lease: File,
+    lease: File,
+}
+
+impl Drop for Ownership {
+    fn drop(&mut self) {
+        // A concurrent fork can retain this open-file description until exec.
+        // Release authority now instead of waiting for every inherited copy to close.
+        if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&self.lease), libc::LOCK_UN) } != 0
+        {
+            eprintln!(
+                "warning: release native ownership lease: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
 }
 
 fn private_file(path: &Path, create: bool) -> Result<File> {
@@ -81,7 +95,7 @@ impl Ownership {
         Ok(Self {
             path,
             record: Value::Null,
-            _lease: lease,
+            lease,
         })
     }
 
@@ -315,11 +329,15 @@ mod tests {
             "one owner holds the lease"
         );
         let bytes = fs::read(&path).unwrap();
+        // dup and fork share the same lock description. Hold a duplicate to
+        // deterministically model another thread's child between fork and exec.
+        let inherited_lease = receipt.lease.try_clone().unwrap();
         drop(receipt);
         let receipt = Ownership::claim(&state)
             .unwrap()
             .recover(&configuration)
             .unwrap();
+        drop(inherited_lease);
         assert_eq!(receipt.pid(), Some(pid));
         assert!(receipt.matches());
         assert!(receipt.has_live_record(&configuration));
