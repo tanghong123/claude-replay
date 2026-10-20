@@ -770,8 +770,7 @@ mod tests {
         (root, runtime)
     }
 
-    #[test]
-    fn construction_and_status_never_create_native_state_or_a_process() {
+    fn absent_fixture() -> (PathBuf, Arc<NativeRuntime>) {
         let (root, runtime) = fixture();
         // A private absent socket cannot be claimed by a parallel ephemeral-port test.
         #[cfg(unix)]
@@ -786,6 +785,12 @@ mod tests {
             log_path: runtime.config.log_path.clone(),
         })
         .unwrap();
+        (root, runtime)
+    }
+
+    #[test]
+    fn construction_and_status_never_create_native_state_or_a_process() {
+        let (root, runtime) = absent_fixture();
         for _ in 0..3 {
             let status = runtime.status();
             assert_eq!(status["ok"], true);
@@ -845,7 +850,7 @@ mod tests {
 
     #[test]
     fn connect_only_refuses_absent_server_without_spawning_or_creating_state() {
-        let (root, runtime) = fixture();
+        let (root, runtime) = absent_fixture();
         let error = runtime.activate(false).unwrap_err();
         assert!(error.to_string().contains("not running"));
         assert!(runtime.gateway().is_none());
@@ -856,7 +861,8 @@ mod tests {
 
     #[test]
     fn failed_explicit_start_retains_its_binary_cause_without_activating_gateway() {
-        let (root, runtime) = fixture();
+        let (root, runtime) = absent_fixture();
+        ServerToken::load_or_create(&runtime.config.gateway.state_path).unwrap();
         let error = runtime.activate(true).unwrap_err();
         assert!(format!("{error:#}").contains("missing-codex"));
         assert!(runtime.gateway().is_none());

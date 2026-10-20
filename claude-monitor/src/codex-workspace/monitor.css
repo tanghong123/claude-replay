@@ -161,7 +161,7 @@ body[data-shared-codex] #app #jumpToBottom{z-index:51;bottom:calc(var(--shared-c
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){
  body[data-shared-codex] #app #jumpToBottom{bottom:calc(var(--shared-composer-height,116px) + var(--shared-reader-gap,0px) + var(--phone-kb,0px) + var(--shared-keyboard-safe-bottom,env(safe-area-inset-bottom,0px)) + 24px)}
  /* Pending decisions take priority over the floating jump target on a phone. */
- body[data-shared-codex]:has(.shared-requests:not(:empty)) #app #jumpToBottom{display:none!important}
+ body[data-shared-codex][data-shared-pending="true"] #app #jumpToBottom{display:none!important}
 }
 
 /* Sideways phones keep the resident draft to one line until it is tapped. */
@@ -189,4 +189,15 @@ body[data-shared-codex] #app #jumpToBottom{z-index:51;bottom:calc(var(--shared-c
  body[data-shared-codex] #app:has(#composer[data-shared-input-only="true"]) .shared-runtime,
  body[data-shared-codex] #app:has(#composer[data-shared-input-only="true"]) .phone-dock,
  body[data-shared-codex] #app:has(#composer[data-shared-input-only="true"]) #jumpToBottom{display:none!important}
+}
+
+/* A short phone shows the command and both decisions before explanatory text.
+   Reserve 66px for card padding/borders, the 44px actions and their 4px gap. */
+@media(pointer:coarse) and (max-height:500px){
+ .ws-approval{display:grid;gap:4px;padding:8px 10px;margin:0}
+ .ws-approval>pre{grid-row:1;margin:0;line-height:16px;max-height:clamp(16px,calc(32dvh - 66px),80px)}
+ .ws-approval>.ws-request-actions{grid-row:2}
+ .ws-approval>strong{grid-row:3}
+ .ws-approval>p{grid-row:4;margin:0}
+ .ws-approval>small{grid-row:5;margin:0}
 }

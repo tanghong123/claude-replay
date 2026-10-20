@@ -142,12 +142,12 @@ impl NativeServer {
                                 if authorized { Ok(response) } else { Err(tungstenite::http::Response::builder().status(401).body(Some("Authentication required".into())).unwrap()) }
                             }) else { return; };
                             if socket.get_ref().timeout(Duration::from_millis(150)).is_err() { return; }
-                            let mut approval_id = 0;
+                            let mut approval_id: u64 = 0;
                             while !quit.load(Ordering::SeqCst) {
                                 if disconnect.load(Ordering::SeqCst) { let _ = socket.close(None); break; }
                                 if approval.swap(false, Ordering::SeqCst) {
                                     approval_id += 1;
-                                    let request = json!({"id":format!("fixture-approval-{approval_id}"),"method":"item/commandExecution/requestApproval","params":{"threadId":"native-owned","turnId":"active-turn","itemId":"fixture-command","command":"cargo test -p parser","reason":"Check the synthetic parser change before continuing.","availableDecisions":["decline","accept"]}});
+                                    let request = json!({"id":10000 + approval_id,"method":"item/commandExecution/requestApproval","params":{"threadId":"native-owned","turnId":"active-turn","itemId":"fixture-command","command":"cargo test -p parser","reason":"Check the synthetic parser change before continuing.","availableDecisions":["decline","accept"]}});
                                     if socket.send(tungstenite::Message::Text(request.to_string().into())).is_err() { break; }
                                 }
                                 let message = match socket.read() {
@@ -159,7 +159,7 @@ impl NativeServer {
                                 if !message.is_text() { continue; }
                                 let Ok(text) = message.to_text() else { continue; };
                                 let request: Value = serde_json::from_str(text).unwrap();
-                                if request["id"].as_str().is_some_and(|id| id.starts_with("fixture-approval-")) && request.get("result").is_some() {
+                                if request["id"].as_u64() == Some(10000 + approval_id) && request.get("result").is_some() {
                                     decisions.lock().unwrap().push(request["result"].clone());
                                     let resolved = json!({"method":"serverRequest/resolved","params":{"threadId":"native-owned","requestId":request["id"]}});
                                     if socket.send(tungstenite::Message::Text(resolved.to_string().into())).is_err() { break; }

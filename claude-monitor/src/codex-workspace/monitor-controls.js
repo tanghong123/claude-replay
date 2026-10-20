@@ -157,6 +157,7 @@ export class MonitorControls {
   /** Release the native view without terminating the shared server or an accepted action. */
   deactivate() {
     this.active = false; cancelAnimationFrame(this.composeFrame);
+    delete document.body.dataset.sharedPending;
     byId("composer").removeAttribute("data-shared-collapsed");
     byId("composer").removeAttribute("data-shared-input-only");
     if (this.selected) { this.drafts.set(this.selected, byId("composeInput").value); this.recovery.forget(this.selected); }
@@ -738,6 +739,9 @@ export class MonitorControls {
         }
       }
     }
+    // Explicit state also invalidates WebKit styles when a request is inserted.
+    // Desktop-owned or disabled cards leave ordinary reader navigation available.
+    document.body.dataset.sharedPending = String(this.active !== false && !!this.requests.querySelector("button:not(:disabled)"));
     const queue = this.state.queue || [];
     const turn = activeTurn(this.state.thread);
     const queueKey = JSON.stringify([this.selected, this.canControl(), turn?.id, queue.map(item => [item.clientUserMessageId, textOfInput(item.input || [])])]);

@@ -959,21 +959,71 @@ fn phone_approval_controls(
     native: &native::NativeServer,
     root: &std::path::Path,
 ) {
+    // Exercise real request rendering while varying actionability, without relying
+    // on WebKit's child-insertion :has() invalidation or a stylesheet reinsertion.
+    eval(
+        tab,
+        r#"window.requestNavigation = null; import('/codex-workspace/monitor-controls.js').then(({MonitorControls}) => {
+      const requests=document.getElementById('sharedRequests'), saved=requests.innerHTML, prior=document.body.dataset.sharedPending;
+      let connected=true;
+      const controller=Object.assign(Object.create(MonitorControls.prototype), {active:true,state:{pending:[],queue:[]},requests,queue:document.createElement('section'),requestDrafts:new Map(),canControl:()=>connected});
+      const results=[];
+      try {
+        for (const [name,method,canRespond,online,expected] of [
+          ['approval','item/commandExecution/requestApproval',true,true,true],
+          ['permissions','item/permissions/requestApproval',true,true,true],
+          ['questions','item/tool/requestUserInput',true,true,true],
+          ['desktop','item/tool/call',false,true,false],
+          ['unsupported','unknown/request',true,true,false],
+          ['disconnected','item/commandExecution/requestApproval',true,false,false],
+          ['reconnected','item/commandExecution/requestApproval',true,true,true],
+          ['resolved',null,true,true,false]]) {
+          connected=online;
+          controller.state.pending=method ? [{id:9,requestToken:name,method,canRespond,params:{threadId:'synthetic',command:'cargo test -p parser',questions:[{id:'q',question:'Continue?'}],permissions:{}}}] : [];
+          controller.paintPending();
+          document.getElementById('jumpToBottom').classList.add('show');
+          const pending=document.body.dataset.sharedPending==='true', jump=document.getElementById('jumpToBottom').checkVisibility();
+          results.push({name,pending,jump,pass:pending===expected && jump!==expected});
+        }
+        window.requestNavigation=results;
+      } finally {requests.innerHTML=saved;if(prior===undefined)delete document.body.dataset.sharedPending;else document.body.dataset.sharedPending=prior;}
+    }).catch(error=>{window.requestNavigationError=String(error)});true"#,
+    );
+    until(
+        tab,
+        "window.requestNavigation?.length===8 && window.requestNavigation.every(r=>r.pass)",
+        "actionable requests alone suppress phone navigation",
+        Duration::from_secs(10),
+        "JSON.stringify({results:window.requestNavigation,error:window.requestNavigationError})",
+    );
+    std::fs::write(
+        root.join("native-request-navigation.json"),
+        serde_json::to_vec_pretty(&probe(tab, "window.requestNavigation")).unwrap(),
+    )
+    .unwrap();
+    let viewport = probe(tab, "({width:innerWidth,height:innerHeight})");
+    let width = viewport["width"].as_u64().unwrap() as u32;
+    let height = viewport["height"].as_u64().unwrap() as u32;
+    if width > height {
+        phone(tab, width, 292);
+    }
     for (theme, decision) in [("light", "decline"), ("dark", "accept")] {
         eval(tab, &format!("document.documentElement.dataset.theme={theme:?};document.getElementById('jumpToBottom').classList.add('show');true"));
         native.approval_requested.store(true, Ordering::SeqCst);
         wait(tab, "document.querySelector('#sharedRequests [data-testid=approval-card]')?.checkVisibility() === true");
         let geometry = r#"(()=>{const card=document.querySelector('#sharedRequests [data-testid=approval-card]'),pre=card.querySelector('pre'),r=card.getBoundingClientRect(),p=pre.getBoundingClientRect();return {display:getComputedStyle(card).display,cardWidth:r.width,commandWidth:p.width,command:pre.textContent,jump:document.getElementById('jumpToBottom').checkVisibility()};})()"#;
-        until(tab, &format!("(()=>{{const g={geometry};return g.display==='block' && g.command==='cargo test -p parser' && g.commandWidth>=240 && g.commandWidth>=g.cardWidth-40 && !g.jump;}})()"),
+        until(tab, &format!("(()=>{{const g={geometry};return ['block','grid'].includes(g.display) && g.command==='cargo test -p parser' && g.commandWidth>=240 && g.commandWidth>=g.cardWidth-40 && !g.jump && document.body.dataset.sharedPending==='true';}})()"),
             "phone approval command uses the card width without a jump overlay", Duration::from_secs(10), &format!("JSON.stringify({geometry})"));
         std::fs::write(
             root.join(format!("native-approval-{theme}-geometry.json")),
             serde_json::to_vec_pretty(&probe(tab, geometry)).unwrap(),
         )
         .unwrap();
-        eval(
+        // Do not scroll to reveal either the command or the decisions: the initial
+        // card must expose them even with Safari's 292px landscape content area.
+        wait(
             tab,
-            "document.querySelector('#sharedRequests pre').scrollIntoView({block:'center'});true",
+            r#"(()=>{const pre=document.querySelector('#sharedRequests pre'),r=pre.getBoundingClientRect();return r.height>=16 && pre.contains(document.elementFromPoint(r.left+r.width/2,r.top+8));})()"#,
         );
         std::fs::write(
             root.join(format!("native-approval-{theme}-command.png")),
@@ -986,11 +1036,10 @@ fn phone_approval_controls(
             .unwrap(),
         )
         .unwrap();
-        // A short landscape panel scrolls; the decision row must remain reachable.
-        eval(tab, "document.querySelector('#sharedRequests .ws-request-actions').scrollIntoView({block:'center'});true");
+        // Both decisions must already be visible and hit-testable without scrolling.
         wait(
             tab,
-            r#"[...document.querySelectorAll('#sharedRequests [data-decision]')].length===2 && [...document.querySelectorAll('#sharedRequests [data-decision]')].every(b=>{const r=b.getBoundingClientRect();return !b.disabled && r.width>=44 && r.height>=44 && [0.2,0.5,0.8].every(x=>b.contains(document.elementFromPoint(r.left+r.width*x,r.top+r.height/2)));})"#,
+            r#"[...document.querySelectorAll('#sharedRequests [data-decision]')].length===2 && [...document.querySelectorAll('#sharedRequests [data-decision]')].every(b=>{const r=b.getBoundingClientRect();return !b.disabled && r.width>=44 && r.height>=44 && [0.2,0.5,0.8].every(x=>[0.1,0.5,0.9].every(y=>b.contains(document.elementFromPoint(r.left+r.width*x,r.top+r.height*y))));})"#,
         );
         assert_eq!(
             eval(
@@ -1033,10 +1082,13 @@ fn phone_approval_controls(
         );
         wait(
             tab,
-            "document.getElementById('jumpToBottom').checkVisibility()",
+            "document.getElementById('jumpToBottom').checkVisibility() && document.body.dataset.sharedPending==='false'",
         );
     }
     eval(tab, "document.documentElement.dataset.theme='';true");
+    if width > height {
+        phone(tab, width, height);
+    }
 }
 /// Chrome models viewport geometry and touch events; iOS keyboard/hover acceptance
 /// still requires a device or simulator and is not inferred from these checks.
