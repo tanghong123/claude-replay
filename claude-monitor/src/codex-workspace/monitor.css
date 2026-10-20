@@ -160,6 +160,8 @@ body[data-shared-codex] #app #composer[data-session-conflict="true"] .shared-com
 body[data-shared-codex] #app #jumpToBottom{z-index:51;bottom:calc(var(--shared-composer-height,116px) + 32px)}
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){
  body[data-shared-codex] #app #jumpToBottom{bottom:calc(var(--shared-composer-height,116px) + var(--shared-reader-gap,0px) + var(--phone-kb,0px) + var(--shared-keyboard-safe-bottom,env(safe-area-inset-bottom,0px)) + 24px)}
+ /* Pending decisions take priority over the floating jump target on a phone. */
+ body[data-shared-codex]:has(.shared-requests:not(:empty)) #app #jumpToBottom{display:none!important}
 }
 
 /* Sideways phones keep the resident draft to one line until it is tapped. */
@@ -180,7 +182,7 @@ body[data-shared-codex] #app #jumpToBottom{z-index:51;bottom:calc(var(--shared-c
  body[data-shared-codex] #app #composer[data-shared-input-only="true"]>.shared-error,
  body[data-shared-codex] #app #composer[data-shared-input-only="true"] .shared-compose-body>:not(#composeInput){display:none!important}
  body[data-shared-codex] #app #composer[data-shared-input-only="true"] .shared-compose-body{display:block;min-height:0;height:100%;overflow:hidden}
- body[data-shared-codex] #app #composer[data-shared-input-only="true"] #composeInput{height:100%!important;min-height:0;max-height:100%;padding-top:0;padding-bottom:0;line-height:24px}
+ body[data-shared-codex] #app #composer[data-shared-input-only="true"] #composeInput{height:100%!important;min-height:0;max-height:100%;padding-top:0;padding-bottom:0;line-height:clamp(0px,calc(var(--shared-input-only-height) - 2px),24px)}
  /* Suppress header paint only if it overlaps the sole available input row.
     Retain its layout box so restoring height does not reflow the reader. */
  body[data-shared-codex] #app:has(#composer[data-shared-input-only="true"][data-shared-header-covered="true"]) .workspace>.topbar{visibility:hidden}

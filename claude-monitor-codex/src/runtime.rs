@@ -773,6 +773,19 @@ mod tests {
     #[test]
     fn construction_and_status_never_create_native_state_or_a_process() {
         let (root, runtime) = fixture();
+        // A private absent socket cannot be claimed by a parallel ephemeral-port test.
+        #[cfg(unix)]
+        let runtime = NativeRuntime::new(RuntimeConfig {
+            gateway: Config {
+                endpoint: format!("unix://{}", root.join("absent.sock").display()),
+                allowed_roots: vec![root.clone()],
+                state_path: root.join("receipts.sqlite3"),
+            },
+            binary: runtime.config.binary.clone(),
+            home: runtime.config.home.clone(),
+            log_path: runtime.config.log_path.clone(),
+        })
+        .unwrap();
         for _ in 0..3 {
             let status = runtime.status();
             assert_eq!(status["ok"], true);

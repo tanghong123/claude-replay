@@ -600,6 +600,9 @@ fn run_sized(mobile: bool, unix: bool, width: u32, height: u32) {
         "recovery does not send, interrupt, or replace the session"
     );
     if mobile {
+        phone_approval_controls(&tab, &native, &root);
+    }
+    if mobile {
         let geometry = probe(&tab, "(() => {const r=document.getElementById('composer').getBoundingClientRect(); return {left:r.left,right:r.right,width:innerWidth};})()");
         assert!(
             geometry["left"].as_f64().unwrap() >= -1.0
@@ -949,6 +952,92 @@ fn run_sized(mobile: bool, unix: bool, width: u32, height: u32) {
         delivery_recovery(&browser, &tab, &monitor, &native, &root);
     }
 }
+/// Render actual gateway requests inside the production shell, whose transcript
+/// also has an unrelated `.approval` class. Touch both advertised decisions.
+fn phone_approval_controls(
+    tab: &headless_chrome::Tab,
+    native: &native::NativeServer,
+    root: &std::path::Path,
+) {
+    for (theme, decision) in [("light", "decline"), ("dark", "accept")] {
+        eval(tab, &format!("document.documentElement.dataset.theme={theme:?};document.getElementById('jumpToBottom').classList.add('show');true"));
+        native.approval_requested.store(true, Ordering::SeqCst);
+        wait(tab, "document.querySelector('#sharedRequests [data-testid=approval-card]')?.checkVisibility() === true");
+        let geometry = r#"(()=>{const card=document.querySelector('#sharedRequests [data-testid=approval-card]'),pre=card.querySelector('pre'),r=card.getBoundingClientRect(),p=pre.getBoundingClientRect();return {display:getComputedStyle(card).display,cardWidth:r.width,commandWidth:p.width,command:pre.textContent,jump:document.getElementById('jumpToBottom').checkVisibility()};})()"#;
+        until(tab, &format!("(()=>{{const g={geometry};return g.display==='block' && g.command==='cargo test -p parser' && g.commandWidth>=240 && g.commandWidth>=g.cardWidth-40 && !g.jump;}})()"),
+            "phone approval command uses the card width without a jump overlay", Duration::from_secs(10), &format!("JSON.stringify({geometry})"));
+        std::fs::write(
+            root.join(format!("native-approval-{theme}-geometry.json")),
+            serde_json::to_vec_pretty(&probe(tab, geometry)).unwrap(),
+        )
+        .unwrap();
+        eval(
+            tab,
+            "document.querySelector('#sharedRequests pre').scrollIntoView({block:'center'});true",
+        );
+        std::fs::write(
+            root.join(format!("native-approval-{theme}-command.png")),
+            tab.capture_screenshot(
+                headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
+                None,
+                None,
+                true,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        // A short landscape panel scrolls; the decision row must remain reachable.
+        eval(tab, "document.querySelector('#sharedRequests .ws-request-actions').scrollIntoView({block:'center'});true");
+        wait(
+            tab,
+            r#"[...document.querySelectorAll('#sharedRequests [data-decision]')].length===2 && [...document.querySelectorAll('#sharedRequests [data-decision]')].every(b=>{const r=b.getBoundingClientRect();return !b.disabled && r.width>=44 && r.height>=44 && [0.2,0.5,0.8].every(x=>b.contains(document.elementFromPoint(r.left+r.width*x,r.top+r.height/2)));})"#,
+        );
+        assert_eq!(
+            eval(
+                tab,
+                "document.getElementById('jumpToBottom').checkVisibility()"
+            ),
+            false
+        );
+        std::fs::write(
+            root.join(format!("native-approval-{theme}-actions.png")),
+            tab.capture_screenshot(
+                headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
+                None,
+                None,
+                true,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let before = native.approval_decisions.lock().unwrap().len();
+        tap(tab, &format!("#sharedRequests [data-decision={decision}]"));
+        wait(
+            tab,
+            "document.getElementById('sharedRequests').children.length===0",
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while native.approval_decisions.lock().unwrap().len() == before
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(native.approval_decisions.lock().unwrap().len(), before + 1);
+        assert_eq!(
+            native.approval_decisions.lock().unwrap()[before]["decision"],
+            decision
+        );
+        eval(
+            tab,
+            "document.getElementById('jumpToBottom').classList.add('show');true",
+        );
+        wait(
+            tab,
+            "document.getElementById('jumpToBottom').checkVisibility()",
+        );
+    }
+    eval(tab, "document.documentElement.dataset.theme='';true");
+}
 /// Chrome models viewport geometry and touch events; iOS keyboard/hover acceptance
 /// still requires a device or simulator and is not inferred from these checks.
 fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
@@ -1120,8 +1209,8 @@ fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
     .unwrap();
     if sideways {
         eval(tab, "(()=>{Object.defineProperty(visualViewport,'height',{configurable:true,get:()=>16});visualViewport.dispatchEvent(new Event('resize'));return true;})()");
-        let minimal = "(()=>{const a=document.getElementById('app').getBoundingClientRect(),c=document.getElementById('composer'),r=c.getBoundingClientRect();return {inputOnly:c.dataset.sharedInputOnly,top:r.top-a.top,bottom:r.bottom-a.top,height:r.height,send:document.getElementById('sendBtn').checkVisibility()};})()";
-        until(tab, &format!("(()=>{{const g={minimal};return g.inputOnly==='true' && g.top>=0 && g.bottom<=17 && g.height<=16 && !g.send && !document.querySelector('.workspace>.topbar').checkVisibility({{visibilityProperty:true}}) && (()=>{{const i=document.getElementById('composeInput'),r=i.getBoundingClientRect();return i.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2));}})();}})()"),
+        let minimal = "(()=>{const a=document.getElementById('app').getBoundingClientRect(),c=document.getElementById('composer'),r=c.getBoundingClientRect(),i=document.getElementById('composeInput');return {inputOnly:c.dataset.sharedInputOnly,top:r.top-a.top,bottom:r.bottom-a.top,height:r.height,inputHeight:i.clientHeight,lineHeight:parseFloat(getComputedStyle(i).lineHeight),send:document.getElementById('sendBtn').checkVisibility()};})()";
+        until(tab, &format!("(()=>{{const g={minimal};return g.inputOnly==='true' && g.top>=0 && g.bottom<=17 && g.height<=16 && g.lineHeight<=g.inputHeight && !g.send && !document.querySelector('.workspace>.topbar').checkVisibility({{visibilityProperty:true}}) && (()=>{{const i=document.getElementById('composeInput'),r=i.getBoundingClientRect();return i.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2));}})();}})()"),
             "tiny Safari viewport clips to one bottom input", Duration::from_secs(10), minimal);
         std::fs::write(
             root.join("native-tiny-keyboard-geometry.json"),

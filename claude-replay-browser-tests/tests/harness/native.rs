@@ -53,6 +53,8 @@ pub struct NativeServer {
     pub active: Arc<AtomicBool>,
     pub occupied: Arc<AtomicBool>,
     pub disconnected: Arc<AtomicBool>,
+    pub approval_requested: Arc<AtomicBool>,
+    pub approval_decisions: Arc<Mutex<Vec<Value>>>,
     stop: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
     socket_directory: Option<std::path::PathBuf>,
@@ -101,6 +103,10 @@ impl NativeServer {
         let owned = occupied.clone();
         let disconnected = Arc::new(AtomicBool::new(false));
         let disconnect = disconnected.clone();
+        let approval_requested = Arc::new(AtomicBool::new(false));
+        let approval = approval_requested.clone();
+        let approval_decisions = Arc::new(Mutex::new(Vec::new()));
+        let decisions = approval_decisions.clone();
         let queue = Arc::new(Mutex::new(Vec::<Value>::new()));
         let created = Arc::new(AtomicBool::new(false));
         let sent = Arc::new(AtomicBool::new(false));
@@ -117,6 +123,8 @@ impl NativeServer {
                         let busy = busy.clone();
                         let owned = owned.clone();
                         let disconnect = disconnect.clone();
+                        let approval = approval.clone();
+                        let decisions = decisions.clone();
                         let queue = queue.clone();
                         let created = created.clone();
                         let sent = sent.clone();
@@ -134,8 +142,14 @@ impl NativeServer {
                                 if authorized { Ok(response) } else { Err(tungstenite::http::Response::builder().status(401).body(Some("Authentication required".into())).unwrap()) }
                             }) else { return; };
                             if socket.get_ref().timeout(Duration::from_millis(150)).is_err() { return; }
+                            let mut approval_id = 0;
                             while !quit.load(Ordering::SeqCst) {
                                 if disconnect.load(Ordering::SeqCst) { let _ = socket.close(None); break; }
+                                if approval.swap(false, Ordering::SeqCst) {
+                                    approval_id += 1;
+                                    let request = json!({"id":format!("fixture-approval-{approval_id}"),"method":"item/commandExecution/requestApproval","params":{"threadId":"native-owned","turnId":"active-turn","itemId":"fixture-command","command":"cargo test -p parser","reason":"Check the synthetic parser change before continuing.","availableDecisions":["decline","accept"]}});
+                                    if socket.send(tungstenite::Message::Text(request.to_string().into())).is_err() { break; }
+                                }
                                 let message = match socket.read() {
                                     Ok(message) => message,
                                     Err(tungstenite::Error::Io(error)) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
@@ -145,6 +159,12 @@ impl NativeServer {
                                 if !message.is_text() { continue; }
                                 let Ok(text) = message.to_text() else { continue; };
                                 let request: Value = serde_json::from_str(text).unwrap();
+                                if request["id"].as_str().is_some_and(|id| id.starts_with("fixture-approval-")) && request.get("result").is_some() {
+                                    decisions.lock().unwrap().push(request["result"].clone());
+                                    let resolved = json!({"method":"serverRequest/resolved","params":{"threadId":"native-owned","requestId":request["id"]}});
+                                    if socket.send(tungstenite::Message::Text(resolved.to_string().into())).is_err() { break; }
+                                    continue;
+                                }
                                 let Some(method) = request["method"].as_str() else { continue; };
                                 log.lock().unwrap().push(method.to_owned());
                                 if request.get("id").is_none() { continue; }
@@ -212,6 +232,8 @@ impl NativeServer {
             active,
             occupied,
             disconnected,
+            approval_requested,
+            approval_decisions,
             stop,
             worker: Some(worker),
             socket_directory,

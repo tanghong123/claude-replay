@@ -44,7 +44,7 @@ export function requestHtml(request, index, disabled = false) {
   const kind = requestKind(request);
   const params = request.params || {};
   const disable = disabled ? " disabled" : "";
-  const base = `class="ws-request ${kind}" data-testid="${kind === "questions" ? "question-card" : kind === "approval" || kind === "permissions" ? "approval-card" : "desktop-tool-card"}" data-request-index="${index}" data-request-id="${escapeText(request.id)}" data-request-token="${escapeText(request.requestToken || "")}"`;
+  const base = `class="ws-request ws-${kind}" data-testid="${kind === "questions" ? "question-card" : kind === "approval" || kind === "permissions" ? "approval-card" : "desktop-tool-card"}" data-request-index="${index}" data-request-id="${escapeText(request.id)}" data-request-token="${escapeText(request.requestToken || "")}"`;
   if (kind === "desktop" || kind === "unsupported") return `<article ${base}><strong>${kind === "desktop" ? "Codex desktop is handling this tool" : "Open Codex desktop to handle this request"}</strong><p>${escapeText(params.tool || request.method)}</p><small>This browser observes this request.</small></article>`;
   const heading = kind === "questions" ? "Codex needs your answer" : kind === "permissions" ? "Codex requests permissions" : request.method.includes("fileChange") ? "Approve file changes" : "Approve command execution";
   const details = params.command || params.reason || params.cwd || "";

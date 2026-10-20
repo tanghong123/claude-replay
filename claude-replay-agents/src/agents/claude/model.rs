@@ -1271,6 +1271,15 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "backgroundCwdHint",
     "backgroundTaskId",
     "backgroundedByUser",
+    // #s188, Bash (client 2.1.296): the boolean `true` on a result whose command the client moved
+    // to the background so that a message that arrived while it ran could reach the model; one
+    // result on this machine, 2026-10-21, beside an empty `stdout`/`stderr` and
+    // `backgroundTaskId`. The result's text states the move and its reason, and the card shows
+    // that text. A third way to the background, beside `run_in_background` and
+    // `backgroundedByUser`. REVISIT if it arrives false, on a result other than Bash, or if a
+    // backgrounded Bash card should ever wear a marker of its own (a RENDER question that covers
+    // `backgroundedByUser` too, since neither is read).
+    "backgroundedToDeliverMessage",
     "bytes",
     // #s77, Agent (client 2.1.296): the boolean `true` on the result of a background launch
     // (`status: "async_launched"`), beside `canReadOutputFile`; 12 of 12 on this machine,
@@ -7108,6 +7117,14 @@ mod tests {
             unknown_tool_result_keys(&elsewhere),
             vec!["allowedTools"],
             "beside a key the Skill shape lacks, it is reported like any new key"
+        );
+        // #s188 (client 2.1.296): a Bash command the client moved to the background so that a
+        // message could reach the model, the whole result as measured.
+        let moved = serde_json::json!({"stdout": "", "stderr": "", "interrupted": false, "isImage": false, "noOutputExpected": false, "backgroundTaskId": "bq7x2k", "backgroundedToDeliverMessage": true});
+        assert_eq!(
+            unknown_tool_result_keys(&moved),
+            Vec::<&str>::new(),
+            "{moved}"
         );
         // #s62: an Artifact list result's `pins_enabled` is known in the list's shape, and only there.
         let list = serde_json::json!({"artifacts": [], "scope": "all", "pins_enabled": true});
