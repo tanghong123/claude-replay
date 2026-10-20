@@ -129,6 +129,12 @@ impl ServerToken {
     }
 }
 
+/// Apply the same private state-directory boundary for tokenless Unix ownership receipts.
+#[cfg(unix)]
+pub(super) fn prepare_private_directory(path: &Path) -> Result<()> {
+    CredentialDirectory::open(path)?.restrict()
+}
+
 /// Pin credential operations to the directory inspected, even if its pathname is replaced.
 struct CredentialDirectory {
     file: File,

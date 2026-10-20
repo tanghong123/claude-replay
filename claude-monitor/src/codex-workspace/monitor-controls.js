@@ -25,6 +25,7 @@ export class MonitorControls {
     this.browserAccess = "paired"; this.catalogEpoch = null; this.observedEpoch = null; this.connectionEpoch = null; this.latestError = null;
     this.initialThread = new URL(location.href).searchParams.get("thread");
     this.threads = []; this.drafts = new Map(); this.draftRevisions = new Map(); this.imageErrors = new Map(); this.uncertainSendPayloads = new Map(); this.sendDrafts = new Map(); this.requestDrafts = new Map(); this.uncertainActions = new Map(); this.selected = null; this.generation = 0; this.pending = false; this.creating = false; this.archived = false; this.projectId = "";
+    this.composerExpanded = false;
     this.outgoing = new OutgoingMessages(); this.journalRequired = true;
     this.attachments = new ImageAttachmentDrafts(undefined, thread => { this.touchDraft(thread); void this.persistDraft(thread).catch(() => {}); if (thread === this.selected) this.paint(); });
     this.bind();
@@ -140,7 +141,11 @@ export class MonitorControls {
     this.readerButton.setAttribute("aria-label", "Reader tools"); this.readerButton.setAttribute("aria-controls", "phoneDock"); this.readerButton.setAttribute("aria-expanded", "false");
     this.readerButton.onclick = () => this.setReaderTools(!document.body.hasAttribute("data-shared-reader-open"));
     byId("previewBtn").before(this.readerButton);
-    byId("composeInput").addEventListener("focus", () => { if (this.active !== false) this.setReaderTools(false); });
+    byId("composeInput").addEventListener("focus", () => { if (this.active !== false) { this.setReaderTools(false); this.setComposerExpanded(true); } });
+    byId("composer").addEventListener("click", () => this.setComposerExpanded(true));
+    document.addEventListener("pointerdown", event => {
+      if (!byId("composer").contains(event.target) && !this.dialog.contains(event.target)) this.setComposerExpanded(false);
+    });
     const reposition = () => { if (this.active === false) return; if (!matchMedia(PHONE_QUERY).matches) this.setReaderTools(false); this.fitComposer(); if (this.dialog.matches(":popover-open")) this.positionSettings(); };
     window.addEventListener("resize", reposition); window.visualViewport?.addEventListener("resize", reposition); window.visualViewport?.addEventListener("scroll", reposition);
     this.newDialog = make("dialog", "shared-dialog shared-new-dialog"); this.newDialog.id = "sharedNewDialog"; this.newDialog.setAttribute("aria-label", "New Codex session"); document.body.append(this.newDialog); this.newDialog.oncancel = event => { if (this.creating) event.preventDefault(); }; this.newDialog.addEventListener("close", () => { this.newProjectPicker?.destroy(); this.actions.nativeNewClosed?.(); });
@@ -148,6 +153,7 @@ export class MonitorControls {
   /** Release the native view without terminating the shared server or an accepted action. */
   deactivate() {
     this.active = false; cancelAnimationFrame(this.composeFrame);
+    byId("composer").removeAttribute("data-shared-collapsed");
     if (this.selected) { this.drafts.set(this.selected, byId("composeInput").value); this.recovery.forget(this.selected); }
     this.clearSessionConflict();
     this.selected = null; this.generation++;
@@ -245,6 +251,14 @@ export class MonitorControls {
     byId("transcript").style.paddingBottom = `${height + extra}px`;
   }
   open() { byId("composer").classList.add("production-show"); byId("composer").classList.remove("live"); byId("composeFab").classList.remove("show"); byId("composeFab").hidden = true; }
+  setComposerExpanded(expanded) {
+    if (this.active === false) return;
+    this.composerExpanded = expanded;
+    this.fitComposer();
+  }
+  // Use the layout orientation, not visualViewport height: a portrait keyboard
+  // must never turn the upright composer into the sideways one-line variant.
+  sidewaysComposer() { return matchMedia(PHONE_QUERY).matches && matchMedia("(orientation:landscape)").matches; }
   /**
    * Fit the mounted composer and pending actions above the phone keyboard and below the header.
    * Text grows to 132 px; constrained body/pending content scrolls without losing draft bytes.
@@ -255,7 +269,9 @@ export class MonitorControls {
     const input = byId("composeInput"), composer = byId("composer");
     input.style.height = "auto"; composer.style.maxHeight = ""; composer.setAttribute("data-shared-constrained", "false");
     if (this.runtimePanel) this.runtimePanel.style.maxHeight = "";
-    let limit = 132;
+    const collapsed = this.sidewaysComposer() && !this.composerExpanded;
+    composer.setAttribute("data-shared-collapsed", String(collapsed));
+    let limit = collapsed ? 24 : 132;
     if (matchMedia(PHONE_QUERY).matches) {
       const view = window.visualViewport, style = getComputedStyle(composer);
       const safe = edge => parseFloat(style.getPropertyValue(`--shared-safe-${edge}`)) || 0;
@@ -501,6 +517,7 @@ export class MonitorControls {
       this.attachments.accepted(threadId, draft.images);
       if (unchanged && threadId === this.selected && byId("composeInput").value.trim() === text) { byId("composeInput").value = ""; this.drafts.delete(threadId); }
       else if (unchanged && this.drafts.get(threadId)?.trim() === text) this.drafts.delete(threadId);
+      if (unchanged && threadId === this.selected && this.sidewaysComposer()) { byId("composeInput").blur(); this.setComposerExpanded(false); }
     } finally {
       if (!this.uncertainActions?.has(key)) this.sendDrafts.delete(key);
     }

@@ -700,6 +700,9 @@ fn run_sized(mobile: bool, unix: bool, width: u32, height: u32) {
     // Send through the real HTTP gateway to a synthetic native server, never an LLM.
     eval(&tab, "(() => {const i=document.getElementById('composeInput');i.value='Synthetic first message';i.dispatchEvent(new Event('input',{bubbles:true}));return true;})()");
     eval(&tab, "(() => {window.holdNativeSends=true;document.getElementById('sendBtn').addEventListener('click',()=>{window.previewClickAt=performance.now();},{once:true,capture:true});new MutationObserver(()=>{if(window.previewDelayMs==null && document.querySelector('[data-outgoing-state=sending]')) window.previewDelayMs=performance.now()-window.previewClickAt;}).observe(document.getElementById('sharedOutgoing'),{childList:true,subtree:true});return true;})()");
+    if mobile {
+        tap(&tab, "#composeInput");
+    }
     click(&tab, "#sendBtn");
     wait(&tab, "window.heldNativeSends.length === 1 && document.getElementById('sharedOutgoing').innerText.includes('Synthetic first message') && document.querySelector('[data-outgoing-state=sending]') !== null");
     wait(
@@ -737,6 +740,9 @@ fn run_sized(mobile: bool, unix: bool, width: u32, height: u32) {
         "document.getElementById('transcript').innerText.includes('Loading session history…')",
     );
     wait(&tab, "document.getElementById('sharedOutgoing').innerText.includes('Synthetic first message') && document.getElementById('sharedOutgoing').innerText.includes('Sent')");
+    if mobile && width > height {
+        wait(&tab, "document.getElementById('composer').dataset.sharedCollapsed==='true' && document.getElementById('composeInput').value===''");
+    }
     assert_eq!(
         eval(&tab, "window.nativeUiErrors.length"),
         0,
@@ -912,6 +918,47 @@ fn run_sized(mobile: bool, unix: bool, width: u32, height: u32) {
 /// Chrome models viewport geometry and touch events; iOS keyboard/hover acceptance
 /// still requires a device or simulator and is not inferred from these checks.
 fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
+    let sideways = eval(tab, "matchMedia('(orientation:landscape)').matches") == true;
+    if sideways {
+        // Start collapsed; a touch expands, an outside touch folds without losing text.
+        tap(tab, "#sharedReaderTools");
+        wait(
+            tab,
+            "document.getElementById('composer').dataset.sharedCollapsed==='true'",
+        );
+        eval(tab, "(()=>{const i=document.getElementById('composeInput');i.value='Retain sideways draft';i.dispatchEvent(new Event('input'));return true;})()");
+        let collapsed = probe(tab, "(()=>{const c=document.getElementById('composer'),r=c.getBoundingClientRect();return {height:r.height,send:document.getElementById('sendBtn').checkVisibility(),input:document.getElementById('composeInput').getBoundingClientRect().height};})()");
+        assert!(
+            collapsed["height"].as_f64().unwrap() <= 60.0
+                && collapsed["send"] == false
+                && collapsed["input"].as_f64().unwrap() >= 24.0,
+            "{collapsed}"
+        );
+        std::fs::write(
+            root.join("native-landscape-collapsed.png"),
+            tab.capture_screenshot(
+                headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
+                None,
+                None,
+                true,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        tap(tab, "#composeInput");
+        wait(tab, "document.getElementById('composer').dataset.sharedCollapsed==='false' && document.getElementById('sendBtn').checkVisibility() && document.activeElement.id==='composeInput' && !document.body.hasAttribute('data-shared-reader-open')");
+        tap(tab, "#sharedReaderTools");
+        wait(
+            tab,
+            "document.getElementById('composer').dataset.sharedCollapsed==='true'",
+        );
+        assert_eq!(
+            eval(tab, "document.getElementById('composeInput').value"),
+            "Retain sideways draft"
+        );
+        tap(tab, "#sharedReaderTools");
+    }
+
     assert!(
         eval(
             tab,
@@ -990,6 +1037,18 @@ fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
             && geometry["right"].as_f64().unwrap() <= geometry["width"].as_f64().unwrap(),
         "{geometry}"
     );
+    if sideways {
+        eval(tab, "document.getElementById('sharedReaderTools').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));true");
+        wait(
+            tab,
+            "document.getElementById('composer').dataset.sharedCollapsed==='true'",
+        );
+        eval(
+            tab,
+            "document.getElementById('composeInput').dispatchEvent(new Event('focus'));true",
+        );
+        wait(tab, "document.getElementById('composer').dataset.sharedCollapsed==='false' && document.getElementById('sendBtn').checkVisibility()");
+    }
     // The offset probe above shadows Safari's scroll coordinates without physically
     // scrolling Chrome. Restore those shadows for a screenshot/hit test in its real viewport.
     eval(tab, "(()=>{delete visualViewport.offsetTop;delete visualViewport.pageTop;visualViewport.dispatchEvent(new Event('scroll'));document.getElementById('jumpToBottom').classList.add('show');return true;})()");

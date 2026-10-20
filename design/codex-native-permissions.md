@@ -183,19 +183,30 @@ detaching an external server, whose work keeps running. This observation covers
 threads attached to Monitor, not unrelated work invisible to its connection.
 Cancel and Escape leave the server and both modes on.
 An unavailable ownership check never silently proceeds with shutdown.
-Monitor handles SIGTERM, SIGINT and SIGHUP on its main thread: it fences activation,
-waits for an owned startup to unwind, then closes the gateway and reaps its owned
-process group. After the first signal, default signal behavior is restored so a
-second signal can force exit; that forced exit may leave an owned process behind.
-Orderly cleanup can exceed a service manager's grace period while startup or RPC
-drain is pending; this change does not promise a 20-second shutdown deadline.
-Dropping the runtime also cleans up an owned child. An independently
-started server is externally managed: Monitor closes only its own connection.
-SIGKILL and host power loss cannot run cleanup; an orphan left by either event is
-not adopted or killed merely because its endpoint matches. Its original launcher
-or operator remains responsible for stopping it.
-It never signals that process, interrupts another client's turn, deletes queued
-messages from that server, removes writer locks or edits Codex storage.
+Monitor handles SIGTERM, SIGINT and SIGHUP on its main thread. After successful
+activation, its server stays running across host exit and upgrades, including
+active turns. Before activation succeeds, Monitor atomically saves and syncs a
+0600 ownership receipt beside its state database: process ID/group, start identity,
+executable identity and endpoint/home/scope configuration. It holds a private file
+lease while managing that process, so another Monitor cannot claim it concurrently.
+On the next explicit activation, the configured transport must authenticate first
+(the existing bearer token for WebSocket; private Unix permissions and peer UID
+for explicit Unix mode). The receipt, live process start identity, executable and
+configuration must also match before the new Monitor reports the server as owned.
+Missing/unsafe receipts, reused PIDs and mismatches leave the server external; they
+never authorize a signal. Records contain no token contents.
+
+Explicit mode-off and abnormal runtime destruction still stop the owned server;
+startup failures still clean up their child. Orderly host shutdown only closes the
+gateway and releases the ownership lease. After the first terminal signal, default
+signal behavior is restored, so a second signal can end a slow drain. No fixed
+20-second exit deadline is promised. SIGKILL cannot run cleanup, but an already
+persisted receipt can be verified on restart; interrupted startup before its receipt
+was persisted still needs operator recovery. Old versions leave this new receipt
+unused and see a surviving process as external. Do not remove the state directory
+while a server is retained; losing its receipt/token prevents safe reacquisition.
+Independent servers remain external: Monitor only closes its own connection,
+never signals them, removes writer locks, or edits Codex session storage.
 
 The standalone Gateway's `disconnect` and `force_disconnect` APIs retain their
 non-interrupting contract for other hosts. Runtime startup/shutdown transitions
@@ -284,6 +295,10 @@ Browser storage may contain message text and images; it contains no native or br
 This storage is native-only and does not change the read-only export format.
 
 ## Native phone layout
+
+On sideways phones the composer starts as one input line. Tapping it expands the
+model, attachment and send controls; a successful send or outside tap folds it
+again without discarding the draft. Portrait keeps the full resident composer.
 
 The resident native composer keeps reading tools behind a 44px **Reader tools**
 button in the top bar. The existing dock is hidden until that button is opened;

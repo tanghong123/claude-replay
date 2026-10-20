@@ -161,3 +161,13 @@ body[data-shared-codex] #app #jumpToBottom{bottom:calc(var(--shared-composer-hei
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){
  body[data-shared-codex] #app #jumpToBottom{bottom:calc(var(--shared-composer-height,116px) + var(--shared-reader-gap,0px) + var(--phone-kb,0px) + var(--shared-keyboard-safe-bottom,env(safe-area-inset-bottom,0px)) + 24px)}
 }
+
+/* Sideways phones keep the resident draft to one line until it is tapped. */
+@media(max-width:760px),(pointer:coarse) and (max-height:500px){
+ body[data-shared-codex] #app #composer[data-shared-collapsed="true"]{gap:0;padding-top:8px;padding-bottom:8px}
+ body[data-shared-codex] #app #composer[data-shared-collapsed="true"]>.compose-foot,
+ body[data-shared-codex] #app #composer[data-shared-collapsed="true"]>.compose-note,
+ body[data-shared-codex] #app #composer[data-shared-collapsed="true"] .shared-compose-body>:not(#composeInput){display:none!important}
+ body[data-shared-codex] #app #composer[data-shared-collapsed="true"] .shared-compose-body{display:block;min-height:0;overflow:hidden}
+ body[data-shared-codex] #app #composer[data-shared-collapsed="true"] #composeInput{height:24px!important;min-height:24px;max-height:24px;line-height:24px;padding-top:0;padding-bottom:0;overflow:hidden}
+}

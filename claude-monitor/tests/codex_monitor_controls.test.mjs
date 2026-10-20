@@ -746,3 +746,24 @@ test("phone composer fitting uses the app box after Safari keyboard page scrolli
     document.querySelector = previous.querySelector;
   }
 });
+
+
+test("only sideways phone layout folds the resident composer", () => {
+  const controller = Object.create(MonitorControls.prototype);
+  const previous = globalThis.matchMedia;
+  try {
+    for (const [phone, sideways, expected] of [[true,true,true], [true,false,false], [false,true,false]]) {
+      globalThis.matchMedia = query => ({ matches: query === "(orientation:landscape)" ? sideways : phone });
+      assert.equal(controller.sidewaysComposer(), expected);
+    }
+    let fits = 0;
+    controller.fitComposer = () => { fits++; };
+    controller.setComposerExpanded(true);
+    assert.equal(controller.composerExpanded, true);
+    controller.setComposerExpanded(false);
+    assert.equal(controller.composerExpanded, false);
+    controller.active = false; controller.setComposerExpanded(true);
+    assert.equal(controller.composerExpanded, false);
+    assert.equal(fits, 2, "inactive controllers cannot change an ordinary editor");
+  } finally { globalThis.matchMedia = previous; }
+});

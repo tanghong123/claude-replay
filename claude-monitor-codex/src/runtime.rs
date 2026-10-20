@@ -1,5 +1,10 @@
 //! Explicit activation of a shared Codex runtime. Construction and status never spawn work.
 
+#[cfg(unix)]
+mod ownership;
+#[cfg(all(test, unix))]
+mod restart_tests;
+
 use crate::{auth::ServerToken, transport::Endpoint, validate_state_path, Config, Gateway};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -36,6 +41,8 @@ pub struct NativeRuntime {
 struct RuntimeState {
     gateway: Option<Arc<Gateway>>,
     child: Option<Child>,
+    #[cfg(unix)]
+    ownership: Option<ownership::Ownership>,
     last_error: Option<String>,
     shutdown_warnings: Vec<String>,
 }
@@ -163,7 +170,20 @@ impl NativeRuntime {
         } else {
             "configured"
         });
-        result["ownedServerPid"] = json!(state.child.as_ref().map(Child::id));
+        #[allow(unused_mut)]
+        let mut owned_pid = state.child.as_ref().map(Child::id);
+        #[cfg(unix)]
+        if let Some(ownership) = &state.ownership {
+            if ownership.matches() {
+                owned_pid = ownership.pid();
+            } else if state.child.is_none() {
+                state.ownership = None;
+            }
+        }
+        result["ownedServerPid"] = json!(owned_pid);
+        if owned_pid.is_some() {
+            result["homeProvenance"] = json!("monitor-started");
+        }
         result["lastStartupError"] = json!(state.last_error);
         result["shutdownWarnings"] = json!(state.shutdown_warnings);
         result
@@ -204,14 +224,33 @@ impl NativeRuntime {
         self.close_owned()
     }
 
-    /// Host termination fences new activation and waits for any owned startup to unwind.
-    /// External servers are detached, never signalled.
+    /// Host exit preserves the recorded server and active turns for the next Monitor.
+    /// Explicit deactivation and abnormal runtime destruction still stop owned processes.
     pub fn shutdown(&self) -> std::result::Result<Value, crate::DisconnectError> {
         self.shutting_down.store(true, Ordering::SeqCst);
         let _transition = self
             .transition
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        #[cfg(unix)]
+        {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            // Activation durably records ownership before publishing its gateway. Remove
+            // the cleanup handles before any fallible detach, preserving the server even
+            // when a worker cannot finish within the close deadline.
+            state.child.take();
+            let gateway = state.gateway.take();
+            drop(state);
+            let closed = gateway.map(|gateway| gateway.close()).transpose();
+            self.state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .ownership
+                .take();
+            closed?;
+            Ok(self.status())
+        }
+        #[cfg(not(unix))]
         self.close_owned()
     }
 
@@ -226,9 +265,32 @@ impl NativeRuntime {
                 .child
                 .take(),
         );
+        #[cfg(unix)]
+        let ownership = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .ownership
+            .take();
+        #[cfg(unix)]
+        let had_child = owned.0.is_some();
         let stopped = owned.stop_gracefully();
+        #[cfg(unix)]
+        let stopped = stopped.and_then(|()| {
+            if let Some(receipt) = &ownership {
+                if !had_child {
+                    receipt.stop()?;
+                }
+                receipt.clear()?;
+            }
+            Ok(())
+        });
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.child = owned.0.take();
+        #[cfg(unix)]
+        if stopped.is_err() {
+            state.ownership = ownership;
+        }
         if let Ok(warnings) = &closed {
             state.gateway = None;
             state.shutdown_warnings = warnings.clone().unwrap_or_default();
@@ -306,7 +368,28 @@ impl NativeRuntime {
             &self.config.gateway.state_path,
         )?;
         let mut startup = StartupChild(None);
+        #[cfg(unix)]
+        let mut ownership = if !listening {
+            // A disconnected runtime may still hold a lease for an exited server.
+            self.state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .ownership
+                .take()
+                .map(Ok)
+                .unwrap_or_else(|| ownership::Ownership::claim(&self.config.gateway.state_path))
+                .map(Some)?
+        } else {
+            None
+        };
         if !listening {
+            #[cfg(unix)]
+            if ownership
+                .as_ref()
+                .is_some_and(|receipt| receipt.has_live_record(&self.identity()))
+            {
+                bail!("Recorded Codex process is still running but its endpoint is unavailable; retry after it recovers");
+            }
             {
                 let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(child) = state.child.as_mut() {
@@ -366,7 +449,38 @@ impl NativeRuntime {
                 .context("Close native connection during Monitor shutdown")?;
             bail!("Monitor stopped during native activation");
         }
+        #[cfg(unix)]
+        if let Some(child) = &startup.0 {
+            if let Err(error) = ownership
+                .as_mut()
+                .expect("startup ownership lease")
+                .record(child.id(), self.identity())
+            {
+                let _ = gateway.close();
+                return Err(error);
+            }
+        } else if listening
+            && self
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .ownership
+                .is_none()
+        {
+            match ownership::Ownership::claim(&self.config.gateway.state_path)
+                .and_then(|receipt| receipt.recover(&self.identity()))
+            {
+                Ok(receipt) => ownership = Some(receipt),
+                Err(error) => eprintln!("Native server remains external: {error:#}"),
+            }
+        }
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(unix)]
+        {
+            if ownership.is_some() {
+                state.ownership = ownership;
+            }
+        }
         state.gateway = Some(gateway);
         if startup.0.is_some() {
             state.child = startup.0.take();
@@ -422,7 +536,7 @@ impl NativeRuntime {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
-            // Isolate the owned process group for bounded startup and Monitor-exit cleanup.
+            // Isolate the owned group for startup failure and explicit mode-off cleanup.
             unsafe {
                 command.pre_exec(|| {
                     if libc::setsid() < 0 {
@@ -471,7 +585,20 @@ impl Drop for NativeRuntime {
                 eprintln!("warning: close native gateway during runtime drop: {error}");
             }
         }
-        if let Err(error) = StartupChild(state.child.take()).stop_gracefully() {
+        #[cfg(unix)]
+        let had_child = state.child.is_some();
+        let stopped = StartupChild(state.child.take()).stop_gracefully();
+        #[cfg(unix)]
+        let stopped = stopped.and_then(|()| {
+            if let Some(receipt) = state.ownership.take() {
+                if !had_child {
+                    receipt.stop()?;
+                }
+                receipt.clear()?;
+            }
+            Ok(())
+        });
+        if let Err(error) = stopped {
             eprintln!("warning: stop owned Codex server during runtime drop: {error:#}");
         }
     }
@@ -597,7 +724,7 @@ impl Drop for StartupChild {
 mod tests {
     use super::*;
 
-    fn fixture() -> (PathBuf, Arc<NativeRuntime>) {
+    pub(super) fn fixture() -> (PathBuf, Arc<NativeRuntime>) {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
             "native-lifecycle-{}-{}-{}",
