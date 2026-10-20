@@ -3164,6 +3164,7 @@ mod tests {
                 description: String::new(),
                 icon: String::new(),
                 removed,
+                edits_applied: None,
             })),
             asked: None,
             delivered: Vec::new(),
@@ -3188,6 +3189,56 @@ mod tests {
         assert!(
             plain.contains("https://example.test/artifact/x") && !plain.contains("Removed"),
             "{plain}"
+        );
+    }
+
+    /// #s182: an Artifact publish that edited a file of the artifact draws the edit under its URL
+    /// — its summary and the changed lines — and, when the result applied fewer edits than were
+    /// sent, says so in place of the summary.
+    #[test]
+    fn an_artifact_edit_draws_its_diff_under_the_url() {
+        let edit = |applied: Option<usize>| Block::ToolUse {
+            name: "Artifact".into(),
+            target: "Deck".into(),
+            diffs: vec![("title: Draft\n".into(), "title: Final\n".into())],
+            output: None,
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: Some(Box::new(crate::model::Published {
+                name: "Deck".into(),
+                url: "https://example.test/artifact/x".into(),
+                description: String::new(),
+                icon: String::new(),
+                removed: Vec::new(),
+                edits_applied: applied,
+            })),
+            asked: None,
+            delivered: Vec::new(),
+            sent: None,
+            saved_output: None,
+        };
+        let screen = |b: Block| {
+            let mut v = View::new(vec![b], "s", false, FoldPolicy::none());
+            let buf = draw(&mut v, 90, 10);
+            (0..buf.area.height)
+                .map(|y| row(&buf, y))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let applied = screen(edit(Some(1)));
+        assert!(
+            applied.contains("https://example.test/artifact/x")
+                && applied.contains("Added 1 line, removed 1 line")
+                && applied.contains("title: Draft")
+                && applied.contains("title: Final"),
+            "{applied}"
+        );
+        let short = screen(edit(Some(0)));
+        assert!(
+            short.contains("Applied 0 of 1 edit") && !short.contains("Added 1 line"),
+            "{short}"
         );
     }
 

@@ -1203,6 +1203,12 @@ const TOOL_RESULT_READ: &[&str] = &[
     "content",
     // #306: an Artifact create from a type — whether it created, and what it warned.
     "created_from_type",
+    // #s182 (client 2.1.303, one record in this store, measured 2026-10-19): an Artifact publish
+    // that EDITED a file of the artifact in place (`edits: [{old_str, new_str}]` in the input) ends
+    // with `editsApplied`, an integer equal to the edits sent in the one met. It is the result's
+    // count of what was done, read onto the publish (`Published::edits_applied`); the card says so
+    // when it falls short of the edits sent.
+    "editsApplied",
     // #s5 (client 2.1.289): a framed sub-agent result counts the notes placed above its frame and
     // the parts after its report. Only 0 has been met; anything else keeps the framed text whole.
     "harnessNoteCount",
@@ -1541,8 +1547,8 @@ const ARTIFACT_PUBLISH_SHAPE: &[&str] = &[
 /// 2.1.302 and 2.1.303, measured 2026-10-19), true in all 17, as in a create; `carried`,
 /// `preferredContract` and `read` sit inside `stored`, not beside it. One of the 17 ends with
 /// `editsApplied`, an edit of the artifact by `old_str`/`new_str` (client 2.1.303): it is in this
-/// array so that record stays in the shape, but it has no row below and so stays reported until
-/// its card draws it. REVISIT: `owned` arriving false, or a plain publish from a file
+/// array so that record stays in the shape, and it is READ (#s182, `TOOL_RESULT_READ`): the card
+/// draws the edit's diff and says when fewer edits were applied than sent. REVISIT: `owned` arriving false, or a plain publish from a file
 /// ([`ARTIFACT_PUBLISH_SHAPE`]) reporting `owned` beside `icon`, which no client has written yet.
 const ARTIFACT_TYPED_PUBLISH_SHAPE: &[&str] = &[
     "artifact_id",
@@ -1772,8 +1778,8 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     ("own_files", ARTIFACT_TYPED_PUBLISH_SHAPE),
     ("type_files", ARTIFACT_TYPED_PUBLISH_SHAPE),
     // #s181 (client 2.1.302): `owned` on a publish into a typed artifact, true in all 17 met, as in
-    // a create. Known only in this shape. `editsApplied` is in the shape's array but has no row:
-    // it stays reported until the card reads it.
+    // a create. Known only in this shape. `editsApplied` is in the shape's array and on the read
+    // list (#s182), so an edit keeps the shape.
     ("owned", ARTIFACT_TYPED_PUBLISH_SHAPE),
     // #s181 (client 2.1.303): an Artifact read's whole result is `{files_read}`, whose text the card
     // draws in full. Known only as the whole result, as CronList's `jobs` is.
@@ -2884,6 +2890,13 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
                                     .collect()
                             })
                             .unwrap_or_default();
+                        // #s182: how many of the call's edits the result APPLIED. The card says
+                        // so when it is short of the edits sent, and never claims an edit the
+                        // result does not count.
+                        p.edits_applied = tur
+                            .get("editsApplied")
+                            .and_then(Value::as_u64)
+                            .map(|n| n as usize);
                         if created == Some(true) {
                             p.description = tur
                                 .get("warnings")
@@ -3938,6 +3951,7 @@ fn artifact_publish(name: &str, input: &Value) -> Option<Published> {
         },
         icon: artifact_icon(input),
         removed: Vec::new(), // filled from the result
+        edits_applied: None, // filled from the result
     })
 }
 
@@ -5324,6 +5338,23 @@ fn extract_diffs(name: &str, input: &Value) -> Vec<(String, String)> {
                 .unwrap_or("");
             vec![(String::new(), n.to_string())]
         }
+        // #s182 (Claude Code 2.1.303): the Artifact tool edits a file of a published artifact in
+        // place, `edits: [{old_str, new_str}]` beside `file_path`. Its hunks are the change; the
+        // publish fact stays, so the card keeps its link and gains the diff. Only an array is
+        // read: a publish without edits keeps no diffs and renders as it did.
+        "Artifact" => input
+            .get("edits")
+            .and_then(|e| e.as_array())
+            .map(|edits| {
+                edits
+                    .iter()
+                    .map(|e| {
+                        let side = |k: &str| e.get(k).and_then(Value::as_str).unwrap_or("");
+                        (side("old_str").to_string(), side("new_str").to_string())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         "MultiEdit" => input
             .get("edits")
             .and_then(|e| e.as_array())
@@ -8794,7 +8825,7 @@ mod tests {
             unknown_tool_result_keys(&removing)
         );
         // #s181: client 2.1.302 adds `owned` to every such publish, and one that edited the
-        // artifact ends with `editsApplied`, which stays reported alone until its card reads it.
+        // artifact ends with `editsApplied`, which is read (#s182), so the edit stays known.
         let mut owned = publish.clone();
         owned["owned"] = serde_json::json!(true);
         assert!(
@@ -8804,10 +8835,10 @@ mod tests {
         );
         let mut edited = owned.clone();
         edited["editsApplied"] = serde_json::json!(1);
-        assert_eq!(
-            unknown_tool_result_keys(&edited),
-            vec!["editsApplied"],
-            "an edit stays in the shape, so editsApplied alone is reported"
+        assert!(
+            unknown_tool_result_keys(&edited).is_empty(),
+            "an edit stays in the shape, and its editsApplied is read: {:?}",
+            unknown_tool_result_keys(&edited)
         );
         assert_eq!(
             unknown_tool_result_keys(
@@ -8815,6 +8846,62 @@ mod tests {
             ),
             vec!["files_removed", "own_files", "type_files"],
             "outside the typed publish's shape, its keys are reported"
+        );
+    }
+
+    /// #s182: an Artifact publish that edits a file of the artifact in place (client 2.1.303)
+    /// carries its `edits` as hunks and the result's `editsApplied` on the publish; a publish with
+    /// no edits carries neither. Hand-written: no real ids, URLs or paths.
+    #[test]
+    fn an_artifact_edit_carries_its_hunks_and_the_count_its_result_applied() {
+        let jsonl = r#"
+{"type":"user","timestamp":"2026-10-19T10:00:00.000Z","message":{"content":"fix the title"}}
+{"type":"assistant","timestamp":"2026-10-19T10:00:01.000Z","message":{"content":[{"type":"tool_use","id":"t1","name":"Artifact","input":{"url":"https://example.test/artifact/x","root":"/w/deck","file_path":"data.json","edits":[{"old_str":"\"title\": \"Draft\"","new_str":"\"title\": \"Final\""},{"old_str":"\"v\": 1","new_str":"\"v\": 2"}]}}]}}
+{"type":"user","timestamp":"2026-10-19T10:00:02.000Z","toolUseResult":{"url":"https://example.test/artifact/x","path":"/w/deck/data.json","artifact_id":"x","title":"Deck","updated":true,"owned":true,"audience":"private","seq":5,"version":"v5","capabilities":{},"stored":{},"contract":"1.0.0","liveSubscription":"none","files_written":[{"path":"data.json","sha256":"00"}],"type":{"url":"https://example.test/types/deck","release":"r1","latest":"r1"},"own_files":["data.json"],"type_files":["artifact-type/index.js"],"editsApplied":1},"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Updated https://example.test/artifact/x"}]}}
+{"type":"assistant","timestamp":"2026-10-19T10:00:03.000Z","message":{"content":[{"type":"tool_use","id":"t2","name":"Artifact","input":{"url":"https://example.test/artifact/x","root":"/w/deck","file_path":"data.json"}}]}}
+{"type":"user","timestamp":"2026-10-19T10:00:04.000Z","toolUseResult":{"url":"https://example.test/artifact/x","path":"/w/deck/data.json","artifact_id":"x","title":"Deck","updated":true,"files_written":[{"path":"data.json","sha256":"00"}]},"message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"Updated https://example.test/artifact/x"}]}}
+"#;
+        // Each Artifact call as (its hunks, the count its result applied).
+        type Call = (Vec<(String, String)>, Option<usize>);
+        let calls: Vec<Call> = parse(jsonl)
+            .iter()
+            .filter_map(|b| match b {
+                Block::ToolUse {
+                    name,
+                    diffs,
+                    published,
+                    ..
+                } if name == "Artifact" => Some((
+                    diffs.clone(),
+                    published
+                        .as_deref()
+                        .expect("both calls published")
+                        .edits_applied,
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert_eq!(
+            calls[0].0,
+            vec![
+                (
+                    "\"title\": \"Draft\"".to_string(),
+                    "\"title\": \"Final\"".to_string()
+                ),
+                ("\"v\": 1".to_string(), "\"v\": 2".to_string()),
+            ],
+            "the edits become the block's hunks"
+        );
+        assert_eq!(
+            calls[0].1,
+            Some(1),
+            "the result's count, not the edits sent"
+        );
+        assert_eq!(
+            calls[1],
+            (vec![], None),
+            "a publish with no edits carries neither"
         );
     }
 

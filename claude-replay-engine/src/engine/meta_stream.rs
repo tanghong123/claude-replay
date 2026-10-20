@@ -314,11 +314,16 @@ pub const COMPACT_AFTER: usize = 256;
 /// `files_removed`) carries them (`Published::removed`), and its card says so. A v64 stream holds
 /// the publish with no trace of the removal.
 ///
+/// v66: #s182 — an Artifact publish that edited a file of the artifact in place (Claude Code
+/// 2.1.303's `edits: [{old_str, new_str}]`) carries the edit's hunks in its `diffs` and the
+/// result's `editsApplied` (`Published::edits_applied`), and its card draws the diff. A v65 stream
+/// holds the publish with no diff.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 65;
+pub const FOLD_VERSION: u16 = 66;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

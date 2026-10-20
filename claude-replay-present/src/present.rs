@@ -161,6 +161,20 @@ pub fn removed_files_note(files: &[String]) -> String {
     }
 }
 
+/// #s182: what an Artifact edit's card says when its result applied FEWER edits than the call
+/// sent — `Applied 1 of 3 edits` — for the terminal and the pages alike. `None` when they agree,
+/// when nothing was sent, or when the result gave no count: the card then says nothing extra, and
+/// it never claims an edit the result does not count.
+pub fn edits_applied_note(applied: Option<usize>, sent: usize) -> Option<String> {
+    let applied = applied?;
+    (applied < sent).then(|| {
+        format!(
+            "Applied {applied} of {sent} edit{}",
+            if sent == 1 { "" } else { "s" }
+        )
+    })
+}
+
 /// #s83: a SendMessage receipt as the reader should see it, for the terminal and the pages alike.
 /// The client writes it as the JSON of its result (`{"success":true,"message":"…","msg_id":"…"}`),
 /// whose `message` is the sentence that says where the message went ("… in that session's inbox,
@@ -325,6 +339,26 @@ pub fn run_changes(tools: &[Block]) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #s182: an Artifact edit's card speaks only when the result applied fewer edits than sent.
+    #[test]
+    fn edits_applied_note_only_when_short() {
+        assert_eq!(
+            edits_applied_note(Some(1), 3).as_deref(),
+            Some("Applied 1 of 3 edits")
+        );
+        assert_eq!(
+            edits_applied_note(Some(0), 1).as_deref(),
+            Some("Applied 0 of 1 edit")
+        );
+        assert_eq!(
+            edits_applied_note(Some(2), 2),
+            None,
+            "all applied: nothing extra"
+        );
+        assert_eq!(edits_applied_note(None, 2), None, "no count: no claim");
+        assert_eq!(edits_applied_note(Some(1), 0), None, "nothing sent");
+    }
 
     /// #s155: a publish's removed files in a change's words — one, several, and past the names
     /// it spells out, where the rest are counted.
