@@ -1067,6 +1067,13 @@ fn note_op(
                 }
             };
             let mut a = vec!["notes".to_string(), verb.to_string(), id.to_string()];
+            // mdrev 1.1.57 (#s185): mdrev-cli run with no terminal is taken for an AGENT, and an
+            // agent's close of a note its person has replied to, reopened or edited since it last
+            // listed it is refused. This close is the reader's own, made in the page with the note
+            // in view, so it passes `--force`, as the embedding guide's notes table does.
+            if verb != "reopen" {
+                a.push("--force".to_string());
+            }
             if let Some(note) = body
                 .get("resolvedBy")
                 .and_then(|r| r.get("note"))
@@ -2708,8 +2715,22 @@ esac
             &req("PATCH", &q, patch, true),
         );
         assert_eq!(r.code, "200 OK", "{}", String::from_utf8_lossy(&r.body));
+        // #s185 (mdrev 1.1.57): the reader's close passes --force, since mdrev-cli with no
+        // terminal is taken for an agent, whose close of a note with a newer reply is refused.
         assert!(
-            calls(&f).contains("notes resolve ann-1 --note done --root"),
+            calls(&f).contains("notes resolve ann-1 --force --note done --root"),
+            "{}",
+            calls(&f)
+        );
+        let wontfix = call(
+            &f,
+            &held,
+            "annotations/ann-1",
+            &req("PATCH", &q, br#"{"status":"wontfix"}"#, true),
+        );
+        assert_eq!(wontfix.code, "200 OK");
+        assert!(
+            calls(&f).contains("notes wontfix ann-1 --force --root"),
             "{}",
             calls(&f)
         );
@@ -2720,7 +2741,11 @@ esac
             &req("PATCH", &q, br#"{"status":"open"}"#, true),
         );
         assert_eq!(reopen.code, "200 OK");
-        assert!(calls(&f).contains("notes reopen ann-1 --root"));
+        assert!(
+            calls(&f).contains("notes reopen ann-1 --root"),
+            "a reopen closes nothing and passes no --force: {}",
+            calls(&f)
+        );
         let reply = call(
             &f,
             &held,
