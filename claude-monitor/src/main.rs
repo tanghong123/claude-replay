@@ -12,7 +12,8 @@
 mod shutdown;
 
 use claude_monitor::control::{
-    ensure_token, read_token, set_passcode_interactive, tokened_url, Attempts,
+    ensure_token, printed_url, read_token, set_passcode_interactive, tokened_url,
+    withheld_token_note, Attempts,
 };
 use claude_monitor::index;
 
@@ -20,6 +21,7 @@ use anyhow::{Context, Result};
 use claude_replay_core::Agent;
 use claude_replay_html::{service_routes, HttpResponse, RootLock, ServiceConfig};
 use claude_replay_present::cache::Presentation;
+use std::io::IsTerminal;
 use std::sync::Arc;
 
 /// The stable default port (§11): the monitor is a bookmarkable place.
@@ -170,8 +172,9 @@ USAGE:
   agent-monitor --codex-server-url URL --codex-allowed-root PATH [--no-open]
 
   --pair            Require a token to reach the monitor — a 0600 secret, minted
-                    once. Run it on a SHARED machine; it prints the URL to open,
-                    and a plain `agent-monitor` then keeps requiring that token.
+                    once. Run it on a SHARED machine; in a terminal it prints
+                    the URL to open (never into a log or a pipe), and a plain
+                    `agent-monitor` then keeps requiring that token.
   --port N          Serve on N instead of {DEFAULT_PORT}.
   --agents LIST     Only these agents: claude, codex, qoder, qoderwork,
                     qwenwork.
@@ -349,12 +352,23 @@ fn main() -> Result<()> {
         // The bare URL, deliberately: which shell `/` serves is the REMEMBERED preference
         // (`ui::resolve`), and the running monitor is the one that answers it. Pinning a `ui=`
         // here would override the user's own choice on every hand-off.
-        let url = with_token(&url);
-        eprintln!("agent-monitor is already running — opening {url}");
-        if open_browser {
-            open_url(&url);
+        // The token is printed only to a terminal (#s204); the browser is still opened with it.
+        let (out_tty, err_tty) = (
+            std::io::stdout().is_terminal(),
+            std::io::stderr().is_terminal(),
+        );
+        let shown = |terminal| printed_url(&url, token.as_deref(), terminal);
+        eprintln!(
+            "agent-monitor is already running — opening {}",
+            shown(err_tty)
+        );
+        if token.is_some() && !err_tty {
+            eprintln!("{}", withheld_token_note());
         }
-        println!("{url}");
+        if open_browser {
+            open_url(&with_token(&url));
+        }
+        println!("{}", shown(out_tty));
         return Ok(());
     }
     // Scratch lives under the monitor's OWN root (#161), not `$TMPDIR` — everything this tool
@@ -487,9 +501,22 @@ fn main() -> Result<()> {
     let ownership = serde_json::json!({"port":bound});
     publish_runtime_note(&root, ownership);
     let base = format!("http://127.0.0.1:{bound}/");
+    // The token is printed only to a terminal (#s204): run as a LaunchAgent both streams are a
+    // log file, which kept it at every restart. The browser is still opened with it.
     let url = with_token(&base);
+    let (out_tty, err_tty) = (
+        std::io::stdout().is_terminal(),
+        std::io::stderr().is_terminal(),
+    );
+    let shown = |terminal| printed_url(&base, token.as_deref(), terminal);
     if token.is_some() {
-        eprintln!("agent-monitor serving {url} (paired — token required · Ctrl-C to stop)");
+        eprintln!(
+            "agent-monitor serving {} (paired — token required · Ctrl-C to stop)",
+            shown(err_tty)
+        );
+        if !err_tty {
+            eprintln!("{}", withheld_token_note());
+        }
     } else {
         eprintln!("agent-monitor serving {url} (loopback only — Ctrl-C to stop)");
         // The silent-hole warning (§4.2): unpaired + a platform that cannot verify a TCP
@@ -502,7 +529,7 @@ fn main() -> Result<()> {
             );
         }
     }
-    println!("{url}");
+    println!("{}", shown(out_tty));
     if open_browser {
         open_url(&url);
     }

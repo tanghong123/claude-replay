@@ -22,6 +22,29 @@ pub fn tokened_url(base: &str, token: Option<&str>) -> String {
     }
 }
 
+/// The URL a start PRINTS on one stream (#s204): the tokened URL only where a person reads it, a
+/// terminal, and the bare one anywhere else. Run as a LaunchAgent, both streams are a log file,
+/// which kept the token at every restart until an agent reading that log for a stall printed it
+/// into its transcript. The browser a start opens still gets the token; only the printing changes.
+pub fn printed_url(base: &str, token: Option<&str>, terminal: bool) -> String {
+    if terminal {
+        tokened_url(base, token)
+    } else {
+        base.to_string()
+    }
+}
+
+/// What a start prints in place of a token it kept out of a log: where the token is, never the
+/// token. `agent-monitor --pair` run in a terminal hands off to the running monitor and prints its
+/// URL with the token; the file is there for the other binaries, which share it.
+pub fn withheld_token_note() -> String {
+    format!(
+        "  note: the token is not written where this goes — `agent-monitor --pair` in a terminal \
+         prints the URL to open (the token is in {})",
+        token_path().display()
+    )
+}
+
 /// The pairing token's file — the monitor's STATE dir, mode 0600 (#197). It moved OUT of the
 /// cache with the hide list, and for the same reason plus a sharper one: the token is a
 /// CREDENTIAL that cannot be recomputed, so an `rm -rf ~/.cache` would silently un-pair the
@@ -593,6 +616,20 @@ mod tests {
             tokened_url("http://127.0.0.1:2727/", None),
             "http://127.0.0.1:2727/"
         );
+    }
+
+    /// #s204: a start prints the token only to a terminal. Anywhere else (a LaunchAgent's log, a
+    /// pipe, a file) the URL is bare; unpaired there is no token to withhold.
+    #[test]
+    fn a_start_prints_the_token_to_a_terminal_only() {
+        let base = "http://127.0.0.1:2727/";
+        assert_eq!(
+            printed_url(base, Some("abc"), true),
+            "http://127.0.0.1:2727/?token=abc"
+        );
+        assert_eq!(printed_url(base, Some("abc"), false), base);
+        assert_eq!(printed_url(base, None, true), base);
+        assert_eq!(printed_url(base, None, false), base);
     }
 
     /// #197 token migration: a monitor paired under v1.79.x (token in the CACHE) stays paired

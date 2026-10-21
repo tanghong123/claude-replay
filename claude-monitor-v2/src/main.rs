@@ -19,7 +19,7 @@
 
 use anyhow::{Context, Result};
 use claude_monitor::control::{
-    ensure_token, read_token, set_passcode_interactive, tokened_url, Attempts,
+    ensure_token, printed_url, read_token, set_passcode_interactive, withheld_token_note, Attempts,
 };
 use claude_monitor::index;
 use claude_replay_core::{discover, Agent};
@@ -27,6 +27,7 @@ use claude_replay_html::{
     query_get, AuthGate, HttpResponse, PageChrome, RootLock, ServiceConfig, SessionService,
 };
 use claude_replay_present::cache::Presentation;
+use std::io::IsTerminal;
 use std::sync::Arc;
 
 /// v2's own port. v1 keeps 2727 — both must be runnable at once, or v2 could not be
@@ -244,9 +245,21 @@ fn main() -> Result<()> {
     .with_trusted_hosts(claude_monitor::pair_phone::trusted_hosts(port));
     let bound = claude_replay_html::spawn_listener_gated(port, handler, gate)
         .with_context(|| format!("binding 127.0.0.1:{port}"))?;
-    let url = tokened_url(&format!("http://127.0.0.1:{bound}/"), token.as_deref());
-    eprintln!("agent-monitor-v2 serving {url} (loopback only · Ctrl-C to stop)");
-    println!("{url}");
+    // The token is printed only to a terminal (#s204), as v1 prints it: a log keeps it.
+    let base = format!("http://127.0.0.1:{bound}/");
+    let (out_tty, err_tty) = (
+        std::io::stdout().is_terminal(),
+        std::io::stderr().is_terminal(),
+    );
+    let shown = |terminal| printed_url(&base, token.as_deref(), terminal);
+    eprintln!(
+        "agent-monitor-v2 serving {} (loopback only · Ctrl-C to stop)",
+        shown(err_tty)
+    );
+    if token.is_some() && !err_tty {
+        eprintln!("{}", withheld_token_note());
+    }
+    println!("{}", shown(out_tty));
     // The listener runs on its own thread; park this one so the process stays up.
     loop {
         std::thread::park();
