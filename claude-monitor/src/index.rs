@@ -2388,8 +2388,16 @@ fn scan_procs() -> Vec<Proc> {
         &mut procs,
         &run(&["ps", "eww", "-o", "pid=,command=", "-p", &pids]),
     );
-    apply_lsof(&mut procs, &run(&["lsof", "-p", &pids, "-Fpfn"]));
+    apply_lsof(&mut procs, &run(&lsof_argv(&pids)));
     procs
+}
+
+/// The probe's `lsof`. `-n -P` keep it from turning every network socket's address and port
+/// into names, which the probe never reads (only `cwd` and `.jsonl` paths): one QwenWork app
+/// with 23 connections took 30 s per scan on a slow DNS, and the session list sat on
+/// "Scanning…" behind it (#s205); with the flags, 0.08 s for every agent process at once.
+fn lsof_argv(pids: &str) -> [&str; 6] {
+    ["lsof", "-n", "-P", "-p", pids, "-Fpfn"]
 }
 
 /// `pid command…` lines → bare [`Proc`]s (identity facts only).
@@ -4150,6 +4158,22 @@ mod tests {
         // …while 101, which carries ANOTHER session's uuid, is excluded from the heuristic
         // pool entirely (the probe's UNCONFIRMED cross-check as a hard rule).
         assert!(session_ref(&procs[0].argv).is_some() && session_ref(&procs[1].argv).is_none());
+    }
+
+    /// #s205: the probe's `lsof` resolves no names. Without `-n -P` it looked up every network
+    /// socket of every agent process, and one app's 23 connections held the session list on
+    /// "Scanning…" for 30 s a pass; the probe reads only `cwd` and `.jsonl` paths.
+    #[test]
+    fn the_probe_s_lsof_resolves_no_host_or_port_names() {
+        let argv = lsof_argv("4399,21496");
+        assert_eq!(argv[0], "lsof");
+        assert!(argv.contains(&"-n"), "no host names: {argv:?}");
+        assert!(argv.contains(&"-P"), "no port names: {argv:?}");
+        assert!(
+            argv.windows(2).any(|w| w == ["-p", "4399,21496"]),
+            "{argv:?}"
+        );
+        assert_eq!(argv.last(), Some(&"-Fpfn"), "the fields apply_lsof reads");
     }
 
     /// #269 (a): a process that merely CONTAINS a session's uuid — a background job's
