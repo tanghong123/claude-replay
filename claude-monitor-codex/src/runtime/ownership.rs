@@ -7,6 +7,9 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+#[cfg(any(target_os = "linux", test))]
+mod linux;
+
 pub(super) struct Ownership {
     path: PathBuf,
     record: Value,
@@ -209,8 +212,13 @@ impl Ownership {
             }
             let deadline = Instant::now() + Duration::from_secs(3);
             while Instant::now() < deadline {
-                if !self.matches() {
-                    // The old leader exited. Never signal a potentially reused pid/group.
+                // Identity lookup failure is not exit evidence. In particular, Linux
+                // can lose the leader's exe while other threads still hold sockets.
+                #[cfg(target_os = "linux")]
+                let exited = linux::exited(&PathBuf::from(format!("/proc/{pid}")))?;
+                #[cfg(not(target_os = "linux"))]
+                let exited = !self.matches();
+                if exited {
                     return Ok(());
                 }
                 std::thread::sleep(Duration::from_millis(20));
@@ -285,28 +293,8 @@ fn process_identity(pid: u32) -> Result<Value> {
 
 #[cfg(target_os = "linux")]
 fn process_identity(pid: u32) -> Result<Value> {
-    use std::os::unix::fs::MetadataExt;
     let root = PathBuf::from(format!("/proc/{pid}"));
-    let uid = fs::metadata(&root)?.uid();
-    if uid != unsafe { libc::geteuid() } {
-        bail!("Native process belongs to another user");
-    }
-    let stat = fs::read_to_string(root.join("stat"))?;
-    let fields: Vec<_> = stat
-        .rsplit_once(')')
-        .context("Invalid process stat")?
-        .1
-        .split_whitespace()
-        .collect();
-    if fields.len() < 20 || fields[0] == "Z" {
-        bail!("Native process has exited or has invalid stat");
-    }
-    let group: u32 = fields[2].parse()?;
-    let mut executable = executable_identity(root.join("exe"))?;
-    executable["path"] = json!(fs::read_link(root.join("exe"))?);
-    Ok(
-        json!({"pid":pid,"group":group,"uid":uid,"start":fields[19],"boot":fs::read_to_string("/proc/sys/kernel/random/boot_id")?.trim(),"executable":executable}),
-    )
+    linux::identity(&root, pid, Path::new("/proc/sys/kernel/random/boot_id"))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

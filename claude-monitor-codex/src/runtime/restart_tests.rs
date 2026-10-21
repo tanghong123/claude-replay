@@ -2,9 +2,27 @@
 use super::*;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
+use std::path::Path;
+
+struct RestartScratch(PathBuf);
+impl std::ops::Deref for RestartScratch {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+impl Drop for RestartScratch {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.0) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("Remove restart fixture {}: {error}", self.0.display());
+            }
+        }
+    }
+}
 
 // Use a short, private path: workspace scratch paths can exceed sockaddr_un.sun_path.
-fn restart_fixture() -> (PathBuf, Arc<NativeRuntime>) {
+fn restart_fixture() -> (RestartScratch, Arc<NativeRuntime>) {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let root = PathBuf::from("/tmp").join(format!(
         "cr-restart-{}-{}-{}",
@@ -31,7 +49,24 @@ fn restart_fixture() -> (PathBuf, Arc<NativeRuntime>) {
         log_path: root.join("native.log"),
     })
     .unwrap();
-    (root, runtime)
+    (RestartScratch(root), runtime)
+}
+
+#[test]
+fn restart_scratch_is_removed_when_a_test_unwinds() {
+    let (root, runtime) = restart_fixture();
+    let path = root.0.clone();
+    std::fs::write(root.join("copied-test-binary"), b"synthetic fixture").unwrap();
+    let failed = std::panic::catch_unwind(move || {
+        let _scratch = root;
+        let _runtime = runtime;
+        panic!("synthetic restart assertion failure");
+    });
+    assert!(failed.is_err());
+    assert!(
+        !path.exists(),
+        "failed tests must remove copied executables"
+    );
 }
 
 #[test]
@@ -244,13 +279,13 @@ fn host_exit_preserves_server_and_restart_recovers_it_for_explicit_close() {
     assert!(!root.join("receipts.owner.json").exists());
     drop(next);
     drop(guard);
-    crate::remove_test_scratch(&root);
 }
 
 #[test]
 fn invalid_receipt_or_token_cannot_authorize_stopping_external_process() {
     for invalid_token in [false, true] {
         let (root, runtime) = super::tests::fixture();
+        let root = RestartScratch(root);
         install_fixture(&runtime);
         let pid = runtime.activate(true).unwrap()["ownedServerPid"]
             .as_u64()
@@ -279,7 +314,6 @@ fn invalid_receipt_or_token_cannot_authorize_stopping_external_process() {
             "dropping an observer must preserve the external subprocess"
         );
         drop(guard);
-        crate::remove_test_scratch(&root);
     }
 }
 
@@ -325,5 +359,4 @@ fn executable_removal_preserves_status_restart_and_explicit_stop() {
     guard.assert_exited();
     drop(recovered);
     drop(guard);
-    crate::remove_test_scratch(&root);
 }

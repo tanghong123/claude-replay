@@ -1112,7 +1112,19 @@ mod tests {
     fn dropping_the_runtime_reaps_only_its_owned_process_group() {
         use std::os::unix::process::CommandExt;
         let (root, runtime) = fixture();
-        let external = std::net::TcpListener::bind(runtime.addresses[0]).unwrap();
+        // Retain the reservation instead of rebinding fixture()'s released port.
+        let external = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let runtime = NativeRuntime::new(RuntimeConfig {
+            gateway: Config {
+                endpoint: format!("ws://{}", external.local_addr().unwrap()),
+                allowed_roots: vec![root.clone()],
+                state_path: root.join("receipts.sqlite3"),
+            },
+            binary: runtime.config.binary.clone(),
+            home: runtime.config.home.clone(),
+            log_path: runtime.config.log_path.clone(),
+        })
+        .unwrap();
         let mut command = Command::new("/bin/sleep");
         command.arg("60");
         unsafe {
