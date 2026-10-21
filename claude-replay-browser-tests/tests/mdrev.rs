@@ -1677,8 +1677,13 @@ fn the_detached_tab_reads_subscribes_and_notifies_through_draft_8() {
         r#"{"t@example.invalid":"Alice A","bob@example.com":"Bob B","carol@example.com":"Carol C"}"#,
     )
     .unwrap();
+    // The channel runs under the monitor's scratch HOME, where a version-manager shim found
+    // through `env node` can hang (#s203): name the real node the harness resolved.
+    let shebang = harness::real_node()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "/usr/bin/env node".to_string());
     let script = format!(
-        "#!/usr/bin/env node\nconst fs = require('fs');\nlet input = '';\nprocess.stdin.on('data', d => (input += d)).on('end', () => {{\n  const req = JSON.parse(input);\n  fs.appendFileSync({calls:?}, JSON.stringify(req) + '\\n');\n  const known = JSON.parse(fs.readFileSync({people:?}, 'utf8'));\n  if (req.lookup) process.stdout.write(JSON.stringify({{people: req.lookup.filter(e => known[e]).map(e => ({{email: e, name: known[e]}})), unknown: req.lookup.filter(e => !known[e])}}));\n}});\n",
+        "#!{shebang}\nconst fs = require('fs');\nlet input = '';\nprocess.stdin.on('data', d => (input += d)).on('end', () => {{\n  const req = JSON.parse(input);\n  fs.appendFileSync({calls:?}, JSON.stringify(req) + '\\n');\n  const known = JSON.parse(fs.readFileSync({people:?}, 'utf8'));\n  if (req.lookup) process.stdout.write(JSON.stringify({{people: req.lookup.filter(e => known[e]).map(e => ({{email: e, name: known[e]}})), unknown: req.lookup.filter(e => !known[e])}}));\n}});\n",
         calls = calls.display().to_string(),
         people = fake.join("people.json").display().to_string(),
     );

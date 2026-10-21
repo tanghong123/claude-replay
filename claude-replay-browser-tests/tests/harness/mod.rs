@@ -1359,6 +1359,36 @@ pub fn configure_monitor_environment(
     for (key, value) in stores.unwrap_or(&empty).envs() {
         cmd.env(key, value);
     }
+    // A real node for mdrev's CLI (#s203). The monitor's HOME is the case's scratch, so a
+    // version-manager shim on PATH (mise, measured) starts from an empty cache there: it read the
+    // owner's ~/.config/mise as an ancestor project config, resolved `go = "latest"` from GitHub
+    // on every call, and the monitor's first `node --version` hung past every mdrev case's
+    // timeout whenever the suite ran from a checkout under ~. The monitor treats MDREV_NODE as
+    // final; a case that takes node away still sets its own, after this.
+    if let Some(node) = real_node() {
+        cmd.env("MDREV_NODE", node);
+    }
+}
+
+/// The node binary this test process would run, resolved once with the REAL environment
+/// (`node -p process.execPath`, so a shim answers with the binary it runs), or the parent's own
+/// `MDREV_NODE`. `None` leaves the monitor to its own search.
+pub fn real_node() -> Option<std::ffi::OsString> {
+    static NODE: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
+    NODE.get_or_init(|| {
+        if let Some(explicit) = std::env::var_os("MDREV_NODE").filter(|n| !n.is_empty()) {
+            return Some(explicit);
+        }
+        let out = std::process::Command::new("node")
+            .args(["-p", "process.execPath"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())?;
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        std::path::Path::new(&path).is_file().then(|| path.into())
+    })
+    .clone()
 }
 
 pub struct Monitor {
