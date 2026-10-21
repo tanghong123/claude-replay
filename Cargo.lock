@@ -263,7 +263,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "claude-monitor"
-version = "1.398.0"
+version = "1.399.0"
 dependencies = [
  "anyhow",
  "claude-replay-core",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "claude-monitor-codex"
-version = "1.398.0"
+version = "1.399.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "claude-monitor-fleet"
-version = "1.398.0"
+version = "1.399.0"
 dependencies = [
  "anyhow",
  "claude-replay-html",
@@ -303,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "claude-monitor-v2"
-version = "1.398.0"
+version = "1.399.0"
 dependencies = [
  "anyhow",
  "claude-monitor",
@@ -315,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay"
-version = "1.398.0"
+version = "1.399.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-agents"
-version = "1.398.0"
+version = "1.399.0"
 dependencies = [
  "anyhow",
  "claude-replay-core",
@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-browser-tests"
-version = "1.398.0"
+version = "1.399.0"
 dependencies = [
  "clap",
  "claude-replay-html",
@@ -352,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-core"
-version = "1.398.0"
+version = "1.399.0"
 dependencies = [
  "anyhow",
  "claude-replay-agents",
@@ -363,7 +363,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-engine"
-version = "1.398.0"
+version = "1.399.0"
 dependencies = [
  "anyhow",
  "claude-replay-agents",
@@ -374,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-html"
-version = "1.398.0"
+version = "1.399.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -390,7 +390,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-present"
-version = "1.398.0"
+version = "1.399.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -403,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-tui"
-version = "1.398.0"
+version = "1.399.0"
 dependencies = [
  "anyhow",
  "arboard",
