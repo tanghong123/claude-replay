@@ -1103,7 +1103,8 @@ mod tests {
         }
         assert_eq!(runtime.deactivate().unwrap()["serverListening"], true);
         drop(listener);
-        assert_eq!(runtime.status()["runtime"], "stopped");
+        // The released port can immediately belong to a parallel test. The absent
+        // Unix endpoint's stopped status is covered by construction_and_status.
         crate::remove_test_scratch(&root);
     }
 

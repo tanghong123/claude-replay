@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 
 #[cfg(any(target_os = "linux", test))]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 
 pub(super) struct Ownership {
     path: PathBuf,
@@ -216,7 +218,9 @@ impl Ownership {
                 // can lose the leader's exe while other threads still hold sockets.
                 #[cfg(target_os = "linux")]
                 let exited = linux::exited(&PathBuf::from(format!("/proc/{pid}")))?;
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(target_os = "macos")]
+                let exited = macos::exited(pid)?;
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 let exited = !self.matches();
                 if exited {
                     return Ok(());
@@ -254,18 +258,8 @@ fn executable_identity(path: PathBuf) -> Result<Value> {
 
 #[cfg(target_os = "macos")]
 fn process_identity(pid: u32) -> Result<Value> {
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of_val(&info) as i32;
-    let read = unsafe {
-        libc::proc_pidinfo(
-            pid as i32,
-            libc::PROC_PIDTBSDINFO,
-            0,
-            (&mut info as *mut libc::proc_bsdinfo).cast(),
-            size,
-        )
-    };
-    if read != size || info.pbi_uid != unsafe { libc::geteuid() } || info.pbi_status == 5 {
+    let info = macos::info(pid as i32).context("Read native process identity")?;
+    if info.pbi_uid != unsafe { libc::geteuid() } || info.pbi_status == 5 {
         bail!("Native process is absent, exited or owned by another user");
     }
     let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];

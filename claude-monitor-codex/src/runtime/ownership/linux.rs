@@ -84,6 +84,24 @@ pub(super) fn identity(root: &Path, pid: u32, boot: &Path) -> Result<Value> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn literal_stat_uses_kernel_field_numbers() {
+        let (root, _runtime) = crate::runtime::tests::fixture();
+        // A literal /proc/PID/stat prefix, independent of write_stat's indexes:
+        // state is field 3, pgrp 5, num_threads 20 and starttime 22.
+        fs::write(
+            root.join("stat"),
+            "42 (native (fixture)) Z 1 42 42 0 -1 4194304 7 0 0 0 11 12 0 0 20 0 3 0 12345\n",
+        )
+        .unwrap();
+        let stat = read_stat(&root).unwrap();
+        assert_eq!(stat.group, 42);
+        assert_eq!(stat.start, "12345");
+        assert_eq!(stat.threads, 3);
+        assert!(!stat.exited());
+        crate::remove_test_scratch(&root);
+    }
+
     fn write_stat(root: &Path, state: &str, threads: u32) {
         let mut fields = vec!["0".to_owned(); 20];
         fields[0] = state.to_owned();

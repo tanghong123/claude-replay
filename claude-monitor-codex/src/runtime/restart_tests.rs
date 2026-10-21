@@ -90,6 +90,17 @@ fn fixture_server() {
                     .unwrap();
             let listener =
                 std::net::TcpListener::bind(endpoint.trim_start_matches("ws://")).unwrap();
+            if let Ok(path) = std::env::var("NATIVE_RESTART_FIXTURE_READY") {
+                // Publish only after this child holds its kernel-selected port.
+                let path = PathBuf::from(path);
+                let temporary = path.with_extension("tmp");
+                std::fs::write(
+                    &temporary,
+                    format!("ws://{}", listener.local_addr().unwrap()),
+                )
+                .unwrap();
+                std::fs::rename(temporary, path).unwrap();
+            }
             for stream in listener.incoming() {
                 let stream = stream.unwrap();
                 stream.set_nonblocking(false).unwrap();
@@ -220,6 +231,95 @@ fn install_fixture(runtime: &NativeRuntime) {
     .unwrap();
 }
 
+fn websocket_restart_fixture() -> (RestartScratch, Arc<NativeRuntime>, Reap) {
+    use std::os::unix::process::CommandExt;
+    let (root, original) = restart_fixture();
+    let state = &original.config.gateway.state_path;
+    ServerToken::load_or_create(state).unwrap();
+    let ready = root.join("endpoint");
+    let log = std::fs::File::create(&original.config.log_path).unwrap();
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "runtime::restart_tests::fixture_server",
+            "--nocapture",
+        ])
+        .env_clear()
+        .env("NATIVE_RESTART_FIXTURE_ENDPOINT", "ws://127.0.0.1:0")
+        .env(
+            "NATIVE_RESTART_FIXTURE_TOKEN",
+            ServerToken::path(state).unwrap(),
+        )
+        .env("NATIVE_RESTART_FIXTURE_READY", &ready)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone().unwrap())
+        .stderr(log);
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = StartupChild(Some(command.spawn().unwrap()));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let endpoint = loop {
+        match std::fs::read_to_string(&ready) {
+            Ok(endpoint) if !endpoint.is_empty() => break endpoint,
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("Read fixture endpoint: {error}"),
+        }
+        assert!(child.0.as_mut().unwrap().try_wait().unwrap().is_none());
+        assert!(
+            Instant::now() < deadline,
+            "fixture did not report its endpoint"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let runtime = NativeRuntime::new(RuntimeConfig {
+        gateway: Config {
+            endpoint,
+            allowed_roots: original.config.gateway.allowed_roots.clone(),
+            state_path: state.clone(),
+        },
+        binary: original.config.binary.clone(),
+        home: original.config.home.clone(),
+        log_path: original.config.log_path.clone(),
+    })
+    .unwrap();
+    // Model a prior Monitor's private receipt without releasing the child's port.
+    // The Unix fixtures separately exercise NativeRuntime's actual spawn path.
+    let pid = child.0.as_ref().unwrap().id();
+    let mut receipt = ownership::Ownership::claim(state).unwrap();
+    receipt.record(pid, runtime.identity()).unwrap();
+    drop(receipt);
+    child.0.take(); // Reap owns this exact child from here, including assertion failures.
+    (root, runtime, Reap(Some(pid)))
+}
+
+#[test]
+fn authenticated_websocket_restart_recovers_and_stops_its_server() {
+    let (root, runtime, mut guard) = websocket_restart_fixture();
+    let pid = guard.0.unwrap();
+    assert_eq!(runtime.activate(false).unwrap()["ownedServerPid"], pid);
+    assert_eq!(runtime.shutdown().unwrap()["serverListening"], true);
+    let next = copy_runtime(&runtime);
+    drop(runtime);
+    let status = next.activate(false).unwrap();
+    assert_eq!(status["ownedServerPid"], pid);
+    assert_eq!(status["authentication"]["type"], "bearer");
+    next.deactivate().unwrap();
+    assert!(
+        !next.listening(),
+        "stop must finish before acknowledging success"
+    );
+    guard.assert_exited();
+    assert!(!root.join("receipts.owner.json").exists());
+}
+
 #[test]
 fn host_exit_preserves_server_and_restart_recovers_it_for_explicit_close() {
     let (root, runtime) = restart_fixture();
@@ -284,13 +384,9 @@ fn host_exit_preserves_server_and_restart_recovers_it_for_explicit_close() {
 #[test]
 fn invalid_receipt_or_token_cannot_authorize_stopping_external_process() {
     for invalid_token in [false, true] {
-        let (root, runtime) = super::tests::fixture();
-        let root = RestartScratch(root);
-        install_fixture(&runtime);
-        let pid = runtime.activate(true).unwrap()["ownedServerPid"]
-            .as_u64()
-            .unwrap() as u32;
-        let guard = Reap(Some(pid));
+        let (root, runtime, guard) = websocket_restart_fixture();
+        let pid = guard.0.unwrap();
+        assert_eq!(runtime.activate(false).unwrap()["ownedServerPid"], pid);
         let next = copy_runtime(&runtime);
         runtime.shutdown().unwrap();
         drop(runtime);
