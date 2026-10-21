@@ -312,11 +312,15 @@ fn authenticated_websocket_restart_recovers_and_stops_its_server() {
     assert_eq!(status["ownedServerPid"], pid);
     assert_eq!(status["authentication"]["type"], "bearer");
     next.deactivate().unwrap();
-    assert!(
-        !next.listening(),
-        "stop must finish before acknowledging success"
+    // Observe this exact child immediately; a released TCP port can be reused.
+    let reaped = unsafe { libc::waitpid(pid as i32, std::ptr::null_mut(), libc::WNOHANG) };
+    assert_eq!(
+        reaped,
+        pid as i32,
+        "stop must finish before acknowledging success: {}",
+        std::io::Error::last_os_error()
     );
-    guard.assert_exited();
+    guard.0 = None;
     assert!(!root.join("receipts.owner.json").exists());
 }
 
