@@ -498,13 +498,15 @@ mod tests {
     #[test]
     fn reflected_handshake_credentials_never_enter_status_or_startup_error() {
         use std::io::{Read, Write};
-        let (root, runtime) = fixture();
+        let (root, runtime, listener) = listening_fixture();
         ServerToken::load_or_create(&runtime.config.gateway.state_path).unwrap();
         let token =
             std::fs::read_to_string(ServerToken::path(&runtime.config.gateway.state_path).unwrap())
                 .unwrap();
         assert!(!runtime.status().to_string().contains(&token));
-        let listener = std::net::TcpListener::bind(runtime.addresses[0]).unwrap();
+        // status() probed the endpoint once; take that connection before the mock peer
+        // counts the activation's own.
+        drop(listener.accept().unwrap().0);
         let reflected = token.clone();
         let peer = std::thread::spawn(move || {
             // Activation first makes an ordinary TCP availability probe.
@@ -648,8 +650,7 @@ mod tests {
 
     #[test]
     fn reconnect_failure_preserves_a_server_started_by_an_earlier_activation() {
-        let (root, runtime) = fixture();
-        let _listener = std::net::TcpListener::bind(runtime.addresses[0]).unwrap();
+        let (root, runtime, _listener) = listening_fixture();
         std::fs::create_dir(root.join("receipts.sqlite3")).unwrap();
         runtime.state.lock().unwrap().child =
             Some(Command::new("sleep").arg("60").spawn().unwrap());
@@ -702,8 +703,7 @@ mod tests {
     }
     #[test]
     fn slow_activation_does_not_hold_runtime_state_mutex() {
-        let (root, runtime) = fixture();
-        let listener = std::net::TcpListener::bind(runtime.addresses[0]).unwrap();
+        let (root, runtime, listener) = listening_fixture();
         listener.set_nonblocking(true).unwrap();
         let accept = || {
             // Credential publication between the probe and handshake includes two fsyncs.
@@ -796,5 +796,25 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// A fixture whose endpoint is a listener the test holds from the start. `fixture`
+    /// releases its port, and a test that binds that port again can lose it to a parallel
+    /// test in between ("Address already in use", #s197).
+    fn listening_fixture() -> (PathBuf, Arc<NativeRuntime>, std::net::TcpListener) {
+        let (root, released) = fixture();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let runtime = NativeRuntime::new(RuntimeConfig {
+            gateway: Config {
+                endpoint: format!("ws://{}", listener.local_addr().unwrap()),
+                allowed_roots: vec![root.clone()],
+                state_path: root.join("receipts.sqlite3"),
+            },
+            binary: released.config.binary.clone(),
+            home: released.config.home.clone(),
+            log_path: released.config.log_path.clone(),
+        })
+        .unwrap();
+        (root, runtime, listener)
     }
 }
