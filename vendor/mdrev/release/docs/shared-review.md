@@ -541,6 +541,7 @@ for agents are unchanged.
 | D2: the person reads what an agent wrote first | the push lists every record, agent-assisted ones tagged with the note that asked; the viewer sends only the ids it showed | — | UI, browser |
 | E1: an agent names only the project's own store | an agent's `--review-pointer` writes only the store mdrev suggests or its `<repo>-notes`, compared as one repository however spelled, and only one an anonymous read was refused; another URL, `--notify` and `--link` are refused with the command for its person (#s103) | an agent persuading its person to type another URL | unit, gate |
 | E3: an agent pairs only a store in the default location the server vouches for | an agent's `mdrev --review-pair --email --name` pairs when the store is the project's own repository or its `<repo>-notes` at `refs/notes/mdrev-review`, the server confirms the email and the store is known private, and records that an agent made it; otherwise it only asks, and hears why; only the person overrides a mismatch or pairs with a store that is public or unknown; without a pairing nothing is fetched, written or pushed | as for D1 | unit, gate, browser |
+| #s188: an agent names the machine's channels only on its person's word | `mdrev --channels NAMES\|none` is not refused from an agent (Hong, 2026-10-20, #s190), unlike `--notify` and `--link`: it records that an agent set them and prints what it set and the paired projects that will now tell people, which the agent tells its person; the hint an agent is given says to ask its person which channels first | an agent naming them without asking | test |
 | H1: subscribing to the project, unsubscribing, and another email are a person's | `review subscribe` without a document, `review unsubscribe` and `review confirm` need the viewer key or a person at their own terminal; an agent subscribes its person to a document only with `--for`, under the pairing's email; another email waits for a code its person types back | — | gate, browser |
 | H2: agents tell no one | notifications go only after a push, which agents cannot make (D1); a message from an agent's record says "agent-assisted" | mentions an agent wrote into a reply its person pushes: the push list draws them as people | gate, browser |
 | H6: an agent reads nothing | `review read` needs the viewer key; `--thread` marks nothing | — | gate |
@@ -804,7 +805,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.57",
+  "mdrev": "1.1.59",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
@@ -905,7 +906,8 @@ and, after a push, who it told.
 | `mdrev --reply ID --note "…" --for LOCAL` | a reply in the record's thread, answering that record (B2, B5) |
 | `mdrev --delete ID --for LOCAL` | an agent taking back its own unpushed reply, to answer again (B2, B3) |
 | `mdrev --resolve ID --for LOCAL`, `--reopen` | the same; anyone's resolve counts, and a non-owner's says so (C3) |
-| `mdrev --review-status` | fetches, then: the store, the pairing, every unpushed record, what this person is subscribed to, the project's channels and this machine's tool for each, and what is new to them, per document |
+| `mdrev --review-status` | fetches, then: the store, the pairing, every unpushed record, what this person is subscribed to, the channels a push tells people through — the project's, the host's or this machine's, said which — and this machine's tool for each, and what is new to them, per document |
+| `mdrev --channels [NAMES\|none]` | the channels this machine tells people through, for every project whose `.mdrev.json` names none (#s188): named by the person, or by their agent on their word; alone, what is set and the tools this machine has |
 | `mdrev --review-push` | a person in their own terminal: prints the list (D2), asks before pushing it, names the destination (E3), and warns about notes on unpushed commits (D4); then says who it told (H2) |
 | `mdrev --review-subscribe DOC` or `--project` | be told of new notes on a document, or the whole project (H1); `--email E` names another address, confirmed by a code typed at the terminal; an agent subscribes its person to a document with `--for` |
 | `mdrev --review-unsubscribe DOC` or `--project` | a person only |
@@ -1002,8 +1004,10 @@ Hong's rulings, 2026-10-08:
   says "agent-assisted"; someone both subscribed and mentioned gets the
   mention.
 - **H5. Channels belong to the organisation.** The project's `.mdrev.json`
-  names the channels its team uses; each machine has the tool that sends for
-  each. mdrev ships no channel and names none. A channel's tool vouches for
+  names the channels its team uses, and where it names none, each machine
+  may name its own once, for every project there (`mdrev --channels`,
+  #s188); each machine has the tool that sends for each. mdrev ships no
+  channel and names none. A channel's tool vouches for
   an email — it finds the person and their name — and mdrev sends only to
   people a tool vouched for, except a confirmation code.
 - **H6. Each reviewer sees what is new to them,** record by record: a note,
@@ -1111,8 +1115,10 @@ In the project's `.mdrev.json`, beside the store:
 ```
 
 - `channels` are names matching `^[a-z][a-z0-9-]{0,31}$`; any other is
-  refused and said. No `notify`: nobody is told, and the push's result says
-  so.
+  refused and said. An empty list: nobody is told, whatever the machine
+  says. No `notify`, or no `channels` in it: the machine's channels, where
+  its person named any (`mdrev --channels`, below), and nobody where it
+  names none — the push's result says which.
 - `link` is optional, `https` only: `{commit}` is the commit of the thread's
   note, and `{path}` its path, URL-encoded.
 
@@ -1125,10 +1131,12 @@ read off the project's own repository by its shape —
 gitlab.com — and never off the store, since a public project's store is its
 private `<repo>-notes`, which holds no document; `--link <pattern>` gives
 another, and a repository on this machine gets none, said. `--notify` again
-replaces the channels and keeps the link; `--notify none` removes `notify`.
-Where no channel is named, `--review-status`, a bare `--review-pointer`,
-pairing at a terminal and the viewer's subscribe panel each give that
-command, with the channels this machine has a tool for.
+replaces the channels and keeps the link; `--notify none` writes an empty
+list, so a project that said none stays quiet on a machine that names
+channels (#s188). Where neither the project nor the machine names a channel,
+`--review-status`, a bare `--review-pointer`, pairing at a terminal and the
+viewer's subscribe panel each give that command and `mdrev --channels`
+beside it, with the channels this machine has a tool for.
 
 A channel's tool is the command `mdrev-notify-<name>`, looked for beside
 mdrev's own launcher, then in the PATH's absolute directories — never in a
@@ -1183,7 +1191,7 @@ machine), and the channels it tells people through, whatever the project's
 simply on there (#s186, #s187). A tool's protocol does not change; the page shows "telling…", then
 whom it told.
 
-### Turning notifications on, once per machine (proposed; #s188)
+### Turning notifications on, once per machine (#s188)
 
 Hong, 2026-10-19: "On local device, turning on shared notes and turning on
 notifications are two steps. the former needs to be done per repo
@@ -1191,13 +1199,13 @@ notifications are two steps. the former needs to be done per repo
 notification I think can be a one-off per box." He had said where channel
 settings live in draft 8: "sure, both": the project, and each machine (above).
 
-**Today** a push from a machine tells people only through the channels its
-repository's committed `.mdrev.json` names (`--review-pointer --notify`,
-above), so turning notifications on is a commit, per repository, which
-somebody has to make and its owners merge — and until then a push tells
+**Before it**, a push from a machine told people only through the channels
+its repository's committed `.mdrev.json` named (`--review-pointer --notify`,
+above), so turning notifications on was a commit, per repository, which
+somebody had to make and its owners merge — and until then a push told
 nobody.
 
-**Proposed: the machine's channels.** A person names, once, the channels this
+**The machine's channels.** A person names, once, the channels this
 machine tells people through:
 
 ```
@@ -1222,11 +1230,10 @@ So one step on a machine turns notifications on for every repository there
 that has not chosen otherwise, and turning on shared notes stays per
 repository, a step of its own.
 
-**A change to `--notify none`, and to projects that ran it.** Today
-`--notify none` removes `notify` from `.mdrev.json` ("No `notify`: nobody is
-told", above). Under rule 3, a project with no `notify` follows the machine,
-so `--notify none` would write `"channels": []` instead, which keeps it
-quiet. Every reader of a file already treats an empty list as none (core
+**A change to `--notify none`, and to projects that ran it.** Before,
+`--notify none` removed `notify` from `.mdrev.json`. Under rule 3, a project
+with no `notify` follows the machine, so `--notify none` now writes
+`"channels": []` instead, which keeps it quiet. Every reader of a file already treats an empty list as none (core
 `readNotify`), so the change needs no reader to move. But a project that ran
 `--notify none` before has no `notify` left, and would start telling people
 the day its person names the machine's channels. So `mdrev --channels`, the
@@ -1236,18 +1243,20 @@ without one (E3) — says each will now tell people, and gives `mdrev
 --review-pointer --notify none` for any that should stay quiet. A project
 paired after that is told so at its pairing.
 
-**Who takes the step.** The messages go out as the person, from their own
-mailbox and chat account, so naming the machine's channels is the person's
-to do at their own terminal, as `--notify` and `--link` are (E1): an agent
-that runs `mdrev --channels <names>` or `none` is refused, with the command
-for its person to run. A bare `mdrev --channels` only reads, and an agent may
-run it.
+**Who takes the step.** The person, or their agent on their word (Hong,
+2026-10-20, #s190: "agent can pick notification channel on user's word"), as
+an agent accepts a pairing. The messages go out as the person, from their own
+mailbox and chat account, so an agent runs `mdrev --channels <names>` or
+`none` only once its person has said which channels, never on its own
+initiative, and tells them what it set and the projects that will now tell
+people. Unlike `--notify` and `--link` (E1), mdrev does not refuse it from an
+agent. A bare `mdrev --channels` only reads, and anyone may run it.
 
 **The hint.** On a machine whose channels are not named, the first push or
 pairing in a project whose file names none says, once for the machine, with
 the channels it has a tool for: "this machine tells nobody of your pushes;
 `mdrev --channels dingtalk,email` turns it on for every project here" — to an
-agent, "ask your person to run" it. A machine with no channel tools says
+agent, "ask your person which channels, then run it". A machine with no channel tools says
 nothing. Where a project names no channels, `--review-status`, a bare
 `--review-pointer`, pairing at a terminal and the viewer's subscribe panel
 offer `mdrev --channels` while the machine names none, and the project's
@@ -1264,16 +1273,25 @@ as everywhere else.
 company's channels whatever either file says (above). A project's own
 channels still decide on a machine where it names them.
 
-**What it would amend:** H5 ("the project names the channels"); "No `notify`:
+**What it amended:** H5 ("the project names the channels"); "No `notify`:
 nobody is told" and `--notify none` under Channels; the places that offer
-`--review-pointer --notify`; the `--review-status` rows; E1's row in the agent
-table, which gains `--channels`; and a new command, `mdrev --channels`.
+`--review-pointer --notify`; the `--review-status` rows; the agent table,
+which gains a row for `--channels` (an agent names the machine's channels on
+its person's word); and a new command, `mdrev --channels`.
 
-**To decide (Hong, #s190):** whether an agent may name the machine's channels
-on its person's word, as it accepts a pairing, or only the person at their
-own terminal (as drafted); and, with defaults in the draft, whether a
-project's channels replace the machine's (drafted) or add to them, and the
-command's name.
+**Decided (Hong, 2026-10-20, #s190):** an agent may name the machine's
+channels on its person's word. The draft's defaults on the other two points
+stand, since the question gave them and he did not change them: a project's
+channels replace the machine's rather than add to them, and the command is
+`mdrev --channels`.
+
+**As built (#s188).** `~/.mdrev/notify.json` (under `MDREV_STATE_DIR` where
+that is set) holds the channels once named, an empty list for none, who
+named them (`by`: the person, or an agent on their word) and when the hint
+was given (`hinted`), so it is given once; a file that is not one is said
+where a push would have told people, and tells nobody. Where a host names
+`MDREV_NOTIFY_FILE` — a team's service — the machine's file is never read:
+the host speaks for the machine there.
 
 ### An organisation's plugin
 
@@ -1328,7 +1346,7 @@ the same routes, and both clients have them.
 | `mdrev --review-subscribe DOC` or `--project` | a document, or the project — the project only for a person at their own terminal; an agent needs `--for`. `--email E` names another email of the person's, confirmed by a code. A bare `--review-subscribe` is refused |
 | `mdrev --review-unsubscribe DOC` or `--project` | a person only |
 | `mdrev --review-subscribers [DOC]` | who is subscribed to the project, or to DOC, under which email |
-| `mdrev --review-status` | also: this person's subscriptions, the channels and this machine's tools for them, and how many records are new to them, per document |
+| `mdrev --review-status` | also: this person's subscriptions, the channels — and whose they are: the project's, the host's or this machine's — and this machine's tools for them, and how many records are new to them, per document |
 
 ### Verification
 
