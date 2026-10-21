@@ -1603,7 +1603,7 @@ pub fn remote_phone(
 /// when set, else a Chrome for Testing (`com.google.chrome.for.testing`) where one is installed.
 /// Neither present, the crate's own detection stands — CI has its own Chrome and no developer
 /// window to lose — so this is a local hygiene rule, not a new dependency.
-fn browser_path() -> Option<std::path::PathBuf> {
+pub fn browser_path() -> Option<std::path::PathBuf> {
     if let Some(explicit) = std::env::var_os("CLAUDE_REPLAY_CHROME") {
         let path = std::path::PathBuf::from(explicit);
         assert!(

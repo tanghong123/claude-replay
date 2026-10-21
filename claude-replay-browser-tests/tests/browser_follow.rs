@@ -165,6 +165,7 @@ fn live_viewport_follows_pinned_and_holds_unpinned() {
     let (browser, tab) = harness::first_tab(|| {
         headless_chrome::Browser::new(
             headless_chrome::LaunchOptions::default_builder()
+                .path(harness::browser_path())
                 .headless(true)
                 // Never let tab-backgrounding heuristics starve timers or rendering — the
                 // page's poll loop and the renderer's scroll events are the test subject.
@@ -441,6 +442,7 @@ fn jump_to_bottom_lands_after_a_viewport_resize() {
     let (browser, tab) = harness::first_tab(|| {
         headless_chrome::Browser::new(
             headless_chrome::LaunchOptions::default_builder()
+                .path(harness::browser_path())
                 .headless(true)
                 .window_size(Some((1400, 900)))
                 .args(vec![
@@ -564,6 +566,7 @@ fn a_turn_landing_holds_through_late_reflow() {
     let (browser, tab) = harness::first_tab(|| {
         headless_chrome::Browser::new(
             headless_chrome::LaunchOptions::default_builder()
+                .path(harness::browser_path())
                 .headless(true)
                 .args(vec![
                     std::ffi::OsStr::new("--disable-background-timer-throttling"),
@@ -667,6 +670,7 @@ fn stepping_search_hits_keeps_the_viewport_when_the_match_is_visible() {
     let (browser, tab) = harness::first_tab(|| {
         headless_chrome::Browser::new(
             headless_chrome::LaunchOptions::default_builder()
+                .path(harness::browser_path())
                 .headless(true)
                 // A real reading viewport: with a short window the "previous" match lands under
                 // the top chrome, where scrolling to it is the CORRECT behaviour and the test
@@ -832,6 +836,7 @@ fn a_workflow_fleet_renders_under_its_launching_block() {
     let (_browser, tab) = harness::first_tab(|| {
         headless_chrome::Browser::new(
             headless_chrome::LaunchOptions::default_builder()
+                .path(harness::browser_path())
                 .headless(true)
                 .build()
                 .unwrap(),
@@ -1577,6 +1582,7 @@ fn a_clicked_file_path_opens_its_content_in_the_page() {
     let (_browser, tab) = harness::first_tab(|| {
         headless_chrome::Browser::new(
             headless_chrome::LaunchOptions::default_builder()
+                .path(harness::browser_path())
                 .headless(true)
                 .build()
                 .unwrap(),
@@ -1666,6 +1672,7 @@ fn the_compose_affordance_appears_only_once_paired() {
     stores.claude_finished();
     let browser = headless_chrome::Browser::new(
         headless_chrome::LaunchOptions::default_builder()
+            .path(harness::browser_path())
             .headless(true)
             .build()
             .unwrap(),
@@ -1773,6 +1780,7 @@ fn the_artifact_roster_groups_republishes_by_url() {
     let (browser, tab) = harness::first_tab(|| {
         headless_chrome::Browser::new(
             headless_chrome::LaunchOptions::default_builder()
+                .path(harness::browser_path())
                 .headless(true)
                 .build()
                 .unwrap(),
@@ -2222,6 +2230,7 @@ fn the_classic_page_keys_resolve_through_the_shared_table() {
     let (_browser, tab) = harness::first_tab(|| {
         headless_chrome::Browser::new(
             headless_chrome::LaunchOptions::default_builder()
+                .path(harness::browser_path())
                 .headless(true)
                 .window_size(Some((1200, 800)))
                 .build()
