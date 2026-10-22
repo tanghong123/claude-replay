@@ -872,6 +872,20 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // classifier — is a RENDER question for the owner (a quiet "who allowed this" on the
             // tool card); queue it with the record count and client version, never decide it here.
             "permissionDecision",
+            // #s215 (client 2.1.308): a boolean on the user record carrying a Bash tool_result —
+            // whether the command ran inside Claude Code's sandbox. Every Bash result since 2.1.308
+            // carries it (2,671 of 2,671; none of 1,695 from 2.1.304–2.1.307), about 2,700 records
+            // in 33 transcripts on hong-devserver, measured 2026-10-23, on object results and on
+            // "Error: Exit code" strings alike, never on another tool's result — and `false` on
+            // every one, since that box configures no sandbox. Constant, it would mark every Bash
+            // card with nothing; it records how the call ran, like `permissionDecision`, not what it
+            // did. REVISIT: (1) the first `true`, from a box with the sandbox on: there `false`
+            // beside trues marks a command that ran OUTSIDE it (`dangerouslyDisableSandbox`, or an
+            // excluded command), where a refused network call or a write outside the workspace
+            // reads differently — whether the Bash card says so is a RENDER question for the owner,
+            // queued with the record count and client version, never decided here; (2) the key on
+            // another tool's result, or a value that is not a boolean.
+            "sandboxed",
         ],
     ),
     (
@@ -7544,6 +7558,25 @@ mod tests {
         let seen: Vec<_> = unknown_shapes()
             .into_iter()
             .filter(|s| s.example.as_deref() == Some("s-s165"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+    }
+
+    /// #s215: the 2.1.308 sandbox flag on a Bash result — an object result and a failed command's
+    /// string — is known, not reported while the sweep asks. Removing the key from the user arm of
+    /// the census turns this red.
+    #[test]
+    fn a_bash_result_s_sandboxed_flag_is_known() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"assistant","version":"2.1.308","sessionId":"s-s215","uuid":"a1","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_s215a","name":"Bash","input":{"command":"ls"}},{"type":"tool_use","id":"toolu_s215b","name":"Bash","input":{"command":"false"}}]}}
+{"type":"user","version":"2.1.308","sessionId":"s-s215","uuid":"u1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_s215a","content":"a.txt"}]},"toolUseResult":{"stdout":"a.txt","stderr":"","interrupted":false},"sandboxed":false,"sourceToolAssistantUUID":"a1"}
+{"type":"user","version":"2.1.308","sessionId":"s-s215","uuid":"u2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_s215b","content":"Error: Exit code 1","is_error":true}]},"toolUseResult":"Error: Exit code 1","sandboxed":false,"sourceToolAssistantUUID":"a1"}
+"##;
+        let _ = parse(jsonl);
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s215"))
             .collect();
         assert!(seen.is_empty(), "nothing reported: {seen:?}");
     }
