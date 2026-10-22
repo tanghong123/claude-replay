@@ -3264,30 +3264,33 @@ function turnsScroller() {
 /** Lock (`on`) or unlock the pane. Locking shows the current turn at once, unless `reveal` is
  *  false — a turn chosen in the pane is in view already, and the session's jump marks it. */
 function setTurnsFollow(on, reveal = true) {
-  byId("navigatorTurns").dataset.follow = on ? "locked" : "unlocked";
   if (turnsFollow === on) return;
   turnsFollow = on;
+  byId("navigatorTurns").dataset.follow = on ? "locked" : "unlocked";
   if (on && reveal) { outlineCurrent = null; updateOutlineFocus(); }
 }
 byId("navigatorTurns").dataset.follow = "locked";
 const SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
 const editable = target => !!target?.closest?.("input, textarea, select, [contenteditable=''], [contenteditable='true']");
 function readerMoves(event) {
-  const target = event.target, scroller = turnsScroller();
-  const inTurns = !!scroller && scroller.contains(target);
-  if (inTurns) {
-    // On the desktop the outline's own wheel handler knows whether the gesture scrolls the list.
-    if (event.type === "wheel") {
-      if (byId("sessionNavigator").contains(scroller)) return;
-      const room = event.deltaY < 0 ? scroller.scrollTop > 1 : scroller.scrollTop < scroller.scrollHeight - scroller.clientHeight - 1;
-      if (event.deltaY && room) setTurnsFollow(false);
-    } else if (event.type === "touchmove" || (event.type === "keydown" && SCROLL_KEYS.has(event.key)) || (event.type === "pointerdown" && target === scroller)) setTurnsFollow(false);
+  const target = event.target, type = event.type;
+  // The session first, reading no layout: wheels and touchmoves over the transcript arrive at the
+  // engine's own rate, and a glide is no place to make the browser lay out the outline (#372).
+  if (transcript.contains(target) || (type === "keydown" && target === document.body)) {
+    if (type === "wheel" || type === "touchmove" || (type === "pointerdown" && target === transcript) || (type === "keydown" && SCROLL_KEYS.has(event.key) && !editable(target))) setTurnsFollow(true);
     return;
   }
-  const inSession = transcript.contains(target);
-  if ((event.type === "wheel" || event.type === "touchmove") && inSession) setTurnsFollow(true);
-  else if (event.type === "pointerdown" && target === transcript) setTurnsFollow(true);
-  else if (event.type === "keydown" && SCROLL_KEYS.has(event.key) && !editable(target) && (inSession || target === document.body)) setTurnsFollow(true);
+  // Only then the list, and only for input in or around it.
+  const list = byId("navigatorTurns");
+  if (!(target instanceof Element) || !(list.contains(target) || target.contains(list))) return;
+  const scroller = turnsScroller();
+  if (!scroller || !scroller.contains(target)) return;
+  if (type === "wheel") {
+    // On the desktop the outline's own wheel handler knows whether the gesture scrolls the list.
+    if (byId("sessionNavigator").contains(scroller)) return;
+    const room = event.deltaY < 0 ? scroller.scrollTop > 1 : scroller.scrollTop < scroller.scrollHeight - scroller.clientHeight - 1;
+    if (event.deltaY && room) setTurnsFollow(false);
+  } else if (type === "touchmove" || (type === "keydown" && SCROLL_KEYS.has(event.key)) || (type === "pointerdown" && target === scroller)) setTurnsFollow(false);
 }
 for (const kind of ["wheel", "touchmove", "pointerdown", "keydown"]) document.addEventListener(kind, readerMoves, { capture: true, passive: true });
 
