@@ -805,7 +805,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.59",
+  "mdrev": "1.1.60",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
@@ -951,8 +951,8 @@ Hong's rulings, 2026-10-08:
 2. Bob writes two shared notes on `docs/plan.md`, one of them saying
    "@dana@example.com, is this still true?", and pushes them.
 3. Once the push lands, Bob's machine sends, as Bob: Alice and Carol get "2
-   new notes on docs/plan.md from Bob-on-desktop"; Dana gets "Bob-on-desktop
-   mentioned you on docs/plan.md: is this still true?".
+   new notes on docs/plan.md from Bob Lee"; Dana gets "Bob Lee mentioned you
+   on docs/plan.md: is this still true?".
 4. Alice opens the document. Bob's two threads are marked new. She opens the
    first, a lone note, and it is read. When she closes the tab her read marks
    go to the store, and that evening, on her laptop, it is read there too.
@@ -995,7 +995,12 @@ Hong's rulings, 2026-10-08:
   it will reach — the mentions an agent wrote included.
 - **H4. A notification is short, one per person per push.** To a subscriber:
   "*N* new notes on *document* from *pusher*", a line per document. To
-  someone mentioned: "*pusher* mentioned you on *document*: *snippet*", the
+  someone mentioned: "*pusher* mentioned you on *document*: *snippet*". The
+  *pusher* is the person, not the device their pairing is named for — "Bob
+  Lee", not "Bob-on-desktop" (#s223): a host's word for them where it gives
+  one (`from`, below), else git's `user.name` where git's email is the
+  pairing's own, else the pairing's name; the thread itself still shows the
+  device. The
   snippet being the line of the record that holds the mention, as plain
   text, cut at 140 characters. Under either: each document's path and
   commit, the counts of new threads and replies, and how to open it — `mdrev
@@ -1158,10 +1163,10 @@ for; and
 {
   "v": 1,
   "channel": "email",
-  "from": {"name": "Bob-on-desktop", "email": "bob@example.com"},
+  "from": {"name": "Bob Lee", "email": "bob@example.com"},
   "messages": [
-    {"to": "dana@example.com", "why": "mentioned", "subject": "Bob-on-desktop mentioned you on docs/plan.md",
-     "text": "Bob-on-desktop mentioned you on docs/plan.md: is this still true?\n\n…", "path": "docs/plan.md", "commit": "8c1e2f…", "link": "https://…"}
+    {"to": "dana@example.com", "why": "mentioned", "subject": "Bob Lee mentioned you on docs/plan.md",
+     "text": "Bob Lee mentioned you on docs/plan.md: is this still true?\n\n…", "path": "docs/plan.md", "commit": "8c1e2f…", "link": "https://…"}
   ]
 }
 ```
@@ -1181,14 +1186,16 @@ before every send.
 through a sign-in of that person's own the service keeps for them. The
 service answers Push once the records are in the store; then it renews that
 sign-in and runs `mdrev-cli review notify`, which decides whom and what as a
-push on a machine does, with `MDREV_NOTIFY_FILE` naming four things only the
+push on a machine does, with `MDREV_NOTIFY_FILE` naming five things only the
 service knows: the tools' whole environment (that person's sign-in, never
 mdrev-cli's own), a link to the service's page at the thread on its branch in
 place of the project's `link`, the people who turned the service's
 messages off (they are still told of what a colleague pushes from their own
 machine), and the channels it tells people through, whatever the project's
 `.mdrev.json` names — DingTalk and email, the company's, so notifications are
-simply on there (#s186, #s187). A tool's protocol does not change; the page shows "telling…", then
+simply on there (#s186, #s187) — and the pusher's own name, from single sign-on,
+which every message says it is from ("Hong Tang", not the pairing's
+"Hong-on-service", #s223). A tool's protocol does not change; the page shows "telling…", then
 whom it told.
 
 ### Turning notifications on, once per machine (#s188)

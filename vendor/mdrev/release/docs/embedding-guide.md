@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.59/
+mdrev-embed-1.1.60/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -180,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.59`, with two tarballs: `mdrev-1.1.59-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.59.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.60`, with two tarballs: `mdrev-1.1.60-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.60.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.59/mdrev-embed-1.1.59.tar.gz
-tar xzf mdrev-embed-1.1.59.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.59
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.60/mdrev-embed-1.1.60.tar.gz
+tar xzf mdrev-embed-1.1.60.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.60
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.59/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.60/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -196,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.59/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.59.tar.gz
-cd mdrev-embed-1.1.59
+tar xzf mdrev-embed-1.1.60.tar.gz
+cd mdrev-embed-1.1.60
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -316,7 +316,7 @@ The options, all of them:
 | `onOpenPage(page)` | go to a page **you** named: a branch from your optional `/branches`, or a note drawn on another branch from `/notes-elsewhere` (contract.md). The viewer hands back `page` exactly as you gave it and never navigates itself. Left out, the Branch section and those notes are not offered | — |
 | `fileRail` | show the rail beside the document — the files a range touched, and your `/tree` of everything else. Needs `/changed`, and `/tree` or `/documents`, or it has nothing to list. It gives way to the document: where your mount cannot keep a 600px reading column beside it (and beside a pinned outline), the rail is not drawn, and it returns as the reader left it when the mount is wide enough | `false` |
 | `toolbar` | for a **plain reader** — a host serving `/text` and `/asset` and no more: `'none'` shows no toolbar at all (the keys still work), `'collapsible'` opens one on demand, `'always'` is today's. Honoured only while neither history nor notes is in play: the moment your host offers `/revisions` in a checkout or `/annotations`, the toolbar is present and its controls are not yours to hide — the range picker is what review *is*, the notes control what annotation *is* | `'always'` |
-| `controls` | which of a plain reader's controls are on the toolbar: `{outline, display, wrap, column, print, fullscreen, source}`, each `true`/`false`, absent meaning on. A hidden control is gone, not greyed. Same rule as `toolbar`: a plain reader only | all on |
+| `controls` | which of a plain reader's controls are on the toolbar: `{outline, display, wrap, column, print, fullscreen, source}`, each `true`/`false`, absent meaning on. A hidden control is gone, not greyed. `source` brings its neighbour along: the Copy original button, which copies the whole Markdown at the version on screen, shows and hides with it. Same rule as `toolbar`: a plain reader only | all on |
 | `theme` | `'light'`, `'dark'` or `'system'`: the host owns the theme, and the viewer drops its own control rather than offer a second switch that can disagree with yours. Left out, the viewer keeps the control and remembers the reader's choice | the viewer's |
 | `locale` | the viewer's own words, in the reader's language: `'en'` or `'zh-Hans'`. Not the document's script — that is `lang` — and a Chinese document does not imply a Chinese reader. When your application has a language setting it has already asked, so say it here: it outranks the reader's own choice and the browser's preference, and the viewer shows no language control, as with `theme`. A host fact, unchanged by a move between folders. Left out, the reader chooses in the display menu, or `navigator.languages` decides | the reader's |
 | `reloadToken` | bump it to re-read the document. For a shell where the file changes under the reader's own hand — an editor — because refetching keeps their scroll, their open notes and their range where remounting would lose all three | — |
@@ -472,8 +472,8 @@ Install the `mdrev-embed` tree on the machine that runs your server (§1, *Getti
 | Your route | Run | stdin | stdout |
 |---|---|---|---|
 | `GET /annotations` | `mdrev-cli notes list --path P --all --records --root R` | — | `[note]` — return it as it is; without `--records` every note is judged against the file first, which the viewer does not use and which takes seconds on a busy document |
-| `POST /annotations` | `mdrev-cli notes add --path P --root R --author U` | the request body: `{body, anchor, type?}` | the stored note, with `id`, `rev`, `blob`, `created`, and the anchor placed |
-| `POST …/{id}/replies` | `mdrev-cli notes reply ID --body "…" --root R --author U` | — | the note |
+| `POST /annotations` | `mdrev-cli notes add --path P --root R --author U` | the request body: `{body, anchor, type?, saveId?}` — `saveId` names the Save, so one sent again after a lost answer is answered with the note already filed | the stored note, with `id`, `rev`, `blob`, `created`, and the anchor placed |
+| `POST …/{id}/replies` | `mdrev-cli notes reply ID --body "…" --root R --author U`, with `--save-id K` when the body carries `saveId`, so a reply sent again is written once | — | the note |
 | `PATCH …/{id}` `{status: "resolved"}` | `mdrev-cli notes resolve ID --note "…" --force --root R --author U` | — | the note, with `resolvedBy` |
 | `PATCH …/{id}` `{status: "wontfix"}` | `mdrev-cli notes wontfix ID --note "…" --force …` | — | the note |
 | `PATCH …/{id}` `{status: "open"}` | `mdrev-cli notes reopen ID …` | — | the note |

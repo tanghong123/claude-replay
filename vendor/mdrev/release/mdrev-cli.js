@@ -1821,6 +1821,12 @@ function hostNotify(file = process.env.MDREV_NOTIFY_FILE) {
       return { host: null, error: "the host's notification settings name channels that are not channels' names (MDREV_NOTIFY_FILE)" };
     host.channels = [...new Set(c)];
   }
+  const from = d.from;
+  if (from !== void 0) {
+    if (typeof from !== "string" || !from.trim() || from.length > 100 || /[\u0000-\u001f\u007f]/.test(from))
+      return { host: null, error: "the host's notification settings name a sender that is not a name (MDREV_NOTIFY_FILE)" };
+    host.from = from.trim();
+  }
   return { host };
 }
 function launcherDirs(script = process.argv[1] ?? "") {
@@ -33686,6 +33692,39 @@ var SharedStore = class {
     } catch {
     }
   }
+  /**
+   * The thread a Save of this name opened on this document, pushed or not
+   * (#s209): looked for in the outbox and in `sent/`, among the files of the
+   * last day — a retry follows its first try by seconds, and `sent/` only grows.
+   * (`quiet/` holds read marks and subscriptions, never a note.)
+   */
+  savedAs(saveId, path2, reply) {
+    const since = Date.now() - 24 * 36e5;
+    for (const dir of [this.outboxDir, join7(this.outboxDir, "sent")]) {
+      let names;
+      try {
+        names = readdirSync3(dir).filter((n) => n.endsWith(".json"));
+      } catch {
+        continue;
+      }
+      for (const n of names) {
+        try {
+          const file = join7(dir, n);
+          if (statSync3(file).mtimeMs < since)
+            continue;
+          const e = JSON.parse(readFileSync4(file, "utf8"));
+          if (e?.local?.saveId !== saveId)
+            continue;
+          if (!reply && e.record?.kind === "note" && e.record.path === path2)
+            return e.record.id;
+          if (reply && e.record?.kind === "reply" && e.record.thread === reply.thread && e.record.body === reply.body.trim())
+            return e.record.id;
+        } catch {
+        }
+      }
+    }
+    return null;
+  }
   /** The ids taken back before a push (not edits that came too late), newest last. */
   takenBack() {
     try {
@@ -34897,6 +34936,14 @@ async function pairedStore(root5) {
   }
   return { store, me };
 }
+async function senderName(root5, me, host) {
+  if (host?.from)
+    return host.from;
+  const git3 = await identityOf(root5).catch(() => null);
+  if (git3?.name && git3.email.trim().toLowerCase() === me.email.trim().toLowerCase())
+    return git3.name;
+  return me.name;
+}
 async function identityOf(root5) {
   const said = (await git(["config", "--get-regexp", "^user\\.(name|email)$"], { cwd: root5 })).out;
   let email = "";
@@ -35297,8 +35344,25 @@ async function shareNote(source, note, who) {
     ...note.ref ? { ref: note.ref } : {},
     anchor: note.anchor
   };
-  store.write(record, local(who, source.repoRoot));
+  store.write(record, { ...local(who, source.repoRoot), ...note.saveId ? { saveId: note.saveId } : {} });
   return foldThreads(store.records(), me.email).find((t) => t.id === id);
+}
+async function savedThread(source, path2, saveId) {
+  if (!source.isGit)
+    return null;
+  let paired;
+  try {
+    paired = await pairedStore(source.repoRoot);
+  } catch {
+    return null;
+  }
+  const id = paired.store.savedAs(saveId, path2);
+  if (!id)
+    return null;
+  const thread = foldThreads(paired.store.records(), paired.me.email).find((t) => t.id === id);
+  if (!thread)
+    throw new StoreError(`this note was saved already, as ${id}: fetch to see it (mdrev --review-status)`, "other");
+  return thread;
 }
 async function threadById(source, id, who) {
   const { store, me } = await pairedStore(source.repoRoot);
@@ -35310,7 +35374,21 @@ async function threadById(source, id, who) {
     logEvent("review.read", { store: store.pointer.remote, thread: found.thread.id, ...who.for ? { asked: who.for } : {} });
   return { thread: found.thread, ...asked ? { asked: { id: asked.note.id, body: asked.note.body } } : {} };
 }
-async function replyShared(source, recordId, body3, who) {
+async function savedSharedReply(source, recordId, body3, saveId) {
+  if (!source.isGit)
+    return null;
+  let paired;
+  try {
+    paired = await pairedStore(source.repoRoot);
+  } catch {
+    return null;
+  }
+  const found = threadFor(paired.store, paired.me.email, recordId);
+  if (!found)
+    return null;
+  return paired.store.savedAs(saveId, found.thread.path, { thread: found.thread.id, body: body3 }) ? found.thread : null;
+}
+async function replyShared(source, recordId, body3, who, saveId) {
   const { store, me } = await pairedStore(source.repoRoot);
   const found = threadFor(store, me.email, recordId);
   if (!found)
@@ -35322,7 +35400,7 @@ async function replyShared(source, recordId, body3, who) {
   if (!body3.trim())
     throw new StoreError("a reply needs a body", "other");
   const id = mint();
-  store.write(base2("reply", id, found.thread.id, recordId, me, body3.trim(), who, await headOf(source.repoRoot)), local(who, source.repoRoot));
+  store.write(base2("reply", id, found.thread.id, recordId, me, body3.trim(), who, await headOf(source.repoRoot)), { ...local(who, source.repoRoot), ...saveId ? { saveId } : {} });
   if (asked)
     await noteAnswered(source, asked, found.thread.id, id);
   return foldThreads(store.records(), me.email).find((t) => t.id === found.thread.id);
@@ -35814,8 +35892,9 @@ async function sendCode(source, store, me, want) {
     throw new StoreError(`no tool for ${channel} on this machine to send the code \u2014 install your organisation's plugin`, "other");
   const code4 = String(randomBytes(4).readUInt32BE(0) % 1e6).padStart(6, "0");
   const project2 = basename2(source.repoRoot);
-  const text9 = `${me.name} <${me.email}> asked mdrev to send review notifications for ${project2} to this address. The code is ${code4}; it lasts ten minutes. If you did not ask, ignore this.`;
-  const failed = await sendWith(channel, tool, { name: me.name, email: me.email }, [{ to: want.email, why: "confirm", subject: `mdrev: your code is ${code4}`, text: text9 }], 3e4);
+  const from = { name: await senderName(source.repoRoot, me, hostNotify().host), email: me.email };
+  const text9 = `${from.name} <${from.email}> asked mdrev to send review notifications for ${project2} to this address. The code is ${code4}; it lasts ten minutes. If you did not ask, ignore this.`;
+  const failed = await sendWith(channel, tool, from, [{ to: want.email, why: "confirm", subject: `mdrev: your code is ${code4}`, text: text9 }], 3e4);
   if (failed.length > 0)
     throw new StoreError(`the code could not be sent to ${want.email} through ${channel}: ${failed[0].error}`, "other");
   writeAtomic(file, JSON.stringify({ email: want.email, ...want.path ? { path: want.path } : {}, hash: codeHash(code4), at: (/* @__PURE__ */ new Date()).toISOString(), via: channel }, null, 2));
@@ -35954,7 +36033,7 @@ async function notifyPush(source, store, me, landed) {
     stamp2();
     return { sent: [], failed: [] };
   }
-  const from = { name: me.name, email: me.email };
+  const from = { name: await senderName(source.repoRoot, me, host), email: me.email };
   const linkOf = (d, thread, ref) => pattern && d && (d.commit || !pattern.includes("{commit}")) ? linkTo(pattern, d.commit ?? "", d.path, { ref: ref ?? d.ref, note: thread ?? d.thread }) : void 0;
   const docLines = (paths) => [...paths].flatMap((path2) => {
     const d = docs.get(path2);
@@ -35962,7 +36041,7 @@ async function notifyPush(source, store, me, landed) {
       return [];
     const n = d.notes + d.replies;
     return [
-      `${n} new note${n === 1 ? "" : "s"} on ${path2} from ${me.name}${d.agent ? " (agent-assisted)" : ""} \u2014 ${d.notes} new thread${d.notes === 1 ? "" : "s"}, ${d.replies} repl${d.replies === 1 ? "y" : "ies"}`,
+      `${n} new note${n === 1 ? "" : "s"} on ${path2} from ${from.name}${d.agent ? " (agent-assisted)" : ""} \u2014 ${d.notes} new thread${d.notes === 1 ? "" : "s"}, ${d.replies} repl${d.replies === 1 ? "y" : "ies"}`,
       `  ${d.commit ? `at ${d.commit.slice(0, 8)} \xB7 ` : ""}open it: mdrev ${path2}${linkOf(d) ? ` \xB7 ${linkOf(d)}` : ""}`
     ];
   });
@@ -35972,11 +36051,11 @@ async function notifyPush(source, store, me, landed) {
     const d = docs.get(first);
     const link3 = p2.why === "mentioned" ? linkOf(d, p2.thread, p2.ref) : linkOf(d);
     if (p2.why === "mentioned") {
-      const head2 = `${me.name} mentioned you on ${p2.on ?? first}: ${p2.snippet ?? ""}${p2.agent ? " (agent-assisted)" : ""}`;
-      return { to, why: "mentioned", subject: `${me.name} mentioned you on ${p2.on ?? first}`, text: [head2, "", ...docLines(paths)].join("\n"), path: first, ...d?.commit ? { commit: d.commit } : {}, ...link3 ? { link: link3 } : {} };
+      const head2 = `${from.name} mentioned you on ${p2.on ?? first}: ${p2.snippet ?? ""}${p2.agent ? " (agent-assisted)" : ""}`;
+      return { to, why: "mentioned", subject: `${from.name} mentioned you on ${p2.on ?? first}`, text: [head2, "", ...docLines(paths)].join("\n"), path: first, ...d?.commit ? { commit: d.commit } : {}, ...link3 ? { link: link3 } : {} };
     }
     const total = paths.reduce((n, path2) => n + (docs.get(path2)?.notes ?? 0) + (docs.get(path2)?.replies ?? 0), 0);
-    const subject = paths.length === 1 ? `${total} new note${total === 1 ? "" : "s"} on ${first} from ${me.name}` : `${total} new notes on ${paths.length} documents from ${me.name}`;
+    const subject = paths.length === 1 ? `${total} new note${total === 1 ? "" : "s"} on ${first} from ${from.name}` : `${total} new notes on ${paths.length} documents from ${from.name}`;
     return { to, why: "subscribed", subject, text: docLines(paths).join("\n"), path: first, ...d?.commit ? { commit: d.commit } : {}, ...link3 ? { link: link3 } : {} };
   });
   const result = { sent: [], failed: notify.refused.map((error) => ({ error })) };
@@ -36283,6 +36362,9 @@ async function upgradeAnchors(source, path2, annotations) {
 async function annotationsFor(source, relPath) {
   return (await docsByDestination(source, relPath))[0]?.annotations ?? [];
 }
+async function savedNote(source, relPath, saveId) {
+  return (await annotationsFor(source, relPath)).find((a) => a.saveId === saveId) ?? null;
+}
 function inScope(annotation, q) {
   if (!q.all && annotation.status !== "open")
     return false;
@@ -36409,16 +36491,26 @@ async function closeNote(source, id, status, note, by, who = CLI) {
   });
   return updated ? { path: found.path, annotation: updated } : null;
 }
-async function replyToNote(source, id, body3, author, who = CLI) {
+async function replyToNote(source, id, body3, author, who = CLI, saveId) {
   if (isSharedId(id)) {
-    const t = await replyShared(source, id, body3, who);
+    const t = await replyShared(source, id, body3, who, saveId);
     return { path: t.path, annotation: t };
   }
   const found = await findAnnotation(source.notesHome, id);
   if (!found)
     return null;
-  const updated = await appendReply(source.notesHome, found.path, id, { author, body: body3, ...who.agent ? { agent: who.agent } : {} });
+  const updated = await appendReply(source.notesHome, found.path, id, { author, body: body3, ...who.agent ? { agent: who.agent } : {}, ...saveId ? { saveId } : {} });
   return updated ? { path: found.path, annotation: updated } : null;
+}
+async function savedReply(source, id, body3, saveId) {
+  if (isSharedId(id)) {
+    const t = await savedSharedReply(source, id, body3, saveId);
+    return t ? { path: t.path, annotation: t } : null;
+  }
+  const found = await findAnnotation(source.notesHome, id).catch(() => null);
+  if (!found)
+    return null;
+  return found.annotation.replies?.some((r) => r.saveId === saveId && r.body === body3) ? found : null;
 }
 async function reopenNote(source, id, why, author, who = CLI) {
   if (isSharedId(id)) {
@@ -36922,7 +37014,9 @@ var Review = class {
         anchor: canonical2 ?? given,
         body: String(args.annotation.body ?? ""),
         // the page's branch, when its host says it (the service's ref, #s148)
-        ...typeof args.annotation.ref === "string" ? { ref: args.annotation.ref } : {}
+        ...typeof args.annotation.ref === "string" ? { ref: args.annotation.ref } : {},
+        // the page's name for this Save, kept on the machine so a retry finds the thread (#s209)
+        ...typeof args.annotation.saveId === "string" ? { saveId: args.annotation.saveId } : {}
       }, args.who ?? { via: "viewer" });
     }
     return appendAnnotation(source.notesHome, args.path, {
@@ -38364,7 +38458,7 @@ var USAGE = `mdrev-cli \u2014 mdrev's store, from the command line, for a host a
                                                        --viewer do not combine with it, and no other verb
                                                        takes --follow
   mdrev-cli notes add    --path P  < record.json       file a note; the record is {body, anchor, type?, rev?}
-  mdrev-cli notes reply  ID --body "\u2026"
+  mdrev-cli notes reply  ID --body "\u2026" [--save-id K]
   mdrev-cli notes resolve ID [--note "\u2026"] [--force]   an agent's close of a note its person has written on
                                                        since it last listed it is refused; --force closes it
   mdrev-cli notes wontfix ID [--note "\u2026"] [--force]
@@ -38476,6 +38570,8 @@ function parse5(argv) {
       o.json = true;
     else if (a === "--body")
       o.body = next2();
+    else if (a === "--save-id")
+      o.saveId = next2();
     else if (a === "--note")
       o.note = next2();
     else if (a === "--at")
@@ -38815,6 +38911,27 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
             };
             if (side && agentHere)
               throw new UsageError("in service mode an agent does not file notes: it replies to and closes its person's (B10)");
+            if (record.saveId !== void 0 && (typeof record.saveId !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(record.saveId))) {
+              throw new UsageError(`the record's "saveId" is 8 to 64 letters, digits, - or _`);
+            }
+            if (typeof record.saveId === "string" && (record.shared !== true || o.viewer)) {
+              const made2 = record.shared === true ? await savedThread(source, path2, record.saveId) : await savedNote(source, path2, record.saveId);
+              if (made2) {
+                const words = String(record.body).trim();
+                let now = made2;
+                if (words && words !== made2.body) {
+                  try {
+                    const edited = side ? await side.changing(made2.id, () => editNote(source, made2.id, words, who)) : await editNote(source, made2.id, words, who);
+                    if (edited)
+                      now = edited.annotation;
+                  } catch (e) {
+                    throw new UsageError(`this note was saved already, as ${made2.id}, with the words you first sent, and cannot take the new ones: ${e.message}`);
+                  }
+                }
+                emit({ ...now, retried: true });
+                return 0;
+              }
+            }
             const personalNote = side && record.shared !== true;
             if (side && record.shared === true && record.ref === void 0) {
               const ref = await side.branch();
@@ -38849,7 +38966,19 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
           case "reply": {
             const which = need(id, "the note id");
             const body3 = need(o.body, "--body");
-            const answer = side ? await side.changing(which, () => replyToNote(source, which, body3, author, who)) : await replyToNote(source, which, body3, author, who);
+            if (o.saveId !== void 0 && !/^[A-Za-z0-9_-]{8,64}$/.test(o.saveId))
+              throw new UsageError("--save-id is 8 to 64 letters, digits, - or _");
+            if (o.saveId && (!isSharedId(which) || o.viewer)) {
+              const made = await savedReply(source, which, body3, o.saveId);
+              if (made) {
+                if (o.text)
+                  said(`${which} answered`, made.path, body3);
+                else
+                  emit({ ...made.annotation, retried: true });
+                return 0;
+              }
+            }
+            const answer = side ? await side.changing(which, () => replyToNote(source, which, body3, author, who, o.saveId)) : await replyToNote(source, which, body3, author, who, o.saveId);
             if (!answer)
               throw new NotFound(side ? side.missing(which) : `no note '${which}'`);
             if (o.text)

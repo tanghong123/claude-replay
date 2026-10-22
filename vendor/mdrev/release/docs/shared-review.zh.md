@@ -324,7 +324,7 @@ paired: you write as Hong-on-laptop <hong@example.com>
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.59",
+  "mdrev": "1.1.60",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
@@ -400,7 +400,7 @@ Hong 的裁定，2026-10-08：
 
 1. Alice 在查看器里点一下，订阅整个项目：每一篇文档，使用她配对时的邮箱。Carol 让她的智能体关注 `docs/plan.md`，它为她订阅了这篇文档。
 2. Bob 在 `docs/plan.md` 上写了两条共享批注，其中一条写着"@dana@example.com，这还成立吗？"，然后推送。
-3. 推送一落地，Bob 的机器就以 Bob 的身份发出：Alice 和 Carol 收到"2 new notes on docs/plan.md from Bob-on-desktop"；Dana 收到"Bob-on-desktop mentioned you on docs/plan.md: 这还成立吗？"。
+3. 推送一落地，Bob 的机器就以 Bob 的身份发出：Alice 和 Carol 收到"2 new notes on docs/plan.md from Bob Lee"；Dana 收到"Bob Lee mentioned you on docs/plan.md: 这还成立吗？"。
 4. Alice 打开文档。Bob 的两个讨论串标着"新"。她打开第一个，一条孤立的批注，它就算读过了。她关掉标签页时，已读标记被送进评审库；当晚在她的笔记本上，它也是已读的。
 
 ### 需求
@@ -414,7 +414,7 @@ Hong 的裁定，2026-10-08：
   - 必须：通知失败绝不使推送失败或被撤销，最多让推送多等三十秒。推送的结果写明通知了谁、什么失败了；事件日志记下每位收件人的邮箱和通知的原因，绝不记下任何正文。
   - 不得：由智能体发出通知（智能体不推送，D1），也不得为未进入评审库的记录发出通知。
 - **H3. 提及就是一个邮箱：** 批注或回复中的 `@dana@example.com`，原样交给渠道。撰写框按名称建议订阅者，并插入其邮箱；也可以输入任何其他邮箱。只有严格的邮箱格式才算数，代码与引用里的不算，比较时不分大小写。推送清单把每条记录中的提及画成人，所以推送的内容本身就显示它会到达谁——包括智能体写下的提及。
-- **H4. 通知要短，每次推送每人一条。** 给订阅者："*N* new notes on *文档* from *推送者*"，每篇文档一行。给被提及的人："*推送者* mentioned you on *文档*: *片段*"，片段是记录中含有这次提及的那一行，纯文本，截到 140 个字符。两种通知下面都附上：每篇文档的路径与提交、新讨论串和回复的数目，以及打开方式——在检出目录里运行 `mdrev <path>`，项目给了链接模式时再附一个链接。给订阅者的通知不含任何批注正文；智能体写的记录标明"agent-assisted"；既是订阅者又被提及的人，只收到提及的那一条。
+- **H4. 通知要短，每次推送每人一条。** 给订阅者："*N* new notes on *文档* from *推送者*"，每篇文档一行。给被提及的人："*推送者* mentioned you on *文档*: *片段*"。*推送者*指这个人，而不是他配对所用的设备名——"Bob Lee"，不是"Bob-on-desktop"（#s223）：宿主给出了他的名字时用宿主的（下文的 `from`），否则在 git 的邮箱就是配对邮箱时用 git 的 `user.name`，再否则用配对的名字；讨论串里仍然显示设备。片段是记录中含有这次提及的那一行，纯文本，截到 140 个字符。两种通知下面都附上：每篇文档的路径与提交、新讨论串和回复的数目，以及打开方式——在检出目录里运行 `mdrev <path>`，项目给了链接模式时再附一个链接。给订阅者的通知不含任何批注正文；智能体写的记录标明"agent-assisted"；既是订阅者又被提及的人，只收到提及的那一条。
 - **H5. 渠道属于组织。** 项目的 `.mdrev.json` 写明它的团队用哪些渠道；项目没有写时，每台机器可以为这台机器上的所有项目写一次自己的渠道（`mdrev --channels`，#s188）；每台机器上有为每个渠道发送的工具。mdrev 不自带任何渠道，也不点名任何渠道。渠道的工具为一个邮箱担保——找到这个人和他的名字——mdrev 只发给工具担保过的人，验证码除外。
 - **H6. 每位评审者看到对自己而言是新的东西，** 逐条记录：别人写的、自己还没读过的批注、回复、解决或重新打开（隐藏、取消隐藏、订阅和已读标记永远不算新）。在 mdrev 里，别人看不到。查看器画出来的内容，在以下情况算已读：
   - 打开它所在讨论串的卡片，并看到最后一条——孤立的批注，打开即读；新记录是最后一条的讨论串，滚动到它即读；任何讨论串，看到最后一条时，其中每一条都算已读；
@@ -493,17 +493,17 @@ Hong 的裁定，2026-10-08：
 {
   "v": 1,
   "channel": "email",
-  "from": {"name": "Bob-on-desktop", "email": "bob@example.com"},
+  "from": {"name": "Bob Lee", "email": "bob@example.com"},
   "messages": [
-    {"to": "dana@example.com", "why": "mentioned", "subject": "Bob-on-desktop mentioned you on docs/plan.md",
-     "text": "Bob-on-desktop mentioned you on docs/plan.md: is this still true?\n\n…", "path": "docs/plan.md", "commit": "8c1e2f…", "link": "https://…"}
+    {"to": "dana@example.com", "why": "mentioned", "subject": "Bob Lee mentioned you on docs/plan.md",
+     "text": "Bob Lee mentioned you on docs/plan.md: is this still true?\n\n…", "path": "docs/plan.md", "commit": "8c1e2f…", "link": "https://…"}
   ]
 }
 ```
 
 其中 `why` 是 `subscribed`、`mentioned` 或 `confirm`（验证码：唯一会发给工具未担保邮箱的消息，因为验证码本身就是证明）。工具以 0 退出，标准输出为空或为 `{"failed": [{"to": "…", "error": "…"}]}`；以其他值退出则全部失败，以标准错误的第一行为原因，截到 200 个字符。它以所服务的那个人的身份发送——他自己的邮箱、他自己的聊天账号——绝不以机器人身份，mdrev 也不交给它任何凭据。mdrev 在写入订阅时、输入提及时（停止输入之后）以及每次发送之前，都会调用 `lookup`。
 
-**在团队的 mdrev 服务上**（[personal-service.md](personal-service.md)，"Notifications"；#s129），同样的工具以推送者本人的身份通知别人，用的是服务为此人保留的、此人自己的登录。服务在记录进入评审库后就答复推送；然后续期那个登录，运行 `mdrev-cli review notify`——通知谁、说什么，和机器上的推送一样决定——由 `MDREV_NOTIFY_FILE` 给出只有服务知道的四件事：工具的完整环境（此人的登录，绝不是 mdrev-cli 自己的）、指向服务页面上该讨论串所在分支的链接（代替项目的 `link`）、关掉了服务消息的人（同事从自己机器推送的内容，仍然会通知他们），以及它通知别人用的渠道，不论项目的 `.mdrev.json` 怎么写——钉钉和邮件，公司的渠道，所以那里的通知总是开着的（#s186、#s187）。工具的协议不变；页面先显示"正在通知……"，再显示通知了谁。
+**在团队的 mdrev 服务上**（[personal-service.md](personal-service.md)，"Notifications"；#s129），同样的工具以推送者本人的身份通知别人，用的是服务为此人保留的、此人自己的登录。服务在记录进入评审库后就答复推送；然后续期那个登录，运行 `mdrev-cli review notify`——通知谁、说什么，和机器上的推送一样决定——由 `MDREV_NOTIFY_FILE` 给出只有服务知道的五件事：工具的完整环境（此人的登录，绝不是 mdrev-cli 自己的）、指向服务页面上该讨论串所在分支的链接（代替项目的 `link`）、关掉了服务消息的人（同事从自己机器推送的内容，仍然会通知他们），以及它通知别人用的渠道，不论项目的 `.mdrev.json` 怎么写——钉钉和邮件，公司的渠道，所以那里的通知总是开着的（#s186、#s187）——以及推送者本人的名字，来自单点登录，每条消息都说是他发的（"Hong Tang"，而不是配对用的"Hong-on-service"，#s223）。工具的协议不变；页面先显示"正在通知……"，再显示通知了谁。
 
 ### 每台机器打开一次通知（#s188）
 

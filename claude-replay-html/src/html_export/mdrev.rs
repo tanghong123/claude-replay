@@ -1089,9 +1089,21 @@ fn note_op(
             let Some(text) = body.get("body").and_then(Value::as_str) else {
                 return status("400 Bad Request", error("expected {body}"));
             };
-            args = ["notes", "reply", id, "--body", text]
+            let mut a: Vec<String> = ["notes", "reply", id, "--body", text]
                 .map(String::from)
                 .to_vec();
+            // mdrev 1.1.60 (#s211): the page names each Send, and a Send repeated after its answer
+            // was lost carries the same name, which the CLI answers with the reply its first try
+            // wrote. A new note's name rides in the body `notes add` reads whole; a reply's is a
+            // flag. The CLI judges the name's shape and refuses a bad one in its own words.
+            if let Some(key) = body
+                .get("saveId")
+                .and_then(Value::as_str)
+                .filter(|k| !k.is_empty())
+            {
+                a.extend(["--save-id".to_string(), key.to_string()]);
+            }
+            args = a;
             ("POST", "200 OK")
         }
         ("DELETE", "") => {
@@ -2754,6 +2766,20 @@ esac
         );
         assert_eq!(reply.code, "200 OK");
         assert!(calls(&f).contains("notes reply ann-1 --body ok --root"));
+        // mdrev 1.1.60 (#s211): a Send's name reaches the CLI as --save-id; a new note's rides in
+        // the body, passed through whole.
+        let named = call(
+            &f,
+            &held,
+            "annotations/ann-1/replies",
+            &req("POST", &q, br#"{"body":"again","saveId":"send-k1"}"#, true),
+        );
+        assert_eq!(named.code, "200 OK");
+        assert!(
+            calls(&f).contains("notes reply ann-1 --body again --save-id send-k1 --root"),
+            "{}",
+            calls(&f)
+        );
         let gone = call(
             &f,
             &held,
