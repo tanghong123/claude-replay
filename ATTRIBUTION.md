@@ -18,12 +18,14 @@ preserved in the relevant source file.
 
 ## Brand marks
 
-- **Claude** — the path of the Claude mark drawn for Claude Code sessions in the agent monitor
-  (`agentLogo` in `design/agent-monitor-codex-demo.html`, extracted into
-  `claude-monitor/src/codex-ui/icons.js`) is taken unmodified from **Simple Icons** 16.32.0,
-  released under CC0-1.0 (<https://simpleicons.org>, slug `claude`, colour `#D97757`, source
-  <https://claude.ai>). The mark itself is Anthropic's trademark and is used only to say which
-  agent wrote a session.
+- **Claude, Qoder and Qwen** — the marks drawn for Claude Code, Qoder / QoderWork and Qwenwork
+  sessions in the agent monitor (`agentLogo` in `design/agent-monitor-codex-demo.html`, extracted
+  into `claude-monitor/src/codex-ui/icons.js`) are the paths of the single-colour icons each vendor
+  published to the **Agent Client Protocol registry** (<https://github.com/agentclientprotocol/registry>,
+  Apache-2.0; entries `claude-acp`, `qoder` and `qwen-code` at commit `528db5c8`), scaled into the
+  monitor's 24-unit icon box and drawn in the surrounding text colour, as the registry draws them.
+  The marks themselves are Anthropic's, Qoder's and Alibaba's trademarks, used only to say which
+  agent wrote a session. The Claude path was Simple Icons' (CC0-1.0, in its brand colour) before.
 - **Codex** has no official mark here on purpose: Simple Icons removed OpenAI's in v16 because
   OpenAI's brand guidelines require permission (simple-icons#13944, #12739, #14096). Codex sessions
   show a plain terminal-prompt glyph drawn for this project until that permission exists.

@@ -14004,8 +14004,7 @@ fn flat_world(base: &std::path::Path) -> Stores {
     };
     codex(FLAT_KAPPA, "kappa live", 3 * 60);
     codex(FLAT_XI, "xi oldest", 26 * 3600);
-    // An agent the shell has no mark for: the flat row draws its first letter instead. Oldest of
-    // all, so it is the list's last row.
+    // A Qwenwork session, oldest of all, so it is the list's last row: Qwen's mark (#s209).
     let qw = stores.qwenwork_session(
         FLAT_QW,
         &harness::long_session(6, harness::Shape::default()),
@@ -14129,14 +14128,15 @@ fn the_app_shell_lists_the_sessions_by_activity_alone() {
     );
     assert_eq!(flat["heads"], 0, "no agent or project heads: {flat}");
     let rows = flat["rows"].as_array().cloned().unwrap_or_default();
+    // The oldest is the Qwenwork session: it wears Qwen's own mark (#s209), not a first letter.
     assert_eq!(
-        (rows.len(), rows[5][2].as_str(), rows[5][4].as_str()),
-        (6, Some("Qwenwork"), Some("Q")),
-        "the oldest, an agent without a mark, gets its name's first letter: {flat}"
+        (rows.len(), rows[5][2].as_str()),
+        (6, Some("Qwenwork")),
+        "the oldest is the Qwenwork session: {flat}"
     );
     assert!(
-        rows[..5].iter().all(|r| r[4].is_null()),
-        "the agents with a mark keep it: {flat}"
+        rows.iter().all(|r| r[4].is_null()),
+        "every agent here has a mark of its own, none a first letter: {flat}"
     );
     for r in &rows {
         assert_eq!(

@@ -178,7 +178,6 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .tree-context{display:flex;align-items:center;gap:5px;min-width:0;font-size:10.5px;line-height:13px;color:color-mix(in srgb,var(--faint) 88%,var(--sub))}
 .tree-agent{flex:none;display:inline-flex}
 .tree-agent .brand-icon{width:12px;height:12px;display:block}
-.tree-agent .brand-icon [fill]:not([fill="none"]){fill:currentColor}
 .tree-agent .agent-monogram text{fill:currentColor;stroke:none;font:700 12px var(--sans,system-ui)}
 .tree-project{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #app.sessions-flat .tree-row.session.is-member{padding-left:30px}

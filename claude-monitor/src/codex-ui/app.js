@@ -344,12 +344,12 @@ const agentName = id => ({ claude: "Claude Code", codex: "Codex", qoder: "Qoder"
 const SIDEBAR_SESSION_LIMIT = 5;
 /** The agent's mark on a flat row (#s206): one colour, the row's muted text colour, as the agent
  *  lists that show several agents side by side draw it (Zed's and JetBrains' shared registry
- *  requires a single-colour 16px mark; VS Code's sessions view mutes it). An agent the shell has no
- *  mark for — Qwenwork, or one it does not know — gets its name's first letter in a rounded square
- *  rather than a robot every such agent would share; QoderWork shares its vendor's mark. */
+ *  requires a single-colour 16px mark; VS Code's sessions view mutes it). The marks are the
+ *  vendors' own registry marks (#s209, the owner); QoderWork shares Qoder's, Qwenwork takes Qwen's.
+ *  An agent the shell has no mark for gets its name's first letter in a rounded square rather than
+ *  a robot every such agent would share. */
 function agentGlyph(id, name) {
-  if (["claude", "codex", "qoder"].includes(id)) return agentLogo(id);
-  if (id === "qoderwork") return agentLogo("qoder");
+  if (["claude", "codex", "qoder", "qoderwork", "qwenwork"].includes(id)) return agentLogo(id);
   const letter = escapeText((String(name || id || "?").trim()[0] || "?").toUpperCase());
   return `<svg class="brand-icon icon agent-monogram" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5"/><text x="12" y="16.4" text-anchor="middle">${letter}</text></svg>`;
 }

@@ -449,6 +449,19 @@ assert.match(appSource, /families\(rows\)/, "the tree clusters fork families thr
 }
 assert.match(appSource, /flatFamilies\(agents, Date\.now\(\) \/ 1000\)/, "the flat list orders through the tested function");
 assert.match(appSource, /if \(target && turnsFollow\) revealInPane\(target\);/, "#s207: the Turns pane follows the current turn only while it is locked to the session");
+// #s209 (the owner): the agents' marks are the vendors' own registry marks, drawn in one colour.
+{
+  const { agentLogo } = await import("../src/codex-ui/icons.js");
+  for (const id of ["claude", "qoder", "qoderwork", "qwenwork"]) {
+    const mark = agentLogo(id);
+    assert.match(mark, /<path fill="currentColor" stroke="none" d="/, `${id}: a filled vendor path in the text's colour`);
+    assert.doesNotMatch(mark, /#[0-9A-Fa-f]{3,6}\b/, `${id}: one colour, no brand colour of its own`);
+  }
+  assert.equal(agentLogo("qoderwork"), agentLogo("qoder"), "QoderWork wears its vendor's mark");
+  assert.notEqual(agentLogo("qwenwork"), agentLogo("someone-new"), "Qwenwork has a mark of its own, not the fallback");
+  assert.notEqual(agentLogo("qwenwork"), agentLogo("qoder"), "and not Qoder's");
+  console.log("#s209 agent mark cases passed");
+}
 assert.match(productionCss, /#app\.sessions-flat \.side-head \.head-actions>:is\(#collapseBtn,#expandBtn\)\{display:none\}/, "flat, the group controls go");
 assert.match(appSource, /indexState\.selectedWasRow && !selectedRow\(\)\) sessionGone\(\)/, "a sub-agent child, never a list row, is not declared gone by the index poll");
 assert.match(appSource, /meta\?\.ancestors\?\.at\(-1\)/, "the parent control reads the last ancestor from the session's own meta");
