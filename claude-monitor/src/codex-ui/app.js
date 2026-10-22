@@ -524,7 +524,19 @@ function setBuckets(next) {
 function toggleFilterSheet(open) {
   if (!open && railFlyoutFor === "filter") { closeRailFlyout(false); return; }
   filterSheet.hidden = !open; filterBtn.setAttribute("aria-expanded", String(open));
+  fitFilterSheet();
 }
+/** The sheet ends on the screen (#s206): its stylesheet caps it at 74% of the viewport, which
+ *  forgets where it STARTS — under the drawer's head on a phone held sideways (a 292px page in
+ *  Safari) it ran 16px past the screen's foot, half of Include hidden and all of the row below out
+ *  of reach. Capped at the room below its top instead, it scrolls within what is on screen. */
+function fitFilterSheet() {
+  filterSheet.style.maxHeight = "";
+  if (filterSheet.hidden || railFlyoutFor === "filter") return;
+  const room = Math.floor(innerHeight - filterSheet.getBoundingClientRect().top - 8);
+  if (room > 0 && filterSheet.scrollHeight > room) filterSheet.style.maxHeight = `${Math.max(120, room)}px`;
+}
+addEventListener("resize", fitFilterSheet);
 filterBtn.onclick = () => toggleFilterSheet(filterSheet.hidden);
 filterMini.onclick = () => { if (railFlyoutFor === "filter" && railFlyoutPinned) closeRailFlyout(false); else openRailFlyout("filter", filterMini, true); };
 filterSheet.addEventListener("click", event => {

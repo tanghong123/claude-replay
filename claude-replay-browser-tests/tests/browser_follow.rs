@@ -14269,6 +14269,14 @@ fn a_phone_lists_the_sessions_by_activity_in_its_drawer_and_its_column() {
             3198,
             "phone-flat-sideways",
         ),
+        // A narrower phone held sideways in Safari, its tab bar showing: the drawer, and 330px of page.
+        (
+            874,
+            330,
+            Some(harness::SIDEWAYS_INSETS),
+            3202,
+            "phone-flat-short",
+        ),
     ] {
         let (m, _b, tab) = drawer_world(port, case, w, h, false, 2, insets);
         harness::eval(
@@ -14284,7 +14292,7 @@ fn a_phone_lists_the_sessions_by_activity_in_its_drawer_and_its_column() {
             Duration::from_secs(30),
             "document.querySelector('#app>.sidebar').innerText.slice(0, 400)",
         );
-        if w < 500 {
+        if w < 900 {
             phone_tap(&tab, "#drawerHandle");
             harness::until(
                 &tab,
@@ -14316,6 +14324,38 @@ fn a_phone_lists_the_sessions_by_activity_in_its_drawer_and_its_column() {
         assert_eq!(
             seen["inside"], true,
             "{w}x{h}: each row's project line is inside it: {seen}"
+        );
+        // The filter sheet ends on the screen, its last row (the toggle) can be scrolled to and
+        // tapped, and the tap brings the tree back.
+        phone_tap(&tab, "#filterBtn");
+        harness::until(
+            &tab,
+            "!document.getElementById('sessionFilter').hidden",
+            "the filter sheet to open",
+            Duration::from_secs(5),
+            "document.getElementById('sessionFilter').hidden",
+        );
+        let sheet: serde_json::Value = serde_json::from_str(
+            harness::eval(&tab, "(function(){ var s = document.getElementById('sessionFilter'), b = s.getBoundingClientRect(); var t = s.querySelector('[data-flat]'); t.scrollIntoView({ block: 'nearest' }); var r = t.getBoundingClientRect(); var e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return JSON.stringify({ bottom: Math.round(b.bottom), h: innerHeight, hit: !!e && (e === t || t.contains(e)) }); })()")
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            sheet["bottom"].as_i64().unwrap_or(9999) <= sheet["h"].as_i64().unwrap_or(0),
+            "{w}x{h}: the filter sheet ends on the screen: {sheet}"
+        );
+        assert_eq!(
+            sheet["hit"], true,
+            "{w}x{h}: its last row, the toggle, can be scrolled to and tapped: {sheet}"
+        );
+        phone_tap(&tab, "#sessionFilter [data-flat]");
+        harness::until(
+            &tab,
+            "!document.getElementById('app').classList.contains('sessions-flat') && document.querySelectorAll('#app>.sidebar .agent-label').length > 0",
+            "the toggle to bring the tree back",
+            Duration::from_secs(10),
+            "document.getElementById('app').className",
         );
         drop(m);
     }
