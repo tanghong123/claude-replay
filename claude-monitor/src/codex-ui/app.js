@@ -26,6 +26,8 @@ import { revealMermaidSource } from "./shared/mermaid.js";
 // The outline row currently marked (#52) — declared ahead of the init code below, which
 // renders the navigator before the module's later statements have run.
 let outlineCurrent = null;
+// Whether the Turns pane follows the session (#s207) — declared here for the same reason.
+let turnsFollow = true;
 
 const byId = id => document.getElementById(id);
 const app = byId("app");
@@ -189,7 +191,7 @@ turnStickyText.id = "turnStickyText";
 turnStickyBar.append(turnStickyCaret, turnStickyText);
 byId("transcript").prepend(turnStickyBar);
 let turnStickyAt = null;
-turnStickyBar.onclick = () => { if (turnStickyAt != null) viewport.jumpToRecord(turnStickyAt, "turn"); };
+turnStickyBar.onclick = () => { if (turnStickyAt != null) { setTurnsFollow(true); viewport.jumpToRecord(turnStickyAt, "turn"); } };
 // #s37 (design/phone-landscape.md §3.4): on a phone the turn is the top bar's SUBTITLE, under the
 // session's title, where the strip above was a third row of chrome (production.css hides that strip
 // there). It always names the turn the reader is in — the strip waited until its card had scrolled
@@ -1259,7 +1261,9 @@ byId("sessionNavigator").addEventListener("wheel", event => {
   }
   if (wheelOwner === "pane") {
     const list = listWithRoom(wheelPane, dy);
-    if (list) return;             // the browser scrolls the pane's own list
+    // The browser scrolls the pane's own list — and the Turns list, scrolled so, stops following
+    // the session (#s207).
+    if (list) { if (list.contains(byId("navigatorTurns"))) setTurnsFollow(false); return; }
     event.preventDefault();       // …and at its end the gesture is spent: no handover
     return;
   }
@@ -1533,7 +1537,7 @@ function renderSessionInfo(turns, agents) {
 // has to reach both hosts — a handler bound to the navigator alone stopped hearing the fold
 // clicks the moment `#navigatorSession` left it.
 const navigatorClick = event => {
-  const turn = event.target.closest("[data-turn-record]"); if (turn) { viewport.jumpToRecord(Number(turn.dataset.turnRecord), "turn"); return; }
+  const turn = event.target.closest("[data-turn-record]"); if (turn) { setTurnsFollow(true, false); viewport.jumpToRecord(Number(turn.dataset.turnRecord), "turn"); return; }
   const infoFold = event.target.closest("[data-info-fold]");
   if (infoFold) {
     const key = infoFold.dataset.infoFold;
@@ -2689,7 +2693,7 @@ function paintJump() {
   const label = n ? `${n} new message${n === 1 ? "" : "s"} — jump to the latest` : "Jump to the latest";
   button.title = label; button.setAttribute("aria-label", label);
 }
-byId("jumpToBottom").onclick = () => viewport.follow();
+byId("jumpToBottom").onclick = () => { setTurnsFollow(true); viewport.follow(); };
 function updateStickyHeaders() { const top = transcript.getBoundingClientRect().top; viewport.window.querySelectorAll("[data-process-surface]").forEach(surface => { const rect = surface.getBoundingClientRect(); surface.dataset.prodSticky = String(rect.top < top && rect.bottom > top + 40); }); }
 
 byId("themeBtn").onclick = () => { const dark = document.documentElement.dataset.theme !== "dark"; document.documentElement.dataset.theme = dark ? "dark" : ""; localStorage.setItem("am-demo-theme", dark ? "dark" : "light"); };
@@ -3205,7 +3209,7 @@ function updateOutlineFocus() {
   });
   if (key === outlineCurrent) return;
   outlineCurrent = key;
-  if (target) revealInPane(target);
+  if (target && turnsFollow) revealInPane(target);
 }
 function revealInPane(row) {
   // #139: only while the drawer is fully open. A part-way drawer shows the TOP of its list and
@@ -3225,7 +3229,58 @@ function revealInPane(row) {
   if (rect.top < bounds.top) pane.scrollTop -= bounds.top - rect.top;
   else if (rect.bottom > bounds.bottom) pane.scrollTop += rect.bottom - bounds.bottom;
 }
+// #s207 (the owner): the Turns pane is LOCKED to the session — it keeps the current turn in view —
+// until the reader scrolls the pane itself, which UNLOCKS it: from then nothing moves it, neither a
+// turn the session tails nor the current turn changing. Scrolling the session view, the jump to the
+// latest, the sticky turn bar, a turn step, or choosing a turn in the pane LOCKS it again. Both are
+// decided on the reader's INPUT, never on a scroll event: the shell's own writes scroll too, and a
+// headless renderer delivered the reader's scroll event a second after their wheel. Input that will
+// move the list — a wheel it has room for (the outline's wheel handler decides that on the
+// desktop), a finger dragging it, a scroll key with focus in it, a press on its scrollbar — unlocks;
+// the same input on the session view locks. Wherever the list is drawn (the outline, a phone's
+// sheet, a wide phone's column) its scroller is the nearest one around it, and `data-follow` on the
+// list says which state it is in.
+function turnsScroller() {
+  let pane = byId("navigatorTurns");
+  while (pane && pane !== document.body) {
+    const overflow = getComputedStyle(pane).overflowY;
+    if ((overflow === "auto" || overflow === "scroll") && pane.scrollHeight > pane.clientHeight) return pane;
+    pane = pane.parentElement;
+  }
+  return null;
+}
+/** Lock (`on`) or unlock the pane. Locking shows the current turn at once, unless `reveal` is
+ *  false — a turn chosen in the pane is in view already, and the session's jump marks it. */
+function setTurnsFollow(on, reveal = true) {
+  byId("navigatorTurns").dataset.follow = on ? "locked" : "unlocked";
+  if (turnsFollow === on) return;
+  turnsFollow = on;
+  if (on && reveal) { outlineCurrent = null; updateOutlineFocus(); }
+}
+byId("navigatorTurns").dataset.follow = "locked";
+const SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
+const editable = target => !!target?.closest?.("input, textarea, select, [contenteditable=''], [contenteditable='true']");
+function readerMoves(event) {
+  const target = event.target, scroller = turnsScroller();
+  const inTurns = !!scroller && scroller.contains(target);
+  if (inTurns) {
+    // On the desktop the outline's own wheel handler knows whether the gesture scrolls the list.
+    if (event.type === "wheel") {
+      if (byId("sessionNavigator").contains(scroller)) return;
+      const room = event.deltaY < 0 ? scroller.scrollTop > 1 : scroller.scrollTop < scroller.scrollHeight - scroller.clientHeight - 1;
+      if (event.deltaY && room) setTurnsFollow(false);
+    } else if (event.type === "touchmove" || (event.type === "keydown" && SCROLL_KEYS.has(event.key)) || (event.type === "pointerdown" && target === scroller)) setTurnsFollow(false);
+    return;
+  }
+  const inSession = transcript.contains(target);
+  if ((event.type === "wheel" || event.type === "touchmove") && inSession) setTurnsFollow(true);
+  else if (event.type === "pointerdown" && target === transcript) setTurnsFollow(true);
+  else if (event.type === "keydown" && SCROLL_KEYS.has(event.key) && !editable(target) && (inSession || target === document.body)) setTurnsFollow(true);
+}
+for (const kind of ["wheel", "touchmove", "pointerdown", "keydown"]) document.addEventListener(kind, readerMoves, { capture: true, passive: true });
+
 function stepTurn(delta) {
+  setTurnsFollow(true);
   const turns = userUnits(); if (!turns.length) return;
   const next = Math.max(0, Math.min(turns.length - 1, currentUserUnitIndex() + delta));
   viewport.jumpToRecord(turns[next].from, "turn");

@@ -448,6 +448,7 @@ assert.match(appSource, /families\(rows\)/, "the tree clusters fork families thr
   console.log("flat list cases passed");
 }
 assert.match(appSource, /flatFamilies\(agents, Date\.now\(\) \/ 1000\)/, "the flat list orders through the tested function");
+assert.match(appSource, /if \(target && turnsFollow\) revealInPane\(target\);/, "#s207: the Turns pane follows the current turn only while it is locked to the session");
 assert.match(productionCss, /#app\.sessions-flat \.side-head \.head-actions>:is\(#collapseBtn,#expandBtn\)\{display:none\}/, "flat, the group controls go");
 assert.match(appSource, /indexState\.selectedWasRow && !selectedRow\(\)\) sessionGone\(\)/, "a sub-agent child, never a list row, is not declared gone by the index poll");
 assert.match(appSource, /meta\?\.ancestors\?\.at\(-1\)/, "the parent control reads the last ancestor from the session's own meta");
@@ -1251,8 +1252,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /let wheelPane = null;/, "…and remembers the pane it began in");
   assert.match(appSource, /wheelIdle = setTimeout\(\(\) => \{ wheelOwner = null; wheelPane = null; \}, WHEEL_IDLE_MS\);/, "…and a pause is what ends it");
   assert.match(appSource, /wheelPane = paneBodyAt\(event\.target\);\n    wheelOwner = wheelPane \? "pane" : "chain";/, "where the gesture began decides what it drives (#206)");
-  assert.match(appSource, /if \(wheelOwner === "pane"\) \{\n    const list = listWithRoom\(wheelPane, dy\);\n    if \(list\) return;/, "…a pane gesture scrolls the pane's own list, by the browser itself");
-  assert.match(appSource, /if \(list\) return;\s*\/\/ the browser scrolls the pane's own list\n    event\.preventDefault\(\);/, "…and at the list's end the gesture is spent: the drawers never take over");
+  assert.match(appSource, /if \(wheelOwner === "pane"\) \{\n    const list = listWithRoom\(wheelPane, dy\);\n(    \/\/ .*\n)*    if \(list\) \{ if \(list\.contains\(byId\("navigatorTurns"\)\)\) setTurnsFollow\(false\); return; \}/, "…a pane gesture scrolls the pane's own list, by the browser itself (and the Turns list, so scrolled, stops following, #s207)");
+  assert.match(appSource, /if \(list\) \{ if \(list\.contains\(byId\("navigatorTurns"\)\)\) setTurnsFollow\(false\); return; \}\n    event\.preventDefault\(\);/, "…and at the list's end the gesture is spent: the drawers never take over");
   assert.doesNotMatch(appSource, /WHEEL_RESIST_PX|wheelResist/, "the friction went with the handover it guarded");
   assert.match(appSource, /function drawersUnderNoPressure\(cards\) \{/, "a closing push leaves a wholly visible tail alone (#206)");
   assert.match(appSource, /const exempt = delta > 0 \? drawersUnderNoPressure\(cards\) : new Set\(\);/, "…only when closing — a pull gives back in the order it took");
@@ -2375,7 +2376,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /const on = !!unit && viewport\.scroller\.scrollTop > 8;/, "off only at the very top, where the turn names itself");
   assert.match(appSource, /turnStickyText\.textContent = `Turn \$\{unit\.turn\} — \$\{unit\.label \|\| ""\}`\.trimEnd\(\);/, "…and reads 'Turn N — label', the classic page's own words");
   assert.match(appSource, /const index = currentUserUnitIndex\(atKey\);\s*\n\s*const unit = index >= 0 \? userUnits\(\)\[index\] : null;\s*\n\s*\/\/ Off at the very top/, "fed by the same current-turn rule the outline pane and the keys use (#199), with the engine's key when the transaction boundary gives one (#209)");
-  assert.match(appSource, /turnStickyBar\.onclick = \(\) => \{ if \(turnStickyAt != null\) viewport\.jumpToRecord\(turnStickyAt, "turn"\); \};/, "a click returns to that turn's record");
+  assert.match(appSource, /turnStickyBar\.onclick = \(\) => \{ if \(turnStickyAt != null\) \{ setTurnsFollow\(true\); viewport\.jumpToRecord\(turnStickyAt, "turn"\); \} \};/, "a click returns to that turn's record, the Turns pane locked to the session again (#s207)");
   assert.match(appSource, /updateStickyHeaders\(\); updateOutlineFocus\(\); updateTurnBar\(\);/, "…and it is refreshed on every scroll");
   assert.match(productionCss, /\.transcript\{scroll-padding-top:52px\}/, "the scroller declares the bar's height");
   assert.match(viewportSource, /get landing\(\) \{\s*\n\s*return parseFloat\(getComputedStyle\(this\.scroller\)\.scrollPaddingTop\) \|\| 18;/, "…so a jump lands below the bar, not behind it (the landing the spy line follows, #199)");
@@ -2751,7 +2752,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(shell, /this\.jumpTo\(\{ index, block: recordIndex, top: this\.landing \}, \{ dirtyFrom: index, intent: true \}\);/, "the shell's jump lands the record row at the landing, stamped as before");
   assert.match(shell, /this\.jumpTo\(\{ key: memory\.key, index, top: memory\.top \}, \{ dirtyFrom: changedUnit \}\);/, "…its memory restore is a landing with no stamp");
   assert.doesNotMatch(shell, /toBottom\(/, "…and the pill is the engine's follow, with no wrapper left on the shell");
-  assert.match(app, /byId\("jumpToBottom"\)\.onclick = \(\) => viewport\.follow\(\);/, "…called from the pill itself");
+  assert.match(app, /byId\("jumpToBottom"\)\.onclick = \(\) => \{ setTurnsFollow\(true\); viewport\.follow\(\); \};/, "…called from the pill itself (which locks the Turns pane to the session again, #s207)");
   assert.match(app, /viewport\.pageBy\(direction, \{ intent: true \}\);/, "paging is the engine's, stamped as before");
   assert.match(app, /viewport\.reveal\(heads\[next\], \{ top: 160, smooth: true, intent: true \}\);/, "a stepped head is revealed smoothly — the classic page's rule, stamped as before");
   assert.match(app, /viewport\.reveal\(nested, \{ top: 18 \}\);/, "a nested hash landing is a reveal");

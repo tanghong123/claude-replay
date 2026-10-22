@@ -14320,3 +14320,308 @@ fn a_phone_lists_the_sessions_by_activity_in_its_drawer_and_its_column() {
         drop(m);
     }
 }
+
+/// The Turns pane as the reader sees it: its scroller's offset and range, whether it follows the
+/// session (`data-follow`), how many rows it lists, and whether the current turn's row is inside
+/// the scroller's box.
+const TURNS_PANE_JS: &str = "(function () { var list = document.getElementById('navigatorTurns'); var s = list; while (s && s !== document.body) { var o = getComputedStyle(s).overflowY; if ((o === 'auto' || o === 'scroll') && s.scrollHeight > s.clientHeight) break; s = s.parentElement; } if (!s || s === document.body) return JSON.stringify({ scroller: false }); var b = s.getBoundingClientRect(), cur = list.querySelector('.outline-turn-row.current'), c = cur && cur.getBoundingClientRect(); return JSON.stringify({ scroller: true, top: Math.round(s.scrollTop), max: s.scrollHeight - s.clientHeight, follow: list.dataset.follow || null, rows: list.querySelectorAll('.outline-turn-row').length, current: cur ? cur.dataset.turnRecord : null, currentShown: !!c && c.top >= b.top - 1 && c.bottom <= b.bottom + 1, mid: [b.left + b.width / 2, b.top + b.height / 2] }); })()";
+
+/// A real wheel (CDP `mouseWheel`) at a point: the browser scrolls whatever is under it.
+fn wheel_at(tab: &headless_chrome::Tab, x: f64, y: f64, dy: f64) {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventTypeOption as Kind,
+    };
+    tab.call_method(DispatchMouseEvent {
+        Type: Kind::MouseWheel,
+        x,
+        y,
+        modifiers: None,
+        timestamp: None,
+        button: None,
+        buttons: None,
+        click_count: None,
+        force: None,
+        tangential_pressure: None,
+        tilt_x: None,
+        tilt_y: None,
+        twist: None,
+        delta_x: Some(0.0),
+        delta_y: Some(dy),
+        pointer_Type: None,
+    })
+    .expect("a wheel");
+}
+
+/// #s207 (the owner): the Turns pane follows the session until the reader scrolls it. While they
+/// scroll it nothing moves it, not even the session tailing a new turn; scrolling the session
+/// view, the jump to the latest, or choosing a turn in the pane locks it to the session again.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_turns_pane_stays_where_the_reader_scrolled_it_until_they_go_back_to_the_session() {
+    let _serial = serial();
+    let base = base("turns-unlock");
+    let stores = Stores::new(&base);
+    let sid = "7a2e7a2e-0000-4000-8000-000000000207";
+    let body: String = (0..60)
+        .map(|i| {
+            format!(
+                "{}{}",
+                harness::user_at(
+                    &format!("turn {i}: a question"),
+                    &harness::rfc3339_secs_ago(4000 - i * 60)
+                ),
+                harness::assistant_at(
+                    &format!(
+                        "answer {i}. {}",
+                        "Enough prose to give each turn some height in the transcript. ".repeat(4)
+                    ),
+                    &harness::rfc3339_secs_ago(3990 - i * 60)
+                )
+            )
+        })
+        .collect();
+    let path = stores.claude_session(sid, &body);
+    let monitor = Monitor::spawn(Kind::V1, 3199, &base, Some(&stores), false);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1400.0, 760.0);
+    tab.navigate_to(&format!("http://127.0.0.1:3199/?ui=app&session={sid}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let pane = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, TURNS_PANE_JS).as_str().unwrap_or("{}")).unwrap()
+    };
+    harness::until(
+        &tab,
+        &format!("JSON.parse(({TURNS_PANE_JS})).rows >= 60 && JSON.parse(({TURNS_PANE_JS})).currentShown"),
+        "the sixty turns, the current one in view",
+        Duration::from_secs(30),
+        TURNS_PANE_JS,
+    );
+    let at = pane();
+    assert!(
+        at["max"].as_i64().unwrap_or(0) > 300,
+        "sixty turns overflow the pane: {at}"
+    );
+    let (px, py) = (
+        at["mid"][0].as_f64().unwrap(),
+        at["mid"][1].as_f64().unwrap(),
+    );
+    let unlock = |what: &str| -> i64 {
+        wheel_at(&tab, px, py, -100000.0);
+        harness::until(
+            &tab,
+            &format!("JSON.parse(({TURNS_PANE_JS})).top === 0"),
+            &format!("{what}: the reader's wheel to take the pane to its top"),
+            Duration::from_secs(10),
+            TURNS_PANE_JS,
+        );
+        std::thread::sleep(Duration::from_millis(400));
+        pane()["top"].as_i64().unwrap_or(-1)
+    };
+    // 1. The reader scrolls the pane to its top, then the session tails a new turn: the pane stays.
+    let scrolled = unlock("first");
+    harness::append(
+        &path,
+        &format!(
+            "{}{}",
+            harness::user_at(
+                "turn 60: arrives while the reader reads the pane",
+                &harness::rfc3339_secs_ago(5)
+            ),
+            harness::assistant_at("answer 60.", &harness::rfc3339_secs_ago(4))
+        ),
+    );
+    harness::until(
+        &tab,
+        &format!("JSON.parse(({TURNS_PANE_JS})).rows === 61"),
+        "the new turn to be listed",
+        Duration::from_secs(20),
+        TURNS_PANE_JS,
+    );
+    std::thread::sleep(Duration::from_millis(2500));
+    let tailed = pane();
+    assert_eq!(
+        tailed["top"].as_i64(),
+        Some(scrolled),
+        "the session tailing a turn does not move the pane the reader scrolled: {tailed}"
+    );
+    assert_eq!(
+        tailed["follow"], "unlocked",
+        "the pane says it no longer follows: {tailed}"
+    );
+    // 2. Scrolling the session view locks it again: the pane shows the current turn.
+    let t = harness::eval(&tab, "(function(){ var b = document.querySelector('.transcript').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()");
+    let t: Vec<f64> = serde_json::from_str(t.as_str().unwrap_or("[]")).unwrap();
+    wheel_at(&tab, t[0], t[1], -900.0);
+    harness::until(
+        &tab,
+        &format!("(function(){{ var p = JSON.parse(({TURNS_PANE_JS})); return p.follow === 'locked' && p.currentShown; }})()"),
+        "scrolling the session to lock the pane and bring the current turn into it",
+        Duration::from_secs(10),
+        TURNS_PANE_JS,
+    );
+    // 3. Unlocked again, the jump to the latest locks it: the last turn is current and shown.
+    unlock("second");
+    assert_eq!(
+        pane()["follow"],
+        "unlocked",
+        "a scroll of the pane unlocks it again"
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('jumpToBottom').click(); return 'ok'; })()",
+    );
+    harness::until(
+        &tab,
+        &format!("(function(){{ var p = JSON.parse(({TURNS_PANE_JS})); var last = [...document.querySelectorAll('#navigatorTurns .outline-turn-row')].pop(); return p.follow === 'locked' && p.currentShown && p.current === last.dataset.turnRecord; }})()"),
+        "the jump to the latest to lock the pane on the last turn",
+        Duration::from_secs(10),
+        TURNS_PANE_JS,
+    );
+    // 4. Unlocked again, choosing a turn in the pane locks it: that turn is current and shown.
+    unlock("third");
+    let chosen = harness::eval(&tab, "(function(){ var r = document.querySelectorAll('#navigatorTurns .outline-turn-row')[2]; r.click(); return r.dataset.turnRecord; })()");
+    harness::until(
+        &tab,
+        &format!("(function(){{ var p = JSON.parse(({TURNS_PANE_JS})); return p.follow === 'locked' && p.currentShown && p.current === {chosen}; }})()"),
+        "choosing a turn to lock the pane on it",
+        Duration::from_secs(10),
+        TURNS_PANE_JS,
+    );
+    drop(monitor);
+}
+
+/// A finger dragging whatever `sel` matches (a touch that moves, as iOS sends it), then the scroll
+/// that drag makes: the scroller around it set to `top`, with its scroll event. Synthetic touches
+/// do not scroll by themselves, so the scroll is written as touch_glide writes a glide's.
+fn finger_scroll(tab: &headless_chrome::Tab, sel: &str, top: i64) {
+    let r = harness::eval(tab, &format!("(function(){{ var el = document.querySelector('{sel}'); if (!el) return 'missing'; var s = el; while (s && s !== document.body) {{ var o = getComputedStyle(s).overflowY; if ((o === 'auto' || o === 'scroll') && s.scrollHeight > s.clientHeight) break; s = s.parentElement; }} var b = el.getBoundingClientRect(), x = b.left + b.width / 2, y = b.top + Math.min(b.height / 2, 40); var t = new Touch({{ identifier: 7, target: el, clientX: x, clientY: y }}); el.dispatchEvent(new TouchEvent('touchstart', {{ touches: [t], targetTouches: [t], changedTouches: [t], bubbles: true }})); var m = new Touch({{ identifier: 7, target: el, clientX: x, clientY: y + 60 }}); el.dispatchEvent(new TouchEvent('touchmove', {{ touches: [m], targetTouches: [m], changedTouches: [m], bubbles: true }})); if (s && s !== document.body) {{ s.scrollTop = {top}; s.dispatchEvent(new Event('scroll')); }} el.dispatchEvent(new TouchEvent('touchend', {{ touches: [], targetTouches: [], changedTouches: [m], bubbles: true }})); return 'ok'; }})()"));
+    assert_eq!(r.as_str(), Some("ok"), "a finger on {sel}");
+}
+
+/// #s207 on a phone: the Turns list in the upright sheet and in a wide phone's column held sideways
+/// follows the same rule — a finger dragging it unlocks it and a tailed turn leaves it where it
+/// was; choosing a turn (the sheet) or a finger on the session (the column) locks it again.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_s_turns_list_stays_where_the_finger_left_it() {
+    let _serial = serial();
+    for (w, h, insets, port, case) in [
+        (390, 844, None, 3200, "turns-unlock-upright"),
+        (
+            956,
+            440,
+            Some(harness::SIDEWAYS_INSETS),
+            3201,
+            "turns-unlock-sideways",
+        ),
+    ] {
+        let base = base(case);
+        let stores = Stores::new(&base);
+        let sid = "7a2e7a2e-0000-4000-8000-000000000208";
+        let body: String = (0..60)
+            .map(|i| {
+                format!(
+                    "{}{}",
+                    harness::user_at(
+                        &format!("turn {i}: a question"),
+                        &harness::rfc3339_secs_ago(4000 - i * 60)
+                    ),
+                    harness::assistant_at(
+                        &format!("answer {i}. {}", "Some prose for the turn. ".repeat(4)),
+                        &harness::rfc3339_secs_ago(3990 - i * 60)
+                    )
+                )
+            })
+            .collect();
+        let path = stores.claude_session(sid, &body);
+        let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), false);
+        let (_browser, tab) = harness::chrome_tab();
+        harness::phone(&tab, w, h);
+        if let Some(insets) = insets {
+            harness::safe_area(&tab, insets);
+        }
+        tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
+            .unwrap();
+        tab.wait_until_navigated().unwrap();
+        harness::until(
+            &tab,
+            &format!("document.querySelectorAll('#navigatorTurns .outline-turn-row').length >= 60 && innerWidth === {w}"),
+            "the sixty turns at the phone's size",
+            Duration::from_secs(30),
+            "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
+        );
+        let pane = || -> serde_json::Value {
+            serde_json::from_str(harness::eval(&tab, TURNS_PANE_JS).as_str().unwrap_or("{}"))
+                .unwrap()
+        };
+        // The list where a phone draws it: the Turns sheet upright, the column's Turns tab sideways.
+        let sideways = w > 500;
+        if sideways {
+            phone_tap(&tab, "#columnSwitch [data-column-tab=\"turns\"]");
+        } else {
+            phone_tap(&tab, "#phonePane-turns");
+        }
+        harness::until(
+            &tab,
+            &format!("(function(){{ var p = JSON.parse(({TURNS_PANE_JS})); return p.scroller && p.max > 200 && p.currentShown; }})()"),
+            "the Turns list on screen, the current turn in it",
+            Duration::from_secs(10),
+            TURNS_PANE_JS,
+        );
+        finger_scroll(&tab, "#navigatorTurns .outline-turn-row", 0);
+        let dragged = pane();
+        assert_eq!(
+            (dragged["follow"].as_str(), dragged["top"].as_i64()),
+            (Some("unlocked"), Some(0)),
+            "{w}x{h}: a finger dragging the list unlocks it: {dragged}"
+        );
+        harness::append(
+            &path,
+            &format!(
+                "{}{}",
+                harness::user_at(
+                    "turn 60: tailed while the finger reads the list",
+                    &harness::rfc3339_secs_ago(5)
+                ),
+                harness::assistant_at("answer 60.", &harness::rfc3339_secs_ago(4))
+            ),
+        );
+        harness::until(
+            &tab,
+            &format!("JSON.parse(({TURNS_PANE_JS})).rows === 61"),
+            "the tailed turn to be listed",
+            Duration::from_secs(20),
+            TURNS_PANE_JS,
+        );
+        std::thread::sleep(Duration::from_millis(2500));
+        let tailed = pane();
+        assert_eq!(
+            (tailed["follow"].as_str(), tailed["top"].as_i64()),
+            (Some("unlocked"), Some(0)),
+            "{w}x{h}: the tailed turn leaves the list where the finger left it: {tailed}"
+        );
+        if sideways {
+            // A finger on the session beside the column locks it again and shows the current turn.
+            finger_scroll(&tab, ".transcript .turn.user", 0);
+            harness::until(
+                &tab,
+                &format!("(function(){{ var p = JSON.parse(({TURNS_PANE_JS})); return p.follow === 'locked' && p.currentShown; }})()"),
+                "a finger on the session to lock the column's list on the current turn",
+                Duration::from_secs(10),
+                TURNS_PANE_JS,
+            );
+        } else {
+            // Choosing a turn in the sheet locks it again: the sheet closes on the chosen turn.
+            let chosen = harness::eval(&tab, "(function(){ var r = document.querySelectorAll('#navigatorTurns .outline-turn-row')[3]; r.click(); return r.dataset.turnRecord; })()");
+            harness::until(
+                &tab,
+                &format!("document.getElementById('navigatorTurns').dataset.follow === 'locked' && (document.querySelector('#navigatorTurns .outline-turn-row.current') || {{}}).dataset.turnRecord === {chosen}"),
+                "choosing a turn to lock the list on it",
+                Duration::from_secs(10),
+                "document.getElementById('navigatorTurns').dataset.follow",
+            );
+        }
+        drop(monitor);
+    }
+}
