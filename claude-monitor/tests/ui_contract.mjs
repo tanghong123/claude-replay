@@ -28,6 +28,7 @@ import { agentRecordTargets, currentTurnIndex, peerHue, peerLabelRest, Projectio
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
+import { CALM_SECS, flatFamilies } from "../src/codex-ui/session-list.js";
 import { BLOCKED_SUMMARY, BUCKETS, FILTER_BUCKETS, FILTER_LABELS, RECENT_SECS, REASONS, REASON_BUCKETS, denoteState, displayState, needsPerson, sessionBucket, sessionFilterBuckets, stateTip } from "../../claude-replay-html/src/html/shared/state-labels.js";
 import { composeCapability, composeCopy, consentQuery, grantOutcome, runRevoke, runSend, sendOutcome, sendQuery } from "../../claude-replay-html/src/html/shared/control-protocol.js";
 import { cursorText, freshCursor, parseRecords, pullQuery, recordsQuery, reducePull } from "../../claude-replay-html/src/html/shared/record-stream.js";
@@ -407,6 +408,47 @@ console.log("reveal cases passed");
   console.log("family cases passed");
 }
 assert.match(appSource, /families\(rows\)/, "the tree clusters fork families through the tested function");
+
+// #s206: the flat list — every family the tree shows, across agents and projects, in the server's
+// calm order: active families (the last ten minutes) tied and named in turn, then the rest newest
+// first, a stable key under every tie; families form within their project, as in the tree.
+{
+  const now = 1_000_000;
+  const tree = [
+    { id: "claude", projects: [
+      { id: "p:/r", name: "r", rows: [
+        { id: "zeta", name: "zeta", activityTs: now - 60 },
+        { id: "nu", name: "nu", activityTs: now - 7200 },
+        { id: "nuFork", name: "nu", family: "nu", isFork: true, activityTs: now - 5000 }
+      ] },
+      { id: "p:/p2", name: "p2", rows: [{ id: "mu", name: "mu", activityTs: now - 2400 }] }
+    ] },
+    { id: "codex", projects: [
+      { id: "p:/cx", name: "cx", rows: [
+        { id: "kappa", name: "Kappa", activityTs: now - 180 },
+        { id: "xi", name: "xi", activityTs: now - 93600 },
+        { id: "twin", name: "mu", activityTs: now - 2400 }
+      ] }
+    ] }
+  ];
+  const flat = flatFamilies(tree, now);
+  assert.deepEqual(flat.map(f => [f.rep.id, f.agent.id, f.project.name]), [
+    ["kappa", "codex", "cx"],
+    ["zeta", "claude", "r"],
+    ["mu", "claude", "p2"],
+    ["twin", "codex", "cx"],
+    ["nu", "claude", "r"],
+    ["xi", "codex", "cx"]
+  ], "active families tied by name (case aside), the rest newest first, a stable key between equals");
+  assert.deepEqual(flat.find(f => f.rep.id === "nu").forks.map(r => r.id), ["nuFork"], "a family keeps its forks, and is placed by its newest member");
+  assert.equal(flat.find(f => f.rep.id === "nu").latest, now - 5000);
+  assert.deepEqual(flatFamilies(tree, now).map(f => f.key), flat.map(f => f.key), "the same data gives the same list");
+  assert.equal(CALM_SECS, 600, "the calm window is the server's ACTIVE_WINDOW");
+  assert.deepEqual(flatFamilies([], now), []);
+  console.log("flat list cases passed");
+}
+assert.match(appSource, /flatFamilies\(agents, Date\.now\(\) \/ 1000\)/, "the flat list orders through the tested function");
+assert.match(productionCss, /#app\.sessions-flat \.side-head \.head-actions>:is\(#collapseBtn,#expandBtn\)\{display:none\}/, "flat, the group controls go");
 assert.match(appSource, /indexState\.selectedWasRow && !selectedRow\(\)\) sessionGone\(\)/, "a sub-agent child, never a list row, is not declared gone by the index poll");
 assert.match(appSource, /meta\?\.ancestors\?\.at\(-1\)/, "the parent control reads the last ancestor from the session's own meta");
 assert.match(productionCss, /\.session-parent\.is-live\{display:inline-flex;/, "the reference parent control is shown by a production state, not by editing the shell");

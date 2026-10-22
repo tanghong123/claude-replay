@@ -16,6 +16,9 @@ export const indexState = {
   // other view choices; every bucket is "no filter". Include hidden stays a view state (not
   // remembered, like classic), so a reload starts with hidden rows hidden.
   buckets: new Set(json("am-prod-session-filter", ["recent", "blocked"])),
+  // #s206: the list as ONE list by activity, with no agent or project groups — a choice in the
+  // same sheet, remembered like the buckets; off, the tree.
+  flat: localStorage.getItem("am-prod-session-flat") === "1",
   // Fork families opened in the tree (view state, like classic famOpen), and whether the
   // selected id was a LIST row when chosen — a sub-agent child never is, and must not be
   // declared gone by the index poll for that reason.
@@ -120,6 +123,7 @@ export function persist() {
   localStorage.setItem("am-prod-task-groups", JSON.stringify([...uiState.taskGroupsShown]));
   localStorage.setItem("am-prod-read", JSON.stringify(indexState.read));
   localStorage.setItem("am-prod-session-filter", JSON.stringify([...indexState.buckets]));
+  localStorage.setItem("am-prod-session-flat", indexState.flat ? "1" : "0");
   if (uiState.readingChosen) localStorage.setItem(READING_KEY, JSON.stringify(uiState.reading));
 }
 

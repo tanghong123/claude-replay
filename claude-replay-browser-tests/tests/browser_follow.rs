@@ -13957,3 +13957,366 @@ fn a_phone_dims_behind_a_pane_sheet_and_keeps_a_margin_upright() {
         gutter,
     );
 }
+
+/// #s206 fixture: five sessions over two agents and three projects, each with its file's
+/// modification time set, since that is the activity the list orders by. Two are active (minutes
+/// ago) and three are not; the newest active one is NOT first, because the calm order ties every
+/// active session and names them in turn (owner, 2026-08-08).
+fn flat_world(base: &std::path::Path) -> Stores {
+    let stores = Stores::new(base);
+    let aged = |path: &std::path::Path, secs: u64| {
+        let when = std::time::SystemTime::now() - Duration::from_secs(secs);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    };
+    let claude = |dir: &str, cwd: &str, sid: &str, title: &str, secs: u64| {
+        let proj = stores.root.join("claude").join(dir);
+        std::fs::create_dir_all(&proj).unwrap();
+        let path = proj.join(format!("{sid}.jsonl"));
+        // A Claude session's title is the client's own (`ai-title`), never its prompt.
+        let body = format!(
+            "{{\"type\":\"ai-title\",\"aiTitle\":\"{title}\",\"sessionId\":\"{sid}\"}}\n{}{}",
+            harness::user_at(title, &harness::rfc3339_secs_ago(secs + 5)),
+            harness::history::assistant_phased_at("Done.", &harness::rfc3339_secs_ago(secs), true)
+        )
+        .replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{cwd}\""));
+        std::fs::write(&path, body).unwrap();
+        aged(&path, secs);
+    };
+    claude("-r", "/r", FLAT_ZETA, "zeta live", 60);
+    claude("-r", "/r", FLAT_NU, "nu older", 2 * 3600);
+    claude("-p2", "/p2", FLAT_MU, "mu old", 40 * 60);
+    let codex = |id: &str, title: &str, secs: u64| {
+        let ts = harness::rfc3339_secs_ago(secs);
+        let path = stores.codex_session(
+            id,
+            &format!(
+                "{{\"timestamp\":\"{ts}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/cx\",\"originator\":\"codex-tui\",\"cli_version\":\"0.147.0\"}}}}\n\
+                 {{\"timestamp\":\"{ts}\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"{title}\"}}]}}}}\n\
+                 {{\"timestamp\":\"{ts}\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"Done.\"}}]}}}}\n"
+            ),
+        );
+        aged(&path, secs);
+    };
+    codex(FLAT_KAPPA, "kappa live", 3 * 60);
+    codex(FLAT_XI, "xi oldest", 26 * 3600);
+    // An agent the shell has no mark for: the flat row draws its first letter instead. Oldest of
+    // all, so it is the list's last row.
+    let qw = stores.qwenwork_session(
+        FLAT_QW,
+        &harness::long_session(6, harness::Shape::default()),
+    );
+    aged(&qw, 3 * 86400);
+    stores
+}
+const FLAT_ZETA: &str = "f1a7f1a7-0000-4000-8000-000000000001";
+const FLAT_NU: &str = "f1a7f1a7-0000-4000-8000-000000000002";
+const FLAT_MU: &str = "f1a7f1a7-0000-4000-8000-000000000003";
+const FLAT_KAPPA: &str = "f1a7f1a7-0000-4000-8000-000000000004";
+const FLAT_XI: &str = "f1a7f1a7-0000-4000-8000-000000000005";
+const FLAT_QW: &str = "f1a7f1a7-0000-4000-8000-000000000006";
+
+/// The list as the reader sees it: the order of its session rows (title, the project and agent
+/// the row names, whether it is the selected one), the group heads, whether the two group controls
+/// and the flat toggle are shown and checked, and the app's mode class.
+const FLAT_LIST_JS: &str = "(function () { var t = document.getElementById('tree'); var shown = function (id) { var el = document.getElementById(id); return !!el && getComputedStyle(el).display !== 'none'; }; var flat = document.querySelector('#sessionFilter [data-flat]'); return { rows: Array.from(t.querySelectorAll('.tree-row.session[data-session]')).map(function (r) { var p = r.querySelector('.tree-project'), a = r.querySelector('.tree-agent'), m = a && a.querySelector('.agent-monogram text'), ink = a && (a.querySelector('.brand-icon [fill]:not([fill=none])') || m); return [r.querySelector('.tree-title').textContent, p ? p.textContent : null, a ? a.getAttribute('aria-label') : null, r.classList.contains('selected'), m ? m.textContent : null, ink ? getComputedStyle(ink).fill : a ? getComputedStyle(a.querySelector('.brand-icon')).stroke : null, a ? getComputedStyle(a).color : null]; }), heads: t.querySelectorAll('.agent-label, .tree-row.project').length, collapse: shown('collapseBtn'), expand: shown('expandBtn'), filter: shown('filterBtn'), toggle: flat ? flat.getAttribute('aria-checked') : 'missing', mode: document.getElementById('app').classList.contains('sessions-flat') }; })()";
+
+/// #s206 (the owner): a toggle in the session filter's sheet lists the sessions as ONE list by
+/// activity, with no agent or project heads; each row keeps its project's name and its agent's
+/// mark under the title; Collapse every group and Expand every group go while it is on and come
+/// back with the tree; the choice survives a reload; the order is the server's calm one.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_lists_the_sessions_by_activity_alone() {
+    use headless_chrome::protocol::cdp::Page;
+    let _serial = serial();
+    let base = base("appshell-flat");
+    let stores = flat_world(&base);
+    let monitor = Monitor::spawn(Kind::V1, 3196, &base, Some(&stores), false);
+    let (_browser, tab) = harness::chrome_tab();
+    let url = "http://127.0.0.1:3196/?ui=app";
+    tab.navigate_to(url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::show_every_session(&tab, url);
+    let list = || eval(&tab, FLAT_LIST_JS, false);
+    let titles = |v: &serde_json::Value| {
+        v["rows"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .map(|r| r[0].as_str().unwrap_or("").to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut tree = list();
+    while titles(&tree).len() < 6 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(500));
+        tree = list();
+    }
+    // 1. The tree: heads, both group controls, the toggle unchecked.
+    assert_eq!(
+        titles(&tree).len(),
+        6,
+        "the six sessions are listed: {tree}"
+    );
+    assert!(
+        tree["heads"].as_u64().unwrap_or(0) >= 7,
+        "three agents and four projects head the tree: {tree}"
+    );
+    assert_eq!(
+        (
+            tree["collapse"].as_bool(),
+            tree["expand"].as_bool(),
+            tree["mode"].as_bool()
+        ),
+        (Some(true), Some(true), Some(false)),
+        "the tree has its group controls: {tree}"
+    );
+    assert_eq!(tree["toggle"], "false", "the toggle starts off: {tree}");
+    // 2. On: one list, no heads, the calm order — the two active sessions tied and by name, then
+    //    the rest newest first — each row naming its project and agent; the group controls gone,
+    //    the filter glyph not.
+    let click = |sel: &str| {
+        let r = eval(&tab, &format!("(function () {{ var el = document.querySelector('{sel}'); if (!el) return 'missing'; el.click(); return 'ok'; }})()"), false);
+        assert_eq!(r.as_str(), Some("ok"), "clicked {sel}");
+    };
+    click("#filterBtn");
+    click("#sessionFilter [data-flat]");
+    let want = serde_json::json!([
+        ["kappa live", "cx", "Codex"],
+        ["zeta live", "r", "Claude Code"],
+        ["mu old", "p2", "Claude Code"],
+        ["nu older", "r", "Claude Code"],
+        ["xi oldest", "cx", "Codex"]
+    ]);
+    // The first five rows without their selected flag (the shell opens a session of its own at
+    // load); the sixth, the Qwenwork one, is checked on its own.
+    let placed = |v: &serde_json::Value| {
+        serde_json::Value::Array(
+            v["rows"]
+                .as_array()
+                .map(|rows| {
+                    rows.iter()
+                        .take(5)
+                        .map(|r| serde_json::json!([r[0], r[1], r[2]]))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        )
+    };
+    let selected = |v: &serde_json::Value| {
+        v["rows"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter(|r| r[3] == true)
+                    .map(|r| r[0].as_str().unwrap_or("").to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let flat = list();
+    assert_eq!(
+        placed(&flat),
+        want,
+        "one list in the calm order, each row naming its project and agent: {flat}"
+    );
+    assert_eq!(flat["heads"], 0, "no agent or project heads: {flat}");
+    let rows = flat["rows"].as_array().cloned().unwrap_or_default();
+    assert_eq!(
+        (rows.len(), rows[5][2].as_str(), rows[5][4].as_str()),
+        (6, Some("Qwenwork"), Some("Q")),
+        "the oldest, an agent without a mark, gets its name's first letter: {flat}"
+    );
+    assert!(
+        rows[..5].iter().all(|r| r[4].is_null()),
+        "the agents with a mark keep it: {flat}"
+    );
+    for r in &rows {
+        assert_eq!(
+            r[5], r[6],
+            "one colour: each mark is painted in the row's muted text colour, the spark too: {r}"
+        );
+    }
+    assert_eq!(
+        (
+            flat["collapse"].as_bool(),
+            flat["expand"].as_bool(),
+            flat["filter"].as_bool(),
+            flat["mode"].as_bool()
+        ),
+        (Some(false), Some(false), Some(true), Some(true)),
+        "Collapse every group and Expand every group go; the filter stays: {flat}"
+    );
+    assert_eq!(flat["toggle"], "true", "the toggle reads checked: {flat}");
+    // The row's two lines: the project line under the title, both inside the row, the mark 12px
+    // and beside the project's name, the age still on the title's side, in both themes.
+    click("#filterBtn");
+    for theme in ["light", "dark"] {
+        if theme == "dark" {
+            click("#themeBtn");
+        }
+        let geometry = eval(&tab, "(function () { return Array.from(document.querySelectorAll('#tree .tree-row.session.flat')).map(function (r) { var rr = r.getBoundingClientRect(), t = r.querySelector('.tree-title').getBoundingClientRect(), c = r.querySelector('.tree-context').getBoundingClientRect(), g = r.querySelector('.tree-agent .brand-icon').getBoundingClientRect(), p = r.querySelector('.tree-project').getBoundingClientRect(), a = r.querySelector('.session-age').getBoundingClientRect(); return { under: c.top >= t.bottom - 1, inside: rr.top <= t.top && c.bottom <= rr.bottom + 0.5 && c.left >= rr.left && a.right <= rr.right, mark: [Math.round(g.width), Math.round(g.height)], beside: g.right <= p.left && Math.abs((g.top + g.bottom) / 2 - (p.top + p.bottom) / 2) <= 2, ageBeside: a.left > t.left && a.top < c.top }; }); })()", false);
+        for row in geometry.as_array().into_iter().flatten() {
+            assert_eq!(
+                (&row["under"], &row["inside"], &row["mark"], &row["beside"], &row["ageBeside"]),
+                (&serde_json::json!(true), &serde_json::json!(true), &serde_json::json!([12, 12]), &serde_json::json!(true), &serde_json::json!(true)),
+                "{theme}: each flat row is its title, then the mark and the project's name under it: {geometry}"
+            );
+        }
+        if let Some(dir) = std::env::var_os("CR_FLAT_SCREENSHOT_DIR") {
+            let png = tab
+                .capture_screenshot(Page::CaptureScreenshotFormatOption::Png, None, None, true)
+                .unwrap();
+            std::fs::write(
+                std::path::Path::new(&dir).join(format!("flat-{theme}.png")),
+                png,
+            )
+            .unwrap();
+        }
+    }
+    click("#themeBtn");
+    // 3. A row still chooses its session, and the choice survives a reload, flat as it was.
+    click(&format!(".tree-row.session[data-session=\"{FLAT_MU}\"]"));
+    harness::until(
+        &tab,
+        &format!("new URLSearchParams(location.search).get('session') === '{FLAT_MU}'"),
+        "the chosen session to open",
+        Duration::from_secs(15),
+        "location.search",
+    );
+    tab.reload(false, None).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#tree .tree-row.session[data-session]').length === 6",
+        "the list to come back after the reload",
+        Duration::from_secs(30),
+        "document.getElementById('tree').innerText",
+    );
+    let again = list();
+    assert_eq!(
+        placed(&again),
+        want,
+        "after a reload the list is still flat, in the same order: {again}"
+    );
+    assert_eq!(
+        selected(&again),
+        vec!["mu old".to_string()],
+        "and the chosen row is the selected one: {again}"
+    );
+    assert_eq!(
+        (
+            again["collapse"].as_bool(),
+            again["expand"].as_bool(),
+            again["mode"].as_bool()
+        ),
+        (Some(false), Some(false), Some(true)),
+        "and the group controls are still gone: {again}"
+    );
+    // 4. Off: the tree and its controls come back.
+    click("#filterBtn");
+    click("#sessionFilter [data-flat]");
+    let back = list();
+    assert!(
+        back["heads"].as_u64().unwrap_or(0) >= 7,
+        "the heads are back: {back}"
+    );
+    assert!(
+        back["rows"]
+            .as_array()
+            .map(|rows| rows.iter().all(|r| r[1].is_null()))
+            .unwrap_or(false),
+        "a tree row carries no context line: {back}"
+    );
+    assert_eq!(
+        (
+            back["collapse"].as_bool(),
+            back["expand"].as_bool(),
+            back["mode"].as_bool(),
+            back["toggle"].as_str()
+        ),
+        (Some(true), Some(true), Some(false), Some("false")),
+        "and so are the group controls: {back}"
+    );
+    drop(monitor);
+}
+
+/// What the flat list looks like on a phone: whether the two group controls and the filter glyph
+/// are drawn, how many flat rows there are and the shortest one's height, whether every row's
+/// context line sits inside it, and the "Show more" button's text.
+const PHONE_FLAT_JS: &str = "(function () { var shown = function (id) { var el = document.getElementById(id); return !!el && getComputedStyle(el).display !== 'none' && el.offsetWidth > 0; }; var rows = Array.from(document.querySelectorAll('#app>.sidebar .tree-row.session.flat')); var more = document.querySelector('#app>.sidebar .tree-project-more'); return JSON.stringify({ collapse: shown('collapseBtn'), expand: shown('expandBtn'), filter: shown('filterBtn'), rows: rows.length, minHeight: rows.length ? Math.min.apply(null, rows.map(function (r) { return Math.round(r.getBoundingClientRect().height); })) : 0, inside: rows.every(function (r) { var a = r.getBoundingClientRect(), c = r.querySelector('.tree-context').getBoundingClientRect(); return c.bottom <= a.bottom + 0.5 && c.top >= a.top; }), heads: document.querySelectorAll('#app>.sidebar .agent-label, #app>.sidebar .tree-row.project').length, more: more ? more.textContent : null }); })()";
+
+/// #s206 on a phone: the flat list in the upright drawer and in a wide phone's column held
+/// sideways — no group controls in either head, the filter glyph kept, finger-sized two-line rows,
+/// and thirty families before "Show more" (the fixture has thirty-one sessions).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_lists_the_sessions_by_activity_in_its_drawer_and_its_column() {
+    let _serial = serial();
+    for (w, h, insets, port, case) in [
+        (390, 844, None, 3197, "phone-flat-upright"),
+        (
+            956,
+            440,
+            Some(harness::SIDEWAYS_INSETS),
+            3198,
+            "phone-flat-sideways",
+        ),
+    ] {
+        let (m, _b, tab) = drawer_world(port, case, w, h, false, 2, insets);
+        harness::eval(
+            &tab,
+            "(function(){ localStorage.setItem('am-prod-session-flat', '1'); return 'ok'; })()",
+        );
+        tab.reload(false, None).unwrap();
+        tab.wait_until_navigated().unwrap();
+        harness::until(
+            &tab,
+            "document.querySelectorAll('#app>.sidebar .tree-row.session.flat').length >= 30",
+            "the flat list after the reload",
+            Duration::from_secs(30),
+            "document.querySelector('#app>.sidebar').innerText.slice(0, 400)",
+        );
+        if w < 500 {
+            phone_tap(&tab, "#drawerHandle");
+            harness::until(
+                &tab,
+                "!document.getElementById('app').classList.contains('mobile-detail')",
+                "the drawer to open",
+                Duration::from_secs(10),
+                "document.getElementById('app').className",
+            );
+        }
+        let seen: serde_json::Value =
+            serde_json::from_str(harness::eval(&tab, PHONE_FLAT_JS).as_str().unwrap()).unwrap();
+        assert_eq!(
+            (&seen["collapse"], &seen["expand"], &seen["filter"], &seen["heads"]),
+            (&serde_json::json!(false), &serde_json::json!(false), &serde_json::json!(true), &serde_json::json!(0)),
+            "{w}x{h}: flat, the head keeps its filter and drops the group controls, and no group heads are drawn: {seen}"
+        );
+        assert_eq!(
+            seen["rows"], 30,
+            "{w}x{h}: thirty families before Show more: {seen}"
+        );
+        assert_eq!(
+            seen["more"], "Show 1 more⌄",
+            "{w}x{h}: the rest wait behind Show more: {seen}"
+        );
+        assert!(
+            seen["minHeight"].as_i64().unwrap_or(0) >= 44,
+            "{w}x{h}: a finger-sized row: {seen}"
+        );
+        assert_eq!(
+            seen["inside"], true,
+            "{w}x{h}: each row's project line is inside it: {seen}"
+        );
+        drop(m);
+    }
+}

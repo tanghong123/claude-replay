@@ -2755,6 +2755,21 @@ mod tests {
 
     use super::*;
 
+    /// #s206: the app shell's flat list orders by the server's calm rule, so its window is this
+    /// one; a change here that missed the shared module would order the two lists differently.
+    #[test]
+    fn the_flat_list_keeps_the_server_s_calm_window() {
+        let js = include_str!("codex-ui/session-list.js");
+        let want = format!(
+            "export const CALM_SECS = {} * 60;",
+            ACTIVE_WINDOW.as_secs() / 60
+        );
+        assert!(
+            ACTIVE_WINDOW.as_secs().is_multiple_of(60) && js.contains(&want),
+            "{want}"
+        );
+    }
+
     #[test]
     fn cost_merge_keeps_known_subtotals_and_unpriced_state() {
         let priced = crate::cost::CostSummary {

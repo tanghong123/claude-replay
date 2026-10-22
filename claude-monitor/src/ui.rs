@@ -231,6 +231,10 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/session-index-store.js").as_slice(),
         ),
+        "monitor-ui/session-list.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/session-list.js").as_slice(),
+        ),
         "monitor-ui/view-model.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/view-model.js").as_slice(),
@@ -472,6 +476,7 @@ mod tests {
                 "session-index-store.js",
                 include_str!("codex-ui/session-index-store.js"),
             ),
+            ("session-list.js", include_str!("codex-ui/session-list.js")),
             (
                 "shared/session-visibility.js",
                 claude_replay_html::shared_source("session-visibility").unwrap(),

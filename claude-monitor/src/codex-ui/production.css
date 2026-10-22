@@ -168,6 +168,22 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .tree-row.session.is-member{padding-left:62px}
 .tree-row.session.is-member .tree-title{font-weight:400;color:var(--sub)}
 
+/* The flat list (#s206, the owner): one list by activity with no agent or project heads, so each
+   row says where it lives — the title, and under it the agent's mark and the project's name — and
+   sits at the list's own edge rather than a session's indent. Collapse every group and Expand every
+   group have no group to act on, so they go while it is flat, on every width. */
+.tree-row.session.flat{padding-left:12px;align-items:center}
+.tree-main{min-width:0;flex:1;display:flex;flex-direction:column;gap:2px}
+.tree-main>.tree-title{flex:none}
+.tree-context{display:flex;align-items:center;gap:5px;min-width:0;font-size:10.5px;line-height:13px;color:color-mix(in srgb,var(--faint) 88%,var(--sub))}
+.tree-agent{flex:none;display:inline-flex}
+.tree-agent .brand-icon{width:12px;height:12px;display:block}
+.tree-agent .brand-icon [fill]:not([fill="none"]){fill:currentColor}
+.tree-agent .agent-monogram text{fill:currentColor;stroke:none;font:700 12px var(--sans,system-ui)}
+.tree-project{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#app.sessions-flat .tree-row.session.is-member{padding-left:30px}
+#app.sessions-flat .side-head .head-actions>:is(#collapseBtn,#expandBtn){display:none}
+
 /* Reading controls (parity #7): the reference rules size code and the transcript with literals;
    production sizes them through custom properties the app root carries, so a preference is one
    property change, not a rule per element. */

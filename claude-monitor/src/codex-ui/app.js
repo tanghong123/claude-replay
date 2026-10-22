@@ -11,6 +11,7 @@ import { RecordStore } from "./record-store.js";
 import { SessionIndexStore } from "./session-index-store.js";
 import { controlState, indexState, persist, recordState, selectedRow, uiState } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
+import { flatFamilies } from "./session-list.js";
 import { displayState, denoteState, sessionFilterBuckets, FILTER_BUCKETS, FILTER_LABELS, BLOCKED_SUMMARY } from "./shared/state-labels.js";
 import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
@@ -339,6 +340,19 @@ function sessionWorkers(id = recordState.session) {
 const workerRunning = row => displayState(row).state !== "idle";
 const agentName = id => ({ claude: "Claude Code", codex: "Codex", qoder: "Qoder", qoderwork: "QoderWork", qwenwork: "Qwenwork" })[id] || id;
 const SIDEBAR_SESSION_LIMIT = 5;
+/** The agent's mark on a flat row (#s206): one colour, the row's muted text colour, as the agent
+ *  lists that show several agents side by side draw it (Zed's and JetBrains' shared registry
+ *  requires a single-colour 16px mark; VS Code's sessions view mutes it). An agent the shell has no
+ *  mark for — Qwenwork, or one it does not know — gets its name's first letter in a rounded square
+ *  rather than a robot every such agent would share; QoderWork shares its vendor's mark. */
+function agentGlyph(id, name) {
+  if (["claude", "codex", "qoder"].includes(id)) return agentLogo(id);
+  if (id === "qoderwork") return agentLogo("qoder");
+  const letter = escapeText((String(name || id || "?").trim()[0] || "?").toUpperCase());
+  return `<svg class="brand-icon icon agent-monogram" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5"/><text x="12" y="16.4" text-anchor="middle">${letter}</text></svg>`;
+}
+// #s206: the flat list shows this many families before "Show more", the selected one always.
+const FLAT_SESSION_LIMIT = 30;
 
 // Hide / restore (parity #1). The control lives ON the row, where the shell keeps row-level
 // actions, and appears on hover or focus — except on a hidden row, where "restore" is the
@@ -351,14 +365,39 @@ function treeAction(target, kind) {
 // A row, or a fork family's representative (`fam`): the family's state and age, not just the
 // rep's — a forked conversation is "running" when any fork is — plus a fork count that opens
 // the other members, indented, the way the classic rail's ⑂ chip does (#142).
-function sessionTreeRow(row, fam = null, member = false) {
+function sessionTreeRow(row, fam = null, member = false, context = null) {
   const forked = fam && fam.forks.length ? fam : null;
   const denote = forked && forked.growing && stateDenote(row)?.tone !== "busy" ? { label: "A fork is running", tone: "busy" } : stateDenote(row);
   const newest = forked ? forked.members.reduce((a, b) => ((b.activityTs || 0) > (a.activityTs || 0) ? b : a), row) : row;
   const marker = denote ? `<span class="session-state ${escapeText(denote.tone)}" role="img" aria-label="${escapeText(denote.label)}" title="${escapeText(denote.label)}"></span>` : "";
   const open = forked && (indexState.openFamilies.has(forked.key) || forked.forks.some(r => r.id === indexState.selected));
   const chip = forked ? `<button class="tree-forks" type="button" data-family-toggle="${escapeText(forked.key)}" aria-expanded="${!!open}" title="${forked.forks.length} fork${forked.forks.length === 1 ? "" : "s"} of this session — forking copies the conversation, so they overlap heavily">⑂ ${forked.forks.length}</button>` : "";
-  return `<div class="tree-row session ${row.id === indexState.selected ? "selected" : ""} ${row.hidden ? "is-hidden" : ""} ${member ? "is-member" : ""}" role="treeitem" tabindex="0" data-session="${escapeText(row.id)}" title="${escapeText(displayState(row).label)} · ${escapeText(row.stateDetail || "")}"><span class="tree-title">${escapeText(row.name || row.id)}</span><span class="session-end">${chip}${treeAction(row, "session")}${marker}<span class="session-age">${escapeText(newest.activity || row.activity || "")}</span></span></div>`;
+  // #s206: a row of the flat list says where it lives, since no group head does — the project's
+  // name under the title, after the agent's mark, which is named for a screen reader and a pointer.
+  const title = `<span class="tree-title">${escapeText(row.name || row.id)}</span>`;
+  const main = context ? `<span class="tree-main">${title}<span class="tree-context"><span class="tree-agent" role="img" aria-label="${escapeText(context.agent.name)}" title="${escapeText(context.agent.name)}">${agentGlyph(context.agent.id, context.agent.name)}</span><span class="tree-project" title="${escapeText(context.project.path || context.project.name)}">${escapeText(context.project.name)}</span></span></span>` : title;
+  return `<div class="tree-row session ${context ? "flat" : ""} ${row.id === indexState.selected ? "selected" : ""} ${row.hidden ? "is-hidden" : ""} ${member ? "is-member" : ""}" role="treeitem" tabindex="0" data-session="${escapeText(row.id)}" title="${escapeText(displayState(row).label)} · ${escapeText(row.stateDetail || "")}">${main}<span class="session-end">${chip}${treeAction(row, "session")}${marker}<span class="session-age">${escapeText(newest.activity || row.activity || "")}</span></span></div>`;
+}
+
+/** The flat list (#s206): every family the tree would show, in one list by activity (the shared
+ *  `flatFamilies`, the server's calm order), each row naming its project and agent; forks open
+ *  under their family as in the tree. The sidebar and the collapsed rail's flyout both draw it,
+ *  as they both draw `agentProjectsHtml` in the tree. `agents` is `visibleTree`'s output. */
+function flatSessionsHtml(agents, overflowKey = "flat") {
+  const fams = flatFamilies(agents, Date.now() / 1000);
+  const expanded = indexState.expandedProjects.has(overflowKey);
+  let shown = expanded ? fams : fams.slice(0, FLAT_SESSION_LIMIT);
+  const selectedFam = fams.find(fam => fam.members.some(row => row.id === indexState.selected));
+  if (!expanded && selectedFam && !shown.includes(selectedFam)) shown = shown.concat(selectedFam);
+  let html = "";
+  for (const fam of shown) {
+    html += sessionTreeRow(fam.rep, fam, false, { agent: { id: fam.agent.id, name: agentName(fam.agent.id) }, project: fam.project });
+    const open = fam.forks.length && (indexState.openFamilies.has(fam.key) || fam.forks.some(row => row.id === indexState.selected));
+    if (open) for (const fork of fam.forks) html += sessionTreeRow(fork, null, true);
+  }
+  const hidden = fams.filter(fam => !shown.includes(fam)).length;
+  if (fams.length > FLAT_SESSION_LIMIT) html += `<button class="tree-project-more" type="button" data-project-more="${escapeText(overflowKey)}" aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span><span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>`;
+  return html;
 }
 
 /** One agent's projects and their session rows, as the tree draws them — the sidebar and the
@@ -401,7 +440,11 @@ function renderTree() {
   const shownAgents = controls.projectTree?.(filteredAgents, agents) || filteredAgents;
   const shown = shownAgents.reduce((n, agent) => n + agent.projects.reduce((m, project) => m + project.rows.length, 0), 0);
   lastShownAgents = shownAgents;
-  for (const agent of shownAgents) {
+  // #s206: one list by activity, or the tree. Flat, no group is collapsed and nothing is left to
+  // expand, so Collapse every group and Expand every group go with the heads (`sessions-flat`).
+  app.classList.toggle("sessions-flat", indexState.flat);
+  if (indexState.flat) html = flatSessionsHtml(shownAgents);
+  else for (const agent of shownAgents) {
     const agentKey = `a:${agent.id}`, openAgent = !indexState.collapsed.has(agentKey);
     html += `<div class="agent-label" role="treeitem" tabindex="0" data-toggle="${escapeText(agentKey)}" aria-expanded="${openAgent}">${escapeText(agent.name)}${agent.id === "codex" && controls.projectActions ? `<button class="native-project-add" type="button" data-native-add-project aria-label="Add Codex project" title="Add project"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 19H3V5h6l2 2h10v5M17 14v8m-4-4h8"/></svg></button>` : ""}</div>`;
     if (!openAgent) continue;
@@ -456,6 +499,10 @@ filterSheet.innerHTML = `<div class="scope-menu-head"><strong>SHOW</strong><butt
 <div class="scope-menu-divider"></div>
 <div class="scope-menu-list">
 <button class="scope-option" type="button" role="checkbox" aria-checked="false" data-include-hidden title="Show the sessions, projects and agents you have hidden, dimmed"><span class="scope-check"></span><span>Include hidden</span><span class="scope-count" data-bucket-count="hidden"></span></button>
+</div>
+<div class="scope-menu-divider"></div>
+<div class="scope-menu-list">
+<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-flat title="One list, most recent activity first, without the agent and project groups: each session names its project and agent"><span class="scope-check"></span><span>One list by activity</span></button>
 </div>`;
 document.querySelector(".side-head").appendChild(filterSheet);
 const filterMini = document.createElement("button");
@@ -481,6 +528,7 @@ filterMini.onclick = () => { if (railFlyoutFor === "filter" && railFlyoutPinned)
 filterSheet.addEventListener("click", event => {
   if (event.target.closest("[data-filter-reset]")) { setBuckets(FILTER_BUCKETS); return; }
   if (event.target.closest("[data-include-hidden]")) { indexState.showHidden = !indexState.showHidden; renderTree(); return; }
+  if (event.target.closest("[data-flat]")) { indexState.flat = !indexState.flat; persist(); renderTree(); return; }
   const option = event.target.closest("[data-bucket]"); if (!option) return;
   const bucket = option.dataset.bucket;
   const next = new Set(indexState.buckets); if (next.has(bucket)) next.delete(bucket); else next.add(bucket);
@@ -509,7 +557,7 @@ function railFlyoutBody() {
   if (railFlyoutFor === "filter") return null;
   const agent = lastShownAgents.find(item => item.id === railFlyoutFor);
   const name = agentName(railFlyoutFor);
-  const rows = agent ? agentProjectsHtml(agent) : "";
+  const rows = !agent ? "" : indexState.flat ? flatSessionsHtml([agent], `flat:${agent.id}`) : agentProjectsHtml(agent);
   return `<div class="rail-flyout-head">${escapeText(name)}</div><div class="rail-flyout-tree" role="tree" aria-label="${escapeText(name)} sessions">${rows || `<div class="no-results">${bucketFilterActive() ? "No sessions in this filter" : "No sessions"}</div>`}</div>`;
 }
 function placeRailFlyout() {
@@ -604,6 +652,8 @@ function renderFilterControl(counts, shown, total) {
   }
   const include = filterSheet.querySelector("[data-include-hidden]");
   include.classList.toggle("on", indexState.showHidden); include.setAttribute("aria-checked", String(indexState.showHidden));
+  const flat = filterSheet.querySelector("[data-flat]");
+  flat.classList.toggle("on", indexState.flat); flat.setAttribute("aria-checked", String(indexState.flat));
   for (const el of filterSheet.querySelectorAll("[data-bucket-count]")) {
     const key = el.dataset.bucketCount;
     el.textContent = String(key === "hidden" ? indexState.ignoredCount : counts[key] || 0);
