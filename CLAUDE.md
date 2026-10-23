@@ -418,7 +418,9 @@ Push), a note filed `shared: true` is refused, and `mdrev-cli` runs with the vie
 its environment; the detached tab (`markdown-page.js` → `mountStandalone`) mounts it on
 `api/mdrev-review/`, the same handler with mdrev's viewer key (`MDREV_STATE_DIR` or `~/.mdrev`, file
 `token`, read per request; without one the prefix is the pane's), which answers `review`,
-`review/fetch|push|pair`, `hide` and a body-only `PATCH` edit through `mdrev-cli review|notes …`, and
+`review/fetch|push|pair`, `hide`, a body-only `PATCH` edit and Share (`POST annotations/{id}/share`,
+#s232: an agent's drafts on the reader's note become their shared records, `{edits}` on stdin; the pane
+answers it 404, as a host without it does) through `mdrev-cli review|notes …`, and
 passes `--viewer` on every note write and listing. The page's own calls (`hold`, `open`, `resolve`)
 stay on `api/mdrev/`. Every review route goes through the document's stamp like the note routes, and
 the writes through `deny_mutation`; a paired client can reach the prefix directly (the tab is

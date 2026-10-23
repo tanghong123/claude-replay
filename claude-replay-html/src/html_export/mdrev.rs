@@ -1032,7 +1032,9 @@ fn note_op(
     viewer: Option<&Viewer>,
 ) -> HttpResponse {
     let (id, tail) = rest.split_once('/').unwrap_or((rest, ""));
+    // A note's id goes to mdrev-cli as an argument, so it is never an option (`--all`).
     let id_ok = !id.is_empty()
+        && !id.starts_with('-')
         && id.len() <= 80
         && id
             .bytes()
@@ -1042,6 +1044,7 @@ fn note_op(
     }
     let body: Value = serde_json::from_slice(req.body).unwrap_or(Value::Null);
     let args: Vec<String>;
+    let mut input: Option<&[u8]> = None;
     let (method, ok): (&'static str, &'static str) = match (req.method, tail) {
         // #s10: a PATCH carrying `{body}` alone is an edit — a person's, in a viewer: their own
         // unpushed shared record, or an open local note.
@@ -1133,6 +1136,18 @@ fn note_op(
         ("POST", "hide") => {
             return HttpResponse::not_found("shared review is not offered by this host")
         }
+        // #s232: Share — the reader's press under the drafts an agent wrote on their note, which
+        // become the reader's shared records (mdrev's contract, "Share"; `{edits}` read whole from
+        // stdin). A shared operation, so the detached tab's; the pane answers 404, as a host
+        // without the route does, and the viewer then shows the drafts with no Share.
+        ("POST", "share") if viewer.is_some() => {
+            args = ["notes", "share", id].map(String::from).to_vec();
+            input = Some(req.body);
+            ("POST", "200 OK")
+        }
+        ("POST", "share") => {
+            return HttpResponse::not_found("shared review is not offered by this host")
+        }
         _ => return HttpResponse::method_not_allowed("no such note operation"),
     };
     if let Some(r) = req.deny_mutation(method) {
@@ -1143,7 +1158,7 @@ fn note_op(
     if viewer.is_some() {
         argv.push("--viewer");
     }
-    let out = cli_as(rel, &d.root, &argv, None, viewer);
+    let out = cli_as(rel, &d.root, &argv, input, viewer);
     if out.code != 0 {
         return cli_error(&out);
     }
@@ -1643,6 +1658,7 @@ case "$1" in
           *) echo '[{"path":"docs/doc.md","annotation":{"id":"ann-1","body":"hi"},"state":"exact"}]' ;;
         esac ;;
       add) cat > "$here/stdin.json"; echo '{"id":"ann-2","body":"filed"}' ;;
+      share) cat > "$here/share.json"; echo '{"id":"'"$3"'","sharedAs":["shr-9"]}' ;;
       delete) if [ "$3" = "ann-missing" ]; then echo "mdrev-cli: no such note" >&2; exit 2; fi; echo '{"deleted":true}' ;;
       *) echo '{"id":"'"$3"'","status":"'"$2"'"}' ;;
     esac ;;
@@ -2380,6 +2396,29 @@ esac
         assert_eq!(
             pane("POST", "annotations/shr-1/hide", br#"{"hidden":true}"#),
             "404 Not Found"
+        );
+
+        // #s232: Share turns an agent's drafts on the reader's note into their shared records, the
+        // body read whole from stdin. The pane answers 404, so the viewer offers no Share there.
+        let edits = br#"{"edits":{"ann-1/1":"my words"}}"#;
+        let shared = tab("POST", "annotations/ann-1/share", edits, true);
+        assert_eq!(shared.code, "200 OK");
+        assert!(String::from_utf8_lossy(&shared.body).contains("\"sharedAs\":[\"shr-9\"]"));
+        assert!(calls(&f).contains("notes share ann-1 --viewer --root"));
+        assert_eq!(std::fs::read(f.kit.join("share.json")).unwrap(), edits);
+        assert_eq!(
+            pane("POST", "annotations/ann-1/share", edits),
+            "404 Not Found"
+        );
+        assert_ne!(
+            tab("POST", "annotations/ann-1/share", edits, false).code,
+            "200 OK",
+            "an unpaired client shares nothing"
+        );
+        assert_eq!(
+            tab("POST", "annotations/--all/share", edits, true).code,
+            "400 Bad Request",
+            "a note's id is never an option"
         );
         assert_eq!(
             tab(
