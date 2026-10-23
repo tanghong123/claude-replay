@@ -374,6 +374,9 @@
   // server, which keeps this purely presentational.
   function attachCmd(r){
     if(r.term==="screen")return "screen -r "+r.target;
+    // #s226: herdr attaches by server, not by pane: `herdr`, or `herdr --session <name>` for a
+    // named session (measured on aries-black, herdr 0.9.5).
+    if(r.term==="herdr")return "herdr"+(r.herdrSession?" --session "+r.herdrSession:"");
     if(r.term!=="tmux")return null;
     return "tmux "+(r.sock?"-L "+r.sock+" ":"")+"attach -t "+r.target;
   }
@@ -400,6 +403,8 @@
     // Named, never used: the monitor is read-only — this says WHERE the agent lives.
     var t=r.term==="tmux"
       ?"live agent pid "+r.pid+" in a controllable tmux pane "+r.target+(r.sock?" on server -L "+r.sock:"")
+      :r.term==="herdr"
+      ?"live agent pid "+r.pid+" in herdr pane "+r.target+(r.herdrSession?" of session "+r.herdrSession:"")
       :"live agent pid "+r.pid+" in a controllable screen session "+r.target;
     // #145: the pane is certain; WHOSE pane it is may not be. An unconfirmed link was
     // matched by directory, and that directory holds more than one session.
@@ -450,7 +455,7 @@
       +(r.visited&&r.child?'<span class="live">↳ live</span>':"")
       +(r.target?'<span class="term'+(state.copied&&state.copied.id===r.id?" copied":"")+'" data-attach="'+esc(attachCmd(r)||"")+'" title="'+esc(termTip(r))+'">'
     +(state.copied&&state.copied.id===r.id?(state.copied.ok?"copied":"⌘C it"):"&gt;_ "+esc(r.term))+'</span>':"")
-      +(canCompose(r)?'<button class="rowsend'+(canInject(r)?" inject"+(r.consented?" armed":""):"")+'" data-compose="'+esc(r.id)+'" data-name="'+esc(r.name)+'" data-mode="'+(canInject(r)?"tmux":"resume")+'"'+(canInject(r)&&r.consented?' data-consented="1"':"")+' title="'+(canInject(r)?"Send a prompt into this live tmux pane"+(r.consented?" (consent granted)":" (asks consent first)"):"Send a prompt — resumes this finished session")+'">✎</button>':"")
+      +(canCompose(r)?'<button class="rowsend'+(canInject(r)?" inject"+(r.consented?" armed":""):"")+'" data-compose="'+esc(r.id)+'" data-name="'+esc(r.name)+'" data-mode="'+(canInject(r)?"tmux":"resume")+'"'+(canInject(r)&&r.consented?' data-consented="1"':"")+' title="'+(canInject(r)?"Send a prompt into this live "+(r.term==="herdr"?"herdr":"tmux")+" pane"+(r.consented?" (consent granted)":" (asks consent first)"):"Send a prompt — resumes this finished session")+'">✎</button>':"")
       +forks+rowx
       +'</div><div class="r2"><span class="counters'+(r.visited?"":" unvisited")+'"'+(costTip(r)?' title="'+esc(costTip(r))+'"':"")+'>'+esc(subLine(r,g))+'</span>'
       +'<span class="age">'+esc(fam?famActivity(fam,r):r.activity)+'</span></div></div>';

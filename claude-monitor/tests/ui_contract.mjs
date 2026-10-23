@@ -3384,3 +3384,20 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(globalRowsSrc, /splitQuery|querySpans|parseScope|takeTokens|takeTools/, "⌘K calls nothing of the session grammar");
   console.log("#294 qualifier grammar cases passed");
 }
+
+// #s226: a session in a herdr pane is named as one. The classic rail's badge copies the herdr way
+// to attach (by server: `herdr`, or `herdr --session <name>`), its tip and its send button say
+// herdr, and the app shell's confirm names the herdr pane; a tmux row reads as before.
+{
+  const rail = readFileSync(new URL("../../claude-monitor/src/rail.html", import.meta.url), "utf8");
+  const attachSrc = rail.slice(rail.indexOf("function attachCmd(r){"), rail.indexOf("function copyText("));
+  const attachCmd = new Function(`${attachSrc}; return attachCmd;`)();
+  assert.equal(attachCmd({ term: "herdr", target: "w1:p2" }), "herdr", "the default server attaches with plain herdr");
+  assert.equal(attachCmd({ term: "herdr", target: "w1:p2", herdrSession: "trial" }), "herdr --session trial", "a named session by name");
+  assert.equal(attachCmd({ term: "tmux", target: "%3", sock: "knack" }), "tmux -L knack attach -t %3", "tmux unchanged");
+  assert.match(rail, /in herdr pane "\+r\.target/, "the tip says herdr pane");
+  assert.match(rail, /"Send a prompt into this live "\+\(r\.term==="herdr"\?"herdr":"tmux"\)\+" pane"/, "the send button names its host");
+  const store = readFileSync(new URL("../../claude-monitor/src/codex-ui/control-store.js", import.meta.url), "utf8");
+  assert.match(store, /controlState\.row\.term === "herdr" \? `herdr pane \$\{controlState\.row\.target\}`/, "the confirm names a herdr pane");
+  console.log("#s226 herdr naming cases passed");
+}

@@ -53,14 +53,56 @@ pub struct SendTarget {
     pub cwd: Option<String>,
 }
 
-/// A resolved, allowed TMUX send target (#133 tmux slice): the pane to inject into, plus
-/// the pid the consent is keyed by (a pane outlives its process, so consent must not carry
-/// over to whatever occupies it next).
-pub struct TmuxTarget {
+/// Where a live agent can be typed into: a tmux pane (#133) or a herdr pane (#s226, Hong's
+/// move from tmux to herdr). Both are read from the agent's own environment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaneAddr {
+    /// The pane (`%3`) and its server's socket basename when it is not the default server.
+    Tmux { sock: Option<String>, pane: String },
+    /// The pane (`HERDR_PANE_ID`, like `w1:p2`) and its server's socket (`HERDR_SOCKET_PATH`).
+    Herdr {
+        socket: Option<String>,
+        pane: String,
+    },
+}
+
+impl PaneAddr {
+    pub fn pane(&self) -> &str {
+        match self {
+            PaneAddr::Tmux { pane, .. } | PaneAddr::Herdr { pane, .. } => pane,
+        }
+    }
+    /// The socket half of a consent key: a tmux socket basename as before, a herdr server as
+    /// `herdr:<socket>`, so a grant for one host can never match a pane of the other.
+    pub fn consent_sock(&self) -> Option<String> {
+        match self {
+            PaneAddr::Tmux { sock, .. } => sock.clone(),
+            PaneAddr::Herdr { socket, .. } => {
+                Some(format!("herdr:{}", socket.as_deref().unwrap_or("default")))
+            }
+        }
+    }
+}
+
+/// The named herdr session a server's socket belongs to: `~/.config/herdr/sessions/<name>/
+/// herdr.sock` is `<name>` (measured on aries-black, herdr 0.9.5); the default server's
+/// `~/.config/herdr/herdr.sock`, or no socket at all, is `None`.
+pub fn herdr_session(socket: Option<&str>) -> Option<String> {
+    let rest = socket?.strip_suffix("/herdr.sock")?;
+    let (dir, name) = rest.rsplit_once('/')?;
+    (dir.ends_with("/sessions") && !name.is_empty()).then(|| name.to_string())
+}
+
+/// A resolved, allowed send target for a LIVE session (#133, #s226): the pane to type into,
+/// plus the pid the consent is keyed by (a pane outlives its process, so consent must not
+/// carry over to whatever occupies it next).
+pub struct PaneTarget {
     pub sid: String,
     pub pid: u32,
-    pub sock: Option<String>,
-    pub pane: String,
+    pub addr: PaneAddr,
+    /// What the client says it waits on (#s76: a question, a permission prompt), read as the
+    /// target resolved. The herdr send holds while it waits; typing would answer the dialog.
+    pub client_wait: bool,
 }
 
 /// Why a send-prompt was refused — each a distinct, reportable fact (mirrors the §3.1/§4
@@ -81,20 +123,21 @@ pub enum SendRefusal {
     /// (tmux path) the link is a cwd HEURISTIC, not proven (§3.1) — injecting could hit a
     /// different agent's pane.
     UnprovenLink,
-    /// (tmux path) the live agent is not in a tmux pane (screen/plain tty — no injection).
+    /// (pane path) the live agent is in neither a tmux nor a herdr pane (screen/plain tty —
+    /// no injection).
     NotInTmux,
     /// (tmux path) no consent has been granted for this pane/pid, or it expired (§3.4).
     NoConsent,
+    /// (herdr path) herdr's hook reports the session in a pane for Claude only, and the send
+    /// proves its pane by that report (#s226), so a Codex session in herdr is not sent to.
+    HerdrClaudeOnly,
 }
 
-/// The tmux-injection decision (#133 tmux slice), PURE over one scan's link data — split out
-/// so the §3.1 refusal ladder is unit-tested without a live process or a tmux server. The
+/// The pane-injection decision (#133 tmux slice, #s226 herdr), PURE over one scan's link data —
+/// split out so the §3.1 refusal ladder is unit-tested without a live process or a server. The
 /// order is the security order: unsupported agent, then not-live, then UNPROVEN (a cwd guess
-/// must never be injected), then not-in-tmux. Returns the `(pid, sock, pane)` to inject into.
-fn tmux_target_from(
-    agent: Agent,
-    link: &SendLink,
-) -> Result<(u32, Option<String>, String), SendRefusal> {
+/// must never be injected), then not-in-a-pane. Returns the pid and the pane to inject into.
+fn pane_target_from(agent: Agent, link: &SendLink) -> Result<(u32, PaneAddr), SendRefusal> {
     if agent != Agent::CLAUDE && agent != Agent::CODEX {
         return Err(SendRefusal::UnsupportedAgent);
     }
@@ -102,8 +145,11 @@ fn tmux_target_from(
     if !link.confirmed {
         return Err(SendRefusal::UnprovenLink);
     }
-    let (sock, pane) = link.tmux.clone().ok_or(SendRefusal::NotInTmux)?;
-    Ok((pid, sock, pane))
+    let addr = link.pane.clone().ok_or(SendRefusal::NotInTmux)?;
+    if matches!(addr, PaneAddr::Herdr { .. }) && agent != Agent::CLAUDE {
+        return Err(SendRefusal::HerdrClaudeOnly);
+    }
+    Ok((pid, addr))
 }
 
 /// Does ANOTHER session in the same project (cwd) have a live process? PURE over one scan's
@@ -160,8 +206,11 @@ impl SendRefusal {
             Self::UnsupportedAgent => "sending is supported only for claude and codex sessions",
             Self::SessionNotLive => "the session is not live — use send, which resumes it",
             Self::UnprovenLink => "which pane this session drives is not proven — cannot inject",
-            Self::NotInTmux => "the live agent is not in tmux — cannot inject",
+            Self::NotInTmux => "the live agent is not in a tmux or herdr pane — cannot inject",
             Self::NoConsent => "grant consent to send into this session's terminal first",
+            Self::HerdrClaudeOnly => {
+                "herdr proves which session runs in a pane only for Claude: send to this one from its pane"
+            }
         }
     }
 }
@@ -271,8 +320,8 @@ impl State {
 struct SendLink {
     /// The live agent pid, or `None` when the session is finished.
     pid: Option<u32>,
-    /// `(socket basename, pane)` when the live agent is in tmux.
-    tmux: Option<(Option<String>, String)>,
+    /// The pane when the live agent is in tmux or herdr.
+    pane: Option<PaneAddr>,
     /// Whether the process↔session link is proven (§3.1) — required to inject.
     confirmed: bool,
 }
@@ -422,6 +471,15 @@ struct Proc {
     tmux_sock: Option<String>,
     /// `STY=<name>` — GNU screen's equivalent.
     screen: Option<String>,
+    /// `HERDR_PANE_ID=wN:pN` — the herdr pane (#s226). herdr sets it in every pane it runs.
+    herdr_pane: Option<String>,
+    /// `HERDR_SOCKET_PATH` — which herdr server the pane belongs to (one per named session).
+    herdr_socket: Option<String>,
+    /// With a herdr pane in its environment, the NEAREST multiplexer up the process's parent chain
+    /// (`apply_nesting`): an outer one's marker is inherited and names a pane this agent is not in.
+    inner_mux: Option<Mux>,
+    /// The tmux server's pid, the second field of `TMUX=/path,pid,idx`.
+    tmux_server_pid: Option<u32>,
     /// When the process started, in epoch seconds (`ps -o etime=`, so to the second) — what pairs a
     /// one-shot `claude -p` with the session it created (#s50).
     started: Option<u64>,
@@ -431,6 +489,15 @@ struct Proc {
     /// running worker whose parent pid was 1, so the process tree alone would not have said. Set
     /// only when both are present.
     parent_session: Option<String>,
+}
+
+/// A terminal multiplexer that hosts panes (#s226).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mux {
+    Tmux,
+    Herdr,
+    /// screen or zellij: a multiplexer we do not drive, nearer than any herdr around it.
+    Other,
 }
 
 /// How a live agent process maps to a session row, and what hosts it.
@@ -450,6 +517,11 @@ enum Terminal {
         /// `tmux -L <name>` target needs.
         sock: Option<String>,
     },
+    /// A herdr pane (#s226) and its server's socket.
+    Herdr {
+        pane: String,
+        socket: Option<String>,
+    },
     Screen(String),
     Tty,
     Detached,
@@ -457,6 +529,37 @@ enum Terminal {
 
 impl Terminal {
     fn of(p: &Proc) -> Terminal {
+        // #s226: a pane of one multiplexer can sit inside a pane of the other, and the inner one
+        // hands its children the OUTER pane's markers too: a herdr server started from a tmux
+        // pane gives every herdr pane `TMUX_PANE`, and tmux started in a herdr pane gives every
+        // tmux pane `HERDR_PANE_ID`. Typing at the outer pane reaches whatever sits there now,
+        // never this agent. With both, the nearest multiplexer in the parent chain decides; with
+        // no answer, the agent is in no pane we may drive. herdr sets its socket in every pane,
+        // so a pane id without one is no herdr pane we can address.
+        // So a herdr marker is believed only when herdr IS the nearest multiplexer up the chain
+        // (`apply_nesting`, which also catches screen or zellij inside a herdr pane), and tmux
+        // inside herdr is tmux only when tmux is the nearest.
+        if let Some(pane) = &p.herdr_pane {
+            match (p.inner_mux, &p.herdr_socket) {
+                (Some(Mux::Herdr), Some(socket)) => {
+                    return Terminal::Herdr {
+                        pane: pane.clone(),
+                        socket: Some(socket.clone()),
+                    }
+                }
+                (Some(Mux::Tmux), _) if p.pane.is_some() => {}
+                (Some(Mux::Other), _) if p.screen.is_some() => {
+                    return Terminal::Screen(p.screen.clone().unwrap_or_default())
+                }
+                _ => {
+                    return if p.tty.is_some() {
+                        Terminal::Tty
+                    } else {
+                        Terminal::Detached
+                    }
+                }
+            }
+        }
         match (&p.pane, &p.screen, &p.tty) {
             (Some(pane), _, _) => Terminal::Tmux {
                 pane: pane.clone(),
@@ -475,25 +578,33 @@ impl Terminal {
     fn kind(&self) -> &'static str {
         match self {
             Terminal::Tmux { .. } => "tmux",
+            Terminal::Herdr { .. } => "herdr",
             Terminal::Screen(_) => "screen",
             Terminal::Tty => "tty",
             Terminal::Detached => "detached",
         }
     }
-    /// The controllable target — a tmux pane or a screen session name; `None` when the
-    /// host shape has no supported control channel.
+    /// The controllable target — a tmux or herdr pane, or a screen session name; `None` when
+    /// the host shape has no supported control channel.
     fn target(&self) -> Option<&str> {
         match self {
-            Terminal::Tmux { pane, .. } => Some(pane),
+            Terminal::Tmux { pane, .. } | Terminal::Herdr { pane, .. } => Some(pane),
             Terminal::Screen(name) => Some(name),
             _ => None,
         }
     }
-    /// The tmux control address `(socket basename, pane)` — the only host the send-prompt
-    /// tmux path (#133) drives (screen/tty are out of scope for injection).
-    fn tmux_target(&self) -> Option<(Option<String>, String)> {
+    /// The pane the send-prompt path types into: tmux (#133) or herdr (#s226). screen and a
+    /// bare tty are out of scope for injection.
+    fn pane_addr(&self) -> Option<PaneAddr> {
         match self {
-            Terminal::Tmux { pane, sock } => Some((sock.clone(), pane.clone())),
+            Terminal::Tmux { pane, sock } => Some(PaneAddr::Tmux {
+                sock: sock.clone(),
+                pane: pane.clone(),
+            }),
+            Terminal::Herdr { pane, socket } => Some(PaneAddr::Herdr {
+                socket: socket.clone(),
+                pane: pane.clone(),
+            }),
             _ => None,
         }
     }
@@ -641,23 +752,24 @@ impl Index {
         })
     }
 
-    /// Resolve a TMUX send target (#133 tmux slice): the session must be LIVE with a PROVEN
-    /// link (§3.1 — never a cwd guess; injecting into the wrong pane runs your text in a
-    /// different agent) that is in tmux, AND it must be the ONLY live session in its project
-    /// (constraint 2, mirrored from the resume path): with a live sibling we cannot tell which
-    /// session drives the project, so we refuse rather than pick. A fresh scan is forced.
-    pub fn resolve_tmux_send(&self, sid: &str) -> Result<TmuxTarget, SendRefusal> {
+    /// Resolve a LIVE send target (#133 tmux slice, #s226 herdr): the session must be LIVE with a
+    /// PROVEN link (§3.1 — never a cwd guess; injecting into the wrong pane runs your text in a
+    /// different agent) that is in a tmux or herdr pane, AND it must be the ONLY live session in
+    /// its project (constraint 2, mirrored from the resume path): with a live sibling we cannot
+    /// tell which session drives the project, so we refuse rather than pick. A fresh scan is
+    /// forced.
+    pub fn resolve_pane_send(&self, sid: &str) -> Result<PaneTarget, SendRefusal> {
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         self.scan(&mut st, &|_| {});
         st.scanned_at = Some(Instant::now());
 
-        let (agent, cwd) = {
+        let (agent, cwd, path) = {
             let row = st.rows.get(sid).ok_or(SendRefusal::NoSuchSession)?;
-            (row.agent, row.cwd.clone())
+            (row.agent, row.cwd.clone(), row.path.clone())
         };
         st.legacy_send_policy.allow_session(agent, sid)?;
         let link = st.send_links.get(sid).cloned().unwrap_or_default();
-        let (pid, sock, pane) = tmux_target_from(agent, &link)?;
+        let (pid, addr) = pane_target_from(agent, &link)?;
         // The project must have no OTHER live session — else injecting here while another
         // session drives the same cwd forks divergent work (constraint 2).
         if project_has_other_live(
@@ -675,11 +787,13 @@ impl Index {
         ) {
             return Err(SendRefusal::ProjectHasActiveSession);
         }
-        Ok(TmuxTarget {
+        Ok(PaneTarget {
             sid: sid.to_string(),
             pid,
-            sock,
-            pane,
+            addr,
+            client_wait: claude_replay_core::adapter(agent)
+                .client_wait(&path)
+                .is_some(),
         })
     }
 
@@ -914,7 +1028,7 @@ impl Index {
                     f.sid.clone(),
                     SendLink {
                         pid: f.pid,
-                        tmux: f.tmux.clone(),
+                        pane: f.pane.clone(),
                         confirmed: f.confirmed,
                     },
                 )
@@ -1349,7 +1463,7 @@ impl Index {
                 term: link
                     .as_ref()
                     .and_then(|l| l.terminal.target().map(str::to_string)),
-                tmux: link.as_ref().and_then(|l| l.terminal.tmux_target()),
+                pane: link.as_ref().and_then(|l| l.terminal.pane_addr()),
                 confirmed: link.as_ref().map(|l| l.confirmed).unwrap_or(false),
                 tree_mtime: row.tree_mtime,
             });
@@ -1409,8 +1523,15 @@ impl Index {
                 {
                     j["sock"] = json!(sock);
                 }
+                // #s226: a herdr pane's named session, which attaching names (`herdr --session
+                // <name>`); none for the default server.
+                if let Terminal::Herdr { socket, .. } = &l.terminal {
+                    if let Some(name) = herdr_session(socket.as_deref()) {
+                        j["herdrSession"] = json!(name);
+                    }
+                }
                 if let Some(t) = l.terminal.target() {
-                    // The controllable target (#112): a tmux pane or screen session name.
+                    // The controllable target (#112): a tmux or herdr pane, or a screen name.
                     j["target"] = json!(t);
                 }
                 // #133 tmux slice: this row can be INJECTED into iff the link is PROVEN
@@ -1420,12 +1541,18 @@ impl Index {
                 // whether a standing grant already covers this exact pane/pid (send now) or one
                 // is needed first.
                 let driven = matches!(row.agent, Agent::CLAUDE | Agent::CODEX);
-                if let (true, Some((sock, pane))) = (
-                    l.confirmed && driven && !proj_active,
-                    l.terminal.tmux_target(),
-                ) {
+                // #s226: herdr proves the pane's session for Claude only (`HerdrClaudeOnly`).
+                let pane = l.terminal.pane_addr().filter(|addr| {
+                    !matches!(addr, PaneAddr::Herdr { .. }) || row.agent == Agent::CLAUDE
+                });
+                if let (true, Some(addr)) = (l.confirmed && driven && !proj_active, pane) {
                     j["injectable"] = json!(true);
-                    j["consented"] = json!(consented(sock.as_deref(), &pane, sid, l.pid));
+                    j["consented"] = json!(consented(
+                        addr.consent_sock().as_deref(),
+                        addr.pane(),
+                        sid,
+                        l.pid
+                    ));
                 }
             }
             if let Some((_, c)) = &row.counters {
@@ -2074,7 +2201,7 @@ fn link(
     // pane reported "detached" because a stale sibling won.
     let host = |p: &Proc| {
         let rank = match Terminal::of(p) {
-            Terminal::Tmux { .. } | Terminal::Screen(_) => 2,
+            Terminal::Tmux { .. } | Terminal::Herdr { .. } | Terminal::Screen(_) => 2,
             Terminal::Tty => 1,
             Terminal::Detached => 0,
         };
@@ -2388,8 +2515,60 @@ fn scan_procs() -> Vec<Proc> {
         &mut procs,
         &run(&["ps", "eww", "-o", "pid=,command=", "-p", &pids]),
     );
+    // #s226: only an agent carrying a herdr marker needs its parent chain.
+    if procs.iter().any(|p| p.herdr_pane.is_some()) {
+        // `ucomm`, the executable's own name: `comm` is the path it was started by, which ps
+        // cuts at 16 characters (the herdr server runs as `/opt/homebrew/bin/herdr server`, so
+        // its `comm` loses the name; measured on aries-black).
+        apply_nesting(&mut procs, &run(&["ps", "-axo", "pid=,ppid=,ucomm="]));
+    }
     apply_lsof(&mut procs, &run(&lsof_argv(&pids)));
     procs
+}
+
+/// `pid ppid ucomm` lines → for each agent carrying a herdr marker, the NEAREST multiplexer up its
+/// parent chain (a pane's shell is the child of its server; a daemonized server's own parent is
+/// launchd, so an outer one is never reached first). The tmux server is known by the pid its
+/// `TMUX` variable names (its name is `tmux` on macOS, `tmux: server` on Linux), herdr's by the
+/// executable `herdr` (the server, a pane shell's DIRECT parent, measured on aries-black), and
+/// screen or zellij count as a multiplexer we do not drive. Bounded; a
+/// cycle or a missing parent leaves it undecided, which drives nothing.
+fn apply_nesting(procs: &mut [Proc], table: &str) {
+    let parents: HashMap<u32, (u32, String)> = table
+        .lines()
+        .filter_map(|line| {
+            let mut it = line.split_whitespace();
+            let pid = it.next()?.parse().ok()?;
+            let ppid = it.next()?.parse().ok()?;
+            let comm = it.collect::<Vec<_>>().join(" ");
+            let base = comm.rsplit('/').next().unwrap_or(&comm).to_string();
+            Some((pid, (ppid, base)))
+        })
+        .collect();
+    for p in procs.iter_mut().filter(|p| p.herdr_pane.is_some()) {
+        let tmux_server = p.tmux_server_pid;
+        let mut at = parents.get(&p.pid).map(|(ppid, _)| *ppid);
+        for _ in 0..64 {
+            let Some(pid) = at else { break };
+            let Some((ppid, comm)) = parents.get(&pid) else {
+                break;
+            };
+            p.inner_mux = if tmux_server == Some(pid) || comm == "tmux" || comm.starts_with("tmux:")
+            {
+                Some(Mux::Tmux)
+            } else if comm == "herdr" {
+                Some(Mux::Herdr)
+            } else if matches!(comm.as_str(), "screen" | "SCREEN" | "zellij") {
+                Some(Mux::Other)
+            } else {
+                None
+            };
+            if p.inner_mux.is_some() || *ppid == 0 || *ppid == pid {
+                break;
+            }
+            at = Some(*ppid);
+        }
+    }
 }
 
 /// The probe's `lsof`. `-n -P` keep it from turning every network socket's address and port
@@ -2427,6 +2606,10 @@ fn parse_ps(out: &str) -> Vec<Proc> {
             pane: None,
             tmux_sock: None,
             screen: None,
+            herdr_pane: None,
+            herdr_socket: None,
+            inner_mux: None,
+            tmux_server_pid: None,
             started: None,
             parent_session: None,
         });
@@ -2458,7 +2641,8 @@ fn apply_tty(procs: &mut [Proc], out: &str, now: u64) {
     }
 }
 
-/// `ps eww` lines (command + environment, space-separated) → `TMUX_PANE` / `STY` markers.
+/// `ps eww` lines (command + environment, space-separated) → `TMUX_PANE` / `STY` /
+/// `HERDR_PANE_ID` markers.
 fn apply_env(procs: &mut [Proc], out: &str) {
     for line in out.lines() {
         let line = line.trim_start();
@@ -2477,8 +2661,13 @@ fn apply_env(procs: &mut [Proc], out: &str) {
                 p.pane = Some(v.to_string());
             } else if let Some(v) = tok.strip_prefix("TMUX=") {
                 p.tmux_sock = v.split(',').next().map(str::to_string);
+                p.tmux_server_pid = v.split(',').nth(1).and_then(|pid| pid.parse().ok());
             } else if let Some(v) = tok.strip_prefix("STY=") {
                 p.screen = Some(v.to_string());
+            } else if let Some(v) = tok.strip_prefix("HERDR_PANE_ID=") {
+                p.herdr_pane = Some(v.to_string());
+            } else if let Some(v) = tok.strip_prefix("HERDR_SOCKET_PATH=") {
+                p.herdr_socket = Some(v.to_string());
             } else if let Some(v) = tok.strip_prefix("CLAUDE_CODE_SESSION_ID=") {
                 session = is_uuid(v).then(|| v.to_string());
             } else if tok == "CLAUDE_CODE_CHILD_SESSION=1" {
@@ -3042,7 +3231,7 @@ mod tests {
             Err(SendRefusal::SessionIsLive)
         ));
         assert!(matches!(
-            shared.resolve_tmux_send(&sid),
+            shared.resolve_pane_send(&sid),
             Err(SendRefusal::SessionIsLive)
         ));
         assert_eq!(shared.agent_for_session(&sid), Some(Agent::CODEX));
@@ -3168,9 +3357,18 @@ mod tests {
     /// and an UNPROVEN link (the cwd guess) is refused BEFORE its pane is ever revealed.
     #[test]
     fn tmux_injection_requires_a_live_proven_tmux_link() {
+        let tmux_target_from = |agent, link: &SendLink| {
+            pane_target_from(agent, link).map(|(pid, addr)| match addr {
+                PaneAddr::Tmux { sock, pane } => (pid, sock, pane),
+                other => panic!("not a tmux pane: {other:?}"),
+            })
+        };
         let tmux = |confirmed: bool, in_tmux: bool| SendLink {
             pid: Some(777),
-            tmux: in_tmux.then(|| (Some("knack".into()), "%3".into())),
+            pane: in_tmux.then(|| PaneAddr::Tmux {
+                sock: Some("knack".into()),
+                pane: "%3".into(),
+            }),
             confirmed,
         };
 
@@ -4054,6 +4252,175 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// #s226: an agent in a herdr pane is herdr-hosted, its pane the target. A multiplexer inside
+    /// the other's pane hands its children the OUTER pane's markers too, in both directions, so
+    /// with both the nearest one up the parent chain decides: herdr started from a tmux pane (201,
+    /// herdr inner), tmux started in a herdr pane (203, tmux inner — sending through herdr would
+    /// type into the tmux client), and an agent whose chain names neither is in no pane we may
+    /// drive (204). The named session comes from the socket path, as measured on aries-black.
+    #[test]
+    fn a_herdr_pane_is_the_host_even_with_an_inherited_tmux_pane() {
+        let sid = "99999999-1111-2222-3333-444444444444";
+        let mut procs = parse_ps(&format!(
+            "  201 /Users/x/.local/bin/claude --resume {sid}\n\
+             202 /Users/x/.local/bin/claude\n\
+             203 /Users/x/.local/bin/claude\n\
+             204 /Users/x/.local/bin/claude\n\
+             205 /Users/x/.local/bin/claude\n\
+             206 /Users/x/.local/bin/claude\n\
+             207 /Users/x/.local/bin/claude\n\
+             208 /Users/x/.local/bin/claude\n"
+        ));
+        apply_tty(
+            &mut procs,
+            "  201 ttys010\n  202 ttys011\n  203 ttys012\n  204 ttys013\n  205 ttys014\n  206 ttys015\n  207 ttys016\n  208 ttys017\n",
+            0,
+        );
+        let herdr = "HERDR_ENV=1 HERDR_PANE_ID=w1:p2 HERDR_WORKSPACE_ID=w1 HERDR_SOCKET_PATH=/Users/x/.config/herdr/sessions/trial/herdr.sock";
+        let both = format!("TMUX=/tmp/tmux-501/work,89,0 TMUX_PANE=%7 {herdr}");
+        apply_env(
+            &mut procs,
+            &format!(
+                "  201 claude {both}\n\
+                 202 claude HERDR_PANE_ID=w2:p1 HERDR_SOCKET_PATH=/Users/x/.config/herdr/herdr.sock\n\
+                 203 claude {both}\n\
+                 204 claude {both}\n\
+                 205 claude HERDR_PANE_ID=w3:p1\n\
+                 206 claude TMUX=/tmp/tmux-501/odd,95,0 TMUX_PANE=%2 {herdr}\n\
+                 207 claude STY=1234.pts-0.host {herdr}\n\
+                 208 claude {herdr}\n"
+            ),
+        );
+        // ucomm as ps gives it. 201: zsh in a herdr pane (the shell is the server's direct
+        // child, measured), the herdr server started from a tmux pane's zsh. 202/205: plain herdr
+        // panes. 203: zsh in a tmux pane whose daemonized server is launchd's child (tmux was
+        // started from a herdr pane, measured). 204: nothing up the chain is a multiplexer. 206:
+        // a tmux server known only by the pid `TMUX` names. 207: screen inside a herdr pane. 208:
+        // zellij inside a herdr pane.
+        apply_nesting(
+            &mut procs,
+            "    1     0 launchd\n\
+               50     1 tmux\n\
+               51    50 zsh\n\
+               60    51 herdr\n\
+               61    60 zsh\n\
+              201    61 claude\n\
+               65     1 herdr\n\
+               66    65 zsh\n\
+              202    66 claude\n\
+              205    66 claude\n\
+               70     1 tmux\n\
+               71    70 zsh\n\
+              203    71 claude\n\
+               80     1 login\n\
+               81    80 zsh\n\
+              204    81 claude\n\
+               95     1 tmux3.5a\n\
+               96    95 zsh\n\
+              206    96 claude\n\
+              100    61 screen\n\
+              101   100 zsh\n\
+              207   101 claude\n\
+              110    61 zellij\n\
+              111   110 zsh\n\
+              208   111 claude\n",
+        );
+        let l = link(
+            &procs,
+            sid,
+            Agent::CLAUDE,
+            Path::new("/nope.jsonl"),
+            None,
+            false,
+            &|_| true,
+        )
+        .expect("argv link");
+        assert_eq!(
+            l.terminal.kind(),
+            "herdr",
+            "herdr wins over the inherited TMUX_PANE"
+        );
+        assert_eq!(l.terminal.target(), Some("w1:p2"));
+        assert_eq!(
+            l.terminal.pane_addr(),
+            Some(PaneAddr::Herdr {
+                socket: Some("/Users/x/.config/herdr/sessions/trial/herdr.sock".into()),
+                pane: "w1:p2".into(),
+            })
+        );
+        assert_eq!(Terminal::of(&procs[1]).kind(), "herdr");
+        assert_eq!(
+            Terminal::of(&procs[2]).pane_addr(),
+            Some(PaneAddr::Tmux {
+                sock: Some("work".into()),
+                pane: "%7".into()
+            }),
+            "tmux inside a herdr pane is tmux, never the herdr pane around it"
+        );
+        assert_eq!(
+            Terminal::of(&procs[3]).kind(),
+            "tty",
+            "undecided: no pane to drive"
+        );
+        assert_eq!(Terminal::of(&procs[3]).pane_addr(), None);
+        assert_eq!(
+            Terminal::of(&procs[4]).kind(),
+            "tty",
+            "a herdr pane id with no socket is no herdr pane we can address"
+        );
+        assert_eq!(
+            Terminal::of(&procs[5]).kind(),
+            "tmux",
+            "a tmux server known by its pid, whatever ps calls it"
+        );
+        assert_eq!(
+            Terminal::of(&procs[6]).kind(),
+            "screen",
+            "screen inside a herdr pane is screen, never the herdr pane around it"
+        );
+        assert_eq!(
+            Terminal::of(&procs[7]).pane_addr(),
+            None,
+            "zellij inside a herdr pane: no pane we may drive"
+        );
+        // The named session attaching needs; the default server names none.
+        assert_eq!(
+            herdr_session(Some("/Users/x/.config/herdr/sessions/trial/herdr.sock")).as_deref(),
+            Some("trial")
+        );
+        assert_eq!(
+            herdr_session(Some("/Users/x/.config/herdr/herdr.sock")),
+            None
+        );
+        assert_eq!(herdr_session(None), None);
+        // A herdr grant can never match a tmux pane's, nor another herdr server's.
+        let herdr = PaneAddr::Herdr {
+            socket: None,
+            pane: "w1:p2".into(),
+        };
+        assert_eq!(herdr.consent_sock().as_deref(), Some("herdr:default"));
+        assert_ne!(
+            herdr.consent_sock(),
+            PaneAddr::Tmux {
+                sock: None,
+                pane: "w1:p2".into()
+            }
+            .consent_sock()
+        );
+        // A proven herdr link resolves to its pane, like a tmux one.
+        let send = SendLink {
+            pid: Some(201),
+            pane: Some(herdr.clone()),
+            confirmed: true,
+        };
+        assert_eq!(pane_target_from(Agent::CLAUDE, &send), Ok((201, herdr)));
+        // herdr's hook proves the pane's session for Claude only.
+        assert_eq!(
+            pane_target_from(Agent::CODEX, &send),
+            Err(SendRefusal::HerdrClaudeOnly)
+        );
+    }
+
     /// The #112 parsers and link precedence, against fixture strings shaped exactly like
     /// the probe's verified sources — no live processes needed.
     #[test]
@@ -4933,6 +5300,82 @@ n/Users/x/proj
         assert!(none.is_empty());
     }
 
+    /// #s226, what the attention report reads (agreed with Aries): a session alone in its directory
+    /// and running in a herdr pane is a row with `term: "herdr"`, its pane as `target`, the named
+    /// session it belongs to as `herdrSession`, and an injectable link — while a grant for the
+    /// same pane id on a tmux server would not count for it.
+    #[test]
+    fn a_herdr_session_s_row_says_herdr_and_offers_the_send() {
+        let scratch = std::env::temp_dir().join(format!("cm-herdr-row-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let mut procs = parse_ps("  700 claude --resume\n");
+        apply_tty(&mut procs, "  700 ttys004 10:00\n", 1_791_400_000);
+        apply_env(
+            &mut procs,
+            "  700 claude HERDR_ENV=1 HERDR_PANE_ID=w1:p2 HERDR_SOCKET_PATH=/Users/x/.config/herdr/sessions/trial/herdr.sock\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "  1 0 launchd\n  60 1 herdr\n  61 60 zsh\n  700 61 claude\n",
+        );
+        apply_lsof(&mut procs, "p700\nfcwd\nn/w/harbor\n");
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        let now = 1_791_400_000u64;
+        let mut row = growth_row("/w/harbor", false);
+        row.first_event = Some(now - 600);
+        row.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(now - 5));
+        row.last_event = Some(now - 5);
+        st.rows.insert("h1".into(), row);
+        crate::consent::ConsentStore::open()
+            .grant(None, "w1:p2", "h1", 700)
+            .expect("a tmux-keyed grant");
+        let mut facts = Vec::new();
+        let snapshot = idx.assemble(&st, &mut facts);
+        fn find<'a>(v: &'a Value, id: &str) -> Option<&'a Value> {
+            match v {
+                Value::Object(m) if m.get("id").and_then(|i| i.as_str()) == Some(id) => Some(v),
+                Value::Object(m) => m.values().find_map(|c| find(c, id)),
+                Value::Array(a) => a.iter().find_map(|c| find(c, id)),
+                _ => None,
+            }
+        }
+        let row = find(&snapshot, "h1").expect("the row");
+        assert_eq!(row["term"], "herdr", "{row}");
+        assert_eq!(row["target"], "w1:p2");
+        assert_eq!(row["herdrSession"], "trial");
+        assert_eq!(
+            row["injectable"], true,
+            "a lone, proven herdr link can be sent to"
+        );
+        assert_eq!(
+            row["consented"], false,
+            "a tmux grant for the same pane id does not count"
+        );
+        assert!(row.get("sock").is_none(), "no tmux socket on a herdr row");
+        assert_eq!(
+            facts[0].pane,
+            Some(PaneAddr::Herdr {
+                socket: Some("/Users/x/.config/herdr/sessions/trial/herdr.sock".into()),
+                pane: "w1:p2".into(),
+            })
+        );
+        crate::consent::ConsentStore::open()
+            .grant(
+                Some("herdr:/Users/x/.config/herdr/sessions/trial/herdr.sock"),
+                "w1:p2",
+                "h1",
+                700,
+            )
+            .expect("the herdr grant");
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert_eq!(find(&snapshot, "h1").expect("the row")["consented"], true);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
     /// #s50, as aries-black showed it: a coordinator and two `claude -p` workers in one repo, both
     /// workers carrying the coordinator's `TMUX_PANE`. The first worker, deep in a long Bash, is
     /// not the directory's newest session; the second wrote last. Each worker keeps its OWN
@@ -5000,13 +5443,10 @@ n/Users/x/proj
             fact("coord").confirmed,
             "alone among the directory's candidates"
         );
-        assert_eq!(
-            fact("coord").tmux.as_ref().map(|t| t.1.as_str()),
-            Some("%0")
-        );
+        assert_eq!(fact("coord").pane.as_ref().map(|t| t.pane()), Some("%0"));
         for w in ["w1", "w2"] {
             assert!(
-                fact(w).tmux.is_none() && fact(w).term.is_none(),
+                fact(w).pane.is_none() && fact(w).term.is_none(),
                 "a worker is never offered the pane it inherited"
             );
         }

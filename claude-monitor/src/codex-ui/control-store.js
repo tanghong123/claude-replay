@@ -82,7 +82,9 @@ export class ControlStore {
     if (!text || !controlState.row) return;
     controlState.pending = text;
     if (controlState.mode === "tmux" && !controlState.consented) {
-      byId("confirmText").textContent = `The message goes to ${controlState.row.target || "the current tmux pane"} and runs with that agent's current permissions.`;
+      // #s226: a herdr pane is named as one; a tmux pane's `%N` reads as before.
+      const where = controlState.row.term === "herdr" ? `herdr pane ${controlState.row.target}` : controlState.row.target || "the current tmux pane";
+      byId("confirmText").textContent = `The message goes to ${where} and runs with that agent's current permissions.`;
       byId("confirmLayer").classList.add("production-open");
       return;
     }

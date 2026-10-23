@@ -292,6 +292,44 @@ lists workers. A fork's engine (`--fork-session --resume <parent.jsonl>`) is the
 anywhere, and `note_forks_from_argv` is how one joins its #142 family. Diagnose against the
 machine, not the API: `term`/`injectable` describe the process the row was LINKED to, so a false
 link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and `ps -axww` first.
+**A session in a herdr pane is sent to through herdr** (#s226, Hong's move from tmux to herdr in
+stages, agentdev-setup-hong#s127; herdr 0.9.5 measured on aries-black by its steward). The agent's own
+environment names the pane (`HERDR_PANE_ID`, like `w1:p2`) and its server (`HERDR_SOCKET_PATH`, which
+herdr sets in every pane; `~/.config/herdr/sessions/<name>/herdr.sock` for a named session). One
+multiplexer inside the other's pane hands its children the OUTER pane's markers too, in BOTH
+directions (herdr started from a tmux pane gives every herdr pane `TMUX_PANE`; tmux started in a herdr
+pane gives every tmux pane `HERDR_PANE_ID`), and typing at the outer pane reaches whatever sits there
+now — so a herdr marker is believed only when herdr IS the nearest multiplexer up the agent's parent
+chain (`apply_nesting`, one `ps -axo pid=,ppid=,ucomm=` when any agent carries a herdr marker: a
+pane's shell is the herdr server's direct child, measured; `ucomm` because `comm` is the start path
+cut at 16 characters). The tmux server is known by the pid in `TMUX`, screen or zellij nearer than
+herdr is a pane we do not drive, and with no answer the agent is in no pane we may drive. The row says `term: "herdr"`, `target` the pane, `herdrSession` a named session
+(the attention report reads `term`, agreed with Aries); the classic rail's badge copies `herdr` or
+`herdr --session <name>`, since herdr attaches by server. The send (`PaneAddr`, `resolve_pane_send`)
+keeps every tmux rule — a proven link, the project's only live session, consent keyed to the pane and
+pid (a herdr key's socket half is `herdr:<socket>`, so a tmux grant can never count) — and then
+`control::herdr_send` checks what tmux never did, for a CLAUDE session only (herdr's hook reports
+Claude's session; a Codex row in herdr is not offered the send, `HerdrClaudeOnly`): the pane id must
+be herdr's shape and the socket a socket of this user (both come from another process's
+environment); every herdr step addresses that one server by `HERDR_SOCKET_PATH` alone (the monitor's
+own `HERDR_*` removed), within 5 s; `herdr agent get` must name THIS
+session (no hook: the refusal says `herdr integration install claude`); `agent_status: blocked` or
+the client's own wait (#s76) holds it; and so does the input box read from `herdr pane read --ansi`
+— the LAST pair of `─` rules with `❯`+NO-BREAK SPACE on its first line — unless everything in it after
+the prompt is blank or DIM (the suggestion an empty input shows; a draft, its second line included,
+is not dim, and a colour is not dim: `sgr_dim` skips `38;2;r;g;b` and its kin whole; a permission
+dialog replaces the box, so no box holds too). The agent is asked once more right before typing; the
+prompt goes over the socket (`pane.send_text`, one JSON line, its reply's id matched: `pane
+send-text` takes the text only as an argv), with a CR made a newline and every other control
+character dropped (`herdr_text`: tmux's bracketed paste keeps them inert, herdr's was not measured); the pane is read AGAIN (still this session, no dialog,
+text in the box, or no Enter — a dialog takes Enter as its first choice); and one `herdr pane
+send-keys <pane> enter` submits. Whether every character in the box is ours is not read back (a long
+prompt may show as a paste), and a dialog can still open in the moment before typing, as with tmux; a multi-line prompt arrives as one
+draft. A held send answers `{"ok": false, "code": "held", "error": <what to do>}`, which both pages
+show as is. Unlike tmux's status line, nothing announces the send in the pane: no herdr command for it
+was measured, and the typed text sits in the box before it is submitted. Caveat from the trial: herdr
+restores a session as `claude --resume <id>`, dropping its start flags, so one started with
+`--dangerously-skip-permissions` comes back in `settings.json`'s mode.
 
 **Text in the preview pane is mdrev's viewer, as a guest** (#270,
 `design/mdrev-in-the-preview-pane.md`; every text file since #s13), and **mdrev is PINNED** (#274, the owner: "only depend on
