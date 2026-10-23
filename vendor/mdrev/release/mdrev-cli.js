@@ -33661,9 +33661,9 @@ var SharedStore = class {
   pointer;
   dir;
   gitDir;
-  constructor(pointer) {
+  constructor(pointer, stateDir = stateHome()) {
     this.pointer = pointer;
-    this.dir = join7(stateHome(), "review", storeKey(pointer));
+    this.dir = join7(stateDir, "review", storeKey(pointer));
     this.gitDir = join7(this.dir, "store.git");
   }
   get outboxDir() {
@@ -38519,7 +38519,9 @@ Options:
   --text          for the notes verbs: the prose a person reads, not the JSON
   --author NAME   who is acting (default: user@host)
   --viewer        a person acting in a viewer: what a host's routes pass on every note write and
-                  listing. Needs the viewer key in MDREV_VIEWER_KEY (the token in mdrev's state dir)
+                  listing. Needs the viewer key in MDREV_VIEWER_KEY (the token in mdrev's state dir),
+                  or, for the person's own notes and nothing shared, the notes key in MDREV_NOTES_KEY
+                  (notes-token there)
   --for ID        a write to a shared thread from the command line names the open local note that asked for it
   --fetch         for review status: fetch the store first
   --header "K: V" for conform: a header to send with every request (repeatable) \u2014 the host's session
@@ -38716,11 +38718,21 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
     process.stderr.write("mdrev-cli: --follow streams the open notes as they change; --all, --records and --viewer do not combine with it\n");
     return 1;
   }
+  let notesOnly = false;
   if (o.viewer && !viewerKeyOk()) {
-    process.stderr.write("mdrev-cli: --viewer is for a viewer's host, and needs its key (MDREV_VIEWER_KEY); from the command line, an agent answers a thread with --for\n");
-    if (!listing)
-      return 1;
-    o.viewer = false;
+    if (notesKeyOk())
+      notesOnly = true;
+    else {
+      process.stderr.write("mdrev-cli: --viewer is for a viewer's host, and needs its key (MDREV_VIEWER_KEY), or the notes key (MDREV_NOTES_KEY) for the person's own notes alone; from the command line, an agent answers a thread with --for\n");
+      if (!listing)
+        return 1;
+      o.viewer = false;
+    }
+  }
+  if (notesOnly && (command === "review" || command === "notes" && (["share", "hide", "unhide", "thread"].includes(sub ?? "") || id !== void 0 && isSharedId(id)))) {
+    process.stderr.write(`mdrev-cli: ${NOTES_KEY_ONLY}
+`);
+    return 1;
   }
   const atTerminal = Boolean(as.person || personAtTerminal());
   const who = o.viewer ? { via: "viewer" } : { via: "cli", ...o.for ? { for: o.for } : {}, ...atTerminal ? {} : { agent: agentMark() } };
@@ -38856,7 +38868,7 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
             if (o.records) {
               const records = await recordsFor(source, { path: o.path, all: o.all, revs, upgrade: o.path !== void 0 });
               const local2 = side ? await side.markNotPushed(records) : records;
-              const threads = o.viewer ? await threadsFor(source, { path: o.path, all: o.all }) : [];
+              const threads = o.viewer && !notesOnly ? await threadsFor(source, { path: o.path, all: o.all }) : [];
               emit([...local2, ...side ? await side.placeThreads(threads) : threads]);
               return 0;
             }
@@ -38888,6 +38900,10 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
               throw new UsageError("the record needs a body");
             if (!record.anchor || typeof record.anchor !== "object")
               throw new UsageError("the record needs an anchor");
+            if (notesOnly && record.shared === true)
+              throw new UsageError(NOTES_KEY_ONLY);
+            if (notesOnly)
+              record = Object.fromEntries(Object.entries(record).filter(([k]) => NOTE_FIELDS.has(k)));
             const anchor = record.anchor;
             if (typeof anchor.exact !== "string" || anchor.exact === "") {
               throw new UsageError('the anchor needs "exact": the text the note points at');
@@ -38910,7 +38926,7 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
               ...quoteOnly ? { start: 0, end: 0, space: "source" } : {}
             };
             if (side && agentHere)
-              throw new UsageError("in service mode an agent does not file notes: it replies to and closes its person's (B10)");
+              throw new UsageError(`in service mode an agent does not file notes: it replies to and closes its person's (B10). A viewer's host files its reader's note with --viewer and its key (contract.md, "The viewer key" and "The notes key")`);
             if (record.saveId !== void 0 && (typeof record.saveId !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(record.saveId))) {
               throw new UsageError(`the record's "saveId" is 8 to 64 letters, digits, - or _`);
             }
@@ -39397,14 +39413,23 @@ ${formatCodeOffer(before.code).join("\n")}
   }
 }
 function viewerKeyOk() {
-  const given = process.env.MDREV_VIEWER_KEY ?? "";
+  return keyOk(process.env.MDREV_VIEWER_KEY, "token");
+}
+function notesKeyOk() {
+  return keyOk(process.env.MDREV_NOTES_KEY, "notes-token");
+}
+var NOTE_FIELDS = /* @__PURE__ */ new Set(["body", "anchor", "type", "rev", "fromRev", "target", "about", "ref", "saveId"]);
+var NOTES_KEY_ONLY = `the notes key is for the person's own notes: anything shared \u2014 a thread, Share, hiding, the review store \u2014 needs the viewer key (contract.md, "The notes key")`;
+function keyOk(given, file) {
   let token = "";
   try {
-    token = readFileSync8(join12(process.env.MDREV_STATE_DIR ?? join12(homedir4(), ".mdrev"), "token"), "utf8").trim();
+    token = readFileSync8(join12(process.env.MDREV_STATE_DIR ?? join12(homedir4(), ".mdrev"), file), "utf8").trim();
   } catch {
     return false;
   }
-  return token.length > 0 && given.length === token.length && timingSafeEqual(Buffer.from(given), Buffer.from(token));
+  const said = Buffer.from(given ?? "");
+  const kept = Buffer.from(token);
+  return kept.length > 0 && said.length === kept.length && timingSafeEqual(said, kept);
 }
 function followSignals() {
   const stop = new AbortController();

@@ -459,7 +459,10 @@ Section G says how mdrev enforces each of these.
 - **E5. Both viewers, and hosts.** The daemon, the guest viewer, and
   embedding hosts (through mdrev-cli) all show, write and push threads the
   same way. A host proves a person to mdrev-cli with the viewer key (G); one
-  that does not pass it gets reading and local notes, nothing shared.
+  that does not pass it gets reading and local notes held to an agent's
+  rules, nothing shared — and no new note in service mode, where agents file
+  none (personal-service.md B10). One that passes the notes key instead gets
+  the person's own notes as theirs, and nothing shared.
 
 ### F. After the fact
 
@@ -496,7 +499,10 @@ person sees, because no program can read intent — they say so below.
 **Who is asking.** A viewer's route is a person: the daemon's routes need its
 key (the token in `~/.mdrev`, as a cookie or header) on every request, and
 the guest's host passes that same key to mdrev-cli in its environment;
-`mdrev-cli --viewer` without it is refused. Anything else on the command line
+`mdrev-cli --viewer` without it is refused. A host may pass the notes key
+instead (contract.md, "The notes key"): mdrev-cli then believes `--viewer` for
+the person's own notes alone, and refuses everything shared as it does without
+a key. Anything else on the command line
 is an agent's, even when a person types it — so a person replying from a
 terminal with `--for` is marked agent-assisted. Pairing and pushing may also
 come from a person at their own terminal: the `mdrev` command checks for a
@@ -805,7 +811,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.60",
+  "mdrev": "1.1.61",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
