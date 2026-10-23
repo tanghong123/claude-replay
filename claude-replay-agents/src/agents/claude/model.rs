@@ -909,6 +909,25 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             "isApiErrorMessage",
             "error",
             "truncatedAfterOutput",
+            // #s220 (client 2.1.308): a string on the synthetic assistant record the client writes
+            // when a response stream is cut (`isApiErrorMessage`, model "<synthetic>", zero usage,
+            // `error` and `truncatedAfterOutput` beside it), naming the cause. Met on ONE record on
+            // aries-black, measured 2026-10-23, value "watchdog"; absent from 2.1.304, and the
+            // 2.1.308 and 2.1.309 clients set it to one of eight values: watchdog, timed_out,
+            // server_error, malformed_stream, stream_suspended, stream_truncated, network_down,
+            // stale_connection. The client writes the same cause into the record's text, one
+            // sentence per cause family ("The response stopped arriving", "may be incomplete" or
+            // "no response was produced"), which the page already draws as a Failure note (#236),
+            // so nothing a reader needs; the key is finer only where two causes share a sentence.
+            // Expected beside it and NOT yet met in any transcript, so not in this census, each to
+            // be judged as its own row when one first carries it: `streamWatchdogGaveUp` (the
+            // watchdog fired before any output) and `resendCannotCure` (an error a resend cannot
+            // fix, a billing error among them). REVISIT: (1) the key on an assistant record NOT
+            // flagged `isApiErrorMessage`, a cut the page would then draw as prose; (2) a value
+            // outside the eight; (3) many cuts in one session, where a count or a filter by cause,
+            // finer than the text, is a RENDER question for the owner, queued with the record
+            // count and client version, never decided here.
+            "streamCutCause",
             "apiErrorStatus",
             "supersedesUuids",
             "errorDetails",
@@ -7579,6 +7598,39 @@ mod tests {
             .filter(|s| s.example.as_deref() == Some("s-s215"))
             .collect();
         assert!(seen.is_empty(), "nothing reported: {seen:?}");
+    }
+
+    /// #s220: the 2.1.308 cause on a cut stream's synthetic error record is known, not reported
+    /// while the sweep asks, and the record still folds to ONE Failure note, never the assistant's
+    /// prose. Removing the key from the assistant arm of the census turns this red.
+    #[test]
+    fn an_api_error_s_stream_cut_cause_is_known() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.308","sessionId":"s-s220","uuid":"u1","message":{"role":"user","content":"go"}}
+{"type":"assistant","version":"2.1.308","sessionId":"s-s220","uuid":"a1","isApiErrorMessage":true,"error":"server_error","truncatedAfterOutput":true,"streamCutCause":"watchdog","message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: The response stopped arriving. The response above may be incomplete."}]}}
+"##;
+        let messages = tokenize(jsonl.lines());
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s220"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+        let failures = messages
+            .iter()
+            .filter(|m| {
+                matches!(m, Message::SystemNote { text, kind: NoteKind::Failure }
+                    if text.contains("stopped arriving"))
+            })
+            .count();
+        assert_eq!(failures, 1, "one Failure note: {messages:?}");
+        let blocks = replay(&messages, &mut Vec::new(), &CLAUDE_SHAPING);
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, Block::AssistantText(_) | Block::AssistantMessage { .. })),
+            "the cut is not the assistant speaking: {blocks:?}"
+        );
     }
 
     /// #370: the 2.1.288 placement flag on an attachment is known — not reported while the sweep
