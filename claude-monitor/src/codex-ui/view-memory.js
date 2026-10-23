@@ -6,11 +6,11 @@
 // stable across reloads, which is what makes remembering by key work at all.
 export const viewMemoryKey = session => `am-view:${session}`;
 
-// The reader's CHOICES ride with the position (#114): which folds, processes, prompts and
-// images they opened, which turns they read raw, which caps they expanded — keyed by record
+// The reader's CHOICES ride with the position (#114): which folds, processes and prompts
+// they opened, which turns they read raw, which caps they expanded — keyed by record
 // id or unit key, both stable across reloads — so a reload or a switch away and back shows
 // the session as they left it, not as the server authored it.
-const VIEW_FIELDS = ["folds", "processFolds", "processExpanded", "promptExpanded", "rawTurns", "capOpen", "openImages", "processBulk", "processChosen"];
+const VIEW_FIELDS = ["folds", "processFolds", "processExpanded", "promptExpanded", "rawTurns", "capOpen", "processBulk", "processChosen"];
 
 /** The reader state → a plain object (Maps as objects, Sets as arrays); empty ones omitted. */
 export function viewChoices(state) {

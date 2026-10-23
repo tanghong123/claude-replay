@@ -351,13 +351,23 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .outline-agent-spawn{width:24px;height:24px;border-radius:6px;display:grid;place-items:center;background:transparent;color:var(--faint);cursor:pointer;font-size:13px;line-height:1}
 .outline-agent-spawn:hover,.outline-agent-spawn:focus-visible{color:var(--ink);background:var(--hover);outline:0}
 /* #80: an image attachment — a line until asked, then an inline thumbnail, then the lightbox. */
-.renderer-image{display:flex;flex-direction:column;gap:8px;align-items:flex-start}
-.renderer-image-toggle{padding:4px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--sub);font-size:12.5px;cursor:pointer}
-.renderer-image-toggle:hover,.renderer-image-toggle:focus-visible{color:var(--ink);border-color:var(--sub);outline:0}
-.renderer-image-figure{margin:0;display:flex;flex-direction:column;gap:4px;align-items:flex-start;max-width:100%}
-.renderer-image-thumb{padding:0;border:1px solid var(--line);border-radius:8px;background:var(--bg);cursor:zoom-in;overflow:hidden;max-width:100%;display:block}
-.renderer-image-thumb img{display:block;max-height:320px;max-width:100%;width:auto;height:auto}
-.renderer-image-figure figcaption{font-size:11.5px;color:var(--faint)}
+/* An image is a bounded thumbnail one click from the right pane (#s223); consecutive images are one
+   event with a count and a strip (#s221), and Open all puts them in the pane as tabs (#s222). */
+.renderer-image{display:flex;align-items:flex-start}
+.image-thumb{padding:0;border:1px solid var(--line);border-radius:8px;background:var(--bg);cursor:pointer;overflow:hidden;max-width:100%;display:block;flex:none}
+.image-thumb img{display:block;height:72px;max-width:240px;width:auto;object-fit:cover}
+.image-thumb:hover,.image-thumb:focus-visible{border-color:var(--sub);outline:0}
+/* #s221 on a touch screen: iOS keeps :hover on the last thing tapped, so a tapped thumbnail or Open
+   all kept its hover edge after the pane closed (the walk's screenshot). */
+@media(hover:none){#app :is(.image-thumb,.image-run-open-all,.renderer-open-all):hover:not(:focus-visible){border-color:var(--line);color:var(--sub)}}
+.image-thumb-name{display:block;padding:6px 10px;color:var(--sub);font:11.5px/1.4 var(--mono)}
+.image-run{display:flex;flex-direction:column;gap:6px;padding:3px 2px}
+.image-run-head{display:flex;align-items:baseline;gap:10px}
+.image-run-lead{color:var(--sub);font-size:11px;font-variant-numeric:tabular-nums}
+.image-run-open-all,.renderer-open-all{padding:2px 9px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--sub);font-size:11.5px;cursor:pointer}
+.image-run-open-all:hover,.image-run-open-all:focus-visible,.renderer-open-all:hover{color:var(--ink);border-color:var(--sub);outline:0}
+.image-run-strip{display:flex;flex-wrap:wrap;gap:6px}
+.artifact-stage>.preview-note{position:absolute;top:10px;left:12px;right:12px;z-index:2;padding:7px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--sub);font-size:11.5px;pointer-events:none}
 /* #119: the fleet a workflow call launched, in flow under the call — the classic page's roster
    (`.fleet` / `.fleet-row` / `.fleet-dot.on` / `a.fleet-name`), in this shell's type. It sits
    inside the renderer after the body, so a folded call still shows who it launched. */
@@ -570,7 +580,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .process-surface-label[data-turn-label]:after{content:"Turn " attr(data-turn-label)}
 /* #99: a turn's chrome never enters a selection — dragging across a one-line prompt copied the
    prompt, "#" and "{}" as three lines. */
-.turn .spot-link,.turn .raw-toggle,.turn .turn-time,.turn .prompt-expand,.turn .command-chevron,.turn .command-chip,.renderer-head,.process-surface-headbar,.cap-more-btn,.codebar,.renderer-image-toggle{user-select:none}
+.turn .spot-link,.turn .raw-toggle,.turn .turn-time,.turn .prompt-expand,.turn .command-chevron,.turn .command-chip,.renderer-head,.process-surface-headbar,.cap-more-btn,.codebar,.image-run-head{user-select:none}
 
 /* A bare tool result's body wears the classic page's ⎿ gutter (#122, parity row 3.18): the
    record is nothing but what came back, so the mark carries the meaning the rail cannot. */
@@ -878,7 +888,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .image-lightbox-stage>img{position:absolute;left:50%;top:50%;transform-origin:center center;will-change:transform;max-width:none;max-height:none}
 .image-lightbox-stage[data-pannable="yes"]{cursor:grab}
 .image-lightbox-stage[data-pannable="yes"].dragging{cursor:grabbing}
-.image-zoom{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;align-items:center;gap:2px;padding:3px;border-radius:999px;background:rgba(18,22,30,.82);backdrop-filter:blur(10px);box-shadow:0 6px 20px rgba(0,0,0,.28);z-index:2}
+.image-zoom{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;align-items:center;gap:2px;padding:3px;border:1px solid rgba(255,255,255,.16);border-radius:999px;background:rgba(18,22,30,.82);backdrop-filter:blur(10px);box-shadow:0 6px 20px rgba(0,0,0,.28);z-index:2}
 .image-zoom[hidden]{display:none!important}
 .image-zoom-btn,.image-zoom-level{border:0;background:transparent;color:#e8ecf2;font:12px/1 var(--sans);cursor:pointer;border-radius:999px;transition:background .12s ease}
 .image-zoom-btn{width:28px;height:26px;font-size:15px}
@@ -919,6 +929,12 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    every width, because a phone hides the state pill the counts used to share. The target column
    shrinks to its text, so the badge sits beside it rather than across the card. */
 .renderer>.renderer-head:has(>.renderer-change){grid-template-columns:11px max-content minmax(0,max-content) max-content minmax(0,1fr)}
+/* #s222: a send's Open all takes the badge's place, in a column of its own after the target, and
+   the state keeps its own width: at minmax(0,1fr) a narrow head (the pane open beside it) gave the
+   state 0px and its "4 lines", aligned to the end, spilled left over the chip and took its click.
+   The target is what gives way. */
+.renderer>.renderer-head:has(>.renderer-open-all){grid-template-columns:11px max-content minmax(0,max-content) max-content minmax(max-content,1fr)}
+.renderer-open-all{justify-self:start;white-space:nowrap;line-height:16px;direction:ltr}
 .renderer-change{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;font:600 10.5px/18px var(--mono);direction:ltr}
 .renderer-change>span{padding:0 5px;border-radius:5px}
 .renderer-change>.add{color:var(--green);background:var(--green-bg)}
@@ -1383,6 +1399,13 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .renderer-delivered{align-items:center;gap:6px;margin:4px 0 10px}
   #app .renderer-delivered-file{display:inline-flex;align-items:center;min-height:36px;padding:0 12px;border-radius:18px;background:var(--hover);color:var(--ink);text-decoration:none}
   #app :is(.renderer-target-link,.pointer-run-file[data-reference-path]){padding:10px 0}
+  /* #s221/#s222 on a phone: a thumbnail, Open all and the pane's zoom bar are finger targets. */
+  #app .image-thumb img{height:56px}
+  #app .image-thumb{min-height:44px;min-width:44px}
+  #app .artifact-stage .image-zoom-btn,#app .artifact-stage .image-zoom-level{height:40px;min-width:44px}
+  #app .image-run-open-all{min-height:36px;padding:0 14px;border-radius:18px}
+  #app .renderer-open-all{display:inline-flex;align-items:center;min-height:32px;padding:0 12px;border-radius:16px}
+  #app .image-run-strip{gap:8px}
   .toast{bottom:calc(max(calc(64px + env(safe-area-inset-bottom,0px)),calc(var(--phone-kb,0px) + 64px)) + 10px)}
   #app .session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 16px)}
   /* #s39 (design/phone-landscape.md §3.5c, approved by the owner): the compose box is the dock's third

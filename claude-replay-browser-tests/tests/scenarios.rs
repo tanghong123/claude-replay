@@ -2330,47 +2330,33 @@ fn scenario_embedded_image_renders(tab: &headless_chrome::Tab, surface: Surface,
             until(tab, "!!document.querySelector('.amark img') && document.querySelector('.amark img').naturalWidth >= 1 && document.querySelector('.amark img').getBoundingClientRect().height > 0", "the classic page to show the image inline and visible", Duration::from_secs(20), "document.querySelectorAll('.amark').length + ' attachment blocks, imgs: ' + document.querySelectorAll('.amark img').length");
         }
         Surface::AppShell => {
-            // The reader's flow (#106): the image is a row of its own inside the process; its
-            // fold is opened by ITS head — not whichever fold happens to be last — and the
-            // toggle is clicked only once it has a rect, as a reader would see it.
-            until(tab, "!!document.querySelector('[data-image-toggle]')", "the image block to render inside the process", Duration::from_secs(20), "document.querySelectorAll('.renderer-note, .renderer-image').length + ' attachment views'");
-            let opened = eval(tab, "(function(){ var t = document.querySelector('[data-image-toggle]'); var r = t.closest('.renderer'); if (!r) return 'no renderer'; if (!r.classList.contains('closed')) return 'already open'; var h = r.querySelector('button.renderer-head'); if (!h) return 'no head button'; h.click(); return 'opened'; })()");
-            assert!(
-                opened == "opened" || opened == "already open",
-                "the image row's fold opens from its own head: {opened}"
-            );
-            until(tab, "(function(){ var t = document.querySelector('[data-image-toggle]'); return !!t && t.getBoundingClientRect().height > 0; })()", "the Show image control to be visible in its open row", Duration::from_secs(10), "document.querySelector('[data-image-toggle]') ? document.querySelector('[data-image-toggle]').closest('.renderer').className : 'no toggle'");
-            assert_eq!(
-                eval(
-                    tab,
-                    "document.querySelectorAll('.renderer-image img').length"
-                ),
-                0,
-                "collapsed: no image yet"
-            );
-            eval(
-                tab,
-                "document.querySelector('[data-image-toggle]').click(); 'ok'",
-            );
-            until(tab, "!!document.querySelector('.renderer-image-thumb img') && document.querySelector('.renderer-image-thumb img').naturalWidth >= 1", "the first click to show a thumbnail with real dimensions", Duration::from_secs(10), "(function(){ var i = document.querySelector('.renderer-image-thumb img'); return i ? JSON.stringify({ src: i.getAttribute('src').slice(0, 40), complete: i.complete, natural: i.naturalWidth, shown: i.offsetParent !== null }) : 'no img'; })()");
-            // Visible, not merely decoded (#106): the click re-renders the window, and the tool
-            // fold holding the image must come back open — a thumbnail inside a closed fold has
-            // its natural size and no rect, which is what "Show image is broken" looked like.
-            let thumb = probe(tab, "(function(){ var i = document.querySelector('.renderer-image-thumb img'); var r = i.getBoundingClientRect(); var t = document.querySelector('[data-image-toggle]'); return { height: Math.round(r.height), width: Math.round(r.width), natural: i.naturalWidth, toggle: t ? t.textContent : null, foldOpen: !!i.closest('.renderer') && !i.closest('.renderer').classList.contains('closed') }; })()");
+            // The reader's flow since #s223 (Hong: "if both are images, why not giving them a
+            // similar experience?"): the image is a row of its own inside the process showing its
+            // bounded thumbnail at once — drawn from the bytes the page already holds, so nothing is
+            // fetched (#80) — and one click opens it in the right pane, as a file name does. (#106's
+            // Show image toggle and the lightbox after it are gone.)
+            until(tab, "(function(){ var i = document.querySelector('.renderer-image .image-thumb img'); return !!i && i.naturalWidth >= 1 && i.getBoundingClientRect().height > 0; })()", "the image row to show its thumbnail inside the process", Duration::from_secs(20), "document.querySelectorAll('.renderer-note, .renderer-image').length + ' attachment views; thumbs: ' + document.querySelectorAll('.image-thumb').length");
+            let thumb = probe(tab, "(function(){ var i = document.querySelector('.renderer-image .image-thumb img'); var r = i.getBoundingClientRect(); return { height: Math.round(r.height), width: Math.round(r.width), src: (i.getAttribute('src') || '').slice(0, 15), toggle: !!document.querySelector('[data-image-toggle]') }; })()");
             assert!(
                 thumb["height"].as_f64().unwrap_or(0.0) > 0.0
-                    && thumb["width"].as_f64().unwrap_or(0.0) > 0.0,
-                "the thumbnail is visible after the click: {thumb}"
+                    && thumb["height"].as_f64().unwrap_or(999.0) <= 120.0,
+                "the thumbnail is visible and bounded: {thumb}"
             );
-            assert!(
-                thumb["height"].as_f64().unwrap_or(999.0) <= 320.0,
-                "the thumbnail is bounded: {thumb}"
+            assert_eq!(
+                thumb["src"], "data:image/png;",
+                "drawn from the bytes the page holds: {thumb}"
             );
+            assert_eq!(thumb["toggle"], false, "no Show/Hide step: {thumb}");
             eval(
                 tab,
-                "document.querySelector('.renderer-image-thumb').click(); 'ok'",
+                "document.querySelector('.renderer-image .image-thumb').click(); 'ok'",
             );
-            until(tab, "(function(){ var l = document.querySelector('.image-lightbox'); if (!l || l.hidden) return false; var r = l.getBoundingClientRect(); var img = l.querySelector('img'); return r.width > 0 && r.height > 0 && getComputedStyle(l).visibility !== 'hidden' && !!img && (img.getAttribute('src') || '').indexOf('data:image/png') === 0; })()", "the second click to open the lightbox", Duration::from_secs(10), "(function(){ var l = document.querySelector('.image-lightbox'); if (!l) return 'no lightbox'; var r = l.getBoundingClientRect(); return JSON.stringify({ hidden: l.hidden, w: r.width, h: r.height, vis: getComputedStyle(l).visibility, img: !!l.querySelector('img') }); })()");
+            until(tab, "(function(){ var i = document.querySelector('#previewBody .artifact-stage img'); return !document.getElementById('app').classList.contains('preview-off') && !!i && i.naturalWidth >= 1 && (i.getAttribute('src') || '').indexOf('data:image/png') === 0; })()", "one click to open the image in the right pane", Duration::from_secs(10), "(function(){ var b = document.getElementById('previewBody'); return document.getElementById('app').className + ' | ' + (b ? b.innerHTML.slice(0, 200) : 'no pane'); })()");
+            assert_eq!(
+                eval(tab, "!!document.querySelector('.image-lightbox.open')"),
+                false,
+                "and no lightbox"
+            );
         }
     }
 }
@@ -6696,16 +6682,18 @@ fn scenario_a_pasted_image_opens(tab: &headless_chrome::Tab, surface: Surface, _
     );
     if surface == Surface::AppShell {
         // The classic page shows a pasted image inline and has nothing to click; the app shell
-        // makes the thumbnail the way in, so the click is the rule.
+        // makes the thumbnail the way in, and since #s223 it opens the image in the right pane.
+        let pane = "(function(){ var i = document.querySelector('#previewBody .artifact-stage img'); return !document.querySelector('#previewBody .preview-error') && !!i && i.naturalWidth >= 1; })()";
+        let pane_diag = "(function(){ var b = document.getElementById('previewBody'); var i = b && b.querySelector('img'); return JSON.stringify({ app: document.getElementById('app').className, src: (i && i.getAttribute('src') || '').slice(0, 24), natural: i ? i.naturalWidth : -1, body: b ? b.innerText.slice(0, 160) : '' }); })()";
         eval(tab, "document.querySelector('.prompt-image').click(); 'ok'");
         until(
             tab,
-            "(function(){ var l = document.querySelector('.image-lightbox'); if (!l || l.hidden) return false; var img = l.querySelector('img'); return l.dataset.state !== 'unavailable' && !!img && !img.hidden && img.naturalWidth >= 1; })()",
-            "the click to open the image, not the 'cannot be opened' card",
+            pane,
+            "the click to open the image in the pane, not an error",
             Duration::from_secs(10),
-            "(function(){ var l = document.querySelector('.image-lightbox'); if (!l) return 'no lightbox'; var i = l.querySelector('img'); return JSON.stringify({ state: l.dataset.state, hidden: l.hidden, src: (i && i.getAttribute('src') || '').slice(0, 24), natural: i ? i.naturalWidth : -1 }); })()",
+            pane_diag,
         );
-        // And the rule that made this bug possible at all: the lightbox must never show LESS
+        // And the rule that made a bug possible here at all (#144): the pane must never show LESS
         // than the thumbnail is already showing. The card was rendered from data the view held;
         // looking the record up again by id is a second, weaker path to the same bytes, and when
         // it misses — a tail rewrite replacing records, a stale id in a DOM that has not
@@ -6713,16 +6701,16 @@ fn scenario_a_pasted_image_opens(tab: &headless_chrome::Tab, surface: Surface, _
         // exactly: point the card at a record id that is not in the stream, and click it.
         eval(
             tab,
-            "document.querySelector('.image-lightbox [data-lightbox-close]').click(); document.querySelector('.prompt-image').dataset.attachment = 'no-such-record'; 'ok'",
+            "document.querySelector('.prompt-image').dataset.attachment = 'no-such-record'; 'ok'",
         );
         settle();
         eval(tab, "document.querySelector('.prompt-image').click(); 'ok'");
         until(
             tab,
-            "(function(){ var l = document.querySelector('.image-lightbox'); if (!l || l.hidden) return false; var i = l.querySelector('img'); return l.dataset.state === 'ready' && !!i && i.naturalWidth >= 1; })()",
-            "the lightbox to show what the thumbnail showed even when the record lookup misses",
+            &format!("document.querySelector('#previewTabs .preview-tab.on') && document.querySelector('#previewTabs .preview-tab.on').dataset.previewTab === 'attachment:no-such-record' && {pane}"),
+            "the pane to show what the thumbnail showed even when the record lookup misses",
             Duration::from_secs(10),
-            "(function(){ var l = document.querySelector('.image-lightbox'); var i = l && l.querySelector('img'); return JSON.stringify({ state: l && l.dataset.state, src: (i && i.getAttribute('src') || '').slice(0, 24), natural: i ? i.naturalWidth : -1 }); })()",
+            pane_diag,
         );
     }
 }
@@ -6780,8 +6768,9 @@ fn fixture_pasted_original(name: &str, turns: u32) -> (Fixture, PathBuf) {
 /// #324: a pasted image is a file on disk too. Once the client names where it saved the original,
 /// both pages offer the file manager beside the image — never sending the request here: the page's
 /// `fetch` is wrapped so `/__reveal` is recorded, because `open -R` must never run on the machine
-/// the suite runs on — and the app shell's lightbox opens the ORIGINAL (1200 px wide, where the
-/// inline copy is 1), saying so, and the inline copy once the original is gone. The classic page
+/// the suite runs on — and the app shell opens the ORIGINAL (1200 px wide, where the inline copy
+/// is 1) — in the right pane since #s223, in the lightbox before — and the inline copy once the
+/// original is gone, saying so. The classic page
 /// served with no file hosting keeps opening the copy it shows. The reminder the record carries for
 /// the model is drawn nowhere.
 fn scenario_a_pasted_image_carries_its_saved_original(
@@ -6831,7 +6820,7 @@ fn scenario_a_pasted_image_carries_its_saved_original(
     };
     let shown = match surface {
         Surface::Classic => "(function(){ var i = document.querySelector('.lightbox .lb-stage img'); return i && i.complete ? i.naturalWidth : 0; })()",
-        Surface::AppShell => "(function(){ var l = document.querySelector('.image-lightbox'); var i = l && l.querySelector('img'); return l && !l.hidden && i && i.complete ? i.naturalWidth : 0; })()",
+        Surface::AppShell => "(function(){ var i = document.querySelector('#previewBody .artifact-stage img'); return i && i.complete ? i.naturalWidth : 0; })()",
     };
     eval(tab, open);
     let want = if surface == Surface::AppShell {
@@ -6842,40 +6831,37 @@ fn scenario_a_pasted_image_carries_its_saved_original(
     until(
         tab,
         &format!("({shown}) === {want}"),
-        "the lightbox to show the image at the width it should",
+        "the image shown at the width it should (the pane on the app shell, the lightbox on the classic page)",
         Duration::from_secs(10),
         shown,
     );
     if surface == Surface::AppShell {
         assert_eq!(
-            eval(
-                tab,
-                "document.querySelector('[data-lightbox-status]').textContent"
-            ),
-            "original",
-            "the lightbox says it is showing the original"
+            eval(tab, "!document.querySelector('[data-preview-note]')"),
+            true,
+            "the original is shown as itself, with no note"
         );
-        eval(
-            tab,
-            "document.querySelector('.image-lightbox [data-lightbox-close]').click(); 'ok'",
-        );
+        // The pane keeps its tab: close it, so the next click opens the image afresh.
+        eval(tab, "(function(){ var x = document.querySelector('#previewTabs .preview-tab.on [data-close-tab], #previewTabs .preview-tab.on .preview-tab-close'); if (x) x.click(); return 'ok'; })()");
         std::fs::remove_file(original).unwrap();
         settle();
         eval(tab, open);
         until(
             tab,
             &format!("({shown}) === 1"),
-            "the lightbox to fall back to the copy the session kept once the original is gone",
+            "the pane to fall back to the copy the session kept once the original is gone",
             Duration::from_secs(10),
             shown,
         );
-        assert_eq!(
-            eval(
-                tab,
-                "document.querySelector('[data-lightbox-status]').textContent"
-            ),
-            "saved with the session",
-            "…and to say that is what it shows"
+        let note = eval(
+            tab,
+            "(document.querySelector('[data-preview-note]') || {}).textContent || ''",
+        );
+        assert!(
+            note.as_str()
+                .unwrap_or("")
+                .contains("copy saved with the session"),
+            "…and to say that is what it shows: {note}"
         );
     }
 }
@@ -11339,12 +11325,13 @@ fn app_shell_a_delivered_file_is_offered_like_any_path() {
 
 /// The owner: "currently it takes two clicks to see the image, which is one click too many."
 ///
-/// The two were the record's fold and the "Show image" toggle inside it. An attachment record
-/// starts open now, so the toggle is the FIRST thing a reader can press. The second half of the
-/// rule is what must not change: the bytes stay behind that press, because the owner's reason
-/// for choosing this shape over "unfolding shows the image" was "when user clicks expand all,
-/// that would lead to all images being downloaded". So this asserts both — one click to the
-/// image, and nothing fetched before it.
+/// Since #s223 (Hong: "if both are images, why not giving them a similar experience?") the app
+/// shell draws the image itself as a thumbnail with no click at all, and one click opens it in the
+/// right pane, as a delivered file's name does. What must not change is the reason the owner gave
+/// for the old shape: "when user clicks expand all, that would lead to all images being
+/// downloaded". The thumbnail is drawn only from the bytes the record already carries, so this
+/// asserts both: the image is on screen with nothing fetched, Expand all fetches nothing, and one
+/// click puts it in the pane.
 fn scenario_an_image_is_one_click_away(
     tab: &headless_chrome::Tab,
     surface: Surface,
@@ -11360,59 +11347,61 @@ fn scenario_an_image_is_one_click_away(
     }
     until(
         tab,
-        "!!document.querySelector('[data-image-toggle]')",
-        "the image row to render inside the process",
+        "(function(){ var i = document.querySelector('.renderer-image .image-thumb img'); return !!i && i.naturalWidth >= 1; })()",
+        "the image's thumbnail to draw inside the process with no click",
         Duration::from_secs(20),
         "document.querySelectorAll('.renderer-note, .renderer-image').length + ' attachment views'",
     );
-    // No click yet: the record is open on its own, and its toggle is really visible — a rect is
-    // not visibility, so the control is hit-tested where it claims to be (the rect-is-not-
-    // visibility memory; a clipped control still measures 34×34).
-    let ready = eval(tab, "(function(){ var t = document.querySelector('[data-image-toggle]'); var r = t.closest('.renderer'); var b = t.getBoundingClientRect(); var hit = document.elementFromPoint(Math.round(b.left + b.width / 2), Math.round(b.top + b.height / 2)); return JSON.stringify({ closed: r.classList.contains('closed'), height: Math.round(b.height), reachable: !!hit && (hit === t || t.contains(hit)) }); })()");
+    // No click yet: the record is open on its own, and its thumbnail is really visible — a rect
+    // is not visibility, so the control is hit-tested where it claims to be.
+    let ready = eval(tab, "(function(){ var t = document.querySelector('.renderer-image .image-thumb'); var r = t.closest('.renderer'); var b = t.getBoundingClientRect(); var hit = document.elementFromPoint(Math.round(b.left + b.width / 2), Math.round(b.top + b.height / 2)); return JSON.stringify({ closed: r.classList.contains('closed'), height: Math.round(b.height), reachable: !!hit && (hit === t || t.contains(hit)), toggles: document.querySelectorAll('[data-image-toggle]').length }); })()");
     let ready: serde_json::Value =
         serde_json::from_str(ready.as_str().unwrap_or("{}")).unwrap_or(serde_json::Value::Null);
     assert_eq!(
         ready["closed"],
         serde_json::json!(false),
-        "the attachment record starts open, so its one affordance needs no click to reach: {ready}"
+        "the attachment record starts open, so its image needs no click to see: {ready}"
     );
     assert!(
         ready["height"].as_f64().unwrap_or(0.0) > 0.0,
-        "the toggle is drawn: {ready}"
+        "the thumbnail is drawn: {ready}"
     );
     assert_eq!(
         ready["reachable"],
         serde_json::json!(true),
-        "the toggle answers a click where it is painted: {ready}"
+        "the thumbnail answers a click where it is painted: {ready}"
     );
-    // …and nothing has been fetched for it.
     assert_eq!(
-        eval(
-            tab,
-            "document.querySelectorAll('.renderer-image img').length"
-        ),
-        0,
-        "an open record has loaded no image bytes"
+        ready["toggles"],
+        serde_json::json!(0),
+        "nothing asks to Show it first: {ready}"
     );
-    // The performance property the owner chose this shape FOR: expand everything, and still no
-    // image is fetched. This is the assertion that would fail had the fix been "unfolding shows
-    // the image" instead.
+    // …drawn from the record's own bytes, so nothing has been fetched for it.
+    let fetched = "(function(){ var src = document.querySelector('.renderer-image .image-thumb img').getAttribute('src') || ''; return JSON.stringify({ embedded: src.indexOf('data:image/') === 0, files: performance.getEntriesByType('resource').filter(function (e) { return e.name.indexOf('/file?') >= 0; }).length }); })()";
+    let before: serde_json::Value =
+        serde_json::from_str(eval(tab, fetched).as_str().unwrap_or("{}")).unwrap_or_default();
+    assert_eq!(
+        before,
+        serde_json::json!({"embedded": true, "files": 0}),
+        "the thumbnail is the record's own bytes, and no file was fetched for it"
+    );
+    // The performance property the owner chose the shape FOR: expand everything, and still no
+    // image is fetched.
     eval(tab, "(function(){ var b = document.getElementById('sessionFoldAll'); if (b) b.click(); return 'ok'; })()");
     settle();
+    let after: serde_json::Value =
+        serde_json::from_str(eval(tab, fetched).as_str().unwrap_or("{}")).unwrap_or_default();
     assert_eq!(
-        eval(
-            tab,
-            "document.querySelectorAll('.renderer-image img').length"
-        ),
-        0,
-        "expand-all fetches no images: the bytes stay behind the per-image click"
+        after["files"],
+        serde_json::json!(0),
+        "expand-all fetches no images: {after}"
     );
-    // One click, and the image is there.
+    // One click, and the image is in the right pane.
     eval(
         tab,
-        "document.querySelector('[data-image-toggle]').click(); 'ok'",
+        "document.querySelector('.renderer-image .image-thumb').click(); 'ok'",
     );
-    until(tab, "(function(){ var i = document.querySelector('.renderer-image-thumb img'); return !!i && i.naturalWidth >= 1; })()", "one click to show the image", Duration::from_secs(10), "(function(){ var i = document.querySelector('.renderer-image-thumb img'); return i ? 'natural ' + i.naturalWidth : 'no img'; })()");
+    until(tab, "(function(){ var i = document.querySelector('#previewBody .artifact-stage img'); return !document.getElementById('app').classList.contains('preview-off') && !!i && i.naturalWidth >= 1; })()", "one click to open the image in the pane", Duration::from_secs(10), "(function(){ var i = document.querySelector('#previewBody .artifact-stage img'); return i ? 'natural ' + i.naturalWidth : 'no img in the pane'; })()");
 }
 
 /// The owner: "when see the enlarged image, all me to have zoom control and move control (when
@@ -11429,24 +11418,26 @@ fn scenario_the_enlarged_image_zooms(tab: &headless_chrome::Tab, surface: Surfac
             "(function(){ var i = document.querySelector('.amark img'); if (!i) return 'no inline image'; i.click(); return 'ok'; })()",
             ".lightbox .lb-stage",
         ),
+        // #s223: the app shell enlarges an image in the right pane, whose stage carries the same
+        // engine and the lightbox's zoom bar.
         Surface::AppShell => (
-            "(function(){ var t = document.querySelector('[data-image-toggle]'); if (!t) return 'no toggle'; t.click(); return 'ok'; })()",
-            ".image-lightbox .image-lightbox-stage",
+            "(function(){ var t = document.querySelector('.renderer-image .image-thumb'); if (!t) return 'no thumbnail'; t.click(); return 'ok'; })()",
+            "#previewBody .artifact-stage",
         ),
     };
     if surface == Surface::AppShell {
+        until(tab, "(function(){ var i = document.querySelector('.renderer-image .image-thumb img'); return !!i && i.naturalWidth >= 1; })()", "the thumbnail", Duration::from_secs(20), "'no thumb'");
+        assert_eq!(eval(tab, open_it), "ok", "the image opens in the pane");
+        // The pane opens over a transition and the fit follows its width through a ResizeObserver
+        // (#305), which a headless tab delivers lazily (#204): measured, the stage read 48px at
+        // 13% for 750ms, the pane reached 410px, and the fit caught up 900ms later. So the case
+        // waits until the zoom shown IS the fit of the stage as it now measures.
         until(
             tab,
-            "!!document.querySelector('[data-image-toggle]')",
-            "the image row",
-            Duration::from_secs(20),
-            "'no toggle'",
-        );
-        assert_eq!(eval(tab, open_it), "ok", "the image shows");
-        until(tab, "(function(){ var i = document.querySelector('.renderer-image-thumb img'); return !!i && i.naturalWidth >= 1; })()", "the thumbnail", Duration::from_secs(10), "'no thumb'");
-        eval(
-            tab,
-            "document.querySelector('.renderer-image-thumb').click(); 'ok'",
+            &format!("(function(){{ var s = document.querySelector('{stage}'); var i = s && s.querySelector('img'); if (!i || !i.naturalWidth || s.clientWidth < 100) return false; var f = Math.min(1, s.clientWidth / i.naturalWidth, s.clientHeight / i.naturalHeight); return String(Math.round(f * 100)) === s.dataset.zoom; }})()"),
+            "the pane to open and the image to fit its stage",
+            Duration::from_secs(10),
+            &format!("(function(){{ var s = document.querySelector('{stage}'); return s ? s.clientWidth + 'x' + s.clientHeight + ' at ' + s.dataset.zoom : 'no stage'; }})()"),
         );
     } else {
         until(tab, "(function(){ var i = document.querySelector('.amark img'); return !!i && i.naturalWidth >= 1; })()", "the inline image", Duration::from_secs(20), "'no inline image'");

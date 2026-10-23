@@ -321,8 +321,20 @@ pane's ↗ opens the document in a tab of its own (#271): `/markdown` is a STATI
 (`ui::markdown_page` + `markdown-page.js`) that reads root, path, cap and the reader's range from its
 own address and goes through the same routes; held text reaches the tab through sessionStorage,
 which `window.open` copies into the tab it makes — so that control must never use `noopener`.
-**An image gets a tab of its own too** (#s11, the owner, for the desktop): the pane's ↗ and the
-lightbox's open `/image` (`ui::image_page` + `image-page.js`), the image whole with the shared zoom
+**An image opens in the pane on ONE click, as a delivered file's name does** (#s223, Hong: "if both
+are images, why not giving them a similar experience?"): the app shell draws each image as a small
+thumbnail (from `att_datauri` only — a path-only image shows its name, so Expand all still fetches
+nothing, #80/#228) and no longer has the Show step or the lightbox; the pane's image stage carries
+the lightbox's zoom bar instead (− fit% + 1:1, 40px on a phone). Consecutive images are ONE block
+(#s221, `groupImageRuns` in `components.js`): "N images", a strip of thumbnails each its record's own
+row (the `data-block-index` a `#b…` link lands on), and **Open all** (#s222) — every item a tab in
+the pane, in the block's order, the first selected, an open tab moved into place, the tab cap raised
+to fit the set (`preview.openAll`), a group's tabs numbered ("image.png 2/4": its images share one
+name). A multi-file `SendUserFile` carries Open all in its card's HEAD beside "first.png +2", since
+the card starts folded; its grid gives the state its own width there, or "4 lines" spilled over the
+chip in a narrow head and took its click.
+**An image gets a tab of its own too** (#s11, the owner, for the desktop): the pane's ↗ opens
+`/image` (`ui::image_page` + `image-page.js`), the image whole with the shared zoom
 (`shared/image-view.js`); a FILE by the path and stamp it was offered under (`/file` reads it, under
 #s7's rules; a pasted image's saved original at full size), an EMBEDDED image by its bytes through
 sessionStorage (`imageTabHref` in `preview.js`), which is also the fallback where the file has gone.
@@ -464,8 +476,8 @@ hermetic. **A session explains its pasted images' originals too** (#324): Claude
 each to `<claude home>/uploads/<whole session id>/` and names the paths in an `inlined_image_paths`
 record a record or two after the prompt; the fold puts each path on its image, in order and only when
 the counts agree (the inline copy is a re-encoded, downscaled JPEG — 921×2000 against a 1320×2868
-PNG, measured), so the image gets reveal and the app shell's lightbox opens the original, falling back
-to the embedded copy if the original is gone. A sub-agent gets its root's uploads. A refusal says
+PNG, measured), so the image gets reveal and the app shell's pane opens the original, falling back
+to the embedded copy, with a note saying so, if the original is gone. A sub-agent gets its root's uploads. A refusal says
 which (`Unservable`, #s7): 410 for a file that is gone, 403 with the ceiling's words for one held
 back, 404 only for a path the page never offered; the preview pane shows them as they are. A path that is gone
 when the page is drawn is still offered under an allowlist, judged by its nearest existing ancestor

@@ -236,6 +236,9 @@ bindComponentEvents(transcript, recordState, {
   },
   openChild: id => descendTo(id),
   openAttachment: (id, path, fsig, action, sig, card) => openAttachment(id, path, fsig, action, sig, card),
+  // #s222: a group's images share one name ("image.png"), so their tabs say which of the group each is.
+  openAll: ids => { const items = ids.map(id => paneImage(id)).filter(Boolean); preview.openAll(items.map((item, at) => ({ ...item, name: `${item.name} ${at + 1}/${items.length}` }))); },
+  openFiles: offers => preview.openAll(offers.map(offer => ({ id: `reference:${offer.path}`, name: String(offer.path).split("/").pop() || "file", path: offer.path, fsig: offer.fsig, sig: offer.sig || "" }))),
   openReference: path => openReference(path),
   openReferenceOffer: offer => openReferenceOffer(offer),
   toast
@@ -280,7 +283,7 @@ const sessionIndex = new SessionIndexStore({
   error: error => { console.warn("Session index refresh failed", error); toast("Session scan failed — retrying"); }
 });
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = -1; heldRecords = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.openImages.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; heldRecords = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
   empty: () => viewport.showEmpty("Start this session", "Send the first message below. Codex runs in the selected directory."),
   materializing: () => viewport.showEmpty("Loading session history…", "Waiting for the latest messages to become available."),
@@ -2641,11 +2644,31 @@ function openAttachment(id, path, fsig, action = "preview", sig = "", card = {})
   if (action === "image" && fileUrl && item.data) { item.source = fileUrl; item.fallback = item.data; }
   // A card that was showing an inline payload is embedded, whatever the lookup found.
   if (!item.embedded && shown.startsWith("data:")) item.embedded = true;
-  if (action === "image") attachmentViewer.openImage(item);
+  if (action === "image") preview.open(paneImageItem(item, shown));
   else if (action === "download") attachmentViewer.download(item);
   else if (action === "copy") attachmentViewer.copyPath(item);
   else if (action === "reveal") attachmentViewer.reveal(item);
   else preview.open(item);
+}
+/** An image as the right pane opens it (#s223, Hong: "if both are images, why not giving them a
+ *  similar experience?" — a delivered file's name already opened there, and an image took three
+ *  steps: a thumbnail, the lightbox, then the pane). Two rules of the lightbox carry over. #324: a
+ *  pasted image whose saved original is on disk opens FROM the file, the transcript's downscaled
+ *  copy kept as the fallback for an original that is gone (the pane prefers inline bytes, so they
+ *  move to `fallback`). #144: the pane never shows less than the thumbnail did — a record lookup
+ *  that missed still has the bytes the card was drawn from. */
+function paneImageItem(item, shown = "") {
+  const pane = { ...item };
+  const fileUrl = pane.path && pane.fsig;
+  if (fileUrl && pane.data) { pane.fallback = pane.data; pane.data = undefined; }
+  else if (!pane.data && !fileUrl && String(shown).startsWith("data:")) pane.data = shown;
+  return pane;
+}
+/** The pane item for the image record `id` (#s222's Open all), or null when it carries nothing to show. */
+function paneImage(id) {
+  const head = findRecord(id)?.head || {};
+  if (!head.att_datauri && !(head.att_path && head.att_fsig)) return null;
+  return paneImageItem({ id: `attachment:${id}`, name: head.att_name || "image", path: head.att_path, fsig: head.att_fsig, sig: head.att_sig, data: head.att_datauri, embedded: head.att_datauri != null });
 }
 // A path the server offered with stamps — from a tool header, an attachment, or a link that
 // matched one. `referenceAction` decides by capability: file stamp → preview, reveal stamp →

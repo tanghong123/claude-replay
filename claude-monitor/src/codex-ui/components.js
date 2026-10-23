@@ -22,8 +22,52 @@ const element = html => {
   return root;
 };
 
-// The image attachments a reader expanded (#80) live in the reader state (`state.openImages`,
-// #114) with the other choices, so a reload brings them back.
+// An image is one click from the right pane (#s223, Hong: "if both are images, why not giving them
+// a similar experience?" — a delivered file's name already opened there). Its thumbnail is drawn
+// only from bytes the page already holds (`att_datauri`, as every image a tool result carried
+// is), so nothing is fetched to show it; one known only by a path shows its name until it is
+// opened. #80's owner ruling stands: unfolding many images must not download them all.
+
+/** One image as a thumbnail button that opens it in the right pane (#s223). `index` is given for
+ *  an image drawn in a group (#s221): the thumbnail then IS that record's row, carrying its block
+ *  index and id, so a `#b…` link, a search mark and the viewport engine all find it there. */
+export function imageThumbHtml(view, index = null) {
+  const h = view.attachment || {};
+  const name = h.att_name || "image";
+  const anchor = index == null ? "" : ` data-block-index="${index}" data-record-id="${escapeText(view.id || "")}"`;
+  const picture = h.att_datauri
+    ? `<img src="${escapeText(h.att_datauri)}" alt="${escapeText(name)}" decoding="async">`
+    : `<span class="image-thumb-name">${escapeText(name)}</span>`;
+  const label = `Open ${name} in the pane`;
+  return `<button type="button" class="image-thumb"${anchor} data-attachment="${escapeText(view.id || "")}" data-attachment-action="image" data-name="${escapeText(h.att_name || "")}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}" title="${escapeText(label)}" aria-label="${escapeText(label)}">${picture}</button>`;
+}
+
+/** Consecutive images in a turn (#s221, Hong: "group consecutive image blocks as a single block
+ *  with counts (sendfiles already do that)"): one event saying how many, a strip of thumbnails,
+ *  and Open all (#s222), which puts every one in the right pane as a tab. */
+export function imageRunHtml(items) {
+  const ids = items.map(({ view }) => view.id).filter(Boolean);
+  const all = ids.length > 1 ? `<button type="button" class="image-run-open-all" data-open-all="${escapeText(ids.join(" "))}" title="Open all ${items.length} in the pane, one tab each">Open all</button>` : "";
+  return `<div class="image-run" data-image-run="${items.length}"><div class="image-run-head"><span class="image-run-lead">${items.length} images</span>${all}</div><div class="image-run-strip">${items.map(({ index, view }) => imageThumbHtml(view, index)).join("")}</div></div>`;
+}
+
+/** A process's events with each run of consecutive images (two or more) made one (#s221). */
+export function groupImageRuns(groups) {
+  const isImage = group => !group.run && !!group.item?.view?.attachment
+    && attachmentCapability(group.item.view.attachment, { reveal: revealHere() }).action === "image";
+  const out = [];
+  let run = null;
+  for (const group of groups) {
+    if (isImage(group)) {
+      if (!run) { run = { images: [] }; out.push(run); }
+      run.images.push(group.item);
+      continue;
+    }
+    run = null;
+    out.push(group);
+  }
+  return out.map(group => (group.images && group.images.length === 1 ? { run: false, item: group.images[0] } : group));
+}
 
 /** A tool view's body with the reader's cap state applied (#108): the raw parts render at
  *  render time, so an expander opened before comes back open. */
@@ -60,6 +104,14 @@ function deliveredHtml(view) {
   return `<div class="renderer-delivered"><span class="renderer-delivered-lead">Delivered</span>${files}</div>`;
 }
 
+/** #s222: Open all for a send of two or more files the pane can show (a file stamp), each a tab in
+ *  the send's order. It rides the card's HEAD beside "first.png +2", the count the reader sees:
+ *  the card starts folded, and the delivered list in its body is out of sight until unfolded. */
+function openFilesHtml(view) {
+  const shown = (view.files || []).filter(offer => offer.path && offer.fsig).map(offer => ({ path: offer.path, fsig: offer.fsig, sig: offer.sig || "" }));
+  return shown.length > 1 ? `<span class="renderer-open-all" role="button" data-open-files="${escapeText(JSON.stringify(shown))}" title="Open all ${shown.length} in the pane, one tab each">Open all</span>` : "";
+}
+
 function rendererBody(view, state) {
   if (view.renderer === "fallback") {
     return `<div class="renderer-fallback"><div class="renderer-fallback-row"><span>record</span><code class="fallback-raw">${escapeText(JSON.stringify(view.raw, null, 2))}</code></div></div>`;
@@ -86,17 +138,10 @@ function rendererBody(view, state) {
   if (view.attachment) {
     const h = view.attachment;
     const capability = attachmentCapability(h, { reveal: revealHere() });
-    // An image attachment (#80): collapsed to a line at first — a transcript with a hundred
-    // screenshots must not be a hundred images — the first click expands it to an inline
-    // thumbnail, and the thumbnail opens the full-size lightbox. The classic page shows the
-    // image inline; here the reader chooses, per image, and the choice holds through re-renders.
-    if (capability.action === "image") {
-      const source = h.att_datauri || `/file?path=${encodeURIComponent(h.att_path || "")}&sig=${encodeURIComponent(h.att_fsig || "")}`;
-      const name = h.att_name || "image";
-      const open = !!state?.openImages?.has(view.id);
-      const attrs = `data-attachment="${escapeText(view.id || "")}" data-attachment-action="image" data-name="${escapeText(h.att_name || "")}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}"`;
-      return `<div class="renderer-image ${open ? "open" : ""}" data-image-block="${escapeText(view.id || "")}"><button type="button" class="renderer-image-toggle" data-image-toggle="${escapeText(view.id || "")}" aria-expanded="${open}">${open ? "Hide" : "Show"} image · ${escapeText(name)}</button>${open ? `<figure class="renderer-image-figure"><button type="button" class="renderer-image-thumb" ${attrs} title="Open ${escapeText(name)} at full size"><img src="${escapeText(source)}" alt="${escapeText(name)}" decoding="async"></button><figcaption>${escapeText(name)} · click for full size</figcaption></figure>` : ""}</div>`;
-    }
+    // A lone image (#s223): its thumbnail, one click from the right pane. It was a "Show image"
+    // line (#80) whose thumbnail opened a lightbox, whose ↗ opened the pane: three steps where a
+    // delivered file's name took one. A run of images is drawn by `imageRunHtml` instead.
+    if (capability.action === "image") return `<div class="renderer-image" data-image-block="${escapeText(view.id || "")}">${imageThumbHtml(view)}</div>`;
     // #254: a POINTER carries nothing to read — `ref`/`file` are what a compaction leaves
     // behind and `edited` is a truncated in-editor snippet. Rendering it as a card with a
     // heading and two buttons made four of them in a row after a compaction read as four
@@ -151,8 +196,8 @@ function renderRenderer(view, index, state, inherited) {
     ? `<span class="renderer-target renderer-target-link" data-reference-path="${escapeText(view.path)}" data-reference-fsig="${escapeText(view.fileSig || "")}" data-reference-sig="${escapeText(view.revealSig || "")}" title="${REFERENCE_TITLES[referenceAction({ ...view, reveal: revealHere() })]}"><bdi dir="ltr">${escapeText(view.summary || "")}</bdi></span>`
     : `<span class="renderer-target"><bdi dir="ltr">${escapeText(view.summary || "")}</bdi></span>`;
   const head = noninteractive
-    ? `<div class="renderer-head" aria-label="${escapeText(title)}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${targetHtml}${changeBadgeHtml(view.change)}<span class="renderer-state"></span></div>`
-    : `<button class="renderer-head" type="button" aria-expanded="${!closed}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${targetHtml}${changeBadgeHtml(view.change)}<span class="renderer-state" title="${escapeText(status)}">${escapeText(view.state ? view.pill : status === "completed" ? "" : status)}</span></button>`;
+    ? `<div class="renderer-head" aria-label="${escapeText(title)}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${targetHtml}${openFilesHtml(view)}${changeBadgeHtml(view.change)}<span class="renderer-state"></span></div>`
+    : `<button class="renderer-head" type="button" aria-expanded="${!closed}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${targetHtml}${openFilesHtml(view)}${changeBadgeHtml(view.change)}<span class="renderer-state" title="${escapeText(status)}">${escapeText(view.state ? view.pill : status === "completed" ? "" : status)}</span></button>`;
   const toolName = view.t === "tool" ? ` data-tool-name="${escapeText(view.name)}"` : "";
   // The tool `o(…)` asks of this record (#367) — app.js `toolNameOf`'s reading, for marks and dimming.
   const searchTool = /^(bash|read|write|edit|skill|tool)$/.test(view.raw?.kind || "") ? ` data-search-tool="${escapeText(view.raw.tool || view.raw.head?.name || "")}"` : "";
@@ -185,9 +230,9 @@ export function fleetHtml(run, state) {
 //
 // This is the cheap half of the choice. The expensive half would be rendering the image itself
 // on unfold, and the owner ruled that out for the right reason: "when user clicks expand all,
-// that would lead to all images being downloaded." The `src` is still emitted only for an id in
-// `state.openImages`, so an opened record shows a button and fetches nothing; expand-all over a
-// hundred screenshots is still a hundred buttons and zero bytes.
+// that would lead to all images being downloaded." Since #s223 an image's thumbnail is drawn only
+// from bytes the page already holds (`att_datauri`); one known only by a path shows its name, so
+// expand-all over a hundred screenshots still fetches nothing.
 //
 // #s21 opened every change and exempted it from the process cap; #s23 withdrew that (the owner:
 // compact everywhere) — a change is a one-line card whose head carries its `+N −N`
@@ -228,7 +273,7 @@ function renderProcess(unit, state) {
   // compact line naming the count, with every path still there and still clickable. A run
   // counts as ONE event against the cap below, which is the point: five pointers must not eat
   // five of the seven visible slots that real work needs.
-  const groups = groupPointerRuns(unit.views, item => item.view?.attachment);
+  const groups = groupImageRuns(groupPointerRuns(unit.views, item => item.view?.attachment));
   const events = groups.map((group, position) => {
     const hidden = position >= visibleLimit && !expanded;
     const frame = inner => `<div class="process-event ${hidden ? "progressive-hidden" : ""}" data-progressive="${position >= visibleLimit}">${inner}</div>`;
@@ -242,6 +287,7 @@ function renderProcess(unit, state) {
       }).join("");
       return frame(`<div class="pointer-run" data-pointer-run="${group.items.length}"><span class="pointer-run-lead">${group.items.length} files carried into the context</span>${links}</div>`);
     }
+    if (group.images) return frame(imageRunHtml(group.images));
     const { index, view } = group.item;
     const content = view.t === "assistant"
       ? `<div class="turn assistant process-commentary" data-kind="assistant" data-record-kind="assistant" data-phase="commentary" data-block-index="${index}"><span class="process-commentary-mark"></span><span class="process-commentary-label">Progress</span><div class="process-commentary-copy markdown">${view.html}</div></div>`
@@ -410,7 +456,7 @@ function renderPromptAttachments(attachments = []) {
     const ext = String(h.att_name || "file").split(".").pop().slice(0, 4).toUpperCase();
     const glyph = capability.action === "download" ? "↓" : capability.action === "copy" ? "⎘" : "↗";
     const card = isImage && source
-      ? `<button class="prompt-attachment prompt-image" type="button" ${action} title="Enlarge ${escapeText(h.att_name || "image")}"><span class="prompt-image-thumb"><img src="${escapeText(source)}" alt=""></span><span class="prompt-file-copy">${titleCopy(h, h.att_name || "image")}<small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">⤢</span></button>`
+      ? `<button class="prompt-attachment prompt-image" type="button" ${action} title="Open ${escapeText(h.att_name || "image")} in the pane"><span class="prompt-image-thumb"><img src="${escapeText(source)}" alt=""></span><span class="prompt-file-copy">${titleCopy(h, h.att_name || "image")}<small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">⤢</span></button>`
       : `<button class="prompt-attachment prompt-file" type="button" ${action}><span class="prompt-file-icon">${escapeText(ext)}</span><span class="prompt-file-copy">${titleCopy(h, h.att_name || "Attachment")}<small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">${glyph}</span></button>`;
     // The card's own action, and beside it the file manager for a reader at this machine or the
     // file as a download for one elsewhere (#272, #s29) — never the same thing twice.
@@ -508,8 +554,11 @@ export function bindComponentEvents(root, state, actions) {
       actions.remember?.();
       return;
     }
-    const imageToggle = event.target.closest("[data-image-toggle]");
-    if (imageToggle) { const id = imageToggle.dataset.imageToggle; state.openImages.has(id) ? state.openImages.delete(id) : state.openImages.add(id); actions.rerender?.(); return; }
+    // #s222: Open all — every image of a group (or every file a send delivered) as a pane tab.
+    const openAll = event.target.closest("[data-open-all]");
+    if (openAll) { actions.openAll?.(openAll.dataset.openAll.split(" ").filter(Boolean)); return; }
+    const openFiles = event.target.closest("[data-open-files]");
+    if (openFiles) { try { actions.openFiles?.(JSON.parse(openFiles.dataset.openFiles)); } catch (_) {} return; }
     // #144: hand the clicked element over too. The card was rendered from data the view already
     // held, so whatever it is SHOWING is the truthful source; re-finding the record by id at
     // click time is a second, weaker path to the same value, and when it misses (a tail rewrite

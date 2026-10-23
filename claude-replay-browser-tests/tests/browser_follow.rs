@@ -8793,15 +8793,21 @@ fn a_phone_switch_closes_the_drawer_and_veils_the_load() {
     );
 }
 
-/// #313, the owner: images "can not pinch zoom … (on mac both supports pinch zoom)". A Mac's pinch
-/// arrives as ctrl+wheel; a phone's is two touch pointers, which the viewer never read, and the
-/// stage's `touch-action:none` kept the browser's own pinch off it. Two fingers spreading zoom the
-/// enlarged image in; a double tap goes back to fit.
-#[test]
-#[ignore]
-fn a_phone_pinches_an_image_to_zoom() {
-    let _serial = serial();
-    let base = harness::base("phone-pinch");
+/// A phone with a screenshot in a process, opened in the right pane (the full-screen sheet) by one
+/// tap on its thumbnail (#s223), and pinched to zoom it in. Returns the browser, the tab, the pane's
+/// stage, the point at its centre and the zoom that fits.
+fn pinched_image_in_the_pane(
+    port: u16,
+    case: &str,
+) -> (
+    harness::Monitor,
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+    &'static str,
+    (f64, f64),
+    f64,
+) {
+    let base = harness::base(case);
     let stores = harness::Stores::new(&base);
     let mut t = harness::long_session(4, harness::Shape::default());
     t += &harness::user_at("question 5: read the screenshot", &harness::now_minus(40));
@@ -8816,39 +8822,25 @@ fn a_phone_pinches_an_image_to_zoom() {
     );
     let sid = "cccc3333-0000-4000-8000-000000000313";
     stores.claude_session(sid, &t);
-    let m = harness::Monitor::spawn(harness::Kind::V1, 2806, &base, Some(&stores), true);
-    let (_browser, tab) = harness::chrome_tab();
+    let m = harness::Monitor::spawn(harness::Kind::V1, port, &base, Some(&stores), true);
+    let (browser, tab) = harness::chrome_tab();
     harness::phone(&tab, 390, 844);
     m.pair(&tab);
     m.open(&tab, &format!("?ui=app&session={sid}"));
-    harness::until(
-        &tab,
-        "!!document.querySelector('[data-image-toggle]')",
-        "the image row",
-        Duration::from_secs(20),
-        "1",
-    );
+    harness::until(&tab, "(function(){ var i = document.querySelector('.renderer-image .image-thumb img'); return !!i && i.naturalWidth >= 1; })()", "the image row's thumbnail", Duration::from_secs(20), "document.querySelectorAll('.image-thumb').length");
     harness::eval(
         &tab,
-        "document.querySelector('[data-image-toggle]').click(); 1",
+        "document.querySelector('.renderer-image .image-thumb').click(); 1",
     );
-    harness::until(&tab, "(function(){ var i = document.querySelector('.renderer-image-thumb img'); return !!i && i.naturalWidth >= 1; })()", "the thumbnail", Duration::from_secs(10), "1");
-    harness::eval(
-        &tab,
-        "document.querySelector('.renderer-image-thumb').click(); 1",
-    );
-    let stage = ".image-lightbox .image-lightbox-stage";
-    let zoom = |tab: &headless_chrome::Tab| {
-        harness::eval(
-            tab,
-            &format!("Number(document.querySelector('{stage}').dataset.zoom || 0)"),
-        )
-        .as_f64()
-        .unwrap()
-    };
-    harness::until(&tab, &format!("Number((document.querySelector('{stage}') || {{ dataset: {{}} }}).dataset.zoom || 0) > 0"), "the enlarged image", Duration::from_secs(10), "1");
+    let stage = "#previewBody .artifact-stage";
+    harness::until(&tab, &format!("Number((document.querySelector('{stage}') || {{ dataset: {{}} }}).dataset.zoom || 0) > 0"), "the image in the pane", Duration::from_secs(10), "1");
     std::thread::sleep(Duration::from_millis(300));
-    let fit = zoom(&tab);
+    let fit = harness::eval(
+        &tab,
+        &format!("Number(document.querySelector('{stage}').dataset.zoom || 0)"),
+    )
+    .as_f64()
+    .unwrap();
     let (cx, cy) = phone_point(&tab, &format!("(function(){{ var r = document.querySelector('{stage}').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"));
     harness::pinch(&tab, cx, cy, 60.0, 240.0, 10);
     harness::until(
@@ -8861,9 +8853,44 @@ fn a_phone_pinches_an_image_to_zoom() {
         Duration::from_secs(5),
         &format!("document.querySelector('{stage}').dataset.zoom + ' from {fit}'"),
     );
-    phone_tap_at(&tab, cx, cy);
-    std::thread::sleep(Duration::from_millis(80));
-    phone_tap_at(&tab, cx, cy);
+    (m, browser, tab, stage, (cx, cy), fit)
+}
+
+/// #313, the owner: images "can not pinch zoom … (on mac both supports pinch zoom)". A Mac's pinch
+/// arrives as ctrl+wheel; a phone's is two touch pointers, which the viewer never read, and the
+/// stage's `touch-action:none` kept the browser's own pinch off it. Two fingers spreading zoom the
+/// image in. Since #s223 a transcript image opens in the right pane (the phone's full-screen
+/// sheet) on one tap, where it opened the lightbox before. The double tap back to fit this case
+/// also asserted passed only by accident — two mouse clicks the lightbox refit on — and is its own
+/// case under #s224.
+#[test]
+#[ignore]
+fn a_phone_pinches_an_image_to_zoom() {
+    let _serial = serial();
+    let (_m, _b, _tab, _stage, _centre, _fit) = pinched_image_in_the_pane(2806, "phone-pinch");
+}
+
+/// #313's other half, and #s224: a finger's double tap on a zoomed image goes back to fit. Chrome's
+/// own touch gesture, two taps at a finger's pace (two mouse clicks reach the pane as mouse
+/// pointers; two `finger_tap`s land 450 ms apart, past the 320 ms a double tap allows). Red: on a
+/// pannable (zoomed) image the viewer counts any pointermove during a tap as a pan.
+#[test]
+#[ignore]
+fn a_phone_double_taps_an_image_back_to_fit_known_red_s224() {
+    let _serial = serial();
+    let (_m, _b, tab, stage, (cx, cy), fit) = pinched_image_in_the_pane(2806, "phone-double-tap");
+    tab.call_method(
+        headless_chrome::protocol::cdp::Input::SynthesizeTapGesture {
+            x: cx,
+            y: cy,
+            duration: Some(50),
+            tap_count: Some(2),
+            gesture_source_Type: Some(
+                headless_chrome::protocol::cdp::Input::GestureSourceType::Touch,
+            ),
+        },
+    )
+    .expect("a finger's double tap");
     harness::until(
         &tab,
         &format!("Math.abs(Number(document.querySelector('{stage}').dataset.zoom) - {fit}) <= 1"),

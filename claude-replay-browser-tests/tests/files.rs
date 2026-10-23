@@ -386,7 +386,8 @@ const BMP: &[u8] = &[
 /// The page decided "image" from a list of extensions the server did not share: a path `.svg` was
 /// offered as "Enlarge", the lightbox asked `/file`, got the SVG's source as text (an SVG served
 /// from this origin could run script, so it is never served as an image) and showed its error;
-/// a path `.bmp`, which the server does serve as an image, was offered as a download. Codex
+/// a path `.bmp`, which the server does serve as an image, was offered as a download. (An image
+/// opens in the right pane since #s223, where the lightbox opened it before.) Codex
 /// Desktop's "Files mentioned by the user" is where such a path arrives, one pointer per prompt
 /// (two in a row would fold into a run and never reach the rule).
 #[test]
@@ -470,16 +471,13 @@ fn the_app_shell_offers_a_path_as_an_image_exactly_when_the_server_serves_one() 
             card("scan.bmp")
         ),
     );
+    // In the right pane since #s223 (Hong: an image opens there on one click, as a file name does).
     until(
         &tab,
-        "(function(){ var i = document.querySelector('[data-lightbox-image]'); var e = document.querySelector('.image-lightbox-error'); return !!i && i.naturalWidth === 1 && !!e && e.hidden; })()",
-        "the lightbox drawing the one-pixel BMP",
+        "(function(){ var i = document.querySelector('#previewBody .artifact-stage img'); return !!i && i.naturalWidth === 1 && !document.querySelector('#previewBody .preview-error'); })()",
+        "the pane drawing the one-pixel BMP",
         Duration::from_secs(10),
-        "(function(){ var i = document.querySelector('[data-lightbox-image]'); var e = document.querySelector('.image-lightbox-error'); return JSON.stringify({ src: i && i.getAttribute('src'), w: i && i.naturalWidth, error: e && !e.hidden }); })()",
-    );
-    eval(
-        &tab,
-        "document.querySelector('[data-lightbox-close]').click(); 'ok'",
+        PANE,
     );
 
     // …and the SVG is read as its source, in the preview pane: mdrev's source view since #s13.
@@ -921,13 +919,14 @@ fn a_phone_reads_a_mentioned_file_outside_the_session_under_the_allowlist() {
 }
 
 /// #s11, the owner: "the images do not get the same treatment of detached view? This probably
-/// matters more to the desktop version". On the desktop an image gets the ↗ Markdown has: in the
-/// preview pane (a file the session read, by its stamp) and in the lightbox (an image the transcript
-/// embeds, by its bytes, handed over through sessionStorage), opening a tab of its own that draws the
-/// image whole, at its real size, with the shared zoom.
+/// matters more to the desktop version". On the desktop an image gets the ↗ Markdown has, in the
+/// preview pane, opening a tab of its own that draws the image whole, at its real size, with the
+/// shared zoom: a file the session read by its stamp, an image the transcript embeds by its bytes,
+/// handed over through sessionStorage. Since #s223 an embedded image opens in the pane on one click,
+/// as a file does, so both reach the tab from there.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn an_image_opens_in_a_tab_of_its_own_from_the_pane_and_the_lightbox() {
+fn an_image_opens_in_a_tab_of_its_own_from_the_pane() {
     const IMG: &str = "5e5510a1-0000-4000-8000-0000000000s11";
     let _serial = serial();
     let base = base("files-image-tab");
@@ -1000,8 +999,9 @@ fn an_image_opens_in_a_tab_of_its_own_from_the_pane_and_the_lightbox() {
         own.get_url()
     );
 
-    // The lightbox: an image the transcript embeds. The tab just opened came to the front; a click
-    // on a page in the background waits for a frame that never comes.
+    // An image the transcript embeds opens in the pane too since #s223 (it opened the lightbox
+    // before), and the pane's ↗ hands its bytes to a tab of its own. The tab just opened came to
+    // the front; a click on a page in the background waits for a frame that never comes.
     tab.activate().unwrap();
     eval(
         &tab,
@@ -1009,12 +1009,12 @@ fn an_image_opens_in_a_tab_of_its_own_from_the_pane_and_the_lightbox() {
     );
     until(
         &tab,
-        "(function(){ var b = document.querySelector('.image-lightbox [data-lightbox-newtab]'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
-        "the lightbox's ↗",
+        "(function(){ var i = document.querySelector('#previewBody .artifact-stage img'); var b = document.querySelector('#previewHead .preview-newtab'); return !!i && i.naturalWidth > 1 && (i.getAttribute('src') || '').indexOf('data:') === 0 && !!b && !b.hidden && b.offsetWidth > 0; })()",
+        "the pasted image in the pane, with the pane's ↗",
         Duration::from_secs(20),
-        "(function(){ var l = document.querySelector('.image-lightbox'); return l ? l.dataset.state + ' ' + l.hidden : 'no lightbox'; })()",
+        PANE,
     );
-    tab.find_element(".image-lightbox [data-lightbox-newtab]")
+    tab.find_element("#previewHead .preview-newtab")
         .unwrap()
         .click()
         .unwrap();
@@ -1757,5 +1757,218 @@ fn a_phone_download_opens_the_share_sheet_and_a_desktop_saves() {
         ),
         serde_json::Value::String("[[],[\"tour.mp4\"]]".into()),
         "a desktop saves the file under its name and opens no sheet"
+    );
+}
+
+/// What the right pane holds: its open state, each tab's id in order, the selected one, and what
+/// the selected tab shows (an image's src head and width, or the first text).
+const PANE_TABS: &str = "(function(){ var b = document.getElementById('previewBody'); var i = b && b.querySelector('.artifact-stage img'); return JSON.stringify({ open: !document.getElementById('app').classList.contains('preview-off'), tabs: [].slice.call(document.querySelectorAll('#previewTabs .preview-tab[data-preview-tab]')).map(function (t) { return t.dataset.previewTab; }), on: (document.querySelector('#previewTabs .preview-tab.on') || { dataset: {} }).dataset.previewTab || null, img: i ? [(i.getAttribute('src') || '').slice(0, 15), i.naturalWidth] : null, text: b ? b.innerText.slice(0, 80) : '' }); })()";
+
+/// #s221/#s222/#s223 (Hong, 2026-10-23): an agent that reads three screenshots at once leaves three
+/// consecutive image blocks, which draw as ONE event: "3 images", a strip of thumbnails each its own
+/// record's row, and Open all. A lone image is one thumbnail and its name, with no Show/Hide step.
+/// One click on any image opens it in the right pane, as a delivered file's name does; Open all puts
+/// a group's images, or a send's files, in the pane as tabs in the block's order, the first
+/// selected, a tab already open moved into place. A `#b…` link to an image in a group lands on its
+/// thumbnail. On a phone the thumbnails are finger-sized and one tap opens the pane's sheet.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+fn consecutive_images_are_one_block_and_open_in_the_pane_one_by_one_or_all() {
+    const SHOTS: &str = "5e5510a1-0000-4000-8000-0000000000s221";
+    let _serial = serial();
+    let base = base("files-image-group");
+    let stores = Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("first.txt"), "the first delivered file\n").unwrap();
+    std::fs::write(repo.join("second.txt"), "the second delivered file\n").unwrap();
+    let line = |v: serde_json::Value| format!("{v}\n");
+    let image = |id: &str, ts: &str| {
+        line(
+            serde_json::json!({"type": "user", "timestamp": ts, "message": {"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": id,
+            "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": harness::TINY_PNG_B64.trim()}}]}]}}),
+        )
+    };
+    let mut jsonl = user_at("look at the screenshots", &at("00:01"));
+    jsonl += &harness::assistant_at("reading the three of them", &at("00:02"));
+    // Three Reads in ONE assistant message, as an agent issues them, then their three results.
+    jsonl += &line(
+        serde_json::json!({"type": "assistant", "timestamp": at("00:03"), "message": {"role": "assistant", "content":
+        (0..3).map(|i| serde_json::json!({"type": "tool_use", "id": format!("r{i}"), "name": "Read", "input": {"file_path": format!("/tmp/shot{i}.png")}})).collect::<Vec<_>>()}}),
+    );
+    for i in 0..3 {
+        jsonl += &image(&format!("r{i}"), &at(&format!("00:0{}", 4 + i)));
+    }
+    jsonl += &harness::assistant_at("and one more on its own", &at("00:10"));
+    jsonl += &read_tool_at("r9", "/tmp/alone.png", &at("00:11"));
+    jsonl += &image("r9", &at("00:12"));
+    let first = repo.join("first.txt").display().to_string();
+    let second = repo.join("second.txt").display().to_string();
+    jsonl += &harness::send_user_file_at("s1", &[&first, &second], &at("00:13"));
+    jsonl += &harness::assistant_at("all done", &at("00:14"));
+    let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(SHOTS, &jsonl);
+
+    let m = Monitor::spawn(Kind::V1, 3203, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    harness::resize(&tab, 1400.0, 900.0);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={SHOTS}"));
+    until(
+        &tab,
+        "!!document.querySelector('.image-run') && !!document.querySelector('.renderer-image .image-thumb') && !!document.querySelector('.renderer-open-all')",
+        "the image group, the lone image and the delivered files",
+        Duration::from_secs(30),
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 400) : 'no transcript'",
+    );
+    let group = harness::eval(&tab, "JSON.stringify((function(){ var g = document.querySelector('.image-run'); var thumbs = [].slice.call(g.querySelectorAll('.image-thumb')); return { count: g.dataset.imageRun, lead: g.querySelector('.image-run-lead').textContent, all: !!g.querySelector('[data-open-all]'), thumbs: thumbs.map(function (t) { var r = t.getBoundingClientRect(); return [t.dataset.blockIndex || null, t.dataset.recordId || null, Math.round(r.height), !!t.querySelector('img')]; }), wrapperIndex: g.closest('[data-block-index]') ? 'nested' : 'none', lone: document.querySelectorAll('.renderer-image .image-thumb').length, toggles: document.querySelectorAll('[data-image-toggle]').length }; })())");
+    let group: serde_json::Value = serde_json::from_str(group.as_str().unwrap()).unwrap();
+    assert_eq!(
+        (&group["count"], &group["lead"], &group["all"]),
+        (
+            &serde_json::json!("3"),
+            &serde_json::json!("3 images"),
+            &serde_json::json!(true)
+        ),
+        "three consecutive images are one block with a count and Open all: {group}"
+    );
+    let thumbs = group["thumbs"].as_array().unwrap();
+    assert!(
+        thumbs.iter().all(|t| t[0].is_string()
+            && t[1].is_string()
+            && t[2].as_i64().unwrap_or(0) > 20
+            && t[2].as_i64().unwrap_or(999) <= 80
+            && t[3] == true),
+        "each thumbnail is its record's row, bounded and drawn: {group}"
+    );
+    assert_eq!(
+        group["wrapperIndex"], "none",
+        "the group is no row of its own: {group}"
+    );
+    assert_eq!(
+        (&group["lone"], &group["toggles"]),
+        (&serde_json::json!(1), &serde_json::json!(0)),
+        "the lone image is one thumbnail, and nothing asks to Show it: {group}"
+    );
+    let ids: Vec<String> = thumbs
+        .iter()
+        .map(|t| t[1].as_str().unwrap().to_string())
+        .collect();
+    let pane = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, PANE_TABS).as_str().unwrap()).unwrap()
+    };
+
+    // One click on the second thumbnail: the pane, that image.
+    harness::eval(
+        &tab,
+        "document.querySelectorAll('.image-run .image-thumb')[1].click(); 'ok'",
+    );
+    let second_tab = format!("attachment:{}", ids[1]);
+    until(
+        &tab,
+        &format!("(function(){{ var p = JSON.parse(({PANE_TABS})); return p.open && p.on === '{second_tab}' && !!p.img && p.img[1] >= 1; }})()"),
+        "one click to open the image in the pane",
+        Duration::from_secs(10),
+        PANE_TABS,
+    );
+
+    // Open all: the three, in the group's order, the first selected; the second's tab reused.
+    harness::eval(
+        &tab,
+        "document.querySelector('.image-run [data-open-all]').click(); 'ok'",
+    );
+    let want: Vec<String> = ids.iter().map(|id| format!("attachment:{id}")).collect();
+    until(
+        &tab,
+        &format!("(function(){{ var p = JSON.parse(({PANE_TABS})); return JSON.stringify(p.tabs.slice(-3)) === {:?} && p.on === {:?} && !!p.img; }})()", serde_json::to_string(&want).unwrap(), want[0]),
+        "Open all to put the three in the pane, in order, the first selected",
+        Duration::from_secs(10),
+        PANE_TABS,
+    );
+    let after = pane();
+    assert_eq!(
+        after["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| t.as_str() == Some(&second_tab))
+            .count(),
+        1,
+        "the second image's tab is reused, not doubled: {after}"
+    );
+    assert_eq!(
+        harness::eval(&tab, "JSON.stringify([].slice.call(document.querySelectorAll('#previewTabs .preview-tab-label')).slice(-3).map(function (l) { return l.textContent; }))"),
+        "[\"image.png 1/3\",\"image.png 2/3\",\"image.png 3/3\"]",
+        "the group's tabs say which of the group each is, the reused one too"
+    );
+
+    // The delivered files: Open all rides the send's head, beside "first.txt +1", so it is there
+    // while the card is folded (it starts folded); a real click puts both in the pane, the first
+    // selected and shown, and leaves the card as it was.
+    let chip = harness::eval(&tab, "(function(){ var c = document.querySelector('.renderer-open-all'); c.scrollIntoView({ block: 'center' }); var r = c.getBoundingClientRect(); var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return JSON.stringify({ inHead: !!c.closest('.renderer-head'), closed: c.closest('.renderer').classList.contains('closed'), w: Math.round(r.width), hit: !!hit && (hit === c || c.contains(hit)), by: hit ? (hit.className || hit.tagName) : null, x: r.left + r.width / 2, y: r.top + r.height / 2 }); })()");
+    let chip: serde_json::Value = serde_json::from_str(chip.as_str().unwrap()).unwrap();
+    assert!(
+        chip["inHead"] == true
+            && chip["closed"] == true
+            && chip["w"].as_i64().unwrap_or(0) > 20
+            && chip["hit"] == true,
+        "the send's Open all is in its folded head, drawn and reachable: {chip}"
+    );
+    tab.click_point(headless_chrome::browser::tab::point::Point {
+        x: chip["x"].as_f64().unwrap(),
+        y: chip["y"].as_f64().unwrap(),
+    })
+    .unwrap();
+    let files = [format!("reference:{first}"), format!("reference:{second}")];
+    until(
+        &tab,
+        &format!("(function(){{ var p = JSON.parse(({PANE_TABS})); return JSON.stringify(p.tabs.slice(-2)) === {:?} && p.on === {:?} && p.text.indexOf('the first delivered file') >= 0; }})()", serde_json::to_string(&files).unwrap(), files[0]),
+        "Open all on the delivered files to open both, the first selected and shown",
+        Duration::from_secs(15),
+        PANE_TABS,
+    );
+    assert_eq!(
+        harness::eval(&tab, "document.querySelector('.renderer-open-all').closest('.renderer').classList.contains('closed')"),
+        true,
+        "a click on Open all does not unfold the card it rides"
+    );
+
+    // A #b… link to the third image lands on its thumbnail.
+    harness::eval(&tab, &format!("location.hash = '#{}'; 'ok'", ids[2]));
+    until(
+        &tab,
+        &format!("(function(){{ var t = document.querySelector('.image-thumb[data-record-id=\"{}\"]'); return !!t && t.classList.contains('source-flash'); }})()", ids[2]),
+        "the link to land on the third image's thumbnail",
+        Duration::from_secs(10),
+        "[].slice.call(document.querySelectorAll('.source-flash')).map(function (e) { return e.className + ' ' + (e.dataset.recordId || ''); }).join(' | ')",
+    );
+
+    // On a phone: finger-sized thumbnails, and one tap opens the pane's sheet.
+    harness::phone(&tab, 390, 844);
+    m.open(&tab, &format!("?ui=app&session={SHOTS}"));
+    until(
+        &tab,
+        "innerWidth === 390 && !!document.querySelector('.image-run .image-thumb img')",
+        "the group on a phone",
+        Duration::from_secs(30),
+        "innerWidth",
+    );
+    let sizes = harness::eval(&tab, "JSON.stringify([].slice.call(document.querySelectorAll('.image-thumb')).map(function (t) { var r = t.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; }))");
+    let sizes: Vec<Vec<i64>> = serde_json::from_str(sizes.as_str().unwrap()).unwrap();
+    assert!(
+        !sizes.is_empty() && sizes.iter().all(|s| s[0] >= 44 && s[1] >= 44),
+        "every thumbnail is a finger target: {sizes:?}"
+    );
+    let at_thumb = harness::eval(&tab, "(function(){ var t = document.querySelector('.image-run .image-thumb'); t.scrollIntoView({ block: 'center' }); var r = t.getBoundingClientRect(); return JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]); })()");
+    let at_thumb: Vec<f64> = serde_json::from_str(at_thumb.as_str().unwrap()).unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    harness::finger_tap(&tab, at_thumb[0], at_thumb[1]);
+    until(
+        &tab,
+        &format!("(function(){{ var p = JSON.parse(({PANE_TABS})); return p.open && p.on === '{}' && !!p.img; }})()", want[0]),
+        "one tap on a phone to open the image in the pane",
+        Duration::from_secs(10),
+        PANE_TABS,
     );
 }

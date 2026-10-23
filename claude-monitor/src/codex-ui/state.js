@@ -56,7 +56,7 @@ export const recordState = {
   // and the fold state to put back when it is cleared.
   filterHits: null, filterDirect: null, filterSnapshot: null,
   searchMask: 0, searchWhole: false, recSizes: [], pendingSearch: false,
-  capOpen: new Set(), openImages: new Set(),
+  capOpen: new Set(),
   // Per-block code overrides (#173): `{ size?, wrap? }` by record id, set by a code pane's own
   // A− / A+ / wrap bar. EPHEMERAL on purpose — the reading preference stays the baseline every
   // block starts from, and these are one reader's one-off look at one block, so they live here

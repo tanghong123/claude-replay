@@ -180,6 +180,24 @@ export class Preview {
     if (uiState.previewTabs.length > SESSION_TAB_LIMIT) uiState.previewTabs.splice(0, uiState.previewTabs.length - SESSION_TAB_LIMIT);
     uiState.previewId = item.id; this.paneBadge(); this.setOpen(true);
   }
+  /** #s222: Open all — every item a tab, in the block's order, the FIRST selected so the reader
+   *  steps through them by the tabs. A tab already open moves to its place in that order (the same
+   *  tab object, so a mounted viewer keeps its identity, taking the batch's label) rather than
+   *  staying where it was, which would make stepping leave the block's order. The tab cap gives way to the batch: an Open all
+   *  of nine keeps all nine (older tabs go first, never one it just opened). */
+  openAll(items) {
+    if (!items.length) return;
+    const opened = new Set(items.map(item => item.id));
+    const open = new Map(uiState.previewTabs.filter(tab => opened.has(tab.id)).map(tab => [tab.id, tab]));
+    uiState.previewTabs = uiState.previewTabs.filter(tab => !opened.has(tab.id)).concat(items.map(item => (open.has(item.id) ? Object.assign(open.get(item.id), { name: item.name }) : item)));
+    const cap = Math.max(SESSION_TAB_LIMIT, items.length);
+    while (uiState.previewTabs.length > cap) {
+      const at = uiState.previewTabs.findIndex(tab => !opened.has(tab.id));
+      if (at < 0) break;
+      uiState.previewTabs.splice(at, 1);
+    }
+    uiState.previewId = items[0].id; this.paneBadge(); this.setOpen(true);
+  }
   /** #337: the previous or next tab — the pinned roster first, then the files — wrapping. */
   stepTab(dir) {
     const ids = [...(this.roster.length ? [ROSTER_ID] : []), ...uiState.previewTabs.map(tab => tab.id)];
@@ -249,9 +267,9 @@ export class Preview {
       // route names the worktree (the owner: "just say it's gone", naming it).
       if (response.status === 410) {
         const worktree = response.headers.get("x-gone-worktree");
-        throw refusal("This file is gone", worktree
+        throw Object.assign(refusal("This file is gone", worktree
           ? `Nothing is at ${item.path} any more: the worktree ${worktree} was removed after the session, and this file went with it.`
-          : `Nothing is at ${item.path} any more: it was moved or deleted after the session named it.`);
+          : `Nothing is at ${item.path} any more: it was moved or deleted after the session named it.`), { gone: true });
       }
       if (response.status === 403) return response.text().then(words => { throw refusal("This monitor may not read this file", words || "It is outside what this monitor may read."); });
       if (!response.ok) throw new Error(`HTTP ${response.status} · This monitor did not offer this path. Reload the session for fresh links.`);
@@ -267,6 +285,9 @@ export class Preview {
       return response.text().then(text => { if (generation === this.renderGeneration) this.show(item, text, null); });
     }).catch(error => {
       if (generation !== this.renderGeneration) return;
+      // #324 through #s223: an image whose saved original could not be read shows the transcript's
+      // own copy, as the lightbox did, rather than the refusal, and says why.
+      if (item.fallback) { this.show(item, null, item.fallback, `${error.gone ? "The original is gone" : "The original could not be read"}: this is the copy saved with the session.`); return; }
       const body = byId("previewBody"); body.classList.remove("production-loading");
       body.innerHTML = `<div class="preview-error"><strong>${escapeText(error.title || "Cannot preview this file")}</strong><span>${escapeText(error.message)}</span><div class="preview-error-actions">${besideAction(item) === "reveal" ? '<button class="smallbtn" data-preview-reveal>Reveal in file manager</button>' : ""}<button class="smallbtn" data-copy-path>Copy original path</button><button class="smallbtn" data-close-preview>Close tab</button></div></div>`;
       const reveal = body.querySelector("[data-preview-reveal]");
@@ -364,7 +385,7 @@ export class Preview {
     if (!href) this.actions.toast?.("This image cannot be handed to a tab");
     return href;
   }
-  show(item, text, data) {
+  show(item, text, data, note = "") {
     const body = byId("previewBody"); body.classList.remove("production-loading");
     this.image = null; if (!this.markdown) this.newTab.hidden = true;
     // One object URL at a time: a tab reopened per session switch minted a new blob and never
@@ -376,12 +397,27 @@ export class Preview {
     if (this.stageObserver) { this.stageObserver.disconnect(); this.stageObserver = null; }
     if (data) {
       this.objectUrl = data.startsWith("blob:") ? data : "";
-      body.innerHTML = `<div class="artifact-surface artifact-stage"><img class="artifact-image" alt="${escapeText(item.name)}"></div>`;
+      // #324 through #s223: the pane says when it shows the session's copy because the original
+      // is gone, as the lightbox said which it was showing. And it carries the lightbox's zoom
+      // bar (#228, "allow me to have zoom control"), since every image now opens here: − and +,
+      // the percentage that fits again, and 1:1, shown once the picture has loaded.
+      const zoom = `<div class="image-zoom" data-zoom-bar hidden><button class="image-zoom-btn" type="button" data-zoom="out" aria-label="Zoom out" title="Zoom out (−)">−</button><button class="image-zoom-level" type="button" data-zoom="fit" title="Fit to the pane (0)"><span data-zoom-percent>100%</span></button><button class="image-zoom-btn" type="button" data-zoom="in" aria-label="Zoom in" title="Zoom in (+)">+</button><button class="image-zoom-btn image-zoom-actual" type="button" data-zoom="actual" title="Actual size (1)">1:1</button></div>`;
+      body.innerHTML = `<div class="artifact-surface artifact-stage">${note ? `<div class="preview-note" data-preview-note>${escapeText(note)}</div>` : ""}<img class="artifact-image" alt="${escapeText(item.name)}">${zoom}</div>`;
       const stage = body.querySelector(".artifact-stage"), img = stage.querySelector("img");
+      const bar = stage.querySelector("[data-zoom-bar]"), percent = stage.querySelector("[data-zoom-percent]");
       // The preview's zoom keys belong to it only while the pane is open (#268) — the pane
       // can be collapsed with an image still mounted, and a collapsed pane must not own
       // `0`/`-`/`+`… against the compose box beside it.
-      this.imageView = createImageView(stage, img, { isActive: () => uiState.preview });
+      this.imageView = createImageView(stage, img, { isActive: () => uiState.preview, onChange: state => { percent.textContent = `${state.percent}%`; } });
+      img.addEventListener("load", () => { bar.hidden = false; }, { once: true });
+      bar.onclick = event => {
+        const how = event.target.closest("[data-zoom]")?.dataset.zoom, view = this.imageView;
+        if (!how || !view) return;
+        if (how === "in") view.zoomBy(1.25);
+        else if (how === "out") view.zoomBy(1 / 1.25);
+        else if (how === "actual") view.actual();
+        else view.fit();
+      };
       // The pane opens, is dragged wider, or the window resizes: the fit follows (#305). `sync`
       // re-fits a reader at the default and only re-clamps one who has zoomed. Without it a fit
       // taken while the pane was still opening stayed a thumbnail.

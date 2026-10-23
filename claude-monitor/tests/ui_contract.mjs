@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
-import { PROMPT_CLAMP_LINES, PROMPT_MIN_HIDDEN, promptExpanderHtml, promptHiddenLines, rawTurnHtml, rendererStartsClosed, changeBadgeHtml } from "../../claude-monitor/src/codex-ui/components.js";
+import { PROMPT_CLAMP_LINES, PROMPT_MIN_HIDDEN, promptExpanderHtml, promptHiddenLines, rawTurnHtml, rendererStartsClosed, changeBadgeHtml, groupImageRuns, imageRunHtml, imageThumbHtml } from "../../claude-monitor/src/codex-ui/components.js";
 import { attachmentCapability, canReveal, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
 import { costDisplay, reportedCostDisplay } from "../../claude-replay-html/src/html/shared/cost-display.js";
 import { fleetGroups } from "../../claude-replay-html/src/html/shared/fleet.js";
@@ -1408,17 +1408,44 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#79 reveal cases passed");
 }
 
-// #80: an image attachment is collapsed, then a thumbnail, then the lightbox.
+// #s221/#s222/#s223: an image is a thumbnail one click from the right pane; consecutive images are
+// one event with a count, a strip and Open all; and nothing is fetched to draw a thumbnail (#80).
 {
-  const src = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
-  assert.match(src, /state\.openImages\.has\(id\) \? state\.openImages\.delete\(id\) : state\.openImages\.add\(id\)/, "the expanded images are reader state (persisted with the other choices since #114)");
-  assert.match(src, /if \(capability\.action === "image"\) \{/, "an image attachment has its own rendering");
-  assert.match(src, /class="renderer-image-toggle" data-image-toggle="\$\{escapeText\(view\.id \|\| ""\)\}" aria-expanded="\$\{open\}"/, "…a toggle first");
-  assert.match(src, /class="renderer-image-thumb" \$\{attrs\} title="Open \$\{escapeText\(name\)\} at full size"><img src="\$\{escapeText\(source\)\}"/, "…then a thumbnail that opens the lightbox");
-  assert.match(src, /state\.openImages\.has\(id\) \? state\.openImages\.delete\(id\) : state\.openImages\.add\(id\); actions\.rerender\?\.\(\);/, "the toggle flips and re-renders");
-  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
-  assert.match(css, /\.renderer-image-thumb img\{display:block;max-height:320px;/, "the thumbnail is bounded");
-  console.log("#80 image attachment cases passed");
+  const img = (id, extra = {}) => ({ view: { id, attachment: { att_kind: "image", att_name: `${id}.png`, att_datauri: "data:image/png;base64,AAAA", ...extra } } });
+  const plain = id => ({ view: { id, t: "tool", renderer: "bash" } });
+  const groups = [img("b1"), img("b2"), img("b3"), plain("b4"), img("b5"), plain("b6"), img("b7"), img("b8")].map((item, i) => ({ run: false, item: { index: i + 10, ...item } }));
+  const grouped = groupImageRuns(groups);
+  assert.deepEqual(grouped.map(g => g.images ? `run:${g.images.map(x => x.view.id).join(",")}` : g.item.view.id), ["run:b1,b2,b3", "b4", "b5", "b6", "run:b7,b8"], "consecutive images become one event; a lone image stays a row of its own");
+  const run = imageRunHtml(grouped[0].images);
+  assert.match(run, /data-image-run="3"/, "the run says how many");
+  assert.match(run, /<span class="image-run-lead">3 images<\/span>/, "…in words");
+  assert.match(run, /data-open-all="b1 b2 b3"/, "Open all names every image, in order (#s222)");
+  assert.equal((run.match(/class="image-thumb" data-block-index="\d+" data-record-id="b\d"/g) || []).length, 3, "each thumbnail IS its record's row, so a #b… link and a search mark find it");
+  assert.doesNotMatch(run.replace(/<button type="button" class="image-thumb"[^>]*>/g, ""), /data-block-index/, "…and the wrapper carries no block index, which would make the thumbnails nested rows");
+  const lone = imageThumbHtml(img("b5").view);
+  assert.doesNotMatch(lone, /data-block-index/, "a lone image's thumbnail sits inside its own row and is not a second one");
+  assert.match(lone, /data-attachment-action="image"/, "a click opens the image (in the pane, app.js)");
+  assert.doesNotMatch(lone, /data-image-toggle/, "no Show/Hide step (#s223)");
+  // #80's ruling: unfolding many images must not download them. A thumbnail is drawn only from
+  // bytes the page already holds; an image known only by a path shows its name and fetches nothing.
+  const pathOnly = imageThumbHtml({ id: "b9", attachment: { att_kind: "image", att_name: "shot.png", att_path: "/tmp/shot.png", att_fsig: "sig" } });
+  assert.doesNotMatch(pathOnly, /<img|\/file\?/, "a path-only image draws no <img> and asks /file for nothing");
+  assert.match(pathOnly, /class="image-thumb-name">shot\.png</, "…it shows its name");
+  const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  assert.match(app, /if \(action === "image"\) preview\.open\(paneImageItem\(item, shown\)\);/, "an image click opens the right pane, not the lightbox (#s223)");
+  assert.match(app, /if \(fileUrl && pane\.data\) \{ pane\.fallback = pane\.data; pane\.data = undefined; \}/, "…from the saved original first, the transcript copy kept as its fallback (#324)");
+  const preview = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
+  assert.match(preview, /if \(item\.fallback\) \{ this\.show\(item, null, item\.fallback, `\$\{error\.gone \? "The original is gone" : "The original could not be read"\}: this is the copy saved with the session\.`\); return; \}/, "…which the pane shows when the original cannot be read, saying why");
+  assert.match(preview, /\{ gone: true \}\);/, "…a 410 marks the refusal gone, so the note says gone only then");
+  assert.match(preview, /<div class="image-zoom" data-zoom-bar hidden>/, "the pane carries the lightbox's zoom bar, since every image opens there (#228 through #s223)");
+  assert.match(preview, /if \(how === "in"\) view\.zoomBy\(1\.25\);/, "…and its buttons drive the shared engine");
+  assert.match(preview, /uiState\.previewTabs = uiState\.previewTabs\.filter\(tab => !opened\.has\(tab\.id\)\)\.concat\(items\.map\(item => \(open\.has\(item\.id\) \? Object\.assign\(open\.get\(item\.id\), \{ name: item\.name \}\) : item\)\)\);/, "Open all puts its tabs in the block's order, reusing a tab already open (#s222)");
+  assert.match(app, /name: `\$\{item\.name\} \$\{at \+ 1\}\/\$\{items\.length\}`/, "a group's tabs say which of the group each is, since its images share one name (#s222)");
+  const compSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(compSrc, /<span class="renderer-open-all" role="button" data-open-files=/, "a send's Open all rides its head, so a folded card still offers it (#s222)");
+  assert.doesNotMatch(compSrc, /renderer-delivered-open-all/, "…and only there, never hidden in the folded body");
+  assert.match(preview, /const cap = Math\.max\(SESSION_TAB_LIMIT, items\.length\);/, "Open all keeps every tab it opens, past the usual cap (#s222)");
+  console.log("#s221 image group cases passed");
 }
 
 // #77: expand-all beside collapse-all.
@@ -1712,15 +1739,19 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 
 // #114: the reader's choices ride with the position and come back.
 {
-  const state = { folds: new Map([["b3", false]]), processFolds: new Map(), processExpanded: new Set(["process:b2"]), promptExpanded: new Set(), rawTurns: new Map([["user:t1", true]]), capOpen: new Set(["b5:0"]), openImages: new Set(["b9"]) };
+  const state = { folds: new Map([["b3", false]]), processFolds: new Map(), processExpanded: new Set(["process:b2"]), promptExpanded: new Set(), rawTurns: new Map([["user:t1", true]]), capOpen: new Set(["b5:0"]) };
   const choices = viewChoices(state);
-  assert.deepEqual(choices, { folds: { b3: false }, processExpanded: ["process:b2"], rawTurns: { "user:t1": true }, capOpen: ["b5:0"], openImages: ["b9"] }, "Maps as objects, Sets as arrays, empties omitted");
+  assert.deepEqual(choices, { folds: { b3: false }, processExpanded: ["process:b2"], rawTurns: { "user:t1": true }, capOpen: ["b5:0"] }, "Maps as objects, Sets as arrays, empties omitted");
   const round = parseViewMemory(serializeViewMemory({ following: false, key: "user:t1", top: 12.4, view: choices }));
   assert.deepEqual(round, { following: false, key: "user:t1", top: 12, view: choices }, "the choices survive the round trip");
   assert.deepEqual(parseViewMemory('{"following":true}'), { following: true }, "an old memory without choices still parses, without a view field");
-  const fresh = { folds: new Map(), processFolds: new Map(), processExpanded: new Set(), promptExpanded: new Set(), rawTurns: new Map(), capOpen: new Set(), openImages: new Set() };
+  const fresh = { folds: new Map(), processFolds: new Map(), processExpanded: new Set(), promptExpanded: new Set(), rawTurns: new Map(), capOpen: new Set() };
   applyViewChoices(fresh, round.view);
-  assert.equal(fresh.folds.get("b3"), false); assert.ok(fresh.capOpen.has("b5:0") && fresh.openImages.has("b9") && fresh.rawTurns.get("user:t1") === true);
+  assert.equal(fresh.folds.get("b3"), false); assert.ok(fresh.capOpen.has("b5:0") && fresh.rawTurns.get("user:t1") === true);
+  // #s223 dropped `openImages`: a memory saved before it still carries the key, which is ignored.
+  const stale = { folds: new Map(), processFolds: new Map(), processExpanded: new Set(), promptExpanded: new Set(), rawTurns: new Map(), capOpen: new Set() };
+  applyViewChoices(stale, { openImages: ["b9"], capOpen: ["b1:0"] });
+  assert.ok(stale.capOpen.has("b1:0") && !("openImages" in stale), "a saved memory from before #s223 still restores, its openImages ignored");
   const vp = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   assert.match(vp, /if \(this\.pendingView\) \{ applyViewChoices\(this\.state, this\.pendingView\); this\.pendingView = null; \}/, "restored with the first batch, after the store's reset");
   assert.match(vp, /const view = viewChoices\(this\.state\);/, "…and saved with the position");
@@ -3036,7 +3067,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(badge, /^<span class="renderer-change"><span class="add">\+158<\/span><span class="del">−0<\/span><\/span>$/);
   assert.equal(changeBadgeHtml([]), "", "no change, no badge");
   const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
-  assert.equal((comp.match(/\$\{targetHtml\}\$\{changeBadgeHtml\(view\.change\)\}/g) || []).length, 2, "both heads carry the badge, after the target");
+  assert.equal((comp.match(/\$\{targetHtml\}\$\{openFilesHtml\(view\)\}\$\{changeBadgeHtml\(view\.change\)\}/g) || []).length, 2, "both heads carry the badge, after the target (and a send's Open all, #s222)");
   assert.match(comp, /const hidden = Math\.max\(0, groups\.length - visibleLimit\);/, "the cap counts every event again");
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.match(css, /\.renderer>\.renderer-head:has\(>\.renderer-change\)\{grid-template-columns:11px max-content minmax\(0,max-content\) max-content minmax\(0,1fr\)\}/, "the badge has a column of its own");
@@ -3059,8 +3090,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // would lead to all images being downloaded" — so the src stays gated on the reader's own
   // per-image choice. If this ever renders an <img> for a closed image, expand-all becomes a
   // hundred downloads.
-  assert.match(components, /const open = !!state\?\.openImages\?\.has\(view\.id\);/, "the thumbnail is still gated on openImages");
-  assert.match(components, /\$\{open \? `<figure class="renderer-image-figure">/, "…and the <img> is emitted only when that is true");
+  assert.match(components, /const picture = h\.att_datauri\s*\? `<img src=/, "the thumbnail's <img> is drawn only from bytes the page already holds (#s223), never fetched");
 
   // The enlarged view's zoom/pan is ONE implementation, shared by every viewer that shows an
   // image over the page (seam 0), not a copy per shell.
@@ -3085,7 +3115,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(imageView, /if \(!isActive\(\)\) return;/, "…and yields while it is not on screen");
   assert.match(viewer, /isActive:\s*\(\)\s*=>\s*!this\.root\.hidden/, "the app shell's lightbox is active only while open");
   const preview = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
-  assert.match(preview, /createImageView\(stage, img, \{ isActive: \(\) => uiState\.preview \}\)/, "the preview's viewer is active only while the pane is open");
+  assert.match(preview, /createImageView\(stage, img, \{ isActive: \(\) => uiState\.preview, onChange: /, "the preview's viewer is active only while the pane is open");
 
   console.log("#228 image cases passed");
 }
