@@ -256,7 +256,7 @@ const paneLayoutChanged = () => {
   viewport.remeasure();
 };
 const preview = new Preview({ layoutChanged: paneLayoutChanged, toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => viewport.jumpToRecord(at, "artifact") });
-const attachmentViewer = new AttachmentViewer({ openPreview: item => preview.open(item), toast });
+const attachmentViewer = new AttachmentViewer({ toast });
 const controlActions = { renderTree, recordSnapshot: () => ({ session: recordState.session, records: recordState.records }), toast, refreshIndex: loadSessions, pauseIndex: () => sessionIndex.stop(), resumeIndex: () => sessionIndex.start(), selectSession, refreshEmpty: () => recordStore.refreshEmpty() };
 const ordinaryControls = new ControlStore(controlActions);
 let controls = ordinaryControls;

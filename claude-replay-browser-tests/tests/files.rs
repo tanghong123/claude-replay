@@ -1605,7 +1605,7 @@ fn a_phone_is_never_offered_the_file_manager_on_either_page() {
             &format!("app shell after {}", what.as_str().unwrap_or("?")),
             &mut leaks,
         );
-        eval(&tab, "(function(){ var l = document.querySelector('.image-lightbox.open [data-lightbox-close], .image-lightbox.open .image-lightbox-close'); if (l) l.click(); document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true})); var c = document.getElementById('closePreview'); if (c && c.offsetWidth) c.click(); return 'ok'; })()");
+        eval(&tab, "(function(){ document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true})); var c = document.getElementById('closePreview'); if (c && c.offsetWidth) c.click(); return 'ok'; })()");
         std::thread::sleep(Duration::from_millis(300));
     }
 

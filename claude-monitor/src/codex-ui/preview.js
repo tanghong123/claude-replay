@@ -8,7 +8,7 @@ import { svg } from "./icons.js";
 
 const byId = id => document.getElementById(id);
 
-/** An image in a tab of its own (#s11), for the pane and the lightbox alike: `/image`, reading a
+/** An image in a tab of its own (#s11), from the pane: `/image`, reading a
  *  FILE by the path and stamp it was offered under (`/file` serves it there, under the same rules —
  *  a pasted image's saved original too, #324, larger than the copy the transcript carries), with
  *  the bytes the transcript EMBEDS handed over through sessionStorage — which `window.open` copies

@@ -47,7 +47,6 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
   .mermaid-fence .mermaid-source,.mermaid-fence .cpy{height:44px;min-width:44px}
 }
 
-.image-lightbox{position:fixed;inset:0;z-index:110;display:none;place-items:center;padding:26px;background:rgba(12,16,24,.78);backdrop-filter:blur(8px)}.image-lightbox.open{display:grid}.image-lightbox[hidden]{display:none!important}.image-lightbox-card{width:min(1120px,96vw);height:min(780px,90vh);display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(255,255,255,.16);border-radius:15px;background:var(--bg);box-shadow:0 26px 80px rgba(0,0,0,.38);transition:width .18s,height .18s}.image-lightbox-head{height:50px;flex:none;display:flex;align-items:center;gap:12px;padding:0 9px 0 16px;border-bottom:1px solid var(--line)}.image-lightbox-title{min-width:0;flex:1;display:flex;align-items:center;gap:9px}.image-lightbox-title>strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:590}.image-lightbox-status{flex:none;padding:3px 6px;border-radius:999px;background:var(--panel);color:var(--faint);font:8.5px var(--mono)}.image-lightbox-status.embedded{background:var(--success-soft);color:var(--success)}.image-lightbox-status.unavailable{background:var(--danger-soft);color:var(--danger)}.image-lightbox-actions{display:flex;align-items:center;gap:6px}.image-lightbox-close{width:32px;height:32px;border-radius:8px;background:transparent;color:var(--sub);font-size:21px;cursor:pointer}.image-lightbox-close:hover{background:var(--hover);color:var(--ink)}.image-lightbox-stage{min-height:0;flex:1;display:grid;place-items:center;padding:18px;background:color-mix(in srgb,var(--panel) 76%,var(--bg))}.image-lightbox-stage>img{display:block;max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;box-shadow:0 5px 28px rgba(15,22,38,.14)}.image-lightbox-loading{display:flex;flex-direction:column;align-items:center;gap:9px;color:var(--faint)}.image-lightbox-loading[hidden]{display:none}.image-lightbox-loading>span{width:22px;height:22px;border:2px solid var(--line);border-top-color:var(--primary);border-radius:50%;animation:attachment-spin .8s linear infinite}.image-lightbox-loading small{font-size:10px}.image-lightbox-error{display:flex;flex-direction:column;align-items:center;gap:7px;max-width:340px;color:var(--sub);font-size:11.5px;line-height:1.55;text-align:center}.image-lightbox-error[hidden]{display:none}.image-lightbox-error-icon{width:46px;height:46px;display:grid;place-items:center;margin-bottom:5px;border-radius:14px;background:var(--primary-soft);color:var(--primary)}.image-lightbox-error-icon svg{width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.image-lightbox-error strong{color:var(--ink);font-size:14px}.image-lightbox-error-actions{display:flex;gap:7px;margin-top:10px}.image-lightbox[data-state="unavailable"] .image-lightbox-card{width:min(460px,calc(100vw - 36px));height:auto}.image-lightbox[data-state="unavailable"] .image-lightbox-stage{min-height:250px;padding:34px 28px;background:var(--bg)}.image-lightbox[data-state="unavailable"] .image-lightbox-actions>[data-lightbox-sidebar]{display:none}@keyframes attachment-spin{to{transform:rotate(360deg)}}
 .turn.user .user-prompt .body{width:auto;max-width:none}
 .turn.user,.turn.assistant{position:relative}/* #162 (visibility). One rule for both message kinds: the raw toggle reveals on hover or focus.
    It used to stay pinned open whenever it was `.on`, and `rawUser` makes every USER turn raw by
@@ -110,7 +109,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .process-commentary-copy { color: var(--ink); font-size: 13.5px; }
 
 /* #167. Hidden at rest, revealed on the block the pointer is over — the owner asked for the chip, not for a column of them ("too many #s"). Because #162 gave each control a real SLOT, revealing costs NO reflow: the space is already held, so nothing moves when the pointer arrives. Both controls now follow one rule. */.spot-link{opacity:0;border-color:var(--line);background:var(--bg);color:var(--faint)}.turn:hover>.spot-link,.turn:focus-within>.spot-link,.spot-link:focus-visible{opacity:1}.spot-link:hover,.spot-link:focus-visible{border-color:color-mix(in srgb,var(--primary) 22%,var(--line));background:color-mix(in srgb,var(--primary-soft) 42%,var(--bg));color:var(--primary);transform:translateY(-1px)}.spot-link:focus-visible{outline:2px solid color-mix(in srgb,var(--primary) 48%,transparent);outline-offset:2px}.spot-link.copied{opacity:1;border-color:color-mix(in srgb,var(--success) 26%,var(--line));background:var(--success-soft);color:var(--success);transform:none}.turn.source-flash>.spot-link{opacity:1}@media(hover:none){.spot-link,.renderer>.renderer-spot{opacity:1}}@media(max-width:620px){.spot-link{right:0;--spot-top:-5px}.turn.user .spot-link{--spot-top:-12px}.turn.proposed-plan>.spot-link{right:7px;--spot-top:8px}}
-@media(max-width:620px){.turn.user .user-prompt{max-width:90%}.prompt-attachments{grid-template-columns:1fr}.turn.proposed-plan>.body{padding:13px 12px 15px}.image-lightbox{padding:0}.image-lightbox-card{width:100vw;height:100vh;border:0;border-radius:0}.image-lightbox-head{padding-left:12px}.image-lightbox-stage{padding:10px}}
+@media(max-width:620px){.turn.user .user-prompt{max-width:90%}.prompt-attachments{grid-template-columns:1fr}.turn.proposed-plan>.body{padding:13px 12px 15px}}
 
 /* The shell switch (see app.js). A word, not a glyph: it is the way back to the other
    frontend while both are supported, and it has to be recognisable without a tooltip. */
@@ -871,23 +870,6 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    centring control had the same fault, and its case never saw it because a synthetic `.click()`
    does not hit-test. */
 .session-navigator>.outline-card>.outline-card-action{z-index:3}
-
-/* #228 — zoom and pan in the enlarged image. The owner: "allow me to have zoom control and move
-   control (when the image is too big to fit). By default, zoom to fit on screen."
-
-   The stage is the gesture surface and the clipping box; the image is positioned by a transform
-   the shared module writes (html/shared/image-view.js), so nothing here reflows while zooming.
-   `overflow:hidden` is what makes panning meaningful — a magnified image is clipped to the stage
-   rather than escaping the card. The cursor follows `data-pannable`, which the module sets per
-   frame, so an image that fits shows no grab hand it cannot honour. */
-.image-lightbox-stage{overflow:hidden;position:relative;touch-action:none}
-/* Anchored at the stage centre, not laid out by it (#230): the stage is `place-items:center`, and
-   a centred grid item LARGER than its box is aligned to START instead under overflow:hidden, so a
-   big image sat top-left while the engine believed it was centred. `left/top:50%` plus the
-   translate(-50%,-50%) the module writes makes centring exact at any size. */
-.image-lightbox-stage>img{position:absolute;left:50%;top:50%;transform-origin:center center;will-change:transform;max-width:none;max-height:none}
-.image-lightbox-stage[data-pannable="yes"]{cursor:grab}
-.image-lightbox-stage[data-pannable="yes"].dragging{cursor:grabbing}
 .image-zoom{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;align-items:center;gap:2px;padding:3px;border:1px solid rgba(255,255,255,.16);border-radius:999px;background:rgba(18,22,30,.82);backdrop-filter:blur(10px);box-shadow:0 6px 20px rgba(0,0,0,.28);z-index:2}
 .image-zoom[hidden]{display:none!important}
 .image-zoom-btn,.image-zoom-level{border:0;background:transparent;color:#e8ecf2;font:12px/1 var(--sans);cursor:pointer;border-radius:999px;transition:background .12s ease}
@@ -897,8 +879,16 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .image-zoom-btn:hover,.image-zoom-level:hover{background:rgba(255,255,255,.14)}
 .image-zoom-btn:focus-visible,.image-zoom-level:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
 @media(prefers-reduced-motion:reduce){.image-zoom-btn,.image-zoom-level{transition:none}}
-/* #228 — the preview pane's image is the same zoomable stage. The panel is the narrowest place
-   an image is shown, so "too big to fit" is its normal condition rather than an edge case. */
+/* #228 — zoom and pan for an image, in the preview pane: since #s223/#s225 every image the app
+   shell shows enlarged is shown here (the lightbox is gone). The owner: "allow me to have zoom
+   control and move control (when the image is too big to fit). By default, zoom to fit on
+   screen." The stage is the gesture surface and the clipping box; the image is positioned by a
+   transform the shared module writes (html/shared/image-view.js), so nothing reflows while
+   zooming, and `overflow:hidden` is what makes panning meaningful. The image is anchored at the
+   stage centre rather than laid out by it (#230): a centred grid item LARGER than its box is
+   aligned to START under overflow:hidden, so `left/top:50%` plus the module's translate(-50%,-50%)
+   makes centring exact at any size. The pane is the narrowest place an image is shown, so "too
+   big to fit" is its normal condition rather than an edge case. */
 .artifact-stage{overflow:hidden;position:relative;touch-action:none}
 /* #305 — the stage FILLS the pane's body. Its image is absolutely positioned, so a stage with no
    height of its own collapsed to its padding (22px + 46px) and the fit scaled a 1200×800 screenshot

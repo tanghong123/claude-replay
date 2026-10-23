@@ -66,8 +66,7 @@ assert.match(productionCss, /\.prompt-file-kind\{flex:none/, "the reason must ho
 assert.match(productionCss, /\.input-request\{/, "native input history must not render as raw JSON");
 assert.match(productionCss, /\.turn\.proposed-plan\{/, "semantic proposed plans must have a dedicated surface");
 assert.match(productionCss, /\.fence-h\{/, "safe markdown fences must keep their toolbar inside the code surface");
-assert.match(productionCss, /\.image-lightbox\{/, "image attachments must have an in-page lightbox");
-assert.match(productionCss, /image-lightbox\[data-state="unavailable"\]/, "missing temporary images must collapse to a compact recovery state");
+assert.doesNotMatch(productionCss, /image-lightbox/, "the app shell enlarges images in the pane, not a lightbox (#s225)");
 assert.match(productionCss, /\.tree-project-more\{/, "projects with many sessions need an inline disclosure control");
 assert.match(productionCss, /\.prompt-copy-shell\.collapsed/, "long prompts need a bounded collapsed surface");
 assert.match(productionCss, /\.spot-link\{/, "message permalinks need a subtle production treatment");
@@ -3098,7 +3097,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(imageView, /export \{ createImageView \};$/m, "the shared module publishes one entry point");
   assert.doesNotMatch(imageView, /^import /m, "…and imports nothing, as the inliner requires");
   const viewer = readFileSync(new URL("../../claude-monitor/src/codex-ui/attachment-viewer.js", import.meta.url), "utf8");
-  assert.match(viewer, /import \{ createImageView \} from "\.\/shared\/image-view\.js";/, "the app shell's lightbox uses the shared engine");
+  assert.doesNotMatch(viewer, /createImageView|image-lightbox|openImage/, "the app shell keeps no lightbox of its own (#s225)");
   const exportJs = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
   assert.match(exportJs, /shared\.createImageView\(stage, img,/, "the classic page uses the same engine through window.__shared");
   // Both classic viewers go through one stage builder, so the lightbox and the file view cannot
@@ -3113,7 +3112,6 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(imageView, /INPUT\|TEXTAREA\|SELECT/, "the viewer yields to a focused text control");
   assert.match(imageView, /isContentEditable/, "…including contenteditable");
   assert.match(imageView, /if \(!isActive\(\)\) return;/, "…and yields while it is not on screen");
-  assert.match(viewer, /isActive:\s*\(\)\s*=>\s*!this\.root\.hidden/, "the app shell's lightbox is active only while open");
   const preview = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
   assert.match(preview, /createImageView\(stage, img, \{ isActive: \(\) => uiState\.preview, onChange: /, "the preview's viewer is active only while the pane is open");
 
