@@ -53,6 +53,13 @@ impl Endpoint {
     }
 }
 
+/// How long the native server may take to answer the WebSocket handshake, on either transport.
+/// It was 2 s, and a loaded machine missed it three times in one day of browser suites ("Private
+/// Unix WebSocket handshake failed", #s227) while every rerun alone passed. A handshake happens
+/// once per connection; the connect itself keeps its 2 s bound, so a server that is not there is
+/// still known at once.
+pub(super) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub(super) enum NativeStream {
     Tcp(TcpStream),
     #[cfg(unix)]
@@ -267,8 +274,8 @@ mod unix {
         }
         let stream = UnixStream::from(fd);
         stream.set_nonblocking(false)?;
-        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+        stream.set_read_timeout(Some(super::HANDSHAKE_TIMEOUT))?;
+        stream.set_write_timeout(Some(super::HANDSHAKE_TIMEOUT))?;
         Ok(stream)
     }
 

@@ -349,8 +349,8 @@ fn handshake(
         .find(|address| address.ip().is_loopback())
         .ok_or_else(|| ConnectError::Other("WebSocket endpoint must resolve to loopback".into()))?;
     let stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_read_timeout(Some(super::transport::HANDSHAKE_TIMEOUT))?;
+    stream.set_write_timeout(Some(super::transport::HANDSHAKE_TIMEOUT))?;
     if let Some(token) = token {
         request
             .headers_mut()
