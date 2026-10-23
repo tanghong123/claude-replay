@@ -70,6 +70,11 @@ pub(crate) const FAMILY_RECORD_KEYS: &[&str] = &[
     "queue_wait_elapsed_ms",
     "queue_max_wait_ms",
     "service_available",
+    // Qwenwork 1.1.71 (#s228, measured 2026-10-23): only on the user records that open a turn,
+    // naming the model the turn was sent to, which `runtime-config.model` and the reply's
+    // `message.model` already say. Revisit if it ever differs from the model (then it may be worth
+    // drawing, the owner's call) or turns up on a tool result, an `isMeta` or a non-user record.
+    "businessModelKey",
 ];
 
 /// QoderWork itself.

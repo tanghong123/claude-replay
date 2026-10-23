@@ -8178,12 +8178,12 @@ mod tests {
     #[test]
     fn the_family_s_own_keys_are_known_to_its_adapters_alone() {
         let v: Value = serde_json::from_str(
-            r#"{"type":"user","sessionId":"s","humanInput":"x","parent_tool_use_id":"t","message":{}}"#,
+            r#"{"type":"user","sessionId":"s","businessModelKey":"m","humanInput":"x","parent_tool_use_id":"t","message":{}}"#,
         )
         .unwrap();
         assert_eq!(
             unknown_record_keys(&v, "user", &[]),
-            vec!["humanInput", "parent_tool_use_id"],
+            vec!["businessModelKey", "humanInput", "parent_tool_use_id"],
             "on a Claude record they are new"
         );
         assert_eq!(
