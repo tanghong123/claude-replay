@@ -31,7 +31,8 @@ Both are unrecoverable after the fact, and both were learned from real damage he
 page (v1's rail, v2's splice shell). A button in each switches and REMEMBERS the choice at
 `<state_dir>/ui.json`, shared by both binaries; `?ui=classic` / `?ui=app` override for one
 request without disturbing it, which is what makes side-by-side comparison possible. The classic
-page is not deprecated — it goes when the app shell has been validated, and not before.
+page is DEPRECATED (#s95–#s97): since v1.376.0 it and `--help` say it is going, with `/session`.
+Until #s98 removes it (deferred) it stays and is fully supported, so a change still keeps it working.
 **The sidebar head is TWO LINES by construction** (#223): the brand takes the first, the controls
 take the second and wrap within it. They never share a row, at any width — the shell switch is a
 word rather than a glyph, and beside the brand it met the theme button. Below `SIDEBAR_TIGHT`
