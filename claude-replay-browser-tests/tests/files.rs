@@ -630,6 +630,70 @@ fn the_app_shell_preview_fits_a_large_image_to_the_pane() {
         wider["iw"].as_i64() > first["iw"].as_i64(),
         "a wider pane draws the image wider: {first} → {wider}"
     );
+
+    // #s224 left a MOUSE double click as it was: 1:1, then fit again. (A finger's double tap,
+    // which the browsers report differently, is `a_phone_double_taps_an_image_back_to_fit`.)
+    let zoom = || {
+        eval(
+            &tab,
+            "document.querySelector('#previewBody .artifact-stage').dataset.zoom",
+        )
+        .as_str()
+        .unwrap_or("")
+        .to_string()
+    };
+    let fitted = zoom();
+    let centre = eval(&tab, "(function(){ var r = document.querySelector('#previewBody .artifact-stage').getBoundingClientRect(); return JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]); })()");
+    let centre: Vec<f64> = serde_json::from_str(centre.as_str().unwrap()).unwrap();
+    let double_click = || {
+        use headless_chrome::protocol::cdp::Input::{
+            DispatchMouseEvent, DispatchMouseEventTypeOption, MouseButton,
+        };
+        for count in [1, 2] {
+            for kind in [
+                DispatchMouseEventTypeOption::MousePressed,
+                DispatchMouseEventTypeOption::MouseReleased,
+            ] {
+                tab.call_method(DispatchMouseEvent {
+                    Type: kind,
+                    x: centre[0],
+                    y: centre[1],
+                    modifiers: None,
+                    timestamp: None,
+                    button: Some(MouseButton::Left),
+                    buttons: None,
+                    click_count: Some(count),
+                    force: None,
+                    tangential_pressure: None,
+                    tilt_x: None,
+                    tilt_y: None,
+                    twist: None,
+                    delta_x: None,
+                    delta_y: None,
+                    pointer_Type: None,
+                })
+                .unwrap();
+            }
+        }
+    };
+    double_click();
+    until(
+        &tab,
+        "document.querySelector('#previewBody .artifact-stage').dataset.zoom === '100'",
+        "a mouse double click to show the image at 1:1",
+        Duration::from_secs(5),
+        "document.querySelector('#previewBody .artifact-stage').dataset.zoom",
+    );
+    double_click();
+    until(
+        &tab,
+        &format!(
+            "document.querySelector('#previewBody .artifact-stage').dataset.zoom === '{fitted}'"
+        ),
+        "a second mouse double click to fit it again",
+        Duration::from_secs(5),
+        "document.querySelector('#previewBody .artifact-stage').dataset.zoom",
+    );
 }
 
 /// #313, the owner: images "can not pinch zoom … in either the popup float window or in preview pane

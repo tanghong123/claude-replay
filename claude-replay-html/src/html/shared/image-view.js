@@ -28,6 +28,10 @@ const MAX_SCALE = 8;
 /** How far below fit a reader may zoom out. Not 1:1 with fit, so leaving a zoomed state feels
  *  continuous instead of hitting a wall the moment the whole image is visible again. */
 const MIN_FIT_FRACTION = 0.2;
+/** How far a finger may wander before its touch is a pan rather than a tap (#s224). A finger
+ *  held still still jitters by a pixel or two, and while any move counted as a pan a tap on a
+ *  zoomed image could never be half of a double tap. */
+const TAP_SLOP = 6;
 
 function clamp(value, low, high) {
   return value < low ? low : value > high ? high : value;
@@ -139,6 +143,8 @@ function createImageView(stage, img, options = {}) {
   let pointer = null;
   let pinch = null;
   let lastTap = null;
+  let lastTouchUp = -Infinity;
+  let tapToggledAt = -Infinity;
   const spread = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
   function onPointerDown(event) {
     if (event.pointerType === "mouse" && event.button !== 0) return;
@@ -157,7 +163,7 @@ function createImageView(stage, img, options = {}) {
       return;
     }
     if (pointers.size > 2 || stage.dataset.pannable !== "yes") return;
-    pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
+    pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, x0: event.clientX, y0: event.clientY, moved: false };
     stage.classList.add("dragging");
     try { stage.setPointerCapture(event.pointerId); } catch (_) {}
     event.preventDefault();
@@ -179,14 +185,20 @@ function createImageView(stage, img, options = {}) {
       return;
     }
     if (!pointer || event.pointerId !== pointer.id) return;
+    // Within the slop it is still a tap and nothing moves; past it the pan takes the whole way
+    // from where the finger went down, so the slop costs no distance.
+    if (!pointer.moved) {
+      if (Math.hypot(event.clientX - pointer.x0, event.clientY - pointer.y0) <= TAP_SLOP) return;
+      pointer.moved = true;
+    }
     state.x += event.clientX - pointer.x;
     state.y += event.clientY - pointer.y;
     pointer.x = event.clientX;
     pointer.y = event.clientY;
-    pointer.moved = true;
     apply();
   }
   function onPointerUp(event) {
+    if (event.pointerType === "touch") lastTouchUp = event.timeStamp || performance.now();
     const had = pointers.get(event.pointerId);
     pointers.delete(event.pointerId);
     if (pinch) {
@@ -218,17 +230,22 @@ function createImageView(stage, img, options = {}) {
     }
     if (event.pointerType === "touch" && had && !moved) doubleTap(event);
   }
-  /** A touch screen's double click: two taps close in time and place. A browser that honours
-   *  `touch-action:none` sends no `dblclick` for them, so the gesture is read here. */
+  /** A touch screen's double click: two taps close in time and place, where the browser sends
+   *  both taps' pointers (Chrome); see `onDoubleClick` for the browser that does not (iOS). */
   function doubleTap(event) {
     const now = event.timeStamp || performance.now();
     if (lastTap && now - lastTap.t < 320 && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 32) {
-      lastTap = null;
-      if (state.scale > state.fit + 0.001) toFit();
-      else zoomAt(Math.max(1, state.fit * 2.5), event.clientX, event.clientY);
+      touchToggle(event.clientX, event.clientY, now);
       return;
     }
     lastTap = { t: now, x: event.clientX, y: event.clientY };
+  }
+  /** What a finger's double tap does: a zoomed image fits again, a fitted one zooms in there. */
+  function touchToggle(x, y, now) {
+    lastTap = null;
+    tapToggledAt = now;
+    if (state.scale > state.fit + 0.001) toFit();
+    else zoomAt(Math.max(1, state.fit * 2.5), x, y);
   }
   /** Eat the click that ends a drag — but never a click on a CONTROL.
    *
@@ -242,9 +259,19 @@ function createImageView(stage, img, options = {}) {
     event.preventDefault();
   }
 
+  /** A dblclick (#s224). The two touch browsers disagree about a finger's double tap, measured:
+   *  Chrome sends both taps' pointers, which `doubleTap` answers at the second pointerup, and then
+   *  a dblclick 20 ms later that toggled it straight back (fitted, then 1:1); iOS Safari swallows
+   *  the second tap's pointers and sends only the dblclick. So a dblclick right after a touch
+   *  double tap is that tap's echo, one right after a single touch IS the double tap, and any
+   *  other is a mouse's. It stays a bubble-phase listener: with only a capture-phase one, iOS
+   *  stopped sending the dblclick at all and delivered the double tap as a single tap. */
   function onDoubleClick(event) {
     event.preventDefault();
     event.stopPropagation();
+    const now = event.timeStamp || performance.now();
+    if (now - tapToggledAt < 500) return;
+    if (now - lastTouchUp < 500) { touchToggle(event.clientX, event.clientY, now); return; }
     if (state.scale > state.fit + 0.001) toFit();
     else zoomAt(1, event.clientX, event.clientY);
   }

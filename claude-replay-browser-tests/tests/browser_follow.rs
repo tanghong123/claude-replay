@@ -8862,7 +8862,7 @@ fn pinched_image_in_the_pane(
 /// image in. Since #s223 a transcript image opens in the right pane (the phone's full-screen
 /// sheet) on one tap, where it opened the lightbox before. The double tap back to fit this case
 /// also asserted passed only by accident — two mouse clicks the lightbox refit on — and is its own
-/// case under #s224.
+/// case below (#s224).
 #[test]
 #[ignore]
 fn a_phone_pinches_an_image_to_zoom() {
@@ -8872,11 +8872,13 @@ fn a_phone_pinches_an_image_to_zoom() {
 
 /// #313's other half, and #s224: a finger's double tap on a zoomed image goes back to fit. Chrome's
 /// own touch gesture, two taps at a finger's pace (two mouse clicks reach the pane as mouse
-/// pointers; two `finger_tap`s land 450 ms apart, past the 320 ms a double tap allows). Red: on a
-/// pannable (zoomed) image the viewer counts any pointermove during a tap as a pan.
+/// pointers; two `finger_tap`s land 450 ms apart, past the 320 ms a double tap allows). It was red
+/// because the viewer answered the double tap (the image fitted) and then the dblclick Chrome sends
+/// for it 20 ms later, which zoomed straight back to 1:1; a dblclick right after a touch is the
+/// touch's own and is ignored now.
 #[test]
 #[ignore]
-fn a_phone_double_taps_an_image_back_to_fit_known_red_s224() {
+fn a_phone_double_taps_an_image_back_to_fit() {
     let _serial = serial();
     let (_m, _b, tab, stage, (cx, cy), fit) = pinched_image_in_the_pane(2806, "phone-double-tap");
     tab.call_method(
