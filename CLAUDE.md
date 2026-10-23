@@ -414,8 +414,14 @@ return at once, as iOS does, so a pin that loses either fails it. **SHARED revie
 the main interface, but in the full detached view"; mdrev 1.1.18+: threads in a review store,
 pairing, a Push). The split is by PREFIX: the pane mounts the guest on `api/mdrev/`, where every
 `review` route and a thread's `hide` answer the contract's 404 (the guest then draws no Share and no
-Push), a note filed `shared: true` is refused, and `mdrev-cli` runs with the viewer key REMOVED from
-its environment; the detached tab (`markdown-page.js` → `mountStandalone`) mounts it on
+Push), a note filed `shared: true` or naming a thread (`shr-`) is refused, and `mdrev-cli` runs with
+the viewer key REMOVED from its environment — it carries mdrev's NOTES key instead (#s231, mdrev
+1.1.61, Hong's choice on mdviewer #s235: `MDREV_NOTES_KEY`, file `notes-token` beside `token`, made
+by the monitor the contract's way when mdrev has a state directory and none is there), with
+`--viewer` on every call, so mdrev-cli takes the reader's own notes as theirs (filed, edited,
+closed, deleted; on a machine joined to a team's mdrev service too, where a keyless pane was refused
+every new note as an agent's, #s230) and turns away everything shared itself. `shares()` in
+`mdrev.rs` is the one test for shared review: the viewer key, never the notes key. The detached tab (`markdown-page.js` → `mountStandalone`) mounts it on
 `api/mdrev-review/`, the same handler with mdrev's viewer key (`MDREV_STATE_DIR` or `~/.mdrev`, file
 `token`, read per request; without one the prefix is the pane's), which answers `review`,
 `review/fetch|push|pair`, `hide`, a body-only `PATCH` edit and Share (`POST annotations/{id}/share`,

@@ -206,16 +206,46 @@ pub(super) fn route(live: Option<&SessionService>, req: &Request) -> Option<Http
         return Some(contract(release(), live, req, rest, held(), key.as_ref()));
     }
     let rest = req.name.strip_prefix("api/mdrev/")?;
-    Some(contract(release(), live, req, rest, held(), None))
+    let key = notes_key();
+    Some(contract(release(), live, req, rest, held(), key.as_ref()))
 }
 
 /// mdrev's viewer key (#s10). `--viewer` tells `mdrev-cli` a person acted in the page — what may
 /// open a thread, edit, hide, pair or push — and it believes that only with this key in its
 /// environment: the token in mdrev's state directory, the key mdrev's own viewers use, so a pairing
 /// made in mdrev's viewer or at a terminal is this host's too.
+///
+/// The PANE carries mdrev's NOTES key instead (#s231, mdrev 1.1.61, Hong's choice on mdviewer #s235):
+/// with it `--viewer` is believed for the person's own notes alone — filed, replied to, edited,
+/// closed, reopened and deleted as theirs, on a machine joined to a team's mdrev service too — and
+/// mdrev-cli turns away everything shared itself. Without a key a joined machine refused the pane's
+/// every new note as an agent's (B10, #s230).
 pub(super) struct Viewer {
     state_dir: PathBuf,
     key: String,
+    kind: KeyKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum KeyKind {
+    /// The review prefix's: shared review — threads, hide, Share, pairing, Push.
+    Viewer,
+    /// The pane's: the person's own notes, nothing shared.
+    Notes,
+}
+
+/// Whether a call may reach shared review: the review prefix's viewer key, never the notes key.
+fn shares(viewer: Option<&Viewer>) -> bool {
+    viewer.is_some_and(|v| v.kind == KeyKind::Viewer)
+}
+
+/// mdrev's state directory: `MDREV_STATE_DIR` when absolute, else `~/.mdrev`.
+#[cfg(not(test))]
+fn state_dir() -> Option<PathBuf> {
+    std::env::var_os("MDREV_STATE_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".mdrev")))
 }
 
 /// The viewer key, read on every request to the review prefix (mdrev mints it on its first run,
@@ -224,17 +254,56 @@ pub(super) struct Viewer {
 /// [`contract`] and never reads this machine's.
 #[cfg(not(test))]
 fn viewer() -> Option<Viewer> {
-    let state_dir = std::env::var_os("MDREV_STATE_DIR")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".mdrev")))?;
+    let state_dir = state_dir()?;
     let key = std::fs::read_to_string(state_dir.join("token")).ok()?;
     let key = key.trim().to_string();
-    (!key.is_empty()).then_some(Viewer { state_dir, key })
+    (!key.is_empty()).then_some(Viewer {
+        state_dir,
+        key,
+        kind: KeyKind::Viewer,
+    })
 }
 
 #[cfg(test)]
 fn viewer() -> Option<Viewer> {
+    None
+}
+
+/// The notes key, read on every request to the pane's prefix: file `notes-token` in mdrev's state
+/// directory. mdrev's own viewer makes it beside the viewer key; where mdrev has a state directory
+/// and none is there yet, the host makes it the contract's way — 32 random bytes as 64 lowercase
+/// hex characters and a newline, mode 0600, never replacing one (`create_new`, so a race with
+/// mdrev leaves whichever came first). No state directory, no key: mdrev has not run here, and the
+/// pane stays keyless as before. Fixed to `None` in a test build, like [`viewer`].
+#[cfg(not(test))]
+fn notes_key() -> Option<Viewer> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let state_dir = state_dir()?;
+    let file = state_dir.join("notes-token");
+    if !file.exists() && state_dir.is_dir() {
+        if let Some(fresh) = super::serve::mint_token() {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&file)
+            {
+                let _ = writeln!(f, "{fresh}");
+            }
+        }
+    }
+    let key = std::fs::read_to_string(&file).ok()?;
+    let key = key.trim().to_string();
+    (!key.is_empty()).then_some(Viewer {
+        state_dir,
+        key,
+        kind: KeyKind::Notes,
+    })
+}
+
+#[cfg(test)]
+fn notes_key() -> Option<Viewer> {
     None
 }
 
@@ -280,15 +349,16 @@ fn contract(
             return HttpResponse::not_found("not offered by this host");
         }
         // #s6: mdrev 1.1.18's SHARED REVIEW — threads in a review store, pairing, a Push — is not
-        // offered from the monitor's PANE: it reads, and takes this machine's local notes, and no
-        // store is reached from it. The contract's way to say so is 404 on every review route, after
+        // offered from the monitor's PANE: it reads, and takes the person's own notes, and no store
+        // is reached from it. The contract's way to say so is 404 on every review route, after
         // which the guest draws no Share control and no Push; and the pane never passes mdrev's
-        // viewer key or `--viewer`, without which mdrev-cli does nothing shared even if asked. The
-        // detached tab's prefix carries the key (#s10) and goes on to the document's review routes.
-        "review" if viewer.is_none() => {
+        // viewer key — only the notes key (#s231), under which mdrev-cli does nothing shared even
+        // if asked. The detached tab's prefix carries the viewer key (#s10) and goes on to the
+        // document's review routes.
+        "review" if !shares(viewer) => {
             return HttpResponse::not_found("shared review is not offered by this host");
         }
-        r if r.starts_with("review/") && viewer.is_none() => {
+        r if r.starts_with("review/") && !shares(viewer) => {
             return HttpResponse::not_found("shared review is not offered by this host");
         }
         _ => {}
@@ -978,7 +1048,8 @@ fn stat(d: &Doc) -> HttpResponse {
 /// with a few dozen notes, after every note, every reply and every poll.
 fn notes_list(rel: &Release, d: &Doc, viewer: Option<&Viewer>) -> HttpResponse {
     let mut args = vec!["notes", "list", "--path", &d.rel, "--all", "--records"];
-    // #s10: with the viewer key, the listing carries the shared threads too (`shr-` ids).
+    // #s10: with the viewer key, the listing carries the shared threads too (`shr-` ids); with the
+    // pane's notes key (#s231) it comes without them.
     if viewer.is_some() {
         args.push("--viewer");
     }
@@ -1001,8 +1072,8 @@ fn notes_add(rel: &Release, d: &Doc, req: &Request, viewer: Option<&Viewer>) -> 
         return r;
     }
     // A note filed `shared: true` opens a thread in the review store (#s10) — the detached tab's to
-    // do, never the pane's, whatever a request says.
-    if viewer.is_none()
+    // do, never the pane's, whatever a request says (mdrev-cli refuses it under the notes key too).
+    if !shares(viewer)
         && serde_json::from_slice::<Value>(req.body)
             .ok()
             .and_then(|b| b.get("shared").and_then(Value::as_bool))
@@ -1042,12 +1113,17 @@ fn note_op(
     if !id_ok {
         return status("400 Bad Request", error("no such note id"));
     }
+    // A thread (`shr-`) is shared review's, the detached tab's (#s10): the pane turns it away itself,
+    // a second wall beside mdrev-cli's own refusal under the notes key (#s231).
+    if !shares(viewer) && id.starts_with("shr-") {
+        return HttpResponse::not_found("shared review is not offered by this host");
+    }
     let body: Value = serde_json::from_slice(req.body).unwrap_or(Value::Null);
     let args: Vec<String>;
     let mut input: Option<&[u8]> = None;
     let (method, ok): (&'static str, &'static str) = match (req.method, tail) {
         // #s10: a PATCH carrying `{body}` alone is an edit — a person's, in a viewer: their own
-        // unpushed shared record, or an open local note.
+        // unpushed shared record, or an open local note (the pane's, with its notes key, #s231).
         ("PATCH", "") if viewer.is_some() && body.get("status").is_none() => {
             let Some(text) = body.get("body").and_then(Value::as_str) else {
                 return status("400 Bad Request", error("expected {status} or {body}"));
@@ -1125,7 +1201,7 @@ fn note_op(
             ("DELETE", "200 OK")
         }
         // Hiding is a shared thread's operation: the detached tab's (#s10), never the pane's (#s6).
-        ("POST", "hide") if viewer.is_some() => {
+        ("POST", "hide") if shares(viewer) => {
             let Some(hidden) = body.get("hidden").and_then(Value::as_bool) else {
                 return status("400 Bad Request", error("expected {hidden}"));
             };
@@ -1140,7 +1216,7 @@ fn note_op(
         // become the reader's shared records (mdrev's contract, "Share"; `{edits}` read whole from
         // stdin). A shared operation, so the detached tab's; the pane answers 404, as a host
         // without the route does, and the viewer then shows the drafts with no Share.
-        ("POST", "share") if viewer.is_some() => {
+        ("POST", "share") if shares(viewer) => {
             args = ["notes", "share", id].map(String::from).to_vec();
             input = Some(req.body);
             ("POST", "200 OK")
@@ -1442,12 +1518,20 @@ fn cli_as(
         };
     };
     let mut command = Command::new(program);
-    match viewer {
-        Some(v) => command
-            .env("MDREV_VIEWER_KEY", &v.key)
-            .env("MDREV_STATE_DIR", &v.state_dir),
-        None => command.env_remove("MDREV_VIEWER_KEY"),
-    };
+    // One key or none, never both: the pane's notes key can never be read as the viewer key, nor the
+    // monitor's own environment lend either.
+    command
+        .env_remove("MDREV_VIEWER_KEY")
+        .env_remove("MDREV_NOTES_KEY");
+    if let Some(v) = viewer {
+        let var = match v.kind {
+            KeyKind::Viewer => "MDREV_VIEWER_KEY",
+            KeyKind::Notes => "MDREV_NOTES_KEY",
+        };
+        command
+            .env(var, &v.key)
+            .env("MDREV_STATE_DIR", &v.state_dir);
+    }
     let spawned = command
         .args(lead)
         .args(args)
@@ -1633,7 +1717,7 @@ mod tests {
     /// fails the way the real one does — exit 2 for a missing note, 1 for anything unknown.
     const FAKE_CLI: &str = r#"#!/bin/sh
 here="$(cd "$(dirname "$0")" && pwd)"
-printf '%s key=%s\n' "$*" "${MDREV_VIEWER_KEY:+set}" >> "$here/calls.log"
+printf '%s notes=%s key=%s\n' "$*" "${MDREV_NOTES_KEY:+set}" "${MDREV_VIEWER_KEY:+set}" >> "$here/calls.log"
 case "$1" in
   review)
     case "$2" in
@@ -1910,6 +1994,7 @@ esac
         let key = Viewer {
             state_dir: f.kit.join("state"),
             key: "k3y".into(),
+            kind: KeyKind::Viewer,
         };
         let q = doc_query(&f, "docs/doc.md");
         let tab = |method: &str, route: &str, query: &str, body: &[u8], paired: bool| {
@@ -2274,6 +2359,90 @@ esac
     /// `mdrev-cli review …` for the document's checkout, and every note listing and write it makes
     /// passes `--viewer` with the key in the CLI's environment — while the same request to the pane's
     /// prefix is the 404 it always was.
+    /// #s231 (mdrev 1.1.61, Hong's choice on mdviewer #s235): the PANE carries mdrev's notes key, so
+    /// on a machine joined to a team's mdrev service its reader still files, edits and deletes their
+    /// own notes (a keyless pane was refused every new note there as an agent's, #s230). Every pane
+    /// call passes the notes key and `--viewer`, the listing included, and never the viewer key; and
+    /// the pane still turns away everything shared itself: the review routes, hide, Share, a thread
+    /// (`shr-`) and a note filed `shared: true`.
+    #[test]
+    fn the_pane_writes_the_persons_own_notes_with_the_notes_key_and_nothing_shared() {
+        let f = fx("notes-key");
+        let held = Mutex::new(Held::default());
+        let notes = Viewer {
+            state_dir: f.kit.join("state"),
+            key: "n0tes".into(),
+            kind: KeyKind::Notes,
+        };
+        let q = doc_query(&f, "docs/doc.md");
+        let pane = |method: &str, route: &str, body: &[u8]| {
+            contract(
+                Some(&f.rel),
+                Some(&f.live),
+                &req(method, &q, body, true),
+                route,
+                &held,
+                Some(&notes),
+            )
+        };
+
+        assert_eq!(pane("GET", "annotations", b"").code, "200 OK");
+        assert_eq!(
+            pane("POST", "annotations", br#"{"body":"mine"}"#).code,
+            "201 Created"
+        );
+        assert_eq!(
+            pane("PATCH", "annotations/ann-1", br#"{"body":"better"}"#).code,
+            "200 OK",
+            "the reader edits their own note"
+        );
+        assert_eq!(
+            pane("PATCH", "annotations/ann-1", br#"{"status":"resolved"}"#).code,
+            "200 OK"
+        );
+        assert_eq!(
+            pane("DELETE", "annotations/ann-1", b"").code,
+            "204 No Content"
+        );
+        let log = calls(&f);
+        for want in [
+            "notes list --path docs/doc.md --all --records --viewer --root",
+            "notes add --path docs/doc.md --viewer --root",
+            "notes edit ann-1 --body better --viewer --root",
+            "notes resolve ann-1 --force --viewer --root",
+            "notes delete ann-1 --viewer --root",
+        ] {
+            assert!(log.contains(want), "{want}\n{log}");
+        }
+        assert!(
+            log.lines().all(|l| l.ends_with("notes=set key=")),
+            "every pane call carries the notes key and never the viewer key:\n{log}"
+        );
+
+        let before = calls(&f);
+        for (method, route, body) in [
+            ("GET", "review", &b""[..]),
+            ("POST", "review/push", br#"{"ids":["shr-1"]}"#),
+            ("POST", "annotations/ann-1/share", br#"{"edits":{}}"#),
+            ("POST", "annotations/shr-1/hide", br#"{"hidden":true}"#),
+            ("PATCH", "annotations/shr-1", br#"{"body":"x"}"#),
+            ("DELETE", "annotations/shr-1", b""),
+            ("POST", "annotations/shr-1/replies", br#"{"body":"x"}"#),
+        ] {
+            assert_eq!(
+                pane(method, route, body).code,
+                "404 Not Found",
+                "{method} {route}"
+            );
+        }
+        assert_eq!(
+            pane("POST", "annotations", br#"{"body":"x","shared":true}"#).code,
+            "403 Forbidden",
+            "a note filed shared is a thread"
+        );
+        assert_eq!(calls(&f), before, "nothing shared reached mdrev-cli");
+    }
+
     #[test]
     fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
         let f = fx("review");
@@ -2281,6 +2450,7 @@ esac
         let key = Viewer {
             state_dir: f.kit.join("state"),
             key: "k3y".into(),
+            kind: KeyKind::Viewer,
         };
         let q = doc_query(&f, "docs/doc.md");
         let tab = |method: &str, route: &str, body: &[u8], paired: bool| {

@@ -1057,6 +1057,142 @@ fn the_reader_closes_a_note_the_person_has_answered() {
     );
 }
 
+/// #s231 (mdrev 1.1.61, Hong's choice on mdviewer #s235): on a machine joined to a team's mdrev
+/// service, in a repository registered there, the pane's reader files, edits and deletes their own
+/// note, because the pane carries mdrev's NOTES key, which the monitor makes in mdrev's state
+/// directory (0600) when none is there. A keyless pane was refused every new note there as an
+/// agent's (B10, #s230). Nothing shared answers in the pane: Share and the review routes 404, a
+/// thread id is turned away, and the listing carries no thread. The join is the monitor's own HOME
+/// (the harness gives each monitor one) holding `.config/mdrev/service` with a URL nothing listens
+/// on, and a fresh repository list in the case's state directory, so mdrev-cli never needs to ask.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+fn on_a_machine_joined_to_an_mdrev_service_the_pane_writes_its_readers_own_notes() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let _serial = serial();
+    let (base, stores, repo) = fixture("mdrev-notes-key");
+    let ok = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://example.test/team/guide.git",
+        ])
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok, "git remote add");
+    let url = "http://127.0.0.1:9/no-service";
+    let joined = base.join("home/.config/mdrev");
+    std::fs::create_dir_all(&joined).unwrap();
+    std::fs::write(
+        joined.join("service"),
+        format!(r#"{{"url":"{url}","token":"t-stub","device":"d-stub","person":"p-stub"}}"#),
+    )
+    .unwrap();
+    let state = base.join("mdrev-state");
+    std::fs::create_dir_all(state.join("service")).unwrap();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    std::fs::write(
+        state.join("service/repos.json"),
+        format!(
+            r#"{{"at":{now_ms},"url":"{url}","repos":[{{"id":7,"path":"team/guide","hosts":["example.test"]}}]}}"#
+        ),
+    )
+    .unwrap();
+    let m = Monitor::spawn_with(
+        Kind::V1,
+        3207,
+        &base,
+        Some(&stores),
+        true,
+        &[("MDREV_STATE_DIR", &state.display().to_string())],
+    );
+    let (_browser, tab) = chrome_tab();
+    open_shell(&m, &tab);
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1')",
+        "the guide in the pane",
+        Duration::from_secs(30),
+        PANE,
+    );
+    // The pane's own routes, with its own document stamp: what its guest calls.
+    let route = |method: &str, tail: &str, body: &str| {
+        let js = format!(
+            "(async function(){{ var d = document.querySelector('.mdrev-pane').dataset; var q = 'root=' + encodeURIComponent(d.root) + '&path=' + encodeURIComponent(d.path) + '&cap=' + encodeURIComponent(d.cap); var o = {{method: {method:?}, headers: {{'Content-Type': 'application/json'}}}}; if ({body:?}) o.body = {body:?}; var r = await fetch(d.contract + {tail:?} + '?' + q, o); return JSON.stringify([r.status, await r.text()]); }})()"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(eval(&tab, &js).as_str().unwrap_or("[0,\"\"]")).unwrap();
+        (
+            v[0].as_u64().unwrap_or(0),
+            v[1].as_str().unwrap_or("").to_string(),
+        )
+    };
+
+    let (code, filed) = route(
+        "POST",
+        "/annotations",
+        r#"{"body":"tighten this","anchor":{"exact":"bold"}}"#,
+    );
+    assert_eq!(
+        code, 201,
+        "the pane files the reader's note in service mode: {filed}"
+    );
+    let id = serde_json::from_str::<serde_json::Value>(&filed).unwrap()["id"]
+        .as_str()
+        .expect("the note's id")
+        .to_string();
+    let made = state.join("notes-token");
+    let key = std::fs::read_to_string(&made).expect("the monitor made the notes key");
+    assert!(
+        key.len() == 65
+            && key.ends_with('\n')
+            && key[..64]
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "64 lowercase hex characters and a newline"
+    );
+    assert_eq!(
+        std::fs::metadata(&made).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    let (code, listed) = route("GET", "/annotations", "");
+    assert!(
+        code == 200 && listed.contains(&id) && !listed.contains("shr-"),
+        "the pane lists the note and no thread: {code} {listed}"
+    );
+    let (code, edited) = route(
+        "PATCH",
+        &format!("/annotations/{id}"),
+        r#"{"body":"tighter"}"#,
+    );
+    assert_eq!(code, 200, "the reader edits their own note: {edited}");
+    let (code, gone) = route("DELETE", &format!("/annotations/{id}"), "");
+    assert_eq!(code, 204, "the reader deletes their own note: {gone}");
+
+    for (method, tail, body) in [
+        ("GET", "/review", ""),
+        (
+            "POST",
+            &format!("/annotations/{id}/share") as &str,
+            r#"{"edits":{}}"#,
+        ),
+        ("PATCH", "/annotations/shr-1", r#"{"body":"x"}"#),
+        ("POST", "/annotations/shr-1/hide", r#"{"hidden":true}"#),
+    ] {
+        let (code, said) = route(method, tail, body);
+        assert_eq!(code, 404, "{method} {tail} is shared review's: {said}");
+    }
+}
+
 /// #s49, the owner on 1.360.0: "the layout of mdrev is messed up … I mean the tool bar area", upright
 /// and sideways, and sometimes it "could magically fix itself". mdrev's toolbar is a `header.topbar`, and
 /// the app shell's phone rules for its OWN top bar were written `#app .topbar` — an id that outranked
