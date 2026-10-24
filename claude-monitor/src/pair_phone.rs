@@ -816,9 +816,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let bin = dir.join("tailscale");
-        std::fs::write(&bin, "#!/bin/sh\nexec sleep 30\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::write_script(&bin, "#!/bin/sh\nexec sleep 30\n");
         let started = Instant::now();
         let read = tailscale_json_within(&bin, &["status", "--json"], Duration::from_millis(200));
         assert!(read.is_none(), "a read past its limit gives no names");
@@ -828,23 +826,22 @@ mod tests {
             started.elapsed()
         );
 
-        std::fs::write(
+        crate::write_script(
             &bin,
             "#!/bin/sh\necho '{\"Self\":{\"DNSName\":\"box.\"}}'\n",
-        )
-        .unwrap();
+        );
         let read = tailscale_json_within(&bin, &["status", "--json"], Duration::from_secs(5));
         assert_eq!(
             read.and_then(|v| v.pointer("/Self/DNSName").cloned()),
             Some(Value::from("box."))
         );
-        std::fs::write(&bin, "#!/bin/sh\nexit 1\n").unwrap();
+        crate::write_script(&bin, "#!/bin/sh\nexit 1\n");
         let read = tailscale_json_within(&bin, &["status", "--json"], Duration::from_secs(5));
         assert_eq!(
             read, None,
             "a failed read gives no names, so the names before it stay (#s170)"
         );
-        std::fs::write(&bin, "#!/bin/sh\necho 'not json'\n").unwrap();
+        crate::write_script(&bin, "#!/bin/sh\necho 'not json'\n");
         let read = tailscale_json_within(&bin, &["status", "--json"], Duration::from_secs(5));
         assert_eq!(read, None, "nor does a read that prints no JSON");
         let _ = std::fs::remove_dir_all(&dir);

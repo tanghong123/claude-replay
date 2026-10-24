@@ -986,13 +986,7 @@ mod tests {
         let (root, runtime) = fixture();
         // Execute a harmless fixture at the configured binary path. It ignores
         // the app-server arguments and reports the actual inherited environment.
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::write(&runtime.config.binary, "#!/bin/sh\nexec /usr/bin/env\n").unwrap();
-        std::fs::set_permissions(
-            &runtime.config.binary,
-            std::fs::Permissions::from_mode(0o700),
-        )
-        .unwrap();
+        crate::write_script(&runtime.config.binary, "#!/bin/sh\nexec /usr/bin/env\n");
         let mut command = runtime.server_command().unwrap();
         let values: std::collections::BTreeMap<_, _> = command.get_envs().collect();
         for (name, expected) in [

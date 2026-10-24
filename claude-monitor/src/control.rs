@@ -1263,7 +1263,6 @@ mod tests {
 
     impl HerdrWorld {
         fn new(name: &str) -> HerdrWorld {
-            use std::os::unix::fs::PermissionsExt;
             // Short: a Unix socket's path must fit in `SUN_LEN` (104 bytes on macOS), and the
             // scratch sits deep in the workspace's target.
             let dir = std::env::temp_dir().join(format!("h{name}{}", std::process::id()));
@@ -1280,17 +1279,17 @@ mod tests {
                 screen: dir.join("screen.txt"),
                 dir,
             };
-            std::fs::write(
+            // Through a `cp` child (#s241): written here and run at once, Linux refused it
+            // (ETXTBSY) whenever another test thread forked mid-write.
+            crate::write_script(
                 &w.fake,
-                format!(
+                &format!(
                     "#!/bin/sh\necho \"$HERDR_SOCKET_PATH $*\" >> '{log}'\ncase \"$1 $2\" in\n  'agent get') if [ -f '{agent}.later' ] && [ -f '{agent}.seen' ]; then cat '{agent}.later'; else touch '{agent}.seen'; cat '{agent}'; fi ;;\n  'pane read') cat '{screen}' ;;\nesac\n",
                     log = w.log.display(),
                     agent = w.agent.display(),
                     screen = w.screen.display(),
                 ),
-            )
-            .unwrap();
-            std::fs::set_permissions(&w.fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+            );
             w.set(
                 &format!(r#"{{"agent_status":"idle","agent_session":{{"value":"{SID}"}}}}"#),
                 &screen("\u{276f}\u{a0}\u{1b}[2mTry \"something\"\u{1b}[0m"),

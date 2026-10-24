@@ -13,6 +13,32 @@ pub mod runtime;
 mod state;
 mod transport;
 
+/// An executable fixture for a test to run: `body` at `path`, mode 0700 (#s241).
+///
+/// The FINAL file is written by a `cp` child, never by this process: on Linux, exec'ing a file
+/// any process holds open for writing fails with ETXTBSY, and a test thread that forks while
+/// another writes hands its child a copy of that write descriptor until the child execs. So a
+/// fixture written and run in a parallel test binary fails at random, and only on Linux.
+#[cfg(all(test, unix))]
+fn write_script(path: &std::path::Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let draft = path.with_extension("draft");
+    std::fs::write(&draft, body).unwrap();
+    let copied = std::process::Command::new("cp")
+        .arg(&draft)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(
+        copied.success(),
+        "cp {} {}",
+        draft.display(),
+        path.display()
+    );
+    std::fs::remove_file(&draft).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use claude_replay_html::{query_get, HttpResponse, Request};

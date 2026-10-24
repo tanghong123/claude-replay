@@ -223,12 +223,7 @@ fn install_fixture(runtime: &NativeRuntime) {
         .map(|path| format!("export NATIVE_RESTART_FIXTURE_TOKEN={}\n", quote(path)))
         .unwrap_or_default();
     let script = format!("#!/bin/sh\nexport NATIVE_RESTART_FIXTURE_ENDPOINT='{}'\n{token}exec {} --exact runtime::restart_tests::fixture_server --nocapture\n", runtime.config.gateway.endpoint, quote(&std::env::current_exe().unwrap()));
-    std::fs::write(&runtime.config.binary, script).unwrap();
-    std::fs::set_permissions(
-        &runtime.config.binary,
-        std::fs::Permissions::from_mode(0o700),
-    )
-    .unwrap();
+    crate::write_script(&runtime.config.binary, &script);
 }
 
 fn websocket_restart_fixture() -> (RestartScratch, Arc<NativeRuntime>, Reap) {
@@ -423,14 +418,20 @@ fn executable_removal_preserves_status_restart_and_explicit_stop() {
     install_fixture(&runtime);
     // A package upgrade can unlink the executable while its server keeps running.
     let executable = root.join("old-native-fixture");
-    std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+    // A `cp` child writes the copy, never this process: it is run below (#s241, ETXTBSY).
+    assert!(std::process::Command::new("cp")
+        .arg(std::env::current_exe().unwrap())
+        .arg(&executable)
+        .status()
+        .unwrap()
+        .success());
     let launcher = std::fs::read_to_string(&runtime.config.binary)
         .unwrap()
         .replace(
             std::env::current_exe().unwrap().to_str().unwrap(),
             executable.to_str().unwrap(),
         );
-    std::fs::write(&runtime.config.binary, launcher).unwrap();
+    crate::write_script(&runtime.config.binary, &launcher);
     let pid = runtime.activate(true).unwrap()["ownedServerPid"]
         .as_u64()
         .unwrap() as u32;
