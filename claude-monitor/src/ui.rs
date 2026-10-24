@@ -1,108 +1,25 @@
 //! Shared Codex-style monitor UI assets.
 //!
-//! The visual reference is extracted byte-for-byte from the immutable design demo. Both
-//! monitor binaries call this module, so there is one frontend and one rollback boundary.
+//! The visual reference is extracted byte-for-byte from the immutable design demo. The
+//! monitor serves this one frontend.
 
-use claude_replay_html::{query_get, HttpResponse};
-use std::path::PathBuf;
+use claude_replay_html::HttpResponse;
 
 const PAGE_HEAD: &str = include_str!("codex-ui/page-head.html");
 const REFERENCE_SHELL: &str = include_str!("codex-ui/reference-shell.html");
 const PAGE_TAIL: &str = include_str!("codex-ui/page-tail.html");
 
-/// Which frontend `/` serves. BOTH are supported while the app shell is being validated —
-/// this is not a one-release escape hatch, and the classic shell is not deprecated until the
-/// owner says it is. `Classic` is the rail (v1) / the splice shell (v2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Shell {
-    App,
-    Classic,
-}
-
-impl Shell {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Shell::App => "app",
-            Shell::Classic => "classic",
-        }
-    }
-
-    /// Parse a `ui=` value. `codex` is accepted for the app shell because that is what the
-    /// rollout called it and what already-published links carry.
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "classic" => Some(Shell::Classic),
-            "app" | "codex" => Some(Shell::App),
-            _ => None,
-        }
-    }
-}
-
-/// The remembered choice: `<state_dir>/ui.json`, beside `ignored.json` and for the same reason
-/// (#197) — it is user INTENT that cannot be recomputed, so it is state, not cache. Shared by
-/// both monitor binaries deliberately: it answers "which shell do I want", not "what is this
-/// process". A `?ui=` on the URL still overrides it for one request without disturbing it, which
-/// is what makes side-by-side comparison possible while the setting stays put.
-fn preference_path() -> PathBuf {
-    crate::index::state_dir().join("ui.json")
-}
-
-/// The stored preference, or the app shell when nothing is stored or the file is unreadable.
-pub fn preference() -> Shell {
-    std::fs::read_to_string(preference_path())
-        .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-        .and_then(|v| v.get("ui").and_then(|v| v.as_str()).and_then(Shell::parse))
-        .unwrap_or(Shell::App)
-}
-
-fn set_preference(shell: Shell) {
-    let path = preference_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(
-        &path,
-        serde_json::json!({ "ui": shell.as_str() }).to_string(),
-    );
-}
-
-/// Which shell this request wants: an explicit `?ui=` wins, else the remembered choice.
-pub fn resolve(query: &str) -> Shell {
-    query_get(query, "ui")
-        .and_then(Shell::parse)
-        .unwrap_or_else(preference)
-}
-
-/// `GET /api/ui` reads the preference; `?set=classic|app` writes it. Same shape and same
-/// justification as `/api/ignore`: a GET with a query param, because the loopback listener
-/// parses only the request line, and persisting a local UI choice at the monitor's own state
-/// dir is UI state rather than agent control — inside the read-only contract (R8).
-pub fn route(query: &str) -> HttpResponse {
-    if let Some(shell) = query_get(query, "set").and_then(Shell::parse) {
-        set_preference(shell);
-        return HttpResponse::json(
-            serde_json::json!({ "ok": true, "ui": shell.as_str() }).to_string(),
-        );
-    }
-    HttpResponse::json(serde_json::json!({ "ok": true, "ui": preference().as_str() }).to_string())
-}
-
-/// The app shell for ONE request. `data-ui-default` says whether the app shell is also the
-/// remembered preference, which is what lets the page emit clean session links (`?session=…`)
-/// when it is, and pin `?ui=app` when it is not — a link copied out of this shell reopens this
-/// shell either way. Built per request because the preference is a live setting: the toggle
-/// writes it and reloads, so a page minted once at startup would answer with a stale flag.
+/// The app shell for ONE request. The classic view it was once switched with is retired (#s98),
+/// so there is no preference to read: `?ui=` and a `ui.json` left behind are both ignored.
 pub fn app_page(version: &str, paired: bool) -> String {
-    page(version, paired, preference() == Shell::App)
+    page(version, paired)
 }
 
-pub fn page(version: &str, paired: bool, default_ui: bool) -> String {
+pub fn page(version: &str, paired: bool) -> String {
     let head = PAGE_HEAD
         .replace("{{VERSION}}", version)
         .replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path())
         .replace("{{PAIRED}}", if paired { "true" } else { "false" })
-        .replace("{{DEFAULT_UI}}", if default_ui { "true" } else { "false" })
         // The mdrev release the preview pane mounts Markdown with (#270), pinned into this binary
         // (#274) and installed by `routes::handler`; "" only before that, when the page renders
         // Markdown as text, as it always did.
@@ -133,11 +50,10 @@ pub fn image_page() -> &'static str {
     include_str!("codex-ui/image-page.html")
 }
 
-/// The monitor's tab icon (#203): the green list mark the classic rail inlines as a data URI
-/// (`rail.html`), served here so the app shell — extracted byte-for-byte from the hand-written
-/// demo, which declares no `<link rel="icon">` — gets it from the production layer's injected
-/// link, and the browser's automatic `/favicon.ico` request resolves instead of 404ing. One
-/// source for both shells and both binaries.
+/// The monitor's tab icon (#203): the green list mark, served here so the app shell — extracted
+/// byte-for-byte from the hand-written demo, which declares no `<link rel="icon">` — gets it from
+/// the production page head's link, and the browser's automatic `/favicon.ico` request resolves
+/// instead of 404ing.
 pub const FAVICON_SVG: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='#2e7d55'/><g fill='#fff'><circle cx='9' cy='10' r='2'/><rect x='13' y='9' width='11' height='2' rx='1'/><circle cx='9' cy='16' r='2'/><rect x='13' y='15' width='11' height='2' rx='1'/><circle cx='9' cy='22' r='2'/><rect x='13' y='21' width='11' height='2' rx='1'/></g></svg>";
 
 /// The page as an app on a phone's Home Screen, or installed from a browser (#320, the owner: "add
@@ -162,9 +78,8 @@ pub const MANIFEST: &str = r##"{
 /// What a device may read before, or without, pairing (#320): the icons and the manifest, which
 /// say nothing of the machine. A phone fetches the icon on its own when the page is saved to its
 /// Home Screen, and iOS asks the root for `apple-touch-icon.png` (and its `-precomposed` twin)
-/// when a page declares none — v2's classic page, whose head is the session viewer's. Both
-/// binaries hand this to their gate (`AuthGate::with_public`); every name here is served by
-/// [`asset`].
+/// on its own. The monitor hands this to its gate (`AuthGate::with_public`); every name here is
+/// served by [`asset`].
 pub const PUBLIC_ASSETS: &[&str] = &[
     "favicon.svg",
     "favicon.ico",
@@ -380,7 +295,7 @@ mod tests {
     /// asks for no standalone mode, which on iOS would open with cookies of its own, unpaired.
     #[test]
     fn the_page_names_its_home_screen_icon() {
-        let page = page("test", false, true);
+        let page = page("test", false);
         for tag in [
             r#"<link rel="icon" type="image/svg+xml" href="/favicon.svg">"#,
             r#"<link rel="apple-touch-icon" href="/apple-touch-icon.png">"#,
@@ -395,45 +310,11 @@ mod tests {
 
     #[test]
     fn page_is_the_reference_shell_without_mock_runtime() {
-        let page = page("test", false, true);
+        let page = page("test", false);
         assert!(page.contains(REFERENCE_SHELL));
         assert!(page.contains("/monitor-ui/app.js"));
         assert!(!page.contains("sample-transcript-data.js"));
         assert!(!page.contains("REAL_TRANSCRIPT"));
-    }
-
-    /// `?ui=` overrides for ONE request; the stored preference answers everything else. That
-    /// pair is what lets both shells stay reachable: the setting is how you choose, the param is
-    /// how you look at the other one without changing your mind.
-    #[test]
-    fn an_explicit_ui_param_overrides_the_remembered_preference() {
-        let dir = std::env::temp_dir().join(format!("ui-pref-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let _env = crate::index::StateEnv::set(&dir);
-
-        assert_eq!(preference(), Shell::App, "app shell with nothing stored");
-        assert_eq!(resolve(""), Shell::App);
-        assert_eq!(resolve("ui=classic"), Shell::Classic);
-
-        let reply = route("set=classic");
-        assert!(String::from_utf8_lossy(&reply.body).contains("\"ui\":\"classic\""));
-        assert_eq!(preference(), Shell::Classic, "the choice persisted");
-        assert_eq!(resolve(""), Shell::Classic, "and answers a bare request");
-        assert_eq!(
-            resolve("ui=codex"),
-            Shell::App,
-            "…while an explicit param still overrides it"
-        );
-        assert_eq!(
-            preference(),
-            Shell::Classic,
-            "and overriding does NOT rewrite the preference"
-        );
-
-        route("set=app");
-        assert_eq!(preference(), Shell::App);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Every `./x.js` a served module imports must itself be served. The list above is

@@ -6,7 +6,7 @@
 //! so the crate's dev-dependencies stay where they are and nothing here reaches
 //! `cargo doc --workspace`. Every case in this crate is `#[ignore]`d and runs only under
 //! `cargo test -p claude-replay-browser-tests -- --ignored`, which needs a local Chrome and,
-//! for the monitor cases, `cargo build --release -p claude-monitor -p claude-monitor-v2`.
+//! for the monitor cases, `cargo build --release -p claude-monitor --features codex-native`.
 //!
 //! Conventions the cases rely on:
 //! - A case takes [`serial`] first: every case binds fixed loopback ports and shares
@@ -1193,83 +1193,27 @@ impl Stores {
         std::fs::write(&path, jsonl).unwrap();
         path
     }
-
-    /// A QoderWork fork FAMILY (#142): a root session and one forked from it, related through
-    /// the `<sid>-session.json` sidecar's `fork_from`, both past the adapter's junk-size gate.
-    /// Returns `(root_id, fork_id)`.
-    pub fn qoderwork_family(&self) -> (&'static str, &'static str) {
-        let qw = self.root.join("qoderwork").join("-r");
-        std::fs::create_dir_all(&qw).unwrap();
-        let root_id = "aaaaaaaa-0000-4000-8000-000000000001";
-        let fork_id = "aaaaaaaa-0000-4000-8000-000000000002";
-        let transcript = |salt: &str| -> String {
-            let mut out = String::new();
-            for i in 0..30u32 {
-                out += &user(
-                    &format!("prompt {salt} {i} — a line long enough to matter"),
-                    i,
-                );
-                out += &assistant(
-                    &format!("reply {salt} {i} — a line long enough to matter"),
-                    i,
-                );
-            }
-            assert!(
-                out.len() > 4096,
-                "past QoderWork's MIN_TRANSCRIPT_BYTES gate"
-            );
-            out
-        };
-        std::fs::write(qw.join(format!("{root_id}.jsonl")), transcript("root")).unwrap();
-        std::fs::write(
-            qw.join(format!("{root_id}-session.json")),
-            r#"{"title":"Family root","updated_at":1756800000000}"#,
-        )
-        .unwrap();
-        std::fs::write(qw.join(format!("{fork_id}.jsonl")), transcript("fork")).unwrap();
-        std::fs::write(
-            qw.join(format!("{fork_id}-session.json")),
-            format!(r#"{{"title":"Family root (Fork)","fork_from":"{root_id}","updated_at":1756800100000}}"#),
-        )
-        .unwrap();
-        (root_id, fork_id)
-    }
-
-    /// One FINISHED Claude session (old timestamps, no process) — the shape the compose
-    /// affordance resumes. Returns its id.
-    pub fn claude_finished(&self) -> &'static str {
-        let sid = "bbbbbbbb-0000-4000-8000-000000000001";
-        let mut out = String::new();
-        for i in 0..12u32 {
-            out += &user(&format!("prompt {i} — a line long enough to matter"), i);
-            out += &assistant(&format!("reply {i} — a line long enough to matter"), i);
-        }
-        self.claude_session(sid, &out);
-        sid
-    }
 }
 
 // ── the monitor under test ──────────────────────────────────────────────────────────────────
 
+/// Which monitor binary a case runs. One since `agent-monitor-v2` and the classic view were
+/// retired (#s98); the name stays so every call site reads as it did.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
-    /// `agent-monitor` — the v1 binary: its classic page is the rail.
+    /// `agent-monitor`.
     V1,
-    /// `agent-monitor-v2` — its classic page is the splice shell.
-    V2,
 }
 
 impl Kind {
     fn binary(self) -> &'static str {
         match self {
             Kind::V1 => "agent-monitor",
-            Kind::V2 => "agent-monitor-v2",
         }
     }
     fn package(self) -> &'static str {
         match self {
             Kind::V1 => "claude-monitor",
-            Kind::V2 => "claude-monitor-v2",
         }
     }
 }
@@ -2242,23 +2186,6 @@ pub fn app_at_tail(tab: &headless_chrome::Tab) -> bool {
     eval(tab, "(function(){ var s=document.querySelector('.transcript'); if (!s || !document.querySelector('.virtual-window').children.length) return false; return s.scrollHeight - s.clientHeight - s.scrollTop <= 2; })()")
         .as_bool()
         .unwrap_or(false)
-}
-
-/// The classic page (the html server's, or a monitor's classic view): the viewport's state —
-/// scrollY, document height, the gap to the bottom, whether it follows, the pill's text.
-pub fn classic_view_state(tab: &headless_chrome::Tab) -> serde_json::Value {
-    probe(
-        tab,
-        r#"({
-            y: Math.round(window.scrollY),
-            h: document.body.scrollHeight,
-            gap: Math.round(document.body.scrollHeight - window.innerHeight - window.scrollY),
-            following: document.body.classList.contains("following"),
-            badge: (document.getElementById("newbadge") || {}).textContent || "",
-            badgeOn: /\bon\b/.test((document.getElementById("newbadge") || {className:""}).className),
-            blocks: document.querySelectorAll('#stream [data-idx]').length
-        })"#,
-    )
 }
 
 // ── the two surfaces, one vocabulary ────────────────────────────────────────────────────────

@@ -25,22 +25,20 @@ Both are unrecoverable after the fact, and both were learned from real damage he
   taskq sees it, so the task file is right and the TRANSCRIPT holds `$D`. Multi-paragraph
   text in single quotes is fine; a heredoc into a variable is the trap.
 
-## The monitor's two shells
-`agent-monitor` and `agent-monitor-v2` each serve **two** frontends and both are supported: the
-**app shell** (`claude-monitor/src/ui.rs` + `src/codex-ui/*`, the default) and the **classic**
-page (v1's rail, v2's splice shell). A button in each switches and REMEMBERS the choice at
-`<state_dir>/ui.json`, shared by both binaries; `?ui=classic` / `?ui=app` override for one
-request without disturbing it, which is what makes side-by-side comparison possible. The classic
-page is DEPRECATED (#s95–#s97): since v1.376.0 it and `--help` say it is going, with `/session`.
-Until #s98 removes it (deferred) it stays and is fully supported, so a change still keeps it working.
+## The monitor's page
+`agent-monitor` serves ONE frontend, the **app shell** (`claude-monitor/src/ui.rs` +
+`src/codex-ui/*`). The classic rail-and-iframe page it once switched with, its `ui.json`
+preference, `/api/ui` and `agent-monitor-v2` were retired by #s98 (design/classic-view-deprecation.md
+stage 3, after the v1.376.0 notice): `/` and `?ui=classic` both serve the app shell, a `ui.json` left
+behind is ignored, and `/api/ui` answers 404. `/session` and `PageChrome` remain until stage 4
+(#s99). "The classic page" below means export.js, the offline viewer's page (`agent-replay --html`,
+`--dump-html`), which stays and is the browser suite's reference.
 **The sidebar head is TWO LINES by construction** (#223): the brand takes the first, the controls
-take the second and wrap within it. They never share a row, at any width — the shell switch is a
-word rather than a glyph, and beside the brand it met the theme button. Below `SIDEBAR_TIGHT`
+take the second and wrap within it. They never share a row, at any width. Below `SIDEBAR_TIGHT`
 (272px) the shell wears `sidebar-tight`, which squeezes the head's padding, the gaps and the glyphs
-so all six stay inside the sidebar at its 232px minimum (#210); the switch is exempt from the 30px
-glyph width there, since shaving a word is what clipped it. Nothing is hidden at any width; a new
-control in that row is measured against the minimum, not the default, and the case hit-tests the
-switch against the brand and the theme glyph rather than eyeballing it.
+so all five stay inside the sidebar at its 232px minimum (#210). Nothing is hidden at any width; a
+new control in that row is measured against the minimum, not the default, and the case
+(`the_app_shell_resizes_the_session_list`) hit-tests every control there rather than eyeballing it.
 **On a phone (≤760px, #310 then #313 — or a finger on a phone-sized short side, a phone held sideways,
 #s32) the app shell is a reader and a native-feeling app**, the owner's rules: upright the transcript keeps a 24px margin either side (#s55; the Reading menu's Wide
 transcript gives it the whole width, a 13px gutter), controls may FLOAT, and controls of
@@ -202,7 +200,7 @@ monitor — so the local desktop is byte-for-byte what it was; the case
 `a_phone_over_the_tailnet_reads_the_session_gzipped` reaches it as `phone.test`. That same `Host` is
 why the gate must know the tailnet name (#331): `origin_ok` (the DNS-rebinding and cross-site guard
 every file read and every write asks) knew only the loopback, so a PAIRED phone was told "reading
-local files requires pairing". Both binaries now hand the gate `pair_phone::trusted_hosts(port)`: the
+local files requires pairing". The monitor hands the gate `pair_phone::trusted_hosts(port)`: the
 names this machine's `tailscale serve` relays to THIS port, plus any `AGENT_MONITOR_TRUSTED_HOSTS`
 lists — never a `*.ts.net` wildcard, and only a relay the tailnet alone reaches that serves the monitor
 alone (#s170, the owner: no setup opens it to Funnel, and nothing else is served at its name and port,
@@ -217,8 +215,7 @@ as on macOS (#366). The pairing
 cookie is named for the token it carries — `cmauth-` and eight hex digits of the token's SHA-256
 (`cookie_name`, #350) — because a cookie is scoped to the HOST, not the port: while every gate wrote
 `cmauth`, agent-metrics' `serve --phone` (this gate since #317, a token of its own) replaced the
-monitor's cookie and the owner was told the monitor was not paired. The two monitors share one token
-and so one cookie; the legacy `cmauth` is still read (admitting only on this gate's token) and is
+monitor's cookie and the owner was told the monitor was not paired. The legacy `cmauth` is still read (admitting only on this gate's token) and is
 answered with the gate's own. It is `SameSite=Strict`, which a browser WITHHOLDS from a navigation
 that did not start on the site (a link in another app; the owner met it on a phone after saving a
 file, #341), so a refused PAGE load gets `HttpResponse::refusal_page`: it reloads once from itself
@@ -227,8 +224,8 @@ host's refusal words; fetches keep the plain 401, and each refused page load is 
 (never the token), which names a legacy `cmauth` that did not match apart from the gate's own.
 **The page saves to a Home Screen as itself** (#320): the tab icon's green mark, square and opaque
 (`claude-monitor/src/icons/`, rendered from `app-icon.svg` by `scripts/render-app-icon.sh`), named by
-the app shell's and v1's classic heads with a manifest and the label "Agent Monitor"; iOS asks the root
-for `apple-touch-icon.png` on its own, which covers v2's classic page. Those files are the ONLY paths
+the app shell's head with a manifest and the label "Agent Monitor"; iOS also asks the root
+for `apple-touch-icon.png` on its own. Those files are the ONLY paths
 the gate answers unpaired (`ui::PUBLIC_ASSETS` → `AuthGate::with_public`, GET only), because a phone
 fetches the icon itself and may not carry the pairing cookie. The manifest says `display: browser`,
 which on iOS 26 decides nothing (#s111, measured on the 26.4 Simulator, a `browser` and a `standalone`
@@ -267,8 +264,7 @@ between Expand every group and the sidebar collapse, opening Active recently / B
 Include hidden checkboxes; Active recently and Blocked by default, remembered, never an empty
 set; "Everything" checks the three and leaves Include hidden alone) filters by a COVER of that partition: Active recently is an hour of
 activity or busy now and overlaps Blocked by design (`sessionFilterBuckets`). It replaced the
-Needs attention and Show Hidden controls; the classic rail keeps its All / Active / Idle pills on
-the legacy `state`.
+Needs attention and Show Hidden controls.
 
 **Which process a session is linked to** (#269, `index.rs` `link()`) decides liveness AND whether
 the compose box appears, and Claude Code 2.1.278 changed the shape it has to read: the session's
@@ -311,8 +307,7 @@ carries `startedBy` only when the starter is a row here, and `brief` (the first 
 prompt: a worker's own title is its project's). The app shell leaves such rows out of the tree and
 its counts, lists them in the starter's Agents pane after its sub-agents (`data-worker-session`, the
 same descent, so the parent control leads back; a linked worker falls back to `startedBy`), and the
-send gate does not count a session's own worker as "another active session". The classic rail still
-lists workers. A fork's engine (`--fork-session --resume <parent.jsonl>`) is the only marker of a Claude fork
+send gate does not count a session's own worker as "another active session". A fork's engine (`--fork-session --resume <parent.jsonl>`) is the only marker of a Claude fork
 anywhere, and `note_forks_from_argv` is how one joins its #142 family. Diagnose against the
 machine, not the API: `term`/`injectable` describe the process the row was LINKED to, so a false
 link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and `ps -axww` first.
@@ -328,8 +323,7 @@ chain (`apply_nesting`, one `ps -axo pid=,ppid=,ucomm=` when any agent carries a
 pane's shell is the herdr server's direct child, measured; `ucomm` because `comm` is the start path
 cut at 16 characters). The tmux server is known by the pid in `TMUX`, screen or zellij nearer than
 herdr is a pane we do not drive, and with no answer the agent is in no pane we may drive. The row says `term: "herdr"`, `target` the pane, `herdrSession` a named session
-(the attention report reads `term`, agreed with Aries); the classic rail's badge copies `herdr` or
-`herdr --session <name>`, since herdr attaches by server. The send (`PaneAddr`, `resolve_pane_send`)
+(the attention report reads `term`, agreed with Aries). The send (`PaneAddr`, `resolve_pane_send`)
 keeps every tmux rule — a proven link, the project's only live session, consent keyed to the pane and
 pid (a herdr key's socket half is `herdr:<socket>`, so a tmux grant can never count) — and then
 one rule tmux does not have: **a grant follows a herdr RESTORE of the same session** (#s234, Hong's
@@ -357,8 +351,8 @@ character dropped (`herdr_text`: tmux's bracketed paste keeps them inert, herdr'
 text in the box, or no Enter — a dialog takes Enter as its first choice); and one `herdr pane
 send-keys <pane> enter` submits. Whether every character in the box is ours is not read back (a long
 prompt may show as a paste), and a dialog can still open in the moment before typing, as with tmux; a multi-line prompt arrives as one
-draft. A held send answers `{"ok": false, "code": "held", "error": <what to do>}`, which both pages
-show as is. **Images go to a Claude session in a herdr pane, and nowhere else** (#s237, Hong: "if
+draft. A held send answers `{"ok": false, "code": "held", "error": <what to do>}`, which the page
+shows as is. **Images go to a Claude session in a herdr pane, and nowhere else** (#s237, Hong: "if
 agent-monitor detects that the session is managed under herdr, we should also allow sending images
 to the session"). herdr carries no image itself (its socket has no image, paste or clipboard
 method), so the monitor does what a terminal paste does, measured on herdr 0.9.5 and Claude Code
@@ -392,7 +386,7 @@ upgrades will be triggered explicitly and manually"). `vendor/mdrev` is a crate 
 mdrev release's embedding kit, unmodified (`release/`: `bundle/`, `mdrev-cli.js` + `package.json`,
 `docs/*.md`); its version IS the release's (1.1.61, #s231), `release.sha256` is checked by its tests (never
 hand-edit a vendored file), and its build script embeds `bundle/` as a table. Only `claude-monitor`
-depends on it, and `routes::handler` — the one constructor both binaries go through — installs it
+depends on it, and `routes::handler` — the one constructor the monitor goes through — installs it
 into the html crate (`install_mdrev`), so `agent-replay` carries none of it. Nothing installed on
 the machine is looked at. **The pin moves only by `scripts/vendor-mdrev.sh <version>`** (the public
 release's `mdrev-embed-<version>.tar.gz`, checked against the digest the release publishes; refuses
@@ -514,8 +508,9 @@ a shrink-to-fit column, which the case now catches by hit-testing the heading.
 `src/codex-ui/{reference.css,reference-shell.html,icons.js}` are **generated**, extracted
 byte-for-byte from `design/agent-monitor-codex-demo.html` by
 `scripts/extract-agent-monitor-demo.mjs` and checked by two tests. Never hand-edit them: change
-the demo and re-run the script. Production-only chrome (the shell switch) is layered on at
-runtime from `app.js` so the extraction stays exact.
+the demo and re-run the script. Production-only chrome (the session filter, the compose box's image
+controls) is layered on at runtime by the shell's own scripts and `production.css`, so the
+extraction stays exact.
 
 **Shared frontend modules live in `claude-replay-html/src/html/shared/`** (seam 0 of
 `design/monitor-shell-duplication.md`, v1.140.0): ONE source, consumed two ways — the monitor
@@ -524,11 +519,7 @@ html crate INLINES each into its self-contained pages ahead of `export.js`
 (`html_export/shared.rs`), where export.js reads it as `window.__shared.<name>`. The inliner is
 textual, so a shared module keeps two conventions, held by tests: no imports, and exactly one
 trailing `export { … };` line. A new module is one row in `SHARED` (`shared.rs`); the monitor's
-import-closure test and the html crate's convention test cover the rest. The classic rail
-(`claude-monitor/src/rail.html`) and the v2 splice shell (`claude-monitor-v2/src/shell.html`) take the
-same inlined block at serve time through their `{{SHARED}}` placeholder
-(`claude_replay_html::shared_inline_all()`), so `window.__shared` there is a template substitution,
-not an import (#43). `claude-monitor/src/codex-ui/shared` is a SYMLINK to that directory, there so
+import-closure test and the html crate's convention test cover the rest. `claude-monitor/src/codex-ui/shared` is a SYMLINK to that directory, there so
 node (the contract test imports `components.js`, which imports `./shared/…`) and editors resolve the
 relative paths; the served bytes still come from the html crate through `ui::asset()`.
 
@@ -635,8 +626,8 @@ file to `navigator.share` on `pointer: coarse` (a phone or a tablet; never a des
 is not a download), keeps it ready for the next tap when iOS says the tap expired during the fetch,
 and streams anything over 64 MB (`?inMemoryMax=` for a case) to the browser's own download from
 `/file`; a desktop saves to Downloads as before
-(`a_phone_download_opens_the_share_sheet_and_a_desktop_saves`). `a_phone_is_never_offered_the_file_manager_on_either_page` is the audit:
-a remote phone clicks every kind of offered path on both pages and meets no reveal and sends no
+(`a_phone_download_opens_the_share_sheet_and_a_desktop_saves`). `a_phone_is_never_offered_the_file_manager` is the audit:
+a remote phone clicks every kind of offered path in the app shell and meets no reveal and sends no
 `/__reveal`; a local narrow window keeps its reveal. A case about what a REMOTE reader is offered
 opens the monitor as one (`Monitor::spawn_remote`, `harness::remote_phone`, `open_remote`).
 Nothing reveals automatically, not even on a refusal (v2's fallback did):
@@ -664,11 +655,11 @@ delivered is offered (`ToolUse::delivered` → `head.files`), not only the first
   clamping and native scroll anchoring, which only a real engine has, and twice in one day a
   shell that failed to LINK passed every static gate and was caught only here. Everything is
   `#[ignore]`d; the gate is
-  `cargo build --release -p claude-monitor -p claude-monitor-v2 --features claude-monitor/codex-native && cargo test -p claude-replay-browser-tests -- --ignored --skip known_red`
+  `cargo build --release -p claude-monitor --features claude-monitor/codex-native && cargo test -p claude-replay-browser-tests -- --ignored --skip known_red`
   (a local Chrome; CI runs the same in its `browser` job). `tests/harness/mod.rs` is the kit
   every case uses: `Stores` (a hermetic world of agent stores under the case's scratch root —
   nothing a case measures comes from this machine's sessions), record builders and
-  `long_session`, `Monitor::spawn` (v1 or v2 on a fixed port, reaped on drop; a missing binary
+  `long_session`, `Monitor::spawn` (`agent-monitor` on a fixed port, reaped on drop; a missing binary
   PANICS naming the build — never a silent skip, which is how a blank shell once passed as
   13/16), `chrome_tab()` — a browser with timer throttling off AND its first tab, the one way a
   case opens one (#343: `first_tab` launches again, up to four times with a stderr line each,
@@ -684,9 +675,7 @@ delivered is offered (`ToolUse::delivered` → `head.files`), not only the first
   (panics with what it saw), and the
   two-surface vocabulary (`Surface::{Classic, AppShell}`, `turn_at_top`, `at_tail`, `scroll_by`,
   `jump_to_end`, `open_last_fold`, `LiveGrowth`). `tests/browser_follow.rs` holds the
-  structural cases (the html server's viewport contract; `the_app_shell_*` on ports 2831–2836;
-  `the_classic_rail_*` on 2837–2838 against v1; `the_v2_shell_*`, the compose affordance on
-  2841–2842). `tests/files.rs` holds #272's file affordances on the app shell (2811–2814) and #374's handed
+  structural cases (the html server's viewport contract; `the_app_shell_*` on ports 2831–2836). `tests/files.rs` holds #272's file affordances on the app shell (2811–2814) and #374's handed
   files on a phone (2933), and
   `tests/unsigned.rs` the unstamped-path case on both pages (2815) — its own binary, because the
   signing key is read once per process and that case needs none; a case
@@ -1074,17 +1063,12 @@ crate — plus `claude-replay-browser-tests/`, a member deliberately kept OUT of
 `vendor/mdrev/`, the PINNED mdrev release (#274): data only, versioned as the release it holds,
 and a dependency of `claude-monitor` alone — plus
 **`claude-monitor/`** — the machine-wide session index (#98): a loopback web service whose
-page is a session-list rail beside the html crate's session view in an iframe; scan/state/
-cards in `src/index.rs`, the rail in `src/rail.html`; lazy population — a session's durable
+page is the app shell; scan/state/cards in `src/index.rs`; lazy population — a session's durable
 entry (at the monitor's OWN root, `~/.cache/claude-monitor`) is written by VISITING it,
 never by a sweep. It is **lib + bin**: `src/lib.rs` exposes `index` (the scan and the send
 DECISIONS), `consent` (grants + the passcode), `cost`, `state`, `control` (the pairing
-token and the two send transports, #133), and `routes` (THE route table, #47: the five API
-arms, the assets and the service fallthrough, with each binary's classic page and v1's
-`chrome=embed` session arm as named parameters), so `claude-monitor-v2/` reuses them rather than
-forking them — one implementation of "may this prompt be injected into that pane", two
-front-ends. Both monitors share the state dir (token, passcode, consent) because the
-`cmauth` cookie is host-scoped, not port-scoped; they keep separate CACHE roots. Each
+token and the two send transports, #133), and `routes` (THE route table, #47: the API arms,
+the assets and the service fallthrough). Each
 crate re-exports the lower layers' modules at its root (`crate::model`, `crate::present`,
 …), so moved code reads unchanged. One shared version: bump `[workspace.package] version`
 in the root Cargo.toml — the single spot per release.

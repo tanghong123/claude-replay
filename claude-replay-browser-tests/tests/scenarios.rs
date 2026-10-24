@@ -3,7 +3,7 @@
 //! and its probes), on hermetic fixtures, with live growth where the bug bit (#53).
 //!
 //! Every case is `#[ignore]`d: `cargo test -p claude-replay-browser-tests -- --ignored`, which
-//! needs a local Chrome and `cargo build --release -p claude-monitor-v2`. A case whose result on
+//! needs a local Chrome and `cargo build --release -p claude-monitor`. A case whose result on
 //! a surface is a QUEUED bug carries `known_red` in its name and the number of the task that
 //! owns it; the gate runs with `--skip known_red` and the fix removes the marker — the case is
 //! the bug's repro and is never weakened. The classic page is the reference for the app shell,
@@ -111,7 +111,7 @@ fn fixture_workflow_phased(name: &str) -> Fixture {
 /// #241 — BOTH pages render a run's phases as groups, in launch order, with each member under
 /// the phase it actually ran in and the unphased remainder under the run itself.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn both_shells_group_a_workflow_fleet_by_its_phases() {
     let _serial = serial();
     for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 2996)] {
@@ -372,15 +372,13 @@ fn open_page(surface: Surface, fx: &Fixture, port: u16, extra: &str) -> Opened {
     }
 }
 
-/// Both surfaces on ONE v2 monitor, so a server restart can be driven: the classic page is the
-/// splice (`?ui=classic&session=`, the same export.js DOM in the document), the app shell is
-/// `?ui=app&session=`. The monitor is owned by the returned page and can be respawned.
-/// The surface on a MONITOR process, for a case whose point is the server (a restart): the app
-/// shell on `agent-monitor`, the classic page as the v2 splice. The classic leg is the monitor's
-/// classic view, which retires (design/classic-view-deprecation.md, stage 3 deletes it with v2).
+/// The surface on a MONITOR process, for a case whose point is the server (a restart, a file the
+/// monitor serves): the app shell, the only page the monitor serves since its classic view and
+/// `agent-monitor-v2` were retired (#s98, design/classic-view-deprecation.md stage 3). The
+/// monitor is owned by the returned page and can be respawned.
 fn monitor_kind(surface: Surface) -> Kind {
     match surface {
-        Surface::Classic => Kind::V2,
+        Surface::Classic => panic!("the monitor serves only the app shell (#s98)"),
         Surface::AppShell => Kind::V1,
     }
 }
@@ -395,7 +393,7 @@ fn open_on_monitor(surface: Surface, fx: &Fixture, port: u16) -> Opened {
     let monitor = Monitor::spawn(monitor_kind(surface), port, &fx.base, Some(&stores), true);
     monitor.pair(&tab);
     let (query, ready, diag) = match surface {
-        Surface::Classic => (format!("?ui=classic&session={}", sid_of(fx)), "document.querySelectorAll('#stream .blk').length >= 3 && document.body.scrollHeight > window.innerHeight * 3", "document.querySelectorAll('#stream [data-turn]').length"),
+        Surface::Classic => unreachable!("monitor_kind refuses the classic page"),
         Surface::AppShell => (format!("?ui=app&session={}", sid_of(fx)), "document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3", "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : 'no window'"),
     };
     monitor.open(&tab, &query);
@@ -559,7 +557,7 @@ fn classic_page_holds_the_viewport_when_a_fold_toggles_near_the_end() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_holds_the_viewport_when_a_fold_toggles_near_the_end() {
     let _serial = serial();
     let fx = fixture("scenario-fold-app", 400);
@@ -664,7 +662,7 @@ fn classic_page_follows_the_tail_when_pinned() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_follows_the_tail_when_pinned() {
     let _serial = serial();
     let fx = fixture("scenario-pinned-app", 40);
@@ -682,7 +680,7 @@ fn classic_page_holds_when_unpinned_through_growth() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_holds_when_unpinned_through_growth() {
     let _serial = serial();
     let fx = fixture("scenario-unpinned-app", 40);
@@ -762,7 +760,7 @@ fn classic_page_a_command_output_is_plain_output() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_command_output_is_plain_output() {
     let _serial = serial();
     let fx = fixture_styled_command("scenario-ansi-app");
@@ -905,7 +903,7 @@ fn classic_page_a_nudge_keeps_the_tail() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_nudge_keeps_the_tail() {
     let _serial = serial();
     let fx = fixture("scenario-nudge-app", 20);
@@ -957,7 +955,7 @@ fn classic_page_steps_turns_from_the_top() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_steps_turns_from_the_top() {
     let _serial = serial();
     let fx = fixture("scenario-step-app", 40);
@@ -1052,7 +1050,7 @@ fn classic_page_corrects_a_growth_above_before_paint() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_corrects_a_growth_above_before_paint() {
     let _serial = serial();
     let fx = fixture("scenario-jolt-app", 40);
@@ -1150,7 +1148,7 @@ fn classic_page_never_fights_the_readers_motion() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_never_fights_the_readers_motion() {
     let _serial = serial();
     let fx = fixture_open_turn("scenario-fling-app");
@@ -1235,7 +1233,7 @@ fn classic_page_wide_mode_drops_the_reading_cap() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_wide_mode_drops_the_reading_cap() {
     let _serial = serial();
     let fx = fixture("scenario-wide-app", 12);
@@ -1310,7 +1308,7 @@ fn classic_page_folding_near_the_tail_keeps_the_scroll() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_folding_near_the_tail_keeps_the_scroll() {
     let _serial = serial();
     let fx = fixture("scenario-foldscroll-app", 20);
@@ -1387,7 +1385,7 @@ fn classic_page_the_call_carries_its_fleet() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_the_call_carries_its_fleet() {
     let _serial = serial();
     let fx = fixture_workflow("scenario-fleet-app");
@@ -1507,7 +1505,7 @@ fn classic_page_the_turn_bar_names_and_returns() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_the_turn_bar_names_and_returns() {
     let _serial = serial();
     let fx = fixture("scenario-turnbar-app", 40);
@@ -1567,7 +1565,7 @@ fn classic_page_pane_follows_the_transcript() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_pane_follows_the_transcript() {
     let _serial = serial();
     let fx = fixture("scenario-pane-app", 40);
@@ -1623,7 +1621,7 @@ fn classic_page_search_survives_growth() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_search_survives_growth() {
     let _serial = serial();
     let fx = fixture("scenario-search-app", 30);
@@ -1684,7 +1682,7 @@ fn classic_page_text_fields_keep_the_zoom_keys() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_text_fields_keep_the_zoom_keys() {
     let _serial = serial();
     let fx = fixture("scenario-zoomkeys-app", 30);
@@ -1784,7 +1782,7 @@ fn classic_page_pages_and_steps_around_a_deep_jump() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_pages_and_steps_around_a_deep_jump() {
     let _serial = serial();
     let fx = fixture("scenario-deep-app", 120);
@@ -1825,7 +1823,7 @@ fn classic_page_keeps_the_tail_through_a_resize() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_keeps_the_tail_through_a_resize() {
     let _serial = serial();
     let fx = fixture("scenario-resize-app", 60);
@@ -1874,16 +1872,7 @@ fn scenario_restart_resumes(page: &mut Opened, surface: Surface, fx: &Fixture, p
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn classic_page_resumes_after_a_server_restart() {
-    let _serial = serial();
-    let fx = fixture("scenario-restart-classic", 40);
-    let mut page = open_on_monitor(Surface::Classic, &fx, 2859);
-    scenario_restart_resumes(&mut page, Surface::Classic, &fx, 2859);
-}
-
-#[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_resumes_after_a_server_restart() {
     let _serial = serial();
     let fx = fixture("scenario-restart-app", 40);
@@ -1954,7 +1943,7 @@ fn classic_page_holds_to_the_pixel_when_unpinned_through_growth() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_holds_to_the_pixel_when_unpinned_through_growth() {
     let _serial = serial();
     let fx = fixture("scenario-pixel-app", 40);
@@ -2036,7 +2025,7 @@ fn classic_page_holds_to_the_pixel_inside_an_open_turn() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_holds_to_the_pixel_inside_an_open_turn() {
     let _serial = serial();
     let fx = fixture_open_turn("scenario-openturn-app");
@@ -2119,7 +2108,7 @@ fn classic_page_holds_between_scrolls_while_the_open_turn_grows() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_holds_between_scrolls_while_the_open_turn_grows() {
     let _serial = serial();
     let fx = fixture_open_turn("scenario-scrollgrow-app");
@@ -2174,7 +2163,7 @@ fn classic_page_shows_the_new_messages_pill() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_shows_the_new_messages_pill() {
     let _serial = serial();
     let fx = fixture("scenario-pill-app", 40);
@@ -2238,7 +2227,7 @@ fn classic_page_shows_a_queued_prompts_text() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_shows_a_queued_prompts_text() {
     let _serial = serial();
     let fx = fixture("scenario-queued-app", 12);
@@ -2309,7 +2298,7 @@ fn classic_page_session_id_copies_the_transcript_path() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_session_id_copies_the_transcript_path() {
     let _serial = serial();
     let fx = fixture("scenario-sid-app", 12);
@@ -2371,7 +2360,7 @@ fn classic_page_renders_an_embedded_image() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_renders_an_embedded_image() {
     let _serial = serial();
     let fx = image_fixture("scenario-image-app");
@@ -2520,7 +2509,7 @@ fn classic_page_holds_inside_a_long_open_turn_through_rewrites() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_holds_inside_a_long_open_turn_through_rewrites() {
     let _serial = serial();
     let fx = open_turn_fixture("scenario-open-turn-app");
@@ -2742,7 +2731,7 @@ fn classic_page_holds_through_growth_above_the_reader() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_holds_through_growth_above_the_reader() {
     let _serial = serial();
     let fx = open_turn_fixture("scenario-growth-app");
@@ -2758,7 +2747,7 @@ fn app_shell_holds_through_growth_above_the_reader() {
 /// pointer holds the thumb, the scroll offset is the truth: the window follows it and nothing
 /// corrects it; the anchor rule resumes on release.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_lets_the_thumb_own_the_position_while_dragged() {
     let _serial = serial();
     let fx = open_turn_fixture("scenario-thumb-app");
@@ -2938,7 +2927,7 @@ fn classic_page_caps_output_and_remembers_an_expansion() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_caps_output_and_remembers_an_expansion() {
     let _serial = serial();
     let fx = caps_fixture("scenario-caps-app");
@@ -3057,7 +3046,7 @@ fn classic_page_shows_a_user_turn_as_raw_text() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_shows_a_user_turn_as_raw_text() {
     let _serial = serial();
     let fx = raw_fixture("scenario-raw-app");
@@ -3231,7 +3220,7 @@ fn classic_page_a_late_scroll_is_still_the_readers() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_late_scroll_is_still_the_readers() {
     let _serial = serial();
     let fx = fixture("scenario-late-scroll-app", 40);
@@ -3369,7 +3358,7 @@ fn classic_page_wrap_reaches_every_rendering() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_wrap_reaches_every_rendering() {
     let _serial = serial();
     let fx = long_line_fixture("scenario-wrap-app");
@@ -3436,7 +3425,7 @@ fn classic_page_spot_controls_hold_their_slot() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_spot_controls_hold_their_slot() {
     let _serial = serial();
     let fx = filter_fixture("scenario-spot-slot-app");
@@ -3532,7 +3521,7 @@ fn classic_page_sparse_filter_mounts_only_what_matches() {
 /// — a deliberate divergence, not a gap. What the app shell must do instead is
 /// `app_shell_the_tool_filter_is_a_search_by_kind` below.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_the_tool_filter_is_a_search_by_kind() {
     let _serial = serial();
     let fx = filter_fixture("scenario-filter-app");
@@ -3787,7 +3776,7 @@ fn classic_page_marks_every_hit_and_searches_text() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_marks_every_hit_and_searches_text() {
     let _serial = serial();
     let fx = search_fixture("scenario-search-app");
@@ -3856,7 +3845,7 @@ fn classic_page_shows_user_turn_timestamps() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_shows_user_turn_timestamps() {
     let _serial = serial();
     let fx = time_fixture("scenario-time-app");
@@ -3936,7 +3925,7 @@ fn classic_page_shows_a_command_turn() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_shows_a_command_turn() {
     let _serial = serial();
     let fx = command_fixture("scenario-command-app");
@@ -4125,7 +4114,7 @@ fn classic_page_keeps_view_state_across_a_reload() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_keeps_view_state_across_a_reload_and_a_switch() {
     let _serial = serial();
     let fx = view_state_fixture("scenario-viewstate-app");
@@ -4254,7 +4243,7 @@ fn classic_page_code_pane_bar_and_gutters() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_code_pane_bar_and_gutters() {
     let _serial = serial();
     let fx = view_state_fixture("scenario-codepane-app");
@@ -4322,7 +4311,7 @@ fn classic_page_deep_links_to_a_tool_row() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_deep_links_to_a_tool_row() {
     let _serial = serial();
     let fx = view_state_fixture("scenario-deeplink-app");
@@ -4407,7 +4396,7 @@ fn classic_page_hit_stepping_shows_the_term_and_reenters() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_hit_stepping_shows_the_term_and_reenters() {
     let _serial = serial();
     let fx = hits_fixture("scenario-hits-app");
@@ -4582,7 +4571,7 @@ fn classic_page_scope_edges_count_mark_and_reenter() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_scope_edges_count_mark_and_reenter() {
     let _serial = serial();
     let fx = scope_edge_fixture("scenario-scope-edge-app");
@@ -4639,7 +4628,7 @@ fn classic_page_learning_heights_only_grows_the_page() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_learning_heights_only_grows_the_page() {
     let _serial = serial();
     let fx = fixture("scenario-estimate-app", 40);
@@ -4763,7 +4752,7 @@ fn classic_page_a_task_reads_like_the_board() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_task_reads_like_the_board() {
     let _serial = serial();
     let fx = fixture_task_life("scenario-task-app");
@@ -4927,7 +4916,7 @@ fn classic_page_a_task_with_no_title_says_why() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_task_with_no_title_says_why() {
     let _serial = serial();
     let fx = fixture_unrecorded_task("scenario-stub-task-app");
@@ -5165,7 +5154,7 @@ fn classic_page_a_clicked_control_at_the_tail_does_not_strand_the_reader() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_clicked_control_at_the_tail_does_not_strand_the_reader() {
     let _serial = serial();
     let fx = fixture_process_tail("scenario-strand-app", 1200, 22);
@@ -5283,7 +5272,7 @@ fn classic_page_a_long_jump_lands_on_content() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_short_jump_lands_on_content() {
     let _serial = serial();
     let fx = fixture_process_tail("scenario-jump-short-app", 400, 22);
@@ -5292,7 +5281,7 @@ fn app_shell_a_short_jump_lands_on_content() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_long_jump_lands_on_content() {
     let _serial = serial();
     let fx = fixture_process_tail("scenario-jump-long-app", 400, 22);
@@ -5427,7 +5416,7 @@ fn classic_page_the_trace_records_what_the_engine_did() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_the_trace_records_what_the_engine_did() {
     let _serial = serial();
     let fx = fixture("scenario-trace-app", 30);
@@ -5600,7 +5589,7 @@ fn classic_page_a_fold_keeps_its_head_state_across_a_rematerialization() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_fold_keeps_its_head_state_across_a_rematerialization() {
     let _serial = serial();
     let fx = fixture_long_command_midway("scenario-headstate-app");
@@ -5700,7 +5689,7 @@ fn classic_page_a_long_command_unfolds_on_the_second_click() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_long_command_unfolds_on_the_second_click() {
     let _serial = serial();
     let fx = fixture_long_command("scenario-longcmd-app");
@@ -5826,7 +5815,7 @@ fn classic_page_scope_counts_prefix_and_gating() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_scope_counts_prefix_and_gating() {
     let _serial = serial();
     let fx = scope_fixture("scenario-scope-app");
@@ -5925,7 +5914,7 @@ fn classic_page_large_session_searches_on_enter() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_large_session_searches_on_enter() {
     let _serial = serial();
     let fx = large_fixture("scenario-large-app");
@@ -6061,7 +6050,7 @@ fn classic_page_turn_ordinal_is_the_turns_own() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_turn_ordinal_is_the_turns_own() {
     let _serial = serial();
     let fx = ordinal_fixture("scenario-ordinal-app");
@@ -6131,7 +6120,7 @@ fn classic_page_dragging_a_card_copies_one_line() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_dragging_a_card_copies_one_line() {
     let _serial = serial();
     let fx = fixture("scenario-copyline-app", 12);
@@ -6265,7 +6254,7 @@ fn classic_page_tool_heads_carry_state_exit_and_duration() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_tool_heads_carry_state_exit_and_duration() {
     let _serial = serial();
     let fx = fixture_codex("scenario-toolhead-app", 12);
@@ -6445,7 +6434,7 @@ fn classic_page_a_request_for_input_is_a_card() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_request_for_input_is_a_card() {
     let _serial = serial();
     let fx = fixture_input_requests("scenario-input-app", 14);
@@ -6463,7 +6452,7 @@ fn classic_page_a_bare_result_reads_as_a_result_row() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_bare_result_reads_as_a_result_row() {
     let _serial = serial();
     let fx = fixture_bare_result("scenario-bare-app", 14);
@@ -6472,7 +6461,7 @@ fn app_shell_a_bare_result_reads_as_a_result_row() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_launched_spawn_is_not_a_running_head() {
     let _serial = serial();
     let fx = fixture_spawns("scenario-spawn-app", 14);
@@ -6551,7 +6540,7 @@ fn classic_page_a_record_measures_as_its_own_box() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_record_measures_as_its_own_box() {
     let _serial = serial();
     let fx = fixture("scenario-measure-app", 120);
@@ -6632,7 +6621,7 @@ fn classic_page_numbered_code_has_the_width() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_numbered_code_has_the_width() {
     let _serial = serial();
     let fx = fixture_write("scenario-numcode-app", 12);
@@ -6725,7 +6714,7 @@ fn classic_page_a_pasted_image_opens() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_pasted_image_opens() {
     let _serial = serial();
     let fx = fixture_pasted_image("scenario-paste-app", 8);
@@ -6876,7 +6865,7 @@ fn classic_page_a_pasted_image_carries_its_saved_original() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_pasted_image_carries_its_saved_original() {
     let _serial = serial();
     let (fx, original) = fixture_pasted_original("scenario-paste-original-app", 8);
@@ -7011,7 +7000,7 @@ fn classic_page_an_artifact_icon_word_is_drawn_as_its_emoji() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_an_artifact_icon_word_is_drawn_as_its_emoji() {
     let _serial = serial();
     let fx = fixture_artifact_icons("scenario-art-icon-app");
@@ -7179,7 +7168,7 @@ fn classic_page_an_artifact_publish_says_what_it_removed() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_an_artifact_publish_says_what_it_removed() {
     let _serial = serial();
     let fx = fixture_artifact_removed("scenario-art-removed-app");
@@ -7325,7 +7314,7 @@ fn classic_page_an_artifact_edit_draws_its_diff() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_an_artifact_edit_draws_its_diff() {
     let _serial = serial();
     let fx = fixture_artifact_edited("scenario-art-edit-app");
@@ -7346,7 +7335,7 @@ fn app_shell_an_artifact_edit_draws_its_diff() {
 /// breadcrumb from the transcript's own `ancestors`. It keeps no hint, so it cannot lose one — a
 /// mechanism difference, not a missing feature.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_fleet_row_descent_keeps_the_way_back() {
     let _serial = serial();
     let fx = fixture_workflow("scenario-fleet-descent");
@@ -7629,7 +7618,7 @@ fn classic_page_wide_is_one_click_from_the_header() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_wide_is_one_click_from_the_header() {
     let _serial = serial();
     let fx = fixture("scenario-wide-app", 12);
@@ -7726,7 +7715,7 @@ fn classic_page_an_attachment_says_why_it_is_there() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_an_attachment_says_why_it_is_there() {
     let _serial = serial();
     let fx = fixture_edited_attachment("scenario-attkind-app", 8);
@@ -7864,7 +7853,7 @@ fn classic_page_a_converge_yields_to_the_reader() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_converge_yields_to_the_reader() {
     let _serial = serial();
     let fx = fixture_queued_tail("scenario-qtail-app", 40);
@@ -8106,7 +8095,7 @@ fn classic_page_a_landing_holds_through_a_growth_above_it() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_landing_holds_through_a_growth_above_it() {
     let _serial = serial();
     let fx = fixture("scenario-hold-app", 120);
@@ -8265,7 +8254,7 @@ fn classic_page_a_growth_around_the_run_displaces_the_reader() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_growth_around_the_run_displaces_the_reader() {
     let _serial = serial();
     let fx = fixture("scenario-around-app", 120);
@@ -8338,7 +8327,7 @@ fn classic_page_a_press_in_the_gutter_is_not_a_thumb() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_press_in_the_gutter_is_not_a_thumb() {
     let _serial = serial();
     let fx = fixture("scenario-gutter-app", 40);
@@ -8478,7 +8467,7 @@ fn classic_page_a_code_control_moves_its_own_pane_only() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_code_control_moves_its_own_pane_only() {
     let _serial = serial();
     let fx = fixture_two_code_blocks("scenario-codectl-app");
@@ -8777,7 +8766,7 @@ fn classic_page_a_growth_in_a_nested_record_holds_the_reader() {
 /// sufficient — this case found that on the surface assumed to be correct. The gate skips
 /// `known_red`; the fix removes the marker, and the case is never weakened to make it pass.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_growth_in_a_nested_record_holds_the_reader() {
     let _serial = serial();
     let fx = fixture_nested_records("scenario-nested-app");
@@ -9083,7 +9072,7 @@ fn classic_page_a_growth_in_a_visible_records_head_holds_it() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_growth_in_a_visible_records_head_holds_it() {
     let _serial = serial();
     let fx = fixture_nested_records("scenario-visible-head-app");
@@ -9237,7 +9226,7 @@ fn scenario_a_scroll_up_over_fresh_ground_moves_by_what_was_asked(
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn classic_page_a_scroll_up_over_fresh_ground_moves_by_what_was_asked() {
     let _serial = serial();
     let fx = fixture_varied_prose("scenario-fresh-ground-classic");
@@ -9250,7 +9239,7 @@ fn classic_page_a_scroll_up_over_fresh_ground_moves_by_what_was_asked() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_scroll_up_over_fresh_ground_moves_by_what_was_asked() {
     let _serial = serial();
     let fx = fixture_varied_prose("scenario-fresh-ground-app");
@@ -9389,7 +9378,7 @@ fn scenario_the_tail_is_a_wall(tab: &headless_chrome::Tab, surface: Surface, _fx
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn classic_page_the_tail_is_a_wall() {
     let _serial = serial();
     let fx = fixture_tall_prose("scenario-tail-wall-classic");
@@ -9398,7 +9387,7 @@ fn classic_page_the_tail_is_a_wall() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_the_tail_is_a_wall() {
     let _serial = serial();
     let fx = fixture_tall_prose("scenario-tail-wall-app");
@@ -9482,7 +9471,7 @@ fn scenario_the_page_stops_growing_once_it_knows_what_a_record_costs(
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn classic_page_the_page_stops_growing_once_it_knows_what_a_record_costs() {
     let _serial = serial();
     let fx = fixture_tall_prose("scenario-learned-height-classic");
@@ -9495,7 +9484,7 @@ fn classic_page_the_page_stops_growing_once_it_knows_what_a_record_costs() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_the_page_stops_growing_once_it_knows_what_a_record_costs() {
     let _serial = serial();
     let fx = fixture_tall_prose("scenario-learned-height-app");
@@ -9664,7 +9653,7 @@ fn classic_page_a_fold_opened_at_the_tail_does_not_snap_back() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_fold_opened_at_the_tail_does_not_snap_back() {
     let _serial = serial();
     let fx = fixture_capped_tail("scenario-fold-tail-app");
@@ -9891,7 +9880,7 @@ fn classic_page_a_reader_above_a_growing_tail_moves_only_by_their_wheel() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_reader_above_a_growing_tail_moves_only_by_their_wheel() {
     let _serial = serial();
     let fx = fixture_long_open_turn("scenario-growing-tail-app");
@@ -10089,7 +10078,7 @@ fn classic_page_a_gradual_walk_forward_keeps_its_place() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_gradual_walk_forward_keeps_its_place() {
     let _serial = serial();
     let fx = fixture_varied_long("scenario-gradual-walk-app");
@@ -10227,7 +10216,7 @@ fn classic_page_at_the_bottom_the_last_turn_is_current() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_at_the_bottom_the_last_turn_is_current() {
     let _serial = serial();
     let fx = fixture_short_last_turn("scenario-endrule-app");
@@ -10312,7 +10301,7 @@ fn classic_page_a_turn_taller_than_the_viewport_names_itself() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_turn_taller_than_the_viewport_names_itself() {
     let _serial = serial();
     let fx = fixture_two_tall_turns("scenario-spanning-app");
@@ -10412,7 +10401,7 @@ fn classic_page_holds_through_growth_above_the_reader_during_a_fling() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_holds_through_growth_above_the_reader_during_a_fling() {
     let _serial = serial();
     let fx = fixture("scenario-fling-app", 40);
@@ -10525,7 +10514,7 @@ fn classic_page_a_held_landing_yields_to_the_readers_wheel() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_held_landing_yields_to_the_readers_wheel() {
     let _serial = serial();
     let fx = fixture("scenario-heldwheel-app", 120);
@@ -10646,7 +10635,7 @@ fn classic_page_a_smooth_step_yields_to_the_readers_wheel() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_smooth_step_yields_to_the_readers_wheel() {
     let _serial = serial();
     let fx = fixture("scenario-smoothstep-app", 40);
@@ -10770,7 +10759,7 @@ fn classic_page_a_unit_height_does_not_depend_on_the_window_edge() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_unit_height_does_not_depend_on_the_window_edge() {
     let _serial = serial();
     let fx = fixture("scenario-edge-unit-app", 60);
@@ -10870,7 +10859,7 @@ fn classic_page_the_engine_holds_its_invariants() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_the_engine_holds_its_invariants() {
     let _serial = serial();
     let fx = fixture("scenario-invariants-app", 120);
@@ -11213,7 +11202,7 @@ fn classic_page_the_history_records_what_happened() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_the_history_records_what_happened() {
     let _serial = serial();
     let fx = fixture("scenario-history-app", 60);
@@ -11313,7 +11302,7 @@ fn classic_page_a_delivered_file_is_offered_like_any_path() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_delivered_file_is_offered_like_any_path() {
     let _serial = serial();
     let fx = delivered_file_fixture("scenario-delivered-app");
@@ -11557,7 +11546,7 @@ fn classic_page_an_image_is_one_click_away() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_an_image_is_one_click_away() {
     let _serial = serial();
     let fx = image_fixture("scenario-oneclick-app");
@@ -11566,7 +11555,7 @@ fn app_shell_an_image_is_one_click_away() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_wide_image_opens_centred() {
     let _serial = serial();
     let fx = wide_image_fixture("wide-centre-app");
@@ -11593,7 +11582,7 @@ fn classic_page_the_enlarged_image_zooms() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_the_enlarged_image_zooms() {
     let _serial = serial();
     let fx = big_image_fixture("scenario-zoom-app");
@@ -11699,7 +11688,7 @@ fn classic_page_command_output_is_readable_in_both_themes() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_command_output_is_readable_in_both_themes() {
     let _serial = serial();
     let fx = caps_fixture("scenario-contrast-app");
@@ -11914,7 +11903,7 @@ fn classic_page_a_read_says_which_file() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_read_says_which_file() {
     let _serial = serial();
     let fx = parity_fixture("parity-read-app");
@@ -11977,7 +11966,7 @@ fn classic_page_a_bodyless_record_still_names_its_target() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_bodyless_record_still_names_its_target() {
     let _serial = serial();
     let fx = image_fixture("parity-bodyless-app");
@@ -12302,7 +12291,7 @@ fn carried_files_fixture(name: &str) -> Fixture {
 /// updates stripped of their content: each wore a bold filename, a chevron, a card and two
 /// buttons, and carried nothing at all.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_carried_files_collapse_and_wear_no_card() {
     let _serial = serial();
     let fx = carried_files_fixture("carried-files-app");
@@ -12404,7 +12393,7 @@ fn context_report_fixture(name: &str) -> Fixture {
 /// anyone checked — what vanished was the ELEVEN RECORDS AFTER IT, which is why this case
 /// asserts on what follows the report rather than on the report alone.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn both_shells_render_a_context_report_and_keep_going() {
     let _serial = serial();
     for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 2994)] {
@@ -12533,7 +12522,7 @@ fn client_cost_row(tab: &headless_chrome::Tab, surface: Surface) -> serde_json::
 /// the SUM over process epochs of each epoch's highest reading ($7.50 + $2.25), never the last
 /// record ($2.25): on a real session that difference was 31x.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn both_shells_show_the_clients_own_cost_with_the_window_it_covers() {
     let _serial = serial();
     for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 2992)] {
@@ -12589,7 +12578,7 @@ fn both_shells_show_the_clients_own_cost_with_the_window_it_covers() {
 
 /// The audit as an ASSERTION: every structure one page renders, the other renders too.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn both_shells_render_the_same_prose_structures() {
     let _serial = serial();
     let mut seen = Vec::new();
@@ -12694,7 +12683,7 @@ fn settled_big_turn_fixture(name: &str) -> Fixture {
 /// stamp is sticky. A block that was complete before the page opened never grew under the
 /// reader and is left alone, which is what bounds the whole thing to how long they watched.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_the_live_turn_lists_everything_and_a_settled_one_does_not() {
     let _serial = serial();
     // (1) The historical half: a big turn that was over before the page opened stays concise.
@@ -12894,7 +12883,7 @@ fn classic_page_an_unfold_survives_the_turn_growing() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_an_unfold_survives_the_turn_growing() {
     let _serial = serial();
     let fx = growing_turn_fixture("grow-fold-app");
@@ -13098,7 +13087,7 @@ fn classic_page_folds_survive_a_queue_pickup() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_folds_survive_a_queue_pickup() {
     let _serial = serial();
     let fx = queue_rewrite_fixture("queue-fold-app");
@@ -13123,7 +13112,7 @@ fn app_shell_folds_survive_a_queue_pickup() {
 /// A case that presses this on an already-OPEN section cannot see the bug at all, which is why
 /// it survived #233.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_expand_all_opens_the_section_it_expands() {
     let _serial = serial();
     let fx = growing_turn_fixture("bulk-closed-app");
@@ -13190,7 +13179,7 @@ fn app_shell_expand_all_opens_the_section_it_expands() {
 /// folded default — and the reader, who had asked for this turn to be open, watched work arrive
 /// shut. The intent is now held on the section and inherited by whatever the turn produces next.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_expand_all_reaches_what_the_turn_produces_next() {
     let _serial = serial();
     let fx = growing_turn_fixture("bulk-live-app");
@@ -13299,7 +13288,7 @@ fn image_in_a_run_fixture(name: &str) -> Fixture {
 /// out — "in place", except the span had not been written yet, so it landed ahead of the whole
 /// run. The further into a turn a screenshot was taken, the further back it was thrown.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn both_shells_put_an_images_where_the_tool_took_it_not_under_the_prompt() {
     let _serial = serial();
     for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3006)] {
@@ -13377,7 +13366,7 @@ fn turn_duration_fixture(name: &str) -> Fixture {
 /// that an untimed turn shows nothing at all: a chip reading "0m" would be a number that says
 /// nothing while claiming to.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn both_shells_say_how_long_a_turn_took_and_stay_silent_when_unrecorded() {
     let _serial = serial();
     for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3008)] {
@@ -13446,7 +13435,7 @@ fn ask_question_fixture(name: &str) -> Fixture {
 /// this two-question call, 2 of the 8 things the asker wrote, and none of the options that were
 /// DECLINED, which is where the trade-off is written.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn both_shells_show_every_question_and_every_option_that_was_offered() {
     let _serial = serial();
     for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3010)] {
@@ -13550,7 +13539,7 @@ fn ask_replied_fixture(name: &str) -> Fixture {
 /// "Both - …" is not the option "Both"), the notes are there, and the client's `(notes only)`
 /// placeholder is not — it is the client's word, not the reader's.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn both_shells_draw_every_question_alike_and_every_answer_given() {
     let _serial = serial();
     for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3024)] {
@@ -13682,7 +13671,7 @@ fn ask_unanswered_fixture(name: &str) -> Fixture {
 /// input — please return to the agent client" forever: 25 of the owner's 223 questions, one in
 /// nine. A call that has come back is not waiting.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn both_shells_say_why_a_question_went_unanswered() {
     let _serial = serial();
     for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3026)] {
@@ -13785,7 +13774,7 @@ fn delivered_files_fixture(name: &str) -> (Fixture, Vec<String>) {
 /// 64). Each file now carries its own stamps and a path element the page's own click machinery acts
 /// on — the classic page's `.tool-path`, the app shell's `[data-reference-path]`.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn both_shells_offer_every_file_a_send_delivered() {
     let _serial = serial();
     for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3028)] {
@@ -13859,7 +13848,7 @@ fn scratch_fixture(name: &str) -> (Fixture, String, String) {
     )
 }
 
-/// #283 — a file under the agent's OWN scratch for this project opens in the page, on BOTH pages;
+/// #283 — a file under the agent's OWN scratch for this project opens in the page;
 /// one under ANOTHER project's scratch still does not.
 ///
 /// The owner: "also allow inline rendering of files under agent's scratch directory whose paths are
@@ -13868,101 +13857,75 @@ fn scratch_fixture(name: &str) -> (Fixture, String, String) {
 /// project, its transcript's directory) — and no session explained its scratch, so a scratchpad
 /// file the transcript named was refused whatever the policy said. A session now explains its own
 /// project's scratch (`TranscriptAdapter::scratch_dirs`: `<scratch root>/<project slug>/`, where a
-/// session's spawned agents keep their scratch too). The classic page falls back to revealing a
-/// refused file, which is how the refusal shows there.
+/// session's spawned agents keep their scratch too).
 ///
-/// Both pages come from ONE v2 monitor: the classic page is its splice (`?ui=classic`), because
-/// the html server this file's other classic cases use renders no file inline at all — it only
-/// reveals — so it could not show the difference.
+/// The app shell only: the classic leg came from v2's splice and went with it (#s98), and the html
+/// server this file's other classic cases use renders no file inline at all — it only reveals — so
+/// it could not show the difference.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn both_shells_open_a_file_from_the_session_s_own_scratch() {
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_opens_a_file_from_the_session_s_own_scratch() {
     let _serial = serial();
-    for (surface, port) in [(Surface::Classic, 3032), (Surface::AppShell, 3030)] {
-        let (fx, own, other) = scratch_fixture(match surface {
-            Surface::Classic => "scratch-classic",
-            _ => "scratch-app",
-        });
-        let (_browser, tab) = harness::chrome_tab();
-        let stores = Stores {
-            root: fx.base.join("stores"),
-        };
-        let monitor = Monitor::spawn(monitor_kind(surface), port, &fx.base, Some(&stores), true);
-        monitor.pair(&tab);
-        let (ui, ready) = match surface {
-            Surface::Classic => ("classic", "document.querySelectorAll('#stream .blk').length >= 3"),
-            _ => ("app", "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3"),
-        };
-        monitor.open(
-            &tab,
-            &format!("?ui={ui}&session={}&mountall=1", sid_of(&fx)),
-        );
-        harness::until(
-            &tab,
-            ready,
-            "the page to render the fixture",
-            Duration::from_secs(30),
-            "document.body.innerText.slice(0, 200)",
-        );
-        settle();
-        // Record every reveal, never send one: `open -R` must not run here.
+    let (fx, own, other) = scratch_fixture("scratch-app");
+    let (_browser, tab) = harness::chrome_tab();
+    let stores = Stores {
+        root: fx.base.join("stores"),
+    };
+    let monitor = Monitor::spawn(Kind::V1, 3030, &fx.base, Some(&stores), true);
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={}&mountall=1", sid_of(&fx)));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3",
+        "the page to render the fixture",
+        Duration::from_secs(30),
+        "document.body.innerText.slice(0, 200)",
+    );
+    settle();
+    // Record every reveal, never send one: `open -R` must not run here.
+    eval(
+        &tab,
+        "window.__reveals = []; var real = window.fetch; window.fetch = function (u, o) { var s = String(u); if (/__reveal\\?/.test(s)) { window.__reveals.push(s); return Promise.resolve(new Response('', {status: 200})); } return real(u, o); }; 'ok'",
+    );
+    // #s13: a text file opens in mdrev's source view (itself a `pre`), not the plain one.
+    let shown = "#previewBody .mdrev-host .source-view";
+    let click = |p: &str| {
+        let sel = format!("[data-reference-path={p:?}]");
         eval(
             &tab,
-            "window.__reveals = []; var real = window.fetch; window.fetch = function (u, o) { var s = String(u); if (/__reveal\\?/.test(s)) { window.__reveals.push(s); return Promise.resolve(new Response('', {status: 200})); } return real(u, o); }; 'ok'",
+            &format!("document.querySelector({sel:?}).click(); 'ok'"),
         );
-        let (link, shown) = match surface {
-            Surface::Classic => (".tool-path[data-path={p}]", ".lightbox pre.lb-text"),
-            // #s13: a text file opens in mdrev's source view (itself a `pre`), not the plain one.
-            Surface::AppShell => (
-                "[data-reference-path={p}]",
-                "#previewBody .mdrev-host .source-view",
-            ),
-        };
-        let click = |p: &str| {
-            let sel = link.replace("{p}", &format!("{p:?}"));
-            eval(
-                &tab,
-                &format!("document.querySelector({sel:?}).click(); 'ok'"),
-            );
-        };
-        click(&own);
-        until(
+    };
+    click(&own);
+    until(
+        &tab,
+        &format!(
+            "[...document.querySelectorAll({shown:?})].some(function (e) {{ return e.textContent.indexOf('scratch notes of this project') >= 0; }})"
+        ),
+        "the session's own scratch file, shown in the page",
+        Duration::from_secs(10),
+        "JSON.stringify({ reveals: window.__reveals, shown: [...document.querySelectorAll('pre')].map(function (e) { return e.className + ':' + e.textContent.slice(0, 40); }).slice(-4) })",
+    );
+    click(&other);
+    // The pane says it cannot read the file, and offers the file manager.
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody [data-preview-reveal]')",
+        "another project's scratch file refused",
+        Duration::from_secs(10),
+        "JSON.stringify({ reveals: window.__reveals, pane: (document.getElementById('previewBody') || {}).className })",
+    );
+    assert_eq!(
+        eval(
             &tab,
             &format!(
-                "[...document.querySelectorAll({shown:?})].some(function (e) {{ return e.textContent.indexOf('scratch notes of this project') >= 0; }})"
-            ),
-            "the session's own scratch file, shown in the page",
-            Duration::from_secs(10),
-            "JSON.stringify({ reveals: window.__reveals, shown: [...document.querySelectorAll('pre')].map(function (e) { return e.className + ':' + e.textContent.slice(0, 40); }).slice(-4) })",
-        );
-        click(&other);
-        let refused = match surface {
-            // The classic page reveals what `/file` refuses.
-            Surface::Classic => {
-                "(window.__reveals || []).some(function (u) { return u.indexOf('other.txt') >= 0; })"
-            }
-            // The app shell's pane says it cannot read the file, and offers the file manager.
-            Surface::AppShell => "!!document.querySelector('#previewBody [data-preview-reveal]')",
-        };
-        until(
-            &tab,
-            refused,
-            "another project's scratch file refused",
-            Duration::from_secs(10),
-            "JSON.stringify({ reveals: window.__reveals, pane: (document.getElementById('previewBody') || {}).className })",
-        );
-        assert_eq!(
-            eval(
-                &tab,
-                &format!(
-                    "[...document.querySelectorAll({shown:?})].some(function (e) {{ return e.textContent.indexOf(\"another project's notes\") >= 0; }})"
-                )
+                "[...document.querySelectorAll({shown:?})].some(function (e) {{ return e.textContent.indexOf(\"another project's notes\") >= 0; }})"
             )
-            .as_bool(),
-            Some(false),
-            "{surface:?}: a session does not explain another project's scratch"
-        );
-    }
+        )
+        .as_bool(),
+        Some(false),
+        "a session does not explain another project's scratch"
+    );
 }
 
 /// An `AskUserQuestion` whose options came with the asker's drawings, answered with the first.
@@ -13989,7 +13952,7 @@ fn ask_previewed_fixture(name: &str) -> Fixture {
 /// file tree, a code sketch — drawn so the reader could compare them, and the card dropped every
 /// one: the options it listed were the labels and descriptions alone.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn both_shells_show_the_drawings_an_asker_gave_its_options() {
     let _serial = serial();
     for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3034)] {
@@ -14072,7 +14035,7 @@ fn both_shells_show_the_drawings_an_asker_gave_its_options() {
 /// a full push leaves the column at rest with every head reachable, and the short-window case
 /// where the breathing room has to go stays a CORNER — off at every ordinary size.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
     let _serial = serial();
     let fx = fixture_workflow_phased("outline-offset");
@@ -14273,7 +14236,7 @@ fn restored_files_fixture(name: &str) -> Fixture {
 /// its kind and its line count, and NOTHING inside a row is wider than the row. Both are
 /// asserted at two widths, because a head that fits at 1440 is not a head that fits.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_a_restored_file_names_itself_and_stays_in_its_box() {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
@@ -14393,7 +14356,7 @@ const NEEDLE_262: &str = "NEEDLE-IN-THE-HEAD";
 /// mark still measures a perfectly good rectangle inside the viewport, which is exactly why
 /// this went unnoticed (the repo has a memory about it — "rect is not visibility").
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_every_counted_search_hit_can_be_seen() {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
@@ -14500,7 +14463,7 @@ fn bash_edit_fixture(name: &str) -> Fixture {
 /// because `files[]` is capped at five. Every file the record names is accounted for, because
 /// a Bash call's head names the COMMAND and nothing else would say which file a row belongs to.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_a_bash_command_that_edits_shows_its_diff() {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
@@ -14605,7 +14568,7 @@ fn model_fallback_fixture(name: &str) -> Fixture {
 /// names ONE model for a session, and after a fallback that answer is wrong for every turn
 /// that follows — which also changes what the cost means.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_a_model_fallback_is_named_on_the_page() {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
@@ -14678,7 +14641,7 @@ fn deep_line_numbers_fixture(name: &str) -> Fixture {
 /// Asserted against the row's own line height rather than a pixel constant, so a font change
 /// cannot quietly make this pass.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_a_five_digit_line_number_stays_on_one_line() {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
@@ -14891,7 +14854,7 @@ fn classic_page_a_query_and_a_tool_facet_narrow_each_other() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_query_and_a_tool_facet_narrow_each_other() {
     let _serial = serial();
     let fx = needle_fixture("scenario-narrow-app");
@@ -14906,7 +14869,7 @@ fn app_shell_a_query_and_a_tool_facet_narrow_each_other() {
 /// after the reader has clicked away with the query held — the count is not clipped, and the row
 /// reads ↑ ↓ ab| filter, each control answering its own hit test.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_the_search_box_shows_its_own_query() {
     let _serial = serial();
     let fx = needle_fixture("searchbox-width-app");
@@ -15103,7 +15066,7 @@ fn classic_page_escape_leaves_the_search_box() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_escape_leaves_the_search_box() {
     let _serial = serial();
     let fx = needle_fixture("escape-box-app");
@@ -15120,7 +15083,7 @@ fn app_shell_escape_leaves_the_search_box() {
 /// public repository does not have (ATTRIBUTION.md; the owner kept it so in #s210). In both themes
 /// each mark is drawn, is its own button's hit target, and stands off the ground it sits on.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_the_rail_wears_each_agent_s_mark() {
     let _serial = serial();
     let base = base("agent-marks-app");
@@ -15208,7 +15171,7 @@ fn app_shell_the_rail_wears_each_agent_s_mark() {
 /// is expanded. Every flyout sits inside the window and answers its own hit test, at a narrow
 /// window too.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
     let _serial = serial();
     let base = base("rail-flyouts-app");
@@ -15445,7 +15408,7 @@ fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
 /// below it"), and a chip and the filter popover mirror each other. Every drop-down sits inside the
 /// window and answers its own hit test.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_facets_are_typed_from_a_drop_down_and_frozen_into_chips() {
     let _serial = serial();
     let fx = needle_fixture("facet-chips-app");
@@ -15675,7 +15638,7 @@ fn app_shell_facets_are_typed_from_a_drop_down_and_frozen_into_chips() {
 /// characters — `~/.`, `./`, `/` — are drawn at the far end. Every target that starts with one is
 /// affected; the drawn order must be the text's order, first character leftmost.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_head_target_reads_in_its_own_order() {
     let _serial = serial();
     let base = base("head-bidi-app");
@@ -15843,7 +15806,7 @@ fn classic_page_enter_searches_and_lands_on_the_nearest_hit() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_enter_searches_and_lands_on_the_nearest_hit() {
     let _serial = serial();
     let fx = enter_fixture("enter-lands-app");
@@ -15933,7 +15896,7 @@ fn classic_page_an_artifact_created_from_a_type_is_a_link() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_an_artifact_created_from_a_type_is_a_link() {
     let _serial = serial();
     let fx = type_publish_fixture("type-publish-app");
@@ -16018,7 +15981,7 @@ fn job_tmp_fixture(name: &str, sid: &str) -> (Fixture, String, String) {
 }
 
 /// #291 — a file in the session's OWN job workspace (`~/.claude/jobs/<sid[..8]>/tmp`) opens in the
-/// page, on BOTH pages; one in another session's job tmp does not. (That the eight characters are
+/// page; one in another session's job tmp does not. (That the eight characters are
 /// checked against the job's `state.json`, and not taken as an identity, is the unit test's claim:
 /// two states cannot share one directory name here.)
 ///
@@ -16026,99 +15989,73 @@ fn job_tmp_fixture(name: &str, sid: &str) -> (Fixture, String, String) {
 /// agent had been using `tmp/` as a workspace for days, and 749 of its lines named paths there —
 /// none of which could render, because `/file` only serves what a hosted session EXPLAINS (#283)
 /// and a job tmp was not among those places. It is now, on one condition: the job's `state.json`
-/// must NAME this session, since eight characters are a prefix and not an identity.
+/// must NAME this session, since eight characters are a prefix and not an identity. The app shell
+/// only: the classic leg came from v2's splice and went with it (#s98).
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn both_shells_open_a_file_from_the_session_s_job_workspace() {
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_opens_a_file_from_the_session_s_job_workspace() {
     let _serial = serial();
     let sid = "b0bb9596-4060-4a9b-9834-a2bc736d2f6c";
-    for (surface, port) in [(Surface::Classic, 3038), (Surface::AppShell, 3040)] {
-        let (fx, mine, theirs) = job_tmp_fixture(
-            match surface {
-                Surface::Classic => "jobtmp-classic",
-                _ => "jobtmp-app",
-            },
-            sid,
-        );
-        let (_browser, tab) = harness::chrome_tab();
-        let stores = Stores {
-            root: fx.base.join("stores"),
-        };
-        let monitor = Monitor::spawn(monitor_kind(surface), port, &fx.base, Some(&stores), true);
-        monitor.pair(&tab);
-        let (ui, ready) = match surface {
-            Surface::Classic => ("classic", "document.querySelectorAll('#stream .blk').length >= 3"),
-            _ => ("app", "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3"),
-        };
-        monitor.open(
-            &tab,
-            &format!("?ui={ui}&session={}&mountall=1", sid_of(&fx)),
-        );
-        harness::until(
-            &tab,
-            ready,
-            "the page to render the fixture",
-            Duration::from_secs(30),
-            "document.body.innerText.slice(0, 200)",
-        );
-        settle();
-        // Record every reveal, never send one: `open -R` must not run on this machine.
+    let (fx, mine, theirs) = job_tmp_fixture("jobtmp-app", sid);
+    let (_browser, tab) = harness::chrome_tab();
+    let stores = Stores {
+        root: fx.base.join("stores"),
+    };
+    let monitor = Monitor::spawn(Kind::V1, 3040, &fx.base, Some(&stores), true);
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={}&mountall=1", sid_of(&fx)));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 3",
+        "the page to render the fixture",
+        Duration::from_secs(30),
+        "document.body.innerText.slice(0, 200)",
+    );
+    settle();
+    // Record every reveal, never send one: `open -R` must not run on this machine.
+    eval(
+        &tab,
+        "window.__reveals = []; var real = window.fetch; window.fetch = function (u, o) { var s = String(u); if (/__reveal\\?/.test(s)) { window.__reveals.push(s); return Promise.resolve(new Response('', {status: 200})); } return real(u, o); }; 'ok'",
+    );
+    // #s13: a text file opens in mdrev's source view (itself a `pre`), not the plain one.
+    let shown = "#previewBody .mdrev-host .source-view";
+    let click = |p: &str| {
+        let sel = format!("[data-reference-path={p:?}]");
         eval(
             &tab,
-            "window.__reveals = []; var real = window.fetch; window.fetch = function (u, o) { var s = String(u); if (/__reveal\\?/.test(s)) { window.__reveals.push(s); return Promise.resolve(new Response('', {status: 200})); } return real(u, o); }; 'ok'",
+            &format!("document.querySelector({sel:?}).click(); 'ok'"),
         );
-        let (link, shown) = match surface {
-            Surface::Classic => (".tool-path[data-path={p}]", ".lightbox pre.lb-text"),
-            // #s13: a text file opens in mdrev's source view (itself a `pre`), not the plain one.
-            Surface::AppShell => (
-                "[data-reference-path={p}]",
-                "#previewBody .mdrev-host .source-view",
-            ),
-        };
-        let click = |p: &str| {
-            let sel = link.replace("{p}", &format!("{p:?}"));
-            eval(
-                &tab,
-                &format!("document.querySelector({sel:?}).click(); 'ok'"),
-            );
-        };
-        click(&mine);
-        until(
+    };
+    click(&mine);
+    until(
+        &tab,
+        &format!(
+            "[...document.querySelectorAll({shown:?})].some(function (e) {{ return e.textContent.indexOf(\"the job's own workspace\") >= 0; }})"
+        ),
+        "the session's own job workspace, shown in the page",
+        Duration::from_secs(10),
+        "JSON.stringify({ reveals: window.__reveals, shown: [...document.querySelectorAll('pre')].map(function (e) { return e.className + ':' + e.textContent.slice(0, 40); }).slice(-4) })",
+    );
+    click(&theirs);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody [data-preview-reveal]')",
+        "another job's workspace refused",
+        Duration::from_secs(10),
+        "JSON.stringify({ reveals: window.__reveals, pane: (document.getElementById('previewBody') || {}).className })",
+    );
+    assert_eq!(
+        eval(
             &tab,
             &format!(
-                "[...document.querySelectorAll({shown:?})].some(function (e) {{ return e.textContent.indexOf(\"the job's own workspace\") >= 0; }})"
-            ),
-            "the session's own job workspace, shown in the page",
-            Duration::from_secs(10),
-            "JSON.stringify({ reveals: window.__reveals, shown: [...document.querySelectorAll('pre')].map(function (e) { return e.className + ':' + e.textContent.slice(0, 40); }).slice(-4) })",
-        );
-        click(&theirs);
-        let refused = match surface {
-            Surface::Classic => {
-                "(window.__reveals || []).some(function (u) { return u.indexOf('theirs.txt') >= 0; })"
-            }
-            Surface::AppShell => "!!document.querySelector('#previewBody [data-preview-reveal]')",
-        };
-        until(
-            &tab,
-            refused,
-            "another job's workspace refused",
-            Duration::from_secs(10),
-            "JSON.stringify({ reveals: window.__reveals, pane: (document.getElementById('previewBody') || {}).className })",
-        );
-        assert_eq!(
-            eval(
-                &tab,
-                &format!(
-                    "[...document.querySelectorAll({shown:?})].some(function (e) {{ return e.textContent.indexOf(\"another job's workspace\") >= 0; }})"
-                )
+                "[...document.querySelectorAll({shown:?})].some(function (e) {{ return e.textContent.indexOf(\"another job's workspace\") >= 0; }})"
             )
-            .as_bool(),
-            Some(false),
-            "{surface:?}: a session explains its OWN job workspace and no other's"
-        );
-        drop(monitor);
-    }
+        )
+        .as_bool(),
+        Some(false),
+        "a session explains its OWN job workspace and no other's"
+    );
+    drop(monitor);
 }
 
 // ── scenario: MCP calls are one expandable family in the filter, with counts (#293, #120) ────
@@ -16275,7 +16212,7 @@ fn classic_page_mcp_calls_are_one_family_in_the_filter() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_mcp_calls_are_one_family_in_the_filter() {
     let _serial = serial();
     let fx = mcp_fixture("scenario-mcp-app");
@@ -16289,7 +16226,7 @@ fn app_shell_mcp_calls_are_one_family_in_the_filter() {
 /// carries BOTH its twisty and its tick, because expanding and selecting are different acts; the
 /// twisty expands without selecting, and a ticked row's tick is painted as a ticked scope row's is.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_tool_rows_select_with_the_scope_rows_tick() {
     let _serial = serial();
     let fx = mcp_fixture("tool-ticks-app");
@@ -16393,7 +16330,7 @@ fn mcp_fixture(name: &str) -> Fixture {
 /// DIMMED, with choosing it clearing that filter (the reader picked the row, so the clearing is
 /// their own act). `project:` narrows. The app shell only: the classic rail has no such dialog.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_command_k_is_a_jump_to_ranked_by_recency() {
     let _serial = serial();
     let base = base("jumpto-app");
@@ -16677,7 +16614,7 @@ fn hook_context_fixture(name: &str) -> Fixture {
 /// word for word. The SessionStart shape comes BEFORE the first prompt, so the case also holds the
 /// numbering: the first prompt is still turn 1 and the session still counts three turns.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_a_hook_that_added_context_is_named_and_turns_keep_their_numbers() {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
@@ -16793,7 +16730,7 @@ fn hook_after_tool_fixture(name: &str) -> Fixture {
 /// #s92: what a hook put in the model's context after a tool call is named after that call's card,
 /// and the turns keep their numbers. The sibling of #371's case, on both pages.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_a_hook_that_added_context_after_a_tool_is_named_after_it() {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
@@ -16884,7 +16821,7 @@ fn framed_agent_fixture(name: &str) -> Fixture {
 /// the report indented two spaces. The Agent card drew that text, so it opened on the client's
 /// boilerplate. It shows the report now, its heading still a heading.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_a_sub_agent_report_is_drawn_without_its_frame() {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
@@ -16973,7 +16910,7 @@ fn diagnostics_fixture(name: &str) -> Fixture {
 /// unknown review: `diagnostics` (client 2.1.288) drew nothing, so the reply that fixed the code
 /// read as if out of nowhere. Never the reminder the record carries for the model.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_diagnostics_after_a_tool_call_are_a_note() {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
@@ -17051,7 +16988,7 @@ fn qwenwork_tool_heads_fixture(name: &str) -> Fixture {
 /// `exit 1` with failure presentation. Found by the daily unknown review: the client records
 /// `exitCode`, which the page dropped, so a failed command read as a successful one.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_qwenwork_tool_heads_carry_their_exit_code() {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
@@ -17155,7 +17092,7 @@ fn not_returned_thinking_fixture(name: &str) -> Fixture {
 /// sessions ask for) is drawn as "[thinking not returned]" in its turn's work span on both pages,
 /// and opens no turn of its own. The page dropped it, so the turn showed no reasoning at all.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_a_thinking_block_not_returned_is_a_placeholder_in_the_work_span() {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
@@ -17260,7 +17197,7 @@ fn not_applied_edits_fixture(name: &str) -> Fixture {
 /// no diff (the change never happened), a REJECTED one says the reader rejected it above the diff
 /// they refused. Neither claims `Added N lines`, which both used to.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_an_edit_that_changed_nothing_says_why() {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
@@ -17434,7 +17371,7 @@ const S23_PROBE: &str = r#"(function () {
 /// loads; each diff is one tap away. On a phone the counts stay on screen: the state pill they
 /// used to share is hidden there.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_a_change_nests_in_its_run_and_the_run_carries_it() {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
@@ -17523,7 +17460,7 @@ fn scenario_a_change_nests_in_its_run_and_the_run_carries_it() {
 /// #s23, live: a change that lands in a run while the page is open JOINS that run — the run's
 /// line gains its counts, and no card of its own appears beside it.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_a_change_made_live_joins_its_run() {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
@@ -17618,7 +17555,7 @@ fn qwenwork_file_edit_fixture(name: &str) -> Fixture {
 /// line numbers, and the Write over a file was drawn as if the file were new, its whole text, so
 /// the reader could not see what changed.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_qwenwork_file_edit_draws_its_diff_with_real_line_numbers() {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
@@ -17717,7 +17654,7 @@ fn qwenwork_bash_exit_fixture(name: &str) -> Fixture {
 /// app shell's head module made any non-zero exit a failure whatever the class, so a fix on the
 /// server alone passes the classic page and still fails the app shell.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_qwenwork_bash_exit_the_client_calls_no_failure_is_not_drawn_failed() {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
@@ -17827,7 +17764,7 @@ fn todo_write_at(id: &str, todos: &[(&str, &str)], refused: bool, ts: &str) -> S
 /// corrected one, and a session that ends on a refusal kept it. The third list arrives LIVE, as an
 /// agent writes it.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_a_refused_todo_write_leaves_the_tasks_list_as_it_was() {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
@@ -18036,7 +17973,7 @@ fn classic_page_shows_another_sessions_message_as_its_own_turn() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_shows_another_sessions_message_as_its_own_turn() {
     let _serial = serial();
     let fx = peer_fixture("scenario-peer-app");
@@ -18123,7 +18060,7 @@ fn classic_page_shows_a_message_sent_on_its_card() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_shows_a_message_sent_on_its_card() {
     let _serial = serial();
     let fx = sent_fixture("scenario-sent-app");
@@ -18137,7 +18074,7 @@ fn app_shell_shows_a_message_sent_on_its_card() {
 /// Each target is narrowed to 90px so both overflow, then the side its text overflows is measured.
 /// The path is a Write's, which stands alone (a Read would join a collapsed activity run).
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_clips_a_prose_target_at_its_end_and_a_path_at_its_start() {
     let _serial = serial();
     let fx = sent_fixture("scenario-clip-app");
@@ -18278,7 +18215,7 @@ fn two_peers_fixture(name: &str) -> Fixture {
 /// different one for tern-AB's, and the same as the sender on the transcript's card — while the
 /// person's own turns carry no chip. The rows used to read like any prompt.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_turns_pane_marks_agent_turns_and_tells_senders_apart() {
     let _serial = serial();
     let fx = two_peers_fixture("scenario-two-peers-app");

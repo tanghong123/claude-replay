@@ -1,10 +1,9 @@
 //! The monitor's CONTROL PLANE — everything that acts on a session rather than reading one:
 //! the pairing token, the injection passcode, and the two send transports (#133).
 //!
-//! It lives in the library half of this crate, not in `main.rs`, because it is shared: a
-//! second monitor front-end (`agent-monitor-v2`) must run the SAME send decisions, the same
-//! consent model and the same token, and a security surface with two implementations has two
-//! behaviours. Nothing here is v1-specific — every function takes what it needs.
+//! It lives in the library half of this crate, not in `main.rs`: a security surface with two
+//! implementations has two behaviours, and `agent-monitor-v2` once ran these same decisions
+//! through it (retired, #s98). Every function takes what it needs, so the tests drive it directly.
 
 use crate::index;
 use anyhow::{Context, Result};

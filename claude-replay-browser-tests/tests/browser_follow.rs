@@ -894,114 +894,6 @@ fn a_workflow_fleet_renders_under_its_launching_block() {
     );
 }
 
-/// **Monitor v2's composition.** The rail is injected into the session document instead of
-/// wrapping it in an `<iframe>`, and lays itself out `position: fixed` — so the transcript keeps
-/// the DOCUMENT scroller, which is the entire reason this shape was chosen: every
-/// `window.scrollY` in `export.js` (follow, pin, jump-to-bottom, turn landing, search stepping)
-/// keeps working untouched. Only a real engine can say whether that is true, so this asserts the
-/// three things the composition could plausibly have broken: the rail does not scroll away, the
-/// document is what scrolls, and the view still lands pinned at the tail.
-#[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn the_v2_shell_keeps_the_document_scroller() {
-    let _serial = serial();
-    let base = base("v2shell");
-    let src = base.join("v2.jsonl");
-    {
-        let mut s = String::new();
-        for i in 0..40u32 {
-            s.push_str(&user(
-                &format!("question {i}: {}", "lorem ipsum ".repeat(8)),
-                i,
-            ));
-            s.push_str(&assistant(
-                &format!("answer {i}: {}", "dolor sit amet ".repeat(12)),
-                i,
-            ));
-        }
-        std::fs::write(&src, s).unwrap();
-    }
-    // v2 lists sessions from the real store, so point it at this fixture by deep link: the
-    // shell route registers an unknown id on demand. It needs the transcript inside a store
-    // it scans, so this test drives the id the server reports for the file it was given.
-    let stores = Stores::new(&base);
-    // A hermetic tall session: the assertion is about LAYOUT, not content.
-    let sid = "cccccccc-0000-4000-8000-000000000001".to_string();
-    stores.claude_session(&sid, &harness::long_session(40, harness::Shape::default()));
-    let monitor = Monitor::spawn(Kind::V2, 2831, &base, Some(&stores), true);
-    let (_browser, tab) = harness::chrome_tab();
-    monitor.pair(&tab);
-    // Any session the machine has will do — the assertion is about LAYOUT, not content.
-    let id = sid.clone();
-    // `?ui=classic` explicitly: the app shell is the default at `/` now, and the layout
-    // contract this test holds — one document scroller, a rail that does not scroll away, no
-    // iframe — belongs to the CLASSIC splice shell. Both shells are supported while the new one
-    // is being validated, so this assertion names the one it is about instead of riding the
-    // default and going quiet the moment the default moves (it has gone quiet twice before).
-    tab.navigate_to(&format!("http://127.0.0.1:2831/?ui=classic&session={id}"))
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
-    // A cold cache renders the whole session before there is anything to scroll — wait for
-    // the page to exceed the viewport rather than guessing at a sleep.
-    for _ in 0..80 {
-        let tall = tab
-            .evaluate(
-                "document.body.scrollHeight > window.innerHeight + 200",
-                true,
-            )
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if tall {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(250));
-    }
-
-    let probe = r#"(function () {
-      var rail = document.getElementById('v2rail');
-      var stream = document.getElementById('stream');
-      if (!rail || !stream) return JSON.stringify({ ok: false });
-      var before = rail.getBoundingClientRect().top;
-      window.scrollTo({ top: 400 });
-      var scrolled = window.scrollY;
-      var after = rail.getBoundingClientRect().top;
-      return JSON.stringify({
-        ok: true,
-        docScrolls: scrolled > 0,                       // the DOCUMENT is the scroller
-        railFixed: Math.abs(after - before) < 1,        // …and the rail does not move with it
-        streamOffset: stream.getBoundingClientRect().left >= rail.getBoundingClientRect().right - 1,
-        noFrame: document.querySelectorAll('iframe').length === 0,
-        // seam 0: the served classic page carries the inlined shared modules.
-        shared: typeof (window.__shared && window.__shared.groupSessions) === 'function'
-      });
-    })()"#;
-    let seen = tab
-        .evaluate(probe, true)
-        .ok()
-        .and_then(|r| r.value)
-        .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_default();
-    drop(monitor);
-    let v: serde_json::Value = serde_json::from_str(&seen).unwrap_or(serde_json::Value::Null);
-    assert_eq!(v["ok"], true, "the shell composed both panes: {seen}");
-    assert_eq!(v["docScrolls"], true, "the document scrolls: {seen}");
-    assert_eq!(
-        v["railFixed"], true,
-        "the rail stays put while it does: {seen}"
-    );
-    assert_eq!(
-        v["streamOffset"], true,
-        "the transcript clears the rail: {seen}"
-    );
-    assert_eq!(v["noFrame"], true, "no iframe anywhere: {seen}");
-    assert_eq!(
-        v["shared"], true,
-        "the inlined shared modules reach the served page: {seen}"
-    );
-}
-
 /// The app shell can hide a session and get it back (parity #1). The classic rail always
 /// could; the first app shell filtered `row.hidden` out with no control in either direction,
 /// which made hiding a one-way trap. This drives the real thing: the row action calls
@@ -1009,7 +901,7 @@ fn the_v2_shell_keeps_the_document_scroller() {
 /// appears, reveals it dimmed, and its restore action brings it back. Hide state lives in
 /// the scratch STATE dir, never the user's, so nothing on the machine is actually hidden.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_hides_and_restores_a_session() {
     let _serial = serial();
     let base = base("appshell-hide");
@@ -1142,7 +1034,7 @@ fn the_app_shell_hides_and_restores_a_session() {
 /// alone. Needs a parent with children in the real store; skips, with a diagnostic, when
 /// none of the first sessions has one.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_walks_a_child_back_to_its_parent() {
     let _serial = serial();
     let base = base("appshell-parent");
@@ -1267,7 +1159,7 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
 /// the position and it comes back following. Only a real engine can say this: the memory is
 /// the viewport's own DOM anchor, and the restore has to wait for that unit to stream in.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_restores_the_scroll_position_across_a_reload() {
     let _serial = serial();
     let base = base("appshell-scroll");
@@ -1349,7 +1241,7 @@ fn the_app_shell_restores_the_scroll_position_across_a_reload() {
 /// puts focus on a tool head — and none of it fires while typing in the search box. Only a
 /// real engine can say where a key-driven jump actually scrolled to.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_keys_step_turns_and_heads() {
     let _serial = serial();
     let base = base("appshell-keys");
@@ -1442,7 +1334,7 @@ fn the_app_shell_keys_step_turns_and_heads() {
 /// The other app-shell cases exercise hide/restore, child→parent, scroll memory and the keys;
 /// this one is the plain "it composes" assertion that was missing.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_composes_one_scroller_under_fixed_chrome() {
     let _serial = serial();
     let base = base("appshell-layout");
@@ -1546,8 +1438,8 @@ fn a_clicked_file_path_opens_its_content_in_the_page() {
 
     // A PAIRED server, stood up from the public API — `/file` is offered only to a client
     // holding the token (owner, 2026-08-27), so an unpaired `--html` server is the wrong
-    // subject: it would exercise the fallback, not the feature. This is the same composition
-    // `agent-monitor-v2` uses: one `SessionService`, `service_routes` for everything, and the
+    // subject: it would exercise the fallback, not the feature. This is the composition the
+    // monitor's own route table falls through to: one `SessionService`, `service_routes`, and the
     // gate carrying the token.
     let service = std::sync::Arc::new(
         claude_replay_html::SessionService::new(claude_replay_html::ServiceConfig {
@@ -1652,85 +1544,6 @@ fn a_clicked_file_path_opens_its_content_in_the_page() {
         |s| s["boxes"].as_i64().unwrap_or(1) == 0,
     );
     assert_eq!(gone["boxes"], 0, "closed");
-}
-
-/// Pairing is the MASTER SWITCH for v2's write capability (#133 §7.1), and the rail must say
-/// so with its affordances: unpaired, no row offers a compose button, because every write
-/// route 401s and offering one would offer a dead end; paired, the same rows grow one.
-///
-/// Worth a browser test rather than a unit test because the rule lives in three places that
-/// have to agree — the server's `{{PAIRED}}` substitution, the rail's `canCompose`, and the
-/// route's own `deny_write` — and only a real page exercises the first two together. The run
-/// is isolated by `AGENT_MONITOR_STATE`, so it neither reads nor writes the developer's own
-/// pairing token.
-#[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn the_compose_affordance_appears_only_once_paired() {
-    let _serial = serial();
-    let base = base("v2pair");
-    let stores = Stores::new(&base);
-    stores.claude_finished();
-    let browser = headless_chrome::Browser::new(
-        headless_chrome::LaunchOptions::default_builder()
-            .path(harness::browser_path())
-            .headless(true)
-            .build()
-            .unwrap(),
-    )
-    .expect("chrome launches");
-
-    // `paired` says whether to pass `--pair`; both runs share an isolated state dir, so the
-    // second one finds the token the first never minted.
-    let probe = |paired: bool, port: u16| -> (bool, i64) {
-        let m = Monitor::spawn(Kind::V2, port, &base, Some(&stores), paired);
-        let tab = browser.new_tab().unwrap();
-        let console = harness::tap_console(&tab);
-        m.pair(&tab);
-        // The affordance under test is the classic splice's: ask for it by name, since the
-        // app shell is what `/` serves by default.
-        m.open(&tab, "?ui=classic");
-        // Wait for the rows, not a fixed beat: the index scan and the first paint take longer
-        // on a loaded machine, and the affordance follows the rows by another round trip.
-        let rows_js = "document.querySelectorAll('.v2row').length";
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while std::time::Instant::now() < deadline
-            && harness::eval(&tab, rows_js).as_i64().unwrap_or(0) == 0
-        {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-        let buttons_js = "document.querySelectorAll('.v2send').length";
-        let settle_until =
-            std::time::Instant::now() + std::time::Duration::from_secs(if paired { 20 } else { 2 });
-        while std::time::Instant::now() < settle_until
-            && (harness::eval(&tab, buttons_js).as_i64().unwrap_or(0) > 0) != paired
-        {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-        let buttons = harness::eval(&tab, buttons_js).as_i64().unwrap_or(-1);
-        let rows = harness::eval(&tab, rows_js).as_i64().unwrap_or(0);
-        if rows == 0 {
-            let body = harness::eval(&tab, "location.href + ' | ' + document.title + ' | ' + document.body.innerText.replace(/\\s+/g, ' ').slice(0, 300)");
-            eprintln!(
-                "no rows on port {port}: {body} console: {:?}",
-                console.lock().unwrap()
-            );
-        }
-        let _ = tab.close(true);
-        drop(m);
-        (rows > 0, buttons)
-    };
-
-    let (had_rows, unpaired_buttons) = probe(false, 2841);
-    assert!(had_rows, "the fixture session is listed");
-    assert_eq!(
-        unpaired_buttons, 0,
-        "unpaired: every write route 401s, so no row offers to send"
-    );
-    let (_, paired_buttons) = probe(true, 2842);
-    assert!(
-        paired_buttons > 0,
-        "paired: the sessions that can be resumed or injected offer it ({paired_buttons})"
-    );
 }
 
 /// The "Artifacts ▾" roster groups REPUBLISHES back into artifacts.
@@ -1862,12 +1675,12 @@ fn the_artifact_roster_groups_republishes_by_url() {
 }
 
 /// #373: a session started in another session's scratch — knack's `claude -p` in a worktree under
-/// its scratchpad — is listed in that session's PROJECT group on both pages (the owner: "group them
+/// its scratchpad — is listed in that session's PROJECT group (the owner: "group them
 /// under knack"), never as a group named after the worktree. Red on 1.344.0, where the worktree's
 /// leaf (`wt-1`) was a project of its own.
 #[test]
 #[ignore]
-fn both_shells_list_a_session_started_in_another_s_scratch_under_its_project() {
+fn app_shell_lists_a_session_started_in_another_s_scratch_under_its_project() {
     let _serial = serial();
     let base = base("scratch-child");
     let stores = Stores::new(&base);
@@ -1923,278 +1736,6 @@ fn both_shells_list_a_session_started_in_another_s_scratch_under_its_project() {
             .any(|h| h.as_str().unwrap_or("").starts_with("wt-")),
         "app shell: no project is named after the worktree: {app}"
     );
-
-    // The classic rail: a row sits inside its group.
-    tab.navigate_to("http://127.0.0.1:2960/?ui=classic")
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
-    harness::until(
-        &tab,
-        &format!("!!document.querySelector('.row[data-id=\"{child}\"]')"),
-        "the classic rail's rows",
-        Duration::from_secs(30),
-        "[...document.querySelectorAll('.glabel')].map(function(g){return g.textContent;}).join(' | ')",
-    );
-    let rail = probe(&format!(
-        "(function(){{ var labels=[...document.querySelectorAll('.group .glabel')].map(function(g){{return g.textContent.trim();}}); var g=document.querySelector('.row[data-id=\"{child}\"]').closest('.group'); return {{labels: labels, childUnder: g ? g.querySelector('.glabel').textContent.trim() : null}}; }})()"
-    ));
-    assert_eq!(
-        rail["childUnder"], "knack",
-        "classic rail: the worktree session sits in its parent's group: {rail}"
-    );
-    assert!(
-        !rail["labels"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|h| h.as_str().unwrap_or("").starts_with("wt-")),
-        "classic rail: no group is named after the worktree: {rail}"
-    );
-}
-
-/// #s97: for one release the classic rail says it is going, and its control is the App switch:
-/// following it is REMEMBERED, so the bare monitor URL then serves the app shell. The classic
-/// view retires (design/classic-view-deprecation.md); this case goes with it in stage 3.
-#[test]
-#[ignore = "needs a local Chrome and a built agent-monitor"]
-fn the_classic_rail_says_it_is_going_and_its_notice_switches_to_the_app() {
-    let _serial = serial();
-    let base = base("rail-deprecation");
-    let stores = Stores::new(&base);
-    stores.claude_session(
-        "dddddddd-0000-4000-8000-0000000000a7",
-        &harness::user_at("hello", &harness::at("09:00")),
-    );
-    let monitor = Monitor::spawn(Kind::V1, 3090, &base, Some(&stores), true);
-    let (_browser, tab) = harness::chrome_tab();
-    monitor.pair(&tab);
-    monitor.open(&tab, "?ui=classic");
-    harness::until(
-        &tab,
-        "!!document.getElementById('deprecation')",
-        "the classic rail with its notice",
-        Duration::from_secs(20),
-        "document.body.innerText.slice(0, 300)",
-    );
-    let notice = harness::probe(
-        &tab,
-        "(function(){ var n = document.getElementById('deprecation'), r = n.getBoundingClientRect(); return { text: n.innerText, shown: r.height > 0 && r.width > 0, button: !!n.querySelector('button') }; })()",
-    );
-    assert!(
-        notice["shown"] == true
-            && notice["button"] == true
-            && notice["text"]
-                .as_str()
-                .unwrap_or("")
-                .contains("goes in the next release")
-            && notice["text"].as_str().unwrap_or("").contains("/session"),
-        "the rail says the classic view and /session are going, with a way across: {notice}"
-    );
-    harness::eval(
-        &tab,
-        "document.getElementById('deprecation-app').click(); 'ok'",
-    );
-    harness::until(
-        &tab,
-        "!!document.querySelector('#app') && !document.getElementById('deprecation')",
-        "the app shell after following the notice",
-        Duration::from_secs(20),
-        "location.href + ' ' + document.body.innerText.slice(0, 200)",
-    );
-    // Remembered, not a one-request override: the bare URL now serves the app shell.
-    monitor.open(&tab, "");
-    harness::until(
-        &tab,
-        "!!document.querySelector('#app') && !document.getElementById('deprecation')",
-        "the bare URL to serve the app shell, remembered",
-        Duration::from_secs(20),
-        "document.body.innerText.slice(0, 200)",
-    );
-}
-
-/// The classic rail (v1 `agent-monitor`, `?ui=classic`) on the hermetic family store: rows
-/// render, the fork family clusters into ONE row whose ⑂ chip opens the fork, and hide /
-/// restore round-trip through `/api/ignore` — the server's `hidden` flag flips, the rail's
-/// "Hidden (n)" toggle reveals the row, and restoring puts the family back. The first rail
-/// case (#43): the baseline the shared-module change is measured against.
-#[test]
-#[ignore]
-fn the_classic_rail_clusters_a_family_and_hides_and_restores_a_row() {
-    let _serial = serial();
-    let base = base("rail-family");
-    let stores = Stores::new(&base);
-    let (root_id, fork_id) = stores.qoderwork_family();
-    let monitor = Monitor::spawn(Kind::V1, 2837, &base, Some(&stores), true);
-    let (_browser, tab) = harness::chrome_tab();
-    let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
-        tab.evaluate(js, true)
-            .ok()
-            .and_then(|r| r.value)
-            .unwrap_or(serde_json::Value::Null)
-    };
-    // Poll a predicate: the rail re-renders on its own 2.5 s poll and right after an ignore.
-    let until = |tab: &headless_chrome::Tab, js: &str, what: &str| {
-        for _ in 0..40 {
-            if eval(tab, js).as_bool() == Some(true) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-        let rows = eval(tab, "[...document.querySelectorAll('.row')].map(r => r.dataset.id + ':' + r.className).join(' | ')");
-        panic!("timed out waiting for {what}; rows: {rows}");
-    };
-    // An OBJECT result comes back by value only as JSON text, so probes stringify it.
-    let probe = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
-        serde_json::from_str(
-            eval(tab, &format!("JSON.stringify({js})"))
-                .as_str()
-                .unwrap_or("null"),
-        )
-        .unwrap_or(serde_json::Value::Null)
-    };
-    let row = |id: &str| format!(".row[data-id=\"{id}\"]");
-    // The server's word on a row, fetched from the page so the rail's own state is untouched.
-    let server_hidden = |tab: &headless_chrome::Tab, id: &str| -> Option<bool> {
-        let js = format!("(async () => {{ const j = await (await fetch('/api/sessions', {{cache: 'no-store'}})).json(); for (const g of j.groups || []) for (const r of g.rows || []) if (r.id === {id:?}) return !!r.hidden; return null; }})()");
-        eval(tab, &js).as_bool()
-    };
-
-    monitor.pair(&tab);
-    tab.navigate_to("http://127.0.0.1:2837/?ui=classic")
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
-
-    // 1. Rows render, and the two sessions are ONE family row: the root represents it, the
-    //    ⑂ chip counts the fork, and no fork row is open yet.
-    until(
-        &tab,
-        "document.querySelectorAll('.row[data-id]').length >= 1",
-        "the rail's first render",
-    );
-    let first = probe(&tab, "(function(){ var rows=[...document.querySelectorAll('.row')]; var chip=document.querySelector('.row button.forks'); return {rows: rows.length, rep: rows[0] && rows[0].dataset.id, chip: chip ? chip.textContent.trim() : null, forkrows: document.querySelectorAll('.row.forkrow').length}; })()");
-    assert_eq!(first["rows"], 1, "one row for the family: {first}");
-    assert_eq!(
-        first["rep"], root_id,
-        "the root represents the family: {first}"
-    );
-    assert_eq!(first["chip"], "⑂ 1", "the chip counts one fork: {first}");
-    assert_eq!(first["forkrows"], 0, "no fork row open: {first}");
-
-    // 1b. Seam (f) (#44): the rail's tooltip opens with the same state label the app shell's
-    //     info pane shows for the same row — one table, both shells, one server.
-    let tip = eval(
-        &tab,
-        &format!(
-            "(document.querySelector('{}') || {{}}).title || ''",
-            row(root_id)
-        ),
-    );
-    let tip = tip.as_str().unwrap_or("").to_string();
-    tab.navigate_to(&format!("http://127.0.0.1:2837/?ui=app&session={root_id}"))
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
-    until(&tab, "!!document.getElementById('statusChip') && !!document.getElementById('statusChip').textContent.trim()", "the app shell's status chip");
-    // The chip carries a dot and, when the state was derived rather than stated, a "· inferred"
-    // suffix. The LABEL is the part the rail's tooltip is supposed to agree with.
-    let status = eval(
-        &tab,
-        "document.getElementById('statusChip').textContent.split('·')[0].trim()",
-    );
-    let status = status.as_str().unwrap_or("").to_string();
-    assert!(
-        !status.is_empty() && tip.starts_with(&format!("{status} — ")),
-        "one state table: rail tooltip {tip:?} vs app-shell status {status:?}"
-    );
-    tab.navigate_to("http://127.0.0.1:2837/?ui=classic")
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
-    until(
-        &tab,
-        "document.querySelectorAll('.row[data-id]').length >= 1",
-        "the rail again",
-    );
-
-    // 2. The chip opens the family: the fork appears as an indented member row.
-    eval(
-        &tab,
-        "document.querySelector('.row button.forks').click(); 'ok'",
-    );
-    until(
-        &tab,
-        "document.querySelectorAll('.row.forkrow').length === 1",
-        "the fork row to open",
-    );
-    let open = probe(&tab, "(function(){ var f=document.querySelector('.row.forkrow'); return {id: f && f.dataset.id, rows: document.querySelectorAll('.row').length}; })()");
-    assert_eq!(open["id"], fork_id, "the member row is the fork: {open}");
-    assert_eq!(open["rows"], 2, "root + fork: {open}");
-
-    // 3. Hide the root: the server records it (/api/ignore), the row leaves the list, and the
-    //    fork — the family's only visible member — now represents it, without a chip.
-    eval(
-        &tab,
-        &format!(
-            "document.querySelector('{} button.rowx[data-hide]').click(); 'ok'",
-            row(root_id)
-        ),
-    );
-    until(
-        &tab,
-        &format!(
-            "!document.querySelector('{}') && !!document.querySelector('{}')",
-            row(root_id),
-            row(fork_id)
-        ),
-        "the root to hide and the fork to represent",
-    );
-    assert_eq!(
-        server_hidden(&tab, root_id),
-        Some(true),
-        "the server hid the root"
-    );
-    assert_eq!(
-        eval(
-            &tab,
-            "document.querySelectorAll('.row button.forks').length"
-        ),
-        0,
-        "a family of one visible member has no chip"
-    );
-    let toggle = probe(&tab, "(function(){ var t=document.getElementById('hiddentoggle'); return {shown: getComputedStyle(t).display !== 'none', text: t.textContent.trim()}; })()");
-    assert_eq!(
-        toggle["shown"], true,
-        "the reveal toggle appears once something is hidden: {toggle}"
-    );
-    assert_eq!(toggle["text"], "Hidden (1)", "{toggle}");
-
-    // 4. Reveal: the hidden root comes back dimmed, with a restore control.
-    eval(
-        &tab,
-        "document.getElementById('hiddentoggle').click(); 'ok'",
-    );
-    until(
-        &tab,
-        &format!(
-            "!!document.querySelector('{}.hidden button.rowx[data-show]')",
-            row(root_id)
-        ),
-        "the hidden root to show with a restore control",
-    );
-
-    // 5. Restore: the server forgets the key, the root is plain again and represents the family.
-    eval(
-        &tab,
-        &format!(
-            "document.querySelector('{} button.rowx[data-show]').click(); 'ok'",
-            row(root_id)
-        ),
-    );
-    until(&tab, &format!("(function(){{ var r=document.querySelector('{}'); return !!r && !r.classList.contains('hidden') && !!r.querySelector('button.forks'); }})()", row(root_id)), "the root to be restored with its chip");
-    assert_eq!(
-        server_hidden(&tab, root_id),
-        Some(false),
-        "the server restored the root"
-    );
-    drop(monitor);
 }
 
 /// The classic page after #45: `]` still steps to the next turn, `w` still toggles wrapping —
@@ -2311,217 +1852,11 @@ fn the_classic_page_keys_resolve_through_the_shared_table() {
     drop(server);
 }
 
-/// The classic rail's compose bar after #48: paired, a finished Claude session offers ✎; the
-/// bar opens with the shared protocol's words ("Send to: …", "Send prompt"), and a send runs
-/// the shared flow — against a stubbed /api/send, so nothing is resumed — and reports the
-/// shared outcome ("sent — the session is resuming").
-#[test]
-#[ignore]
-fn the_classic_rail_composes_through_the_shared_protocol() {
-    let _serial = serial();
-    let base = base("rail-compose");
-    let stores = Stores::new(&base);
-    let sid = stores.claude_finished();
-    let monitor = Monitor::spawn(Kind::V1, 2838, &base, Some(&stores), true);
-    let (_browser, tab) = harness::chrome_tab();
-    let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
-        tab.evaluate(js, true)
-            .ok()
-            .and_then(|r| r.value)
-            .unwrap_or(serde_json::Value::Null)
-    };
-    let until = |tab: &headless_chrome::Tab, js: &str, what: &str| {
-        for _ in 0..40 {
-            if eval(tab, js).as_bool() == Some(true) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-        let seen = eval(tab, "(document.getElementById('composemsg') || {}).textContent + ' | ' + [...document.querySelectorAll('.row')].map(r => r.dataset.id + ':' + r.innerHTML.length).join(' ')");
-        panic!("timed out waiting for {what}; seen: {seen}");
-    };
-    monitor.pair(&tab);
-    tab.navigate_to("http://127.0.0.1:2838/?ui=classic")
-        .unwrap();
-    tab.wait_until_navigated().unwrap();
-    let row = format!(".row[data-id=\"{sid}\"]");
-    until(
-        &tab,
-        &format!("!!document.querySelector('{row} button.rowsend[data-compose]')"),
-        "the finished session's ✎ (paired, resumable)",
-    );
-    // No real send: /api/send is answered in the page, so the flow's outcome is what is measured.
-    eval(&tab, "window.__sent = []; const orig = window.fetch.bind(window); window.fetch = (u, o) => { const url = String(u); if (url.startsWith('/api/send')) { window.__sent.push([url, o && o.body]); return Promise.resolve(new Response('{\"ok\":true}', { status: 200, headers: { 'Content-Type': 'application/json' } })); } return orig(u, o); }; 'ok'");
-    eval(
-        &tab,
-        &format!("document.querySelector('{row} button.rowsend').click(); 'ok'"),
-    );
-    until(
-        &tab,
-        "!document.getElementById('composebar').hidden",
-        "the compose bar to open",
-    );
-    let words = eval(&tab, "JSON.stringify({to: document.getElementById('composeto').textContent, button: document.getElementById('composesend').textContent, notice: document.getElementById('composemsg').textContent, placeholder: document.getElementById('composetext').placeholder})");
-    let words: serde_json::Value =
-        serde_json::from_str(words.as_str().unwrap_or("null")).unwrap_or_default();
-    assert!(
-        words["to"].as_str().unwrap_or("").starts_with("Send to: "),
-        "the shared words: {words}"
-    );
-    assert_eq!(words["button"], "Send prompt", "{words}");
-    assert_eq!(
-        words["notice"], "",
-        "a resume carries no consent notice: {words}"
-    );
-    assert!(
-        words["placeholder"]
-            .as_str()
-            .unwrap_or("")
-            .contains("resumes"),
-        "{words}"
-    );
-    eval(&tab, "document.getElementById('composetext').value = 'carry on'; document.getElementById('composesend').click(); 'ok'");
-    until(
-        &tab,
-        "document.getElementById('composemsg').textContent === 'sent — the session is resuming'",
-        "the shared outcome",
-    );
-    let sent = eval(&tab, "JSON.stringify(window.__sent)");
-    assert_eq!(
-        sent.as_str().unwrap_or(""),
-        format!("[[\"/api/send?target={sid}\",\"carry on\"]]"),
-        "one send, the shared query, the prompt as the body"
-    );
-    drop(monitor);
-}
-
-/// #66: the classic page's file preview (the lightbox) offers "Reveal in file manager" in its
-/// caption; the request it sends must carry the path's reveal STAMP, or the server refuses it
-/// by design. `fetch` is stubbed in the page: `file?` answers with text so the preview opens
-/// without touching the disk, `__reveal` records what was asked and answers ok, and everything
-/// else (the feed) passes through.
-#[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn the_classic_lightbox_reveal_carries_the_stamp() {
-    let _serial = serial();
-    let base = base("classic-lightbox-reveal");
-    let stores = Stores::new(&base);
-    let note = base.join("note.txt");
-    std::fs::write(&note, "a note the page may preview\n").unwrap();
-    let note_s = note.to_string_lossy().to_string();
-    let sid = "cccccccc-0000-4000-8000-000000000066";
-    let mut jsonl = String::new();
-    jsonl.push_str(&harness::user_at(
-        "question 0: read the note",
-        &harness::now_minus(60),
-    ));
-    jsonl.push_str(&harness::read_tool_at(
-        "t-read",
-        &note_s,
-        &harness::now_minus(55),
-    ));
-    jsonl.push_str(&harness::tool_result_at("t-read", &harness::now_minus(50)));
-    jsonl.push_str(&harness::assistant_at(
-        "answer 0: read it",
-        &harness::now_minus(45),
-    ));
-    stores.claude_session(sid, &jsonl);
-    let monitor = Monitor::spawn(Kind::V2, 2839, &base, Some(&stores), true);
-    let (_browser, tab) = harness::chrome_tab();
-    monitor.pair(&tab);
-    monitor.open(&tab, &format!("?ui=classic&session={sid}"));
-    harness::until(
-        &tab,
-        "!!document.querySelector('a.tool-path')",
-        "the offered path to render",
-        std::time::Duration::from_secs(30),
-        "document.body.innerText.slice(0, 200)",
-    );
-    let offered = harness::probe(&tab, "(function(){ var a = document.querySelector('a.tool-path'); return {path: a.dataset.path, sig: !!a.dataset.sig, fsig: !!a.dataset.fsig, artifacts: document.body.dataset.artifacts, title: a.title}; })()");
-    assert_eq!(
-        offered["sig"], true,
-        "the path was offered with a reveal stamp: {offered}"
-    );
-    assert_eq!(
-        offered["fsig"], true,
-        "…and a file stamp (default render policy): {offered}"
-    );
-    assert_eq!(
-        offered["artifacts"], "1",
-        "the served page offers artifacts: {offered}"
-    );
-    harness::eval(&tab, "window.__reqs = []; var real = window.fetch; window.fetch = function (u, o) { var s = String(u); window.__reqs.push(s); if (/^file\\?/.test(s)) return Promise.resolve(new Response('a note', {status: 200, headers: {'content-type': 'text/plain'}})); if (/__reveal\\?/.test(s)) return Promise.resolve(new Response('', {status: 200})); return real(u, o); }; 'ok'");
-    harness::eval(&tab, "document.querySelector('a.tool-path').click(); 'ok'");
-    harness::until(
-        &tab,
-        "!!document.querySelector('.lightbox .lb-act')",
-        "the preview to open",
-        std::time::Duration::from_secs(15),
-        "JSON.stringify(window.__reqs)",
-    );
-    harness::eval(
-        &tab,
-        "document.querySelector('.lightbox .lb-act').click(); 'ok'",
-    );
-    harness::until(
-        &tab,
-        "window.__reqs.some(function (s) { return /__reveal\\?/.test(s); })",
-        "the caption's reveal request",
-        std::time::Duration::from_secs(10),
-        "JSON.stringify(window.__reqs)",
-    );
-    let reveal = harness::eval(
-        &tab,
-        "window.__reqs.filter(function (s) { return /__reveal\\?/.test(s); }).pop()",
-    );
-    let reveal = reveal.as_str().unwrap_or("").to_string();
-    let sig = reveal.split("sig=").nth(1).unwrap_or("").to_string();
-    assert!(
-        !sig.is_empty(),
-        "the caption's reveal carries the path's stamp, got {reveal:?}"
-    );
-    assert!(
-        reveal.contains(&format!("path={}", urlencoding(&note_s))),
-        "…for the previewed path, got {reveal:?}"
-    );
-    harness::until(
-        &tab,
-        "document.querySelector('.lightbox .lb-act').textContent === 'revealed ✓'",
-        "the caption to report the outcome",
-        std::time::Duration::from_secs(5),
-        "document.querySelector('.lightbox .lb-act').textContent",
-    );
-    drop(monitor);
-}
-
-/// `encodeURIComponent` for a path, as the page writes it into a query.
-fn urlencoding(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'!'
-            | b'~'
-            | b'*'
-            | b'\''
-            | b'('
-            | b')' => out.push(b as char),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
 /// #54: the sidebar collapses into a 64px rail of icons — expand, write, search, attention and
 /// one button per agent — the layout stays one scroller under fixed chrome, the choice
 /// survives a reload, and the rail expands back by key and by click.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_collapses_the_sidebar_into_a_rail() {
     let _serial = serial();
     let base = base("appshell-rail");
@@ -2761,7 +2096,7 @@ fn the_app_shell_collapses_the_sidebar_into_a_rail() {
 /// holds it there is `classic_page_holds_through_growth_above_the_reader`, which had been red on
 /// this machine for the same reason and is green with the fix.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_holds_a_scroll_a_transaction_arrives_on_top_of() {
     let _serial = serial();
     let base = base("appshell-213-window");
@@ -2846,7 +2181,7 @@ fn the_app_shell_holds_a_scroll_a_transaction_arrives_on_top_of() {
 /// So the column may scroll only as far as there is CARD below the fold. With nothing below asking
 /// for room the push is spent, and the gap holds by construction rather than by luck.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_a_push_with_nothing_below_to_reveal_moves_nothing() {
     let _serial = serial();
     let base = base("appshell-214-push");
@@ -3026,7 +2361,7 @@ fn the_app_shell_a_push_with_nothing_below_to_reveal_moves_nothing() {
 /// to the outline drop down filter as it is not a frequent operation" — the panes menu, under the
 /// pane it belongs to.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_filters_a_pane_to_what_is_live_from_the_outline_menu() {
     let _serial = serial();
     let base = base("appshell-215-liveonly");
@@ -3240,7 +2575,7 @@ fn the_app_shell_filters_a_pane_to_what_is_live_from_the_outline_menu() {
 /// held here is the part every reader sees: the message is up while the session loads, it is not an
 /// error, and it goes when the records land.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_says_what_it_is_doing_while_a_session_loads() {
     let _serial = serial();
     let base = base("appshell-221-first-open");
@@ -3298,7 +2633,7 @@ const SNAP_212: &str = r#"(function(){ var s = document.querySelector('.transcri
 /// {position:sticky;width:56px}`), so the rail and its expand button are on screen at every
 /// width. Reading the CSS said the opposite; hit-testing said this.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_walks_the_outline_between_its_two_states() {
     let _serial = serial();
     let base = base("appshell-two-states");
@@ -3498,7 +2833,7 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
 /// #56: the tasks pane orders a session's tasks by group — completed, running, pending — and by
 /// id within a group, with a boundary between groups, whatever order the store filed them in.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_orders_tasks_by_group_then_id() {
     let _serial = serial();
     let base = base("appshell-task-order");
@@ -3574,7 +2909,7 @@ const PANE_PROBE: &str = r#"(function (listId) {
 /// chrome, stepping keeps the focused turn inside the pane's own viewport, and the window and
 /// the document never scroll.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_turns_pane_scrolls_itself() {
     let _serial = serial();
     let base = base("appshell-turns-scroller");
@@ -3638,7 +2973,7 @@ fn the_app_shell_turns_pane_scrolls_itself() {
 /// #59: with many tasks, the tasks pane scrolls itself; scrolling it moves neither the window nor
 /// the transcript.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_tasks_pane_scrolls_itself() {
     let _serial = serial();
     let base = base("appshell-tasks-scroller");
@@ -3714,7 +3049,7 @@ fn the_app_shell_tasks_pane_scrolls_itself() {
 /// #57: the tasks pane's control scrolls the pane so the running tasks sit at its center — and,
 /// with none running, the boundary between done and pending — without touching the transcript.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
     let _serial = serial();
     let base = base("appshell-task-center");
@@ -3979,7 +3314,7 @@ fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
 /// blocked-by — without moving the transcript; Escape closes it and focus returns to the row;
 /// the jump is an explicit action, disabled when the stream kept no target.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_opens_a_task_details_popover() {
     let _serial = serial();
     let base = base("appshell-task-popover");
@@ -4097,7 +3432,7 @@ fn the_app_shell_opens_a_task_details_popover() {
 /// transcript (the header names the child and its parent); the row's secondary control jumps
 /// to the spawn point in the parent instead.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_agents_pane_switches_to_the_sub_agent() {
     let _serial = serial();
     let base = base("appshell-agent-switch");
@@ -4166,7 +3501,7 @@ fn the_app_shell_agents_pane_switches_to_the_sub_agent() {
 /// a folded pane is its head alone, the panes stack top to bottom, and at a short window the
 /// column scrolls as a whole with the caption and the heads sticking in a stack under it.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_outline_panes_toggle_independently_and_stack() {
     let _serial = serial();
     let base = base("appshell-outline-panes");
@@ -4389,7 +3724,7 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
 /// too — it is anchored 45px below the top of the header and could as easily run off the
 /// bottom of a short window.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_options_popover_fits_and_scrolls() {
     let _serial = serial();
     let base = base("appshell-options-scroll");
@@ -4565,7 +3900,7 @@ fn the_app_shell_options_popover_fits_and_scrolls() {
 /// that existed in the DOM and answered `getBoundingClientRect` while being unclickable, which is
 /// exactly what a rect assertion cannot see.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_can_bring_a_collapsed_outline_back() {
     let _serial = serial();
     let base = base("appshell-outline-return");
@@ -4643,7 +3978,7 @@ fn the_app_shell_can_bring_a_collapsed_outline_back() {
 /// z-index, so no pane ever shows its body above its own head, and a pane opened while the
 /// column is scrolled lands its head AT that slot with the body directly below it.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_outline_is_an_accordion() {
     let _serial = serial();
     let base = base("appshell-outline-accordion");
@@ -4717,7 +4052,7 @@ fn the_app_shell_outline_is_an_accordion() {
 /// it survives switching to another session and a reload, because it is one key per viewer and
 /// not a property of the session being looked at.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_info_subsections_fold_and_the_choice_persists() {
     let _serial = serial();
     let base = base("appshell-info-folds");
@@ -4812,7 +4147,7 @@ fn the_app_shell_info_subsections_fold_and_the_choice_persists() {
 /// compaction summary — and none of the title / agent / project the header already shows; the
 /// turns pane shows the compaction as an epoch tick between the tenth and eleventh turns.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_info_and_turns_panes_show_the_compaction() {
     let _serial = serial();
     let base = base("appshell-compaction-panes");
@@ -4940,7 +4275,7 @@ fn the_app_shell_info_and_turns_panes_show_the_compaction() {
 /// #75: the theme toggle in the sidebar head is a visible button with a glyph, and it toggles
 /// the theme.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_theme_toggle_is_visible_and_works() {
     let _serial = serial();
     let base = base("appshell-theme-toggle");
@@ -5252,7 +4587,7 @@ fn prompt_screenshots(tab: &headless_chrome::Tab, prefix: &str, turns: &[&str]) 
 /// no count; scrolled up and reloaded, the remembered position comes back and still nothing is
 /// counted; eight records arriving afterwards are "8 new".
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_open_counts_nothing_as_new() {
     let _serial = serial();
     let base = base("appshell-open-count");
@@ -5350,7 +4685,7 @@ fn the_app_shell_open_counts_nothing_as_new() {
 /// #82: a child opened FIRST — a deep link, no parent pulled — still has its way back: the
 /// server names the root it found the child under, the control shows, and it lands on the parent.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_finds_the_parent_from_a_child_opened_first() {
     let _serial = serial();
     let base = base("appshell-child-first");
@@ -5400,7 +4735,7 @@ fn the_app_shell_finds_the_parent_from_a_child_opened_first() {
 /// #77: collapse-all folds every group of the session list; expand-all opens them again; the
 /// choice survives a reload.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_expands_every_group_again() {
     let _serial = serial();
     let base = base("appshell-expand-all");
@@ -5475,7 +4810,7 @@ fn the_app_shell_expands_every_group_again() {
 /// is clamped, remembered across a reload, and reset by a double-click. The head reflows with
 /// it: the controls that share a row with the brand only when there is room for them.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_resizes_the_session_list() {
     let _serial = serial();
     let base = base("appshell-sidebar-resize");
@@ -5496,7 +4831,7 @@ fn the_app_shell_resizes_the_session_list() {
         std::time::Duration::from_secs(30),
         "document.body.innerText.slice(0, 120)",
     );
-    let state = "(function(){ var side = document.querySelector('.sidebar'), head = document.querySelector('.side-head'); var handle = document.getElementById('sidebarResizer'); var hr = handle ? handle.getBoundingClientRect() : null; var sr = side.getBoundingClientRect(); var brand = head.querySelector('.brand').getBoundingClientRect(), acts = head.querySelector('.head-actions').getBoundingClientRect(); return { width: Math.round(sr.width), handle: hr ? [Math.round(hr.right - sr.right), Math.round(hr.width)] : null, sameRow: Math.abs(acts.top - brand.top) <= 10, actionsInside: acts.right <= sr.right + 0.5, brandClear: (function(){ var t = head.querySelector('.shell-toggle'); if (!t) return null; var tr = t.getBoundingClientRect(); return tr.top >= brand.bottom - 0.5 || tr.left >= brand.right - 0.5; })(), switchWhole: (function(){ var t = head.querySelector('.shell-toggle'); return t ? t.scrollWidth <= t.clientWidth + 1 : null; })(), switchClearOfTheme: (function(){ var t = head.querySelector('.shell-toggle'), th = document.getElementById('themeBtn'); if (!t || !th) return null; var a = t.getBoundingClientRect(), b = th.getBoundingClientRect(); return a.right <= b.left + 0.5 || b.right <= a.left + 0.5 || a.bottom <= b.top + 0.5 || b.bottom <= a.top + 0.5; })(), controls: [].slice.call(head.querySelector('.head-actions').children).map(function (e) { var b = e.getBoundingClientRect(); var mid = document.elementFromPoint(Math.round(b.left + b.width / 2), Math.round(b.top + b.height / 2)); return { id: e.id || '?', inside: b.left >= sr.left - 0.5 && b.right <= sr.right + 0.5, hit: mid === e || e.contains(mid) }; }), tight: document.getElementById('app').classList.contains('sidebar-tight'), stored: localStorage.getItem('am-sidebar-width'), role: handle ? handle.getAttribute('role') : '' }; })()";
+    let state = "(function(){ var side = document.querySelector('.sidebar'), head = document.querySelector('.side-head'); var handle = document.getElementById('sidebarResizer'); var hr = handle ? handle.getBoundingClientRect() : null; var sr = side.getBoundingClientRect(); var brand = head.querySelector('.brand').getBoundingClientRect(), acts = head.querySelector('.head-actions').getBoundingClientRect(); return { width: Math.round(sr.width), handle: hr ? [Math.round(hr.right - sr.right), Math.round(hr.width)] : null, sameRow: Math.abs(acts.top - brand.top) <= 10, actionsInside: acts.right <= sr.right + 0.5, controls: [].slice.call(head.querySelector('.head-actions').children).map(function (e) { var b = e.getBoundingClientRect(); var mid = document.elementFromPoint(Math.round(b.left + b.width / 2), Math.round(b.top + b.height / 2)); return { id: e.id || '?', inside: b.left >= sr.left - 0.5 && b.right <= sr.right + 0.5, hit: mid === e || e.contains(mid) }; }), tight: document.getElementById('app').classList.contains('sidebar-tight'), stored: localStorage.getItem('am-sidebar-width'), role: handle ? handle.getAttribute('role') : '' }; })()";
     let start = harness::probe(&tab, state);
     assert_eq!(
         start["width"], 300,
@@ -5510,9 +4845,8 @@ fn the_app_shell_resizes_the_session_list() {
         "the handle sits on the sidebar's right edge: {start}"
     );
     assert_eq!(start["role"], "separator", "…named for what it is: {start}");
-    // A drag widens it. The head reflows: at 300px its six controls (theme, collapse, expand,
-    // the session filter — #202 — and the sidebar collapse, beside the shell switch) take their
-    // own row, and with the room a wider list gives they come back up beside the brand.
+    // A drag widens it. The head reflows: at 300px its controls (theme, collapse, expand, the
+    // session filter — #202 — and the sidebar collapse) take their own row.
     assert_eq!(
         start["sameRow"], false,
         "at the default width the head's controls take their own row rather than overflow: {start}"
@@ -5521,21 +4855,6 @@ fn the_app_shell_resizes_the_session_list() {
         start["actionsInside"], true,
         "…and every one of them is inside the sidebar: {start}"
     );
-    // #223, the bug the owner photographed: the shell switch is a word, not a glyph, and it met
-    // the theme glyph. Measured three ways rather than eyeballed — the switch sits clear of the
-    // brand, it is not clipped, and it does not overlap the theme button.
-    let clear = |label: &str, v: &serde_json::Value| {
-        assert_eq!(
-            v["brandClear"], true,
-            "{label}: the shell switch is clear of the brand: {v}"
-        );
-        assert_eq!(v["switchWhole"], true, "…and not clipped: {v}");
-        assert_eq!(
-            v["switchClearOfTheme"], true,
-            "…and clear of the theme glyph: {v}"
-        );
-    };
-    clear("at the default width", &start);
     let drag = |x: i32| {
         format!("(function(){{ var r = document.getElementById('sidebarResizer'); var rect = r.getBoundingClientRect(); r.dispatchEvent(new PointerEvent('pointerdown', {{ clientX: rect.left + 3, clientY: 300, bubbles: true, pointerId: 1 }})); dispatchEvent(new PointerEvent('pointermove', {{ clientX: {x}, clientY: 300, bubbles: true, pointerId: 1 }})); dispatchEvent(new PointerEvent('pointerup', {{ clientX: {x}, clientY: 300, bubbles: true, pointerId: 1 }})); return 'ok'; }})()")
     };
@@ -5549,16 +4868,13 @@ fn the_app_shell_resizes_the_session_list() {
     );
     let wide = harness::probe(&tab, state);
     assert_eq!(wide["stored"], "480", "the width is the viewer's: {wide}");
-    clear("at 480px", &wide);
     // #223, a stated reversal of what this line used to assert. The controls used to come back up
-    // beside the brand once the sidebar was wide; they no longer do, at any width. The shell switch
-    // is a text label rather than a glyph, so sharing the brand's row put two words next to each
-    // other and they met — the owner photographed "Classic" clipping into the theme glyph. Two
-    // lines by construction is what they asked for, and it costs nothing a wide sidebar needs.
+    // beside the brand once the sidebar was wide; they no longer do, at any width: the owner
+    // photographed the shell switch (gone with the classic view, #s98) clipping into the theme
+    // glyph there, and asked for two lines by construction.
     assert_eq!(
         wide["sameRow"], false,
-        "the head is two lines at every width, so a wide sidebar does not put the shell switch \
-         beside the brand: {wide}"
+        "the head is two lines at every width: {wide}"
     );
     // Clamped at both ends — a drag off the left edge cannot leave a sliver, nor eat the page.
     harness::eval(&tab, &drag(60));
@@ -5570,12 +4886,11 @@ fn the_app_shell_resizes_the_session_list() {
         "Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)",
     );
     // #210, the owner's report: "we could shrink the width of the side bar and hide the collapse
-    // side bar button". The head's row is the shell switch and five glyphs, and #202's filter made
+    // side bar button". The head's row is five glyphs, and #202's filter made
     // it wider than the narrowest sidebar — so the last of them, the sidebar collapse, sat outside
     // it. At the minimum every control is inside the sidebar AND answers a click at its own centre
     // (the two are different questions: a control can be inside and covered).
     let tight = harness::probe(&tab, state);
-    clear("at the 232px minimum", &tight);
     assert_eq!(
         tight["width"], 232,
         "the drag clamped to the minimum: {tight}"
@@ -5585,10 +4900,7 @@ fn the_app_shell_resizes_the_session_list() {
         "…and the head is in its tight state there: {tight}"
     );
     let controls = tight["controls"].as_array().cloned().unwrap_or_default();
-    assert!(
-        controls.len() >= 6,
-        "the head carries the shell switch and five glyphs: {tight}"
-    );
+    assert!(controls.len() >= 5, "the head carries five glyphs: {tight}");
     for control in &controls {
         assert_eq!(
             control["inside"], true,
@@ -5657,7 +4969,7 @@ fn the_app_shell_resizes_the_session_list() {
 /// URL, the republish counted, in a new-tab link — with the count on the pane's button while
 /// the pane is hidden, and a jump that lands the transcript on the publishing record.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_lists_the_published_artifacts() {
     let _serial = serial();
     let base = base("appshell-artifacts");
@@ -5827,7 +5139,7 @@ fn the_app_shell_lists_the_published_artifacts() {
 /// scrolling back up retraces exactly, because openness is a pure function of the offset.
 /// (App-shell only: the classic page has no outline column, so there is no second surface here.)
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_outline_panes_are_drawers() {
     let _serial = serial();
     let base = base("appshell-drawers");
@@ -5983,7 +5295,7 @@ fn the_app_shell_outline_panes_are_drawers() {
 /// the slide was making; at either endpoint it opens or shuts that drawer alone, so shutting
 /// Session never shuts Turns.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_outline_toggle_completes_the_slide() {
     let _serial = serial();
     let base = base("appshell-drawer-toggle");
@@ -6148,7 +5460,7 @@ fn shell_with_a_session(
 /// `font:inherit` + `letter-spacing:inherit` + `text-transform:inherit` + `color:inherit`, which
 /// loads after reference.css at equal specificity and so replaced all four with the body type.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_info_pane_labels_stay_smaller_than_the_card_heads() {
     let _serial = serial();
     let (_monitor, _browser, tab) = shell_with_a_session("appshell-info-labels", 2878);
@@ -6190,7 +5502,7 @@ fn the_app_shell_info_pane_labels_stay_smaller_than_the_card_heads() {
 /// rule rather than from inline attributes. Measured against a real neighbour on the bar, since
 /// "consistent" is about what renders, not about what the markup says.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_reading_glyph_matches_its_neighbours() {
     let _serial = serial();
     let (_monitor, _browser, tab) = shell_with_a_session("appshell-reading-glyph", 2881);
@@ -6223,7 +5535,7 @@ fn the_app_shell_reading_glyph_matches_its_neighbours() {
 /// #160. The size control is a RELATIVE adjustment, so it must not print an absolute pixel
 /// count: that pins the reader to one base size and forecloses variable sizes later.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_size_control_reads_as_a_relative_step() {
     let _serial = serial();
     // #173 moved this control: the reading popover's "Code size" row is gone, and the step now
@@ -6294,7 +5606,7 @@ fn the_app_shell_size_control_reads_as_a_relative_step() {
 /// into a different kind of object. The classic page, the reference, has always drawn it as mono
 /// type on the turn's own surface.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_raw_user_text_keeps_the_turns_own_surface() {
     let _serial = serial();
     let (_monitor, _browser, tab) = shell_with_a_session("appshell-raw-surface", 2880);
@@ -6340,7 +5652,7 @@ fn the_app_shell_raw_user_text_keeps_the_turns_own_surface() {
 /// PAINTS — `aria-checked`, the `on` class, the box filled with the primary colour and a tick
 /// drawn — and unchecked it is a bare box; read as RESOLVED colours, not the class.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_include_hidden_reads_as_a_checked_box() {
     let _serial = serial();
     let (_monitor, _browser, tab) = shell_with_a_session("appshell-include-hidden", 2882);
@@ -6401,7 +5713,7 @@ fn the_app_shell_include_hidden_reads_as_a_checked_box() {
 /// stays. (The classic page has no inconsistency to fix here — only its user turns carry a raw
 /// button at all — which is why this case is the shell's alone.)
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_raw_toggle_reveals_the_same_way_on_every_turn() {
     let _serial = serial();
     let (_monitor, _browser, tab) = shell_with_a_session("appshell-raw-visibility", 2884);
@@ -6485,7 +5797,7 @@ fn the_app_shell_raw_toggle_reveals_the_same_way_on_every_turn() {
 /// gone from the layout, not merely collapsed, and that the drawer machinery below it no longer
 /// counts it. Turning it back on restores it open.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_chooses_which_outline_panes_exist() {
     let _serial = serial();
     let (_monitor, _browser, tab) = shell_with_a_session("appshell-pane-picker", 2889);
@@ -6554,7 +5866,7 @@ fn the_app_shell_chooses_which_outline_panes_exist() {
 /// scrolling reached it. One number per pane fixes that by construction: a pane the toggle shut
 /// is a pane at 0, and the walk finds it like any other.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_reopens_a_toggled_shut_pane_by_pulling() {
     let _serial = serial();
     let (_monitor, _browser, tab) = shell_with_a_session("appshell-reopen-by-pull", 2892);
@@ -6593,7 +5905,7 @@ fn the_app_shell_reopens_a_toggled_shut_pane_by_pulling() {
 /// pop it open." Now there is one state, so the head reads the same number the gesture wrote —
 /// at either end the toggle simply flips it.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_opens_a_pushed_shut_pane_from_its_head() {
     let _serial = serial();
     let (_monitor, _browser, tab) = shell_with_a_session("appshell-open-from-head", 2893);
@@ -6651,7 +5963,7 @@ fn the_app_shell_opens_a_pushed_shut_pane_from_its_head() {
 /// handover at all, so #157's friction went with it). A gesture that begins anywhere else works
 /// the chain.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_a_panes_own_list_takes_the_wheel() {
     let _serial = serial();
     let base = base("appshell-pane-list-wheel");
@@ -6742,7 +6054,7 @@ fn the_app_shell_a_panes_own_list_takes_the_wheel() {
 /// buys room for what is below; when the last cards are already inside the column's viewport,
 /// nothing is asking for room, so a push spends nothing on them.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_drawers_answer_where_the_gesture_began_and_the_pressure_below() {
     let _serial = serial();
     let base = base("appshell-drawer-gestures");
@@ -6848,7 +6160,7 @@ fn the_app_shell_drawers_answer_where_the_gesture_began_and_the_pressure_below()
 /// openable, or removing the placeholder just trades a useless card for a fold that opens onto
 /// emptiness.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_renders_nothing_for_a_record_with_nothing_to_show() {
     let _serial = serial();
     let base = base("appshell-empty-body");
@@ -6900,7 +6212,7 @@ fn the_app_shell_renders_nothing_for_a_record_with_nothing_to_show() {
 /// both themes: in light the message is darker than the background labels, in dark it is
 /// lighter, and in both it stands further from the page than they do.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_ranks_progress_above_thinking_and_activity() {
     let _serial = serial();
     let base = base("appshell-progress-rank");
@@ -6960,7 +6272,7 @@ fn the_app_shell_ranks_progress_above_thinking_and_activity() {
 /// material goes behind the glyph beside them — peek on hover, PIN on click, because a surface you
 /// read inside cannot close when the pointer leaves.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_keeps_cost_visible_with_info_behind_a_glyph() {
     let _serial = serial();
     let (_monitor, _browser, tab) = shell_with_a_session("appshell-info-footer", 2899);
@@ -7040,7 +6352,7 @@ fn the_app_shell_keeps_cost_visible_with_info_behind_a_glyph() {
 /// a button (#159) and putting the menu inside the caption handed both of them that styling.
 /// Measured, not asserted from the CSS, because that is the only way this class of bug shows.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_outline_caption_and_its_menu_lay_out() {
     let _serial = serial();
     let (_monitor, _browser, tab) = shell_with_a_session("appshell-caption-layout", 2901);
@@ -7094,7 +6406,7 @@ fn the_app_shell_outline_caption_and_its_menu_lay_out() {
 /// counts keep naming BOTH halves, so what is hidden is never a secret; and the choice survives a
 /// reload, because a filter a reader has to set again every time is a filter they stop using.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_panes_open_on_what_is_live() {
     let _serial = serial();
     let base = base("appshell-live-only");
@@ -7218,8 +6530,7 @@ fn the_app_shell_panes_open_on_what_is_live() {
 /// `<link rel="icon">` (the demo is hand-written and stays byte-identical), so when the app
 /// shell became the default the browser's automatic `/favicon.ico` request 404'd and the tab
 /// showed the document icon. Now the production layer injects the link and the route table
-/// serves the same green SVG the classic rail inlines — one source — on both binaries; the
-/// classic rail is unchanged.
+/// serves the monitor's green SVG.
 fn app_shell_favicon(kind: Kind, port: u16, label: &str) {
     let _serial = serial();
     let base = base(&format!("appshell-favicon-{label}"));
@@ -7264,22 +6575,6 @@ fn app_shell_favicon(kind: Kind, port: u16, label: &str) {
             .is_some_and(|s| s.starts_with("<svg") && s.contains("#2e7d55")),
         "{label}: the monitor's green mark: {svg}"
     );
-    // The classic rail keeps its own inline icon, unchanged.
-    if matches!(kind, Kind::V1) {
-        tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=classic"))
-            .unwrap();
-        tab.wait_until_navigated().unwrap();
-        let inline = harness::eval(
-            &tab,
-            "(document.querySelector('link[rel~=\"icon\"]') || { getAttribute: () => '' }).getAttribute('href')",
-        );
-        assert!(
-            inline
-                .as_str()
-                .is_some_and(|s| s.starts_with("data:image/svg+xml")),
-            "the classic rail keeps its inline icon: {inline}"
-        );
-    }
 }
 
 /// #320, the owner: "add an app-icon for the page so when saving the page to my Home Screen, I can
@@ -7322,52 +6617,46 @@ fn home_screen_icon(kind: Kind, port: u16, label: &str) {
         "{label}: an unpaired browser reads the manifest"
     );
 
-    // Paired, on each page this binary draws with its own head: the tags, and what they name.
+    // Paired, on the app shell: the tags, and what they name.
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let pages: &[&str] = if matches!(kind, Kind::V1) {
-        &["app", "classic"]
-    } else {
-        &["app"]
-    };
-    for ui in pages {
-        tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui={ui}"))
-            .unwrap();
-        tab.wait_until_navigated().unwrap();
-        harness::until(
-            &tab,
-            "!!document.querySelector('link[rel=\"apple-touch-icon\"]')",
-            "the page to name its Home Screen icon",
-            std::time::Duration::from_secs(30),
-            "document.head.innerHTML.slice(0, 300)",
-        );
-        let seen = harness::eval(
-            &tab,
-            "(async function(){ var q = function (s) { var e = document.querySelector(s); return e ? (e.getAttribute('href') || e.getAttribute('content')) : null; }; var load = function (src) { return new Promise(function (ok) { var i = new Image(); i.onload = function () { ok(i.naturalWidth + 'x' + i.naturalHeight); }; i.onerror = function () { ok('error'); }; i.src = src; }); }; var touch = q('link[rel=\"apple-touch-icon\"]'), manifest = q('link[rel=\"manifest\"]'); var m = manifest ? await (await fetch(manifest)).json() : null; var sizes = []; for (var icon of (m ? m.icons : [])) sizes.push(icon.sizes + '=' + await load(icon.src)); return JSON.stringify({ touch: touch, touchLoads: touch ? await load(touch) : null, manifest: manifest, name: m && m.name, display: m && m.display, icons: sizes, title: q('meta[name=\"apple-mobile-web-app-title\"]'), standalone: !!document.querySelector('meta[name=\"apple-mobile-web-app-capable\"], meta[name=\"mobile-web-app-capable\"]') }); })()",
-        );
-        let seen: serde_json::Value = serde_json::from_str(seen.as_str().unwrap()).unwrap();
-        assert_eq!(
-            seen["touch"], "/apple-touch-icon.png",
-            "{label} {ui}: {seen}"
-        );
-        assert_eq!(seen["touchLoads"], "180x180", "{label} {ui}: {seen}");
-        assert_eq!(
-            seen["manifest"], "/manifest.webmanifest",
-            "{label} {ui}: {seen}"
-        );
-        assert_eq!(seen["name"], "Agent Monitor", "{label} {ui}: {seen}");
-        assert_eq!(
-            seen["display"], "browser",
-            "{label} {ui}: the shortcut opens in the browser, where the phone is paired: {seen}"
-        );
-        assert_eq!(
-            seen["icons"],
-            serde_json::json!(["192x192=192x192", "512x512=512x512"]),
-            "{label} {ui}: every icon the manifest names loads at its size: {seen}"
-        );
-        assert_eq!(seen["title"], "Agent Monitor", "{label} {ui}: {seen}");
-        assert_eq!(seen["standalone"], false, "{label} {ui}: {seen}");
-    }
+    let ui = "app";
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui={ui}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('link[rel=\"apple-touch-icon\"]')",
+        "the page to name its Home Screen icon",
+        std::time::Duration::from_secs(30),
+        "document.head.innerHTML.slice(0, 300)",
+    );
+    let seen = harness::eval(
+        &tab,
+        "(async function(){ var q = function (s) { var e = document.querySelector(s); return e ? (e.getAttribute('href') || e.getAttribute('content')) : null; }; var load = function (src) { return new Promise(function (ok) { var i = new Image(); i.onload = function () { ok(i.naturalWidth + 'x' + i.naturalHeight); }; i.onerror = function () { ok('error'); }; i.src = src; }); }; var touch = q('link[rel=\"apple-touch-icon\"]'), manifest = q('link[rel=\"manifest\"]'); var m = manifest ? await (await fetch(manifest)).json() : null; var sizes = []; for (var icon of (m ? m.icons : [])) sizes.push(icon.sizes + '=' + await load(icon.src)); return JSON.stringify({ touch: touch, touchLoads: touch ? await load(touch) : null, manifest: manifest, name: m && m.name, display: m && m.display, icons: sizes, title: q('meta[name=\"apple-mobile-web-app-title\"]'), standalone: !!document.querySelector('meta[name=\"apple-mobile-web-app-capable\"], meta[name=\"mobile-web-app-capable\"]') }); })()",
+    );
+    let seen: serde_json::Value = serde_json::from_str(seen.as_str().unwrap()).unwrap();
+    assert_eq!(
+        seen["touch"], "/apple-touch-icon.png",
+        "{label} {ui}: {seen}"
+    );
+    assert_eq!(seen["touchLoads"], "180x180", "{label} {ui}: {seen}");
+    assert_eq!(
+        seen["manifest"], "/manifest.webmanifest",
+        "{label} {ui}: {seen}"
+    );
+    assert_eq!(seen["name"], "Agent Monitor", "{label} {ui}: {seen}");
+    assert_eq!(
+        seen["display"], "browser",
+        "{label} {ui}: the shortcut opens in the browser, where the phone is paired: {seen}"
+    );
+    assert_eq!(
+        seen["icons"],
+        serde_json::json!(["192x192=192x192", "512x512=512x512"]),
+        "{label} {ui}: every icon the manifest names loads at its size: {seen}"
+    );
+    assert_eq!(seen["title"], "Agent Monitor", "{label} {ui}: {seen}");
+    assert_eq!(seen["standalone"], false, "{label} {ui}: {seen}");
 }
 
 #[test]
@@ -7377,21 +6666,9 @@ fn a_saved_page_has_the_monitors_home_screen_icon_on_v1() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn a_saved_page_has_the_monitors_home_screen_icon_on_v2() {
-    home_screen_icon(Kind::V2, 2708, "v2");
-}
-
-#[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_has_the_monitors_favicon_on_v1() {
     app_shell_favicon(Kind::V1, 2990, "v1");
-}
-
-#[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn the_app_shell_has_the_monitors_favicon_on_v2() {
-    app_shell_favicon(Kind::V2, 2991, "v2");
 }
 
 // ── #202: the blocked count and the three buckets ────────────────────────────────────────
@@ -7516,7 +6793,7 @@ const BUCKET_TREE_JS: &str = "Array.from(document.querySelectorAll('.tree-row.se
 /// with a question, the exit mid-work), never the finished or the growing session; Blocked alone
 /// shows exactly those three; and the checkbox's title is the predicate's own sentence.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_counts_the_blocked_sessions() {
     let _serial = serial();
     let base = base("appshell-buckets");
@@ -7639,7 +6916,7 @@ const BUCKET_SHEET_JS: &str = "(function () { var s = document.getElementById('s
 /// back (a set is never empty); Everything restores the three and leaves Include hidden alone;
 /// the choice survives a reload; Include hidden shows a hidden row dimmed; Escape closes the sheet.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_filters_the_sessions_by_bucket() {
     let _serial = serial();
     let base = base("appshell-filter");
@@ -7866,7 +7143,7 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
 /// fetched the session list, and the service can only serve ids a scan has SHOWN it. A `/pull` for
 /// a real session, asked before any `/api/sessions`, is now served; an unknown id is still refused.
 #[test]
-#[ignore = "needs a built agent-monitor-v2"]
+#[ignore = "needs a built agent-monitor"]
 fn a_fresh_monitor_serves_a_session_before_any_page_lists_them() {
     let _serial = serial();
     let base = harness::base("fresh-monitor-pull");
@@ -9154,7 +8431,7 @@ fn a_phones_controls_are_finger_sized() {
 /// session it takes the slot after the handle, a finger-sized back arrow clear of the title, and a
 /// tap on it goes back to the parent.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_parent_button_clears_the_drawer_handle() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2709, "phone-parent", 390, 844);
@@ -9297,7 +8574,7 @@ fn a_phone_can_search_the_session() {
 /// the loopback in Chrome), and a paired phone reads a file the session offered — by the route,
 /// and in the preview pane.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_paired_phone_over_the_tailnet_reads_a_file() {
     let _serial = serial();
     let base = harness::base("phone-file");
@@ -9376,7 +8653,7 @@ fn a_paired_phone_over_the_tailnet_reads_a_file() {
 /// title to stand for that. A finger's tap now leaves the menu open, with finger-sized rows; a copy
 /// closes it, as does a tap anywhere else.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_taps_the_title_and_copies_the_session_id() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2715, "phone-copy-id", 390, 844);
@@ -9449,7 +8726,7 @@ fn a_phone_taps_the_title_and_copies_the_session_id() {
 /// held is its cause — both pages now declare `text-size-adjust: 100%` — and that every line of the
 /// block, the 129-character one included, is drawn at one size.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_draws_every_line_of_a_wide_code_block_at_one_size() {
     let _serial = serial();
     let base = harness::base("phone-autosize");
@@ -9607,7 +8884,7 @@ const PHONE_ABOVE_THE_CARD: &str = "(function(){ var top = parseFloat(getCompute
 /// column: a circle, one letter and an ellipsis. On a phone the title has the row's width, at a
 /// size a phone can read.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_tasks_drop_down_shows_each_title() {
     let _serial = serial();
     let (_m, _b, tab) = phone_tasks_world(2701, "phone-task-titles");
@@ -9631,7 +8908,7 @@ fn a_phone_tasks_drop_down_shows_each_title() {
 /// it is very hard to read, suggest to dim the background". Behind the card everything is dimmed,
 /// and a tap on the dimmed part closes the card.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_task_card_dims_what_is_behind_it() {
     let _serial = serial();
     let (_m, _b, tab) = phone_tasks_world(2702, "phone-task-dim");
@@ -9678,7 +8955,7 @@ fn a_phone_task_card_dims_what_is_behind_it() {
 /// stays open under it: closing the card — a tap beside it, its ✕ or Escape — goes back to the
 /// list, where the next task is one tap away; only a second Escape closes the list.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_task_card_lies_over_the_open_tasks_pane() {
     let _serial = serial();
     let (_m, _b, tab) = phone_tasks_world(2703, "phone-task-over-pane");
@@ -9745,7 +9022,7 @@ fn a_phone_task_card_lies_over_the_open_tasks_pane() {
 /// in the pane's order; it opens on what is still moving (Running), and its head jumps to each
 /// state, named and counted as the state's own head is.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_tasks_drop_down_lists_every_state_with_jumps() {
     let _serial = serial();
     let (_m, _b, tab) = phone_tasks_world(2704, "phone-task-states");
@@ -9805,7 +9082,7 @@ fn a_phone_tasks_drop_down_lists_every_state_with_jumps() {
 /// knows the tasks are in what state". Scrolled into the middle of any state, that state's head is
 /// held at the top of the list, over the rows passing under it.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_tasks_drop_down_keeps_the_state_line_in_view() {
     let _serial = serial();
     let (_m, _b, tab) = phone_tasks_world(2705, "phone-task-sticky");
@@ -9883,7 +9160,7 @@ const VIOLATIONS: &str = "JSON.stringify(window.__viewportViolations || [])";
 /// the end, following, the engine broke none of its invariants, and the history records the
 /// landing as a prepend (with its shift), which the sandbox treats as part of the open.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_opens_a_long_session_at_its_tail_first() {
     let _serial = serial();
     let (_m, _b, tab) = tail_first_world(2801, "tail-first-open");
@@ -9934,7 +9211,7 @@ fn app_shell_opens_a_long_session_at_its_tail_first() {
 /// front of it — the same unit at the same pixel, ±1 — because the engine moves their position
 /// with the index space (option A), and the landing is not a move of theirs: they stay unpinned.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_reader_in_the_tail_keeps_their_place_when_the_head_lands() {
     let _serial = serial();
     let (_m, _b, tab) = tail_first_world(2802, "tail-first-reader");
@@ -9987,7 +9264,7 @@ fn app_shell_a_reader_in_the_tail_keeps_their_place_when_the_head_lands() {
 /// page goes no further, as a chat app's history does — and when the turns arrive above it, the
 /// turn they could see below the card stays where it was.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_scrolling_above_the_tail_waits_at_the_loading_card() {
     let _serial = serial();
     let (_m, _b, tab) = tail_first_world(2803, "tail-first-top");
@@ -10054,7 +9331,7 @@ fn app_shell_scrolling_above_the_tail_waits_at_the_loading_card() {
 /// query finds the head's matches too, without being typed again. Each user turn says "question
 /// <n>" once, so the count is the number of user turns the search can see.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_search_typed_before_the_head_lands_finds_it_after() {
     let _serial = serial();
     let (_m, _b, tab) = tail_first_world(2800, "tail-first-search");
@@ -10105,7 +9382,7 @@ fn app_shell_a_search_typed_before_the_head_lands_finds_it_after() {
 /// the dock, never on it (the owner, on the redesign: "Jump to last should be positioned in the
 /// middle"). The desktop keeps its corner.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_jumps_to_the_latest_from_the_bottom_centre() {
     let _serial = serial();
     let (m, _b, tab, path) = phone_world_at(2706, "phone-jump", 390, 844, "");
@@ -10193,7 +9470,7 @@ fn a_phone_jumps_to_the_latest_from_the_bottom_centre() {
 /// through the matches without opening the box, and the header row stays one row. Clearing the
 /// query takes them away again.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_keeps_the_match_count_and_steps_once_the_box_closes() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2710, "phone-search-closed", 390, 844);
@@ -10328,7 +9605,7 @@ fn long_question_at(id: &str, ts: &str) -> String {
 /// label takes the card's width and breaks, if at all, between words — never inside one, and never
 /// clipped.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_question_card_keeps_its_option_labels_whole() {
     let _serial = serial();
     let base = harness::base("phone-question");
@@ -10481,7 +9758,7 @@ const PHONE_DRAWN: &str = "function (sel) { return [].slice.call(document.queryS
 /// the server would only let it REVEAL is copied rather than sent to `/__reveal` (the case wraps
 /// `fetch`, so a reveal is recorded and never sent).
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_is_offered_no_reveal_and_no_new_tab() {
     let _serial = serial();
     let (m, _b, tab, paths) = phone_files_world(
@@ -10597,7 +9874,7 @@ fn a_phone_is_offered_no_reveal_and_no_new_tab() {
 /// keep a readable width, and ‹ › cycle through all of them — wrapping — keeping the current one in
 /// view. Closing a tab takes one off the badge; closing the last takes the badge away.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_pane_counts_its_open_files_and_steps_through_their_tabs() {
     let _serial = serial();
     let names = [
@@ -10746,7 +10023,7 @@ fn a_phone_pane_counts_its_open_files_and_steps_through_their_tabs() {
 /// code block. Since #s55 (the owner) upright text keeps a margin, so the width switch is offered on a
 /// phone too — it gives the text the whole width — as on the desktop's drop-down.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_reading_menu_wraps_and_offers_the_wide_switch() {
     let _serial = serial();
     let code = harness::write_tool_at("w1", "/r/long_line.py", 6, &harness::now_minus(30));
@@ -10810,7 +10087,7 @@ fn a_phone_reading_menu_wraps_and_offers_the_wide_switch() {
 /// to 999" — "Same for counts for agents". A phone's pane icons count past 99, and the count stays
 /// inside its icon.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_counts_its_panes_past_ninety_nine() {
     let _serial = serial();
     let base = harness::base("phone-counts");
@@ -10924,7 +10201,7 @@ fn tail_first_phone(
 /// in. The landing now waits for a still view: it does not happen during the glide, and when it does
 /// the reader is on the turn the glide left them on, with no invariant broken.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_fling_keeps_its_turn_when_the_head_lands() {
     let _serial = serial();
     let (_m, _b, tab) = tail_first_phone(2722, "tail-first-fling", 24576, "", &[]);
@@ -11017,7 +10294,7 @@ fn a_phone_fling_keeps_its_turn_when_the_head_lands() {
 /// the page hears NO scroll event until the glide ends — the worst a lazy tab can do — and still the
 /// head waits for the still view, then lands with the reader where the glide left them.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_fling_heard_late_still_holds_the_head() {
     let _serial = serial();
     let (_m, _b, tab) = tail_first_phone(2935, "tail-first-fling-deaf", 24576, "", &[]);
@@ -11100,7 +10377,7 @@ fn a_phone_fling_heard_late_still_holds_the_head() {
 /// answers sit above the tail, under-estimated from the short ones measured there; the glide emulated
 /// as iOS runs it (#340's: a touch, then a timer writing the offset from ITS OWN position).
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_fling_over_under_estimated_answers_does_not_jitter() {
     let _serial = serial();
     const SID: &str = "37200000-0000-4000-8000-000000000372";
@@ -11239,7 +10516,7 @@ fn a_phone_fling_over_under_estimated_answers_does_not_jitter() {
 /// from the whole session's meta, including agents spawned in the head — are whole too; once the
 /// head lands the three are the same and the note is gone.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_tail_first_open_counts_the_whole_session() {
     let _serial = serial();
     let mut head = String::new();
@@ -11318,7 +10595,7 @@ fn a_phone_tail_first_open_counts_the_whole_session() {
 /// that one retry, and no loop — now as a page that says what to do. #s110: once the retry is
 /// spent, the page's Try again lets a paired browser in with one tap.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_paired_browser_arriving_by_a_link_from_another_site_is_let_in() {
     let _serial = serial();
     let base = harness::base("paired-cross-site");
@@ -11453,7 +10730,7 @@ fn a_browser_that_gives_no_first_tab_is_launched_again() {
 /// agent-metrics' `serve --phone` (the same gate since #317, its own token) set the slot last.
 /// Two monitors on separate state stand in for the two servers.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_browser_paired_with_two_servers_on_one_host_stays_paired_with_both() {
     let _serial = serial();
     let first_base = harness::base("two-gates-first");
@@ -11492,7 +10769,7 @@ const PHONE_WHOLLY_IN: &str = "function (el, box) { if (!el || !box) return fals
 /// chip never loses its glyph, value or ×; the clear control at the end of the field empties the
 /// text, every chip and the results in one tap and leaves the field focused.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_search_box_shows_whole_chips_and_clears_in_one_tap() {
     let _serial = serial();
     // 440 wide, the owner's phone: since #s41 the funnel stays in the find pill while typing (iOS
@@ -11586,7 +10863,7 @@ fn a_phone_search_box_shows_whole_chips_and_clears_in_one_tap() {
 /// row at 360px and at 390px, with the count and both arrows reachable; the ✕ circle beside it ends
 /// the search and gives the dock back to the toolbar pill.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_dock_keeps_one_row_with_a_query_and_a_chip() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2729, "phone-search-row", 360, 780);
@@ -11684,7 +10961,7 @@ fn a_phone_dock_keeps_one_row_with_a_query_and_a_chip() {
 /// width when entering; 3) xxx hits may be out under the search box during the query enter mode;
 /// 4) make the up/down match arrow vertically centered".
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_search_strip_scrolls_whole_and_counts_beside_the_box() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2730, "phone-search-strip", 390, 844);
@@ -11761,7 +11038,7 @@ fn a_phone_search_strip_scrolls_whole_and_counts_beside_the_box() {
 /// background search… text". A tool chip is the wrench and the tools' own selectors — Bash's is B —
 /// with the names in its title; beside chips the field shows no placeholder.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_search_chips_are_their_letters_and_the_placeholder_steps_aside() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2732, "phone-search-letters", 390, 844);
@@ -11821,7 +11098,7 @@ fn a_phone_search_chips_are_their_letters_and_the_placeholder_steps_aside() {
 /// calls' — every one of them reachable, not dimmed away (#356's "1570 matches, and none of them
 /// actually shows" can no longer be built).
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_search_nests_tools_under_tools_and_counts_their_union() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2733, "phone-search-nest", 390, 844);
@@ -11907,7 +11184,7 @@ fn a_phone_search_nests_tools_under_tools_and_counts_their_union() {
 /// own management directory is ~/.qwenworkcn". A session in Qwenwork's store is listed under its
 /// own agent, "Qwenwork", and opens like any other.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_lists_and_opens_a_qwenwork_session() {
     let _serial = serial();
     let base = harness::base("qwenwork-agent");
@@ -11946,7 +11223,7 @@ fn the_app_shell_lists_and_opens_a_qwenwork_session() {
 /// moved up and down. After every step the current match must be wholly visible — both axes —
 /// between the top bar and the dock at the foot (#s37).
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_search_step_shows_a_match_far_along_a_long_line() {
     let _serial = serial();
     let mut extra = String::new();
@@ -12028,7 +11305,7 @@ fn a_phone_search_step_shows_a_match_far_along_a_long_line() {
 /// the foot is ONE row, at a phone's width and a desktop's, every control the thing a tap at its
 /// centre hits.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_code_block_foot_is_one_row_of_glyphs_on_a_phone_and_a_desktop() {
     let _serial = serial();
     const SID: &str = "5e5510a1-0000-4000-8000-0000000000s8";
@@ -12137,7 +11414,7 @@ fn a_code_block_foot_is_one_row_of_glyphs_on_a_phone_and_a_desktop() {
 /// the pane with a finger, and is where they were: the anchor the engine held, the turn under the
 /// bar, and the bar itself.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_reader_who_opens_a_file_and_closes_the_pane_stays_on_its_turn() {
     let _serial = serial();
     const SID: &str = "5e5510a1-0000-4000-8000-0000000000s25";
@@ -12326,7 +11603,7 @@ fn landscape_world(
 /// column), the top bar in ONE row so the transcript keeps its height, nothing in it clipped or
 /// covered, and the preview a sheet across the whole screen.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_held_sideways_gets_the_phone_layout_in_one_row() {
     let _serial = serial();
     let (_m, _b, tab, path) = landscape_world(2742, "landscape-phone", 932, 430, true);
@@ -12388,7 +11665,7 @@ fn a_phone_held_sideways_gets_the_phone_layout_in_one_row() {
 /// session still laid out at full width and left a sliver no one could read. An open preview now
 /// covers the whole session area beside the sidebar — and all of it with the sidebar closed.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver() {
     let _serial = serial();
     let (_m, _b, tab, path) = landscape_world(2743, "narrow-preview", 1000, 800, false);
@@ -12594,7 +11871,7 @@ fn the_list_scrolls(tab: &headless_chrome::Tab, at: &str) {
 /// `a_wide_phone_held_sideways_shows_the_session_list_beside_the_session`); the narrower one keeps
 /// the drawer over it.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_held_sideways_has_its_session_on_screen_and_its_list_in_reach() {
     let _serial = serial();
     let (_m, _b, tab) = drawer_world(2744, "landscape-drawer", 956, 440, false, 1, None);
@@ -12661,7 +11938,7 @@ fn a_phone_held_sideways_has_its_session_on_screen_and_its_list_in_reach() {
 /// phone has no control that expands it. On a phone the rail is never applied — the drawer is the
 /// whole list — and the desktop's choice is still remembered for the desktop.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_with_the_desktop_s_rail_stored_opens_a_drawer_with_its_list() {
     let _serial = serial();
     let (_m, _b, tab) = drawer_world(2745, "rail-drawer", 390, 844, true, 1, None);
@@ -12728,7 +12005,7 @@ fn safe_area_facts(
 /// and line now keeps inside `env(safe-area-inset-*)`: upright, sideways on the widest phone (two
 /// columns) and on a narrower one (a drawer), shut and with the session list open.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_keeps_its_controls_and_lines_inside_the_safe_area() {
     let _serial = serial();
     let (_m, _b, tab) = drawer_world(
@@ -12805,7 +12082,7 @@ const FIRST_LINE_CHARS: &str = "(function(){ var p = [...document.querySelectorA
 /// choice is the column's own: it survives a reload, it touches neither the desktop's rail nor the
 /// drawer, and turning the phone upright finds the drawer as a phone left it.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_wide_phone_held_sideways_shows_the_session_list_beside_the_session() {
     let _serial = serial();
     let (m, _b, tab) = drawer_world(
@@ -12998,7 +12275,7 @@ fn a_wide_phone_held_sideways_shows_the_session_list_beside_the_session() {
 /// column at most about 75 characters wide, the spare width its margin — and Aa offers the whole
 /// width, as on a desktop, for source code or a wide table.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_narrow_phone_held_sideways_reads_at_a_measure() {
     let _serial = serial();
     let (_m, _b, tab) = drawer_world(
@@ -13066,7 +12343,7 @@ fn a_narrow_phone_held_sideways_reads_at_a_measure() {
 /// now sits above the handle while it is open, as Aa's always has; the case first checks that the
 /// heading really lies under the handle, so it cannot pass on a sheet that stopped short.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_narrow_phone_held_sideways_keeps_a_pane_sheets_heading_clear_of_the_handle() {
     let _serial = serial();
     let (_m, _b, tab) = drawer_world(
@@ -13104,7 +12381,7 @@ fn a_narrow_phone_held_sideways_keeps_a_pane_sheets_heading_clear_of_the_handle(
 /// side pane to take the whole screen." Held sideways the pane is a second column; upright it stays the
 /// whole screen, with no expand control.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_held_sideways_opens_the_pane_as_a_second_column() {
     let _serial = serial();
     let (_m, _b, tab) = drawer_world(
@@ -13230,7 +12507,7 @@ fn a_phone_held_sideways_opens_the_pane_as_a_second_column() {
 /// changed". The filter and the keyboard never share a phone's screen; a tap outside dismisses the top
 /// layer only; the funnel is lit by an active filter, never by its open menu.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_s_filter_and_keyboard_never_share_the_screen() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2753, "phone-filter-keyboard", 390, 844);
@@ -13328,7 +12605,7 @@ fn a_phone_s_filter_and_keyboard_never_share_the_screen() {
 /// #s236 (Hong): the box stays open after a send, its field emptied (a failed send keeps the
 /// draft), and it says where a message goes in ONE line — on the phone and on the desktop.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
     let _serial = serial();
     let (m, _b, tab, _path) = phone_world_at(2751, "phone-compose", 390, 844, "");
@@ -13655,7 +12932,7 @@ const STUB_SEND: &str = "(function(){ window.__sendAnswer = { ok: false, error: 
 /// sheet is now a popover at its control's side, beside the column; the head never shrinks; the
 /// jump sits on the dock's row and steps aside for the search; the funnel stays.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_whole() {
     let _serial = serial();
     let (_m, _b, tab) = drawer_world(
@@ -13811,7 +13088,7 @@ fn a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_wh
 /// just above it, the transcript keeps its height (a moving foot would move the reader, #372), and
 /// the keyboard going brings the dock back to its place above the home indicator.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_find_pill_rides_the_keyboard() {
     let _serial = serial();
     let (_m, _b, tab, _path) = phone_world_at(2749, "phone-keyboard", 390, 844, "");
@@ -13981,7 +13258,7 @@ fn workers_world(
 /// with their state, and counts them; a click opens the worker, whose parent control leads back;
 /// and a link straight to a worker knows its starter too.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_session_s_headless_workers_live_in_its_agents_pane_not_the_list() {
     let _serial = serial();
     let (m, _b, tab, [coord, w1, w2]) = workers_world(2754, "workers-pane", None);
@@ -14059,7 +13336,7 @@ fn a_session_s_headless_workers_live_in_its_agents_pane_not_the_list() {
 /// #s53 on a phone: the drawer's list has no worker, and the Agents sheet rising from the dock
 /// holds both, finger-sized; a tap opens the worker.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_reaches_a_session_s_workers_from_its_agents_sheet() {
     let _serial = serial();
     let (_m, _b, tab, [coord, w1, w2]) = workers_world(2755, "workers-phone", Some((440, 956)));
@@ -14115,7 +13392,7 @@ fn a_phone_reaches_a_session_s_workers_from_its_agents_sheet() {
 /// without reaching what lies beneath; upright the text keeps a 24px margin, and the Reading menu's
 /// Wide transcript, offered upright now, gives it the 13px gutter, remembered.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_dims_behind_a_pane_sheet_and_keeps_a_margin_upright() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2734, "phone-dim", 440, 956);

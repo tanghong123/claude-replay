@@ -4,7 +4,7 @@ The real-Chrome harness for the HTML frontend and the monitor's shells. Every ca
 `#[ignore]`d and runs only on request:
 
 ```sh
-cargo build --release -p claude-monitor -p claude-monitor-v2
+cargo build --release -p claude-monitor --features claude-monitor/codex-native
 cargo test -p claude-replay-browser-tests -- --ignored --skip known_red
 ```
 

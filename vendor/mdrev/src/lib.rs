@@ -1,6 +1,6 @@
 //! mdrev, PINNED (#274): the embedding kit of one public mdrev release, vendored under `release/`
-//! and built into the binaries that depend on this crate — `agent-monitor` and `agent-monitor-v2`,
-//! through `claude-monitor`. `README.md` beside this crate says which release, where it came from
+//! and built into the binary that depends on this crate — `agent-monitor`, through
+//! `claude-monitor`. `README.md` beside this crate says which release, where it came from
 //! and how the pin moves; `design/mdrev-in-the-preview-pane.md` says what the monitor does with it.
 //!
 //! The owner, 2026-09-25: "only depend on static version of mdrev, similar to how agent-monitor

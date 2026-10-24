@@ -4,7 +4,7 @@
 //! it was recorded on, the engine's states diffed by turn. A report is a reproduction, and a short
 //! one. The fixtures under `tests/fixtures/history/` are the #194 probes' own exports.
 //!
-//! Every case is `#[ignore]`d (a local Chrome, `cargo build --release -p claude-monitor-v2`).
+//! Every case is `#[ignore]`d (a local Chrome, `cargo build --release -p claude-monitor`).
 
 mod harness;
 
@@ -320,7 +320,7 @@ fn replay(export: &Export, surface: Surface, port: u16, label: &str, tolerance: 
 /// The prose model exists and grows on both surfaces, and a record's height is predicted from
 /// its length within a line.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn sandbox_calibration_measures_prose_on_both_surfaces() {
     let _serial = serial();
     let classic = calibrate(Surface::Classic, 0, "classic");
@@ -374,7 +374,7 @@ fn worst_delta(diffs: &[Diff]) -> i64 {
 /// (design/viewport-history.md §9), two-sided, so a change to either page's wheel handling that
 /// moves the two apart — or a shell that stops moving — shows up here.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn sandbox_walk_classic_export_replays_on_the_shell() {
     let _serial = serial();
     let export = fixture_export("walk-classic.json");
@@ -442,7 +442,7 @@ fn sandbox_runaway_classic_live_replays() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn sandbox_runaway_app_live_replays() {
     let _serial = serial();
     let export = fixture_export("runaway-app-live.json");
@@ -455,7 +455,7 @@ fn sandbox_runaway_app_live_replays() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn sandbox_walk_app_replays() {
     let _serial = serial();
     let export = fixture_export("walk-app.json");
@@ -549,7 +549,7 @@ fn a_tail_first_open_ends_where_its_head_lands() {
 /// does not stick). No violation, the engine writes nothing into a glide, and no turn moves against
 /// the glide that carried it.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn sandbox_phone_jitter_app_replays() {
     let _serial = serial();
     let export = fixture_export("phone-jitter-app.json");

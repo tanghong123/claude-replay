@@ -163,7 +163,7 @@ cat <<EOF
 Next, by hand:
   git diff vendor/mdrev/release/docs/contract.md     # what the host must now honour
   cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && scripts/gate/gate.sh
-  cargo build --release -p claude-monitor -p claude-monitor-v2 \\
+  cargo build --release -p claude-monitor --features claude-monitor/codex-native \\
     && cargo test -p claude-replay-browser-tests -- --ignored --skip known_red
   then commit it as its own change: "mdrev: pin $V"
 EOF

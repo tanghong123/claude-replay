@@ -181,41 +181,39 @@ fn classic_transcript_renders_mermaid_inline_and_preserves_source() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and both built monitors"]
-fn both_monitors_render_mermaid_in_the_app_transcript_and_live_updates() {
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_monitor_renders_mermaid_in_the_app_transcript_and_live_updates() {
     let _serial = serial();
-    for (kind, port) in [(harness::Kind::V1, 3041), (harness::Kind::V2, 3042)] {
-        let base = base(&format!("mermaid-app-{port}"));
-        let stores = harness::Stores::new(&base);
-        let path = stores.claude_session(SID, &transcript());
-        let monitor = harness::Monitor::spawn(kind, port, &base, Some(&stores), true);
-        let (_browser, tab) = harness::chrome_tab();
-        monitor.pair(&tab);
-        monitor.open(&tab, &format!("?session={SID}&ui=app&mountall=1"));
-        assert_diagrams(&tab);
-        assert_eq!(
-            eval(
-                &tab,
-                "document.querySelectorAll('#app [data-mermaid] svg').length"
-            ),
-            3
-        );
-        use std::io::Write;
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(path)
-            .unwrap()
-            .write_all(
-                assistant_markdown(
-                    "```mermaid\nflowchart TD\n  A[Incremental message] --> B[Fresh diagram]\n```",
-                    &harness::at("15:02"),
-                )
-                .as_bytes(),
+    let base = base("mermaid-app-3041");
+    let stores = harness::Stores::new(&base);
+    let path = stores.claude_session(SID, &transcript());
+    let monitor = harness::Monitor::spawn(harness::Kind::V1, 3041, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?session={SID}&ui=app&mountall=1"));
+    assert_diagrams(&tab);
+    assert_eq!(
+        eval(
+            &tab,
+            "document.querySelectorAll('#app [data-mermaid] svg').length"
+        ),
+        3
+    );
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .unwrap()
+        .write_all(
+            assistant_markdown(
+                "```mermaid\nflowchart TD\n  A[Incremental message] --> B[Fresh diagram]\n```",
+                &harness::at("15:02"),
             )
-            .unwrap();
-        wait_diagrams(&tab, 4);
-        assert_eq!(eval(&tab, "[...document.querySelectorAll('[data-mermaid] svg')].some(e=>e.textContent.includes('Incremental') && e.textContent.includes('Fresh'))"), true);
-    }
+            .as_bytes(),
+        )
+        .unwrap();
+    wait_diagrams(&tab, 4);
+    assert_eq!(eval(&tab, "[...document.querySelectorAll('[data-mermaid] svg')].some(e=>e.textContent.includes('Incremental') && e.textContent.includes('Fresh'))"), true);
 }
 
 #[test]
@@ -293,7 +291,7 @@ fn assert_source_toggle_preserves_the_readers_position(tab: &headless_chrome::Ta
 }
 
 #[test]
-#[ignore = "needs a local Chrome and both built monitors"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn opening_tall_mermaid_source_releases_follow_and_keeps_its_header_visible() {
     let _serial = serial();
     let base = base("mermaid-source-position");
@@ -309,21 +307,16 @@ fn opening_tall_mermaid_source_releases_follow_and_keeps_its_header_visible() {
                 &harness::at("15:01"),
             )),
     );
-    for (kind, port, shell) in [
-        (harness::Kind::V1, 3046, "app"),
-        (harness::Kind::V2, 3047, "app"),
-        (harness::Kind::V2, 3048, "classic"),
-    ] {
-        let monitor_root = base.join(format!("{port}"));
-        let monitor = harness::Monitor::spawn(kind, port, &monitor_root, Some(&stores), true);
-        let (_browser, tab) = harness::chrome_tab();
-        monitor.pair(&tab);
-        monitor.open(
-            &tab,
-            &format!("?session={SID}&ui={shell}&mountall=1&trace=viewport"),
-        );
-        assert_source_toggle_preserves_the_readers_position(&tab);
-    }
+    let monitor_root = base.join("3046");
+    let monitor =
+        harness::Monitor::spawn(harness::Kind::V1, 3046, &monitor_root, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    monitor.open(
+        &tab,
+        &format!("?session={SID}&ui=app&mountall=1&trace=viewport"),
+    );
+    assert_source_toggle_preserves_the_readers_position(&tab);
     let output = base.join("transcript.html");
     claude_replay_html::dump_html(
         &Args {
@@ -475,13 +468,11 @@ fn transcript_diagrams_do_not_load_flowchart_images_or_sequence_actor_icons() {
         &(user_at("Show synthetic diagrams.", &harness::at("15:00"))
             + &assistant_markdown(&body, &harness::at("15:01"))),
     );
-    let monitor = harness::Monitor::spawn(harness::Kind::V2, 3049, &base, Some(&stores), true);
-    for shell in ["app", "classic"] {
-        let (_browser, tab) = harness::chrome_tab();
-        monitor.pair(&tab);
-        monitor.open(&tab, &format!("?session={SID}&ui={shell}&mountall=1"));
-        assert_no_automatic_image_requests(&tab, &probe);
-    }
+    let monitor = harness::Monitor::spawn(harness::Kind::V1, 3049, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?session={SID}&ui=app&mountall=1"));
+    assert_no_automatic_image_requests(&tab, &probe);
     claude_replay_html::dump_html(
         &Args {
             dump_html: Some(Some(base.join("transcript").to_string_lossy().into_owned())),
@@ -656,7 +647,7 @@ fn dense_mermaid_groups_use_the_monitor_palette_and_scroll_without_shrinking_lab
         }
         eprintln!("Dense Mermaid context: shell={shell}, phone={phone:?}");
         monitor.pair(&tab);
-        // The classic rail opens its transcript at /session; its index is not the reader.
+        // "classic" is export.js at the monitor's /session, which stays until #s99 (stage 4).
         let path = if shell == "classic" {
             format!("session?id={SID}&mountall=1&theme=light")
         } else {

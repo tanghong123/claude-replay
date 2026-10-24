@@ -15,8 +15,8 @@
 //! `render_flavor`), so a signature minted today is replayed tomorrow; a per-process key would
 //! invalidate every cached page on restart. It lives beside the pairing token in the monitor's
 //! state dir at 0600 — the same "same-user guarantee is the file permissions" argument, and
-//! the same directory, so an installation has one key across `agent-replay --html`,
-//! `agent-monitor` and `agent-monitor-v2`. A key fingerprint is folded into `render_flavor`,
+//! the same directory, so an installation has one key across `agent-replay --html`
+//! and `agent-monitor`. A key fingerprint is folded into `render_flavor`,
 //! so replacing the key re-renders rather than silently breaking every link.
 //!
 //! It is NOT a replacement for the other gates: `/file` still requires the pairing token and a

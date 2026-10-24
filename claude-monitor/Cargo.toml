@@ -6,9 +6,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# A library half (#133 control plane + #98 index) so `agent-monitor-v2` reuses the send
-# decisions, the consent store and the pairing token rather than reimplementing them — one
-# implementation of every security-relevant rule, two front-ends.
+# A library half (#133 control plane + #98 index): the send decisions, the consent store and the
+# pairing token, one implementation of every security-relevant rule. `agent-monitor-v2` reused it
+# until it retired (#s98); the binary and the tests use it now.
 [lib]
 name = "claude_monitor"
 path = "src/lib.rs"

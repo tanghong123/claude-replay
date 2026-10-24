@@ -42,9 +42,7 @@ const viewportSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/v
 const appSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
 const previewSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
 const componentsText = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
-const classicRailSource = readFileSync(new URL("../../claude-monitor/src/rail.html", import.meta.url), "utf8");
 const classicExportSource = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
-const v2ShellSource = readFileSync(new URL("../../claude-monitor-v2/src/shell.html", import.meta.url), "utf8");
 const extractedCss = `${demo.slice(demo.indexOf("<style>\n") + 8, demo.indexOf("\n</style>", demo.indexOf("<style>\n")))}\n`;
 const extractedShell = demo.slice(demo.indexOf("<body>\n") + 7, demo.indexOf('<script src="sample-transcript-data.js"></script>'));
 assert.equal(referenceCss, extractedCss, "reference CSS must remain an exact demo extraction");
@@ -142,11 +140,6 @@ assert.deepEqual(costDisplay({ cost: 12 }), { kind: "priced", known: 12, label: 
 assert.deepEqual(costDisplay({ cost: 12, costPartial: true }), { kind: "partial", known: 12, label: "≥$12.00" });
 assert.deepEqual(costDisplay({ costPartial: true }), { kind: "unpriced", known: null, label: "unpriced" });
 assert.equal(costDisplay({ cost: 1234, costPartial: true }, true).label, "≥$1.2k");
-assert.match(v2ShellSource, /window\.__shared\.costDisplay\(r, true\)\.label/, "the v2 classic shell must render all four states through the shared formatter");
-assert.match(v2ShellSource, /if \(r\.turns == null\) return cost \|\| "not yet opened"/, "an unvisited v2 row must retain a ledger cost state when one exists");
-assert.doesNotMatch(v2ShellSource, /r\.turns == null \? "not yet opened" : counterText\(r\)/, "unvisited rows must not bypass the shared cost formatter");
-assert.doesNotMatch(v2ShellSource, /if \(r\.cost\) out\.push\("~\$"/, "the v2 classic shell must not keep a truthy-number cost formatter");
-assert.match(classicRailSource, /display\.kind==="priced"&&r\.costOwn!=null&&r\.costSubs!=null/, "the classic rail splits a family total only with explicit priced root usage");
 assert.match(appSource, /row && row\.costOwn != null \? Number\(row\.costOwn\) : null/, "the app footer must read the authoritative root cost instead of deriving one by subtraction");
 assert.doesNotMatch(appSource, /const own = display\.known - subs/, "the app footer must not manufacture an own zero from total minus children");
 assert.match(appSource, /const usageCostLabel = usage => usage && \(usage\.cost \|\| \(usage\.cost_partial \? "unpriced" : null\)\)/, "direct transcript usage must distinguish wholly unpriced from no usage");
@@ -567,9 +560,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("keymap cases passed");
 }
 
-// Seam (a) (#43): the classic rail and the v2 splice read the SAME predicates as the app
-// shell — clustering, the hidden filter, the hide/restore action and its query — inlined
-// into their pages at serve time, so none of them keeps a copy.
+// Seam (a) (#43): the shared predicates — clustering, the hidden filter, the hide/restore
+// action and its query. The classic rail and the v2 splice that also read them went with the
+// classic view (#s98).
 {
   assert.equal(familyKey({ id: "q1", agent: "qoderwork", name: "Plan the thing (Fork)" }), "t:Plan the thing", "QoderWork clusters by title, the rail's #153 rule");
   assert.equal(familyKey({ id: "q2", agent: "QoderWork", name: "  ", family: "root" }), "root", "an empty title falls back to the family root");
@@ -588,18 +581,6 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(groupVisible({ hidden: true }), false);
   assert.equal(groupVisible({ hidden: true }, { showHidden: true }), true);
   assert.equal(groupVisible({}), true);
-  const railSource = readFileSync(new URL("../../claude-monitor/src/rail.html", import.meta.url), "utf8");
-  const spliceSource = readFileSync(new URL("../../claude-monitor-v2/src/shell.html", import.meta.url), "utf8");
-  for (const [name, src] of [["rail.html", railSource], ["shell.html", spliceSource]]) {
-    assert.match(src, /\{\{SHARED\}\}/, `${name} carries the inlined shared modules`);
-    assert.doesNotMatch(src, /function (families|clusterKey)\(/, `${name} keeps no clustering of its own`);
-  }
-  assert.match(railSource, /var families=shared\.families;/, "the rail clusters through the shared function");
-  assert.match(railSource, /shared\.hideAction\(/, "the rail's hide/restore controls come from hideAction");
-  assert.match(railSource, /shared\.ignoreQuery\(/, "the rail hides and restores through the shared query");
-  assert.match(railSource, /shared\.rowVisible\(/, "the rail's row filter is the shared predicate");
-  assert.match(railSource, /shared\.groupVisible\(/, "the rail's group filter is the shared predicate");
-  assert.match(spliceSource, /__shared\.rowVisible\(/, "the splice's hidden filter is the shared predicate");
   console.log("seam (a) cases passed");
 }
 
@@ -651,12 +632,6 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(stateTip({ state: "finished" }), /lazy fold\)$/, "an unvisited row says its counters are not folded yet");
   assert.match(appSource, /from "\.\/shared\/state-labels\.js"/, "the shell imports the shared table");
   assert.doesNotMatch(appSource, /const labels = \{ busy:/, "the shell keeps no label table of its own");
-  const railSrc = readFileSync(new URL("../../claude-monitor/src/rail.html", import.meta.url), "utf8");
-  assert.match(railSrc, /shared\.stateTip\(/, "the rail's tooltip is the shared one");
-  assert.match(railSrc, /shared\.costDisplay\(/, "the rail renders pricing completeness through the shared formatter");
-  assert.doesNotMatch(railSrc, /finished — no growth, no process/, "the rail keeps no tooltip wording of its own");
-  const spliceSrc = readFileSync(new URL("../../claude-monitor-v2/src/shell.html", import.meta.url), "utf8");
-  assert.match(spliceSrc, /__shared\.stateTip\(/, "the splice's tooltip is the shared one");
   console.log("seam (f) cases passed");
 }
 
@@ -736,8 +711,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#202 bucket cases passed");
 }
 
-// Seam (d) (#45): keymap.js and reading.js are shared; the classic page and the rail resolve
-// keys through the one table and keep reading preferences under the one key.
+// Seam (d) (#45): keymap.js and reading.js are shared; the classic page and the app shell
+// resolve keys through the one table and keep reading preferences under the one key.
 {
   assert.equal(SIZE_MIN, 8, "the range is the classic page's (8–16 in half steps)");
   assert.equal(clampSize(7), 8); assert.equal(clampSize(12.3), 12.5); assert.equal(clampSize(99), 16);
@@ -760,8 +735,6 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(exportSource, /e\.key === "\]"|e\.key === "w"|e\.key === "j"/, "the classic page keeps no key chain of its own");
   assert.match(exportSource, /shared\.loadReading\(/, "the classic page loads prefs through the shared loader");
   assert.doesNotMatch(exportSource, /var MS_KEY|var WRAP_KEY|var WIDE_KEY/, "the classic page keeps no pref keys of its own");
-  const railSrc2 = readFileSync(new URL("../../claude-monitor/src/rail.html", import.meta.url), "utf8");
-  assert.match(railSrc2, /shared\.resolveKey\(/, "the rail resolves keys through the shared table");
   assert.match(appSource, /from "\.\/shared\/keymap\.js"/); assert.match(appSource, /from "\.\/shared\/reading\.js"/);
   // The shared key is written only by a CHOICE, in either shell — never by a load or by an
   // unrelated persist() carrying one shell's defaults into the other.
@@ -826,17 +799,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal((await runRevoke({ target: "s1", post: async () => ({ ok: true }) })).kind, "revoked");
   // Code lines only: the shells' comments still describe the protocol in prose.
   const codeOf = src => src.split("\n").filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
-  for (const [name, path] of [["rail.html", "../../claude-monitor/src/rail.html"], ["shell.html", "../../claude-monitor-v2/src/shell.html"], ["control-store.js", "../../claude-monitor/src/codex-ui/control-store.js"]]) {
+  for (const [name, path] of [["control-store.js", "../../claude-monitor/src/codex-ui/control-store.js"]]) {
     const src = codeOf(readFileSync(new URL(path, import.meta.url), "utf8"));
     assert.match(src, /runSend\(\{/, `${name} sends through the shared flow`);
     assert.match(src, /runRevoke\(\{/, `${name} revokes through the shared flow`);
     assert.doesNotMatch(src, /\.code\s*===?\s*"(passcode-required|bad-passcode|locked|no-consent)"/, `${name} reads no raw server code of its own — the outcomes are the protocol's`);
     assert.doesNotMatch(src, /\/api\/(send|consent)\?/, `${name} builds no /api query of its own`);
-  }
-  for (const [name, path] of [["rail.html", "../../claude-monitor/src/rail.html"], ["shell.html", "../../claude-monitor-v2/src/shell.html"]]) {
-    const src = codeOf(readFileSync(new URL(path, import.meta.url), "utf8"));
-    assert.match(src, /composeCopy\(/, `${name} takes its words from the shared table`);
-    assert.doesNotMatch(src, /"(Grant & send|Send to pane|Send prompt|Inject into: |Send to: )"/, `${name} keeps no compose wording of its own`);
   }
   const stateSrc2 = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
   assert.match(stateSrc2, /composeCapability\(row, controlState\.paired\)/, "the app shell's canInject/canResume are the shared rule");
@@ -2396,13 +2364,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(productionCss, /\.side-head\{height:auto;min-height:72px;flex-wrap:wrap/, "the head wraps instead of clipping what does not fit");
   // #223, the owner: "the title classic clips with theme glyph … explicitly make the top area of
   // the left bar to be two lines." The brand takes the whole first line, so the controls are never
-  // beside it and the shell switch (a WORD, not a glyph) can never meet the theme button. The
-  // controls take the whole second line and wrap within it, because at the 232px minimum even they
-  // do not fit on one; and the tight state's 30px glyph width is not applied to the switch, which
-  // is what was shaving the label there.
+  // beside it. The controls take the whole second line and wrap within it, because at the 232px
+  // minimum even they do not fit on one. (The shell switch that met the theme button there went
+  // with the classic view, #s98.)
   assert.match(productionCss, /\.side-head>\.brand\{flex:0 0 100%/, "the brand takes the first line, so the head is two lines by construction (#223)");
   assert.match(productionCss, /\.side-head>\.head-actions\{flex:0 1 100%;flex-wrap:wrap;justify-content:flex-end\}/, "…the controls take the second and wrap within it");
-  assert.match(productionCss, /#app\.sidebar-tight \.side-head \.iconbtn\.shell-toggle\{width:auto;flex:none;padding:0 6px\}/, "…and the switch keeps its content width when the glyphs are squeezed");
   assert.match(productionCss, /@media\(min-width:761px\) and \(min-height:501px\),\(min-width:761px\) and \(pointer:fine\)\{\s*\.app\{--sidebar:var\(--sidebar-user,300px\)\}/, "the viewer's width reaches the grid only off a phone — above 760px and not a phone held sideways (#s33)");
   assert.match(productionCss, /\.app\.sidebar-off \.sidebar-resizer\{display:none\}/, "…and the rail has nothing to drag");
   assert.match(appSource, /const SIDEBAR_MIN = 232, SIDEBAR_MAX = 520, SIDEBAR_DEFAULT = 300;/, "the width is clamped at both ends");
@@ -2989,7 +2955,6 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 {
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   const ui = readFileSync(new URL("../../claude-monitor/src/ui.rs", import.meta.url), "utf8");
-  const rail = readFileSync(new URL("../../claude-monitor/src/rail.html", import.meta.url), "utf8");
   assert.doesNotMatch(referenceShell, /rel="icon"/, "the extracted shell declares no icon (the demo stays byte-identical)");
   // #320 moved the link from a runtime injection into the production page head, which is where
   // iOS looks for a Home Screen icon; the property — the production layer, not the extracted
@@ -2997,7 +2962,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const head = readFileSync(new URL("../../claude-monitor/src/codex-ui/page-head.html", import.meta.url), "utf8");
   assert.match(head, /<link rel="icon" type="image\/svg\+xml" href="\/favicon\.svg">/, "…so the production page head links the served icon");
   assert.doesNotMatch(app, /icon\.href = "\/favicon\.svg"/, "…and nothing injects a second one");
-  for (const [page, text] of [["page-head.html", head], ["rail.html", rail]]) {
+  for (const [page, text] of [["page-head.html", head]]) {
     assert.match(text, /<link rel="apple-touch-icon" href="\/apple-touch-icon\.png">/, `#320: ${page} names the Home Screen icon`);
     assert.match(text, /<link rel="manifest" href="\/manifest\.webmanifest">/, `#320: ${page} names the manifest`);
     assert.match(text, /<meta name="apple-mobile-web-app-title" content="Agent Monitor">/, `#320: ${page} gives the Home Screen label`);
@@ -3005,9 +2970,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   }
   assert.match(ui, /"favicon\.svg" \| "favicon\.ico" => \("image\/svg\+xml", FAVICON_SVG\.as_bytes\(\)\),/, "the route table serves it under both names");
   const served = /pub const FAVICON_SVG: &str = "([^"]+)";/.exec(ui)?.[1];
-  const inline = /<link rel="icon" href="data:image\/svg\+xml,([^"]+)">/.exec(rail)?.[1];
-  assert.ok(served && inline, "both icon sources were found");
-  assert.equal(decodeURIComponent(inline), served, "…and it is the rail's own mark: one source, two shells, both binaries");
+  assert.ok(served, "the served icon was found");
   console.log("#203 favicon cases passed");
 }
 
@@ -3383,18 +3346,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#294 qualifier grammar cases passed");
 }
 
-// #s226: a session in a herdr pane is named as one. The classic rail's badge copies the herdr way
-// to attach (by server: `herdr`, or `herdr --session <name>`), its tip and its send button say
-// herdr, and the app shell's confirm names the herdr pane; a tmux row reads as before.
+// #s226: a session in a herdr pane is named as one: the app shell's confirm names the herdr pane.
+// (The classic rail's herdr attach badge went with the classic view, #s98.)
 {
-  const rail = readFileSync(new URL("../../claude-monitor/src/rail.html", import.meta.url), "utf8");
-  const attachSrc = rail.slice(rail.indexOf("function attachCmd(r){"), rail.indexOf("function copyText("));
-  const attachCmd = new Function(`${attachSrc}; return attachCmd;`)();
-  assert.equal(attachCmd({ term: "herdr", target: "w1:p2" }), "herdr", "the default server attaches with plain herdr");
-  assert.equal(attachCmd({ term: "herdr", target: "w1:p2", herdrSession: "trial" }), "herdr --session trial", "a named session by name");
-  assert.equal(attachCmd({ term: "tmux", target: "%3", sock: "knack" }), "tmux -L knack attach -t %3", "tmux unchanged");
-  assert.match(rail, /in herdr pane "\+r\.target/, "the tip says herdr pane");
-  assert.match(rail, /"Send a prompt into this live "\+\(r\.term==="herdr"\?"herdr":"tmux"\)\+" pane"/, "the send button names its host");
   const store = readFileSync(new URL("../../claude-monitor/src/codex-ui/control-store.js", import.meta.url), "utf8");
   assert.match(store, /controlState\.row\.term === "herdr" \? `herdr pane \$\{controlState\.row\.target\}`/, "the confirm names a herdr pane");
   console.log("#s226 herdr naming cases passed");

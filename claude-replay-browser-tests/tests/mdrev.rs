@@ -146,7 +146,7 @@ const NOTE_INVITE: &str =
 /// attachment's text is rendered by mdrev — a real heading, not `# Field notes` in a `<pre>` — held
 /// by the monitor for the contract, and with no toolbar at all.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn mdrev_renders_transcript_markdown_as_a_clean_reader() {
     let _serial = serial();
     let (base, stores, _repo) = fixture("mdrev-reader");
@@ -204,7 +204,7 @@ fn mdrev_renders_transcript_markdown_as_a_clean_reader() {
 /// A file on disk — a stamped path from a tool head — mounts the whole viewer over the file's own
 /// checkout, with mdrev's toolbar.
 #[test]
-#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn mdrev_renders_a_local_markdown_file_with_its_toolbar() {
     let _serial = serial();
     drop(mdrev_cli()); // the monitor's history and notes run the pinned CLI under node
@@ -259,7 +259,7 @@ fn mdrev_renders_a_local_markdown_file_with_its_toolbar() {
 /// must not answer the same press. `\` is the hardest case — a `when: "any"` binding (the sidebar),
 /// which no context value can switch off. Red without `inGuest` in shared/keymap.js.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn mdrev_owns_a_key_pressed_while_the_reader_is_engaged_with_it() {
     let _serial = serial();
     let (base, stores, repo) = fixture("mdrev-keys");
@@ -328,7 +328,7 @@ fn mdrev_owns_a_key_pressed_while_the_reader_is_engaged_with_it() {
 /// `MDREV_NODE` is final when set (mdrev's own rule): that is how the case takes node away on a
 /// machine that has one.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn without_node_a_local_markdown_file_keeps_its_history_and_takes_no_notes() {
     let _serial = serial();
     let (base, stores, repo) = fixture("mdrev-nonode");
@@ -382,7 +382,7 @@ fn without_node_a_local_markdown_file_keeps_its_history_and_takes_no_notes() {
 /// sidecar with the code `mdrev --notes` uses, closed and deleted. The guide: when your host passes
 /// it, you are done. The capability is read off the page, where a reader gets one too.
 #[test]
-#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn mdrev_contract_passes_mdrev_cli_conform() {
     let _serial = serial();
     let (base, stores, repo) = fixture("mdrev-conform");
@@ -501,7 +501,7 @@ fn own_h1(tab: &headless_chrome::Tab) -> String {
 /// transcript carries opens there as it reads in the pane — the clean reader, no toolbar — from a
 /// monitor that was never paired: held text touches no disk, so it asks for no pairing.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn mdrev_opens_held_text_in_a_tab_of_its_own() {
     let _serial = serial();
     let (base, stores, _repo) = fixture("mdrev-tab-held");
@@ -546,7 +546,7 @@ fn mdrev_opens_held_text_in_a_tab_of_its_own() {
 /// and the tab is a frame around the same guarded routes, not a new way to read: a forged
 /// capability in its address shows a refusal, never the text.
 #[test]
-#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn mdrev_opens_a_file_in_a_tab_where_the_reader_was() {
     let _serial = serial();
     drop(mdrev_cli()); // the file's history and notes run the pinned CLI under node
@@ -666,7 +666,7 @@ fn mdrev_opens_a_file_in_a_tab_where_the_reader_was() {
 /// without that copy, the same address after another restart says the text is gone rather than
 /// showing nothing.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_tab_of_held_text_survives_a_monitor_restart() {
     let _serial = serial();
     let (base, stores, _repo) = fixture("mdrev-tab-restart");
@@ -728,7 +728,7 @@ fn a_tab_of_held_text_survives_a_monitor_restart() {
 /// its own opens THAT document — not the one the pane started with, and not with the capability
 /// that opened it, which names another path.
 #[test]
-#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn mdrev_follows_the_reader_to_another_document_into_its_tab() {
     let _serial = serial();
     drop(mdrev_cli()); // the file's history and notes run the pinned CLI under node
@@ -865,7 +865,7 @@ fn shared_review_world(case: &str) -> (PathBuf, Stores, PathBuf, PathBuf) {
 /// review prefix, is answered with the store's state, paired. And mdrev's own definition of a host
 /// holds on that prefix too: `mdrev-cli conform`, every route and the note round trip.
 #[test]
-#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
     let _serial = serial();
     let (base, stores, repo, state) = shared_review_world("mdrev-shared");
@@ -975,7 +975,7 @@ fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
 /// Here the pane files a note and lists it, the person replies (a viewer's reply: the key in the
 /// case's own mdrev state directory), and the pane's resolve still closes it.
 #[test]
-#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn the_reader_closes_a_note_the_person_has_answered() {
     let _serial = serial();
     let (base, stores, repo) = fixture("mdrev-reader-close");
@@ -1066,7 +1066,7 @@ fn the_reader_closes_a_note_the_person_has_answered() {
 /// (the harness gives each monitor one) holding `.config/mdrev/service` with a URL nothing listens
 /// on, and a fresh repository list in the case's state directory, so mdrev-cli never needs to ask.
 #[test]
-#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn on_a_machine_joined_to_an_mdrev_service_the_pane_writes_its_readers_own_notes() {
     use std::os::unix::fs::PermissionsExt as _;
     let _serial = serial();
@@ -1199,7 +1199,7 @@ fn on_a_machine_joined_to_an_mdrev_service_the_pane_writes_its_readers_own_notes
 /// mdrev's own rules inside the pane (no wrapping, the row spread, the shell's padding). They are
 /// scoped to `.workspace>.topbar` now, so the pane's toolbar keeps mdrev's own layout.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_pane_leaves_mdrevs_toolbar_its_own_layout() {
     let _serial = serial();
     let (base, stores, repo) = fixture("mdrev-toolbar");
@@ -1240,7 +1240,7 @@ fn a_phone_pane_leaves_mdrevs_toolbar_its_own_layout() {
 /// its close control returns the reader to the pane and the transcript exactly as they were — no
 /// navigation, no reload, the transcript's offset unchanged.
 #[test]
-#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn a_phone_reviews_in_a_full_screen_sheet_and_closes_back_to_where_it_was() {
     let _serial = serial();
     let (base, stores, repo, state) = shared_review_world("mdrev-sheet");
@@ -1435,7 +1435,7 @@ fn source(tab: &headless_chrome::Tab) -> serde_json::Value {
 /// numbered, never rendered as a document — over the file's own checkout, and with nothing of notes
 /// or shared review, which mdrev does not do on code.
 #[test]
-#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn mdrev_shows_a_local_code_file_as_highlighted_numbered_source() {
     let _serial = serial();
     drop(mdrev_cli()); // the file's history runs the pinned CLI under node
@@ -1545,7 +1545,7 @@ fn mdrev_shows_a_local_code_file_as_highlighted_numbered_source() {
 /// binary still offers its download, an image is still drawn, and an HTML page still renders as a
 /// page (the owner, 2026-10-06: "html pages render as pages, no need to send to mdrev").
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_pane_hands_mdrev_held_code_and_keeps_its_own_view_of_the_rest() {
     let _serial = serial();
     let (base, stores, repo) = code_fixture("mdrev-code-rest");
@@ -1611,7 +1611,7 @@ const PRINT_CONTROL: &str = "(function(){ var b = document.querySelector('#previ
 /// head offers mdrev's own print (`mounted.print()`) for a Markdown document — on screen and
 /// hit-tested at a phone's width, beside the head's other controls — and nothing for a code file.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_pane_prints_a_markdown_document_where_mdrev_offers_no_print() {
     let _serial = serial();
     drop(mdrev_cli());
@@ -1785,7 +1785,7 @@ fn the_pane_prints_a_markdown_document_where_mdrev_offers_no_print() {
 ///
 /// The pane's prefix still answers 404 to every draft 8 route.
 #[test]
-#[ignore = "needs a local Chrome, a built agent-monitor-v2 and node"]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn the_detached_tab_reads_subscribes_and_notifies_through_draft_8() {
     let _serial = serial();
     let (base, stores, repo, state) = shared_review_world("mdrev-draft8");
@@ -2239,7 +2239,7 @@ fn the_detached_tab_reads_subscribes_and_notifies_through_draft_8() {
 /// still hold (the pane's own head gone from the paper, the document shown, the page white) until
 /// `afterprint`. Both are mdrev's own since 1.1.29 (#s58); the host carried them for #s57.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_prints_the_document_alone_and_keeps_mdrevs_menu_on_screen() {
     let _serial = serial();
     let (base, stores, repo) = fixture("mdrev-phone-print");

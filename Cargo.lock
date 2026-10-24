@@ -304,18 +304,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "claude-monitor-v2"
-version = "1.416.0"
-dependencies = [
- "anyhow",
- "claude-monitor",
- "claude-replay-core",
- "claude-replay-html",
- "claude-replay-present",
- "serde_json",
-]
-
-[[package]]
 name = "claude-replay"
 version = "1.416.0"
 dependencies = [

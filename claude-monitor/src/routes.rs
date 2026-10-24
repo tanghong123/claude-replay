@@ -1,11 +1,9 @@
-//! The monitor's route table (#47, design/monitor-shell-duplication.md §2): ONE dispatch for
-//! both binaries. The five API arms (`api/ui`, `api/sessions`, `api/ignore`, `api/send`,
-//! `api/consent`), the `monitor-ui/*` assets and the fallthrough to the session service's own
-//! wire surface (`/session`, `/pull`, `/records`, `/__reveal`, static assets) were identical
-//! in `agent-monitor` and `agent-monitor-v2`; they live here once. What genuinely differs is
-//! NAMED in [`Frontend`] and each main.rs passes its own: which CLASSIC page `/` serves (v1's
-//! rail, v2's splice with its session), and v1's `chrome=embed`-defaulting `session` arm.
-//! No behaviour changed in the move — the browser cases against both binaries are the proof.
+//! The monitor's route table (#47): the API arms (`api/sessions`, `api/ignore`, `api/send`,
+//! `api/consent`), the `monitor-ui/*` assets, the app shell at `/`, and the fallthrough to the
+//! session service's own wire surface (`/session`, `/pull`, `/records`, `/__reveal`, static
+//! assets). It was shared by `agent-monitor` and `agent-monitor-v2` until the classic view and v2
+//! were retired (#s98, design/classic-view-deprecation.md stage 3): `/` serves the app shell
+//! whatever `?ui=` says, and `/api/ui`, which remembered the choice between the two, answers 404.
 
 use crate::control::{self, Attempts};
 use crate::index::{self, Index};
@@ -55,27 +53,14 @@ fn ensure_known(backend: &Backend, id: &str) {
     });
 }
 
-/// The page `/` serves when the classic shell is wanted, given the request's query.
-pub type ClassicPage = Arc<dyn Fn(&str) -> HttpResponse + Send + Sync>;
-
-/// A binary's own arm for `session` requests without a `chrome` parameter.
-pub type SessionArm = Arc<dyn Fn(&Request, &Backend) -> HttpResponse + Send + Sync>;
-
-/// The two genuine differences between the binaries' tables, as parameters.
+/// What the app shell's page names: the build, and whether the monitor is paired.
 pub struct Frontend {
     pub version: &'static str,
     pub paired: bool,
-    /// The classic page: v1's rail, v2's splice shell with the session spliced in.
-    pub classic: ClassicPage,
-    /// v1 only ever serves the view EMBEDDED. The view navigates sub-agents with a relative
-    /// `?session=<child>` href that drops the `chrome=embed` param, so v1 defaults it back
-    /// (#124) — a drilled-in child keeps embed chrome instead of flashing the full brand. v2
-    /// passes `None`: its `session` requests go to the service like everything else.
-    pub session: Option<SessionArm>,
 }
 
 /// The listener's handler over one backend and one frontend. It also installs the pinned mdrev,
-/// because this is the one constructor both binaries go through.
+/// because this is the one constructor the monitor goes through.
 pub fn handler(backend: Arc<Backend>, front: Frontend) -> RouteHandler {
     install_mdrev(&backend.scratch);
     Arc::new(move |req: &Request| dispatch(&backend, &front, req))
@@ -104,23 +89,13 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
         return asset;
     }
     match name {
-        // Which shell `/` serves: an explicit `?ui=` wins, else the remembered preference
-        // (shared by both binaries — one preference, so `?ui=` is what compares them side by
-        // side). Both shells are supported while the app shell is validated.
-        "" | "index.html" => {
-            if ui::resolve(query) == ui::Shell::Classic {
-                (front.classic)(query)
-            } else {
-                HttpResponse::html(ui::app_page(front.version, front.paired))
-            }
-        }
+        // The app shell, whatever `?ui=` says: `?ui=classic` and a `ui.json` that remembered the
+        // classic view both get it since that view was retired (#s98).
+        "" | "index.html" => HttpResponse::html(ui::app_page(front.version, front.paired)),
         // A Markdown document from the preview pane, in a tab of its own (#271).
         "markdown" => HttpResponse::html(ui::markdown_page()),
         // An image from the preview pane, in a tab of its own (#s11).
         "image" => HttpResponse::html(ui::image_page().to_string()),
-        // Read or set which shell `/` serves; the toggle in each shell's header calls this
-        // and reloads.
-        "api/ui" => ui::route(query),
         // The session list — the shared index's, so a row's liveness, its counters, its
         // family and its `injectable`/`consented` facts are ONE derivation. The register
         // callback is what makes `?session=<id>` resolvable: the shells render by id, and the
@@ -150,9 +125,9 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
         // stock unpaired binary cannot reach them.
         "api/send" => control::send_route(&backend.idx, req),
         "api/consent" => control::consent_route(&backend.idx, req, &backend.attempts),
-        "session" if front.session.is_some() && query_get(query, "chrome").is_none() => {
-            (front.session.as_ref().expect("checked"))(req, backend)
-        }
+        // The route that remembered the classic view (#s98): a page from before the release
+        // that still asks gets a plain 404, not the static fallback's 403.
+        "api/ui" => HttpResponse::not_found("the classic view is retired"),
         // Everything else is the session service's own wire surface — /session, /pull,
         // /records, /__reveal, static assets (§6.3). A session's feed is asked for by id, and the
         // service must have been shown that id first (#309).
@@ -224,8 +199,6 @@ mod tests {
         let front = Frontend {
             version: "0.0.0-test",
             paired: false,
-            classic: Arc::new(|_: &str| HttpResponse::html(String::new())),
-            session: None,
         };
         let serve = handler(make_backend("mdrev"), front);
         assert_eq!(claude_replay_html::mdrev_version(), Some(mdrev::VERSION));
@@ -258,8 +231,6 @@ mod tests {
         let front = Frontend {
             version: "0.0.0-test",
             paired: false,
-            classic: Arc::new(|_: &str| HttpResponse::html(String::new())),
-            session: None,
         };
         let serve = handler(make_backend("markdown"), front);
         let hostile =
@@ -287,9 +258,10 @@ mod tests {
         );
     }
 
-    /// The table serves the same surface for both frontends; only the named differences vary.
+    /// The table: the app shell at `/` whatever `?ui=` asks (the classic view is retired, #s98),
+    /// `/api/ui` gone, the API arms, and `/session` left to the session service.
     #[test]
-    fn the_table_dispatches_the_shared_arms_and_the_named_differences() {
+    fn the_table_serves_the_app_shell_and_the_api_arms() {
         let state = std::env::temp_dir().join(format!("cm-routes-state-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&state);
         std::fs::create_dir_all(&state).unwrap();
@@ -305,54 +277,43 @@ mod tests {
         ] {
             std::env::set_var(var, state.join(var.to_ascii_lowercase()));
         }
-        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        // A preference the classic view left behind is read as the app shell.
+        std::fs::write(state.join("ui.json"), r#"{"ui":"classic"}"#).unwrap();
         let front = Frontend {
             version: "0.0.0-test",
             paired: false,
-            classic: Arc::new(|query: &str| HttpResponse::html(format!("CLASSIC[{query}]"))),
-            session: Some({
-                let seen = seen.clone();
-                Arc::new(move |req: &Request, _backend: &Backend| {
-                    seen.lock().unwrap().push(req.query.to_string());
-                    HttpResponse::html("SESSION".to_string())
-                })
-            }),
         };
-        let backend = make_backend("v1");
-        // The app shell by default, the classic page on request — through the shared resolver.
-        assert!(
-            body(&dispatch(&backend, &front, &get("", "ui=app"))).contains("/monitor-ui/app.js")
-        );
+        let backend = make_backend("table");
+        for query in ["", "ui=app", "ui=classic", "ui=classic&session=s1"] {
+            assert!(
+                body(&dispatch(&backend, &front, &get("", query))).contains("/monitor-ui/app.js"),
+                "{query}"
+            );
+        }
+        assert!(body(&dispatch(
+            &backend,
+            &front,
+            &get("index.html", "ui=classic")
+        ))
+        .contains("/monitor-ui/app.js"));
         assert_eq!(
-            body(&dispatch(
-                &backend,
-                &front,
-                &get("", "ui=classic&session=s1")
-            )),
-            "CLASSIC[ui=classic&session=s1]"
-        );
-        assert_eq!(
-            body(&dispatch(
-                &backend,
-                &front,
-                &get("index.html", "ui=classic")
-            )),
-            "CLASSIC[ui=classic]"
+            dispatch(&backend, &front, &get("api/ui", "set=classic")).code,
+            "404 Not Found",
+            "the route that remembered the choice is gone"
         );
         // An asset is served before anything else is consulted.
         assert!(
             body(&dispatch(&backend, &front, &get("monitor-ui/app.js", ""))).contains("import")
         );
-        // #203: the tab icon, one source for both shells — under the name the app shell's link
-        // asks for and the one the browser asks for on its own.
+        // #203: the tab icon, under the name the app shell's link asks for and the one the
+        // browser asks for on its own.
         for name in ["favicon.svg", "favicon.ico"] {
             let icon = dispatch(&backend, &front, &get(name, ""));
             assert_eq!(icon.code, "200 OK", "{name}");
             assert_eq!(icon.content_type, "image/svg+xml", "{name}");
             assert!(body(&icon).starts_with("<svg"), "{name}");
         }
-        // The shared API arms.
-        assert!(body(&dispatch(&backend, &front, &get("api/ui", ""))).contains("\"ui\""));
+        // The API arms.
         assert!(body(&dispatch(&backend, &front, &get("api/sessions", ""))).contains("\"groups\""));
         assert!(body(&dispatch(&backend, &front, &get("api/ignore", ""))).contains("\"ok\":false"));
         // The write routes refuse an unauthenticated GET rather than acting.
@@ -364,36 +325,10 @@ mod tests {
                 .code
                 .starts_with("200")
         );
-        // v1's session arm sees `session` requests without `chrome`, and only those.
-        assert_eq!(
-            body(&dispatch(&backend, &front, &get("session", "session=s1"))),
-            "SESSION"
-        );
+        // `/session` is the session service's own (a 404 for an unknown id here).
         assert_ne!(
-            body(&dispatch(
-                &backend,
-                &front,
-                &get("session", "session=s1&chrome=embed")
-            )),
-            "SESSION"
+            dispatch(&backend, &front, &get("session", "session=s1")).code,
+            "200 OK"
         );
-        assert_eq!(seen.lock().unwrap().as_slice(), ["session=s1".to_string()]);
-        // v2 passes no session arm: the service answers (a 404 for an unknown id here).
-        let v2 = Frontend {
-            version: "0.0.0-test",
-            paired: true,
-            classic: Arc::new(|_q: &str| HttpResponse::html("SPLICE".to_string())),
-            session: None,
-        };
-        let backend2 = make_backend("v2");
-        assert_ne!(
-            body(&dispatch(&backend2, &v2, &get("session", "session=s1"))),
-            "SESSION"
-        );
-        assert_eq!(
-            body(&dispatch(&backend2, &v2, &get("", "ui=classic"))),
-            "SPLICE"
-        );
-        assert!(body(&dispatch(&backend2, &v2, &get("", "ui=app"))).contains("/monitor-ui/app.js"));
     }
 }

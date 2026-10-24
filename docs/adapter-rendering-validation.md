@@ -444,7 +444,7 @@ Run the adapter and browser cases explicitly during iteration:
 cargo test -p claude-replay-agents --test quoted_replies
 cargo test -p claude-replay-agents --test reply_diagnostics
 node claude-monitor/tests/quoted_replies.mjs
-cargo build --release -p claude-monitor -p claude-monitor-v2
+cargo build --release -p claude-monitor
 cargo test -p claude-replay-browser-tests --test quoted_replies -- --ignored
 ```
 

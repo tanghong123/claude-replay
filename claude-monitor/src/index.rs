@@ -3313,7 +3313,7 @@ mod tests {
                 Some("Enable Codex native mode under Write mode to use this shared server.")
             );
             // Feed each real route's response to the unchanged shared JS
-            // consumers used by the classic rail, app shell, and v2 shell.
+            // consumers the app shell uses.
             let script = r#"
                 import assert from 'node:assert/strict';
                 import { pathToFileURL } from 'node:url';

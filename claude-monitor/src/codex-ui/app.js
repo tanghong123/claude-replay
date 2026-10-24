@@ -57,23 +57,6 @@ document.querySelector(".brand small").textContent = `v${document.body.dataset.v
 // (`page-head.html`), not injected here: iOS reads the head to find the icon for a Home Screen
 // shortcut, and the extracted shell — the hand-written demo, kept byte-identical — declares none.
 
-// The shell switch. Both frontends are supported while this one is being validated, so the way
-// back has to be a control a person can see — not a query parameter they have to remember. It
-// writes the preference (`/api/ui`), so the choice survives a reload and a restart; `?ui=` on
-// the URL still overrides for one request, which is how the two get compared side by side.
-const shellToggle = document.createElement("button");
-shellToggle.className = "iconbtn shell-toggle";
-shellToggle.id = "shellToggle";
-shellToggle.title = "Switch to the classic interface";
-shellToggle.textContent = "Classic";
-shellToggle.onclick = () => {
-  shellToggle.disabled = true;
-  fetch("/api/ui?set=classic", { cache: "no-store" })
-    .then(() => { location.href = "/"; })
-    .catch(() => { shellToggle.disabled = false; });
-};
-document.querySelector(".head-actions").prepend(shellToggle);
-
 // Keep the immutable demo shell byte-identical and layer production-only identity actions on
 // top of it. The old viewer made the shortened id copy a different value (the transcript path),
 // which was useful but surprising; the menu makes both debug identities explicit.
@@ -709,7 +692,8 @@ byId("sidebarMiniAgents").onkeydown = event => { if (event.key === "ArrowRight")
 
 function sessionUrl(id) {
   const url = new URL(location.href); url.searchParams.set("session", id);
-  if (document.body.dataset.uiDefault === "true") url.searchParams.delete("ui"); else url.searchParams.set("ui", "app");
+  // A `ui=` left from when there were two shells is dropped (#s98).
+  url.searchParams.delete("ui");
   url.hash = ""; return url;
 }
 function selectSession(id, push) {
@@ -723,7 +707,7 @@ function selectSession(id, push) {
   preview.setSession(id);
   const row = selectedRow(); if (row) { indexState.read[id] = row.activityTs || Date.now() / 1000; persist(); }
   renderTree(); renderHeader(); controls.paint();
-  const url = new URL(location.href); url.searchParams.set("session", id); if (document.body.dataset.uiDefault === "true") url.searchParams.delete("ui"); else url.searchParams.set("ui", "app"); if (push) url.hash = ""; history[push ? "pushState" : "replaceState"]({}, "", url);
+  const url = new URL(location.href); url.searchParams.set("session", id); url.searchParams.delete("ui"); if (push) url.hash = ""; history[push ? "pushState" : "replaceState"]({}, "", url);
   recordState.session = id; viewport.beginSession(id); recordStore.open(id);
 }
 function sessionGone() { sessionLoading?.hide(); recordStore.stop(); preview.setSession(""); indexState.selected = ""; recordState.session = ""; viewport.showEmpty("Session is gone", "It may have been deleted or moved. The list keeps scanning.", true); }

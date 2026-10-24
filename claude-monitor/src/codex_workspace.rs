@@ -27,7 +27,7 @@ pub const PUBLIC_ASSETS: &[&str] = &[
     "codex-workspace/icon-180.png",
 ];
 
-/// Compose inert native support with the unchanged app/classic reader routes.
+/// Compose inert native support with the unchanged reader routes.
 /// No runtime is activated by construction, assets, status or session reading.
 pub fn handler(
     legacy: RouteHandler,
@@ -202,7 +202,7 @@ pub fn configured_runtime(
     })
 }
 
-/// This guard executes at the HTTP table, including classic and old app shells.
+/// This guard executes at the HTTP table, including old app shells.
 /// A missing tmux pane or process attribution never authorizes a second writer.
 fn deny_legacy_codex_write(
     request: &Request<'_>,
@@ -254,7 +254,7 @@ fn native_reader_page(page: String) -> String {
 }
 
 fn monitor_page() -> String {
-    native_reader_page(crate::ui::page(env!("CARGO_PKG_VERSION"), true, true))
+    native_reader_page(crate::ui::page(env!("CARGO_PKG_VERSION"), true))
         .replace(
             "href=\"/manifest.webmanifest\"",
             "href=\"/codex-workspace/manifest.webmanifest\"",
@@ -485,7 +485,7 @@ mod tests {
             !page.contains("maximum-scale=1"),
             "A reader starts with ordinary viewport behavior"
         );
-        assert!(!crate::ui::page(env!("CARGO_PKG_VERSION"), true, true).contains("maximum-scale=1"));
+        assert!(!crate::ui::page(env!("CARGO_PKG_VERSION"), true).contains("maximum-scale=1"));
         for marker in [
             "id=\"transcript\"",
             "id=\"composeInput\"",

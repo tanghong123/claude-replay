@@ -59,7 +59,7 @@ fn reveals(tab: &headless_chrome::Tab) -> Vec<String> {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn both_shells_copy_a_path_offered_without_a_stamp() {
     let _serial = serial();
     std::env::remove_var("AGENT_MONITOR_STATE");

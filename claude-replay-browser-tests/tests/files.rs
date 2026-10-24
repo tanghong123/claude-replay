@@ -126,7 +126,7 @@ fn reveals(tab: &headless_chrome::Tab) -> Vec<String> {
 /// manager beside it, from one control in the pane's head, and a click asks with the REVEAL stamp
 /// the server offered for that path, never the file stamp. An empty pane offers nothing.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_preview_offers_the_file_manager_for_whatever_it_shows() {
     let _serial = serial();
     let (base, stores, repo) = fixture("files-pane");
@@ -249,7 +249,7 @@ fn the_app_shell_preview_offers_the_file_manager_for_whatever_it_shows() {
 /// still offers the file manager: a button beside the explanation (and the head's control), on the
 /// reader's click. Never automatically: a reveal is a side effect on the reader's desktop.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_preview_offers_the_file_manager_when_it_cannot_read_the_file() {
     let _serial = serial();
     let (base, stores, repo) = fixture("files-unpaired");
@@ -312,7 +312,7 @@ fn the_app_shell_preview_offers_the_file_manager_when_it_cannot_read_the_file() 
 /// A prompt card keeps its own action and gains the file manager beside it, as the process-surface
 /// card already had: two controls, never a second action folded into one.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_prompt_card_offers_the_file_manager_beside_its_action() {
     let _serial = serial();
     let (base, stores, _repo) = fixture("files-card");
@@ -391,7 +391,7 @@ const BMP: &[u8] = &[
 /// Desktop's "Files mentioned by the user" is where such a path arrives, one pointer per prompt
 /// (two in a row would fold into a run and never reach the rule).
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_offers_a_path_as_an_image_exactly_when_the_server_serves_one() {
     let _serial = serial();
     let base = base("files-raster");
@@ -581,7 +581,7 @@ fn big_png(w: u32, h: u32) -> Vec<u8> {
 /// image is absolutely positioned), so the fit used its PADDING box, about 68px tall. A large image
 /// fills the pane on one axis, and re-fits when the pane changes width.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_preview_fits_a_large_image_to_the_pane() {
     let _serial = serial();
     let (base, stores, repo) = fixture("files-fit");
@@ -702,7 +702,7 @@ fn the_app_shell_preview_fits_a_large_image_to_the_pane() {
 /// pinch sends — never a phone's two fingers. On a phone, two fingers spreading on the pane's image
 /// zoom it in.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_preview_pinch_zooms_an_image_on_a_phone() {
     let _serial = serial();
     let (base, stores, repo) = fixture("files-pinch");
@@ -757,7 +757,7 @@ fn the_app_shell_preview_pinch_zooms_an_image_on_a_phone() {
 /// over the viewer's cap as well, which streams it as a download; and a pasted image whose original
 /// the client saved under `<home>/uploads/<session>/`, which the allowlist does not reach either.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_downloads_what_the_session_handed_over_wherever_it_lives() {
     const HANDED: &str = "5e5510a1-0000-4000-8000-000000000374";
     let _serial = serial();
@@ -888,7 +888,7 @@ fn a_phone_downloads_what_the_session_handed_over_wherever_it_lives() {
 /// that shape: an allowlist naming the case's root, a session in `repo/`, its reads in a sibling
 /// `wt/`. And a file deleted after the page offered it says it is GONE, naming the path.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_reads_a_mentioned_file_outside_the_session_under_the_allowlist() {
     const SID: &str = "5e5510a1-0000-4000-8000-0000000000s7";
     let _serial = serial();
@@ -989,7 +989,7 @@ fn a_phone_reads_a_mentioned_file_outside_the_session_under_the_allowlist() {
 /// handed over through sessionStorage. Since #s223 an embedded image opens in the pane on one click,
 /// as a file does, so both reach the tab from there.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn an_image_opens_in_a_tab_of_its_own_from_the_pane() {
     const IMG: &str = "5e5510a1-0000-4000-8000-0000000000s11";
     let _serial = serial();
@@ -1102,7 +1102,7 @@ fn an_image_opens_in_a_tab_of_its_own_from_the_pane() {
 /// which a phone cannot use (#335), and its "Open preview" did not show the file in mdrev. On a
 /// phone the card offers no reveal, and the preview is mdrev's: a Markdown file as a document.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_opens_a_carried_file_in_mdrev_and_is_offered_no_reveal() {
     const SID27: &str = "5e5510a1-0000-4000-8000-0000000000s27";
     let _serial = serial();
@@ -1219,12 +1219,12 @@ fn a_phone_opens_a_carried_file_in_mdrev_and_is_offered_no_reveal() {
 
 /// #s28, the owner: "some of the diff blocks are associated with bash command, and they carry a
 /// file name (e.g. CLAUDE.md), can we provide user the ability to open such files?" Each file a
-/// shell command changed leads its note as an offered path, on both pages: the app shell opens it
-/// in the preview pane (mdrev, for Markdown), the classic page offers it as a `.tool-path` with its
-/// stamps.
+/// shell command changed leads its note as an offered path, which the app shell opens in the
+/// preview pane (mdrev, for Markdown). Its classic-page leg went with the monitor's classic view
+/// (#s98).
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn a_file_a_shell_command_changed_opens_from_its_note_on_both_pages() {
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_file_a_shell_command_changed_opens_from_its_note() {
     const SID28: &str = "5e5510a1-0000-4000-8000-0000000000s28";
     let _serial = serial();
     let base = base("files-bash-edit-note");
@@ -1293,39 +1293,15 @@ fn a_file_a_shell_command_changed_opens_from_its_note_on_both_pages() {
         Duration::from_secs(30),
         PANE,
     );
-
-    // The classic page: the same note, the name a `.tool-path` with the file's stamps.
-    // The classic leg is the monitor's classic view (the v2 splice), on a monitor of its own: it
-    // retires in stage 3 of design/classic-view-deprecation.md, and this leg with it.
-    let classic = Monitor::spawn(Kind::V2, 3088, &base, Some(&stores), true);
-    classic.pair(&tab);
-    classic.open(&tab, &format!("?ui=classic&session={SID28}"));
-    let frame = "(function(){ var f = document.querySelector('iframe'); return f && f.contentDocument ? f.contentDocument : document; })()";
-    until(
-        &tab,
-        &format!("!!{frame}.querySelector('#stream .fold')"),
-        "the classic page",
-        Duration::from_secs(30),
-        PANE,
-    );
-    let classic = eval(
-        &tab,
-        &format!("(function(){{ var d = {frame}; d.querySelectorAll('#stream .fold').forEach(function (f) {{ if (f.dataset.open === '0') f.querySelector('.fold-h').click(); }}); d.querySelectorAll('#stream .fold').forEach(function (f) {{ if (f.dataset.open === '0') f.querySelector('.fold-h').click(); }}); var a = [...d.querySelectorAll('.note a.tool-path')].find(function (a) {{ return a.dataset.path === {path:?}; }}); return a ? JSON.stringify({{ text: a.textContent, fsig: !!a.dataset.fsig, sig: !!a.dataset.sig }}) : 'none'; }})()"),
-    );
-    assert_eq!(
-        classic.as_str(),
-        Some(r#"{"text":"CLAUDE.md","fsig":true,"sig":true}"#),
-        "the classic page offers the file on its note"
-    );
 }
 
 /// #s115, the owner: a Bash output too large for the transcript (#s114: the client keeps its first
 /// 30,000 bytes and saves the whole) opens with a note offering the saved file — its name the
-/// link, above the notice — which opens the WHOLE output in the preview pane: on the desktop, on
-/// a remote phone under an allowlist naming the store (the owner's lists `~/.claude/projects`),
-/// and on the classic page as a `.tool-path` with its stamps.
+/// link, above the notice — which opens the WHOLE output in the preview pane: on the desktop
+/// and on a remote phone under an allowlist naming the store (the owner's lists
+/// `~/.claude/projects`). Its classic-page leg went with the monitor's classic view (#s98).
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_cut_bash_output_opens_its_saved_whole_from_its_note() {
     const SID115: &str = "5e5510a1-0000-4000-8000-000000000115";
     let _serial = serial();
@@ -1443,29 +1419,6 @@ fn a_cut_bash_output_opens_its_saved_whole_from_its_note() {
         Duration::from_secs(30),
         PANE,
     );
-
-    // The classic page: the same note, the name a `.tool-path` with the file's stamps. It retires
-    // with the classic view (stage 3 of design/classic-view-deprecation.md), and this leg with it.
-    let classic = Monitor::spawn(Kind::V2, 3093, &base, Some(&stores), true);
-    classic.pair(&tab);
-    classic.open(&tab, &format!("?ui=classic&session={SID115}"));
-    let frame = "(function(){ var f = document.querySelector('iframe'); return f && f.contentDocument ? f.contentDocument : document; })()";
-    until(
-        &tab,
-        &format!("!!{frame}.querySelector('#stream .fold')"),
-        "the classic page",
-        Duration::from_secs(30),
-        PANE,
-    );
-    let classic = eval(
-        &tab,
-        &format!("(function(){{ var d = {frame}; d.querySelectorAll('#stream .fold').forEach(function (f) {{ if (f.dataset.open === '0') f.querySelector('.fold-h').click(); }}); d.querySelectorAll('#stream .fold').forEach(function (f) {{ if (f.dataset.open === '0') f.querySelector('.fold-h').click(); }}); var a = [...d.querySelectorAll('.note a.tool-path')].find(function (a) {{ return a.dataset.path === {path:?}; }}); return a ? JSON.stringify({{ text: a.textContent, fsig: !!a.dataset.fsig, sig: !!a.dataset.sig }}) : 'none'; }})()"),
-    );
-    assert_eq!(
-        classic.as_str(),
-        Some(r#"{"text":"b1.txt","fsig":true,"sig":true}"#),
-        "the classic page offers the saved output on its note"
-    );
 }
 
 /// What offers the file manager, visibly, anywhere on either page right now: the controls that
@@ -1489,14 +1442,15 @@ const REVEAL_CONTROLS: &str = r#"(function () {
 
 /// #s29, the owner: "Can you extend an audit to make sure we have no reveal in file manager in the
 /// mobile rendering path?" (#s27 had found the process card still offering one on a phone.) A phone,
-/// on both pages, over a session that offers every kind of path the pages draw — a Read target, one
+/// on the app shell, over a session that offers every kind of path the page draws — a Read target, one
 /// outside the session (refused) and one gone, an Edit, a Write, a multi-file delivery, a prompt
 /// attachment, a carried file, a pointer run, an image, a shell command's changed file. Everything
 /// is expanded and every offered path and attachment is clicked: no control may offer the file
-/// manager, and no `/__reveal` request may leave the page (the stub records it instead).
+/// manager, and no `/__reveal` request may leave the page (the stub records it instead). Its
+/// classic-page leg went with the monitor's classic view (#s98).
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
-fn a_phone_is_never_offered_the_file_manager_on_either_page() {
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_is_never_offered_the_file_manager() {
     const SID29: &str = "5e5510a1-0000-4000-8000-0000000000s29";
     let _serial = serial();
     let base = base("files-phone-fm-audit");
@@ -1608,46 +1562,6 @@ fn a_phone_is_never_offered_the_file_manager_on_either_page() {
         eval(&tab, "(function(){ document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true})); var c = document.getElementById('closePreview'); if (c && c.offsetWidth) c.click(); return 'ok'; })()");
         std::thread::sleep(Duration::from_millis(300));
     }
-
-    // ── The classic page ───────────────────────────────────────────────────────────────────
-    // The classic leg is the monitor's classic view (the v2 splice), on a monitor of its own: it
-    // retires in stage 3 of design/classic-view-deprecation.md, and this leg with it.
-    let classic = Monitor::spawn_remote(Kind::V2, 3089, &base, Some(&stores));
-    classic.open_remote(&tab, &format!("?ui=classic&session={SID29}"));
-    let frame = "(function(){ var f = document.querySelector('iframe'); return f && f.contentDocument ? f.contentDocument : document; })()";
-    until(
-        &tab,
-        &format!("{frame}.querySelectorAll('#stream .fold').length > 0"),
-        "the classic page",
-        Duration::from_secs(30),
-        PANE,
-    );
-    stub(&tab);
-    for _ in 0..3 {
-        eval(&tab, &format!("(function(){{ var d = {frame}; d.querySelectorAll('#stream .fold').forEach(function (f) {{ if (f.dataset.open === '0') f.querySelector('.fold-h').click(); }}); return 'ok'; }})()"));
-        std::thread::sleep(Duration::from_millis(300));
-    }
-    scan(&tab, "classic, everything open", &mut leaks);
-    // Every path link, and every attachment whose click opens or reveals (not a download).
-    let sel = "a.tool-path, .adl[title=\"open\"], .adl[title=\"copy path\"], .adl[title=\"reveal in file manager\"]";
-    let targets = eval(&tab, &format!("{frame}.querySelectorAll('{sel}').length"))
-        .as_i64()
-        .unwrap_or(0);
-    assert!(
-        targets >= 8,
-        "the classic page offers the paths too: {targets}"
-    );
-    for i in 0..targets {
-        let what = eval(&tab, &format!("(function(){{ var e = {frame}.querySelectorAll('{sel}')[{i}]; if (!e) return 'none'; var w = e.className + ' ' + (e.dataset.path || e.textContent); e.click(); return w; }})()"));
-        std::thread::sleep(Duration::from_millis(700));
-        scan(
-            &tab,
-            &format!("classic after {}", what.as_str().unwrap_or("?")),
-            &mut leaks,
-        );
-        eval(&tab, &format!("(function(){{ var d = {frame}; d.querySelectorAll('.lightbox').forEach(function (b) {{ b.remove(); }}); return 'ok'; }})()"));
-    }
-
     let sent = eval(&tab, "JSON.stringify(window.__reveals || [])");
     assert_eq!(
         sent.as_str(),
@@ -1697,7 +1611,7 @@ fn a_phone_is_never_offered_the_file_manager_on_either_page() {
 /// desktop saves it. The world: a 9 MB film the agent sent (over the viewer cap, so the pane offers it
 /// as a download), on a loopback page, which is a secure context.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_download_opens_the_share_sheet_and_a_desktop_saves() {
     const SID: &str = "5e5510a1-0000-4000-8000-000000000036";
     let _serial = serial();
@@ -1836,7 +1750,7 @@ const PANE_TABS: &str = "(function(){ var b = document.getElementById('previewBo
 /// selected, a tab already open moved into place. A `#b…` link to an image in a group lands on its
 /// thumbnail. On a phone the thumbnails are finger-sized and one tap opens the pane's sheet.
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn consecutive_images_are_one_block_and_open_in_the_pane_one_by_one_or_all() {
     const SHOTS: &str = "5e5510a1-0000-4000-8000-0000000000s221";
     let _serial = serial();

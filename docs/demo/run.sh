@@ -14,11 +14,11 @@ rm -rf $STORE
 python3 $D/make_store.py $STORE $BIG_MB
 
 echo "### monitor on 127.0.0.1:$PORT"
-[ -x $R/target/release/agent-monitor-v2 ] || (cd $R && cargo build --release -p claude-monitor-v2)
+[ -x $R/target/release/agent-monitor ] || (cd $R && cargo build --release -p claude-monitor)
 CLAUDE_PROJECTS_DIR=$STORE/claude QODERWORK_PROJECTS_DIR=$STORE/qoderwork QWENWORK_PROJECTS_DIR=$STORE/qwenwork QODER_PROJECTS_DIR=$STORE/qoder \
 CODEX_HOME=$STORE/codex CLAUDE_JDI_TASKS_ROOT=$STORE/claude-tasks \
 XDG_CACHE_HOME=$STORE/home-cache CLAUDE_MONITOR_CACHE=$STORE/cache CLAUDE_MONITOR_STATE=$STORE/state \
-  $R/target/release/agent-monitor-v2 --port $PORT > $STORE/monitor.log 2>&1 &
+  $R/target/release/agent-monitor --port $PORT > $STORE/monitor.log 2>&1 &
 MON=$!
 trap "kill $MON 2>/dev/null; pkill -f 'claude --resume aaaaaaaa' 2>/dev/null" EXIT
 sleep 5

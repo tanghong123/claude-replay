@@ -611,7 +611,7 @@ fn scenario_the_instrument_sees_the_whole_corpus(tab: &headless_chrome::Tab, sur
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn classic_page_the_instrument_sees_the_whole_corpus() {
     let _serial = serial();
     let fx = fixture_audit("audit-instrument-classic");
@@ -620,7 +620,7 @@ fn classic_page_the_instrument_sees_the_whole_corpus() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_the_instrument_sees_the_whole_corpus() {
     let _serial = serial();
     let fx = fixture_audit("audit-instrument-app");
@@ -814,7 +814,7 @@ fn scenario_wrap_governs_exactly_the_verbatim_text(tab: &headless_chrome::Tab, s
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn classic_page_size_governs_exactly_the_code() {
     let _serial = serial();
     let fx = fixture_audit("audit-size-classic");
@@ -823,7 +823,7 @@ fn classic_page_size_governs_exactly_the_code() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_size_governs_exactly_the_code() {
     let _serial = serial();
     let fx = fixture_audit("audit-size-app");
@@ -832,7 +832,7 @@ fn app_shell_size_governs_exactly_the_code() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn classic_page_wrap_governs_exactly_the_verbatim_text() {
     let _serial = serial();
     let fx = fixture_audit("audit-wrap-classic");
@@ -841,7 +841,7 @@ fn classic_page_wrap_governs_exactly_the_verbatim_text() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_wrap_governs_exactly_the_verbatim_text() {
     let _serial = serial();
     let fx = fixture_audit("audit-wrap-app");
@@ -941,7 +941,7 @@ fn scenario_a_fold_acts_on_its_own_record(tab: &headless_chrome::Tab, surface: S
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn classic_page_a_fold_acts_on_its_own_record() {
     let _serial = serial();
     let fx = fixture_audit("audit-fold-classic");
@@ -950,7 +950,7 @@ fn classic_page_a_fold_acts_on_its_own_record() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_fold_acts_on_its_own_record() {
     let _serial = serial();
     let fx = fixture_audit("audit-fold-app");
@@ -1131,7 +1131,7 @@ fn both_surfaces(fx: &Fixture, port: u16) -> (Opened, Opened) {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_two_pages_agree_about_what_the_size_control_reaches() {
     let _serial = serial();
     let fx = fixture_audit("audit-p3-size");
@@ -1143,7 +1143,7 @@ fn the_two_pages_agree_about_what_the_size_control_reaches() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_two_pages_agree_about_what_the_wrap_control_reaches() {
     let _serial = serial();
     let fx = fixture_audit("audit-p3-wrap");
@@ -1271,7 +1271,7 @@ fn no_op_press(
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn classic_page_a_press_that_changes_nothing_does_not_move_the_reader() {
     let _serial = serial();
     let fx = fixture_audit("audit-p4-classic");
@@ -1280,7 +1280,7 @@ fn classic_page_a_press_that_changes_nothing_does_not_move_the_reader() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_press_that_changes_nothing_does_not_move_the_reader() {
     let _serial = serial();
     let fx = fixture_audit("audit-p4-app");
@@ -1407,7 +1407,7 @@ fn scenario_the_claims_hold_at_every_width_and_theme(tab: &headless_chrome::Tab,
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn classic_page_the_claims_hold_at_every_width_and_theme() {
     let _serial = serial();
     let fx = fixture_audit("audit-conditions-classic");
@@ -1416,7 +1416,7 @@ fn classic_page_the_claims_hold_at_every_width_and_theme() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_the_claims_hold_at_every_width_and_theme() {
     let _serial = serial();
     let fx = fixture_audit("audit-conditions-app");
@@ -1512,7 +1512,7 @@ fn scenario_raw_text_governs_exactly_the_user_turns(tab: &headless_chrome::Tab, 
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn classic_page_raw_text_governs_exactly_the_user_turns() {
     let _serial = serial();
     let fx = fixture_audit("audit-raw-classic");
@@ -1521,7 +1521,7 @@ fn classic_page_raw_text_governs_exactly_the_user_turns() {
 }
 
 #[test]
-#[ignore = "needs a local Chrome and a built agent-monitor-v2"]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_raw_text_governs_exactly_the_user_turns() {
     let _serial = serial();
     let fx = fixture_audit("audit-raw-app");

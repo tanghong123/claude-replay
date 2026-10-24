@@ -1,11 +1,9 @@
 //! `agent-monitor` — every agent session on this machine, one page, over loopback HTTP
-//! (#98). The Codex-style app shell is the default frontend over the existing `/pull` +
-//! `/records` protocol. The rail-and-iframe page is the SECOND SUPPORTED shell, not a rollback
-//! seam: `ui::preference` remembers which one you want, each carries a button to the other, and
-//! `?ui=` overrides for one request. It goes when the app shell has been validated.
+//! (#98). The page is the Codex-style app shell over the `/pull` + `/records` protocol; the
+//! classic rail-and-iframe page it once switched with is retired (#s98).
 //!
 //! Read-only, loopback only (§11). No fold on the index path (R7), no background sweep
-//! (§3): a session's durable entry is written by VISITING it, and the rail's counters read
+//! (§3): a session's durable entry is written by VISITING it, and the list's counters read
 //! that entry's meta stream lock-free.
 
 #[cfg(all(unix, feature = "codex-native"))]
@@ -19,17 +17,13 @@ use claude_monitor::index;
 
 use anyhow::{Context, Result};
 use claude_replay_core::Agent;
-use claude_replay_html::{service_routes, HttpResponse, RootLock, ServiceConfig};
+use claude_replay_html::{RootLock, ServiceConfig};
 use claude_replay_present::cache::Presentation;
 use std::io::IsTerminal;
 use std::sync::Arc;
 
 /// The stable default port (§11): the monitor is a bookmarkable place.
 const DEFAULT_PORT: u16 = 2727;
-
-/// The rail page — self-contained, its own markup and script (§6.3). `{{VERSION}}` is the
-/// only server-side substitution: which build is running (mirrors the HTML viewer's brand).
-const RAIL_TEMPLATE: &str = include_str!("rail.html");
 
 /// What claiming the cache root came to.
 #[derive(Debug)]
@@ -109,11 +103,6 @@ fn publish_runtime_note(root: &std::path::Path, ownership: serde_json::Value) {
             root.join("LOCK").display()
         );
     }
-}
-
-#[cfg(test)]
-fn classic_ui_requested(query: &str) -> bool {
-    claude_monitor::ui::resolve(query) == claude_monitor::ui::Shell::Classic
 }
 
 /// The port out of a root lock's note, which is plain JSON here — the monitor has no serde
@@ -201,15 +190,7 @@ USAGE:
                     browser cannot lift the gate meant to stop it.
 
 Serves http://127.0.0.1:{DEFAULT_PORT} — loopback only.
-Codex native is optional and starts only after an explicit browser action;
-the existing readers remain at `/?ui=app` and `/?ui=classic`.
-
-TWO INTERFACES, one of them DEPRECATED:
-  the app shell (default) and the classic rail-and-iframe page, which goes in
-  the next release, with the /session page. Each carries a button that switches
-  to the other and REMEMBERS the choice (stored in <state_dir>/ui.json, shared
-  with agent-monitor-v2). `?ui=classic` / `?ui=app` on the URL override for one
-  request without changing what is stored.
+Codex native is optional and starts only after an explicit browser action.
 
 CACHE ROOT:
   $AGENT_MONITOR_CACHE, else $CLAUDE_MONITOR_CACHE (legacy, still honored). With
@@ -349,9 +330,8 @@ fn main() -> Result<()> {
             anyhow::ensure!(receipt["note"]["native"] == native_runtime.identity(),
                 "The running Monitor has different or absent native configuration. Use its matching native settings or a separate AGENT_MONITOR_CACHE; no server was started.");
         }
-        // The bare URL, deliberately: which shell `/` serves is the REMEMBERED preference
-        // (`ui::resolve`), and the running monitor is the one that answers it. Pinning a `ui=`
-        // here would override the user's own choice on every hand-off.
+        // The bare URL: `/` is the app shell, the only page the monitor serves since the classic
+        // view retired (#s98).
         // The token is printed only to a terminal (#s204); the browser is still opened with it.
         let (out_tty, err_tty) = (
             std::io::stdout().is_terminal(),
@@ -410,18 +390,8 @@ fn main() -> Result<()> {
     );
     let idx = Arc::new(index::Index::new(root.clone(), state, only));
 
-    let rail = RAIL_TEMPLATE
-        .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"))
-        // Seam 0 (#43): the shared frontend modules, inlined ahead of the rail's own script
-        // exactly as the html crate inlines them into its pages, so `window.__shared` is
-        // there synchronously — no module import to race the first render.
-        .replace("{{SHARED}}", &claude_replay_html::shared_inline_all())
-        // #133 3b: the compose affordance only exists when paired — an unpaired monitor
-        // has no write capability (the route 401s), so the UI must not offer it.
-        .replace("{{PAIRED}}", if token.is_some() { "true" } else { "false" });
     let paired = token.is_some();
-    // The route table is the library's (claude_monitor::routes, #47); this binary contributes
-    // its rail as the classic page and its `chrome=embed`-defaulting session arm.
+    // The route table is the library's (claude_monitor::routes, #47).
     let backend = Arc::new(claude_monitor::routes::Backend {
         service: service.clone(),
         idx: idx.clone(),
@@ -435,28 +405,6 @@ fn main() -> Result<()> {
         claude_monitor::routes::Frontend {
             version: env!("CARGO_PKG_VERSION"),
             paired,
-            classic: {
-                let rail = rail.clone();
-                Arc::new(move |_query: &str| HttpResponse::html(rail.clone()))
-            },
-            // The monitor ONLY ever serves the view EMBEDDED. The view navigates sub-agents
-            // with a relative `?session=<child>` href that drops the `chrome=embed` param, so
-            // default it back here — a drilled-in child keeps embed chrome instead of flashing
-            // the full claude-replay brand (#124).
-            session: Some(Arc::new(
-                |req: &claude_replay_html::Request, backend: &claude_monitor::routes::Backend| {
-                    let q = if req.query.is_empty() {
-                        "chrome=embed".to_string()
-                    } else {
-                        format!("{}&chrome=embed", req.query)
-                    };
-                    service_routes(
-                        Some(&backend.service),
-                        &backend.scratch,
-                        &claude_replay_html::Request { query: &q, ..*req },
-                    )
-                },
-            )),
         },
     );
 
@@ -564,26 +512,16 @@ mod tests {
         std::fs::remove_file(root).unwrap();
     }
 
+    /// The app shell is the page; the classic view and its `ui=` switch are retired (#s98).
     #[test]
-    fn app_shell_is_the_default_and_classic_stays_reachable() {
-        let app = claude_monitor::ui::page("test", false, true);
+    fn the_app_shell_is_the_page_and_help_names_no_second_interface() {
+        let app = claude_monitor::ui::page("test", false);
         assert!(app.contains("/monitor-ui/app.js"));
-        assert!(app.contains("data-ui-default=\"true\""));
+        assert!(!app.contains("data-ui-default"));
         assert!(claude_monitor::ui::asset("monitor-ui/record-store.js").is_some());
         assert!(claude_monitor::ui::asset("monitor-ui/components.js").is_some());
-        assert!(super::RAIL_TEMPLATE.contains("requestedSession"));
-        // #43: the rail's grouping, hiding and fork families are the shared module's.
-        assert!(super::RAIL_TEMPLATE.contains("{{SHARED}}"));
-        let served =
-            super::RAIL_TEMPLATE.replace("{{SHARED}}", &claude_replay_html::shared_inline_all());
-        assert!(served.contains("Object.assign(window.__shared, { "));
-        assert!(served.contains("shared.families") && served.contains("shared.hideAction("));
-        assert!(!served.contains("function clusterKey("));
-        assert!(super::RAIL_TEMPLATE.contains("URLSearchParams(location.search)"));
-        assert!(super::help_text().contains("?ui=classic"));
-        assert!(!super::classic_ui_requested("ui=codex"));
-        assert!(!super::classic_ui_requested("ui=app"));
-        assert!(super::classic_ui_requested("ui=classic"));
+        let help = super::help_text();
+        assert!(!help.contains("ui=classic") && !help.contains("TWO INTERFACES"));
     }
 
     #[test]

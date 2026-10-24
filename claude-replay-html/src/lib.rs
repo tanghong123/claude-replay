@@ -7,7 +7,7 @@
 
 pub mod html_export;
 
-pub use html_export::shared::{inline_all as shared_inline_all, shared_source, SHARED};
+pub use html_export::shared::{shared_source, SHARED};
 
 /// One-time phone pairing codes (#11) — the monitor CLI mints them; the listener redeems them.
 pub use html_export::pairing;

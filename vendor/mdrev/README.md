@@ -1,8 +1,8 @@
 # mdrev, pinned
 
-The monitors' Markdown viewer (#270) is mdrev's embedded viewer, and this crate is the one copy of
-mdrev they have (#274). It holds the embedding kit of ONE public mdrev release, vendored under
-`release/`, and `agent-monitor` and `agent-monitor-v2` build it into their binaries. Nothing
+The monitor's Markdown viewer (#270) is mdrev's embedded viewer, and this crate is the one copy of
+mdrev it has (#274). It holds the embedding kit of ONE public mdrev release, vendored under
+`release/`, and `agent-monitor` builds it into its binary. Nothing
 installed on the machine is looked for: this directory is the dependency, the way `claude-monitor`
 depends on the other crates in this repository. `design/mdrev-in-the-preview-pane.md` covers what
 the monitor does with it.

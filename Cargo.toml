@@ -23,7 +23,6 @@ members = [
     # Separate library; default gates test it without linking it into Monitor binaries.
     "claude-monitor-codex",
     "claude-monitor-fleet",
-    "claude-monitor-v2",
     # The pinned mdrev (#274): one released embedding kit, vendored and built into the monitors.
     "vendor/mdrev",
     # In `members` but NOT in `default-members` below — that omission is the gate that keeps its
@@ -43,7 +42,6 @@ default-members = [
     "claude-monitor",
     "claude-monitor-codex",
     "claude-monitor-fleet",
-    "claude-monitor-v2",
     "vendor/mdrev",
 ]
 

@@ -87,9 +87,8 @@ and the blocked ones.
   on Write and then Codex native to start or continue Codex conversations through a local
   Codex app-server, with text and images, interrupts, approvals and questions
   ([below](#codex-native-mode--optional-shared-runtime)).
-- **One interface, and one going.** The app shell is the default. The classic page and
-  `/session` have been deprecated since 1.376.0; they are still there, and a button on the
-  page switches between the two and remembers the choice.
+- **One interface.** The app shell is the page. The classic page it once switched with, deprecated
+  since 1.376.0, is retired; `/session` follows it.
 
 ## Pairing, phone and write mode
 
@@ -481,12 +480,9 @@ cargo install --path claude-monitor   # → ~/.cargo/bin/agent-monitor
 agent-monitor                         # opens the app-shell monitor at 127.0.0.1:2727
 ```
 
-Two interfaces ship, and both are supported. The **app shell** is the default: it consumes the
-structured session index and the `/records` pipeline directly, in one document. The **classic**
-rail-and-iframe page is still there. Each carries a button that switches to the other and
-remembers the choice; `?ui=classic` or `?ui=app` on the URL overrides for a single request
-without changing what is remembered, so the two can be compared side by side. The classic page
-stays until the app shell has been validated in real use.
+Its page is the **app shell**: it consumes the structured session index and the `/records`
+pipeline directly, in one document. The classic rail-and-iframe page it once switched with is
+retired.
 
 ```bash
 cargo install --path claude-monitor-fleet   # → ~/.cargo/bin/agent-monitor-fleet

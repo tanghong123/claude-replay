@@ -128,12 +128,6 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
 /* #167. Hidden at rest, revealed on the block the pointer is over — the owner asked for the chip, not for a column of them ("too many #s"). Because #162 gave each control a real SLOT, revealing costs NO reflow: the space is already held, so nothing moves when the pointer arrives. Both controls now follow one rule. */.spot-link{opacity:0;border-color:var(--line);background:var(--bg);color:var(--faint)}.turn:hover>.spot-link,.turn:focus-within>.spot-link,.spot-link:focus-visible{opacity:1}.spot-link:hover,.spot-link:focus-visible{border-color:color-mix(in srgb,var(--primary) 22%,var(--line));background:color-mix(in srgb,var(--primary-soft) 42%,var(--bg));color:var(--primary);transform:translateY(-1px)}.spot-link:focus-visible{outline:2px solid color-mix(in srgb,var(--primary) 48%,transparent);outline-offset:2px}.spot-link.copied{opacity:1;border-color:color-mix(in srgb,var(--success) 26%,var(--line));background:var(--success-soft);color:var(--success);transform:none}.turn.source-flash>.spot-link{opacity:1}@media(hover:none){.spot-link,.renderer>.renderer-spot{opacity:1}}@media(max-width:620px){.spot-link{right:0;--spot-top:-5px}.turn.user .spot-link{--spot-top:-12px}.turn.proposed-plan>.spot-link{right:7px;--spot-top:8px}}
 @media(max-width:620px){.turn.user .user-prompt{max-width:90%}.prompt-attachments{grid-template-columns:1fr}.turn.proposed-plan>.body{padding:13px 12px 15px}}
 
-/* The shell switch (see app.js). A word, not a glyph: it is the way back to the other
-   frontend while both are supported, and it has to be recognisable without a tooltip. */
-.iconbtn.shell-toggle{width:auto;padding:0 8px;font-size:11px;font-weight:600;letter-spacing:.02em;opacity:.72}
-.iconbtn.shell-toggle:hover{opacity:1}
-.iconbtn.shell-toggle[disabled]{opacity:.4;pointer-events:none}
-
 /* Hide / restore (parity #1). The action sits on the row and shows on hover or focus; a hidden
    row, revealed by "Hidden (n)", is dimmed and shows its restore action outright. */
 .tree-action{width:22px;height:22px;flex:none;padding:0;border-radius:6px;display:grid;place-items:center;background:transparent;color:var(--faint);cursor:pointer;opacity:0;transition:opacity .12s}
@@ -873,11 +867,6 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 #app.sidebar-tight .side-head{padding-left:10px;padding-right:10px}
 #app.sidebar-tight .head-actions{gap:0}
 #app.sidebar-tight .side-head .iconbtn{width:30px;height:30px;border-radius:8px}
-/* The shell switch is a WORD, so the tight state's 30px glyph width is not for it — that rule
-   was shaving the label (#223: measured clipped at the 232px minimum, scrollWidth past
-   clientWidth, which is exactly the clash the owner saw). It keeps its content width and
-   takes its own line when the row cannot hold it. */
-#app.sidebar-tight .side-head .iconbtn.shell-toggle{width:auto;flex:none;padding:0 6px}
 #app.sidebar-tight .side-head .iconbtn .icon{width:15px;height:15px}
 
 /* #215: a head's action sits ON the head, so it has to outrank it. `.outline-card-action` was
@@ -1172,7 +1161,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   :root{--sidebar:min(86vw,360px)}
   #app>.sidebar{right:auto;width:min(86vw,360px);background:var(--side);box-shadow:1px 0 0 var(--line),14px 0 36px -20px rgba(20,26,40,.5)}
   #app.mobile-detail>.sidebar{box-shadow:none}
-  #app .sidebar-mini,#app .sidebar-resizer,#app #mobileBack,#app #sidebarReopen,#app #sidebarCollapse,#app #shellToggle{display:none!important}
+  #app .sidebar-mini,#app .sidebar-resizer,#app #mobileBack,#app #sidebarReopen,#app #sidebarCollapse{display:none!important}
   #app>.workspace{isolation:isolate}
   .drawer-scrim{display:block;position:fixed;inset:0;z-index:15;background:rgba(14,19,31,.42);opacity:0;pointer-events:none;transition:opacity .22s}
   #app:not(.mobile-detail)>.drawer-scrim{opacity:1;pointer-events:auto}
