@@ -107,9 +107,10 @@ impl Write for NativeStream {
 /// receive the Monitor's credential. So the credential goes out only on a connection whose
 /// SERVER end belongs to this OS user, read for that very connection.
 ///
-/// Until the server accepts, the kernel may not say: macOS's `lsof` sees a socket only once a
-/// process holds it, and Linux may report a socket no process holds yet as root's. So the owner is
-/// read again until it is this user or `OWNER_WAIT` passes, which only a refusal ever waits out.
+/// Until the server accepts, no process holds its end: macOS's `lsof` does not list it, and Linux
+/// lists it with inode 0 (and, before 6.17, root's uid — which a root Monitor would take for its
+/// own). Either is no owner yet, so the owner is read again until it is this user or `OWNER_WAIT`
+/// passes, which only a refusal ever waits out.
 pub(super) fn tcp_server_owner(stream: &TcpStream) -> Option<u32> {
     let (Ok(server), Ok(client)) = (stream.peer_addr(), stream.local_addr()) else {
         return None;
@@ -177,14 +178,13 @@ fn effective_uid() -> Option<u32> {
 mod tcp_owner {
     use std::net::SocketAddr;
 
+    /// Both tables: a dual-stack server (`[::]`) holds a v4 connection's end in `tcp6`, as
+    /// `::ffff:127.0.0.1`.
     #[cfg(target_os = "linux")]
     pub(super) fn lookup(server: SocketAddr, client: SocketAddr) -> Option<u32> {
-        let table = if server.is_ipv4() {
-            "/proc/net/tcp"
-        } else {
-            "/proc/net/tcp6"
-        };
-        proc_net_owner(&std::fs::read_to_string(table).ok()?, server, client)
+        ["/proc/net/tcp", "/proc/net/tcp6"]
+            .iter()
+            .find_map(|table| proc_net_owner(&std::fs::read_to_string(table).ok()?, server, client))
     }
 
     /// As this user, `lsof` lists only this user's processes (measured on macOS 26: it finds
@@ -204,13 +204,18 @@ mod tcp_owner {
             .spawn()
             .ok()?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while child.try_wait().ok()?.is_none() {
-            if std::time::Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(5))
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
         }
         let mut out = String::new();
         std::io::Read::read_to_string(child.stdout.as_mut()?, &mut out).ok()?;
@@ -223,7 +228,8 @@ mod tcp_owner {
     }
 
     /// The `uid` of the `/proc/net/tcp` (or `tcp6`) row whose local end is `server` and whose
-    /// remote end is `client`: the server's socket for this connection.
+    /// remote end is `client`: the server's socket for this connection. A row with inode 0 is
+    /// a socket no process holds yet (not accepted, or already closed), which has no owner.
     #[cfg(any(target_os = "linux", test))]
     pub(super) fn proc_net_owner(
         contents: &str,
@@ -233,14 +239,18 @@ mod tcp_owner {
         contents.lines().skip(1).find_map(|line| {
             let mut f = line.split_whitespace();
             let (local, remote) = (proc_addr(f.nth(1)?)?, proc_addr(f.next()?)?);
-            // After rem_address: st, tx:rx, tr:tm, retrnsmt, then uid.
+            if (local, remote) != (server, client) {
+                return None;
+            }
+            // After rem_address: st, tx:rx, tr:tm, retrnsmt, uid, timeout, inode.
             let uid = f.nth(4)?.parse().ok()?;
-            (local == server && remote == client).then_some(uid)
+            (f.nth(1)?.parse::<u64>().ok()? != 0).then_some(uid)
         })
     }
 
     /// `0100007F:1194` or 32 hex digits and a port: each 32-bit word is printed as the number
-    /// its bytes make in memory (little-endian here), the port as big-endian hex.
+    /// its bytes make in memory, in host byte order; the port as big-endian hex. A v4-mapped
+    /// address (a dual-stack socket's) reads as the v4 address it maps.
     #[cfg(any(target_os = "linux", test))]
     fn proc_addr(field: &str) -> Option<SocketAddr> {
         let (hex, port) = field.split_once(':')?;
@@ -248,14 +258,14 @@ mod tcp_owner {
         let mut bytes = Vec::with_capacity(16);
         for word in 0..hex.len() / 8 {
             let value = u32::from_str_radix(hex.get(word * 8..word * 8 + 8)?, 16).ok()?;
-            bytes.extend_from_slice(&value.to_le_bytes());
+            bytes.extend_from_slice(&value.to_ne_bytes());
         }
         let ip = match (hex.len(), bytes.len()) {
             (8, 4) => std::net::IpAddr::from(<[u8; 4]>::try_from(bytes).ok()?),
             (32, 16) => std::net::IpAddr::from(<[u8; 16]>::try_from(bytes).ok()?),
             _ => return None,
         };
-        Some(SocketAddr::new(ip, port))
+        Some(SocketAddr::new(ip.to_canonical(), port))
     }
 
     /// The `u` (process user id) of the process whose open file is named exactly `name` in
@@ -289,7 +299,10 @@ mod owner_tests {
     }
 
     /// #s145: the row that names the SERVER's end of this connection decides, never the
-    /// client's own row, the listener's, or another connection to the same port.
+    /// client's own row, the listener's, or another connection to the same port; and a row no
+    /// process holds yet (inode 0, root's uid before Linux 6.17) is no owner. The hex is a
+    /// little-endian host's.
+    #[cfg(target_endian = "little")]
     #[test]
     fn proc_net_names_the_owner_of_the_servers_end_of_this_connection() {
         let v4 = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
@@ -310,6 +323,20 @@ mod owner_tests {
             Some(505)
         );
         assert_eq!(proc_net_owner("", addr(SERVER), addr(CLIENT)), None);
+        let unaccepted = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+           0: 0100007F:1194 0100007F:EF32 01 00000000:00000000 00:00000000 00000000     0        0 0 1\n";
+        assert_eq!(
+            proc_net_owner(unaccepted, addr(SERVER), addr(CLIENT)),
+            None,
+            "a socket no process holds yet is no owner, not root's"
+        );
+        let dual_stack = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+           0: 0000000000000000FFFF00000100007F:1194 0000000000000000FFFF00000100007F:EF32 01 00000000:00000000 00:00000000 00000000   506        0 6 1\n";
+        assert_eq!(
+            proc_net_owner(dual_stack, addr(SERVER), addr(CLIENT)),
+            Some(506),
+            "a dual-stack server holds a v4 connection's end as ::ffff:127.0.0.1"
+        );
     }
 
     /// The process that holds a file named exactly `<server>-><client>` decides; this process's
@@ -364,6 +391,18 @@ mod owner_tests {
         assert!(foreign.contains("another OS user"), "{foreign}");
         let unknown = credential_may_go_to(None).unwrap_err();
         assert!(unknown.contains("Could not verify"), "{unknown}");
+    }
+
+    /// The real lookup on this machine: a connection nobody has accepted has no owner yet, even
+    /// though this user's listener is waiting for it.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_connection_nobody_holds_yet_has_no_owner() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, local) = (client.peer_addr().unwrap(), client.local_addr().unwrap());
+        assert_eq!(tcp_owner::lookup(server, local), None);
+        drop(listener);
     }
 
     /// The real lookup on this machine: a listener of this test process is this user's.

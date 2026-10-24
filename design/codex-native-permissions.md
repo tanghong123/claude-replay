@@ -90,13 +90,17 @@ may bind a loopback port above 1023, so another user's listener holding the
 configured port could answer it. So the credential goes out only on a connection
 whose server end belongs to Monitor's own OS user, read for that connection after
 it is made and before the request is written (#s145). On Linux this is the `uid`
-of the server's row in `/proc/net/tcp` or `tcp6`; on macOS it is the process that
-`/usr/sbin/lsof`, run as this user, finds holding the server end, and as this user
-`lsof` sees no other account's sockets. Until the server accepts, its end may
-show no owner (macOS) or root (Linux), so the owner is read again for up to 5
-seconds; another user's or an unreadable owner is refused without sending anything,
-and so is any other platform. Same-user processes with access to this credential,
-and root, remain trusted. Codex App sharing through this
+of the server's row in `/proc/net/tcp` or `tcp6` (a dual-stack server's v4
+connection is in `tcp6`); on macOS it is the process that `/usr/sbin/lsof`, run as
+this user, finds holding the server end, and as this user `lsof` sees no other
+account's sockets. Until the server accepts, no process holds its end: `lsof`
+does not list it, and Linux lists it with inode 0 (and, before 6.17, root's uid),
+which counts as no owner. So the owner is read again for up to 5 seconds;
+another user's or an unreadable owner is refused without sending anything, and so
+is any other platform. A server root holds is another user's unless Monitor itself
+runs as root. Same-user processes with access to this credential remain trusted;
+on macOS that includes one of this user's processes holding a server end another
+account passed it. Codex App sharing through this
 transport requires an App that can supply the Bearer header; an endpoint override
 alone does not establish that support. This authenticated WebSocket is the default
 transport. App-sharing setup is offered only for an explicitly selected Unix
