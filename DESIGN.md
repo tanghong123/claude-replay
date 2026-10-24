@@ -652,6 +652,8 @@ The residual diff is **not** decision-free rendering:
     swapping the frame's `src` keeps the rail's state, which resolves the page-reload question.
     §6.4 names what the URL boundary does NOT give (restyling, a shared scroll context) and what
     it would take to lift that later (a scoped component) rather than pretending it is free.
+    *(Superseded: the monitor's page became the app shell, which renders the session itself; the
+    rail and its iframe retired in v1.417.0 (#s98), and `/session` goes in stage 4 (#s99).)*
   - Still standing from v2/v3: its own cache root (removes the cold-index gap and all lock
     contention), growth-by-`stat` as the primary liveness signal, and `Live` → a public
     `SessionService` + `ServiceConfig` so `--html` and the monitor share one implementation.
