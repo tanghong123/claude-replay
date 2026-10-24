@@ -3399,3 +3399,26 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(store, /controlState\.row\.term === "herdr" \? `herdr pane \$\{controlState\.row\.target\}`/, "the confirm names a herdr pane");
   console.log("#s226 herdr naming cases passed");
 }
+
+// #s236 (Hong): the compose box says where a message goes in ONE line — a live pane by its host's
+// own name, never "tmux" for herdr — and stays open after a send, its field emptied.
+{
+  const store = readFileSync(new URL("../../claude-monitor/src/codex-ui/control-store.js", import.meta.url), "utf8");
+  const src = store.slice(store.indexOf("function composeTargetLine("), store.indexOf("export class ControlStore"));
+  const line = new Function(`${src}; return composeTargetLine;`)();
+  assert.equal(line({ term: "herdr", target: "w1:p2" }, "tmux"), "Types into herdr pane w1:p2", "a herdr pane by name");
+  assert.equal(line({ term: "tmux", target: "%3" }, "tmux"), "Types into tmux pane %3", "a tmux pane by name");
+  assert.equal(line({ term: "tmux" }, "tmux"), "Types into its tmux pane", "a tmux pane with no id");
+  assert.equal(line({ term: "herdr", target: "w1:p2" }, "resume"), "Resumes this session", "an idle session resumes");
+  assert.match(store, /composeTarget"\)\.textContent = composeTargetLine\(row, controlState\.mode\)/, "the foot is that line");
+  const success = store.slice(store.indexOf("if (retireVisibleDraft) {"), store.indexOf("this.actions.toast(mode === \"tmux\""));
+  assert.ok(success.includes('input.value = ""'), "a sent message empties the field");
+  const closes = success.split("this.close()").length - 1;
+  assert.ok(closes === 1 && success.includes("if (controlState.row && selectedRow()?.id !== controlState.row.id) this.close();"), "the box closes after a send only for a reader who moved to another session");
+  const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  assert.match(app, /composeNote\.textContent = byId\("composeTarget"\)\.textContent;/, "the phone's note is the same line");
+  assert.doesNotMatch(app, /writes to the live session/, "no second warning on the phone");
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.ok(css.includes("#app .composer>.composer-head>span,#app .composer .risk,#app .composer .compose-foot:before{display:none}"), "the reference's prefix, static tmux warning and inert ＋ are hidden");
+  console.log("#s236 compose box cases passed");
+}

@@ -5,6 +5,14 @@ import { canCompose, canInject, controlState, selectedRow } from "./state.js";
 import { runRevoke, runSend } from "./shared/control-protocol.js";
 
 const byId = id => document.getElementById(id);
+
+// #s236 (Hong: the box said too much, and "writes to live tmux" for a herdr pane): ONE line says
+// where a message goes — a live pane by its host's own name, or a resume of an idle session.
+function composeTargetLine(row, mode) {
+  if (mode !== "tmux") return "Resumes this session";
+  const host = row?.term === "herdr" ? "herdr" : "tmux";
+  return row?.target ? `Types into ${host} pane ${row.target}` : `Types into its ${host} pane`;
+}
 const json = response => response.json().catch(() => ({ ok: false, error: `HTTP ${response.status}` }));
 const post = (url, body) => fetch(url, { method: "POST", body, cache: "no-store" }).then(json);
 
@@ -33,6 +41,7 @@ export class ControlStore {
     byId("sendBtn").onclick = () => this.attempt();
     byId("composeInput").onkeydown = event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); this.attempt(); } };
     byId("cancelSend").onclick = () => this.closeConfirm();
+    byId("confirmLayer").querySelector("h3").textContent = "Allow typing into this pane?";
     byId("confirmSend").onclick = () => this.grantAndSend();
   }
   showPairHelp() {
@@ -64,7 +73,7 @@ export class ControlStore {
     controlState.mode = canInject(row) ? "tmux" : "resume";
     controlState.consented = !!row.consented;
     byId("composerTitle").textContent = row.name || row.id;
-    byId("composeTarget").textContent = `${row.agent || "Agent"} · ${row._group?.label || ""}`;
+    byId("composeTarget").textContent = composeTargetLine(row, controlState.mode);
     byId("composer").classList.add("production-show");
     byId("composer").classList.toggle("live", controlState.mode === "tmux");
     this.revokeButton.hidden = !(controlState.mode === "tmux" && controlState.consented);
@@ -82,8 +91,8 @@ export class ControlStore {
     if (!text || !controlState.row) return;
     controlState.pending = text;
     if (controlState.mode === "tmux" && !controlState.consented) {
-      // #s226: a herdr pane is named as one; a tmux pane's `%N` reads as before.
-      const where = controlState.row.term === "herdr" ? `herdr pane ${controlState.row.target}` : controlState.row.target || "the current tmux pane";
+      // #s226: a herdr pane is named as one; a tmux pane as one too (#s236).
+      const where = controlState.row.term === "herdr" ? `herdr pane ${controlState.row.target}` : controlState.row.target ? `tmux pane ${controlState.row.target}` : "its tmux pane";
       byId("confirmText").textContent = `The message goes to ${where} and runs with that agent's current permissions.`;
       byId("confirmLayer").classList.add("production-open");
       return;
@@ -138,7 +147,17 @@ export class ControlStore {
       const submittedMatches = submittedDraft.trim() === text;
       const retireVisibleDraft = submittedMatches && ownsComposer() && byId("composeInput").value === submittedDraft;
       if (submittedMatches) owner?.accepted();
-      if (retireVisibleDraft) { byId("composeInput").value = ""; this.close(); }
+      // #s236 (Hong): the box stays open after a send, its field emptied for the next message;
+      // only ✕ closes it. The field's height follows its (now empty) text, as typing would. A
+      // reader who moved to another session while the send was out gets the box closed, as
+      // before: left open it would still write to the session they left, under the new one.
+      if (retireVisibleDraft) {
+        const input = byId("composeInput");
+        input.value = "";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        if (controlState.row && selectedRow()?.id !== controlState.row.id) this.close();
+        else if (controlState.row && !matchMedia("(pointer: coarse)").matches && document.activeElement !== input) input.focus();
+      }
       this.actions.toast(mode === "tmux" ? "Sent to the pane" : "Resuming the session");
       this.actions.refreshIndex();
     } finally {

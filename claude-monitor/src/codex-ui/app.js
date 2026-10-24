@@ -3540,8 +3540,8 @@ var phoneDock;
     const sharedFocus = !!controls.nativeActive && (document.activeElement === composeInput || keyboardOpen && (composer.contains(document.activeElement) || controls.runtimePanel?.contains(document.activeElement)));
     app.classList.toggle("composing", PHONE.matches && composer.classList.contains("production-show") && (!controls.nativeActive || sharedFocus));
     if (controls.nativeActive) { controls.fitComposer(); return; }
-    const target = byId("composeTarget").textContent;
-    composeNote.textContent = `To ${target}${composer.classList.contains("live") ? " · writes to the live session" : ""}`;
+    // #s236: the phone's note is the same one line the desktop's foot shows (`composeTargetLine`).
+    composeNote.textContent = byId("composeTarget").textContent;
     fitCompose();
   };
   new MutationObserver(paintCompose).observe(composeFab, { attributes: true, attributeFilter: ["class"] });

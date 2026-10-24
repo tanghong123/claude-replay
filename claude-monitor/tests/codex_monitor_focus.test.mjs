@@ -24,6 +24,7 @@ for (const shared of [false, true]) test(`${shared ? "shared" : "ordinary"} phon
     };
     assert.doesNotThrow(() => vm.runInNewContext(callback, scope));
     assert.deepEqual(calls.splice(0), [["composing", shared ? active !== outside : true], shared ? "shared-fit" : "ordinary-fit"]);
-    if (!shared) assert.equal(scope.composeNote.textContent, "To Session");
+    // #s236: the phone's note is the foot's one line, nothing added.
+    if (!shared) assert.equal(scope.composeNote.textContent, "Session");
   }
 });

@@ -13325,11 +13325,13 @@ fn a_phone_s_filter_and_keyboard_never_share_the_screen() {
 /// place of the floating compose button; a tap turns the dock into the reply box, which rides the
 /// keyboard as the find pill does and grows with its text; its ✕ keeps the draft, and a dot on ✎
 /// says one is waiting. Held sideways on a wide phone the box spans the session's column.
+/// #s236 (Hong): the box stays open after a send, its field emptied (a failed send keeps the
+/// draft), and it says where a message goes in ONE line — on the phone and on the desktop.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor-v2"]
 fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
     let _serial = serial();
-    let (_m, _b, tab, _path) = phone_world_at(2751, "phone-compose", 390, 844, "");
+    let (m, _b, tab, _path) = phone_world_at(2751, "phone-compose", 390, 844, "");
     harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
     harness::until(
         &tab,
@@ -13357,8 +13359,8 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
             && open["left"].as_i64().unwrap_or(-1) >= 8
             && open["right"].as_i64().unwrap_or(9999) <= open["w"].as_i64().unwrap_or(0) - 8
             && open["bottom"].as_i64().unwrap_or(9999) <= open["h"].as_i64().unwrap_or(0) - 8
-            && open["note"].as_str().is_some_and(|n| n.starts_with("To ")),
-        "the reply box takes the dock's place at the foot, its target above the field: {open}"
+            && open["note"] == "Resumes this session",
+        "the reply box takes the dock's place at the foot, its one line above the field: {open}"
     );
     // The keyboard up: the box rides it, as the find pill does.
     harness::eval(&tab, "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 336; } }); visualViewport.dispatchEvent(new Event('resize')); return 'ok'; })()");
@@ -13393,6 +13395,26 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
         Duration::from_secs(5),
         "document.getElementById('composeInput').value.slice(0, 20)",
     );
+    // #s236: a send keeps the box. The route answers from the page (no session is resumed): a
+    // refusal keeps the draft, a send that goes empties the field and leaves the box open.
+    harness::eval(&tab, STUB_SEND);
+    phone_tap(&tab, "#sendBtn");
+    harness::until(
+        &tab,
+        "window.__sends === 1 && !document.getElementById('sendBtn').disabled && document.getElementById('app').classList.contains('composing') && /^Run the tests again/.test(document.getElementById('composeInput').value)",
+        "a refused send to keep the box and the draft",
+        Duration::from_secs(5),
+        "window.__sends + ' ' + document.getElementById('composeInput').value.slice(0, 20)",
+    );
+    harness::eval(&tab, "window.__sendAnswer = { ok: true }; 'ok'");
+    phone_tap(&tab, "#sendBtn");
+    harness::until(
+        &tab,
+        "window.__sends === 2 && document.getElementById('composeInput').value === '' && document.getElementById('app').classList.contains('composing') && document.getElementById('composer').classList.contains('production-show')",
+        "a sent message to empty the field and keep the box open",
+        Duration::from_secs(5),
+        "window.__sends + ' ' + document.getElementById('app').className",
+    );
     // Held sideways on a wide phone the box spans the session's column, beside the list.
     harness::phone(&tab, 956, 440);
     harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
@@ -13410,7 +13432,47 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
             && side["right"].as_i64().unwrap_or(9999) <= side["w"].as_i64().unwrap_or(0),
         "sideways the reply box spans the session's column: {side}"
     );
+
+    // #s236 on the desktop: the head is the session's name alone, the foot one line, no static
+    // "writes to live tmux" and no inert "＋"; and a send leaves the box open with focus in it.
+    let (_d, desk) = desktop_tab(&m);
+    harness::eval(
+        &desk,
+        "document.getElementById('writeSwitch').click(); 'ok'",
+    );
+    harness::until(
+        &desk,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&desk, "document.getElementById('composeFab').click(); 'ok'");
+    let said = harness::eval(&desk, "(function(){ var c = document.getElementById('composer'), shown = function (e) { return !!e && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0; }; return JSON.stringify({ open: c.classList.contains('production-show'), head: shown(c.querySelector('.composer-head>span')), line: document.getElementById('composeTarget').textContent, risk: shown(c.querySelector('.risk')), plus: getComputedStyle(c.querySelector('.compose-foot'), '::before').display, text: c.innerText }); })()");
+    let said: serde_json::Value = serde_json::from_str(said.as_str().unwrap_or("{}")).unwrap();
+    assert!(
+        said["open"] == true
+            && said["head"] == false
+            && said["line"] == "Resumes this session"
+            && said["risk"] == false
+            && said["plus"] == "none"
+            && !said["text"].as_str().unwrap_or("tmux").contains("tmux"),
+        "the desktop box says one line and nothing about tmux: {said}"
+    );
+    harness::eval(&desk, STUB_SEND);
+    harness::eval(&desk, "(function(){ var i = document.getElementById('composeInput'); i.value = 'once more'; i.dispatchEvent(new Event('input', { bubbles: true })); window.__sendAnswer = { ok: true }; document.getElementById('sendBtn').click(); return 'ok'; })()");
+    harness::until(
+        &desk,
+        "window.__sends === 1 && document.getElementById('composeInput').value === '' && document.getElementById('composer').classList.contains('production-show') && document.activeElement === document.getElementById('composeInput')",
+        "a desktop send to keep the box open, empty, with the field focused",
+        Duration::from_secs(5),
+        "window.__sends + ' ' + document.getElementById('composer').className + ' ' + (document.activeElement || {}).id",
+    );
 }
+
+/// #s236: the page's own answer for `/api/send` (`window.__sendAnswer`, refused at first), counted
+/// in `window.__sends`, so a case can send without resuming or typing into anything.
+const STUB_SEND: &str = "(function(){ window.__sendAnswer = { ok: false, error: 'the pane is busy' }; window.__sends = 0; var real = window.fetch; window.fetch = function (url) { if (String(url).indexOf('/api/send') === 0) { window.__sends++; return Promise.resolve(new Response(JSON.stringify(window.__sendAnswer), { status: 200, headers: { 'Content-Type': 'application/json' } })); } return real.apply(this, arguments); }; return 'ok'; })()";
 
 /// #s41, the owner's iPhone on 1.358.0, held sideways: "Aa menu in landscape shows a black page"
 /// (the sheet was a band across the screen and the session list covered its labels; Info lost its

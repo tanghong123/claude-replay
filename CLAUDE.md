@@ -85,11 +85,18 @@ landing treats the dock as an obstacle. **The compose box is the dock's third mo
 session, a ✎ circle (`#dockCompose`) joins the dock beside search in place of the floating compose
 button; a tap turns the dock into the reply box — the SAME `#composer` and `ControlStore`, restyled on
 a phone (its head and foot `display:contents` in a grid: ✕ at the left, the field growing with its
-text to five lines with ↑ inside it, a `.compose-note` naming the target and, for a live pane, its
-warning above) — riding the keyboard by `--phone-kb` like the find pill, the toolbar, search and the
-jump stepping aside (`#app.composing`). Its ✕ keeps the draft and a dot on ✎ says one is waiting;
-on a wide phone held sideways it spans the session's column
-(`a_phone_writes_from_the_dock_and_keeps_the_draft`). The desktop's card and button are unchanged.
+text to five lines with ↑ inside it, a `.compose-note` above with the box's one line) — riding the
+keyboard by `--phone-kb` like the find pill, the toolbar, search and the jump stepping aside
+(`#app.composing`). Its ✕ keeps the draft and a dot on ✎ says one is waiting; on a wide phone held
+sideways it spans the session's column (`a_phone_writes_from_the_dock_and_keeps_the_draft`).
+**The box says where a message goes in ONE line and stays open after a send** (#s236, Hong: "keep the
+entry dialog open", "too much info", and it said tmux for a herdr pane): `composeTargetLine`
+(`control-store.js`) gives "Types into herdr pane w1:p2", "Types into tmux pane %3" or "Resumes this
+session", the desktop's foot (amber for a live pane) and the phone's note alike; the head is the
+session's name alone, and the reference shell's "Write to this session ·", static "· writes to live
+tmux" and inert "＋" are hidden in `production.css` (the generated files untouched). A send that goes
+empties the field and keeps the box (and, on the desktop, the focus); one that is refused keeps the
+draft; only ✕ closes it.
 **Codex native mode's composer is resident** (the owner): once native mode is
 enabled, its compact composer stays visible on desktop and phone with no close action;
 thread text and image drafts belong to the selected thread. The ordinary writer keeps the
