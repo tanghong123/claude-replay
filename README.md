@@ -5,9 +5,10 @@ Codex, Qoder, QoderWork and Qwenwork sit in one tree, so you see at a glance **w
 running, who is waiting for you and why it stopped**; open one to see what that agent is
 doing, and from a paired phone follow them all and reply to the one that is waiting.
 
-It only reads: it opens the transcripts each agent already writes to disk, installs no
-hooks, changes no commands, and serves on the loopback address. Close it and everything runs
-as before.
+Reading sessions only reads: it opens the transcripts each agent already writes to disk,
+installs no hooks, changes no commands, and serves on the loopback address; closing it leaves
+those agents running as before. Writing to a session (write mode, Codex native mode) is
+separate, and needs a paired monitor and a switch you turn on.
 
 ![agent-monitor: a Claude Code session in the "payments" project is awaiting a reply, with the question it asked](docs/images/agent-monitor.png)
 
@@ -41,13 +42,17 @@ and the blocked ones.
 
 - **Who is waiting for you.** Each session is *active*, *blocked* or *idle*, and a blocked
   one carries its reason (awaiting your permission, for example). The filter offers recently
-  active, blocked, idle, and hidden sessions.
+  active, blocked, idle, and hidden sessions. The tree groups sessions by agent, then by
+  project; One list by activity in the filter menu shows them as one list ordered by
+  activity instead, and remembers the choice.
 - **Passive observation.** No hook, no plugin and no special way to start an agent: it reads
   the session files each agent already writes and recognizes running agents from the process
   list, so a session started in a terminal, in the background or in a desktop app appears as
   it is.
 - **Read a session.** The outline beside the record lists its turns, tasks and sub-agents.
   Choose a turn to jump to it, open a task's card, or descend into a sub-agent's own record.
+  Once you scroll the Turns list yourself, new records leave it where you put it; scrolling
+  the transcript, choosing a turn or jumping to the end resumes following.
 - **Built for long sessions.** A session reads as one continuous transcript, never paged: the
   page renders only what is near the viewport, and a large session opens on its latest
   512 KB while the earlier turns load behind it. Every turn is numbered, and the title bar
@@ -64,25 +69,49 @@ and the blocked ones.
   replies, `t` thinking, `o` tools, and the letters combine (`ua:`); `o(…)` narrows the tools
   (`o(B)` is Bash, `o(Bash,Read)` two tools); `w` matches whole words only; a colon ends the
   prefix, as in `w: tag`.
-- **File preview.** A text file a session mentions opens in a preview pane, highlighted by
-  language with numbered lines. An HTML page renders as a page.
+- **File preview.** A text file a session mentions opens in a preview pane, in the bundled
+  mdrev viewer, highlighted by language with numbered lines. An HTML page renders as a
+  sandboxed page on a paired monitor, and as text on an unpaired one. Consecutive images form
+  one group: click one to open it in the pane, or Open all for the whole group. A finger's
+  double-tap zooms in and back to fit; a mouse double-click switches between 1:1 and fit.
+- **Keeps the reading context.** A message from another session gets a turn of its own,
+  pasted text carries a label, quoted replies read as quotations, and Mermaid diagrams draw
+  inline. Truncated Bash output is marked and links to the full output; an Artifact edit
+  shows the diff it applied, and a publish lists the files it removed.
 - **Phone access.** A phone on your tailnet can read a *paired* monitor (see below). On a
   phone the page is a reader: the session list is a drawer, and the tools float at the foot.
 - **Write mode.** On a paired monitor, and only after you turn it on and grant it, you can
-  reply to a session that is waiting for you from the page.
+  reply to a session that is waiting for you from the page. Typing into a live terminal pane
+  takes a grant for that pane, and can also require a passcode set only in a terminal.
+- **Codex native mode.** Release binaries include it from 1.400.0: on a paired monitor, turn
+  on Write and then Codex native to start or continue Codex conversations through a local
+  Codex app-server, with text and images, interrupts, approvals and questions
+  ([below](#codex-native-mode--optional-shared-runtime)).
+- **One interface, and one going.** The app shell is the default. The classic page and
+  `/session` have been deprecated since 1.376.0; they are still there, and a button on the
+  page switches between the two and remembers the choice.
 
 ## Pairing, phone and write mode
 
 ```bash
 agent-monitor --pair           # once: mint a 0600 token; the monitor requires it from now on
 agent-monitor --pair-phone     # let a phone on your tailnet in: single-use QR code + short code, 5 minutes
-agent-monitor --set-passcode   # optional: require a passcode before write mode can inject (terminal only)
+agent-monitor --set-passcode   # optional: require a passcode before write mode types into a pane (terminal only)
 ```
+
+The address carrying the token is printed only to a terminal; logs and pipes get the bare
+address. If an unpaired monitor is already running, stop it in its terminal and start it
+again with `--pair`. On Linux a local request verified as the same OS user passes without the
+token; macOS cannot verify one, so there every request needs it.
 
 Pair the monitor before serving it with `tailscale serve`. On macOS an unpaired monitor
 admits any request from the same machine, including one `tailscale serve` relays.
 `--pair-phone` refuses an unpaired monitor, finds the `tailscale serve` address (or says how
-to set it up), and never shows the token itself.
+to set it up), and never shows the token itself. `--port N` names the monitor's port,
+`--url ADDRESS` an address you already have, and `--yes` skips the confirmation; it never
+changes your Tailscale configuration. An address is trusted for reading files and writing
+only when it is private to the tailnet and serves the monitor alone at that name and port:
+Funnel, or another application sharing the address, rules it out.
 
 ## Compared with
 
@@ -97,10 +126,24 @@ to set it up), and never shows the token itself.
 
 ## Privacy
 
-No telemetry, and nothing is collected. The monitor's own process opens connections only to
-`127.0.0.1`. What it derives from transcripts is cached on this machine (`~/.cache/agent-monitor`,
-or `$AGENT_MONITOR_CACHE`). Content leaves the machine only if you choose to: a phone over
-your tailnet, or `agent-monitor-fleet`'s SSH tunnels to hosts you configure.
+No usage data is collected. What it derives from transcripts is cached on this machine
+(`~/.cache/agent-monitor`, or `$AGENT_MONITOR_CACHE`). The monitor's own process opens
+connections only to the loopback address (`127.0.0.1`, or `::1` for a Codex endpoint) or,
+for Codex native, an owner-only Unix socket. Other connections come from programs it runs:
+`tailscale` (read only, to its local daemon), the bundled `mdrev-cli` and its notification
+tools, and a Codex app-server it starts.
+
+Content leaves the machine only if you choose to:
+- **A phone.** The page on a phone over your tailnet; secrets in what is sent there can be
+  masked.
+- **mdrev's shared review.** Used from the detached Markdown tab or the phone's Review sheet,
+  it reaches the project's review store and any notification destinations you configured.
+- **An mdrev service.** On a machine joined to one, opening a Markdown file from a registered
+  repository syncs your personal notes there.
+
+Codex native also receives the text, images and actions you submit. Its action receipts
+(status and ids, no conversation text) stay on this machine for 30 days.
+`agent-monitor-fleet`, a separate tool, reaches the hosts you configure over SSH.
 
 ## Also in this repository
 
@@ -345,7 +388,8 @@ JSON `thread.started.thread_id` event (with rollout-marker discovery as a fallba
 
 ## Codex native mode — optional shared runtime
 
-Build `agent-monitor` with `--features codex-native` to offer native Codex controls.
+Release binaries include native Codex controls from 1.400.0; a source build needs
+`--features codex-native`.
 The ordinary reader and Claude writer stay unchanged until you enable Write and
 then Codex native. Only `agent-monitor` integrates this mode; retiring monitor
 entrypoints receive no native extension.
