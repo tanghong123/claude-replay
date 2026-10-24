@@ -12924,6 +12924,78 @@ fn a_herdr_session_takes_images_from_the_compose_box() {
 /// in `window.__sends`, so a case can send without resuming or typing into anything.
 const STUB_SEND: &str = "(function(){ window.__sendAnswer = { ok: false, error: 'the pane is busy' }; window.__sends = 0; var real = window.fetch; window.fetch = function (url) { if (String(url).indexOf('/api/send') === 0) { window.__sends++; return Promise.resolve(new Response(JSON.stringify(window.__sendAnswer), { status: 200, headers: { 'Content-Type': 'application/json' } })); } return real.apply(this, arguments); }; return 'ok'; })()";
 
+/// #s242: held sideways a sheet may rise over the top bar (#s41: the height is what is short there),
+/// and the drawer handle, fixed above the top bar at z 22, drew over Aa's — the iOS Simulator walk of
+/// #s98 showed ☰ across its "Reading" heading, on 1.416.0 as well: Aa's sheet lives in the dock, whose
+/// z 14 caps it (the Turns sheet was lifted by #s121 and passes on its own). An open sheet is the top
+/// layer: wherever a top-bar control and the sheet overlap, the sheet is what a tap there reaches.
+/// Aa, the Turns sheet and the find pill's filter, on a narrow phone held sideways (at 330px and at
+/// Safari's 292px with its tab bar) and on a wide one.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_held_sideways_draws_its_sheets_over_the_drawer_handle() {
+    let _serial = serial();
+    // The controls of the top bar a sheet may rise over, each hit-tested where it meets the sheet.
+    let over = |sel: &str| {
+        format!("(function(){{ var s = document.querySelector({sel:?}), r = s.getBoundingClientRect(), out = []; if (r.height < 40) return JSON.stringify(['the sheet is not drawn: ' + Math.round(r.height)]); [...document.querySelectorAll('#drawerHandle, .workspace>.topbar button')].forEach(function (c) {{ var b = c.getBoundingClientRect(); if (!b.width || getComputedStyle(c).visibility === 'hidden') return; var l = Math.max(b.left, r.left), t = Math.max(b.top, r.top), rr = Math.min(b.right, r.right), bb = Math.min(b.bottom, r.bottom); if (rr - l < 2 || bb - t < 2) return; var e = document.elementFromPoint((l + rr) / 2, (t + bb) / 2); if (!s.contains(e)) out.push((c.id || c.className) + ' over ' + {sel:?} + ' at ' + Math.round(t)); }}); return JSON.stringify(out); }})()")
+    };
+    let check = |tab: &headless_chrome::Tab, what: &str, sel: &str| {
+        let seen = harness::eval(tab, &over(sel));
+        assert_eq!(
+            seen.as_str(),
+            Some("[]"),
+            "{what}: no top-bar control is drawn over the open sheet"
+        );
+    };
+    for (port, case, w, h) in [
+        (3242, "sideways-sheets-narrow", 874, 330),
+        (3244, "sideways-sheets-short", 874, 292),
+        (3243, "sideways-sheets-wide", 956, 440),
+    ] {
+        let (_m, _b, tab) =
+            drawer_world(port, case, w, h, false, 30, Some(harness::SIDEWAYS_INSETS));
+        let at = format!("{w}x{h}");
+        phone_tap(&tab, "#readingBtn");
+        harness::until(
+            &tab,
+            "document.getElementById('readingOptions').classList.contains('open')",
+            "the Reading sheet open",
+            Duration::from_secs(5),
+            "document.getElementById('readingOptions').className",
+        );
+        check(&tab, &format!("{at} Aa"), "#readingOptions");
+        phone_tap(&tab, "#readingBtn");
+        // The panes ride the pill while it holds them (a wide phone's column takes them otherwise).
+        let pill_has_turns = harness::eval(
+            &tab,
+            "(function(){ var b = document.getElementById('phonePane-turns'); return !!b && b.getBoundingClientRect().width > 0; })()",
+        );
+        if pill_has_turns == serde_json::Value::Bool(true) {
+            phone_tap(&tab, "#phonePane-turns");
+            harness::until(
+                &tab,
+                "!document.getElementById('phonePaneMenu').hidden",
+                "the Turns sheet open",
+                Duration::from_secs(5),
+                "document.getElementById('phonePaneMenu').hidden",
+            );
+            check(&tab, &format!("{at} Turns"), "#phonePaneMenu");
+            phone_tap(&tab, "#phonePane-turns");
+        }
+        let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+        phone_tap_at(&tab, gx, gy);
+        harness::eval(&tab, "(function(){ if (!document.getElementById('navigatorOptions').classList.contains('open')) document.getElementById('filterTranscriptBtn').click(); return 1; })()");
+        harness::until(
+            &tab,
+            "document.getElementById('navigatorOptions').classList.contains('open')",
+            "the filter open",
+            Duration::from_secs(5),
+            "document.getElementById('navigatorOptions').className",
+        );
+        check(&tab, &format!("{at} filter"), "#navigatorOptions");
+    }
+}
+
 /// #s41, the owner's iPhone on 1.358.0, held sideways: "Aa menu in landscape shows a black page"
 /// (the sheet was a band across the screen and the session list covered its labels; Info lost its
 /// labels the same way), "the left most drawer button has no effect" (the Sessions tab wore the

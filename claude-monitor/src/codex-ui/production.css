@@ -1524,7 +1524,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      from the dock may cover the top bar rather than show two rows of four. */
   #app .reading-cluster>.reading-options,.phone-pane-menu:not([hidden]),#app .header-search-cluster>.navigator-options,#app .header-search-cluster>.search-suggest{max-height:calc(100dvh - var(--phone-bottom,var(--phone-dock-h)) - 16px - env(safe-area-inset-top,0px))}
   /* #s121: risen over the top bar, a pane's sheet meets the drawer handle (z 22) at the bar's left
-     end, where its heading is; it sits above the handle while open, as Aa's sheet (z 48) does. */
+     end, where its heading is; it sits above the handle while open. (Aa's sheet does not by its own
+     z: it lives in the dock, whose z 14 caps it — #s242 below.) */
   .phone-pane-menu:not([hidden]){z-index:23}
 }
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
@@ -1569,6 +1570,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 @media(pointer:coarse) and (max-height:500px){
   #app.preview-full:not(.preview-off)>.preview{left:0;padding-left:env(safe-area-inset-left,0px);box-shadow:none}
   #app.preview-full:not(.preview-off) .drawer-handle{display:none}
+  /* #s242: the dock's own sheets (Aa, the filter, the suggestions) live inside the dock, whose z 14
+     caps whatever z they carry, so held sideways, risen over the top bar (#s41), they met the handle
+     (z 22) drawn over them — ☰ across Aa's heading on the iOS Simulator. While one is open the handle
+     steps under the dock (13), as the rest of the session does; a tap there closes the sheet first. */
+  #app:has(.reading-cluster>.reading-options.open,.header-search-cluster>.navigator-options.open,.header-search-cluster>.search-suggest:not([hidden]))>.drawer-handle{z-index:13}
 }
 
 /* #s32 — between the phone and 1180px the preview is an overlay (reference.css), and at
