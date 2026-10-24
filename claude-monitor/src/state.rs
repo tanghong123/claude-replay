@@ -20,9 +20,9 @@
 //!
 //! **herdr decides where it can see** (#s238, Hong: "herdr's status is very reliable, since the
 //! agent's process runs inside it"): for a session in a herdr pane that herdr names as that
-//! pane's session, herdr's own status sets the STATE ([`herdr_decides`]); the derivation keeps
+//! pane's session, herdr's own status sets the STATE (`herdr_decides`); the derivation keeps
 //! only the reason and detail that agree with it, and a wait the derivation observed stands.
-//! herdr is read in the background ([`HerdrReader`]), so a slow or hung herdr never holds the
+//! herdr is read in the background (`HerdrReader`), so a slow or hung herdr never holds the
 //! scan, and an answer older than the transcript's last write is not used.
 
 use claude_replay_core::adapter;
