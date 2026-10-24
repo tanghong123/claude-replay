@@ -35,8 +35,8 @@ function attachmentCapability(head = {}, { reveal = true } = {}) {
   if (embedded || served) return { action: "download", label: "Download", hint: "no inline preview · click to download" };
   // The render policy withheld the file stamp (or the bytes are not the kind the page shows),
   // but the server offered the REVEAL stamp: the file manager can still show the file. This is
-  // the classic view's fallback (export.js: `fsig ? openArtifact : reveal`), and it is what
-  // keeps every path actionable under `render-policy.json` mode "never".
+  // what export.js does with every path, and it is what keeps every path actionable under
+  // `render-policy.json` mode "never".
   // #335/#s29: not where the reader cannot see the file manager (a remote client): copied instead.
   if (head.att_path && head.att_sig && reveal) return { action: "reveal", label: "Reveal in file manager", hint: "not readable here · opens its folder" };
   return { action: "copy", label: "Copy path", hint: head.att_path ? "path only · click to copy" : "attachment record only" };

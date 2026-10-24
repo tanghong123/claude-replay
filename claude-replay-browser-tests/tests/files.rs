@@ -10,8 +10,9 @@
 //!
 //! Ports 2811–2814, 2933 for #374's handed-over files on a phone, 3091–3093 for #s115's saved
 //! output of a cut Bash command, 2937 for #s7's mentioned files
-//! under the allowlist ceiling, and 2970 for #s11's images in a tab of their own. The classic page draws no preview pane; its file view already pairs the two
-//! (export.js `openArtifact` and its "Reveal in file manager" action), which is the reference here.
+//! under the allowlist ceiling, and 2970 for #s11's images in a tab of their own. The classic page
+//! (export.js) draws no preview pane and reads no file from disk: a path it offers is revealed or
+//! copied.
 
 use std::path::PathBuf;
 use std::time::Duration;

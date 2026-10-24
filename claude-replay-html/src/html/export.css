@@ -110,9 +110,6 @@ input::placeholder { color: var(--faint); }
 .tbrow { display: flex; align-items: center; gap: 10px; height: 38px; }
 .brand { font: 600 13px var(--mono); white-space: nowrap; }
 .brand span { color: var(--faint); font-weight: 400; }
-/* The embedded page puts the SESSION TITLE here, which is the one thing in the bar with
-   no natural length — let it be what shrinks. */
-#embed-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* Session identity, always on screen (#127): the id snippet, the directory, and how big
    the session is. These used to live only in the masthead, which scrolls away. */
 .sessionbits {
@@ -342,23 +339,6 @@ a.crumb:hover { text-decoration: underline; }
 /* ── layout ──────────────────────────────────────────────────────────── */
 
 .layout { display: flex; padding-top: var(--topbar-h); max-width: 1160px; margin: 0 auto; }
-
-/* ── the host slot ────────────────────────────────────────────────────
-   A host that composes this page into its own chrome (agent-monitor-v2 draws a fixed rail
-   to the left) asks for room with `PageChrome::host_inset`, which stamps `data-shell` and
-   `--host-inset` on <body>. The offsets live HERE, beside the layout they offset, because
-   only this file knows that `.layout` centres itself: insetting its CHILDREN would fight
-   that centring and land them wrong, while padding the document moves everything in normal
-   flow at once and lets `.layout` re-centre inside what is left.
-
-   Position-fixed elements are the exception — they anchor to the VIEWPORT, so the ones
-   anchored left need the offset by hand. The right-anchored ones (#taskpanel, #livechip)
-   and the full-screen .lightbox are already correct.
-
-   Inert without the attribute: a page with no host chrome matches none of these. */
-body[data-shell] { padding-left: var(--host-inset, 0px); }
-body[data-shell] #topbar { left: var(--host-inset, 0px); }
-body[data-shell] #newbadge { left: calc(50% + var(--host-inset, 0px) / 2); }
 
 #sidebar {
   width: 240px; flex: none; position: sticky; top: var(--topbar-h); align-self: flex-start;
@@ -631,26 +611,10 @@ body.selecting #toolmenu, body.selecting #agentmenu {
   max-width: 100%; max-height: calc(100% - 28px); object-fit: contain;
   cursor: default; border-radius: 4px; background: #fff;
 }
-/* A text artifact (the `/file` route): the same modal as an image, with the bytes in a
-   scrollable pane instead of an <img>. White-space preserved, no wrapping games — this is a
-   file view, not a render. */
-.lightbox .lb-text {
-  max-width: 100%; max-height: calc(100% - 28px); overflow: auto; cursor: text;
-  margin: 0; padding: 14px 16px; border-radius: 4px; background: var(--bg); color: var(--fg);
-  font: 12.5px/1.55 var(--mono); white-space: pre; tab-size: 4;
-}
 .lb-cap {
   font: 11.5px var(--mono); color: #e8e4dc; display: flex; align-items: center; gap: 10px;
   max-width: 100%;
 }
-/* A deep path is longer than any viewport; keep the tail (the file name) and clip the head. */
-.lb-cap > span { min-width: 0; overflow: hidden; white-space: nowrap; direction: rtl; text-align: left; }
-.lb-act {
-  font: 11px var(--mono); color: #e8e4dc; background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.24); border-radius: 5px; padding: 2px 8px;
-  cursor: pointer;
-}
-.lb-act:hover { background: rgba(255, 255, 255, 0.22); }
 .ts { flex: none; font: 11px var(--mono); color: var(--faint); margin-top: 4px; }
 .alink { flex: none; color: var(--faint); opacity: 0.45; font: 12px var(--mono); }
 .uturn:not(.fold) > .alink { margin-top: 3px; }

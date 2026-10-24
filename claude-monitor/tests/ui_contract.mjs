@@ -29,8 +29,8 @@ import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewp
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
 import { CALM_SECS, flatFamilies } from "../src/codex-ui/session-list.js";
-import { BLOCKED_SUMMARY, BUCKETS, FILTER_BUCKETS, FILTER_LABELS, RECENT_SECS, REASONS, REASON_BUCKETS, denoteState, displayState, needsPerson, sessionBucket, sessionFilterBuckets, stateTip } from "../../claude-replay-html/src/html/shared/state-labels.js";
-import { composeCapability, composeCopy, consentQuery, grantOutcome, runRevoke, runSend, sendOutcome, sendQuery } from "../../claude-replay-html/src/html/shared/control-protocol.js";
+import { BLOCKED_SUMMARY, BUCKETS, FILTER_BUCKETS, FILTER_LABELS, RECENT_SECS, REASONS, REASON_BUCKETS, denoteState, displayState, needsPerson, sessionBucket, sessionFilterBuckets } from "../../claude-replay-html/src/html/shared/state-labels.js";
+import { composeCapability, consentQuery, grantOutcome, runRevoke, runSend, sendOutcome, sendQuery } from "../../claude-replay-html/src/html/shared/control-protocol.js";
 import { cursorText, freshCursor, parseRecords, pullQuery, recordsQuery, reducePull } from "../../claude-replay-html/src/html/shared/record-stream.js";
 import { applyViewChoices, parseViewMemory, serializeViewMemory, viewChoices, viewMemoryKey } from "../../claude-monitor/src/codex-ui/view-memory.js";
 
@@ -625,11 +625,6 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(denoteState({ agentState: "idle", stateReason: "exited-mid-work" }), { label: "Exited abnormally", tone: "danger" });
   assert.deepEqual(denoteState({ agentState: "idle", stateReason: "exited", activityTs: 10 }, 5), { label: "New result", tone: "unread" });
   assert.equal(denoteState({ agentState: "idle", stateReason: "exited", activityTs: 10 }, 10), null, "read rows carry no marker");
-  assert.equal(stateTip({ state: "finished", visited: true }), "Done — no growth, no process");
-  assert.equal(stateTip({ state: "growing", visited: true }), "Running — the transcript grew since the last scan");
-  assert.equal(stateTip({ state: "idle", conf: "unconfirmed", ambig: 3, visited: true }), "Idle — a live agent is in this directory — but it was started without a session id, and `--resume` picks from a list, so it may be driving any of these 3 sessions");
-  assert.equal(stateTip({ state: "idle", agentState: "wait", stateReason: "permission", visited: true }), "Awaiting permission — alive — a live process names this session");
-  assert.match(stateTip({ state: "finished" }), /lazy fold\)$/, "an unvisited row says its counters are not folded yet");
   assert.match(appSource, /from "\.\/shared\/state-labels\.js"/, "the shell imports the shared table");
   assert.doesNotMatch(appSource, /const labels = \{ busy:/, "the shell keeps no label table of its own");
   console.log("seam (f) cases passed");
@@ -754,8 +749,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(revealQuery({ path: "/w/a.txt", sig: "s1" }), "/__reveal?" + stampQuery({ path: "/w/a.txt", sig: "s1" }), "the app shell's query is the same form behind the route");
   assert.equal(referenceAction({ fileSig: null, revealSig: "r" }), "reveal", "a reveal stamp never authorizes /file");
   const exportSrc = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
-  assert.equal((exportSrc.match(/shared\.referenceAction\(\{ fileSig: ARTIFACTS \? /g) || []).length, 3, "the attachment card, the path link's title and the path click all ask the rule");
-  assert.doesNotMatch(exportSrc, /ARTIFACTS && fsig|ARTIFACTS && tp\.dataset\.fsig/, "no inline stamp precedence remains");
+  assert.equal((exportSrc.match(/shared\.referenceAction\(\{ revealSig: /g) || []).length, 3, "the attachment card, the path link's title and the path click all ask the rule, with the reveal stamp alone (#s99)");
+  assert.doesNotMatch(exportSrc, /referenceAction\(\{ fileSig/, "the classic page never offers a file stamp to the rule");
   assert.match(exportSrc, /shared\.stampQuery\(/, "the classic page builds its stamped queries through the shared helper");
   const componentsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   assert.doesNotMatch(componentsSrc, /function attachmentCapability|function referenceAction|const revealQuery =/, "components.js keeps no copy of the rule");
@@ -771,9 +766,6 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(composeCapability({ state: "finished", agent: "codex" }, true), { inject: false, resume: true, mode: "resume" });
   assert.equal(composeCapability({ state: "finished", agent: "codex", projActive: true }, true).mode, null, "constraint 2: another live session in the project → neither");
   assert.equal(composeCapability({ state: "finished", agent: "qoderwork" }, true).mode, null, "resume is claude/codex only");
-  assert.deepEqual(composeCopy("tmux", false, "S"), { target: "Inject into: S", placeholder: "Type a prompt — it is pasted into the live tmux pane and submitted", notice: "Runs in the LIVE agent with its permissions. “Grant & send” authorises this pane until it restarts.", button: "Grant & send", revoke: false });
-  assert.equal(composeCopy("tmux", true).button, "Send to pane"); assert.equal(composeCopy("tmux", true).revoke, true);
-  assert.equal(composeCopy("resume", false, "S").target, "Send to: S"); assert.equal(composeCopy("resume", false).button, "Send prompt"); assert.equal(composeCopy("resume", false).notice, "");
   assert.equal(sendQuery("a b"), "/api/send?target=a%20b"); assert.equal(consentQuery("s1"), "/api/consent?target=s1"); assert.equal(consentQuery("s1", "revoke"), "/api/consent?op=revoke&target=s1");
   assert.equal(grantOutcome({ code: "passcode-required" }).kind, "passcode-required"); assert.equal(grantOutcome({ code: "bad-passcode" }).tone, "err");
   assert.equal(grantOutcome({ code: "locked", error: "wait" }).message, "wait"); assert.equal(grantOutcome({ ok: true }).kind, "granted"); assert.equal(grantOutcome(null).kind, "error");
@@ -946,16 +938,38 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#65 queued text cases passed");
 }
 
-// #66: the classic lightbox's "Reveal in file manager" runs the caller's STAMPED reveal; it
-// never builds an unstamped __reveal of its own.
+// #66: the classic page reveals only with the stamped request; it never builds an unstamped
+// __reveal of its own.
 {
   const src = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
-  assert.match(src, /function fileview\(path, imgUrl, text, reveal\) \{/, "the lightbox takes the reveal action");
-  assert.doesNotMatch(src, /"__reveal\?path=" \+ encodeURIComponent\(path\)/, "…and builds no unstamped request");
-  assert.match(src, /fileview\(path, URL\.createObjectURL\(b\), null, fallback\)/, "the image view gets it from openArtifact");
-  assert.match(src, /fileview\(path, null, t, fallback\)/, "…and so does the text view");
-  assert.equal((src.match(/var reveal = function \(\) \{\s*return fetch\("__reveal\?" \+ shared\.stampQuery/g) || []).length, 2, "both offered-path sites return their stamped request, so the caption can report it");
-  console.log("#66 lightbox reveal cases passed");
+  assert.doesNotMatch(src, /"__reveal\?path=" \+ encodeURIComponent\(path\)/, "no unstamped request");
+  const reveals = (src.match(/"__reveal\?/g) || []).length;
+  assert.ok(reveals >= 2, "the path click and the attachment card both reveal");
+  assert.equal((src.match(/fetch\("__reveal\?" \+ shared\.stampQuery\(\{ path: /g) || []).length, reveals, "every reveal the page sends is the stamped request");
+  console.log("#66 stamped reveal cases passed");
+}
+
+// #s99 (design/classic-view-deprecation.md stage 4): what only the monitor's classic hosts asked
+// for is gone with /session. export.js has no artifacts mode (a file shown over the page from
+// /file), the stylesheet no host slot or embedded title, and the shared modules no export only the
+// classic rail read.
+{
+  const root = "../../claude-replay-html/src/html/";
+  const read = name => readFileSync(new URL(root + name, import.meta.url), "utf8");
+  const src = read("export.js"), css = read("export.css");
+  for (const gone of ["function fileview", "function openArtifact", "dataset.artifacts", "dataset.original", "ARTIFACTS"]) {
+    assert.ok(!src.includes(gone), `export.js keeps no ${gone}`);
+  }
+  for (const gone of ["data-shell", "--host-inset", "#embed-title", ".lb-text", ".lb-act"]) {
+    assert.ok(!css.includes(gone), `export.css keeps no ${gone}`);
+  }
+  assert.match(css, /\.lb-cap \{/, "the image lightbox keeps its caption");
+  assert.match(src, /function saveBlob\(path, blob\)/, "the viewport history's download stays");
+  const exported = (name, file) => new RegExp(`^export \\{[^}]*\\b${name}\\b`, "m").test(read(file));
+  assert.ok(!exported("stateTip", "shared/state-labels.js"), "stateTip had no reader but the classic rail");
+  assert.ok(!exported("composeCopy", "shared/control-protocol.js"), "composeCopy had no reader but the classic rail");
+  assert.ok(exported("denoteState", "shared/state-labels.js") && exported("composeCapability", "shared/control-protocol.js"), "the probe reads the export lines");
+  console.log("#s99 classic-host leftovers cases passed");
 }
 
 // #62: the runtime snapshot's rows are phrased once — "unknown" is a recorded fact not yet
@@ -3063,9 +3077,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(viewer, /createImageView|image-lightbox|openImage/, "the app shell keeps no lightbox of its own (#s225)");
   const exportJs = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
   assert.match(exportJs, /shared\.createImageView\(stage, img,/, "the classic page uses the same engine through window.__shared");
-  // Both classic viewers go through one stage builder, so the lightbox and the file view cannot
-  // drift apart the way they would with two copies.
-  assert.equal((exportJs.match(/^\s+(?:var shown = |shown = )imageStage\(box,/gm) || []).length, 2, "the classic lightbox and file view both go through the one stage builder");
+  // The classic lightbox goes through the one stage builder (the file view that shared it went
+  // with the classic hosts' artifacts mode, #s99).
+  assert.equal((exportJs.match(/^\s+(?:var shown = |shown = )imageStage\(box,/gm) || []).length, 1, "the classic lightbox goes through the one stage builder");
   assert.equal((exportJs.match(/^\s+function imageStage\(/gm) || []).length, 1, "…of which there is exactly one");
 
   // #268: the shared viewer binds zoom keys on the document, so it must yield twice — while the

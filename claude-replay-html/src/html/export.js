@@ -79,8 +79,9 @@
   }
   // A path the page OFFERS (#46): a native file:// link, which a standalone page follows, and on a
   // served page the delegated `.tool-path` click, where the shared two-stamp rule decides what it
-  // does — open, reveal, or (with no stamp at all) copy the path, #275. `offer` is a head's
-  // `{path, sig, fsig}`, or one of a send's `files`.
+  // does — reveal, or (with no stamp at all) copy the path, #275. This page asks the rule with the
+  // reveal stamp alone: showing a file's bytes is the app shell's preview pane. `offer` is a
+  // head's `{path, sig, fsig}`, or one of a send's `files`.
   function toolPathLink(offer, text) {
     var a = el("a", "tool-path", text);
     a.href = "file://" + offer.path.split("/").map(encodeURIComponent).join("/");
@@ -88,8 +89,7 @@
     a.rel = "noopener";
     a.dataset.path = offer.path;
     if (offer.sig) a.dataset.sig = offer.sig;
-    if (offer.fsig) a.dataset.fsig = offer.fsig;
-    a.title = ({ preview: "Open ", reveal: "Reveal ", copy: "Copy " })[shared.referenceAction({ fileSig: ARTIFACTS ? offer.fsig : null, revealSig: offer.sig, reveal: shared.revealHere() })] + offer.path;
+    a.title = ({ reveal: "Reveal ", copy: "Copy " })[shared.referenceAction({ revealSig: offer.sig, reveal: shared.revealHere() })] + offer.path;
     return a;
   }
   // hh:mm alone for TODAY's turns; older turns carry their date (and year when it differs).
@@ -641,7 +641,7 @@
         ac.appendChild(el("span", "akind", (h.att_kind || "file") + " "));
         var an = el("span", "aname", h.att_name || "attachment");
         var text = h.att_text, datauri = h.att_datauri, path = h.att_path, href = h.att_href;
-        var sig = h.att_sig, fsig = h.att_fsig;
+        var sig = h.att_sig;
         if (href != null) {
             // Offline bundle: the bytes live at assets/<file>; link straight to them.
             an = el("a", "aname adl", h.att_name || "attachment");
@@ -661,18 +661,16 @@
             };
         } else if (path != null) {
             an.classList.add("adl");
-            var pathAction = shared.referenceAction({ fileSig: ARTIFACTS ? fsig : null, revealSig: sig, reveal: shared.revealHere() });
-            an.title = ({ preview: "open", reveal: "reveal in file manager", copy: "copy path" })[pathAction];
+            var pathAction = shared.referenceAction({ revealSig: sig, reveal: shared.revealHere() });
+            an.title = ({ reveal: "reveal in file manager", copy: "copy path" })[pathAction];
             an.onclick = function () {
                 // Two stamps, because they permit different things: `sig` reveals the
                 // path, `fsig` renders its bytes and exists only when the render policy
                 // allows that path. A route refuses the other's stamp, so a link cannot be
                 // edited from one capability into the other. Which one a click uses is the
                 // shared rule's call (html/shared/capabilities.js, #46) — the same rule the
-                // app shell applies; a host that serves no artifacts offers no file stamp.
-                var reveal = function () { return fetch("__reveal?" + shared.stampQuery({ path: path, sig: sig })); };
-                if (pathAction === "preview") openArtifact(shared.stampQuery({ path: path, sig: fsig }), reveal);
-                else if (pathAction === "reveal") reveal();
+                // app shell applies; this page asks it with the reveal stamp alone (#s99).
+                if (pathAction === "reveal") fetch("__reveal?" + shared.stampQuery({ path: path, sig: sig }));
                 // #275: no stamp, nothing the server will act on — copy the path (see the
                 // tool-path click, which had the same unsigned reveal).
                 else copyText(path).then(function (ok) {
@@ -736,10 +734,6 @@
         if (imgsrc != null) {
             var img = el("img", "aimg");
             img.src = imgsrc; img.alt = h.att_name || "image";
-            // #324: the file on disk, where the host shows files and the render policy stamped this
-            // one — for a pasted image the saved original, full size, where the inline copy is a
-            // downscaled re-encode. The lightbox opens it, and the inline copy if it is gone.
-            if (ARTIFACTS && path != null && fsig) img.dataset.original = "file?" + shared.stampQuery({ path: path, sig: fsig });
             // #139: inline images are capped at 520px, which for a screenshot means
             // unreadable. Click opens it at full size — the bytes are already here, so
             // this replaces "download it, then open Preview".
@@ -959,11 +953,9 @@
     return { stage: stage, img: img, view: view };
   }
 
-  function lightbox(src, alt, fallback) {
+  function lightbox(src, alt) {
     var box = el("div", "lightbox");
     var shown = imageStage(box, src, alt);
-    // #324: an original that is gone falls back to the copy the page already shows.
-    if (fallback) shown.img.onerror = function () { shown.img.onerror = null; shown.img.src = fallback; };
     var cap = el("div", "lb-cap", alt || "");
     box.appendChild(cap);
     function close() {
@@ -983,86 +975,7 @@
     document.body.appendChild(box);
   }
 
-  // ── browser-served artifacts ────────────────────────────────────────────────────
-  // A host that sets `data-artifacts` (agent-monitor-v2's goal 3) wants a clicked file to be
-  // SHOWN, not opened in a Finder window on the server. Off everywhere else: a dumped page
-  // has no server behind it, and a host that has not opted in keeps the reveal behaviour.
-  var ARTIFACTS = document.body.dataset.artifacts === "1";
-
-  // Show one file over the page: an image, or its text. Built on demand and torn down on
-  // close, like `lightbox` — and the Blob URL an image rides on is revoked with it, so
-  // browsing a hundred screenshots leaks neither DOM nor object URLs.
-  // The caption's "Reveal in file manager" runs the CALLER's reveal (#66): every path that
-  // reaches a lightbox was offered with its reveal stamp, and the caller already holds the
-  // stamped request (the same one it runs when the bytes cannot be shown). Building an
-  // unstamped `__reveal?path=` here — as this did after capability stamping landed — sent a
-  // request the server refuses by design, so the button read "not found" on every click.
-  function fileview(path, imgUrl, text, reveal) {
-    var box = el("div", "lightbox");
-    var panel;
-    var shown = null;
-    if (imgUrl != null) {
-      // #228: an image file view is the same zoomable, pannable stage as the lightbox's, so a
-      // screenshot opened from a path behaves exactly like one opened from the transcript.
-      shown = imageStage(box, imgUrl, path);
-      panel = shown.stage;
-    } else {
-      panel = el("pre", "lb-text");
-      panel.textContent = text;
-      box.appendChild(panel);
-    }
-    var cap = el("div", "lb-cap");
-    // #304: the caption clips its head right-to-left (export.css `.lb-cap > span`); the path inside
-    // is isolated left-to-right so its leading `/`, `./` or `~/.` are not drawn at the far end.
-    var capPath = el("span");
-    var capText = document.createElement("bdi");
-    capText.dir = "ltr";
-    capText.textContent = path;
-    capPath.appendChild(capText);
-    cap.appendChild(capPath);
-    // #s29: the file manager for a reader at this machine; for one elsewhere, the file itself as a
-    // download — the bytes this view already holds.
-    if (shared.revealHere()) {
-      var rev = el("button", "lb-act", "Reveal in file manager");
-      rev.onclick = function (ev) {
-        ev.stopPropagation();
-        var p = reveal ? reveal() : null;
-        if (!p || !p.then) { rev.textContent = reveal ? "revealed ✓" : "not offered"; return; }
-        p.then(function (r) { rev.textContent = r && r.ok ? "revealed ✓" : "not found"; }, function () { rev.textContent = "not found"; });
-      };
-      cap.appendChild(rev);
-    } else if (text != null || imgUrl != null) {
-      var dl = el("button", "lb-act", "Download");
-      dl.onclick = function (ev) {
-        ev.stopPropagation();
-        if (text != null) { saveBlob(path, new Blob([text], { type: "text/plain;charset=utf-8" })); return; }
-        fetch(imgUrl).then(function (r) { return r.blob(); }).then(function (b) { saveBlob(path, b); });
-      };
-      cap.appendChild(dl);
-    }
-    box.appendChild(cap);
-    function close() {
-      if (shown) shown.view.destroy();
-      box.remove();
-      document.removeEventListener("keydown", onKey, true);
-      window.removeEventListener("resize", onResize);
-      if (imgUrl != null) setTimeout(function () { URL.revokeObjectURL(imgUrl); }, 0);
-    }
-    function onResize() { if (shown) shown.view.sync(); }
-    function onKey(ev) {
-      if (ev.key === "Escape") { ev.stopPropagation(); close(); }
-    }
-    // Anywhere outside the content closes; the content and its caption are safe to click.
-    box.addEventListener("click", function (ev) {
-      if (!panel.contains(ev.target) && ev.target !== panel && !cap.contains(ev.target)) close();
-    });
-    document.addEventListener("keydown", onKey, true);
-    window.addEventListener("resize", onResize);
-    document.body.appendChild(box);
-  }
-
-  // Save bytes the page will not render. The server marks them `attachment` precisely so no
-  // browser renders them either; here that becomes an ordinary download.
+  // Save bytes the page made as an ordinary download — the viewport history's export (⧗).
   function saveBlob(path, blob) {
     var url = URL.createObjectURL(blob);
     var a = el("a");
@@ -1072,38 +985,6 @@
     a.click();
     a.remove();
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-  }
-
-  // Ask the server for a path's bytes. Three outcomes, all of them the file: text and images
-  // are SHOWN, anything else is DOWNLOADED (the server sends it as an attachment, so it is
-  // never rendered as whatever type it claims), and a refusal runs `fallback(status)` — a
-  // directory, something over the cap, a path no hosted session explains, or an unpaired
-  // monitor, where reading local files is not offered at all. The callers reveal in the file
-  // manager instead, which is what those cases want.
-  function openArtifact(q, fallback) {
-    var path = decodeURIComponent((/(?:^|&)path=([^&]*)/.exec(q) || [, ""])[1]);
-    // #s29: for a reader elsewhere a refusal never falls back to the file manager — they are not at the
-    // machine a Finder window would open on (#335). The file view says why instead, in the
-    // server's own words (gone, outside the allowlist, a removed worktree).
-    var refused = function (r) {
-      if (shared.revealHere()) { fallback(r ? r.status : 0); return; }
-      var say = function (words) { fileview(path, null, words, null); };
-      if (!r) { say("The monitor could not be reached."); return; }
-      r.text().then(function (t) { say(t || ("Not shown here (HTTP " + r.status + ").")); },
-        function () { say("Not shown here (HTTP " + r.status + ")."); });
-    };
-    fetch("file?" + q).then(function (r) {
-      if (!r.ok) { refused(r); return null; }
-      var ct = r.headers.get("content-type") || "";
-      var cd = r.headers.get("content-disposition") || "";
-      if (cd.indexOf("attachment") >= 0) {
-        return r.blob().then(function (b) { saveBlob(path, b); });
-      }
-      if (ct.indexOf("image/") === 0) {
-        return r.blob().then(function (b) { fileview(path, URL.createObjectURL(b), null, fallback); });
-      }
-      return r.text().then(function (t) { fileview(path, null, t, fallback); });
-    }).catch(function () { refused(null); });
   }
 
   // Total messages — what a reader means by the word: the top-level user and assistant
@@ -3036,7 +2917,7 @@
 
     // #139: an inline image opens full size.
     var aimg = e.target.closest(".aimg");
-    if (aimg) { lightbox(aimg.dataset.original || aimg.src, aimg.alt, aimg.dataset.original ? aimg.src : null); return; }
+    if (aimg) { lightbox(aimg.src, aimg.alt); return; }
 
 
     var sid = e.target.closest("#sid");
@@ -3125,9 +3006,8 @@
       });
       return;
     }
-    // A file path in a tool header opens the file, and never folds the block. On a host that
-    // serves artifacts the file is SHOWN in the page; everywhere else (and whenever the server
-    // declines to serve those bytes) it is revealed in the file manager.
+    // A file path in a tool header reveals the file in the file manager (or copies the path), and
+    // never folds the block.
     var tp = e.target.closest(".tool-path");
     if (tp) {
       if (location.protocol === "file:") return; // native file:// link works standalone
@@ -3143,9 +3023,8 @@
           .catch(function () { /* server gone */ });
       };
       // #46: the shared two-stamp rule decides, as it does for the attachment card above.
-      var action = shared.referenceAction({ fileSig: ARTIFACTS ? tp.dataset.fsig : null, revealSig: tp.dataset.sig, reveal: shared.revealHere() });
-      if (action === "preview") openArtifact(shared.stampQuery({ path: tp.dataset.path, sig: tp.dataset.fsig }), reveal);
-      else if (action === "reveal") reveal();
+      var action = shared.referenceAction({ revealSig: tp.dataset.sig, reveal: shared.revealHere() });
+      if (action === "reveal") reveal();
       // #275: with NO stamp the server offered nothing to act on, and an unsigned `/__reveal` is
       // refused every time — this used to send one anyway and flash "not found". The rule's third
       // answer is to copy the path, which is what the app shell has always done with it.

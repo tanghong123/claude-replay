@@ -1,7 +1,6 @@
-// SHARED between the app shell (served as an ES module at /monitor-ui/shared/…), the classic
-// rail and the v2 splice (inlined at serve time through {{SHARED}}) and the html crate's pages
-// (inlined by html_export/shared.rs). Conventions the inliner relies on: no imports, exactly
-// one trailing `export { … };` line.
+// SHARED between the app shell (served as an ES module at /monitor-ui/shared/…) and the html
+// crate's pages (inlined by html_export/shared.rs). Conventions the inliner relies on: no
+// imports, exactly one trailing `export { … };` line.
 //
 // The /api/send + /api/consent PROTOCOL (#133), once (#48, design/monitor-shell-duplication.md
 // §1(c)). Two transports; the backend picks by liveness and the UI sets expectations:
@@ -11,8 +10,8 @@
 //    the passcode in the BODY — never the query string, which can be logged) then sends. The
 //    grant step is deliberate — it is where the RISK is stated, because injected text is
 //    input to a live agent running with its permissions.
-// The shells keep their markup and their intermediate paint; this module holds the rule for
-// WHO may compose, the words, the queries, and the meaning of every server answer.
+// The app shell keeps its markup and its intermediate paint; this module holds the rule for
+// WHO may compose, the queries, and the meaning of every server answer.
 
 /** Whether — and how — a row can be composed to, given the monitor's pairing. Constraint 2
  *  (#133): a project with another live session offers neither transport — with two live
@@ -22,23 +21,6 @@ function composeCapability(row, paired) {
   const inject = !!row.injectable;
   const resume = row.state === "finished" && !row.projActive && ["claude", "codex"].includes(row.agent);
   return { inject, resume, mode: inject ? "tmux" : resume ? "resume" : null };
-}
-
-/** The words a compose surface shows for a mode and consent state — the classic rail's. */
-function composeCopy(mode, consented, name) {
-  const tmux = mode === "tmux";
-  return {
-    target: (tmux ? "Inject into: " : "Send to: ") + (name || ""),
-    placeholder: tmux
-      ? "Type a prompt — it is pasted into the live tmux pane and submitted"
-      : "Send a prompt — the session resumes and runs it (permissions skipped)",
-    // The grant step exists to make the RISK explicit.
-    notice: tmux && !consented
-      ? "Runs in the LIVE agent with its permissions. “Grant & send” authorises this pane until it restarts."
-      : "",
-    button: tmux ? (consented ? "Send to pane" : "Grant & send") : "Send prompt",
-    revoke: tmux && consented
-  };
 }
 
 const sendQuery = target => `/api/send?target=${encodeURIComponent(target || "")}`;
@@ -103,4 +85,4 @@ async function runRevoke({ target, post }) {
   return revokeOutcome(d);
 }
 
-export { composeCapability, composeCopy, sendQuery, consentQuery, grantOutcome, sendOutcome, revokeOutcome, runSend, runRevoke };
+export { composeCapability, sendQuery, consentQuery, grantOutcome, sendOutcome, revokeOutcome, runSend, runRevoke };
