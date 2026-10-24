@@ -1779,6 +1779,7 @@ fn annotate_agent_state(root: &mut Value, tracker: &crate::state::StateTracker) 
         let Some(sid) = row.get("id").and_then(Value::as_str) else {
             continue;
         };
+        let by_herdr = tracker.by_herdr(sid);
         if let Some((verdict, since)) = tracker.current(sid) {
             row["agentState"] = serde_json::to_value(verdict.state).unwrap_or(Value::Null);
             row["stateReason"] = json!(verdict.reason.as_str());
@@ -1786,6 +1787,8 @@ fn annotate_agent_state(root: &mut Value, tracker: &crate::state::StateTracker) 
             row["stateConfidence"] =
                 serde_json::to_value(verdict.confidence).unwrap_or(Value::Null);
             row["stateSince"] = json!(since);
+            // #s238: herdr's own status decided it, or the monitor derived it.
+            row["stateSource"] = json!(if by_herdr { "herdr" } else { "derived" });
         } else {
             // Non-immediate states pass through a one-tick stability gate. Keep the additive
             // wire shape deterministic during that first scan, while labeling the coarse
@@ -1806,6 +1809,7 @@ fn annotate_agent_state(root: &mut Value, tracker: &crate::state::StateTracker) 
             row["stateDetail"] = json!("state derivation is stabilizing");
             row["stateConfidence"] = json!("inferred");
             row["stateSince"] = Value::Null;
+            row["stateSource"] = json!("derived");
         }
     }
 }
@@ -3802,6 +3806,10 @@ mod tests {
         );
         assert_eq!(r["stateReason"], "exited");
         assert_eq!(r["stateConfidence"], "observed");
+        assert_eq!(
+            r["stateSource"], "derived",
+            "#s238: no herdr pane, so derived"
+        );
         assert!(
             r.get("stateDetail").is_some() && r.get("stateSince").is_some(),
             "all agentState companion fields are present: {r}"

@@ -17,6 +17,13 @@
 //! must not own — does the attributed process have a live, recent CHILD (a tool
 //! actually executing) — through a single `ps` per tick, run only when some session
 //! needs the answer.
+//!
+//! **herdr decides where it can see** (#s238, Hong: "herdr's status is very reliable, since the
+//! agent's process runs inside it"): for a session in a herdr pane that herdr names as that
+//! pane's session, herdr's own status sets the STATE ([`herdr_decides`]); the derivation keeps
+//! only the reason and detail that agree with it, and a wait the derivation observed stands.
+//! herdr is read in the background ([`HerdrReader`]), so a slow or hung herdr never holds the
+//! scan, and an answer older than the transcript's last write is not used.
 
 use claude_replay_core::adapter;
 use claude_replay_core::liveness::inflight_tools_in_tail;
@@ -27,7 +34,8 @@ use claude_replay_core::state::{
 use claude_replay_core::Agent;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::sync::{Arc, Mutex};
+use std::time::{Instant, SystemTime};
 
 /// What the scan hands over per session — everything the derivation needs that the
 /// index already computed (growth, attribution), plus identity for the event payload.
@@ -77,6 +85,8 @@ pub(crate) struct StateTracker {
     content: HashMap<String, ContentFacts>,
     /// Hysteresis staging + the last PUBLISHED verdict per session.
     staged: HashMap<String, Staged>,
+    /// herdr's word on its panes' agents (#s238).
+    herdr: HerdrReader,
 }
 
 struct ContentFacts {
@@ -100,6 +110,8 @@ struct Staged {
     published: Option<(Verdict, String)>,
     /// The previous tick's derivation — the one-tick stability gate.
     candidate: Option<(AgentState, StateReason)>,
+    /// herdr decided the published verdict (#s238), as this tick last saw it.
+    by_herdr: bool,
 }
 
 impl StateTracker {
@@ -116,6 +128,11 @@ impl StateTracker {
             .map(|(verdict, since)| (verdict, since.as_str()))
     }
 
+    /// Whether herdr decided `sid`'s published verdict (#s238): the row's `stateSource`.
+    pub(crate) fn by_herdr(&self, sid: &str) -> bool {
+        self.staged.get(sid).is_some_and(|s| s.by_herdr)
+    }
+
     /// One tick: derive every interesting session's state, publish transitions, and
     /// rewrite the snapshot. `facts` is what the scan's assemble pass observed.
     pub(crate) fn tick(&mut self, cache_root: &Path, facts: &[RowFacts]) {
@@ -129,17 +146,46 @@ impl StateTracker {
 
         let mut snapshot: Vec<serde_json::Value> = Vec::new();
         let mut events: Vec<StateEvent> = Vec::new();
+        // herdr's last answer per server, read once per tick (#s238).
+        let mut herdr_answers: HashMap<String, Option<HerdrAnswer>> = HashMap::new();
 
         for f in facts {
             let interesting = f.pid.is_some() || f.quiet_secs < INTEREST_QUIET_SECS;
-            let verdict = if !interesting {
-                // Rule 1 without any reads: long-quiet and processless is exited.
-                Verdict {
-                    state: AgentState::Idle,
-                    reason: StateReason::Exited,
-                    detail: String::new(),
-                    confidence: claude_replay_core::state::Confidence::Observed,
-                }
+            // herdr's status for this session, when it sits in a live herdr pane, herdr names it
+            // as that pane's session, and herdr looked after the transcript last moved: a pane
+            // whose agent was replaced or never reported, or an answer older than the newest
+            // write, is left to the derivation.
+            let herdr_status = match (&f.pane, f.pid) {
+                (
+                    Some(crate::index::PaneAddr::Herdr {
+                        socket: Some(socket),
+                        pane,
+                    }),
+                    Some(_),
+                ) => herdr_answers
+                    .entry(socket.clone())
+                    .or_insert_with(|| self.herdr.answer(socket))
+                    .as_ref()
+                    .filter(|a| f.tree_mtime.is_none_or(|m| m <= a.asked_at))
+                    .and_then(|a| {
+                        a.panes.iter().find(|p| {
+                            &p.pane == pane && p.session.as_deref() == Some(f.sid.as_str())
+                        })
+                    })
+                    .map(|p| p.status.clone()),
+                _ => None,
+            };
+            let (verdict, by_herdr) = if !interesting {
+                (
+                    // Rule 1 without any reads: long-quiet and processless is exited.
+                    Verdict {
+                        state: AgentState::Idle,
+                        reason: StateReason::Exited,
+                        detail: String::new(),
+                        confidence: claude_replay_core::state::Confidence::Observed,
+                    },
+                    false,
+                )
             } else {
                 let content = self.content_facts(f);
                 let needs_children =
@@ -188,12 +234,20 @@ impl StateTracker {
                     // a live process only, since a dead one's status file speaks for no one.
                     client_wait: f.pid.and_then(|_| adapter(f.agent).client_wait(&f.path)),
                 };
-                derive_state(&signals)
+                let derived = derive_state(&signals);
+                match herdr_status
+                    .as_deref()
+                    .and_then(|status| herdr_decides(&derived, status))
+                {
+                    Some(decided) => (decided, true),
+                    None => (derived, false),
+                }
             };
 
             let staged = self.staged.entry(f.sid.clone()).or_insert(Staged {
                 published: None,
                 candidate: None,
+                by_herdr: false,
             });
             let key = (verdict.state, verdict.reason);
             let differs = staged
@@ -202,14 +256,15 @@ impl StateTracker {
                 .is_none_or(|(p, _)| (p.state, p.reason) != key);
             // Wait and attention-idle transitions publish immediately — they are what a
             // consumer is waiting to hear. Everything else needs one stable tick, the
-            // anti-flap the growth hold gives the rail.
+            // anti-flap the growth hold gives the rail. A wait herdr SAW is no inference to
+            // steady either (#s238).
             let immediate = matches!(
                 verdict.reason,
                 StateReason::Question
                     | StateReason::PlanApproval
                     | StateReason::Exited
                     | StateReason::ExitedMidWork
-            );
+            ) || (by_herdr && verdict.state == AgentState::Wait);
             let stable = staged.candidate == Some(key);
             if differs && (immediate || stable) {
                 // A first sighting that is merely idle·exited is bookkeeping, not news:
@@ -235,6 +290,21 @@ impl StateTracker {
                     });
                 }
                 staged.published = Some((verdict.clone(), now_ts.clone()));
+            }
+            if !differs {
+                // The same state and reason, now seen (herdr's, or the client's own wait): the
+                // published verdict says how it is known, and no event is written for it.
+                if let Some((p, _)) = staged.published.as_mut() {
+                    p.confidence = verdict.confidence;
+                }
+            }
+            if !differs
+                || staged
+                    .published
+                    .as_ref()
+                    .is_some_and(|(p, _)| p == &verdict)
+            {
+                staged.by_herdr = by_herdr;
             }
             staged.candidate = Some(key);
 
@@ -303,6 +373,215 @@ impl StateTracker {
         }
         self.content.get(&f.sid).expect("just inserted")
     }
+}
+
+/// How often herdr is asked while a session sits in one of its panes.
+const HERDR_ASK: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How long herdr's last answer stands. A server that stopped answering (gone, hung, its socket
+/// no longer this user's) leaves its sessions to the derivation after this.
+const HERDR_FRESH: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long a server is still asked after the last tick that wanted it (no page is polling).
+const HERDR_WANTED: std::time::Duration = std::time::Duration::from_secs(30);
+
+type HerdrRead = dyn Fn(&str) -> anyhow::Result<Vec<crate::control::HerdrPane>> + Send + Sync;
+
+/// herdr's last answer for one server: its panes, and when the ask began, on the wall clock a
+/// transcript's mtime is read on, so a session whose transcript moved after herdr looked is left
+/// to the derivation (the newer evidence wins).
+#[derive(Clone)]
+pub(crate) struct HerdrAnswer {
+    asked_at: SystemTime,
+    got: Instant,
+    panes: Vec<crate::control::HerdrPane>,
+}
+
+/// herdr's word on its panes' agents (#s238): one `herdr agent list` per server every
+/// `HERDR_ASK`, on a thread of its own while a tick has wanted that server within `HERDR_WANTED`.
+/// The scan holds the state lock and a herdr step may take seconds (`HERDR_STEP`), so a tick
+/// never asks: it takes the last answer while it is fresh, and the first tick that meets a server
+/// has none yet and derives as before. One asker per server, and it alone forgets its server,
+/// as it ends.
+pub(crate) struct HerdrReader {
+    read: Arc<HerdrRead>,
+    servers: Arc<Mutex<HashMap<String, HerdrServer>>>,
+    askers: std::sync::atomic::AtomicU64,
+    every: std::time::Duration,
+    fresh: std::time::Duration,
+    wanted_for: std::time::Duration,
+}
+
+#[derive(Default)]
+struct HerdrServer {
+    /// The asker thread serving it, 0 for none.
+    asker: u64,
+    wanted: Option<Instant>,
+    answer: Option<HerdrAnswer>,
+}
+
+impl Default for HerdrReader {
+    fn default() -> Self {
+        Self::with(Arc::new(crate::control::herdr_agent_list))
+    }
+}
+
+impl HerdrReader {
+    fn with(read: Arc<HerdrRead>) -> Self {
+        Self::timed(read, HERDR_ASK, HERDR_FRESH, HERDR_WANTED)
+    }
+
+    fn timed(
+        read: Arc<HerdrRead>,
+        every: std::time::Duration,
+        fresh: std::time::Duration,
+        wanted_for: std::time::Duration,
+    ) -> Self {
+        HerdrReader {
+            read,
+            servers: Arc::default(),
+            askers: std::sync::atomic::AtomicU64::new(1),
+            every,
+            fresh,
+            wanted_for,
+        }
+    }
+
+    /// The server's last answer while it is fresh, starting its asker when it has none. A failed
+    /// ask keeps the answer before it until that ages out.
+    fn answer(&self, socket: &str) -> Option<HerdrAnswer> {
+        let mut servers = self.servers.lock().unwrap_or_else(|e| e.into_inner());
+        let server = servers.entry(socket.to_string()).or_default();
+        server.wanted = Some(Instant::now());
+        if server.asker == 0 {
+            let id = self
+                .askers
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            server.asker = id;
+            let (read, servers, socket) =
+                (self.read.clone(), self.servers.clone(), socket.to_string());
+            let (every, wanted_for) = (self.every, self.wanted_for);
+            let spawned = std::thread::Builder::new()
+                .name("herdr-asker".into())
+                .spawn(move || {
+                    // However the asker ends — unwanted, or a read that panicked — it forgets its
+                    // server, so the next tick that wants it starts another.
+                    let _forget = ForgetOnExit {
+                        servers: servers.clone(),
+                        socket: socket.clone(),
+                        id,
+                    };
+                    loop {
+                        let asked_at = SystemTime::now();
+                        let answer = read(&socket);
+                        let mut all = servers.lock().unwrap_or_else(|e| e.into_inner());
+                        let Some(server) = all.get_mut(&socket).filter(|s| s.asker == id) else {
+                            return;
+                        };
+                        if let Ok(panes) = answer {
+                            server.answer = Some(HerdrAnswer {
+                                asked_at,
+                                got: Instant::now(),
+                                panes,
+                            });
+                        }
+                        if server.wanted.is_none_or(|w| w.elapsed() > wanted_for) {
+                            return;
+                        }
+                        drop(all);
+                        std::thread::sleep(every);
+                    }
+                });
+            if spawned.is_err() {
+                server.asker = 0;
+            }
+        }
+        server
+            .answer
+            .as_ref()
+            .filter(|a| a.got.elapsed() <= self.fresh)
+            .cloned()
+    }
+}
+
+/// Removes an asker's server from the reader as the asker ends, unless a newer asker serves it.
+struct ForgetOnExit {
+    servers: Arc<Mutex<HashMap<String, HerdrServer>>>,
+    socket: String,
+    id: u64,
+}
+
+impl Drop for ForgetOnExit {
+    fn drop(&mut self) {
+        let mut all = self.servers.lock().unwrap_or_else(|e| e.into_inner());
+        if all.get(&self.socket).is_some_and(|s| s.asker == self.id) {
+            all.remove(&self.socket);
+        }
+    }
+}
+
+/// The verdict once herdr's status for the session's pane is heard (#s238). herdr draws the pane,
+/// so it sees what the transcript cannot (a dialog open, a spinner running) and its status sets
+/// the STATE over the derivation's INFERENCES; the derivation keeps the reason and detail that
+/// agree with it, and otherwise the plainest reason for that state stands in. A wait the
+/// derivation OBSERVED (a pending question or plan, the client's own wait) stands whatever herdr
+/// says, herdr deciding it only when it agrees (`blocked`): the client said so itself, and a
+/// herdr rule that missed its dialog must not hide a session that needs a person.
+///
+/// - `working` is busy: a derived busy reason stays (a tool and its name); the inferred
+///   permission wait on a named tool is that tool running; anything else is thinking.
+/// - `blocked` is a wait: a derived wait stays; a tool the derivation had running is that tool
+///   awaiting permission; anything else a permission.
+/// - `idle` and `done` (finished since the pane was last looked at) are idle: a derived idle
+///   reason stays (a turn that ended on a question, an error or a failure still asks for a
+///   person), except a stall, which is the derivation's guess at a turn that should be running;
+///   and a workflow fleet stays busy, since its members run where herdr's screen does not show.
+///   Anything else is done.
+/// - `unknown`, or anything else, leaves the derivation as it is: `None`.
+///
+/// Whatever herdr decided is `Observed`.
+pub(crate) fn herdr_decides(derived: &Verdict, status: &str) -> Option<Verdict> {
+    use claude_replay_core::state::Confidence;
+    let keep = |v: &Verdict| Verdict {
+        confidence: Confidence::Observed,
+        ..v.clone()
+    };
+    let seen = |state, reason, detail: &str| Verdict {
+        state,
+        reason,
+        detail: detail.to_string(),
+        confidence: Confidence::Observed,
+    };
+    if !matches!(status, "working" | "blocked" | "idle" | "done") {
+        return None;
+    }
+    if derived.state == AgentState::Wait && derived.confidence == Confidence::Observed {
+        // herdr agreeing (blocked) says so; disagreeing, it decides nothing.
+        return (status == "blocked").then(|| derived.clone());
+    }
+    Some(match status {
+        "working" => match (derived.state, derived.reason) {
+            (AgentState::Busy, _) => keep(derived),
+            (AgentState::Wait, StateReason::Permission) if !derived.detail.is_empty() => {
+                seen(AgentState::Busy, StateReason::Tool, &derived.detail)
+            }
+            _ => seen(AgentState::Busy, StateReason::Thinking, ""),
+        },
+        "blocked" => match (derived.state, derived.reason) {
+            (AgentState::Wait, _) => keep(derived),
+            (AgentState::Busy, StateReason::Tool) => {
+                seen(AgentState::Wait, StateReason::Permission, &derived.detail)
+            }
+            _ => seen(AgentState::Wait, StateReason::Permission, ""),
+        },
+        _ => match (derived.state, derived.reason) {
+            (AgentState::Idle, StateReason::Stalled) => {
+                seen(AgentState::Idle, StateReason::Done, "")
+            }
+            (AgentState::Idle, _) | (AgentState::Busy, StateReason::Fleet) => keep(derived),
+            _ => seen(AgentState::Idle, StateReason::Done, ""),
+        },
+    })
 }
 
 fn first_line_snippet(t: &str) -> String {
@@ -759,5 +1038,396 @@ mod tests {
         assert_eq!(parse_etime("3-02:01:05"), Some(3 * 86400 + 7265));
         assert_eq!(parse_etime("a:b"), None);
         assert_eq!(parse_etime("1:2:3:4"), None);
+    }
+
+    fn verdict(state: AgentState, reason: StateReason, detail: &str) -> Verdict {
+        Verdict {
+            state,
+            reason,
+            detail: detail.into(),
+            confidence: claude_replay_core::state::Confidence::Inferred,
+        }
+    }
+
+    fn seen(state: AgentState, reason: StateReason, detail: &str) -> Verdict {
+        Verdict {
+            confidence: claude_replay_core::state::Confidence::Observed,
+            ..verdict(state, reason, detail)
+        }
+    }
+
+    /// #s238: herdr's status sets the state over the derivation's inferences; the derivation keeps
+    /// only the reason and detail that agree with it, an observed wait stands, and whatever herdr
+    /// decided is observed.
+    #[test]
+    fn herdr_decides_the_state_and_keeps_the_reasons_that_agree() {
+        use AgentState::{Busy, Idle, Wait};
+        use StateReason::*;
+        let cases = [
+            // working
+            (seen(Busy, Tool, "Bash"), "working", (Busy, Tool, "Bash")),
+            (
+                seen(Busy, QueuedPrompt, ""),
+                "working",
+                (Busy, QueuedPrompt, ""),
+            ),
+            (
+                verdict(Wait, Permission, "Bash"),
+                "working",
+                (Busy, Tool, "Bash"),
+            ),
+            (
+                verdict(Wait, Permission, ""),
+                "working",
+                (Busy, Thinking, ""),
+            ),
+            (
+                seen(Idle, Done, "All set."),
+                "working",
+                (Busy, Thinking, ""),
+            ),
+            (seen(Idle, Stalled, ""), "working", (Busy, Thinking, "")),
+            // blocked
+            (
+                verdict(Wait, Permission, "Bash"),
+                "blocked",
+                (Wait, Permission, "Bash"),
+            ),
+            (
+                seen(Busy, Tool, "Bash"),
+                "blocked",
+                (Wait, Permission, "Bash"),
+            ),
+            (seen(Busy, Thinking, ""), "blocked", (Wait, Permission, "")),
+            (
+                seen(Idle, Done, "All set."),
+                "blocked",
+                (Wait, Permission, ""),
+            ),
+            // idle and done
+            (
+                seen(Idle, Done, "All set."),
+                "idle",
+                (Idle, Done, "All set."),
+            ),
+            (
+                seen(Idle, EndedQuestion, "Apply it?"),
+                "done",
+                (Idle, EndedQuestion, "Apply it?"),
+            ),
+            (
+                seen(Idle, Failed, "API error"),
+                "idle",
+                (Idle, Failed, "API error"),
+            ),
+            (seen(Idle, Stalled, ""), "idle", (Idle, Done, "")),
+            (
+                seen(Busy, Fleet, "2 running"),
+                "idle",
+                (Busy, Fleet, "2 running"),
+            ),
+            (seen(Busy, Tool, "Bash"), "done", (Idle, Done, "")),
+            (seen(Busy, Starting, ""), "idle", (Idle, Done, "")),
+            (verdict(Wait, Permission, "Bash"), "idle", (Idle, Done, "")),
+        ];
+        for (derived, status, (state, reason, detail)) in cases {
+            let v = herdr_decides(&derived, status).expect(status);
+            assert_eq!(
+                (v.state, v.reason, v.detail.as_str()),
+                (state, reason, detail),
+                "{derived:?} + herdr {status}"
+            );
+            assert_eq!(
+                v.confidence,
+                claude_replay_core::state::Confidence::Observed
+            );
+        }
+        // A wait the derivation observed (the client's own, a pending question or plan) stands:
+        // herdr decides it only by agreeing.
+        for derived in [
+            seen(Wait, Question, "Which?"),
+            seen(Wait, PlanApproval, "plan ready for approval"),
+            seen(Wait, Permission, ""),
+        ] {
+            assert_eq!(herdr_decides(&derived, "blocked").as_ref(), Some(&derived));
+            for status in ["working", "idle", "done"] {
+                assert_eq!(
+                    herdr_decides(&derived, status),
+                    None,
+                    "{derived:?} + herdr {status}"
+                );
+            }
+        }
+        for status in ["unknown", "", "sleeping"] {
+            assert_eq!(
+                herdr_decides(&seen(Busy, Tool, "Bash"), status),
+                None,
+                "{status}"
+            );
+            assert_eq!(
+                herdr_decides(&seen(Wait, Question, "?"), status),
+                None,
+                "{status}"
+            );
+        }
+    }
+
+    fn pane(pane: &str, session: &str, status: &str) -> crate::control::HerdrPane {
+        crate::control::HerdrPane {
+            pane: pane.into(),
+            session: Some(session.into()),
+            status: status.into(),
+        }
+    }
+
+    fn ms(n: u64) -> std::time::Duration {
+        std::time::Duration::from_millis(n)
+    }
+
+    /// Wait until the reader's answer for `socket` passes `ok` (it asks in the background).
+    fn heard(
+        reader: &HerdrReader,
+        socket: &str,
+        ok: impl Fn(&HerdrAnswer) -> bool,
+    ) -> Option<HerdrAnswer> {
+        let until = Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(a) = reader.answer(socket).filter(|a| ok(a)) {
+                return Some(a);
+            }
+            if Instant::now() > until {
+                return None;
+            }
+            std::thread::sleep(ms(10));
+        }
+    }
+
+    /// #s238: herdr is asked on a clock of its own, one ask at a time per server, so a look
+    /// never waits and an answer is never a page poll old; a failed ask keeps the answer before
+    /// it; the asker stops once no tick wants the server; and a server forgotten and met again
+    /// still has one asker.
+    #[test]
+    fn the_herdr_reader_asks_on_its_own_clock_one_ask_at_a_time() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        let (asks, inside, most) = (
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let (go, gate) = std::sync::mpsc::channel::<()>();
+        let gate = Mutex::new(gate);
+        let (a, i, m) = (asks.clone(), inside.clone(), most.clone());
+        let reader = HerdrReader::timed(
+            Arc::new(move |_: &str| {
+                let now = i.fetch_add(1, SeqCst) + 1;
+                m.fetch_max(now, SeqCst);
+                let n = a.fetch_add(1, SeqCst);
+                if n == 0 {
+                    // The first ask holds until the test lets it go.
+                    let _ = gate.lock().unwrap().recv();
+                }
+                // Each ask takes longer than the clock's step.
+                std::thread::sleep(ms(80));
+                i.fetch_sub(1, SeqCst);
+                match n {
+                    0 => Ok(vec![pane("w1:p1", "s1", "working")]),
+                    _ => anyhow::bail!("herdr did not answer"),
+                }
+            }),
+            ms(50),
+            std::time::Duration::from_secs(5),
+            ms(1000),
+        );
+        assert!(reader.answer("/s/herdr.sock").is_none(), "no answer yet");
+        // The look returned while the ask it started is still out: it never waits on herdr.
+        let until = Instant::now() + std::time::Duration::from_secs(5);
+        while inside.load(SeqCst) == 0 && Instant::now() < until {
+            std::thread::sleep(ms(5));
+        }
+        assert_eq!(inside.load(SeqCst), 1, "the ask is out");
+        assert!(reader.answer("/s/herdr.sock").is_none(), "still no answer");
+        go.send(()).unwrap();
+        let first = heard(&reader, "/s/herdr.sock", |_| true).expect("an answer");
+        assert_eq!(first.panes, vec![pane("w1:p1", "s1", "working")]);
+        // Asked again with no look in between, and every failure keeps the first answer.
+        std::thread::sleep(ms(400));
+        assert!(
+            asks.load(SeqCst) >= 2,
+            "asked on its own clock: {}",
+            asks.load(SeqCst)
+        );
+        assert_eq!(
+            reader.answer("/s/herdr.sock").map(|a| a.panes),
+            Some(first.panes.clone()),
+            "a failed ask keeps the answer before it"
+        );
+        assert_eq!(most.load(SeqCst), 1, "never two asks at once");
+        // Unwanted for longer than `wanted_for`, the asker forgets the server and stops.
+        std::thread::sleep(ms(1600));
+        assert!(
+            reader.servers.lock().unwrap().is_empty(),
+            "forgotten by its asker"
+        );
+        let stopped = asks.load(SeqCst);
+        std::thread::sleep(ms(300));
+        assert_eq!(asks.load(SeqCst), stopped, "no tick wants it: no more asks");
+        assert_eq!(most.load(SeqCst), 1);
+    }
+
+    /// #s238: an asker whose read panics forgets its server, so the next look starts another
+    /// rather than leaving herdr silently off for that server.
+    #[test]
+    fn a_herdr_asker_that_panics_leaves_its_server_to_a_new_one() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        let asks = Arc::new(AtomicUsize::new(0));
+        let a = asks.clone();
+        let reader = HerdrReader::timed(
+            Arc::new(move |_: &str| {
+                if a.fetch_add(1, SeqCst) == 0 {
+                    panic!("a read that panics");
+                }
+                Ok(vec![pane("w1:p1", "s1", "idle")])
+            }),
+            ms(50),
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(5),
+        );
+        assert!(reader.answer("/s/herdr.sock").is_none());
+        let until = Instant::now() + std::time::Duration::from_secs(5);
+        while !reader.servers.lock().unwrap().is_empty() && Instant::now() < until {
+            std::thread::sleep(ms(10));
+        }
+        assert!(
+            reader.servers.lock().unwrap().is_empty(),
+            "the dead asker's server is forgotten"
+        );
+        assert_eq!(
+            heard(&reader, "/s/herdr.sock", |_| true).map(|a| a.panes),
+            Some(vec![pane("w1:p1", "s1", "idle")]),
+            "the next look starts a new asker"
+        );
+    }
+
+    fn herdr_world(tag: &str) -> (PathBuf, PathBuf) {
+        let root = scratch(tag);
+        let t = root.join("s1.jsonl");
+        std::fs::write(&t, concat!(
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-08-14T10:00:00Z"}"#, "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"All set."}]},"timestamp":"2026-08-14T10:00:05Z"}"#, "\n",
+        )).unwrap();
+        // The transcript's last write is well before herdr's first look.
+        std::fs::File::options()
+            .write(true)
+            .open(&t)
+            .unwrap()
+            .set_modified(SystemTime::now() - std::time::Duration::from_secs(60))
+            .unwrap();
+        (root, t)
+    }
+
+    fn in_pane(sid: &str, t: &Path, at: &str) -> RowFacts {
+        RowFacts {
+            pane: Some(crate::index::PaneAddr::Herdr {
+                socket: Some("/s/herdr.sock".into()),
+                pane: at.into(),
+            }),
+            ..facts(sid, t, Some(4242), 5)
+        }
+    }
+
+    fn now_is(tr: &StateTracker, sid: &str) -> (AgentState, StateReason, bool) {
+        let (v, _) = tr.current(sid).expect(sid);
+        (v.state, v.reason, tr.by_herdr(sid))
+    }
+
+    /// #s238 end to end: a session herdr names in its pane takes herdr's status and the row says
+    /// so; a pane whose session herdr names differently is left to the derivation; a wait herdr
+    /// sees publishes on the tick that hears it.
+    #[test]
+    fn a_session_herdr_names_in_its_pane_takes_herdrs_status() {
+        let (root, t) = herdr_world("herdr");
+        let status = Arc::new(Mutex::new("working"));
+        let said = status.clone();
+        let mut tr = StateTracker {
+            herdr: HerdrReader::timed(
+                Arc::new(move |_: &str| {
+                    let status = *said.lock().unwrap();
+                    Ok(vec![
+                        pane("w1:p1", "s1", status),
+                        pane("w1:p2", "other", "blocked"),
+                    ])
+                }),
+                ms(30),
+                std::time::Duration::from_secs(10),
+                std::time::Duration::from_secs(10),
+            ),
+            ..StateTracker::default()
+        };
+        assert!(heard(&tr.herdr, "/s/herdr.sock", |_| true).is_some());
+
+        // The transcript says the turn ended; herdr sees the agent working.
+        let rows = [in_pane("s1", &t, "w1:p1"), in_pane("s2", &t, "w1:p2")];
+        tr.tick(&root, &rows);
+        tr.tick(&root, &rows);
+        assert_eq!(
+            now_is(&tr, "s1"),
+            (AgentState::Busy, StateReason::Thinking, true)
+        );
+        assert_eq!(
+            now_is(&tr, "s2"),
+            (AgentState::Idle, StateReason::Done, false),
+            "herdr names another session in that pane: the derivation stands"
+        );
+
+        // herdr sees a dialog: the wait publishes on the first tick that hears it.
+        *status.lock().unwrap() = "blocked";
+        assert!(heard(&tr.herdr, "/s/herdr.sock", |a| a.panes[0].status
+            == "blocked")
+        .is_some());
+        tr.tick(&root, &rows);
+        assert_eq!(
+            now_is(&tr, "s1"),
+            (AgentState::Wait, StateReason::Permission, true)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #s238: herdr's answer is older than the transcript's last write (a question answered, a
+    /// prompt submitted after herdr looked), so the newer evidence, the derivation, decides.
+    #[test]
+    fn a_transcript_newer_than_herdrs_answer_is_left_to_the_derivation() {
+        let (root, t) = herdr_world("herdr-stale");
+        let mut tr = StateTracker {
+            // Asked once: the next ask is a minute away.
+            herdr: HerdrReader::timed(
+                Arc::new(|_: &str| Ok(vec![pane("w1:p1", "s1", "blocked")])),
+                std::time::Duration::from_secs(60),
+                std::time::Duration::from_secs(60),
+                std::time::Duration::from_secs(60),
+            ),
+            ..StateTracker::default()
+        };
+        assert!(heard(&tr.herdr, "/s/herdr.sock", |_| true).is_some());
+        let rows = [in_pane("s1", &t, "w1:p1")];
+        tr.tick(&root, &rows);
+        assert_eq!(
+            now_is(&tr, "s1"),
+            (AgentState::Wait, StateReason::Permission, true)
+        );
+        // The transcript moves after herdr looked.
+        std::fs::File::options()
+            .write(true)
+            .open(&t)
+            .unwrap()
+            .set_modified(SystemTime::now() + std::time::Duration::from_secs(1))
+            .unwrap();
+        let rows = [in_pane("s1", &t, "w1:p1")];
+        tr.tick(&root, &rows);
+        tr.tick(&root, &rows);
+        assert_eq!(
+            now_is(&tr, "s1"),
+            (AgentState::Idle, StateReason::Done, false)
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -392,6 +392,50 @@ pub fn parse_herdr_agent(reply: &str) -> HerdrAgent {
     }
 }
 
+/// One pane's agent as `herdr agent list` reports it (#s238): the pane, the session herdr's hook
+/// named there at the agent's start (`agent_session.value`, Claude only), and herdr's own status
+/// for it, which herdr reads off the screen it draws for that pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HerdrPane {
+    pub pane: String,
+    pub session: Option<String>,
+    pub status: String,
+}
+
+/// The panes of a `herdr agent list` reply (`result.agents[]`, measured on herdr 0.9.5); an entry
+/// without a pane id or a status is left out.
+pub fn parse_herdr_agent_list(reply: &str) -> Vec<HerdrPane> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(reply) else {
+        return Vec::new();
+    };
+    let Some(agents) = ["/result/agents", "/agents"]
+        .iter()
+        .find_map(|at| v.pointer(at).and_then(|a| a.as_array()))
+    else {
+        return Vec::new();
+    };
+    agents
+        .iter()
+        .filter_map(|a| {
+            Some(HerdrPane {
+                pane: a.get("pane_id")?.as_str()?.to_string(),
+                session: a
+                    .pointer("/agent_session/value")
+                    .and_then(|s| s.as_str())
+                    .map(str::to_string),
+                status: a.get("agent_status")?.as_str()?.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// `herdr agent list` from the server at `socket`, when it is a socket of this user (#s238).
+pub fn herdr_agent_list(socket: &str) -> Result<Vec<HerdrPane>> {
+    let socket = herdr_socket_ok(socket)?;
+    let reply = herdr_cli(&herdr_program(), &socket, &["agent", "list"])?;
+    Ok(parse_herdr_agent_list(&reply))
+}
+
 /// What the Claude pane's input box holds, read off `herdr pane read --source visible --ansi`
 /// (#s226). Measured on aries-black (herdr 0.9.5, Claude Code 2.1.309): the box is the LAST pair of
 /// `─` rules on screen with the prompt `❯` and a NO-BREAK SPACE on its first line; an empty
@@ -554,9 +598,14 @@ pub fn herdr_pane_id_ok(pane: &str) -> bool {
 
 /// This process's effective uid, read as the owner of a file it just made (no libc in a plain
 /// build; the home directory's owner is not the same thing under a job shell that runs as
-/// another user).
+/// another user). It never changes, so it is read once: the state pass checks a herdr socket
+/// every few seconds (#s238).
 fn effective_uid() -> Result<u32> {
     use std::os::unix::fs::MetadataExt;
+    static UID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    if let Some(uid) = UID.get() {
+        return Ok(*uid);
+    }
     // One name per call: two sends at once must not remove each other's probe.
     static PROBES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -564,7 +613,8 @@ fn effective_uid() -> Result<u32> {
     std::fs::write(&probe, b"").context("a scratch file to read this process's uid")?;
     let uid = std::fs::metadata(&probe).map(|m| m.uid());
     let _ = std::fs::remove_file(&probe);
-    Ok(uid?)
+    let uid = uid?;
+    Ok(*UID.get_or_init(|| uid))
 }
 
 /// The pane's herdr socket, when it is one we may talk to: an absolute path named `herdr.sock`
@@ -1034,6 +1084,38 @@ mod tests {
     /// A Claude pane's screen with `input` in its box, as aries-black showed it.
     fn screen(input: &str) -> String {
         format!("Some reply\n{RULE}\n{input}\n{RULE}\n  \u{23f8} manual mode on\n")
+    }
+
+    /// #s238: `herdr agent list`'s shape, measured on herdr 0.9.5 — each pane's id, the session
+    /// herdr's hook named there, and herdr's own status; an entry missing either half is dropped.
+    #[test]
+    fn herdr_agent_list_reads_each_panes_session_and_status() {
+        let reply = format!(
+            r#"{{"id":"cli:agent:list","result":{{"type":"agent_list","agents":[
+                {{"agent":"claude","agent_session":{{"agent":"claude","kind":"id","source":"herdr:claude","value":"{SID}"}},
+                  "agent_status":"working","pane_id":"wD:p1","cwd":"/w","interactive_ready":true}},
+                {{"agent":"codex","agent_status":"idle","pane_id":"w2:p1"}},
+                {{"agent":"claude","agent_status":"blocked"}},
+                {{"agent":"claude","pane_id":"w3:p1"}}
+            ]}}}}"#
+        );
+        assert_eq!(
+            parse_herdr_agent_list(&reply),
+            vec![
+                HerdrPane {
+                    pane: "wD:p1".into(),
+                    session: Some(SID.into()),
+                    status: "working".into(),
+                },
+                HerdrPane {
+                    pane: "w2:p1".into(),
+                    session: None,
+                    status: "idle".into(),
+                },
+            ]
+        );
+        assert!(parse_herdr_agent_list("not json").is_empty());
+        assert!(parse_herdr_agent_list(r#"{"result":{"agents":{}}}"#).is_empty());
     }
 
     /// #s226: the input box as `herdr pane read --ansi` shows it, measured on aries-black: the

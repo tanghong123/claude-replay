@@ -246,7 +246,23 @@ out of the transcript until it resolves, so the pending-tool rules read such a s
 it records the wait in `<claude home>/sessions/<pid>.json` (`status: waiting`, `waitingFor`: `input
 needed` or `permission prompt`), which `client_wait` reads for a session with a live process, found
 by the `sessionId` it names (the newest file speaks), a permission prompt in plan mode being the
-plan's approval. The app shell's session filter (a glyph in the sidebar's head-actions row,
+plan's approval. **herdr's own status decides where herdr can see** (#s238, Hong: "herdr's status is very
+reliable, since the agent's process runs inside it"): herdr reads each pane's agent off the screen
+it draws, by the rules of its detection manifest (the title's spinner is `working`, a dialog's form
+`blocked`; `herdr agent explain <pane>` names the rule that matched), and its Claude hook only names
+the session, at SessionStart. For a live session in a herdr pane that `herdr agent list` names as that pane's
+session, its status sets the STATE over the derivation's inferences, and the derivation keeps only
+the reason and detail that agree (`herdr_decides` in `state.rs`: a tool stays a tool; a derived
+stall under herdr's idle is done; a workflow fleet stays busy, since its members run off herdr's
+screen). A wait the derivation OBSERVED (a pending question or plan, the client's own wait, #s76)
+stands whatever herdr says, so a dialog herdr's rules miss never hides a session that needs a
+person; `unknown`, no entry, or another session named there leaves the derivation alone. herdr is
+asked on a clock of its own (`HerdrReader`: one asker thread per server, an `agent list` every 2 s
+while a tick has wanted that server in the last 30 s, an answer standing for 10 s), so a tick never
+waits on herdr and an answer is never a page poll old; an answer asked BEFORE the transcript's last
+write is not used, since the newer evidence wins (a question answered, a prompt submitted after
+herdr looked). A wait herdr saw publishes at once, and the row's `stateSource` says `herdr` or
+`derived`. The app shell's session filter (a glyph in the sidebar's head-actions row,
 between Expand every group and the sidebar collapse, opening Active recently / Blocked / Idle /
 Include hidden checkboxes; Active recently and Blocked by default, remembered, never an empty
 set; "Everything" checks the three and leaves Include hidden alone) filters by a COVER of that partition: Active recently is an hour of
