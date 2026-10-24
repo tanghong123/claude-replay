@@ -309,6 +309,14 @@ herdr is a pane we do not drive, and with no answer the agent is in no pane we m
 `herdr --session <name>`, since herdr attaches by server. The send (`PaneAddr`, `resolve_pane_send`)
 keeps every tmux rule — a proven link, the project's only live session, consent keyed to the pane and
 pid (a herdr key's socket half is `herdr:<socket>`, so a tmux grant can never count) — and then
+one rule tmux does not have: **a grant follows a herdr RESTORE of the same session** (#s234, Hong's
+option 1 on #s233; herdr starts it again as `claude --resume <id>`, a new pid): `consent::carried`
+keeps it when only the pid changed, the server and pane (read from the new process's own
+environment, believed only with herdr nearest) and the session id are the same, the process names
+the session in its own argv (`names_exactly`: `--resume <id>` or `--session-id <id>`, never a bare
+id, an `attach` client, a fork, a one-shot or a directory pairing), and the original expiry has not
+passed (never extended). The carry is worked out on every send and never written back, so a send
+only reads `consent.json`, and the row's `consented` asks the same (`covers`) — and then
 `control::herdr_send` checks what tmux never did, for a CLAUDE session only (herdr's hook reports
 Claude's session; a Codex row in herdr is not offered the send, `HerdrClaudeOnly`): the pane id must
 be herdr's shape and the socket a socket of this user (both come from another process's

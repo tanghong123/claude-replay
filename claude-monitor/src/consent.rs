@@ -9,8 +9,11 @@
 //! Consent is keyed by the `(socket, pane, sid, pid)` quadruple. The **pid is load-bearing**:
 //! a pane outlives the process in it, so consenting to "pane %0" must never carry to whatever
 //! runs there next — a restart mints a new pid, no grant matches it, and the owner re-grants
-//! (§3.4). A wall-clock expiry is the backstop for a grant left behind by a long-lived
-//! process. Stored 0600 at the monitor's state root beside the auth token and the hide list
+//! (§3.4). One exception, Hong's choice on #s233 (2026-10-24): a HERDR restore of the same
+//! session in the same pane keeps the grant (`carried`, #s234), since herdr starts the session
+//! again as `claude --resume <id>` — the same conversation in a new process. The carry is worked
+//! out on every send and never written back, so a send only ever READS this file. A wall-clock
+//! expiry is the backstop for a grant left behind by a long-lived process. Stored 0600 at the monitor's state root beside the auth token and the hide list
 //! (#197) — it is security state other local users must not read or forge.
 
 use serde_json::json;
@@ -100,6 +103,50 @@ fn granted(
     })
 }
 
+/// Does an unexpired grant follow a HERDR restore of the same session (#s234, Hong's option 1 on
+/// #s233)? Only when the pid is all that changed: the same herdr server (the grant's socket half
+/// is `herdr:<socket>`) and pane — both read from the new process's OWN environment, and only
+/// when herdr is its nearest multiplexer (`apply_nesting`), since that is the only way a target
+/// gets a herdr address — and the same session id. `follows` is the caller's word that the target
+/// IS a herdr pane whose process names the session itself (`PaneAddr::grant_follows`: `--resume
+/// <id>` or `--session-id <id>`, never a bare id, a prefix, a fork or a directory pairing); the
+/// socket's prefix is checked as well. The grant's expiry is not extended, and tmux never carries.
+fn carried(
+    grants: &[Grant],
+    sock: Option<&str>,
+    pane: &str,
+    sid: &str,
+    pid: u32,
+    follows: bool,
+    now: u64,
+) -> bool {
+    follows
+        && sock.is_some_and(|s| s.starts_with("herdr:"))
+        && grants.iter().any(|g| {
+            g.sock.as_deref() == sock
+                && g.pane == pane
+                && g.sid == sid
+                && g.pid != pid
+                && g.expires_at > now
+        })
+}
+
+/// Would a send to this target find consent — an exact grant, or one that follows a herdr
+/// restore? The row badge's question, over a snapshot's grants (pruned already), so it never
+/// claims consent the send would then refuse.
+pub fn covers(
+    grants: &[Grant],
+    sock: Option<&str>,
+    pane: &str,
+    sid: &str,
+    pid: u32,
+    follows: bool,
+) -> bool {
+    let now = now_secs();
+    granted(grants, sock, pane, sid, pid, now)
+        || carried(grants, sock, pane, sid, pid, follows, now)
+}
+
 /// Drop dead grants — housekeeping on every load so the file cannot grow without bound and an
 /// expired grant cannot linger.
 fn prune(grants: &mut Vec<Grant>, now: u64) {
@@ -187,6 +234,20 @@ impl ConsentStore {
     /// Is this exact target consented right now?
     pub fn is_granted(&self, sock: Option<&str>, pane: &str, sid: &str, pid: u32) -> bool {
         granted(&self.load(), sock, pane, sid, pid, now_secs())
+    }
+
+    /// The send's check (#s234): an exact grant, or one that follows a herdr restore of the same
+    /// session (`carried`). It only READS the file: the carry is worked out again on every send,
+    /// so a send can never race a grant or a revoke into writing back an old list.
+    pub fn consents(
+        &self,
+        sock: Option<&str>,
+        pane: &str,
+        sid: &str,
+        pid: u32,
+        follows: bool,
+    ) -> bool {
+        covers(&self.load(), sock, pane, sid, pid, follows)
     }
 
     /// The live grants right now (expired pruned) — the rail marks a row `consented` by
@@ -385,6 +446,74 @@ mod tests {
         assert!(!granted(&grants, Some("sock"), "%1", "s", 100, 500)); // different socket
     }
 
+    /// #s234 (Hong's option 1 on #s233): a grant follows a herdr restore of the SAME session, in
+    /// the SAME pane on the SAME server, when the new process names the session itself and the
+    /// grant has not expired; nothing else carries it.
+    #[test]
+    fn a_grant_follows_a_herdr_restore_of_the_same_session_and_nothing_else() {
+        let h = Some("herdr:/h/herdr.sock");
+        let at = |sock: Option<&str>, pane: &str| Grant {
+            sock: sock.map(str::to_string),
+            pane: pane.into(),
+            sid: "s".into(),
+            pid: 100,
+            granted_at: 0,
+            expires_at: 1000,
+        };
+        let grants = vec![at(h, "w1:p2")];
+        assert!(
+            carried(&grants, h, "w1:p2", "s", 200, true, 500),
+            "the restore"
+        );
+        let refused = [
+            (
+                h,
+                "w1:p2",
+                "s",
+                100,
+                true,
+                500,
+                "the same process: exact, not a carry",
+            ),
+            (h, "w1:p2", "other", 200, true, 500, "another session"),
+            (h, "w1:p3", "s", 200, true, 500, "another pane"),
+            (
+                Some("herdr:/h2/herdr.sock"),
+                "w1:p2",
+                "s",
+                200,
+                true,
+                500,
+                "another server",
+            ),
+            (
+                h,
+                "w1:p2",
+                "s",
+                200,
+                false,
+                500,
+                "not followed: no naming herdr process",
+            ),
+            (h, "w1:p2", "s", 200, true, 1000, "expired: never extended"),
+        ];
+        for (sock, pane, sid, pid, follows, now, why) in refused {
+            assert!(
+                !carried(&grants, sock, pane, sid, pid, follows, now),
+                "{why}"
+            );
+        }
+        let tmux = vec![at(Some("knack"), "%3"), at(None, "%4")];
+        assert!(
+            !carried(&tmux, Some("knack"), "%3", "s", 200, true, 500),
+            "tmux"
+        );
+        assert!(
+            !carried(&tmux, None, "%4", "s", 200, true, 500),
+            "default tmux"
+        );
+    }
+
     #[test]
     fn prune_drops_only_the_expired() {
         let mut grants = vec![g("live", 1, 1000), g("dead", 2, 100)];
@@ -413,6 +542,38 @@ mod tests {
         // a different pane on the same socket is a different target.
         assert!(!store.is_granted(Some("knack"), "%4", "sid-a", 4242));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The send's check carries the grant to the restored process and only READS the file, so it
+    /// can never write back a list a concurrent revoke changed; a revoke ends the carry.
+    #[test]
+    fn consents_carries_a_grant_and_writes_nothing() {
+        let dir = std::env::temp_dir().join(format!("cr-consent-carry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = store_in(&dir);
+        let h = Some("herdr:/h/herdr.sock");
+        store.grant(h, "w1:p2", "s", 100).unwrap();
+        let before = std::fs::read(dir.join("consent.json")).unwrap();
+        assert!(
+            !store.consents(h, "w1:p2", "s", 200, false),
+            "not followed: no carry"
+        );
+        assert!(store.consents(h, "w1:p2", "s", 200, true), "the restore");
+        assert_eq!(
+            std::fs::read(dir.join("consent.json")).unwrap(),
+            before,
+            "a send writes nothing"
+        );
+        store.revoke("s");
+        assert!(
+            !store.consents(h, "w1:p2", "s", 200, true),
+            "a revoke ends the carry"
+        );
+        // A tmux grant never carries, whatever the process names.
+        store.grant(Some("knack"), "%3", "t", 300).unwrap();
+        assert!(!store.consents(Some("knack"), "%3", "t", 301, true));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

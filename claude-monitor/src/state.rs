@@ -50,6 +50,8 @@ pub(crate) struct RowFacts {
     /// Whether the process↔session link is PROVEN (#133 §3.1): sid-in-argv, fd held, or
     /// growth-proved — NEVER a cwd heuristic. Only a proven link may be injected into.
     pub confirmed: bool,
+    /// The process names the session exactly in its own argv (#s234).
+    pub named: bool,
     /// The tree mtime — the cache key for the content-derived facts.
     pub tree_mtime: Option<SystemTime>,
 }
@@ -449,6 +451,7 @@ mod tests {
             term: None,
             pane: None,
             confirmed: false,
+            named: false,
             tree_mtime: std::fs::metadata(path).and_then(|m| m.modified()).ok(),
         }
     }

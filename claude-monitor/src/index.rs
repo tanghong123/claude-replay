@@ -72,6 +72,11 @@ impl PaneAddr {
             PaneAddr::Tmux { pane, .. } | PaneAddr::Herdr { pane, .. } => pane,
         }
     }
+    /// May a consent grant follow a restore into this pane (#s234)? A HERDR pane whose process
+    /// names the session itself (`names_exactly`); never a tmux pane, whatever its socket's name.
+    pub fn grant_follows(&self, named: bool) -> bool {
+        named && matches!(self, PaneAddr::Herdr { .. })
+    }
     /// The socket half of a consent key: a tmux socket basename as before, a herdr server as
     /// `herdr:<socket>`, so a grant for one host can never match a pane of the other.
     pub fn consent_sock(&self) -> Option<String> {
@@ -103,6 +108,9 @@ pub struct PaneTarget {
     /// What the client says it waits on (#s76: a question, a permission prompt), read as the
     /// target resolved. The herdr send holds while it waits; typing would answer the dialog.
     pub client_wait: bool,
+    /// The process names the session exactly in its own argv (#s234): with a herdr pane, a
+    /// grant for the same session, pane and server may follow it across a restore.
+    pub named: bool,
 }
 
 /// Why a send-prompt was refused — each a distinct, reportable fact (mirrors the §3.1/§4
@@ -324,6 +332,8 @@ struct SendLink {
     pane: Option<PaneAddr>,
     /// Whether the process↔session link is proven (§3.1) — required to inject.
     confirmed: bool,
+    /// The process names the session exactly in its own argv (#s234).
+    named: bool,
 }
 
 /// Per-session scan state, persistent across cycles — the "previous scan" half of §5's diff.
@@ -505,7 +515,35 @@ struct AgentLink {
     pid: u32,
     /// Exact link (sid in argv, or the transcript held open) vs the cwd+recency heuristic.
     confirmed: bool,
+    /// The process names this session EXACTLY in its own argv (`--resume <id>`,
+    /// `--session-id <id>`): what lets a consent grant follow a herdr restore (#s234).
+    named: bool,
     terminal: Terminal,
+}
+
+/// Does this argv name `sid` by the flag a launch passes — `--session-id <id>`, or `--resume <id>`
+/// outside a fork — as a whole token? What lets a consent grant follow a herdr restore, which runs
+/// `claude --resume <id>` (#s234). Stricter than `session_ref` on purpose (the #s234 review): no
+/// bare uuid anywhere in the argv (an interactive prompt may quote another session's id), no
+/// `attach` client, no path form, and no one-shot, whose prompt rides in its argv. Known gap: the
+/// argv is `ps -o command`'s space-joined line, so a prompt that quotes `--resume <id>` word for word
+/// reads as the flag; that can only mislead the row's badge, since `herdr agent get` must still name
+/// this session before anything is typed (`control::herdr_send_verdict`).
+fn names_exactly(argv: &str, sid: &str) -> bool {
+    if is_one_shot(argv) {
+        return false;
+    }
+    let toks: Vec<&str> = argv.split_whitespace().collect();
+    let after = |flag: &str| {
+        toks.iter()
+            .position(|t| *t == flag)
+            .and_then(|i| toks.get(i + 1))
+            .copied()
+    };
+    if let Some(id) = after("--session-id") {
+        return id == sid;
+    }
+    !toks.contains(&"--fork-session") && after("--resume") == Some(sid)
 }
 
 /// What hosts the agent — and therefore whether it can be CONTROLLED (§3 of the probe:
@@ -790,6 +828,7 @@ impl Index {
         Ok(PaneTarget {
             sid: sid.to_string(),
             pid,
+            named: link.named,
             addr,
             client_wait: claude_replay_core::adapter(agent)
                 .client_wait(&path)
@@ -1030,6 +1069,7 @@ impl Index {
                         pid: f.pid,
                         pane: f.pane.clone(),
                         confirmed: f.confirmed,
+                        named: f.named,
                     },
                 )
             })
@@ -1227,10 +1267,10 @@ impl Index {
         // quadruple the send re-checks — so the badge never claims consent a send would then
         // refuse (e.g. after a restart mints a new pid).
         let grants = crate::consent::ConsentStore::open().active_grants();
-        let consented = |sock: Option<&str>, pane: &str, sid: &str, pid: u32| -> bool {
-            grants.iter().any(|g| {
-                g.sock.as_deref() == sock && g.pane == pane && g.sid == sid && g.pid == pid
-            })
+        // #s234: a grant that follows a herdr restore (same session, pane and server, the new
+        // process naming the session itself) covers the row too, as the send would find.
+        let consented = |sock: Option<&str>, pane: &str, sid: &str, pid: u32, follows: bool| {
+            crate::consent::covers(&grants, sock, pane, sid, pid, follows)
         };
         // #133 constraint 2 (UI hint): a row whose project has ANOTHER live session offers no
         // send affordance — the resume path would refuse it (ProjectHasActiveSession) and the
@@ -1388,6 +1428,7 @@ impl Index {
                 .map(|p| AgentLink {
                     pid: p.pid,
                     confirmed: true,
+                    named: names_exactly(&p.argv, sid),
                     terminal: Terminal::of(p),
                 })
                 .or_else(|| {
@@ -1395,6 +1436,7 @@ impl Index {
                     st.procs.iter().find(|p| p.pid == pid).map(|p| AgentLink {
                         pid: p.pid,
                         confirmed: rivals == 0,
+                        named: names_exactly(&p.argv, sid),
                         terminal: Terminal::Detached,
                     })
                 })
@@ -1465,6 +1507,7 @@ impl Index {
                     .and_then(|l| l.terminal.target().map(str::to_string)),
                 pane: link.as_ref().and_then(|l| l.terminal.pane_addr()),
                 confirmed: link.as_ref().map(|l| l.confirmed).unwrap_or(false),
+                named: link.as_ref().is_some_and(|l| l.named),
                 tree_mtime: row.tree_mtime,
             });
             // #113: a row is hidden if its OWN key is on the list, or its whole group is.
@@ -1551,7 +1594,8 @@ impl Index {
                         addr.consent_sock().as_deref(),
                         addr.pane(),
                         sid,
-                        l.pid
+                        l.pid,
+                        addr.grant_follows(l.named)
                     ));
                 }
             }
@@ -2186,6 +2230,7 @@ fn link(
     let mk = |p: &Proc, confirmed: bool| AgentLink {
         pid: p.pid,
         confirmed,
+        named: names_exactly(&p.argv, sid),
         // A helper's pane is the one it INHERITED from the client that spawned it, never
         // where a session's UI is — see `is_helper`.
         terminal: if is_helper(&p.argv) || is_one_shot(&p.argv) {
@@ -3370,6 +3415,7 @@ mod tests {
                 pane: "%3".into(),
             }),
             confirmed,
+            named: false,
         };
 
         // The happy path: live + proven + in tmux + a driven agent.
@@ -4412,6 +4458,7 @@ mod tests {
             pid: Some(201),
             pane: Some(herdr.clone()),
             confirmed: true,
+            named: true,
         };
         assert_eq!(pane_target_from(Agent::CLAUDE, &send), Ok((201, herdr)));
         // herdr's hook proves the pane's session for Claude only.
@@ -5373,6 +5420,103 @@ n/Users/x/proj
             .expect("the herdr grant");
         let snapshot = idx.assemble(&st, &mut Vec::new());
         assert_eq!(find(&snapshot, "h1").expect("the row")["consented"], true);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// #s234's review: only the flags a launch passes name a session for a grant to follow — never
+    /// a bare id in an interactive prompt, an `attach` client, a fork's parent, a one-shot, `-r`
+    /// or a path.
+    #[test]
+    fn only_a_launch_flag_names_a_session_for_a_grant_to_follow() {
+        let sid = "3f1e2d3c-0000-4000-8000-000000000a01";
+        let child = "11111111-0000-4000-8000-000000000000";
+        for (argv, want) in [
+            (format!("claude --resume {sid}"), true),
+            (format!("claude --session-id {sid} --name x"), true),
+            (format!("claude pick up where {sid} left off"), false),
+            (format!("claude attach {sid}"), false),
+            (format!("claude attach {}", &sid[..8]), false),
+            (format!("claude --fork-session --resume {sid}"), false),
+            (
+                format!("claude --session-id {child} --fork-session --resume {sid}"),
+                false,
+            ),
+            (format!("claude -p --resume {sid}"), false),
+            (format!("claude -r {sid}"), false),
+            (format!("claude --resume /x/{sid}.jsonl"), false),
+            ("claude --resume".to_string(), false),
+            (format!("claude --resume {child}"), false),
+        ] {
+            assert_eq!(names_exactly(&argv, sid), want, "{argv}");
+        }
+    }
+
+    /// #s234 (Hong's option 1 on #s233): herdr restores a session as `claude --resume <id>`, a new
+    /// process. Its row keeps the grant made for the old one when that process names the session
+    /// itself, in the same herdr pane on the same server; a process found by its directory alone
+    /// (`claude --resume` with no id) does not, though it is the same pane.
+    #[test]
+    fn a_herdr_restore_of_the_same_session_keeps_its_grant_on_the_row() {
+        let scratch = std::env::temp_dir().join(format!("cm-herdr-restore-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let sid = "3f1e2d3c-0000-4000-8000-000000000a01";
+        let socket = "/Users/x/.config/herdr/sessions/trial/herdr.sock";
+        let now = 1_791_400_000u64;
+        let world = |argv: &str| {
+            let mut procs = parse_ps(&format!("  701 claude {argv}\n"));
+            apply_tty(&mut procs, "  701 ttys004 00:20\n", now);
+            apply_env(
+                &mut procs,
+                &format!(
+                    "  701 claude HERDR_ENV=1 HERDR_PANE_ID=w1:p2 HERDR_SOCKET_PATH={socket}\n"
+                ),
+            );
+            apply_nesting(
+                &mut procs,
+                "  1 0 launchd\n  60 1 herdr\n  61 60 zsh\n  701 61 claude\n",
+            );
+            apply_lsof(&mut procs, "p701\nfcwd\nn/w/harbor\n");
+            let mut st = State {
+                procs,
+                ..Default::default()
+            };
+            let mut row = growth_row("/w/harbor", false);
+            row.first_event = Some(now - 600);
+            row.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(now - 5));
+            row.last_event = Some(now - 5);
+            st.rows.insert(sid.into(), row);
+            st
+        };
+        // The grant was made for the process before the restore.
+        crate::consent::ConsentStore::open()
+            .grant(Some(&format!("herdr:{socket}")), "w1:p2", sid, 700)
+            .expect("the grant");
+        let consented = |st: &State| {
+            let mut facts = Vec::new();
+            let snapshot = idx.assemble(st, &mut facts);
+            fn find<'a>(v: &'a Value, id: &str) -> Option<&'a Value> {
+                match v {
+                    Value::Object(m) if m.get("id").and_then(|i| i.as_str()) == Some(id) => Some(v),
+                    Value::Object(m) => m.values().find_map(|c| find(c, id)),
+                    Value::Array(a) => a.iter().find_map(|c| find(c, id)),
+                    _ => None,
+                }
+            }
+            let row = find(&snapshot, sid).expect("the row").clone();
+            assert_eq!(row["injectable"], true, "{row}");
+            (row["consented"].clone(), facts[0].named)
+        };
+        assert_eq!(
+            consented(&world(&format!("--resume {sid}"))),
+            (json!(true), true),
+            "the restored process names its session: the grant follows it"
+        );
+        assert_eq!(
+            consented(&world("--resume")),
+            (json!(false), false),
+            "found by its directory alone: a new grant is needed"
+        );
         let _ = std::fs::remove_dir_all(&scratch);
     }
 

@@ -847,11 +847,12 @@ fn send_tmux_checked(
 ) -> Result<serde_json::Value, index::SendRefusal> {
     let target = idx.resolve_pane_send(sid)?;
     let store = crate::consent::ConsentStore::open();
-    if !store.is_granted(
+    if !store.consents(
         target.addr.consent_sock().as_deref(),
         target.addr.pane(),
         &target.sid,
         target.pid,
+        target.addr.grant_follows(target.named),
     ) {
         return Ok(json!({
             "ok": false,
