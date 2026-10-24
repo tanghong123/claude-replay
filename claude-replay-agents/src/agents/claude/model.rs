@@ -834,6 +834,18 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             "queuePriority",
             "scheduledTaskId",
             "scheduledFireId",
+            // #s243 (client 2.1.310): the client's wake mechanism on a scheduled firing (`isMeta`,
+            // `promptSource: "system"`, `turnOrigin: "scheduled"`, beside `scheduledTaskId`).
+            // Measured 2026-10-25: 12 records in 1 session, `"schedule_wakeup"` on every one, on
+            // scheduled firings only (all 12 written since 2.1.310, none of the 128 before), set by
+            // CronCreate jobs in a session that never called ScheduleWakeup — so it names how the
+            // client woke, saying what `turnOrigin` and `scheduledTaskId` already say. Unread.
+            // REVISIT: the first value other than `"schedule_wakeup"` (a `/loop` wakeup told apart
+            // from a cron job, a remote trigger, a monitor event, another session: whether the
+            // firing's note or its turn should say what woke the session is then a RENDER question
+            // for the owner, never decided here), and the key on a record that is not a scheduled
+            // firing, or on another record type.
+            "wakeupSource",
             "turnPosition",
             "isVisibleInTranscriptOnly",
             "isCompactSummary",
@@ -7577,6 +7589,23 @@ mod tests {
         let seen: Vec<_> = unknown_shapes()
             .into_iter()
             .filter(|s| s.example.as_deref() == Some("s-s165"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+    }
+
+    /// #s243: the 2.1.310 wake label on a scheduled firing is known, not reported while the
+    /// sweep asks. Removing the key from the user arm of the census turns this red.
+    #[test]
+    fn a_scheduled_firing_s_wakeup_source_is_known() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.310","sessionId":"s-wakeup","uuid":"u1","isMeta":true,"promptSource":"system","turnOrigin":"scheduled","queuePriority":"later","queueSkipAttachments":true,"queueSkipSlashCommands":true,"wakeupSource":"schedule_wakeup","scheduledTaskId":"cron-tern-1","message":{"content":"check the tide tables"}}
+{"type":"user","version":"2.1.310","sessionId":"s-wakeup","uuid":"u2","isMeta":true,"promptSource":"system","turnOrigin":"scheduled","queuePriority":"later","queueSkipAttachments":true,"queueSkipSlashCommands":true,"wakeupSource":"schedule_wakeup","scheduledTaskId":"cron-tern-1","message":{"content":"check the tide tables"}}
+"##;
+        let _ = parse(jsonl);
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-wakeup"))
             .collect();
         assert!(seen.is_empty(), "nothing reported: {seen:?}");
     }
