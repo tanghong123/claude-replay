@@ -2606,6 +2606,21 @@ mod tests {
             Ok(Err(Failure::Unavailable(_)))
         ));
 
+        // A Stop that arrives during the long pause ends it at once, not after 15 s.
+        let (sender, receiver) = mpsc::channel();
+        let stopper = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            sender.send(Command::Stop).unwrap();
+        });
+        let started = Instant::now();
+        assert!(!wait_to_retry(&receiver, &refused));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "a Stop mid-pause is honoured at once: {:?}",
+            started.elapsed()
+        );
+        stopper.join().unwrap();
+
         let (sender, receiver) = mpsc::channel();
         let (command, answered) = call();
         sender.send(command).unwrap();

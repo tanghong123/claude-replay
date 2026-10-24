@@ -184,7 +184,8 @@ pub(super) fn retry_pause(message: &str) -> Duration {
     }
 }
 
-/// After an owner refusal: long enough that a refused port costs a lookup now and then, short
+/// After an owner refusal: long enough that a refused port costs about a quarter of the lookups
+/// it did (one attempt still polls the whole `OWNER_WAIT` when no holder can be seen), short
 /// enough that the server the Monitor should reach is found soon after the port is freed.
 pub(super) const OWNER_REFUSAL_PAUSE: Duration = Duration::from_secs(15);
 
@@ -444,7 +445,7 @@ mod owner_tests {
     }
 
     /// #s240: an owner refusal waits far longer before the next try than a server that is not
-    /// there yet, so a squatted port costs a lookup now and then, not several a second.
+    /// there yet, so a squatted port is tried every 20 s or so, not every 5.
     #[test]
     fn an_owner_refusal_waits_longer_before_the_next_try() {
         let refused = credential_may_go_to(None).unwrap_err();

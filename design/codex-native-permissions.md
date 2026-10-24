@@ -100,8 +100,9 @@ process holds the end; the first holder found is the answer, since an accepted
 socket's owner does not change. Another user's or an unreadable owner is refused
 without sending anything, and a platform with no lookup refuses at once. After a
 refusal Monitor waits 15 seconds before it connects again (a server that is not up
-yet is tried again after 250 ms), so a port another account holds costs a lookup
-now and then. A server root holds is another user's unless Monitor itself
+yet is tried again after 250 ms). An attempt that can see no holder still reads
+for the whole 5 seconds, so a port another account holds costs about a quarter of
+the lookups it did. A server root holds is another user's unless Monitor itself
 runs as root. Same-user processes with access to this credential remain trusted;
 on macOS that includes one of this user's processes holding a server end another
 account passed it. Codex App sharing through this
