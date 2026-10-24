@@ -184,9 +184,10 @@ pub(super) fn retry_pause(message: &str) -> Duration {
     }
 }
 
-/// After an owner refusal: long enough that a refused port costs about a quarter of the lookups
-/// it did (one attempt still polls the whole `OWNER_WAIT` when no holder can be seen), short
-/// enough that the server the Monitor should reach is found soon after the port is freed.
+/// After an owner refusal: long enough that a refused port costs a fraction of the lookups it
+/// did (about a quarter on macOS, where `lsof` sees no holder and one attempt polls the whole
+/// `OWNER_WAIT`; one lookup per pause on Linux, which sees the other account's holder at once),
+/// short enough that the server the Monitor should reach is found soon after the port is freed.
 pub(super) const OWNER_REFUSAL_PAUSE: Duration = Duration::from_secs(15);
 
 #[cfg(unix)]
@@ -456,6 +457,11 @@ mod owner_tests {
             )),
             OWNER_REFUSAL_PAUSE,
             "the worker's own prefix does not hide it"
+        );
+        assert_eq!(
+            OWNER_REFUSAL_PAUSE,
+            Duration::from_secs(15),
+            "the design doc says 15 s"
         );
         assert!(OWNER_REFUSAL_PAUSE >= OWNER_WAIT * 2);
         assert_eq!(
