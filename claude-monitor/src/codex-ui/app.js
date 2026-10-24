@@ -3532,7 +3532,7 @@ var phoneDock;
   };
   const paintCompose = () => {
     dockCompose.hidden = !composeFab.classList.contains("show");
-    const draft = !!composeInput.value.trim();
+    const draft = !!composeInput.value.trim() || !!composer.dataset.imageDraft;
     dockCompose.classList.toggle("has-draft", draft);
     dockCompose.setAttribute("aria-label", draft ? "Write to this session — a draft is waiting" : "Write to this session");
     const keyboardOpen = innerHeight - (window.visualViewport?.height || innerHeight) > 80;
@@ -3547,6 +3547,7 @@ var phoneDock;
   new MutationObserver(paintCompose).observe(composeFab, { attributes: true, attributeFilter: ["class"] });
   new MutationObserver(paintCompose).observe(composer, { attributes: true, attributeFilter: ["class"] });
   composeInput.addEventListener("input", paintCompose);
+  composer.addEventListener("compose-images", paintCompose);
   // Native request cards are installed lazily; delegate focus from their stable workspace.
   composer.closest(".workspace").addEventListener("focusin", paintCompose);
   composer.closest(".workspace").addEventListener("focusout", () => requestAnimationFrame(paintCompose));

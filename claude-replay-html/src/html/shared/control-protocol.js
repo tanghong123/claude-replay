@@ -73,9 +73,10 @@ const UNREACHABLE = { kind: "unreachable", tone: "err", message: "could not reac
  * shell's fetch + json). Resume, or an already-consented pane → send. An unconsented pane →
  * grant first (with `passcode`, possibly empty), then send; every grant outcome other than
  * "granted" returns as `{ step: "grant", outcome }` so the shell can reveal the passcode
- * field, show the lockout, or report. `status(text)` paints the intermediate state.
+ * field, show the lockout, or report. `status(text)` paints the intermediate state. `images`
+ * (data URLs) go only where the row says `sendsImages` (#s237).
  */
-async function runSend({ target, mode, consented, prompt, passcode = "", post, status = () => {} }) {
+async function runSend({ target, mode, consented, prompt, images = [], passcode = "", post, status = () => {} }) {
   let granted = consented;
   if (mode === "tmux" && !consented) {
     status(passcode ? "authorising…" : "granting…");
@@ -87,7 +88,10 @@ async function runSend({ target, mode, consented, prompt, passcode = "", post, s
   }
   status("sending…");
   let d;
-  try { d = await post(sendQuery(target), prompt); } catch (_) { return { step: "send", outcome: UNREACHABLE, consented: granted }; }
+  // #s237: images (data URLs) go with the prompt as one JSON body; a prompt alone stays plain text.
+  const query = images.length ? `${sendQuery(target)}&images=1` : sendQuery(target);
+  const body = images.length ? JSON.stringify({ prompt, images }) : prompt;
+  try { d = await post(query, body); } catch (_) { return { step: "send", outcome: UNREACHABLE, consented: granted }; }
   const outcome = sendOutcome(d, mode);
   return { step: "send", outcome, consented: outcome.kind === "no-consent" ? false : granted };
 }

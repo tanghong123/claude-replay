@@ -13,6 +13,17 @@ function composeTargetLine(row, mode) {
   const host = row?.term === "herdr" ? "herdr" : "tmux";
   return row?.target ? `Types into ${host} pane ${row.target}` : `Types into its ${host} pane`;
 }
+// #s237: images go only to a Claude session in a herdr pane (the row says `sendsImages`), within
+// Codex native mode's bounds (codex-workspace/attachments.js), which the server checks again.
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+const IMAGE_LIMITS = { count: 4, fileBytes: 4 * 1024 * 1024, totalBytes: 8 * 1024 * 1024 };
+const IMAGE_GLYPH = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 4 3.5 3-2.5 4.5 3.5"/></svg>';
+const readDataUrl = file => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result));
+  reader.onerror = () => reject(reader.error || new Error("could not read the image"));
+  reader.readAsDataURL(file);
+});
 const json = response => response.json().catch(() => ({ ok: false, error: `HTTP ${response.status}` }));
 const post = (url, body) => fetch(url, { method: "POST", body, cache: "no-store" }).then(json);
 
@@ -43,6 +54,94 @@ export class ControlStore {
     byId("cancelSend").onclick = () => this.closeConfirm();
     byId("confirmLayer").querySelector("h3").textContent = "Allow typing into this pane?";
     byId("confirmSend").onclick = () => this.grantAndSend();
+    // #s237: the image half — an attach control where the foot's "＋" was, a strip of what is
+    // attached above the field, and an image pasted into the field.
+    this.images = new Map();
+    this.nextImage = 0;
+    this.attachButton = document.createElement("button");
+    this.attachButton.type = "button";
+    this.attachButton.id = "composeAttach";
+    this.attachButton.className = "compose-attach";
+    this.attachButton.innerHTML = IMAGE_GLYPH;
+    this.attachButton.title = "Attach images (or paste them)";
+    this.attachButton.setAttribute("aria-label", "Attach images");
+    this.attachButton.hidden = true;
+    this.fileInput = document.createElement("input");
+    this.fileInput.type = "file";
+    this.fileInput.id = "composeImageInput";
+    this.fileInput.accept = IMAGE_TYPES.join(",");
+    this.fileInput.multiple = true;
+    this.fileInput.hidden = true;
+    this.attachButton.onclick = () => this.fileInput.click();
+    this.fileInput.onchange = () => { const files = [...this.fileInput.files]; this.fileInput.value = ""; this.addImages(files); };
+    byId("composer").querySelector(".compose-foot").prepend(this.attachButton, this.fileInput);
+    this.imageStrip = document.createElement("div");
+    this.imageStrip.id = "composeImages";
+    this.imageStrip.className = "compose-images";
+    byId("composeInput").before(this.imageStrip);
+    byId("composeInput").onpaste = event => {
+      if (!this.imagesAllowed()) return;
+      const files = [...(event.clipboardData?.items || [])].filter(item => item.kind === "file" && item.type.startsWith("image/")).map(item => item.getAsFile()).filter(Boolean);
+      if (!files.length) return;
+      event.preventDefault();
+      const text = event.clipboardData.getData("text/plain"), input = byId("composeInput");
+      if (text) { input.setRangeText(text, input.selectionStart, input.selectionEnd, "end"); input.dispatchEvent(new Event("input", { bubbles: true })); }
+      this.addImages(files);
+    };
+  }
+  // Codex native mode shares #composer and sends its own images: none of this one's there.
+  imagesAllowed(row = controlState.row) { return controlState.mode === "tmux" && !!row?.sendsImages && !document.body.dataset.sharedCodex; }
+  imagesFor(target = controlState.row?.id) { return this.images.get(target) || []; }
+  async addImages(files) {
+    const target = controlState.row?.id;
+    if (!target || !this.imagesAllowed()) return;
+    for (const file of files) {
+      const items = this.imagesFor(target);
+      const reason = !IMAGE_TYPES.includes(file.type) ? "Choose a PNG, JPEG, WebP or GIF image."
+        : !(file.size > 0 && file.size <= IMAGE_LIMITS.fileBytes) ? "Each image must be between 1 byte and 4 MiB."
+        : items.length >= IMAGE_LIMITS.count ? "Attach at most 4 images per message."
+        : items.reduce((total, item) => total + item.size, 0) + file.size > IMAGE_LIMITS.totalBytes ? "Images in one message must total at most 8 MiB." : null;
+      if (reason) { this.actions.toast(`${file.name || "Image"}: ${reason}`); continue; }
+      const item = { id: ++this.nextImage, name: file.name || "Pasted image", size: file.size, url: null };
+      this.images.set(target, [...items, item]);
+      this.paintImages();
+      try { item.url = await readDataUrl(file); } catch (error) {
+        this.removeImage(target, item.id);
+        this.actions.toast(`${item.name}: ${error?.message || "could not read the image"}`);
+        continue;
+      }
+      this.paintImages();
+    }
+  }
+  removeImage(target, id) {
+    const left = this.imagesFor(target).filter(item => item.id !== id);
+    if (left.length) this.images.set(target, left); else this.images.delete(target);
+    this.paintImages();
+  }
+  paintImages() {
+    const allowed = this.imagesAllowed() && byId("composer").classList.contains("production-show");
+    this.attachButton.hidden = !allowed;
+    byId("composer").classList.toggle("attachable", allowed);
+    const items = allowed ? this.imagesFor() : [];
+    this.imageStrip.replaceChildren(...items.map(item => {
+      const tile = document.createElement("div");
+      tile.className = "compose-image";
+      tile.title = item.name;
+      if (item.url) { const img = document.createElement("img"); img.src = item.url; img.alt = item.name; tile.append(img); }
+      else { const wait = document.createElement("span"); wait.className = "compose-image-loading"; wait.textContent = "Loading…"; tile.append(wait); }
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "compose-image-remove";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", `Remove ${item.name}`);
+      const target = controlState.row?.id;
+      remove.onclick = () => this.removeImage(target, item.id);
+      tile.append(remove);
+      return tile;
+    }));
+    // The dock's draft dot counts images too, for the session the dock writes to.
+    byId("composer").dataset.imageDraft = this.imagesFor(selectedRow()?.id).length ? "1" : "";
+    byId("composer").dispatchEvent(new Event("compose-images"));
   }
   showPairHelp() {
     const help = byId("writeHelp");
@@ -65,6 +164,7 @@ export class ControlStore {
       byId("composer").classList.remove("production-show");
       controlState.row = null;
     }
+    this.paintImages();
   }
   open() {
     const row = selectedRow();
@@ -78,17 +178,21 @@ export class ControlStore {
     byId("composer").classList.toggle("live", controlState.mode === "tmux");
     this.revokeButton.hidden = !(controlState.mode === "tmux" && controlState.consented);
     byId("composeFab").classList.remove("show");
+    this.paintImages();
     byId("composeInput").focus();
   }
   close() {
     byId("composer").classList.remove("production-show");
     controlState.row = null;
+    this.paintImages();
     this.paintSoon();
   }
   paintSoon() { queueMicrotask(() => this.paint()); }
   attempt() {
     const text = byId("composeInput").value.trim();
-    if (!text || !controlState.row) return;
+    const images = this.imagesAllowed() ? this.imagesFor() : [];
+    if ((!text && !images.length) || !controlState.row) return;
+    if (images.some(item => !item.url)) { this.actions.toast("Wait for the images to finish loading."); return; }
     controlState.pending = text;
     if (controlState.mode === "tmux" && !controlState.consented) {
       // #s226: a herdr pane is named as one; a tmux pane as one too (#s236).
@@ -129,6 +233,7 @@ export class ControlStore {
     const pending = {};
     this.pendingSends.set(target, pending);
     const submittedDraft = byId("composeInput").value;
+    const images = this.imagesAllowed() ? this.imagesFor(target).filter(item => item.url) : [];
     const owner = this.actions.captureComposer?.();
     // The ordinary editor keeps its target when the reader selects another session.
     // A closed editor has no row; native mode supplies its own generation fence.
@@ -136,7 +241,7 @@ export class ControlStore {
       : controlState.row?.id === target || !controlState.row;
     byId("sendBtn").disabled = true;
     try {
-      const result = await runSend({ target, mode, consented, prompt: text, passcode, post });
+      const result = await runSend({ target, mode, consented, prompt: text, images: images.map(item => item.url), passcode, post });
       if (ownsComposer()) controlState.consented = result.consented;
       if (result.step === "grant") {
         if (["passcode-required", "bad-passcode"].includes(result.outcome.kind) && ownsComposer()) { this.askPasscode(result.outcome); return; }
@@ -147,6 +252,8 @@ export class ControlStore {
       const submittedMatches = submittedDraft.trim() === text;
       const retireVisibleDraft = submittedMatches && ownsComposer() && byId("composeInput").value === submittedDraft;
       if (submittedMatches) owner?.accepted();
+      // #s237: the images sent leave the strip; any added while the send was out stay.
+      if (images.length) for (const item of images) this.removeImage(target, item.id);
       // #s236 (Hong): the box stays open after a send, its field emptied for the next message;
       // only ✕ closes it. The field's height follows its (now empty) text, as typing would. A
       // reader who moved to another session while the send was out gets the box closed, as
@@ -158,7 +265,7 @@ export class ControlStore {
         if (controlState.row && selectedRow()?.id !== controlState.row.id) this.close();
         else if (controlState.row && !matchMedia("(pointer: coarse)").matches && document.activeElement !== input) input.focus();
       }
-      this.actions.toast(mode === "tmux" ? "Sent to the pane" : "Resuming the session");
+      this.actions.toast(mode === "tmux" ? (images.length ? `Sent to the pane with ${images.length === 1 ? "an image" : `${images.length} images`}` : "Sent to the pane") : "Resuming the session");
       this.actions.refreshIndex();
     } finally {
       if (this.pendingSends.get(target) === pending) this.pendingSends.delete(target);

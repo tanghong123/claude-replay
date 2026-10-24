@@ -358,7 +358,29 @@ text in the box, or no Enter — a dialog takes Enter as its first choice); and 
 send-keys <pane> enter` submits. Whether every character in the box is ours is not read back (a long
 prompt may show as a paste), and a dialog can still open in the moment before typing, as with tmux; a multi-line prompt arrives as one
 draft. A held send answers `{"ok": false, "code": "held", "error": <what to do>}`, which both pages
-show as is. Unlike tmux's status line, nothing announces the send in the pane: no herdr command for it
+show as is. **Images go to a Claude session in a herdr pane, and nowhere else** (#s237, Hong: "if
+agent-monitor detects that the session is managed under herdr, we should also allow sending images
+to the session"). herdr carries no image itself (its socket has no image, paste or clipboard
+method), so the monitor does what a terminal paste does, measured on herdr 0.9.5 and Claude Code
+2.1.310: an image file's path sent as a BRACKETED paste (`ESC[200~<path>ESC[201~` over
+`pane.send_text`) becomes `[Image #N]` in Claude's input, and on Enter an image block in the
+prompt itself, followed by a meta `[Image: source: <path>]` (a path typed plainly stays text, and
+the model can only Read it). The row says `sendsImages` (an injectable herdr pane, so Claude); the
+compose box then offers an attach control (leading the foot on a desktop, inside the field at its
+left on a phone), a strip of what is attached with a ✕ each, and an image pasted into the field.
+Codex native mode, which shares `#composer` and sends its own images, never shows these
+(`body[data-shared-codex]`). `/api/send?images=1` takes `{"prompt", "images": [data URL…]}` (PNG,
+JPEG, WebP or GIF by their bytes, at most 4 of 4 MiB and 8 MiB in all, Codex native mode's bounds;
+the route's body limit is 12 MiB, a prompt alone keeps its 64 KiB plain body), and a resume or a
+tmux pane refuses images, the tmux pane before any consent step.
+The herdr send saves each image under `<cache root>/sent-images/<session>/` (0600 in 0700; kept,
+since the transcript names that file as the image's source) only once every check has passed,
+pastes each path, waits for one `[Image #N]` per image (counted over the box's lines joined, since
+the box wraps; else it is held, with no Enter), types the text after a space, and goes on as for
+text. A step that fails once a paste has gone out is held too, saying what is left, unsent, in the
+session's input. A real send was checked by hand through a scratch
+monitor into a separate herdr server (`a_herdr_session_takes_images_from_the_compose_box` holds the
+page). Unlike tmux's status line, nothing announces the send in the pane: no herdr command for it
 was measured, and the typed text sits in the box before it is submitted. Caveat from the trial: herdr
 restores a session as `claude --resume <id>`, dropping its start flags, so one started with
 `--dangerously-skip-permissions` comes back in `settings.json`'s mode.

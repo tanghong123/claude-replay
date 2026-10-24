@@ -15,6 +15,18 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    reference's static "· writes to live tmux" and its inert "＋" are gone. */
 #app .composer>.composer-head>span,#app .composer .risk,#app .composer .compose-foot:before{display:none}
 #app .composer.live #composeTarget{color:var(--amber)}
+/* #s237: images for a Claude session in a herdr pane: the attach control leads the foot, the strip sits above the field. */
+#app .composer .compose-attach{flex:none;width:30px;height:30px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--sub);display:grid;place-items:center;cursor:pointer}
+#app .composer .compose-attach:hover{background:var(--hover);color:var(--ink)}
+#app .composer .compose-attach[hidden]{display:none}
+#app .composer .compose-attach .icon{width:18px;height:18px}
+#app .compose-images:empty{display:none}
+body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!important}
+#app .compose-images{display:flex;gap:8px;overflow-x:auto;padding:4px 2px 6px}
+#app .compose-image{position:relative;flex:none;width:76px;height:64px;border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden}
+#app .compose-image img{display:block;width:100%;height:100%;object-fit:cover}
+#app .compose-image-loading{display:grid;place-content:center;height:100%;font-size:10px;color:var(--sub)}
+#app .compose-image-remove{position:absolute;right:0;top:0;width:24px;height:24px;padding:0;border:0;border-radius:0 0 0 8px;background:var(--bg);color:var(--ink);font-size:18px;line-height:1;cursor:pointer}
 
 /* Explicit session debug identities, revealed from the header title without changing the demo shell. */
 .session-heading{position:relative}.session-heading>#sessionTitle{max-width:290px;padding:4px 5px;margin-left:-5px;border-radius:6px;outline:0;cursor:default}.session-heading>#sessionTitle:hover,.session-heading>#sessionTitle:focus-visible,.session-heading>#sessionTitle[aria-expanded="true"]{background:var(--hover)}.session-heading>#sessionTitle:focus-visible{box-shadow:0 0 0 2px color-mix(in srgb,var(--primary) 18%,transparent)}.session-copy-menu{position:absolute;left:-5px;top:calc(100% + 12px);z-index:70;width:min(330px,calc(100vw - 32px));padding:6px;border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb,var(--bg) 98%,transparent);box-shadow:0 14px 38px rgba(34,43,73,.14);opacity:0;visibility:hidden;transform:translateY(-4px);transition:opacity .12s ease,transform .12s ease,visibility .12s;pointer-events:none}.session-copy-menu:before{content:"";position:absolute;left:0;right:0;top:-13px;height:13px}.session-copy-menu.open{opacity:1;visibility:visible;transform:none;pointer-events:auto}.session-copy-caption{padding:5px 8px 4px;color:var(--faint);font-size:9px;font-weight:680;letter-spacing:.08em;text-transform:uppercase}.session-copy-menu>button{width:100%;min-height:45px;padding:7px 8px;border-radius:8px;background:transparent;display:grid;grid-template-columns:18px minmax(0,1fr);align-items:center;gap:8px;text-align:left;color:var(--sub);cursor:pointer}.session-copy-menu>button:hover:not(:disabled),.session-copy-menu>button:focus-visible{background:var(--hover);color:var(--ink);outline:0}.session-copy-menu>button:disabled{opacity:.48;cursor:default}.session-copy-menu>button>.icon{width:14px;height:14px;color:var(--faint)}.session-copy-menu>button span,.session-copy-menu>button strong,.session-copy-menu>button small{display:block;min-width:0}.session-copy-menu>button strong{font-size:11px;font-weight:620}.session-copy-menu>button small{margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--faint);font:9px var(--mono)}@media(max-width:700px){.session-heading>#sessionTitle{max-width:42vw}.session-copy-menu{position:fixed;left:10px;top:51px;width:min(330px,calc(100vw - 20px))}}
@@ -1430,6 +1442,12 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .composer.production-show .compose-foot:before{display:none}
   #app .composer.production-show #sendBtn{grid-area:field;justify-self:end;align-self:end;margin:0 11px 11px 0;width:34px;height:34px;background:var(--primary);color:#fff}
   #app .composer.production-show #sendBtn .icon{width:18px;height:18px}
+  #app .composer.production-show:has(.compose-images:not(:empty)){grid-template-areas:"note note" "images images" "close field"}
+  #app .composer.production-show .compose-images{grid-area:images;padding:0 2px}
+  #app .composer.production-show .compose-image-remove{width:32px;height:32px;font-size:22px}
+  #app .composer.production-show .compose-attach{grid-area:field;justify-self:start;align-self:end;margin:0 0 11px 9px;width:34px;height:34px;border-radius:17px;color:var(--sub)}
+  #app .composer.production-show .compose-attach .icon{width:20px;height:20px}
+  #app .composer.production-show.attachable textarea{padding-left:50px}
 }
 /* A wide phone held sideways: the column holds Sessions, Turns, Tasks and Agents, so the pill keeps
    Aa beside the search, at the transcript's foot on the right — and takes the panes back while the

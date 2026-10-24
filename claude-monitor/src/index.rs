@@ -649,6 +649,12 @@ impl Terminal {
 }
 
 impl Index {
+    /// Where the images sent to a session are kept (#s237): the session's transcript names each
+    /// one's file as its source.
+    pub fn sent_images_dir(&self, sid: &str) -> PathBuf {
+        self.cache_root.join("sent-images").join(sid)
+    }
+
     /// Build the index over a cache root and a STATE directory. Both are passed in rather
     /// than resolved here (#153): a binary passes [`state_dir()`], a test passes its own
     /// scratch, and neither can reach the other's files by accident.
@@ -1590,6 +1596,11 @@ impl Index {
                 });
                 if let (true, Some(addr)) = (l.confirmed && driven && !proj_active, pane) {
                     j["injectable"] = json!(true);
+                    // #s237: images reach a Claude session in a herdr pane only, pasted as
+                    // its path (`control::herdr_send`); a tmux pane has no measured way.
+                    if matches!(addr, PaneAddr::Herdr { .. }) {
+                        j["sendsImages"] = json!(true);
+                    }
                     j["consented"] = json!(consented(
                         addr.consent_sock().as_deref(),
                         addr.pane(),
@@ -5406,6 +5417,7 @@ n/Users/x/proj
             row["injectable"], true,
             "a lone, proven herdr link can be sent to"
         );
+        assert_eq!(row["sendsImages"], true, "#s237: and sent images to");
         assert_eq!(
             row["consented"], false,
             "a tmux grant for the same pane id does not count"

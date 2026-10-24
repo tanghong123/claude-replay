@@ -242,7 +242,9 @@ fn main() -> Result<()> {
     // #320: the icons and the manifest, which a phone reads to put the page on its Home Screen.
     .with_public(claude_monitor::ui::PUBLIC_ASSETS)
     // #331: the tailnet name `tailscale serve` relays to this port is the monitor's own too.
-    .with_trusted_hosts(claude_monitor::pair_phone::trusted_hosts(port));
+    .with_trusted_hosts(claude_monitor::pair_phone::trusted_hosts(port))
+    // #s237: a send may carry images.
+    .with_body_limit("api/send", claude_monitor::control::SEND_BODY_LIMIT)?;
     let bound = claude_replay_html::spawn_listener_gated(port, handler, gate)
         .with_context(|| format!("binding 127.0.0.1:{port}"))?;
     // The token is printed only to a terminal (#s204), as v1 prints it: a log keeps it.

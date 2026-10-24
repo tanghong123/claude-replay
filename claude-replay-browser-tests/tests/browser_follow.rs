@@ -13470,6 +13470,179 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
     );
 }
 
+/// #s237: the page's own world for a session in a herdr pane — `/api/sessions` says the phone's
+/// session is a live, consented Claude session in herdr pane w1:p2 that takes images, and
+/// `/api/send` is answered here and recorded (`window.__sent`), so nothing is typed anywhere.
+const STUB_HERDR: &str = "(function(){ window.__sent = []; var real = window.fetch; window.fetch = function (url, init) { var u = String(url); if (u.indexOf('/api/send') === 0) { window.__sent.push({ url: u, body: String(init && init.body || '') }); return Promise.resolve(new Response(JSON.stringify(window.__sendAnswer || { ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })); } if (u.indexOf('/api/sessions') === 0) { return real.apply(this, arguments).then(function (r) { return r.json().then(function (d) { (function walk(v) { if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === 'object') { if (v.id === '__SID__') { v.state = 'idle'; v.injectable = true; v.consented = true; v.term = 'herdr'; v.target = 'w1:p2'; v.sendsImages = true; window.__herdrRow = true; } Object.keys(v).forEach(function (k) { walk(v[k]); }); } })(d); return new Response(JSON.stringify(d), { status: 200, headers: { 'Content-Type': 'application/json' } }); }); }); } return real.apply(this, arguments); }; return 'ok'; })()";
+
+/// Two images into the compose box, one pasted and one chosen, as a phone or a desktop gives them.
+const ADD_IMAGES: &str = "(function(){ var bytes = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='), function (c) { return c.charCodeAt(0); }); var pasted = new DataTransfer(); pasted.items.add(new File([bytes], 'pasted.png', { type: 'image/png' })); document.getElementById('composeInput').dispatchEvent(new ClipboardEvent('paste', { clipboardData: pasted, bubbles: true, cancelable: true })); var chosen = new DataTransfer(); chosen.items.add(new File([bytes], 'chosen.png', { type: 'image/png' })); var input = document.getElementById('composeImageInput'); input.files = chosen.files; input.dispatchEvent(new Event('change', { bubbles: true })); return 'ok'; })()";
+
+/// #s237 (Hong: "if agent-monitor detects that the session is managed under herdr, we should also
+/// allow sending images to the session"): the compose box offers images only where the row says
+/// `sendsImages` (a Claude session in a herdr pane) — never for a resume — as an attach control in
+/// the field on a phone and leading the foot on a desktop; pasted and chosen images line up above
+/// the field with a ✕ each; a send carries them with the text as `images=1` JSON, and a send that
+/// goes empties both while the box stays open.
+#[test]
+#[ignore]
+fn a_herdr_session_takes_images_from_the_compose_box() {
+    let _serial = serial();
+    let (m, _b, tab, _path) = phone_world_at(3241, "herdr-images", 390, 844, "");
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        &format!("(function(){{ var b = document.getElementById('dockCompose'); return !b.hidden && ({PHONE_HITTABLE})(b); }})()"),
+        "write mode to put ✎ in the dock",
+        Duration::from_secs(10),
+        "document.getElementById('dockCompose').hidden",
+    );
+    // A resume takes text only: no attach control.
+    phone_tap(&tab, "#dockCompose");
+    harness::until(
+        &tab,
+        "document.getElementById('composer').classList.contains('production-show')",
+        "✎ to open the reply box",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    let resume = harness::eval(&tab, "document.querySelector('#composer .compose-note').textContent + '|' + document.getElementById('composeAttach').hidden");
+    assert_eq!(
+        resume.as_str(),
+        Some("Resumes this session|true"),
+        "a resume offers no images"
+    );
+    phone_tap(&tab, "#closeComposer");
+
+    // The session in a herdr pane: the attach control sits in the field, left of the text.
+    harness::eval(&tab, &STUB_HERDR.replace("__SID__", PHONE_SID));
+    harness::until(
+        &tab,
+        "window.__herdrRow === true",
+        "the session list to say the session is in herdr pane w1:p2",
+        Duration::from_secs(15),
+        "String(window.__herdrRow)",
+    );
+    harness::pause("the shell to repaint the row", Duration::from_millis(600));
+    phone_tap(&tab, "#dockCompose");
+    let attach = format!("(function(){{ var a = document.getElementById('composeAttach'), f = document.getElementById('composeInput').getBoundingClientRect(), r = a.getBoundingClientRect(); return document.querySelector('#composer .compose-note').textContent + '|' + ({PHONE_HITTABLE})(a) + '|' + (r.left >= f.left && r.right <= f.left + 60 && r.bottom <= f.bottom && r.top >= f.top) + '|' + (r.width >= 34); }})()");
+    harness::until(
+        &tab,
+        &format!("{attach} === 'Types into herdr pane w1:p2|true|true|true'"),
+        "the box to name the herdr pane and offer images inside the field, at its left",
+        Duration::from_secs(5),
+        &attach,
+    );
+    harness::eval(&tab, ADD_IMAGES);
+    let strip = format!("(function(){{ var t = document.querySelectorAll('#composeImages .compose-image'), imgs = document.querySelectorAll('#composeImages .compose-image img'), s = document.getElementById('composeImages').getBoundingClientRect(), f = document.getElementById('composeInput').getBoundingClientRect(), x = document.querySelector('#composeImages .compose-image-remove'); return t.length + '|' + imgs.length + '|' + (s.bottom <= f.top + 1) + '|' + ({PHONE_HITTABLE})(x) + '|' + document.getElementById('dockCompose').classList.contains('has-draft'); }})()");
+    harness::until(
+        &tab,
+        &format!("{strip} === '2|2|true|true|true'"),
+        "the pasted and the chosen image above the field, each with its ✕",
+        Duration::from_secs(5),
+        &strip,
+    );
+    // ✕ takes one away; the other is sent with the text.
+    phone_tap(&tab, "#composeImages .compose-image-remove");
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#composeImages .compose-image').length === 1",
+        "✕ to remove one image",
+        Duration::from_secs(5),
+        "document.querySelectorAll('#composeImages .compose-image').length",
+    );
+    harness::eval(&tab, "(function(){ var i = document.getElementById('composeInput'); i.value = 'what colour is this?'; i.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    // A send the server holds keeps the image and the text.
+    harness::eval(
+        &tab,
+        "window.__sendAnswer = { ok: false, code: 'held', error: 'a question is open in the session' }; 'ok'",
+    );
+    phone_tap(&tab, "#sendBtn");
+    harness::until(
+        &tab,
+        "window.__sent.length === 1 && document.querySelectorAll('#composeImages .compose-image').length === 1 && document.getElementById('composeInput').value === 'what colour is this?' && !document.getElementById('sendBtn').disabled",
+        "a held send to keep its image and its text",
+        Duration::from_secs(5),
+        "window.__sent.length + ' ' + document.querySelectorAll('#composeImages .compose-image').length",
+    );
+    harness::eval(&tab, "window.__sendAnswer = null; window.__sent = []; 'ok'");
+    phone_tap(&tab, "#sendBtn");
+    harness::until(
+        &tab,
+        "window.__sent.length === 1 && document.getElementById('composeInput').value === '' && !document.querySelector('#composeImages .compose-image') && document.getElementById('composer').classList.contains('production-show')",
+        "a sent message with its image to empty the field and the strip and keep the box open",
+        Duration::from_secs(5),
+        "JSON.stringify(window.__sent).slice(0, 200)",
+    );
+    let sent = harness::eval(&tab, "JSON.stringify(window.__sent[0])");
+    let sent: serde_json::Value = serde_json::from_str(sent.as_str().unwrap_or("{}")).unwrap();
+    assert!(
+        sent["url"].as_str().unwrap_or("").ends_with("&images=1"),
+        "{sent}"
+    );
+    let body: serde_json::Value =
+        serde_json::from_str(sent["body"].as_str().unwrap_or("{}")).unwrap();
+    assert_eq!(body["prompt"], "what colour is this?");
+    let images = body["images"].as_array().cloned().unwrap_or_default();
+    assert_eq!(images.len(), 1, "{body}");
+    assert!(images[0]
+        .as_str()
+        .unwrap_or("")
+        .starts_with("data:image/png;base64,iVBORw0KGgo"));
+
+    // On a desktop the attach control leads the foot, and the strip sits above the field.
+    let (_d, desk) = desktop_tab(&m);
+    harness::eval(&desk, &STUB_HERDR.replace("__SID__", PHONE_SID));
+    harness::until(
+        &desk,
+        "window.__herdrRow === true",
+        "the desktop's session list to say herdr",
+        Duration::from_secs(15),
+        "String(window.__herdrRow)",
+    );
+    harness::pause("the shell to repaint the row", Duration::from_millis(600));
+    harness::eval(
+        &desk,
+        "document.getElementById('writeSwitch').click(); 'ok'",
+    );
+    harness::until(
+        &desk,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&desk, "document.getElementById('composeFab').click(); 'ok'");
+    harness::eval(&desk, ADD_IMAGES);
+    let desktop = "(function(){ var a = document.getElementById('composeAttach'), foot = document.querySelector('#composer .compose-foot'), s = document.getElementById('composeImages').getBoundingClientRect(), f = document.getElementById('composeInput').getBoundingClientRect(); return !a.hidden + '|' + (foot.firstElementChild === a) + '|' + document.querySelectorAll('#composeImages img').length + '|' + (s.bottom <= f.top + 1); })()";
+    harness::until(
+        &desk,
+        &format!("{desktop} === 'true|true|2|true'"),
+        "the desktop's attach control first in the foot and both images above the field",
+        Duration::from_secs(5),
+        desktop,
+    );
+    // Codex native mode shares the composer and sends its own images: neither control shows.
+    let shown = "(function(){ var v = function (id) { var e = document.getElementById(id); return getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0; }; return v('composeAttach') + '|' + v('composeImages'); })()";
+    harness::eval(&desk, "document.body.dataset.sharedCodex = 'true'; 'ok'");
+    assert_eq!(
+        harness::eval(&desk, shown).as_str(),
+        Some("false|false"),
+        "hidden under native mode"
+    );
+    harness::eval(&desk, "delete document.body.dataset.sharedCodex; 'ok'");
+    assert_eq!(harness::eval(&desk, shown).as_str(), Some("true|true"));
+    // And a desktop send carries both images and leaves the box open and empty.
+    harness::eval(&desk, "(function(){ window.__sent = []; document.getElementById('sendBtn').click(); return 'ok'; })()");
+    harness::until(
+        &desk,
+        "window.__sent.length === 1 && JSON.parse(window.__sent[0].body).images.length === 2 && !document.querySelector('#composeImages .compose-image') && document.getElementById('composer').classList.contains('production-show')",
+        "a desktop send with both images to empty the strip and keep the box open",
+        Duration::from_secs(5),
+        "JSON.stringify(window.__sent).slice(0, 120)",
+    );
+}
+
 /// #s236: the page's own answer for `/api/send` (`window.__sendAnswer`, refused at first), counted
 /// in `window.__sends`, so a case can send without resuming or typing into anything.
 const STUB_SEND: &str = "(function(){ window.__sendAnswer = { ok: false, error: 'the pane is busy' }; window.__sends = 0; var real = window.fetch; window.fetch = function (url) { if (String(url).indexOf('/api/send') === 0) { window.__sends++; return Promise.resolve(new Response(JSON.stringify(window.__sendAnswer), { status: 200, headers: { 'Content-Type': 'application/json' } })); } return real.apply(this, arguments); }; return 'ok'; })()";

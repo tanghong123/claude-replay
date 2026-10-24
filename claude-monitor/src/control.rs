@@ -545,6 +545,33 @@ pub fn herdr_input_line(screen: &str) -> InputLine {
     }
 }
 
+/// How many images the Claude pane's input box holds (#s237): each pasted image shows there as
+/// `[Image #N]` (measured, Claude Code 2.1.310), counted in the LAST box on screen, as
+/// `herdr_input_line` finds it. The box was empty before the paste (`herdr_send_verdict`), so
+/// every one there is ours.
+pub fn herdr_input_images(screen: &str) -> usize {
+    let lines: Vec<&str> = screen.lines().collect();
+    let text = |line: &str| -> String {
+        visible_cells(line, &mut false)
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect()
+    };
+    let is_rule = |line: &str| text(line).trim_start().starts_with('\u{2500}');
+    let Some(bottom) = lines.iter().rposition(|l| is_rule(l)) else {
+        return 0;
+    };
+    let Some(top) = lines[..bottom].iter().rposition(|l| is_rule(l)) else {
+        return 0;
+    };
+    // The box's lines joined, so a token the box wrapped (`[Image` / `#2]`) still counts.
+    let joined: String = lines[top + 1..bottom]
+        .iter()
+        .map(|l| text(l).trim().to_string())
+        .collect();
+    joined.matches("[Image").count()
+}
+
 /// The herdr send's checks, PURE (#s226): the pane is PROVEN to run this session (herdr's own
 /// hook says so, on top of the scan's proven link), no dialog is open, and the input holds no
 /// draft. Each refusal says what to do, since the reader acts in the pane, not here.
@@ -783,6 +810,138 @@ fn herdr_send_text(socket: &std::path::Path, pane: &str, text: &str) -> Result<(
     Ok(())
 }
 
+/// Where an image may go (#s237): only a live Claude session in a herdr pane takes one.
+const IMAGES_HERDR_ONLY: &str =
+    "images go only to a live Claude session in a herdr pane: nothing was sent";
+
+/// How many images one message may carry, and how large (#s237): the same bounds as Codex native
+/// mode's composer (`codex-workspace/attachments.js`).
+pub const SEND_IMAGES_MAX: usize = 4;
+const SEND_IMAGE_BYTES: usize = 4 * 1024 * 1024;
+const SEND_IMAGES_BYTES: usize = 8 * 1024 * 1024;
+
+/// The body `/api/send` may carry (#s237): four images as data URLs, base64 being 4/3 of the
+/// bytes, and the prompt. A prompt alone keeps the 64 KiB it always had (`parse_send_body`).
+pub const SEND_BODY_LIMIT: usize = 12 * 1024 * 1024;
+const SEND_PROMPT_BYTES: usize = 64 * 1024;
+
+/// The images of one send (#s237), checked, and where they are saved when the send gets that far:
+/// `<cache root>/sent-images/<session>/`, since the session's transcript names the file it was
+/// pasted from as the image's source, which must stay.
+pub struct SentImages {
+    pub items: Vec<SentImage>,
+    pub dir: std::path::PathBuf,
+}
+
+pub struct SentImage {
+    pub ext: &'static str,
+    pub bytes: Vec<u8>,
+}
+
+impl SentImages {
+    /// Write each image, 0600 in a 0700 directory, under a name of its own; the paths go into a
+    /// terminal as a paste, so one with whitespace or a control character is refused.
+    fn save(&self) -> Result<Vec<String>> {
+        use std::io::Write;
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&self.dir)
+            .with_context(|| format!("make {}", self.dir.display()))?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let mut paths = Vec::new();
+        for (i, image) in self.items.iter().enumerate() {
+            let path = self.dir.join(format!("{stamp}-{}.{}", i + 1, image.ext));
+            let text = path.to_str().context("an image path that is not UTF-8")?;
+            if text.chars().any(|c| c.is_whitespace() || c.is_control()) {
+                anyhow::bail!("the image would be saved at {text}, which a paste cannot carry");
+            }
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)
+                .and_then(|mut f| f.write_all(&image.bytes))
+                .with_context(|| format!("save {text}"))?;
+            paths.push(text.to_string());
+        }
+        Ok(paths)
+    }
+}
+
+/// The image a data URL carries, when it is a PNG, JPEG, WebP or GIF whose bytes say so and that
+/// is within `SEND_IMAGE_BYTES`.
+fn sent_image(url: &str) -> Result<SentImage, String> {
+    let (head, data) = url
+        .strip_prefix("data:")
+        .and_then(|rest| rest.split_once(";base64,"))
+        .ok_or("an image that is not a base64 data URL")?;
+    let ext = match head {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        _ => return Err("only PNG, JPEG, WebP and GIF images can be sent".into()),
+    };
+    let bytes =
+        claude_replay_core::diff::base64_decode(data).ok_or("an image that is not base64")?;
+    if bytes.is_empty() || bytes.len() > SEND_IMAGE_BYTES {
+        return Err("each image must be between 1 byte and 4 MiB".into());
+    }
+    let signed = match ext {
+        "png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "jpg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        _ => bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
+    };
+    if !signed {
+        return Err(format!("an image whose contents are not {head}"));
+    }
+    Ok(SentImage { ext, bytes })
+}
+
+/// A `/api/send` body (#s237): the prompt as plain text, as it always was, or with `images=1`
+/// a JSON `{"prompt": …, "images": [data URL, …]}`. Returns the prompt and the checked images.
+fn parse_send_body(body: &[u8], with_images: bool) -> Result<(String, Vec<SentImage>), String> {
+    if !with_images {
+        if body.len() > SEND_PROMPT_BYTES {
+            return Err("the prompt is over 64 KiB".into());
+        }
+        return Ok((String::from_utf8_lossy(body).trim().to_string(), Vec::new()));
+    }
+    let v: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| "a send with images must be JSON")?;
+    let prompt = v
+        .get("prompt")
+        .and_then(|p| p.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if prompt.len() > SEND_PROMPT_BYTES {
+        return Err("the prompt is over 64 KiB".into());
+    }
+    let urls = v
+        .get("images")
+        .and_then(|i| i.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if urls.len() > SEND_IMAGES_MAX {
+        return Err(format!("at most {SEND_IMAGES_MAX} images per message"));
+    }
+    let images = urls
+        .iter()
+        .map(|u| sent_image(u.as_str().unwrap_or("")))
+        .collect::<Result<Vec<_>, _>>()?;
+    if images.iter().map(|i| i.bytes.len()).sum::<usize>() > SEND_IMAGES_BYTES {
+        return Err("images in one message must total at most 8 MiB".into());
+    }
+    Ok((prompt, images))
+}
+
 /// Why a herdr send did not complete: a check held it (said to the reader as is), or a step
 /// failed.
 pub enum HerdrSendError {
@@ -802,8 +961,17 @@ pub fn herdr_send(
     sid: &str,
     client_wait: bool,
     prompt: &str,
+    images: &SentImages,
 ) -> Result<(), HerdrSendError> {
-    herdr_send_with(&herdr_program(), socket, pane, sid, client_wait, prompt)
+    herdr_send_with(
+        &herdr_program(),
+        socket,
+        pane,
+        sid,
+        client_wait,
+        prompt,
+        images,
+    )
 }
 
 fn herdr_send_with(
@@ -813,6 +981,7 @@ fn herdr_send_with(
     sid: &str,
     client_wait: bool,
     prompt: &str,
+    images: &SentImages,
 ) -> Result<(), HerdrSendError> {
     if !herdr_pane_id_ok(pane) {
         return Err(HerdrSendError::Held(format!(
@@ -844,7 +1013,54 @@ fn herdr_send_with(
         &herdr_cli(program, &socket, &["agent", "get", pane]).map_err(HerdrSendError::Failed)?,
     );
     herdr_send_verdict(sid, pane, &agent, InputLine::Empty, false).map_err(HerdrSendError::Held)?;
-    herdr_send_text(&socket, pane, &herdr_text(prompt)).map_err(HerdrSendError::Failed)?;
+    // #s237: each image first, as Claude Code takes a pasted path (measured): saved, then its
+    // path PASTED (bracketed, as a terminal pastes) becomes `[Image #N]` in the input, and on
+    // Enter an image in the prompt itself. Saved only now, past every check, so a held send
+    // writes nothing; and the input must show every image before the text follows.
+    // Once a paste has gone out, a step that fails leaves it in the person's input: held, and
+    // the reader told so, rather than a bare error over a box they will find full.
+    let part_way = |e: anyhow::Error| {
+        HerdrSendError::Held(format!(
+            "the send stopped part-way ({e:#}): what reached the session's input is there, unsent, so send or clear it there"
+        ))
+    };
+    if !images.items.is_empty() {
+        let paths = images.save().map_err(HerdrSendError::Failed)?;
+        for path in &paths {
+            herdr_send_text(&socket, pane, &format!("\u{1b}[200~{path}\u{1b}[201~"))
+                .map_err(part_way)?;
+        }
+        let mut shown = 0;
+        for _ in 0..20 {
+            let screen = herdr_cli(
+                program,
+                &socket,
+                &[
+                    "pane", "read", pane, "--source", "visible", "--lines", "40", "--ansi",
+                ],
+            )
+            .map_err(part_way)?;
+            shown = herdr_input_images(&screen);
+            if shown >= paths.len() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+        if shown < paths.len() {
+            return Err(HerdrSendError::Held(format!(
+                "{shown} of {} images attached in the session's input (the rest are there as paths): nothing was sent, so send or clear it there",
+                paths.len()
+            )));
+        }
+    }
+    let text = herdr_text(prompt);
+    if !text.is_empty() {
+        if images.items.is_empty() {
+            herdr_send_text(&socket, pane, &text).map_err(HerdrSendError::Failed)?;
+        } else {
+            herdr_send_text(&socket, pane, &format!(" {text}")).map_err(part_way)?;
+        }
+    }
     // And before Enter: still this session, no dialog, and our text in the box. (Whether every
     // character in the box is ours is not read back: Claude may show a long prompt as a paste.)
     // The box is read until it shows the text or something else, for about a second, since
@@ -881,7 +1097,7 @@ fn herdr_send_with(
 /// invalidation of §3.4. The distinct `"code":"no-consent"` lets the rail offer a grant button
 /// instead of showing a dead-end refusal.
 pub fn send_tmux(idx: &crate::index::Index, sid: &str, prompt: &str) -> serde_json::Value {
-    send_tmux_checked(idx, sid, prompt).unwrap_or_else(|reason| {
+    send_tmux_checked(idx, sid, prompt, Vec::new()).unwrap_or_else(|reason| {
         if idx.shared_codex_required(sid) {
             shared_runtime_body()
         } else {
@@ -894,8 +1110,13 @@ fn send_tmux_checked(
     idx: &crate::index::Index,
     sid: &str,
     prompt: &str,
+    images: Vec<SentImage>,
 ) -> Result<serde_json::Value, index::SendRefusal> {
     let target = idx.resolve_pane_send(sid)?;
+    // Before any consent step: a pane that cannot take images never asks for a grant first.
+    if !images.is_empty() && !matches!(target.addr, index::PaneAddr::Herdr { .. }) {
+        return Ok(json!({"ok": false, "error": IMAGES_HERDR_ONLY}));
+    }
     let store = crate::consent::ConsentStore::open();
     if !store.consents(
         target.addr.consent_sock().as_deref(),
@@ -916,9 +1137,21 @@ fn send_tmux_checked(
             Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
         },
         index::PaneAddr::Herdr { socket, pane } => {
-            match herdr_send(socket.as_deref(), pane, sid, target.client_wait, prompt) {
+            let images = SentImages {
+                items: images,
+                dir: idx.sent_images_dir(&target.sid),
+            };
+            match herdr_send(
+                socket.as_deref(),
+                pane,
+                sid,
+                target.client_wait,
+                prompt,
+                &images,
+            ) {
                 Ok(()) => json!({"ok": true, "sid": sid, "via": "herdr"}),
-                // A held send typed nothing; `held` says so to a client that tells them apart.
+                // A held send pressed no Enter and says what is left in the input, if anything;
+                // `held` says so to a client that tells them apart.
                 Err(HerdrSendError::Held(why)) => {
                     json!({"ok": false, "code": "held", "error": why})
                 }
@@ -965,11 +1198,17 @@ pub fn send_route(idx: &index::Index, req: &claude_replay_html::Request) -> Http
         return deny;
     }
     let sid = claude_replay_html::query_get(req.query, "target").map(crate::index::percent_decode);
-    let prompt = String::from_utf8_lossy(req.body).trim().to_string();
-    let resp = match (sid, prompt.is_empty()) {
+    let with_images = claude_replay_html::query_get(req.query, "images") == Some("1");
+    let (prompt, images) = match parse_send_body(req.body, with_images) {
+        Ok(sent) => sent,
+        Err(why) => return HttpResponse::json(json!({"ok": false, "error": why}).to_string()),
+    };
+    let resp = match (sid, prompt.is_empty() && images.is_empty()) {
         (None, _) => json!({"ok": false, "error": "no target session"}),
         (_, true) => json!({"ok": false, "error": "empty prompt"}),
         (Some(sid), false) => match idx.resolve_send(&sid) {
+            // #s237: a resume takes text only.
+            Ok(_) if !images.is_empty() => json!({"ok": false, "error": IMAGES_HERDR_ONLY}),
             // Finished session → resume-spawn (the idle transport, 3a).
             Ok(target) => match spawn_resume(&target, &prompt) {
                 Ok(()) => json!({"ok": true, "sid": sid, "via": "resume"}),
@@ -979,7 +1218,7 @@ pub fn send_route(idx: &index::Index, req: &claude_replay_html::Request) -> Http
             // pane link AND standing consent. A live session with no proven
             // link, not in tmux, or not consented is refused with its reason.
             Err(crate::index::SendRefusal::SessionIsLive) => {
-                match send_tmux_checked(idx, &sid, &prompt) {
+                match send_tmux_checked(idx, &sid, &prompt, images) {
                     Ok(body) => body,
                     Err(reason) => return checked_send_refusal(idx, &sid, reason),
                 }
@@ -1248,6 +1487,13 @@ mod tests {
         }
     }
 
+    fn no_images() -> SentImages {
+        SentImages {
+            items: Vec::new(),
+            dir: std::path::PathBuf::new(),
+        }
+    }
+
     /// A stand-in herdr world for one send: a `herdr` script that logs its calls and answers
     /// `agent get` and `pane read` from files, and a socket server that takes one `pane.send_text`
     /// and then changes what those files say, as the pane would.
@@ -1324,6 +1570,9 @@ mod tests {
             })
         }
         fn send(&self, prompt: &str) -> Result<(), HerdrSendError> {
+            self.send_images(prompt, &no_images())
+        }
+        fn send_images(&self, prompt: &str, images: &SentImages) -> Result<(), HerdrSendError> {
             herdr_send_with(
                 self.fake.as_os_str(),
                 self.socket.to_str(),
@@ -1331,7 +1580,38 @@ mod tests {
                 SID,
                 false,
                 prompt,
+                images,
             )
+        }
+        /// Serve one `pane.send_text` per entry, in turn; after each, the pane shows that entry's
+        /// (agent, screen). Returns every request line.
+        fn serve_each(&self, then: Vec<(String, String)>) -> std::thread::JoinHandle<Vec<String>> {
+            use std::io::{BufRead, Write};
+            let listener = self
+                .listener
+                .borrow_mut()
+                .take()
+                .expect("one server per world");
+            let (agent, screen) = (self.agent.clone(), self.screen.clone());
+            std::thread::spawn(move || {
+                then.into_iter()
+                    .map(|(a, s)| {
+                        let (stream, _) = listener.accept().unwrap();
+                        let mut line = String::new();
+                        std::io::BufReader::new(&stream)
+                            .read_line(&mut line)
+                            .unwrap();
+                        std::fs::write(&agent, &a).unwrap();
+                        std::fs::write(&screen, &s).unwrap();
+                        (&stream)
+                            .write_all(
+                                b"{\"id\":\"agent-monitor-send\",\"result\":{\"type\":\"ok\"}}\n",
+                            )
+                            .unwrap();
+                        line
+                    })
+                    .collect()
+            })
         }
         fn calls(&self) -> String {
             std::fs::read_to_string(&self.log).unwrap_or_default()
@@ -1402,6 +1682,222 @@ mod tests {
         );
     }
 
+    fn data_url(kind: &str, bytes: &[u8]) -> String {
+        const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let n = chunk
+                .iter()
+                .enumerate()
+                .fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
+            for i in 0..4 {
+                out.push(if i <= chunk.len() {
+                    A[(n >> (18 - 6 * i) & 63) as usize] as char
+                } else {
+                    '='
+                });
+            }
+        }
+        format!("data:{kind};base64,{out}")
+    }
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\nnot really the rest of a png";
+
+    /// #s237: a plain body is the prompt as it always was; with `images=1` the body is JSON whose
+    /// images are each a PNG, JPEG, WebP or GIF whose bytes say so, within the bounds.
+    #[test]
+    fn a_send_body_carries_a_prompt_and_checked_images() {
+        assert_eq!(parse_send_body(b"  hello \n", false).unwrap().0, "hello");
+        assert!(parse_send_body(&vec![b'x'; SEND_PROMPT_BYTES + 1], false).is_err());
+        let body = |images: Vec<String>| json!({"prompt": " look ", "images": images}).to_string();
+        let (prompt, images) =
+            parse_send_body(body(vec![data_url("image/png", PNG)]).as_bytes(), true).unwrap();
+        assert_eq!(prompt, "look");
+        assert_eq!((images.len(), images[0].ext), (1, "png"));
+        assert_eq!(images[0].bytes, PNG);
+        let gif = data_url("image/gif", b"GIF89a....");
+        assert_eq!(
+            parse_send_body(body(vec![gif]).as_bytes(), true).unwrap().1[0].ext,
+            "gif"
+        );
+        // An image only: no prompt needed.
+        let only = json!({"images": [data_url("image/png", PNG)]}).to_string();
+        assert_eq!(parse_send_body(only.as_bytes(), true).unwrap().0, "");
+        for (bad, why) in [
+            (vec![data_url("image/png", b"GIF89a....")], "contents"),
+            (vec![data_url("image/svg+xml", b"<svg/>")], "only PNG"),
+            (vec!["https://example.test/a.png".into()], "data URL"),
+            (
+                vec![data_url("image/png", PNG); SEND_IMAGES_MAX + 1],
+                "at most",
+            ),
+            (vec![data_url("image/png", b"")], "between"),
+        ] {
+            let err = parse_send_body(body(bad).as_bytes(), true)
+                .err()
+                .unwrap_or_default();
+            assert!(err.contains(why), "{why}: {err}");
+        }
+        assert!(parse_send_body(b"not json", true).is_err());
+        // The bounds: one image over 4 MiB, three that total over 8 MiB, a prompt over 64 KiB.
+        let big = |n: usize| {
+            let mut bytes = PNG.to_vec();
+            bytes.resize(n, 0);
+            data_url("image/png", &bytes)
+        };
+        let over = parse_send_body(body(vec![big(SEND_IMAGE_BYTES + 1)]).as_bytes(), true);
+        assert!(over.err().unwrap_or_default().contains("4 MiB"));
+        let three = vec![big(3 * 1024 * 1024); 3];
+        let total = parse_send_body(body(three).as_bytes(), true);
+        assert!(total.err().unwrap_or_default().contains("8 MiB"));
+        let long = json!({"prompt": "x".repeat(SEND_PROMPT_BYTES + 1)}).to_string();
+        assert!(parse_send_body(long.as_bytes(), true).is_err());
+    }
+
+    /// #s237: each pasted image shows in Claude's input as `[Image #N]`, counted in the last box.
+    #[test]
+    fn the_input_box_counts_its_images() {
+        assert_eq!(
+            herdr_input_images(&screen("\u{276f}\u{a0}[Image #1] [Image #2] look")),
+            2
+        );
+        assert_eq!(herdr_input_images(&screen("\u{276f}\u{a0}/tmp/a.png")), 0);
+        let earlier = format!(
+            "{RULE}\n\u{276f}\u{a0}[Image #1] old\n{RULE}\n{}",
+            screen("\u{276f}\u{a0}")
+        );
+        assert_eq!(herdr_input_images(&earlier), 0, "only the last box counts");
+        let wrapped = screen("\u{276f}\u{a0}[Image #1] [Image\n  #2] look");
+        assert_eq!(
+            herdr_input_images(&wrapped),
+            2,
+            "a token the box wrapped still counts"
+        );
+    }
+
+    fn images_in(dir: &std::path::Path, n: usize) -> SentImages {
+        SentImages {
+            items: (0..n)
+                .map(|_| SentImage {
+                    ext: "png",
+                    bytes: PNG.to_vec(),
+                })
+                .collect(),
+            dir: dir.to_path_buf(),
+        }
+    }
+
+    /// #s237 end to end against the stand-in herdr: each image is saved (0600) and its path
+    /// PASTED, bracketed, over the socket; the input must show every image before the text
+    /// follows after a space; then the usual look and one Enter. A held send writes no file.
+    #[test]
+    fn herdr_send_pastes_each_image_then_types_the_text() {
+        use std::os::unix::fs::PermissionsExt;
+        let w = HerdrWorld::new("i");
+        let dir = w.dir.join("sent").join(SID);
+        let idle = format!(r#"{{"agent_status":"idle","agent_session":{{"value":"{SID}"}}}}"#);
+        // A draft in the pane: held, and nothing saved.
+        w.set(&idle, &screen("\u{276f}\u{a0}half a thought"));
+        assert!(matches!(
+            w.send_images("look", &images_in(&dir, 2)),
+            Err(HerdrSendError::Held(_))
+        ));
+        assert!(!dir.exists(), "a held send writes no image");
+        w.set(
+            &idle,
+            &screen("\u{276f}\u{a0}\u{1b}[2mTry \"something\"\u{1b}[0m"),
+        );
+        let server = w.serve_each(vec![
+            (idle.clone(), screen("\u{276f}\u{a0}[Image #1]")),
+            (idle.clone(), screen("\u{276f}\u{a0}[Image #1] [Image #2]")),
+            (
+                idle.clone(),
+                screen("\u{276f}\u{a0}[Image #1] [Image #2] look"),
+            ),
+        ]);
+        assert!(w.send_images("look", &images_in(&dir, 2)).is_ok());
+        let sent: Vec<serde_json::Value> = server
+            .join()
+            .unwrap()
+            .iter()
+            .map(|l| serde_json::from_str(l.trim()).unwrap())
+            .collect();
+        let texts: Vec<&str> = sent
+            .iter()
+            .map(|r| r["params"]["text"].as_str().unwrap())
+            .collect();
+        for pasted in &texts[..2] {
+            let path = pasted
+                .strip_prefix("\u{1b}[200~")
+                .and_then(|p| p.strip_suffix("\u{1b}[201~"))
+                .expect("a bracketed paste");
+            assert!(path.starts_with(dir.to_str().unwrap()), "{path}");
+            assert_eq!(std::fs::read(path).unwrap(), PNG);
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert_ne!(texts[0], texts[1], "each image a file of its own");
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(texts[2], " look");
+        assert_eq!(w.calls().matches("pane send-keys w1:p2 enter").count(), 1);
+    }
+
+    /// #s237: a send that stops after its first paste (the server gone) is held, and says what is
+    /// left in the input; no Enter.
+    #[test]
+    fn herdr_send_that_stops_part_way_says_what_is_left_in_the_input() {
+        let w = HerdrWorld::new("p");
+        let dir = w.dir.join("sent").join(SID);
+        let idle = format!(r#"{{"agent_status":"idle","agent_session":{{"value":"{SID}"}}}}"#);
+        // One paste is answered, then the server is gone.
+        let server = w.serve_each(vec![(idle.clone(), screen("\u{276f}\u{a0}[Image #1]"))]);
+        let thread = std::thread::spawn({
+            let socket = w.socket.clone();
+            move || {
+                server.join().unwrap();
+                let _ = std::fs::remove_file(socket);
+            }
+        });
+        let held = w.send_images("look", &images_in(&dir, 2));
+        thread.join().unwrap();
+        assert!(
+            matches!(held, Err(HerdrSendError::Held(ref why)) if why.contains("part-way") && why.contains("send or clear it there")),
+            "held"
+        );
+        assert_eq!(
+            w.calls().matches("send-keys").count(),
+            0,
+            "no Enter: {}",
+            w.calls()
+        );
+    }
+
+    /// #s237: an image Claude did not take (its path stays text in the input) gets no Enter.
+    #[test]
+    fn herdr_send_presses_no_enter_when_an_image_did_not_attach() {
+        let w = HerdrWorld::new("n");
+        let dir = w.dir.join("sent").join(SID);
+        let idle = format!(r#"{{"agent_status":"idle","agent_session":{{"value":"{SID}"}}}}"#);
+        let server = w.serve_each(vec![(idle.clone(), screen("\u{276f}\u{a0}/tmp/x.png"))]);
+        let held = w.send_images("look", &images_in(&dir, 1));
+        server.join().unwrap();
+        assert!(
+            matches!(held, Err(HerdrSendError::Held(ref why)) if why.contains("0 of 1")),
+            "held"
+        );
+        assert_eq!(
+            w.calls().matches("send-keys").count(),
+            0,
+            "no Enter: {}",
+            w.calls()
+        );
+    }
+
     /// #s226: a dialog that opens while the prompt is being typed gets no Enter (it would take it
     /// as its first choice), whether herdr says `blocked` with the box still drawn or the box is
     /// gone with herdr still saying idle; the prompt stays in the input and the reader is told so.
@@ -1456,6 +1952,7 @@ mod tests {
             SID,
             false,
             "x",
+            &no_images(),
         );
         assert!(
             matches!(bad, Err(HerdrSendError::Held(ref why)) if why.contains("not a herdr pane id"))
@@ -1468,9 +1965,18 @@ mod tests {
             SID,
             false,
             "x",
+            &no_images(),
         );
         assert!(matches!(not_a_socket, Err(HerdrSendError::Failed(_))));
-        let none = herdr_send_with(w.fake.as_os_str(), None, "w1:p2", SID, false, "x");
+        let none = herdr_send_with(
+            w.fake.as_os_str(),
+            None,
+            "w1:p2",
+            SID,
+            false,
+            "x",
+            &no_images(),
+        );
         assert!(matches!(none, Err(HerdrSendError::Failed(_))));
         assert_eq!(
             w.calls().lines().count(),

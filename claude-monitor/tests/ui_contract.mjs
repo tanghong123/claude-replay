@@ -3422,3 +3422,22 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.ok(css.includes("#app .composer>.composer-head>span,#app .composer .risk,#app .composer .compose-foot:before{display:none}"), "the reference's prefix, static tmux warning and inert ＋ are hidden");
   console.log("#s236 compose box cases passed");
 }
+
+// #s237 (Hong): images go with the prompt as ONE JSON body under `images=1`, only to a row that
+// says `sendsImages`; a prompt alone stays the plain body it always was.
+{
+  const calls = [];
+  const post = async (url, body) => { calls.push([url, body]); return { ok: true }; };
+  await runSend({ target: "s1", mode: "tmux", consented: true, prompt: "look", images: ["data:image/png;base64,AA=="], post });
+  await runSend({ target: "s1", mode: "tmux", consented: true, prompt: "text only", images: [], post });
+  assert.deepEqual(calls, [
+    ["/api/send?target=s1&images=1", JSON.stringify({ prompt: "look", images: ["data:image/png;base64,AA=="] })],
+    ["/api/send?target=s1", "text only"],
+  ]);
+  const store = readFileSync(new URL("../../claude-monitor/src/codex-ui/control-store.js", import.meta.url), "utf8");
+  assert.match(store, /imagesAllowed\(row = controlState\.row\) \{ return controlState\.mode === "tmux" && !!row\?\.sendsImages && !document\.body\.dataset\.sharedCodex; \}/, "images only for a live pane whose row takes them, never in native mode's composer");
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.ok(css.includes("body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!important}"), "native mode never shows them");
+  assert.match(store, /images: images\.map\(item => item\.url\)/, "the send carries the strip's images");
+  console.log("#s237 image send cases passed");
+}
