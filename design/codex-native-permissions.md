@@ -94,10 +94,14 @@ of the server's row in `/proc/net/tcp` or `tcp6` (a dual-stack server's v4
 connection is in `tcp6`); on macOS it is the process that `/usr/sbin/lsof`, run as
 this user, finds holding the server end, and as this user `lsof` sees no other
 account's sockets. Until the server accepts, no process holds its end: `lsof`
-does not list it, and Linux lists it with inode 0 (and, before 6.17, root's uid),
-which counts as no owner. So the owner is read again for up to 5 seconds;
-another user's or an unreadable owner is refused without sending anything, and so
-is any other platform. A server root holds is another user's unless Monitor itself
+does not list it, and Linux lists it with inode 0, whatever uid the row shows,
+which counts as no owner. So the owner is read again for up to 5 seconds, until a
+process holds the end; the first holder found is the answer, since an accepted
+socket's owner does not change. Another user's or an unreadable owner is refused
+without sending anything, and a platform with no lookup refuses at once. After a
+refusal Monitor waits 15 seconds before it connects again (a server that is not up
+yet is tried again after 250 ms), so a port another account holds costs a lookup
+now and then. A server root holds is another user's unless Monitor itself
 runs as root. Same-user processes with access to this credential remain trusted;
 on macOS that includes one of this user's processes holding a server end another
 account passed it. Codex App sharing through this

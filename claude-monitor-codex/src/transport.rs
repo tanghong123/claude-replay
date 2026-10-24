@@ -108,38 +108,45 @@ impl Write for NativeStream {
 /// SERVER end belongs to this OS user, read for that very connection.
 ///
 /// Until the server accepts, no process holds its end: macOS's `lsof` does not list it, and Linux
-/// lists it with inode 0 (and, before 6.17, root's uid — which a root Monitor would take for its
-/// own). Either is no owner yet, so the owner is read again until it is this user or `OWNER_WAIT`
-/// passes, which only a refusal ever waits out.
+/// lists it with inode 0. That is no owner yet, so the owner is read again until a process holds
+/// it or `OWNER_WAIT` passes. A holder, once found, is the answer (#s240): a socket's owner does
+/// not change after it is accepted. So only an end nobody holds — another account's server on
+/// macOS, which `lsof` cannot see, or a peer that never accepts — waits the bound out.
 pub(super) fn tcp_server_owner(stream: &TcpStream) -> Option<u32> {
+    server_owner(stream, tcp_owner::ANSWERS, tcp_owner::lookup)
+}
+
+/// `tcp_server_owner` with the platform's answers handed in, so a case can be a platform with
+/// none. One that can never answer refuses at once rather than after the wait.
+fn server_owner(
+    stream: &TcpStream,
+    answers: bool,
+    lookup: impl Fn(std::net::SocketAddr, std::net::SocketAddr) -> Option<u32>,
+) -> Option<u32> {
+    if !answers {
+        return None;
+    }
     let (Ok(server), Ok(client)) = (stream.peer_addr(), stream.local_addr()) else {
         return None;
     };
-    let me = effective_uid()?;
     let deadline = std::time::Instant::now() + OWNER_WAIT;
-    poll_owner(
-        || tcp_owner::lookup(server, client),
-        me,
-        deadline,
-        std::thread::sleep,
-    )
+    poll_owner(|| lookup(server, client), deadline, std::thread::sleep)
 }
 
 /// A real server holds its accepted connection within milliseconds; the bound is for a loaded
 /// machine (#s227 saw a handshake take over 2 s), and it is spent in full only on a refusal.
 const OWNER_WAIT: Duration = Duration::from_secs(5);
 
-/// Read the owner until it is `me` or the deadline passes, and return the last answer.
+/// Read the owner until a process holds the end or the deadline passes, and return the answer.
 fn poll_owner(
     mut lookup: impl FnMut() -> Option<u32>,
-    me: u32,
     deadline: std::time::Instant,
     mut sleep: impl FnMut(Duration),
 ) -> Option<u32> {
     let mut pause = Duration::from_millis(10);
     loop {
         let owner = lookup();
-        if owner == Some(me) || std::time::Instant::now() >= deadline {
+        if owner.is_some() || std::time::Instant::now() >= deadline {
             return owner;
         }
         sleep(pause);
@@ -147,21 +154,39 @@ fn poll_owner(
     }
 }
 
+/// The words every owner refusal ends with, which is how the native worker tells a refusal from
+/// a server that is simply not there yet (`retry_pause`).
+pub(super) const CREDENTIAL_WITHHELD: &str = "the Monitor credential was not sent";
+
 /// May the credential go to a server whose end of the connection `owner` holds? Only to this
 /// OS user's. The refusal names no address and nothing the peer sent.
 pub(super) fn credential_may_go_to(owner: Option<u32>) -> Result<(), String> {
     match (owner, effective_uid()) {
         (Some(owner), Some(me)) if owner == me => Ok(()),
-        (Some(_), Some(_)) => Err(
-            "The Codex server's port belongs to another OS user; the Monitor credential was not sent"
-                .into(),
-        ),
-        _ => Err(
-            "Could not verify that the Codex server's port belongs to this OS user; the Monitor credential was not sent"
-                .into(),
-        ),
+        (Some(_), Some(_)) => Err(format!(
+            "The Codex server's port belongs to another OS user; {CREDENTIAL_WITHHELD}"
+        )),
+        _ => Err(format!(
+            "Could not verify that the Codex server's port belongs to this OS user; {CREDENTIAL_WITHHELD}"
+        )),
     }
 }
+
+/// How long the native worker waits before connecting again after `message`. An owner refusal
+/// is not a server still starting: another account holds the port, or the peer never accepts.
+/// Trying again at the usual 250 ms meant a lookup every few hundred milliseconds for as long as
+/// that lasted (about four `lsof` runs a second on macOS, #s240), so it waits longer.
+pub(super) fn retry_pause(message: &str) -> Duration {
+    if message.contains(CREDENTIAL_WITHHELD) {
+        OWNER_REFUSAL_PAUSE
+    } else {
+        Duration::from_millis(250)
+    }
+}
+
+/// After an owner refusal: long enough that a refused port costs a lookup now and then, short
+/// enough that the server the Monitor should reach is found soon after the port is freed.
+pub(super) const OWNER_REFUSAL_PAUSE: Duration = Duration::from_secs(15);
 
 #[cfg(unix)]
 fn effective_uid() -> Option<u32> {
@@ -177,6 +202,9 @@ fn effective_uid() -> Option<u32> {
 /// way to tell answers `None`, which is a refusal.
 mod tcp_owner {
     use std::net::SocketAddr;
+
+    /// Whether this platform's `lookup` can ever name an owner.
+    pub(super) const ANSWERS: bool = cfg!(any(target_os = "linux", target_os = "macos"));
 
     /// Both tables: a dual-stack server (`[::]`) holds a v4 connection's end in `tcp6`, as
     /// `::ffff:127.0.0.1`.
@@ -236,10 +264,13 @@ mod tcp_owner {
         server: SocketAddr,
         client: SocketAddr,
     ) -> Option<u32> {
+        // The address and port alone: a v6 `SocketAddr` also carries a flow label and scope,
+        // which a table row does not, and a mapped v4 address is the v4 address it maps.
+        let end = |a: SocketAddr| (a.ip().to_canonical(), a.port());
         contents.lines().skip(1).find_map(|line| {
             let mut f = line.split_whitespace();
             let (local, remote) = (proc_addr(f.nth(1)?)?, proc_addr(f.next()?)?);
-            if (local, remote) != (server, client) {
+            if (end(local), end(remote)) != (end(server), end(client)) {
                 return None;
             }
             // After rem_address: st, tx:rx, tr:tm, retrnsmt, uid, timeout, inode.
@@ -358,27 +389,78 @@ mod owner_tests {
         );
     }
 
+    /// #s240: a socket nobody holds yet is read again; the first holder found is the answer,
+    /// whoever it is, since an accepted socket's owner does not change. Only an end nobody holds
+    /// waits out the deadline.
     #[test]
-    fn the_owner_is_read_again_until_it_is_this_user_or_time_runs_out() {
+    fn the_owner_is_read_again_only_until_a_process_holds_the_end() {
         let now = std::time::Instant::now();
-        let mut answers = vec![None, Some(0), Some(7)].into_iter();
+        let mut answers = vec![None, None, Some(0), Some(7)].into_iter();
         let mut sleeps = 0;
         assert_eq!(
             poll_owner(
                 || answers.next().flatten(),
-                7,
                 now + OWNER_WAIT,
                 |_| sleeps += 1
             ),
-            Some(7)
+            Some(0),
+            "another user's holder ends the wait at once"
         );
+        assert_eq!(sleeps, 2, "two reads found no holder, the third did");
+        let mut reads = 0;
         assert_eq!(
-            sleeps, 2,
-            "a socket not yet held, then one read as root, then ours"
+            poll_owner(
+                || {
+                    reads += 1;
+                    None
+                },
+                now,
+                |_| panic!("no wait past the deadline")
+            ),
+            None
         );
+        assert_eq!(reads, 1, "past the deadline, one read and no more");
+    }
+
+    /// #s240: a v6 address from a table row carries no flow label or scope; the end still
+    /// matches a `SocketAddr` that has them.
+    #[cfg(target_endian = "little")]
+    #[test]
+    fn proc_net_matches_the_address_and_port_alone() {
+        let v6 = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+           0: 00000000000000000000000001000000:1194 00000000000000000000000001000000:EF32 01 00000000:00000000 00:00000000 00000000   505        0 5 1\n";
+        let labelled = |port| {
+            SocketAddr::V6(std::net::SocketAddrV6::new(
+                std::net::Ipv6Addr::LOCALHOST,
+                port,
+                0x1234,
+                0,
+            ))
+        };
         assert_eq!(
-            poll_owner(|| Some(0), 7, now, |_| panic!("no wait past the deadline")),
-            Some(0)
+            proc_net_owner(v6, labelled(4500), labelled(61234)),
+            Some(505)
+        );
+    }
+
+    /// #s240: an owner refusal waits far longer before the next try than a server that is not
+    /// there yet, so a squatted port costs a lookup now and then, not several a second.
+    #[test]
+    fn an_owner_refusal_waits_longer_before_the_next_try() {
+        let refused = credential_may_go_to(None).unwrap_err();
+        assert_eq!(retry_pause(&refused), OWNER_REFUSAL_PAUSE);
+        assert_eq!(
+            retry_pause(&format!(
+                "Initialize/recover Codex RPC at ws://x: {refused}"
+            )),
+            OWNER_REFUSAL_PAUSE,
+            "the worker's own prefix does not hide it"
+        );
+        assert!(OWNER_REFUSAL_PAUSE >= OWNER_WAIT * 2);
+        assert_eq!(
+            retry_pause("Connection refused (os error 61)"),
+            Duration::from_millis(250),
+            "a server not there yet is tried again soon"
         );
     }
 
@@ -391,6 +473,23 @@ mod owner_tests {
         assert!(foreign.contains("another OS user"), "{foreign}");
         let unknown = credential_may_go_to(None).unwrap_err();
         assert!(unknown.contains("Could not verify"), "{unknown}");
+    }
+
+    /// #s240: a platform whose lookup can never answer refuses without asking it or waiting.
+    #[test]
+    fn a_platform_with_no_lookup_refuses_at_once() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let started = std::time::Instant::now();
+        let owner = server_owner(&client, false, |_, _| {
+            panic!("a platform with no lookup asks none")
+        });
+        assert_eq!(owner, None);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     /// The real lookup on this machine: a connection nobody has accepted has no owner yet, even

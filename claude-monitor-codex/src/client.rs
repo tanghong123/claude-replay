@@ -720,10 +720,8 @@ pub(super) fn run(
                     .reconnect(format!(
                         "Initialize/recover Codex RPC at {endpoint}: {message}"
                     ));
-                match receiver.recv_timeout(Duration::from_millis(250)) {
-                    Ok(Command::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
-                    Ok(command) => unavailable(command, &message),
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                if !wait_to_retry(&receiver, &message) {
+                    return;
                 }
                 continue;
             }
@@ -990,6 +988,32 @@ pub(super) fn run(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .reconnect(format!("Codex WebSocket at {endpoint}: {disconnected}"));
+    }
+}
+
+/// Wait before the next connection attempt after a failure that said `message`, answering any
+/// command meanwhile as unavailable. False when the worker must stop.
+///
+/// The usual wait is 250 ms, and a command ends it at once. After an owner refusal (#s240) the
+/// wait is `OWNER_REFUSAL_PAUSE` and a command does NOT end it: another account holding the
+/// port is no reason to look again every time a page asks, and each look runs the owner
+/// lookup for up to its whole bound.
+fn wait_to_retry(receiver: &Receiver<Command>, message: &str) -> bool {
+    let pause = super::transport::retry_pause(message);
+    let patient = pause > Duration::from_millis(250);
+    let until = Instant::now() + pause;
+    loop {
+        let left = until.saturating_duration_since(Instant::now());
+        match receiver.recv_timeout(left) {
+            Ok(Command::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+            Ok(command) => {
+                unavailable(command, message);
+                if !patient {
+                    return true;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => return true,
+        }
     }
 }
 
@@ -2550,6 +2574,51 @@ mod tests {
         assert!(error.contains("403"));
         assert!(!error.contains(&"a".repeat(64)));
         fixture.join().unwrap();
+    }
+
+    /// #s240: after an owner refusal a command is answered as unavailable and the wait goes on
+    /// (the Stop sent after it is still read); after any other failure the first command ends the
+    /// short wait at once, as it always has.
+    #[test]
+    fn an_owner_refusal_keeps_waiting_through_commands_and_other_failures_do_not() {
+        let call = || {
+            let (answer, answered) = mpsc::channel();
+            let command = Command::Call {
+                method: "thread/list".into(),
+                params: json!({}),
+                epoch: 0,
+                deadline: Instant::now() + Duration::from_secs(5),
+                answer,
+            };
+            (command, answered)
+        };
+        let refused = super::super::transport::credential_may_go_to(None).unwrap_err();
+        let (sender, receiver) = mpsc::channel();
+        let (command, answered) = call();
+        sender.send(command).unwrap();
+        sender.send(Command::Stop).unwrap();
+        assert!(
+            !wait_to_retry(&receiver, &refused),
+            "the Stop behind the command was read"
+        );
+        assert!(matches!(
+            answered.try_recv(),
+            Ok(Err(Failure::Unavailable(_)))
+        ));
+
+        let (sender, receiver) = mpsc::channel();
+        let (command, answered) = call();
+        sender.send(command).unwrap();
+        sender.send(Command::Stop).unwrap();
+        assert!(wait_to_retry(&receiver, "Connection refused (os error 61)"));
+        assert!(matches!(
+            answered.try_recv(),
+            Ok(Err(Failure::Unavailable(_)))
+        ));
+        assert!(
+            matches!(receiver.try_recv(), Ok(Command::Stop)),
+            "the short wait ended at the command"
+        );
     }
 
     /// #s145: a squatter of another account answers the probe with 401 as the real server does.
