@@ -4,6 +4,9 @@
 and `outline-drawers.md` in the same series: state what is there, draw the arithmetic, name what
 it costs, and ask the questions that change the build. Nothing is built yet.*
 
+*The classic tool filter and the rail's session finder below went with the monitor's classic
+view (#s98, v1.417.0); the classic page they describe is export.js, which stays.*
+
 ---
 
 ## What was asked

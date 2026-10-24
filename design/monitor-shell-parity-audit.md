@@ -2,6 +2,9 @@
 
 # Shell parity audit — what the classic shell does that the app shell does not
 
+> **Superseded** (#s98, v1.417.0): the monitor's classic view and `agent-monitor-v2` are retired, and
+> `agent-monitor` serves the app shell alone. Kept for the history that explains the code.
+
 Method: enumerated every route, DOM control, keyboard handler and top-level function in the
 classic v1 rail (`claude-monitor/src/rail.html`), the classic v2 splice shell
 (`claude-monitor-v2/src/shell.html`) and the session view they embed

@@ -193,12 +193,12 @@ ul.facts strong{font-weight:600}
 </section>
 
 <section class="slide" id="s2" data-where="02 · 它是什么">
-  <div><div class="eyebrow">02 · 它是什么</div><h2>全机范围的会话索引，查看器内置其中</h2><p class="lede">它扫描本机上每个智能体的转录存储——Claude Code、Codex、Qoder、QoderWork——并只提供一个页面：左侧是会话栏，右侧是你选中那个会话的实时视图。</p><p class="note"><code>agent-monitor</code> 与 <code>agent-monitor-v2</code> 两个二进制共用同一个库的一半，各自都能提供两套外壳；它们可以在不同端口、不同缓存根目录下并排运行。</p></div>
-  <div class="col"><ul class="facts"><li><strong>只读，且只走环回地址。</strong>它按智能体写入的原样读取转录，只监听 127.0.0.1；默认启动时在 2727 端口打开应用壳。</li><li><strong>刻意的惰性。</strong>会话在监视器自己缓存根目录下的持久条目，只在<em>访问</em>它时写入，从不靠全盘扫描——机器上有几千个会话，索引依然便宜。</li><li><strong>两套外壳，都受支持。</strong>应用壳（一个文档直接消费结构化索引与记录流）是默认；经典的“侧栏 + iframe”页面保留到应用壳在真实使用中被验证为止。两者各有一个切换按钮，选择记在 <code>&lt;state&gt;/ui.json</code>；<code>?ui=classic</code> 或 <code>?ui=app</code> 只覆盖一次请求，不改动记忆。</li><li><strong>有意只管一台机器。</strong>一个文件系统、一张进程表。多机由 <code>agent-monitor-fleet</code> 负责：每台机器一条 SSH 隧道，加一个切换页，各标签页就是那些监视器自己的页面，原样嵌在 iframe 里——每个监视器的端口从它自己的锁文件读出，从不猜测。</li></ul></div>
+  <div><div class="eyebrow">02 · 它是什么</div><h2>全机范围的会话索引，查看器内置其中</h2><p class="lede">它扫描本机上每个智能体的转录存储——Claude Code、Codex、Qoder、QoderWork——并只提供一个页面：左侧是会话列表，右侧是你选中那个会话的实时视图。</p><p class="note">一个二进制 <code>agent-monitor</code>，建在公开的库的一半之上。它的第二个前端 <code>agent-monitor-v2</code> 已在 v1.417.0 随经典视图一起退役。</p></div>
+  <div class="col"><ul class="facts"><li><strong>只读，且只走环回地址。</strong>它按智能体写入的原样读取转录，只监听 127.0.0.1；默认启动时在 2727 端口打开应用壳。</li><li><strong>刻意的惰性。</strong>会话在监视器自己缓存根目录下的持久条目，只在<em>访问</em>它时写入，从不靠全盘扫描——机器上有几千个会话，索引依然便宜。</li><li><strong>一个页面。</strong>应用壳：一个文档直接消费结构化索引与记录流。经典的“侧栏 + iframe”页面已在 v1.417.0 退役，<code>?ui=classic</code> 也打开应用壳。</li><li><strong>有意只管一台机器。</strong>一个文件系统、一张进程表。多机由 <code>agent-monitor-fleet</code> 负责：每台机器一条 SSH 隧道，加一个切换页，各标签页就是那些监视器自己的页面，原样嵌在 iframe 里——每个监视器的端口从它自己的锁文件读出，从不猜测。</li></ul></div>
 </section>
 
 <section class="slide" id="s3" data-where="03 · 页面">
-  <div><div class="eyebrow">03 · 页面</div><h2>读者看到什么，这些词又是什么意思</h2><p class="lede">会话栏把根会话和它的子智能体聚成一族，并用同一套小词汇表给每个会话贴标签——应用壳、经典页、fleet 页共用这套词汇。视图就是实时转录：轮次、工具、思考，以及你阅读期间新到的内容。</p></div>
+  <div><div class="eyebrow">03 · 页面</div><h2>读者看到什么，这些词又是什么意思</h2><p class="lede">会话栏把根会话和它的子智能体聚成一族，并用同一套小词汇表给每个会话贴标签——应用壳与 fleet 页共用这套词汇。视图就是实时转录：轮次、工具、思考，以及你阅读期间新到的内容。</p></div>
   <div class="col">
     <div class="mock" aria-label="a sketch of the page">
       <div class="rail">
@@ -224,13 +224,13 @@ ul.facts strong{font-weight:600}
 <section class="slide" id="s4" data-where="04 · 对会话采取行动">
   <div><div class="eyebrow">04 · 对会话采取行动</div><h2>回应那个正在等你的会话</h2><p class="lede">在页面里输入的提示会被注入到智能体自己的终端窗格。这是对一个运行中进程的写入，所以监视器把它当作安全面来对待——而且只有一份实现。</p></div>
   <div class="col">
-    <ul class="facts"><li><strong>配对。</strong>写路由需要配对令牌；它设置的 <code>cmauth</code> cookie 以主机为作用域而非端口，因此一台机器上的两个监视器共用一个状态目录来存放令牌、口令和授权。</li><li><strong>同意。</strong>按窗格授权，再加一道口令；“这条提示可以注入到那个窗格吗”这个判断——会话到窗格的归属，以及两种发送通道——只存在一处，在库的那一半里，两个前端都调用它。</li><li><strong>只走环回。</strong>页面从不离开本机；fleet 页面只能通过你自己打开的 SSH 隧道触达远端监视器。</li></ul>
+    <ul class="facts"><li><strong>配对。</strong>写路由需要配对令牌；它设置的 <code>cmauth</code> cookie 以主机为作用域而非端口，所以它以令牌命名；一个状态目录存放令牌、口令和授权。</li><li><strong>同意。</strong>按窗格授权，再加一道口令；“这条提示可以注入到那个窗格吗”这个判断——会话到窗格的归属，以及两种发送通道——只存在一处，在库的那一半里，由监视器调用。</li><li><strong>只走环回。</strong>页面从不离开本机；fleet 页面只能通过你自己打开的 SSH 隧道触达远端监视器。</li></ul>
     <div class="card"><h3>库的这一半回答什么</h3>
       <table class="tbl"><tbody>
         <tr><td class="k">index</td><td>扫描，以及发送判断：哪个会话住在哪个窗格里</td></tr>
         <tr><td class="k">consent</td><td>授权与口令</td></tr>
         <tr><td class="k">control</td><td>配对令牌与两种发送通道</td></tr>
-        <tr><td class="k">state</td><td>共享的状态目录：令牌 · 口令 · 授权 · <code>ui.json</code></td></tr>
+        <tr><td class="k">state</td><td>共享的状态目录：令牌 · 口令 · 授权</td></tr>
       </tbody></table>
     </div>
   </div>
@@ -301,7 +301,7 @@ ul.facts strong{font-weight:600}
 </section>
 
 <section class="slide" id="s10" data-where="10 · 可复用 · Rust 的一半">
-  <div><div class="eyebrow">10 · 可复用 · Rust 的一半</div><h2>库的一半：一份实现，两个前端</h2><p class="lede"><code>claude-monitor</code> 既是库也是二进制。<code>agent-monitor-v2</code> 在同一组模块之上组合出另一个会话页面——“是一个前端，不是第二份实现”——第三个前端需要的一切都已经是公开的。</p></div>
+  <div><div class="eyebrow">10 · 可复用 · Rust 的一半</div><h2>库的一半：一份实现，公开</h2><p class="lede"><code>claude-monitor</code> 既是库也是二进制。<code>agent-monitor-v2</code> 曾在同一组模块之上组合出另一个会话页面，直到 v1.417.0 退役——“是一个前端，不是第二份实现”——另一个前端需要的一切仍然是公开的。</p></div>
   <div class="col">
     <table class="tbl"><thead><tr><th>模块</th><th>它回答什么</th></tr></thead><tbody>
       <tr><td class="k">index</td><td>对每个智能体存储的扫描、会话卡片及其状态，以及发送判断——哪个会话归属于哪个终端窗格</td></tr>
@@ -310,7 +310,7 @@ ul.facts strong{font-weight:600}
       <tr><td class="k">cost</td><td>按会话、按家族的令牌与成本汇总，子智能体折入其根会话</td></tr>
       <tr><td class="k">state</td><td>两个监视器共同读取的状态目录：令牌、口令、授权、记住的外壳</td></tr>
       <tr><td class="k">routes</td><td>路由表——后端一半与前端一半——加一个分发器，新外壳添加页面时无需重新决定路由能做什么</td></tr>
-      <tr><td class="k">ui</td><td>记住的外壳选择、<code>?ui=</code> 覆盖，以及包含共享模块在内的静态资源服务</td></tr>
+      <tr><td class="k">ui</td><td>应用壳的页面，以及包含共享模块在内的静态资源服务</td></tr>
     </tbody></table>
   </div>
 </section>
@@ -350,7 +350,7 @@ agent-replay &lt;path&gt; --dump - --json</div>
 </section>
 
 <section class="slide" id="s13" data-where="13 · 保持诚实">
-  <div><div class="eyebrow">13 · 保持诚实</div><h2>每次改动都过门禁，浏览器是门禁之一</h2><p class="lede">整个工作区无需终端即可完整测试，而监视器的行为——定位、增长中的搜索、尾部钉住、虚拟 DOM——由真实引擎的用例针对两套外壳钉死。</p><p class="note">排队中的 bug 的复现以 <code>known_red_&lt;task&gt;</code> 命名签入并被门禁跳过；修复时去掉标记。经典页是衡量应用壳的行为基准。</p></div>
+  <div><div class="eyebrow">13 · 保持诚实</div><h2>每次改动都过门禁，浏览器是门禁之一</h2><p class="lede">整个工作区无需终端即可完整测试，而监视器的行为——定位、增长中的搜索、尾部钉住、虚拟 DOM——由真实引擎的用例针对两个页面钉死。</p><p class="note">排队中的 bug 的复现以 <code>known_red_&lt;task&gt;</code> 命名签入并被门禁跳过；修复时去掉标记。经典页是衡量应用壳的行为基准。</p></div>
   <div class="col">
     <table class="tbl"><thead><tr><th>门禁</th><th>它守住什么</th></tr></thead><tbody>
       <tr><td class="k">fmt · clippy · test · doc</td><td>格式、零警告、每个 crate 的确定性测试套件、拒绝警告的 rustdoc</td></tr>
@@ -366,9 +366,9 @@ agent-replay &lt;path&gt; --dump - --json</div>
   <div><div class="eyebrow">14 · 去哪里看</div><h2>各部分在哪里</h2><p class="lede">读者需要的路径，按本讲稿使用它们的顺序。</p></div>
   <div class="col">
     <div class="tbl x"><table class="tbl" style="border:0;box-shadow:none"><thead><tr><th>路径</th><th>内容</th></tr></thead><tbody>
-      <tr><td class="k">claude-monitor/src/{index,consent,control,cost,state,routes,ui}.rs</td><td>库的一半：索引、控制面、路由表、外壳选择</td></tr>
-      <tr><td class="k">claude-monitor/src/codex-ui/ · src/rail.html</td><td>应用壳（视口、记录存储、组件）· 经典侧栏</td></tr>
-      <tr><td class="k">claude-monitor-v2/ · claude-monitor-fleet/</td><td>同一库之上的第二个前端 · 多台机器共一页</td></tr>
+      <tr><td class="k">claude-monitor/src/{index,consent,control,cost,state,routes,ui}.rs</td><td>库的一半：索引、控制面、路由表、页面</td></tr>
+      <tr><td class="k">claude-monitor/src/codex-ui/</td><td>应用壳（视口、记录存储、组件）</td></tr>
+      <tr><td class="k">claude-monitor-fleet/</td><td>多台机器共一页</td></tr>
       <tr><td class="k">claude-replay-html/src/html/shared/*.js</td><td>九个共享前端模块</td></tr>
       <tr><td class="k">claude-replay-html/src/html_export/{serve,record_store,sig}.rs</td><td>实时服务器 · 线上投影存储 · 能力戳</td></tr>
       <tr><td class="k">claude-replay-present/src/{cache/,pull.rs}</td><td>SessionCache 与条目提供者 · 拉取协议的两个半边</td></tr>

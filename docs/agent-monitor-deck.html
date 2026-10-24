@@ -193,12 +193,12 @@ ul.facts strong{font-weight:600}
 </section>
 
 <section class="slide" id="s2" data-where="02 · What it is">
-  <div><div class="eyebrow">02 · What it is</div><h2>A machine-wide session index, with the viewer built in</h2><p class="lede">It scans every agent's transcript store on this machine — Claude Code, Codex, Qoder, QoderWork — and serves one page: a rail of sessions beside a live view of the one you picked.</p><p class="note">Two binaries, <code>agent-monitor</code> and <code>agent-monitor-v2</code>, share one library half and each serves both shells; they can run side by side on different ports and cache roots.</p></div>
-  <div class="col"><ul class="facts"><li><strong>Read-only and loopback.</strong> It reads transcripts as the agents write them and listens on 127.0.0.1 only; the default run opens the app shell at port 2727.</li><li><strong>Lazy by design.</strong> A session's durable entry under the monitor's own cache root is written by <em>visiting</em> it, never by a sweep — the index stays cheap on a machine with thousands of sessions.</li><li><strong>Two shells, both supported.</strong> The app shell (one document over the structured index and record stream) is the default; the classic rail-and-iframe page stays until the app shell is validated in real use. A switch in each remembers the choice at <code>&lt;state&gt;/ui.json</code>; <code>?ui=classic</code> or <code>?ui=app</code> overrides one request without disturbing it.</li><li><strong>Single-machine on purpose.</strong> One filesystem, one process table. <code>agent-monitor-fleet</code> is the multi-machine story: one SSH tunnel per machine and a switcher whose tabs are those monitors' own pages, unmodified, in iframes — each monitor's port read from its own lock file, never guessed.</li></ul></div>
+  <div><div class="eyebrow">02 · What it is</div><h2>A machine-wide session index, with the viewer built in</h2><p class="lede">It scans every agent's transcript store on this machine — Claude Code, Codex, Qoder, QoderWork — and serves one page: a list of sessions beside a live view of the one you picked.</p><p class="note">One binary, <code>agent-monitor</code>, over a library half that is public. Its second front-end, <code>agent-monitor-v2</code>, retired with the classic view in v1.417.0.</p></div>
+  <div class="col"><ul class="facts"><li><strong>Read-only and loopback.</strong> It reads transcripts as the agents write them and listens on 127.0.0.1 only; the default run opens the app shell at port 2727.</li><li><strong>Lazy by design.</strong> A session's durable entry under the monitor's own cache root is written by <em>visiting</em> it, never by a sweep — the index stays cheap on a machine with thousands of sessions.</li><li><strong>One page.</strong> The app shell: one document over the structured index and record stream. The classic rail-and-iframe page retired in v1.417.0, and <code>?ui=classic</code> opens the app shell.</li><li><strong>Single-machine on purpose.</strong> One filesystem, one process table. <code>agent-monitor-fleet</code> is the multi-machine story: one SSH tunnel per machine and a switcher whose tabs are those monitors' own pages, unmodified, in iframes — each monitor's port read from its own lock file, never guessed.</li></ul></div>
 </section>
 
 <section class="slide" id="s3" data-where="03 · The page">
-  <div><div class="eyebrow">03 · The page</div><h2>What a reader sees, and what the words mean</h2><p class="lede">The rail clusters a root session with its sub-agents and labels each with the same small vocabulary the app shell, the classic page and the fleet page all share. The view is the live transcript: turns, tools, thinking, and what arrived while you were reading.</p></div>
+  <div><div class="eyebrow">03 · The page</div><h2>What a reader sees, and what the words mean</h2><p class="lede">The rail clusters a root session with its sub-agents and labels each with the same small vocabulary the app shell and the fleet page share. The view is the live transcript: turns, tools, thinking, and what arrived while you were reading.</p></div>
   <div class="col">
     <div class="mock" aria-label="a sketch of the page">
       <div class="rail">
@@ -224,13 +224,13 @@ ul.facts strong{font-weight:600}
 <section class="slide" id="s4" data-where="04 · Acting on a session">
   <div><div class="eyebrow">04 · Acting on a session</div><h2>Answer the session that is waiting on you</h2><p class="lede">A prompt typed into the page is injected into the agent's own terminal pane. That is a write into a running process, so the monitor treats it as a security surface with exactly one implementation.</p></div>
   <div class="col">
-    <ul class="facts"><li><strong>Pairing.</strong> The write routes need a pairing token; the <code>cmauth</code> cookie it sets is host-scoped, not port-scoped, so both monitors on a machine share one state directory for the token, the passcode and the grants.</li><li><strong>Consent.</strong> A grant per pane plus a passcode gate; the decision “may this prompt be injected into that pane” — the session-to-pane attribution and the two send transports — lives once, in the library half, and both front-ends call it.</li><li><strong>Loopback only.</strong> The page never leaves the machine; a fleet page reaches a remote monitor only through the SSH tunnel you opened.</li></ul>
+    <ul class="facts"><li><strong>Pairing.</strong> The write routes need a pairing token; the <code>cmauth</code> cookie it sets is named for its token, since a cookie is scoped to the host, not the port, and one state directory holds the token, the passcode and the grants.</li><li><strong>Consent.</strong> A grant per pane plus a passcode gate; the decision “may this prompt be injected into that pane” — the session-to-pane attribution and the two send transports — lives once, in the library half, where the monitor calls it.</li><li><strong>Loopback only.</strong> The page never leaves the machine; a fleet page reaches a remote monitor only through the SSH tunnel you opened.</li></ul>
     <div class="card"><h3>What the library half answers</h3>
       <table class="tbl"><tbody>
         <tr><td class="k">index</td><td>the scan, and the send decisions: which session lives in which pane</td></tr>
         <tr><td class="k">consent</td><td>grants and the passcode</td></tr>
         <tr><td class="k">control</td><td>the pairing token and the two send transports</td></tr>
-        <tr><td class="k">state</td><td>the shared state directory: token · passcode · consent · <code>ui.json</code></td></tr>
+        <tr><td class="k">state</td><td>the shared state directory: token · passcode · consent</td></tr>
       </tbody></table>
     </div>
   </div>
@@ -301,7 +301,7 @@ ul.facts strong{font-weight:600}
 </section>
 
 <section class="slide" id="s10" data-where="10 · Reusable · the Rust half">
-  <div><div class="eyebrow">10 · Reusable · the Rust half</div><h2>The library half: one implementation, two front-ends</h2><p class="lede"><code>claude-monitor</code> is a library and a binary. <code>agent-monitor-v2</code> composes a different session page over the same modules — “a front-end, not a second implementation” — and everything a third front-end would need is already public.</p></div>
+  <div><div class="eyebrow">10 · Reusable · the Rust half</div><h2>The library half: one implementation, public</h2><p class="lede"><code>claude-monitor</code> is a library and a binary. <code>agent-monitor-v2</code> composed a second session page over the same modules until it retired in v1.417.0 — “a front-end, not a second implementation” — and everything another front-end would need is still public.</p></div>
   <div class="col">
     <table class="tbl"><thead><tr><th>module</th><th>what it answers</th></tr></thead><tbody>
       <tr><td class="k">index</td><td>the scan of every agent's store, the session cards and their state, and the send decisions — which session is attributed to which terminal pane</td></tr>
@@ -310,7 +310,7 @@ ul.facts strong{font-weight:600}
       <tr><td class="k">cost</td><td>token and cost roll-ups per session and per family, sub-agents folded into their root</td></tr>
       <tr><td class="k">state</td><td>the shared state directory both monitors read: token, passcode, consent, the remembered shell</td></tr>
       <tr><td class="k">routes</td><td>the route table — a backend half and a frontend half — with one dispatcher, so a new shell adds pages without re-deciding what a route may do</td></tr>
-      <tr><td class="k">ui</td><td>the remembered shell choice, the <code>?ui=</code> override, and the served assets including the shared modules</td></tr>
+      <tr><td class="k">ui</td><td>the app shell's page and the served assets, including the shared modules</td></tr>
     </tbody></table>
   </div>
 </section>
@@ -350,7 +350,7 @@ agent-replay &lt;path&gt; --dump - --json</div>
 </section>
 
 <section class="slide" id="s13" data-where="13 · Kept honest">
-  <div><div class="eyebrow">13 · Kept honest</div><h2>Every change is gated, and the browser is one of the gates</h2><p class="lede">The workspace is fully testable without a terminal, and the monitor's behaviour — positioning, search through growth, the tail pin, the virtual DOM — is pinned by real-engine cases against both shells.</p><p class="note">A queued bug's reproduction is checked in under a <code>known_red_&lt;task&gt;</code> name and skipped by the gate; the fix removes the marker. The classic page is the behavioural reference the app shell is measured against.</p></div>
+  <div><div class="eyebrow">13 · Kept honest</div><h2>Every change is gated, and the browser is one of the gates</h2><p class="lede">The workspace is fully testable without a terminal, and the monitor's behaviour — positioning, search through growth, the tail pin, the virtual DOM — is pinned by real-engine cases against both pages.</p><p class="note">A queued bug's reproduction is checked in under a <code>known_red_&lt;task&gt;</code> name and skipped by the gate; the fix removes the marker. The classic page is the behavioural reference the app shell is measured against.</p></div>
   <div class="col">
     <table class="tbl"><thead><tr><th>gate</th><th>what it holds</th></tr></thead><tbody>
       <tr><td class="k">fmt · clippy · test · doc</td><td>formatting, zero warnings, the deterministic suite of every crate, rustdoc with warnings denied</td></tr>
@@ -366,9 +366,9 @@ agent-replay &lt;path&gt; --dump - --json</div>
   <div><div class="eyebrow">14 · Where to look</div><h2>Where things live</h2><p class="lede">Paths a reader needs, in the order the deck used them.</p></div>
   <div class="col">
     <div class="tbl x"><table class="tbl" style="border:0;box-shadow:none"><thead><tr><th>path</th><th>what</th></tr></thead><tbody>
-      <tr><td class="k">claude-monitor/src/{index,consent,control,cost,state,routes,ui}.rs</td><td>the library half: the index, the control plane, the route table, the shell choice</td></tr>
-      <tr><td class="k">claude-monitor/src/codex-ui/ · src/rail.html</td><td>the app shell (viewport, record store, components) · the classic rail</td></tr>
-      <tr><td class="k">claude-monitor-v2/ · claude-monitor-fleet/</td><td>the second front-end over the same library · several machines behind one page</td></tr>
+      <tr><td class="k">claude-monitor/src/{index,consent,control,cost,state,routes,ui}.rs</td><td>the library half: the index, the control plane, the route table, the page</td></tr>
+      <tr><td class="k">claude-monitor/src/codex-ui/</td><td>the app shell (viewport, record store, components)</td></tr>
+      <tr><td class="k">claude-monitor-fleet/</td><td>several machines behind one page</td></tr>
       <tr><td class="k">claude-replay-html/src/html/shared/*.js</td><td>the nine shared frontend modules</td></tr>
       <tr><td class="k">claude-replay-html/src/html_export/{serve,record_store,sig}.rs</td><td>the live server · the wire-projection store · capability stamps</td></tr>
       <tr><td class="k">claude-replay-present/src/{cache/,pull.rs}</td><td>SessionCache and the entry providers · the pull protocol, both halves</td></tr>

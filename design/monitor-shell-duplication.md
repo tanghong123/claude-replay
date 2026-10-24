@@ -1,5 +1,8 @@
 # The monitor's two shells: where the logic forks, and the seams that would stop it
 
+> **Superseded** (#s98, v1.417.0): the monitor's classic view and `agent-monitor-v2` are retired, and
+> `agent-monitor` serves the app shell alone. Kept for the history that explains the code.
+
 Status: **accepted; executed in v1.140.0–v1.147.0 (#42–#49)** (task #40; reviewed and corrected 2026-09-03 — see "Review
 notes" at the end). Measured against `main` at v1.139.0. Steps are queue tasks #42–#49.
 

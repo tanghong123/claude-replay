@@ -442,6 +442,10 @@ calls four methods. That is the test for whether this is a real seam or a leak.
 
 ### 6.3 The unit of reuse is a **URL**, not a slot
 
+> **Superseded** (#s98, v1.417.0): the rail that framed this URL in an iframe retired with the
+> monitor's classic view; the monitor's page is the app shell, which renders the session itself.
+> `/session`, the URL this section designs, goes in stage 4 of `classic-view-deprecation.md` (#s99).
+
 v3 gave the page a host-owned `#rail` region. That was wrong, and the objection generalises past
 the rail: a slot is an extension point shaped like *one* host's layout. A host that wants the view
 in a top strip, a right pane, a tab set, a modal, or two side-by-side has no way in — it would

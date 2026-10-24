@@ -1,5 +1,8 @@
 # Monitor v2 — a single app shell, no iframe
 
+> **Superseded** (#s98, v1.417.0): the monitor's classic view and `agent-monitor-v2` are retired, and
+> `agent-monitor` serves the app shell alone. Kept for the history that explains the code.
+
 > **Partly built.** Slices 1–3 (the shell, browser-served artifacts, one search box) and
 > compose/send + pairing shipped between 2026-08-26 and 2026-08-27. The new UX beyond the
 > parity rail is HELD at the owner's request, and whether the reload-per-switch is too coarse
