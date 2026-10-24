@@ -330,9 +330,14 @@ impl From<std::io::Error> for ConnectError {
     }
 }
 
+/// Who holds the server end of a connection (#s145): `transport::tcp_server_owner`, or a test's
+/// stand-in for an account it cannot be.
+type ServerOwner = fn(&TcpStream) -> Option<u32>;
+
 fn handshake(
     endpoint: &str,
     token: Option<&ServerToken>,
+    owner: ServerOwner,
 ) -> Result<WebSocket<NativeStream>, ConnectError> {
     let mut request = endpoint
         .into_client_request()
@@ -352,6 +357,8 @@ fn handshake(
     stream.set_read_timeout(Some(super::transport::HANDSHAKE_TIMEOUT))?;
     stream.set_write_timeout(Some(super::transport::HANDSHAKE_TIMEOUT))?;
     if let Some(token) = token {
+        // #s145: the credential goes only to this OS user's server, checked on this connection.
+        super::transport::credential_may_go_to(owner(&stream)).map_err(ConnectError::Other)?;
         request
             .headers_mut()
             .insert(tungstenite::http::header::AUTHORIZATION, token.bearer());
@@ -387,8 +394,16 @@ fn handshake(
 }
 
 fn socket(endpoint: &str, token: &ServerToken) -> Result<WebSocket<NativeStream>, String> {
+    socket_owned_by(endpoint, token, super::transport::tcp_server_owner)
+}
+
+fn socket_owned_by(
+    endpoint: &str,
+    token: &ServerToken,
+    owner: ServerOwner,
+) -> Result<WebSocket<NativeStream>, String> {
     // Recheck on EVERY connection, including reconnects after a process replacement.
-    match handshake(endpoint, None) {
+    match handshake(endpoint, None, owner) {
         Ok(mut socket) => {
             let _ = socket.close(None);
             return Err(
@@ -398,7 +413,7 @@ fn socket(endpoint: &str, token: &ServerToken) -> Result<WebSocket<NativeStream>
         Err(ConnectError::Unauthorized) => {}
         Err(ConnectError::Other(error)) => return Err(error),
     }
-    handshake(endpoint, Some(token)).map_err(|error| match error {
+    handshake(endpoint, Some(token), owner).map_err(|error| match error {
         ConnectError::Unauthorized => "Native server rejected the Monitor credential".into(),
         ConnectError::Other(error) => error,
     })
@@ -2535,5 +2550,54 @@ mod tests {
         assert!(error.contains("403"));
         assert!(!error.contains(&"a".repeat(64)));
         fixture.join().unwrap();
+    }
+
+    /// #s145: a squatter of another account answers the probe with 401 as the real server does.
+    /// The credential's connection is then refused before a byte is written, whether its server
+    /// end is another user's or its owner cannot be told.
+    #[cfg(unix)]
+    #[test]
+    fn a_server_of_another_user_or_of_no_known_user_never_receives_the_credential() {
+        let another: ServerOwner = |_| Some(unsafe { libc::geteuid() } + 1);
+        let unknown: ServerOwner = |_| None;
+        for (owner, refusal) in [(another, "another OS user"), (unknown, "Could not verify")] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+            let fixture = std::thread::spawn(move || {
+                use std::io::{Read, Write};
+                let mut requests = Vec::new();
+                for _ in 0..2 {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    let mut request = [0_u8; 4096];
+                    let count = stream.read(&mut request).unwrap_or(0);
+                    requests.push(String::from_utf8_lossy(&request[..count]).to_ascii_lowercase());
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                }
+                requests
+            });
+            let error = socket_owned_by(&endpoint, &ServerToken::fixture(), owner)
+                .err()
+                .unwrap();
+            assert!(error.contains(refusal), "{error}");
+            assert!(error.contains("was not sent"), "{error}");
+            let requests = fixture.join().unwrap();
+            assert!(
+                requests[0].starts_with("get "),
+                "the probe went out: {requests:?}"
+            );
+            assert!(
+                requests.iter().all(|r| !r.contains("authorization")),
+                "the credential reached a server that is not this user's: {requests:?}"
+            );
+            assert_eq!(
+                requests[1], "",
+                "nothing was written on the refused connection"
+            );
+        }
     }
 }

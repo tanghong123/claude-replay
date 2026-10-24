@@ -101,6 +101,282 @@ impl Write for NativeStream {
     }
 }
 
+/// #s145: a 401 to the probe proves the server asks for a credential, not WHOSE server it is.
+/// Any account may bind a loopback port above 1023, so a process of another user holding the
+/// configured port (after a reboot, before native mode starts) would answer the probe and then
+/// receive the Monitor's credential. So the credential goes out only on a connection whose
+/// SERVER end belongs to this OS user, read for that very connection.
+///
+/// Until the server accepts, the kernel may not say: macOS's `lsof` sees a socket only once a
+/// process holds it, and Linux may report a socket no process holds yet as root's. So the owner is
+/// read again until it is this user or `OWNER_WAIT` passes, which only a refusal ever waits out.
+pub(super) fn tcp_server_owner(stream: &TcpStream) -> Option<u32> {
+    let (Ok(server), Ok(client)) = (stream.peer_addr(), stream.local_addr()) else {
+        return None;
+    };
+    let me = effective_uid()?;
+    let deadline = std::time::Instant::now() + OWNER_WAIT;
+    poll_owner(
+        || tcp_owner::lookup(server, client),
+        me,
+        deadline,
+        std::thread::sleep,
+    )
+}
+
+/// A real server holds its accepted connection within milliseconds; the bound is for a loaded
+/// machine (#s227 saw a handshake take over 2 s), and it is spent in full only on a refusal.
+const OWNER_WAIT: Duration = Duration::from_secs(5);
+
+/// Read the owner until it is `me` or the deadline passes, and return the last answer.
+fn poll_owner(
+    mut lookup: impl FnMut() -> Option<u32>,
+    me: u32,
+    deadline: std::time::Instant,
+    mut sleep: impl FnMut(Duration),
+) -> Option<u32> {
+    let mut pause = Duration::from_millis(10);
+    loop {
+        let owner = lookup();
+        if owner == Some(me) || std::time::Instant::now() >= deadline {
+            return owner;
+        }
+        sleep(pause);
+        pause = (pause * 2).min(Duration::from_millis(250));
+    }
+}
+
+/// May the credential go to a server whose end of the connection `owner` holds? Only to this
+/// OS user's. The refusal names no address and nothing the peer sent.
+pub(super) fn credential_may_go_to(owner: Option<u32>) -> Result<(), String> {
+    match (owner, effective_uid()) {
+        (Some(owner), Some(me)) if owner == me => Ok(()),
+        (Some(_), Some(_)) => Err(
+            "The Codex server's port belongs to another OS user; the Monitor credential was not sent"
+                .into(),
+        ),
+        _ => Err(
+            "Could not verify that the Codex server's port belongs to this OS user; the Monitor credential was not sent"
+                .into(),
+        ),
+    }
+}
+
+#[cfg(unix)]
+fn effective_uid() -> Option<u32> {
+    Some(unsafe { libc::geteuid() })
+}
+
+#[cfg(not(unix))]
+fn effective_uid() -> Option<u32> {
+    None
+}
+
+/// Who holds the server end of one loopback TCP connection, per platform. A platform with no
+/// way to tell answers `None`, which is a refusal.
+mod tcp_owner {
+    use std::net::SocketAddr;
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn lookup(server: SocketAddr, client: SocketAddr) -> Option<u32> {
+        let table = if server.is_ipv4() {
+            "/proc/net/tcp"
+        } else {
+            "/proc/net/tcp6"
+        };
+        proc_net_owner(&std::fs::read_to_string(table).ok()?, server, client)
+    }
+
+    /// As this user, `lsof` lists only this user's processes (measured on macOS 26: it finds
+    /// nothing for a socket root holds), so another account's server is never found.
+    #[cfg(target_os = "macos")]
+    pub(super) fn lookup(server: SocketAddr, client: SocketAddr) -> Option<u32> {
+        let host = match client {
+            SocketAddr::V4(a) => a.ip().to_string(),
+            SocketAddr::V6(a) => format!("[{}]", a.ip()),
+        };
+        let mut child = std::process::Command::new("/usr/sbin/lsof")
+            .args(["-nP", "-w", "-Fpun"])
+            .arg(format!("-iTCP@{host}:{}", client.port()))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while child.try_wait().ok()?.is_none() {
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let mut out = String::new();
+        std::io::Read::read_to_string(child.stdout.as_mut()?, &mut out).ok()?;
+        lsof_owner(&out, &format!("{server}->{client}"))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub(super) fn lookup(_server: SocketAddr, _client: SocketAddr) -> Option<u32> {
+        None
+    }
+
+    /// The `uid` of the `/proc/net/tcp` (or `tcp6`) row whose local end is `server` and whose
+    /// remote end is `client`: the server's socket for this connection.
+    #[cfg(any(target_os = "linux", test))]
+    pub(super) fn proc_net_owner(
+        contents: &str,
+        server: SocketAddr,
+        client: SocketAddr,
+    ) -> Option<u32> {
+        contents.lines().skip(1).find_map(|line| {
+            let mut f = line.split_whitespace();
+            let (local, remote) = (proc_addr(f.nth(1)?)?, proc_addr(f.next()?)?);
+            // After rem_address: st, tx:rx, tr:tm, retrnsmt, then uid.
+            let uid = f.nth(4)?.parse().ok()?;
+            (local == server && remote == client).then_some(uid)
+        })
+    }
+
+    /// `0100007F:1194` or 32 hex digits and a port: each 32-bit word is printed as the number
+    /// its bytes make in memory (little-endian here), the port as big-endian hex.
+    #[cfg(any(target_os = "linux", test))]
+    fn proc_addr(field: &str) -> Option<SocketAddr> {
+        let (hex, port) = field.split_once(':')?;
+        let port = u16::from_str_radix(port, 16).ok()?;
+        let mut bytes = Vec::with_capacity(16);
+        for word in 0..hex.len() / 8 {
+            let value = u32::from_str_radix(hex.get(word * 8..word * 8 + 8)?, 16).ok()?;
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        let ip = match (hex.len(), bytes.len()) {
+            (8, 4) => std::net::IpAddr::from(<[u8; 4]>::try_from(bytes).ok()?),
+            (32, 16) => std::net::IpAddr::from(<[u8; 16]>::try_from(bytes).ok()?),
+            _ => return None,
+        };
+        Some(SocketAddr::new(ip, port))
+    }
+
+    /// The `u` (process user id) of the process whose open file is named exactly `name` in
+    /// `lsof -F pun` output: `p<pid>` and `u<uid>` open each process, `f`/`n` each file.
+    #[cfg(any(target_os = "macos", test))]
+    pub(super) fn lsof_owner(output: &str, name: &str) -> Option<u32> {
+        let mut uid = None;
+        for line in output.lines() {
+            match line.split_at_checked(1) {
+                Some(("p", _)) => uid = None,
+                Some(("u", value)) => uid = value.parse().ok(),
+                Some(("n", value)) if value == name => return uid,
+                _ => {}
+            }
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod owner_tests {
+    use super::tcp_owner::{lsof_owner, proc_net_owner};
+    use super::*;
+    use std::net::SocketAddr;
+
+    const SERVER: &str = "127.0.0.1:4500";
+    const CLIENT: &str = "127.0.0.1:61234";
+
+    fn addr(text: &str) -> SocketAddr {
+        text.parse().unwrap()
+    }
+
+    /// #s145: the row that names the SERVER's end of this connection decides, never the
+    /// client's own row, the listener's, or another connection to the same port.
+    #[test]
+    fn proc_net_names_the_owner_of_the_servers_end_of_this_connection() {
+        let v4 = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+           0: 0100007F:1194 00000000:0000 0A 00000000:00000000 00:00000000 00000000   501        0 1 1\n\
+           1: 0100007F:EF32 0100007F:1194 01 00000000:00000000 00:00000000 00000000   502        0 2 1\n\
+           2: 0100007F:1194 0100007F:EF33 01 00000000:00000000 00:00000000 00000000   503        0 3 1\n\
+           3: 0100007F:1194 0100007F:EF32 01 00000000:00000000 00:00000000 00000000   504        0 4 1\n";
+        assert_eq!(proc_net_owner(v4, addr(SERVER), addr(CLIENT)), Some(504));
+        assert_eq!(
+            proc_net_owner(v4, addr(SERVER), addr("127.0.0.1:1")),
+            None,
+            "no row for this connection is no owner"
+        );
+        let v6 = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+           0: 00000000000000000000000001000000:1194 00000000000000000000000001000000:EF32 01 00000000:00000000 00:00000000 00000000   505        0 5 1\n";
+        assert_eq!(
+            proc_net_owner(v6, addr("[::1]:4500"), addr("[::1]:61234")),
+            Some(505)
+        );
+        assert_eq!(proc_net_owner("", addr(SERVER), addr(CLIENT)), None);
+    }
+
+    /// The process that holds a file named exactly `<server>-><client>` decides; this process's
+    /// own end of the connection (`<client>-><server>`) is not the server.
+    #[test]
+    fn lsof_names_the_process_holding_the_servers_end() {
+        let out = "p100\nu501\nf7\nn127.0.0.1:61234->127.0.0.1:4500\np200\nu502\nf9\nn127.0.0.1:4500->127.0.0.1:61234\n";
+        let want = format!("{}->{}", addr(SERVER), addr(CLIENT));
+        assert_eq!(lsof_owner(out, &want), Some(502));
+        assert_eq!(
+            lsof_owner("p100\nu501\nf7\nn127.0.0.1:61234->127.0.0.1:4500\n", &want),
+            None
+        );
+        assert_eq!(lsof_owner("", &want), None);
+        let v6 = format!("{}->{}", addr("[::1]:4500"), addr("[::1]:61234"));
+        assert_eq!(
+            lsof_owner("p3\nu9\nf4\nn[::1]:4500->[::1]:61234\n", &v6),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn the_owner_is_read_again_until_it_is_this_user_or_time_runs_out() {
+        let now = std::time::Instant::now();
+        let mut answers = vec![None, Some(0), Some(7)].into_iter();
+        let mut sleeps = 0;
+        assert_eq!(
+            poll_owner(
+                || answers.next().flatten(),
+                7,
+                now + OWNER_WAIT,
+                |_| sleeps += 1
+            ),
+            Some(7)
+        );
+        assert_eq!(
+            sleeps, 2,
+            "a socket not yet held, then one read as root, then ours"
+        );
+        assert_eq!(
+            poll_owner(|| Some(0), 7, now, |_| panic!("no wait past the deadline")),
+            Some(0)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_this_users_server_may_receive_the_credential() {
+        let me = effective_uid().unwrap();
+        assert!(credential_may_go_to(Some(me)).is_ok());
+        let foreign = credential_may_go_to(Some(me + 1)).unwrap_err();
+        assert!(foreign.contains("another OS user"), "{foreign}");
+        let unknown = credential_may_go_to(None).unwrap_err();
+        assert!(unknown.contains("Could not verify"), "{unknown}");
+    }
+
+    /// The real lookup on this machine: a listener of this test process is this user's.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_server_of_this_user_is_found_as_this_user() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_held, _) = listener.accept().unwrap();
+        assert_eq!(tcp_server_owner(&client), effective_uid());
+    }
+}
+
 #[cfg(unix)]
 mod unix {
     use super::*;
