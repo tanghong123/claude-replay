@@ -24,14 +24,20 @@ enum Listener {
     Unix(UnixListener),
 }
 impl Listener {
+    /// The listener polls, but each connection it hands over BLOCKS, with the read timeout its
+    /// handler sets. On macOS an accepted socket inherits the listener's O_NONBLOCK, so the
+    /// handshake read failed at once unless the client had already written — and since #s145 the
+    /// Monitor writes only after it has checked whose server this is.
     fn accept(&self) -> io::Result<Box<dyn FixtureStream>> {
         match self {
-            Self::Tcp(listener) => listener
-                .accept()
-                .map(|(s, _)| Box::new(s) as Box<dyn FixtureStream>),
-            Self::Unix(listener) => listener
-                .accept()
-                .map(|(s, _)| Box::new(s) as Box<dyn FixtureStream>),
+            Self::Tcp(listener) => listener.accept().and_then(|(s, _)| {
+                s.set_nonblocking(false)?;
+                Ok(Box::new(s) as Box<dyn FixtureStream>)
+            }),
+            Self::Unix(listener) => listener.accept().and_then(|(s, _)| {
+                s.set_nonblocking(false)?;
+                Ok(Box::new(s) as Box<dyn FixtureStream>)
+            }),
         }
     }
 }
