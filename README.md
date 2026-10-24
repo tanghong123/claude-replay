@@ -88,7 +88,7 @@ and the blocked ones.
   Codex app-server, with text and images, interrupts, approvals and questions
   ([below](#codex-native-mode--optional-shared-runtime)).
 - **One interface.** The app shell is the page. The classic page it once switched with, deprecated
-  since 1.376.0, is retired; `/session` follows it.
+  since 1.376.0, is retired, and so is `/session`, the session view it framed.
 
 ## Pairing, phone and write mode
 

@@ -6,10 +6,7 @@
 //! a namespace with the markdown/JSON renderer.
 
 use super::record_store::{HtmlNote, RecordStore};
-use super::{
-    assemble_meta, build_shell, build_shell_chrome, display_title, render_blocks, session_id,
-    AgentInfo, PageChrome,
-};
+use super::{assemble_meta, build_shell, display_title, render_blocks, session_id, AgentInfo};
 use crate::cache::{self, PerSession, Presentation};
 use crate::cache::{lock, pull_indices, Admission, Cursor, Denial, SharedSession, Unavailable};
 use crate::engine::meta_stream::Versions;
@@ -422,17 +419,6 @@ impl SessionService {
     /// as the #96 rendezvous note. Set once, after the host's listener binds.
     pub fn set_port(&self, port: u16) {
         let _ = self.port.set(port);
-    }
-
-    /// The complete session view for `id` at a URL (#98 §6.3) — exactly the page `--html`
-    /// serves, with optional host [`PageChrome`]. `None` for an id this service cannot
-    /// resolve.
-    pub fn page(&self, id: &str, chrome: Option<&PageChrome>) -> Option<String> {
-        let (_, t) = self.resolve_id(id)?;
-        Some(match chrome {
-            Some(c) => build_shell_chrome(&t.title, id, c),
-            None => build_shell(&t.title, id, true, true),
-        })
     }
 
     /// Reconstruct the `AgentInfo` that `render_agent_stream` / `child_info` expect from the
@@ -2923,8 +2909,8 @@ fn extract_token(
     }
 }
 
-/// The session service's wire surface as a ROUTE TABLE (#98 §6.3): `/session`, `/pull`,
-/// `/records`, `/__reveal`, `/file`, then static files out of `static_dir`. Returns a plain
+/// The session service's wire surface as a ROUTE TABLE (#98 §6.3): `/pull`, `/records`,
+/// `/__reveal`, `/file`, then static files out of `static_dir`. Returns a plain
 /// [`HttpResponse`], so a host chains its own routes in front and falls back to this —
 /// `--html`'s listener is exactly that with zero routes of its own.
 ///
@@ -2943,43 +2929,6 @@ pub fn service_routes(
     let (name, query) = (req.name, req.query);
     if let Some(response) = super::mermaid::route(name) {
         return response;
-    }
-    // `/session?id=<sid>[&chrome=embed][&theme=light|dark]` — the complete session view at
-    // a URL, exactly as `--html` serves it, with optional host chrome (#98 §6.3).
-    if name == "session" {
-        let Some(live) = live else {
-            return HttpResponse::not_found("no live server");
-        };
-        // Accept BOTH `id` (the documented monitor API, §6.3) and `session` — the served
-        // page navigates BETWEEN sessions with a relative `?session=<child>` href
-        // (export.js), so a sub-agent click on a page served at `/session?id=X` becomes
-        // `/session?session=<child>`. Reading only `id` 404'd every drill-down under the
-        // monitor (it worked under `--html`, whose shell lives at `index.html?session=`).
-        let id = query_get(query, "id")
-            .or_else(|| query_get(query, "session"))
-            .unwrap_or("");
-        if id.is_empty() || id.contains('/') || id.contains("..") {
-            return HttpResponse::not_found("no such session");
-        }
-        let chrome = PageChrome {
-            embed: query_get(query, "chrome") == Some("embed"),
-            theme: query_get(query, "theme").map(str::to_string),
-            artifacts: query_get(query, "artifacts") == Some("1"),
-            host_search: query_get(query, "hostsearch") == Some("1"),
-            // A number or nothing: anything unparsable is no inset, never a raw value
-            // reaching the page (`PageChrome::host_inset`).
-            host_inset: query_get(query, "inset").and_then(|v| v.parse::<u32>().ok()),
-        };
-        let chrome = (chrome.embed
-            || chrome.theme.is_some()
-            || chrome.artifacts
-            || chrome.host_search
-            || chrome.host_inset.is_some())
-        .then_some(chrome);
-        return match live.page(id, chrome.as_ref()) {
-            Some(page) => HttpResponse::html(page),
-            None => HttpResponse::not_found("no such session"),
-        };
     }
     // `/pull?session=<id>&cursor=<epoch.committed.gen.index>` — the pull-client feed. Materialize
     // the id on first pull, borrow this thread to tail it, and return the self-describing PullReply
@@ -3702,8 +3651,8 @@ mod tests {
         );
         assert!(!line.contains("s3cr3t"));
         assert_eq!(
-            refusal_line(0, "session", "no cookie", "Host: x\r\n"),
-            "gate: 1970-01-01T00:00:00Z refused a page load of /session — no cookie, \
+            refusal_line(0, "markdown", "no cookie", "Host: x\r\n"),
+            "gate: 1970-01-01T00:00:00Z refused a page load of /markdown — no cookie, \
              sec-fetch-site -, mode -, user -, referrer -, user-agent -"
         );
         for (raw, origin) in [
@@ -6184,12 +6133,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The `/session?id=` page (#98 §6.3): with no chrome it is byte-identical to the shell
-    /// `--html` writes; `chrome=embed` swaps the brand for the session title and hides the
-    /// theme toggle; `theme=` appends the post-boot stamp. The no-chrome equality is the
-    /// whole reuse argument — one page, one renderer, zero drift.
+    /// `/session` is retired (#s99, design/classic-view-deprecation.md stage 4): it framed the
+    /// session view for the monitor's classic hosts, and with them gone a session the service
+    /// can resolve, asked for under either name the page used, is a 404 like any other path.
     #[test]
-    fn session_route_serves_the_shell_with_optional_chrome() {
+    fn the_session_route_is_retired() {
         let dir = std::env::temp_dir().join(format!("cr-sess-route-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let sess = dir.join("s.jsonl");
@@ -6208,153 +6156,21 @@ mod tests {
         })
         .unwrap();
         let id = live.register_root(&sess);
-
-        let plain = live.page(&id, None).expect("resolvable");
-        let title = display_title(Agent::CLAUDE, &sess);
-        assert_eq!(
-            plain,
-            build_shell(&title, &id, true, true),
-            "no chrome ⇒ exactly the page --html serves"
-        );
-        assert!(plain.contains("agent-replay <span class=\"brand-sub\""));
-        assert!(!plain.contains("data-theme\",\""), "no stamp by default");
-
-        let embedded = live
-            .page(
-                &id,
-                Some(&PageChrome {
-                    embed: true,
-                    theme: Some("light".into()),
-                    artifacts: false,
-                    host_search: false,
-                    host_inset: None,
-                }),
-            )
-            .unwrap();
-        assert!(
-            embedded.contains(&format!(
-                "id=\"embed-title\" title=\"{title}\">{title}</div>"
-            )),
-            "embed shows the session title where the brand was"
-        );
-        assert!(
-            !embedded.contains("claude-replay <span class=\"brand-sub\""),
-            "and the brand is gone"
-        );
-        assert!(
-            embedded.contains("id=\"btn-theme\" class=\"tbtn\" style=\"display:none\""),
-            "theme toggle hidden — the host owns the theme"
-        );
-        assert!(
-            embedded.ends_with(
-                "<script>document.documentElement.setAttribute(\"data-theme\",\"light\");</script>\n</body>\n</html>\n"
-            ),
-            "the stamp runs AFTER the page's own boot"
-        );
-
-        // `host_search`/`artifacts` are page MODES a host asks for, not a second renderer:
-        // one hides the page's own search field (the host supplies one), the other stamps the
-        // opt-in `<body>` attribute the artifact click path reads. Both leave everything else
-        // exactly where it was.
-        let hosted = live
-            .page(
-                &id,
-                Some(&PageChrome {
-                    embed: false,
-                    theme: None,
-                    artifacts: true,
-                    host_search: true,
-                    host_inset: None,
-                }),
-            )
-            .unwrap();
-        assert!(
-            hosted.contains("<div class=\"searchbox\" style=\"display:none\">"),
-            "the page's own search box is hidden, not removed — it is still what runs the search"
-        );
-        assert!(
-            hosted.contains("id=\"q\""),
-            "…and its input is still there to drive"
-        );
-        assert!(
-            hosted.contains(" data-artifacts=\"1\""),
-            "the artifact opt-in reaches the page"
-        );
-        assert!(
-            !plain.contains(" data-artifacts=\"1\"")
-                && !plain.contains("class=\"searchbox\" style="),
-            "and neither mode touches a page that asked for no chrome"
-        );
-
-        // The HOST SLOT. A host that draws chrome beside the page asks for room with a
-        // number; the page stamps `data-shell` + `--host-inset` and applies the offsets in
-        // its OWN stylesheet. What is pinned here is that the page never receives a length
-        // it did not format — `PageChrome` is built from query parameters, so a raw CSS
-        // string would be an injection surface on a page holding the monitor's cookie.
-        let slot = |inset: Option<u32>| {
-            live.page(
-                &id,
-                Some(&PageChrome {
-                    embed: false,
-                    theme: None,
-                    artifacts: false,
-                    host_search: false,
-                    host_inset: inset,
-                }),
-            )
-            .unwrap()
-        };
-        // Note the `="1"`: the stylesheet below MENTIONS `data-shell` in its selectors, so
-        // only the attribute form distinguishes a page that asked for a slot.
-        assert!(
-            slot(Some(326)).contains(" data-shell=\"1\" style=\"--host-inset:326px\">"),
-            "the inset reaches <body> as a length the PAGE formatted"
-        );
-        assert!(
-            slot(Some(u32::MAX)).contains("--host-inset:2000px"),
-            "and is clamped — a nonsense parameter cannot push the transcript off-screen"
-        );
-        assert!(
-            !slot(Some(0)).contains("data-shell=\"1\"") && !slot(None).contains("data-shell=\"1\""),
-            "no inset asked for, no attribute — the rules key on it, so the page stays inert"
-        );
-        assert!(
-            !plain.contains("data-shell=\"1\""),
-            "and a page with no chrome at all is untouched"
-        );
-        // The offsets live in the crate that owns the layout, keyed on the attribute.
-        for rule in [
-            "body[data-shell] { padding-left: var(--host-inset, 0px); }",
-            "body[data-shell] #topbar { left: var(--host-inset, 0px); }",
+        for q in [
+            format!("id={id}"),
+            format!("session={id}"),
+            format!("id={id}&chrome=embed&theme=light&artifacts=1&inset=326"),
         ] {
-            assert!(plain.contains(rule), "export.css carries `{rule}`");
+            let r = service_routes(Some(&live), &dir, &get_request("session", &q, false));
+            assert_eq!(r.code, "404 Not Found", "/session?{q}");
         }
-
-        // The route parses it, and refuses anything that is not a number rather than
-        // passing it through.
-        let inset_body = |q: &str| {
-            let r = service_routes(Some(&live), &dir, &get_request("session", q, false));
-            assert_eq!(r.code, "200 OK");
-            String::from_utf8_lossy(&r.body).into_owned()
-        };
-        assert!(inset_body(&format!("id={id}&inset=326")).contains("--host-inset:326px"));
-        assert!(
-            !inset_body(&format!("id={id}&inset=12px")).contains("data-shell=\"1\""),
-            "a length is not a number: unparsable means no inset, never a raw value"
+        // The feed the app shell reads for that same session is still served.
+        let r = service_routes(
+            Some(&live),
+            &dir,
+            &get_request("pull", &format!("session={id}"), false),
         );
-
-        // The route itself: unknown ids 404; a valid id serves the page.
-        let q = format!("id={id}&chrome=embed");
-        let r = service_routes(Some(&live), &dir, &get_request("session", &q, false));
         assert_eq!(r.code, "200 OK");
-        let r = service_routes(Some(&live), &dir, &get_request("session", "id=nope", false));
-        assert_eq!(r.code, "404 Not Found");
-        // `session=` is accepted as an alias for `id` (#120): the embedded view navigates
-        // sub-agents with a relative `?session=<child>` href, so the drill-down URL becomes
-        // `/session?session=<child>` — reading only `id` 404'd every drill-down.
-        let q2 = format!("session={id}");
-        let r = service_routes(Some(&live), &dir, &get_request("session", &q2, false));
-        assert_eq!(r.code, "200 OK", "session= is an alias for id=");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

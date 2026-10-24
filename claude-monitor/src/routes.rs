@@ -1,9 +1,10 @@
 //! The monitor's route table (#47): the API arms (`api/sessions`, `api/ignore`, `api/send`,
 //! `api/consent`), the `monitor-ui/*` assets, the app shell at `/`, and the fallthrough to the
-//! session service's own wire surface (`/session`, `/pull`, `/records`, `/__reveal`, static
-//! assets). It was shared by `agent-monitor` and `agent-monitor-v2` until the classic view and v2
-//! were retired (#s98, design/classic-view-deprecation.md stage 3): `/` serves the app shell
-//! whatever `?ui=` says, and `/api/ui`, which remembered the choice between the two, answers 404.
+//! session service's own wire surface (`/pull`, `/records`, `/__reveal`, static assets). It was
+//! shared by `agent-monitor` and `agent-monitor-v2` until the classic view and v2 were retired
+//! (#s98, design/classic-view-deprecation.md stage 3): `/` serves the app shell whatever `?ui=`
+//! says, and `/api/ui`, which remembered the choice between the two, answers 404. `/session`, the
+//! session view the classic hosts framed, followed in stage 4 (#s99) and answers 404 too.
 
 use crate::control::{self, Attempts};
 use crate::index::{self, Index};
@@ -128,8 +129,11 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
         // The route that remembered the classic view (#s98): a page from before the release
         // that still asks gets a plain 404, not the static fallback's 403.
         "api/ui" => HttpResponse::not_found("the classic view is retired"),
-        // Everything else is the session service's own wire surface — /session, /pull,
-        // /records, /__reveal, static assets (§6.3). A session's feed is asked for by id, and the
+        // The session view the classic hosts framed (#s99): a link saved from before says so in a
+        // plain 404, whatever the scratch directory beneath the static fallback holds.
+        "session" => HttpResponse::not_found("the /session page is retired; open the session at /"),
+        // Everything else is the session service's own wire surface — /pull, /records,
+        // /__reveal, static assets (§6.3). A session's feed is asked for by id, and the
         // service must have been shown that id first (#309).
         _ => {
             if matches!(name, "pull" | "records") {
@@ -259,7 +263,7 @@ mod tests {
     }
 
     /// The table: the app shell at `/` whatever `?ui=` asks (the classic view is retired, #s98),
-    /// `/api/ui` gone, the API arms, and `/session` left to the session service.
+    /// `/api/ui` and `/session` gone, and the API arms.
     #[test]
     fn the_table_serves_the_app_shell_and_the_api_arms() {
         let state = std::env::temp_dir().join(format!("cm-routes-state-{}", std::process::id()));
@@ -325,10 +329,11 @@ mod tests {
                 .code
                 .starts_with("200")
         );
-        // `/session` is the session service's own (a 404 for an unknown id here).
-        assert_ne!(
-            dispatch(&backend, &front, &get("session", "session=s1")).code,
-            "200 OK"
-        );
+        // `/session` is retired (#s99), under either name the page used for the session.
+        for query in ["session=s1", "id=s1&chrome=embed"] {
+            let r = dispatch(&backend, &front, &get("session", query));
+            assert_eq!(r.code, "404 Not Found", "{query}");
+            assert!(body(&r).contains("retired"), "and says why: {query}");
+        }
     }
 }

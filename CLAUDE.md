@@ -30,8 +30,9 @@ Both are unrecoverable after the fact, and both were learned from real damage he
 `src/codex-ui/*`). The classic rail-and-iframe page it once switched with, its `ui.json`
 preference, `/api/ui` and `agent-monitor-v2` were retired by #s98 (design/classic-view-deprecation.md
 stage 3, after the v1.376.0 notice): `/` and `?ui=classic` both serve the app shell, a `ui.json` left
-behind is ignored, and `/api/ui` answers 404. `/session` and `PageChrome` remain until stage 4
-(#s99). "The classic page" below means export.js, the offline viewer's page (`agent-replay --html`,
+behind is ignored, and `/api/ui` answers 404. Stage 4 (#s99) took `/session`, the session view
+the classic hosts framed, which answers 404 now, with its `PageChrome` options. "The classic page"
+below means export.js, the offline viewer's page (`agent-replay --html`,
 `--dump-html`), which stays and is the browser suite's reference.
 **The sidebar head is TWO LINES by construction** (#223): the brand takes the first, the controls
 take the second and wrap within it. They never share a row, at any width. Below `SIDEBAR_TIGHT`

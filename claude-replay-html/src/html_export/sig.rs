@@ -347,8 +347,8 @@ pub(crate) fn key_fingerprint() -> u64 {
 /// one route cannot be replayed against the other.
 ///
 /// This is not hypothetical tidiness. Before it, the two routes shared one stamp, and a v1
-/// page's link — which its own JavaScript only ever sends to `/__reveal`, because v1 sets no
-/// `PageChrome::artifacts` — could be turned into a byte read by editing `__reveal` to `file`
+/// page's link — which its own JavaScript only ever sent to `/__reveal`, because v1 set no
+/// artifacts opt-in (`PageChrome::artifacts`, removed with `/session` in #s99) — could be turned into a byte read by editing `__reveal` to `file`
 /// in the URL. Demonstrated on a live v1: same path, same stamp, 200 and the file's contents.
 /// Not an escalation (the caller already needs the pairing token and a same-origin request),
 /// but it meant "v1 only opens Finder" was a property of which JavaScript shipped rather than

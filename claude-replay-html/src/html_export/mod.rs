@@ -2168,7 +2168,7 @@ pub(super) fn build_html(
     live: Option<&str>,
     store: PageStore,
 ) -> String {
-    build_page(title, jsonl, turns, live, None, None, false, store)
+    build_page(title, jsonl, turns, live, None, false, store)
 }
 
 /// The shared shell for a multi-file bundle (`--dump-all-html` / served `--html`): no
@@ -2182,7 +2182,6 @@ pub(super) fn build_shell(title: &str, root_id: &str, live: bool, pull: bool) ->
         &[],
         None,
         Some((root_id, live, pull)),
-        None,
         false,
         PageStore::Browser,
     )
@@ -2201,82 +2200,20 @@ pub(super) fn build_bundle_shell(
         &[],
         None,
         Some((root_id, false, false)),
-        None,
         has_mermaid,
         store,
-    )
-}
-
-/// Host-selectable chrome for a SERVED page (`/session?id=…`, #98 §6.3) — URL parameters,
-/// never CSS reaching into the frame.
-///
-/// `embed` swaps the page's own `claude-replay` brand for the session's title and hides the
-/// theme toggle (both are host-owned globals when the page lives inside a host's layout).
-/// `theme` stamps `data-theme` after the page's own boot, overriding the localStorage pick
-/// WITHOUT writing to it — the host owns the theme, the visitor's standalone preference
-/// survives. Every dump path passes no chrome and emits byte-identical output — the byte
-/// gate needs no new argument, and no re-baseline.
-#[derive(Clone, Debug, Default)]
-pub struct PageChrome {
-    pub embed: bool,
-    pub theme: Option<String>,
-    /// Serve clicked file paths as CONTENT (the `/file` route) instead of revealing them in
-    /// the OS file manager. Off by default and off for every dump: a page written to disk has
-    /// no server behind it, and a host that has not opted in keeps today's reveal behaviour
-    /// byte-for-byte. `agent-monitor-v2` sets it — browser-served artifacts are its goal 3.
-    pub artifacts: bool,
-    /// The HOST owns the search input: render the page's own box hidden, the way `embed`
-    /// hides the theme toggle. A host that composes the page into its own chrome (v2 puts a
-    /// rail beside it) wants ONE search field, not two — but the search itself, its scope
-    /// menu and its hit stepping stay exactly where they are, driven by writing into `#q`.
-    /// The page keeps every search behaviour; only the duplicate field goes.
-    pub host_search: bool,
-    /// A LEFT inset, in CSS pixels, that the page makes for chrome the HOST draws beside it
-    /// (`agent-monitor-v2` puts a fixed rail there). The page applies it itself, in
-    /// `export.css`, beside the layout it offsets — the point of the slot.
-    ///
-    /// Before this, v2 positioned itself with the RENDERER's internal selectors: it padded
-    /// `body`, offset `#topbar`, and nudged `#newbadge`, having learned from `export.css`
-    /// that `.layout` centres itself and so the inset belongs on the document rather than on
-    /// its children. That knowledge lived outside the crate that owns the layout, so an
-    /// `export.css` restructure would misalign v2 silently — the one place a fork of the
-    /// presentation layer could start by accident.
-    ///
-    /// A NUMBER, not a CSS length, and deliberately: `PageChrome` is built from query
-    /// parameters (`/session?…&inset=326`), so a string here would be a CSS-injection surface
-    /// on a page that holds the monitor's cookie. The page formats it.
-    pub host_inset: Option<u32>,
-}
-
-/// The largest inset the page will make. Well past any real rail, and it exists so a
-/// nonsense query parameter cannot push the whole transcript off-screen.
-pub const MAX_HOST_INSET: u32 = 2000;
-
-/// [`build_shell`] with host chrome — the `/session?id=…&chrome=embed&theme=…` page.
-pub(super) fn build_shell_chrome(title: &str, root_id: &str, chrome: &PageChrome) -> String {
-    build_page(
-        title,
-        "",
-        &[],
-        None,
-        Some((root_id, true, true)),
-        Some(chrome),
-        false,
-        PageStore::Browser,
     )
 }
 
 /// The page template. `multi` = Some((root_id, live)) makes it a multi-file shell (fetch
 /// `?session=<id>`.jsonl, polling when `live`); None inlines `jsonl` + the server-rendered
 /// `turns` sidebar.
-#[allow(clippy::too_many_arguments)]
 fn build_page(
     title: &str,
     jsonl: &str,
     turns: &[SideEntry],
     live: Option<&str>,
     multi: Option<(&str, bool, bool)>,
-    chrome: Option<&PageChrome>,
     bundle_has_mermaid: bool,
     store: PageStore,
 ) -> String {
@@ -2314,57 +2251,6 @@ fn build_page(
         (Some(src), None) => format!(" data-src=\"{}\" data-poll=\"{POLL_MS}\"", esc(src)),
         (None, None) => String::new(),
     };
-    // Host chrome (#98 §6.3): the served `/session` page may swap the brand for the
-    // session title, hide the theme toggle, and stamp a host-picked theme AFTER the page's
-    // own boot. Every no-chrome caller emits today's exact bytes — `brand`/`theme_btn`
-    // reproduce the original lines verbatim and `chrome_stamp` is empty.
-    // The artifact opt-in rides `<body>`'s attributes beside `data-multi`/`data-poll`, so
-    // export.js reads it exactly where it reads the rest of its page mode.
-    let live_attrs = if chrome.is_some_and(|c| c.artifacts) {
-        format!("{live_attrs} data-artifacts=\"1\"")
-    } else {
-        live_attrs
-    };
-    // The host slot rides `<body>` too: `data-shell` is what `export.css` keys the inset
-    // rules on, and `--host-inset` is the length they read. Both come from one clamped
-    // integer, so the only thing a caller can vary is how much room the page makes.
-    let live_attrs = match chrome.and_then(|c| c.host_inset) {
-        Some(px) if px > 0 => format!(
-            "{live_attrs} data-shell=\"1\" style=\"--host-inset:{}px\"",
-            px.min(MAX_HOST_INSET)
-        ),
-        _ => live_attrs,
-    };
-    let embed = chrome.is_some_and(|c| c.embed);
-    let brand = if embed {
-        let t = esc(title);
-        format!(r#"    <div class="brand" id="embed-title" title="{t}">{t}</div>"#)
-    } else {
-        format!(
-            r#"    <div class="brand">agent-replay <span class="brand-sub">v{}</span></div>"#,
-            env!("CARGO_PKG_VERSION")
-        )
-    };
-    let theme_btn = if embed {
-        r#"    <button id="btn-theme" class="tbtn" style="display:none">◐ Dark</button>"#
-    } else {
-        r#"    <button id="btn-theme" class="tbtn">◐ Dark</button>"#
-    };
-    // A host-owned search field hides the page's own box the same way — hidden, not removed:
-    // `#q` is still the search's one entry point, and the host types into it.
-    let searchbox = if chrome.is_some_and(|c| c.host_search) {
-        r#"<div class="searchbox" style="display:none">"#
-    } else {
-        r#"<div class="searchbox">"#
-    };
-    let chrome_stamp = match chrome.and_then(|c| c.theme.as_deref()) {
-        // After the main script on purpose: export.js has applied the localStorage theme by
-        // now, so this wins — and the visitor's stored standalone preference is never written.
-        Some(t @ ("light" | "dark")) => format!(
-            "<script>document.documentElement.setAttribute(\"data-theme\",\"{t}\");</script>\n"
-        ),
-        _ => String::new(),
-    };
     // The shared modules, inlined ahead of export.js (html_export/shared.rs): this page must
     // stand alone from file://, so what the monitor serves as ES modules arrives here as a
     // classic script publishing the same names on `window.__shared`.
@@ -2395,14 +2281,14 @@ fn build_page(
 <body{live_attrs}>
 <div id="topbar">
   <div class="tbrow">
-{brand}
+    <div class="brand">agent-replay <span class="brand-sub">v{version}</span></div>
     <div class="sessionbits" id="sessionbits"></div>
     <button id="btn-exp" class="tbtn ticon" title="Expand all">▾▾</button>
     <button id="btn-col" class="tbtn ticon" title="Collapse all">▸▸</button>
     <button id="btn-raw" class="tbtn ticon" title="Show user turns as raw text — exactly as typed, whitespace intact">{{}}</button>
     <button id="btn-wide" class="tbtn ticon" title="Wide mode — drop the reading-width cap for diff-heavy sessions">⇔</button>
     <button id="btn-hist" class="tbtn ticon" title="Save the viewport history — the last hour of what you did and what the page did, as kinds, heights and timings; no content">⧗</button>
-{theme_btn}
+    <button id="btn-theme" class="tbtn">◐ Dark</button>
   </div>
   <!-- Filter and Agents sit LEFT of the search box (#156). The box is the only thing here that
        flexes, so anything after it is pinned to the right edge — which is exactly where the task
@@ -2431,7 +2317,7 @@ fn build_page(
         <div id="artifactitems"></div>
       </div>
     </div>
-    {searchbox}
+    <div class="searchbox">
       <span class="mag">⌕</span>
       <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous · a uatow: prefix scopes by type — o(…) narrows the tools, e.g. o(B): for Bash; w requires whole words (e.g. tw:) · a leading : searches the literal text" autocomplete="off">
       <span id="qcount"></span>
@@ -2498,10 +2384,11 @@ fn build_page(
 {mermaid_runtime}<script>
 {page_store}{JS}
 </script>
-{chrome_stamp}</body>
+</body>
 </html>
 "#,
         title_esc = esc(title),
+        version = env!("CARGO_PKG_VERSION"),
         // `</script>` inside the payload would close the tag early.
         jsonl_esc = jsonl.replace("</", "<\\/"),
     )

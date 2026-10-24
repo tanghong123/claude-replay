@@ -623,7 +623,7 @@ fn dense_mermaid_groups_use_the_monitor_palette_and_scroll_without_shrinking_lab
     let base = base("mermaid-dense-palette");
     let stores = harness::Stores::new(&base);
     let diagram = "flowchart LR\n subgraph NS[Synthetic services]\n  subgraph PROCESSOR[Processing worker]\n   A[Demo inbox] --> B[Demo worker] --> C[Mock artifact]\n  end\n  subgraph SCHEDULER[Example scheduler]\n   D[Sample timer] --> E[Example dispatcher] --> F[Demo evaluator]\n  end\n  E --> A\n  E --> G[Result checker]\n end\n H[Demo browser] --> I[Example gateway] --> J[Sample store]\n I --> C";
-    stores.claude_session(
+    let path = stores.claude_session(
         SID,
         &(user_at("Show a grouped synthetic diagram.", &harness::at("15:00"))
             + &assistant_markdown(
@@ -632,6 +632,17 @@ fn dense_mermaid_groups_use_the_monitor_palette_and_scroll_without_shrinking_lab
             )),
     );
     let monitor = harness::Monitor::spawn(harness::Kind::V1, 3044, &base, Some(&stores), true);
+    // "classic" is export.js on the html server, as the scenarios open it (the monitor's
+    // /session that framed it is retired, #s99). It runs in this process and reads its env.
+    std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
+    let server = start_server(
+        &Args {
+            no_cache: true,
+            ..Default::default()
+        },
+        &[path],
+    )
+    .unwrap();
     // Classic remains a desktop/export reference; it has no supported phone layout.
     for (shell, phone) in [
         ("app", None),
@@ -646,14 +657,15 @@ fn dense_mermaid_groups_use_the_monitor_palette_and_scroll_without_shrinking_lab
             harness::resize(&tab, 1600.0, 1050.0);
         }
         eprintln!("Dense Mermaid context: shell={shell}, phone={phone:?}");
-        monitor.pair(&tab);
-        // "classic" is export.js at the monitor's /session, which stays until #s99 (stage 4).
-        let path = if shell == "classic" {
-            format!("session?id={SID}&mountall=1&theme=light")
+        if shell == "classic" {
+            // The page boots light with nothing stored, as the monitor's `theme=light` asked.
+            tab.navigate_to(&format!("{}&mountall=1", server.url_for_root(0).unwrap()))
+                .unwrap();
+            tab.wait_until_navigated().unwrap();
         } else {
-            format!("?session={SID}&ui=app&mountall=1")
-        };
-        monitor.open(&tab, &path);
+            monitor.pair(&tab);
+            monitor.open(&tab, &format!("?session={SID}&ui=app&mountall=1"));
+        }
         wait_diagrams(&tab, 1);
         assert_eq!(eval(&tab, "getComputedStyle(document.querySelector('[data-mermaid-state=ready] .cluster rect')).fill === 'rgb(241, 244, 249)'"), true);
         if phone.is_some() {
