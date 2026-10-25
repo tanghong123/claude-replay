@@ -1,8 +1,8 @@
 # Retiring the monitor's classic view
 
-> **Stages 1–3 BUILT**: the tests moved (#s96) and the notice shipped (#s97), both in v1.376.0;
-> the classic view and `agent-monitor-v2` were removed in v1.417.0 (#s98). Stage 4, `/session` and
-> `PageChrome`, is #s99; stage 5, the documents, is #s100. The queue is the state of record.
+> **BUILT**: the tests moved (#s96) and the notice shipped (#s97), both in v1.376.0; the classic
+> view and `agent-monitor-v2` were removed in v1.417.0 (#s98); `/session`, `PageChrome` and
+> artifacts mode (#s99) and the documents (#s100) followed in v1.419.0.
 >
 > **DECIDED** (#s95, 2026-10-13). The owner asked to deprecate the classic view, and to
 > investigate and design the process first. This is that design, with the owner's decisions in
