@@ -311,9 +311,9 @@ Native ownership wins against another process's stale argv; a native background 
 still use its legitimate attach client as the terminal. Rejected records remain possible
 writers when counting growth ambiguity. Native one-shot claims reserve their sessions before
 legacy time pairing and stay excluded from the directory's newest/sibling candidates.
-Contradicted growth proofs and their growth timestamps are discarded before matching,
-so a later missing record requires a new transcript advancement to prove ownership again.
-This also expires pending growth that had not yet produced a PID proof.
+Contradicted growth observations, pending or already proved, lose attribution eligibility
+before matching, so a later missing record needs new transcript advancement to prove ownership.
+The activity timestamp remains visible; attribution expiry does not mark a writing session idle.
 Current native identity cannot narrow the possible writers during an earlier growth window.
 Rejected identity still counts as an existing process in its project, including for unlinked
 headless workers: it blocks background resume and legacy pane sends without granting a pane.

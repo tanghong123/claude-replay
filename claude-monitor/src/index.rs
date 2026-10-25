@@ -391,13 +391,16 @@ struct Row {
     spawned_by: Option<String>,
     spawn_probed: bool,
     /// The agent process this session was matched to by GROWTH (#146), and that process's
-    /// cwd at the time. Growth is the strongest signal available for a no-id launch — a
-    /// transcript only advances because its own agent wrote to it — so once a session is the
+    /// cwd at the time. For legacy discovery, transcript advancement supplies evidence
+    /// about its writer — current native identity takes precedence. Once a session is the
     /// only grower in its directory the pairing is banked and outlives the growth that
     /// proved it. Dropped as soon as the pid is gone or has moved.
     proved_pid: Option<(u32, String)>,
     /// When growth was last OBSERVED (scan clock) — drives the linger.
     grew_at: Option<Instant>,
+    /// This observation was disqualified for PID attribution. Keep its activity visible;
+    /// only a new transcript advancement supplies a different eligible observation.
+    invalidated_growth: Option<Instant>,
     /// Counter fold of the visited entry's meta stream, keyed by the stream's mtime so a
     /// quiet session costs a `stat`, not a re-read.
     counters: Option<(SystemTime, Counters)>,
@@ -957,6 +960,7 @@ impl Index {
                     spawn_probed: false,
                     proved_pid: None,
                     grew_at: None,
+                    invalidated_growth: None,
                     counters: None,
                     title_mtime: None,
                     cost: None,
@@ -1145,7 +1149,7 @@ impl Index {
 
     /// Bank the pairing that GROWTH proves (#146).
     ///
-    /// A no-id launch leaves nothing on disk naming its session — no fd, no argv id — so the
+    /// Without a native registration, a no-id launch has no fd or argv naming its session, so the
     /// directory match alone cannot say WHICH session an agent is driving (#145). Growth can:
     /// a transcript advances only because its own agent wrote to it. So when a directory has
     /// exactly ONE growing session and exactly ONE agent process, the pairing is forced, and
@@ -1235,7 +1239,7 @@ impl Index {
 
     fn prove_by_growth(&self, st: &mut State) {
         // Invalidate before deriving new proofs: a contradictory native identity refutes both
-        // the stored ownership and its old growth timestamp. Missing evidence on a later scan
+        // stored ownership and the attribution eligibility of its growth. A later Missing scan
         // must wait for new transcript advancement before growth can prove ownership again.
         for (sid, row) in &mut st.rows {
             // Pending growth has the same lifetime as a banked proof. Even when ambiguity
@@ -1250,7 +1254,7 @@ impl Index {
                     })
                 });
             if native_contradiction {
-                row.grew_at = None;
+                row.invalidated_growth = row.grew_at;
             }
             if let Some((pid, cwd)) = &row.proved_pid {
                 let still = st.procs.iter().any(|p| {
@@ -1260,7 +1264,7 @@ impl Index {
                 });
                 if !still {
                     row.proved_pid = None;
-                    row.grew_at = None;
+                    row.invalidated_growth = row.grew_at;
                 }
             }
         }
@@ -1275,7 +1279,10 @@ impl Index {
             if row.one_shot {
                 continue;
             }
-            if row.grew_at.is_some_and(|t| t.elapsed() < GROW_LINGER) {
+            if row
+                .grew_at
+                .is_some_and(|t| t.elapsed() < GROW_LINGER && row.invalidated_growth != Some(t))
+            {
                 if let Some(cwd) = row.cwd.as_deref() {
                     growers
                         .entry(cwd.to_string())
@@ -1318,7 +1325,7 @@ impl Index {
                         .is_some_and(|(q, c)| *q == pid && c == &cwd)
                 {
                     row.proved_pid = None;
-                    row.grew_at = None;
+                    row.invalidated_growth = row.grew_at;
                 }
             }
             if let Some(row) = st.rows.get_mut(&sids[0]) {
@@ -2181,7 +2188,7 @@ const ONE_SHOT_WINDOW_SECS: u64 = 60;
 
 /// Pair each one-shot process with the session it created (#s50): sid → (pid, rivals).
 ///
-/// A no-id launch leaves nothing on disk naming its session (#145), and the directory rule gives
+/// A legacy no-id launch has no native registration (#145), and the directory rule gives
 /// a process to the NEWEST session of its cwd only. So with a coordinator and several `claude -p`
 /// workers in one repo, a worker deep in a long command was not the newest, lost its process, and
 /// read "exited with Bash pending" until its next write — knack on aries-black, 2026-10-07, where
@@ -5219,6 +5226,7 @@ mod tests {
             spawn_probed: true,
             proved_pid: None,
             grew_at: growing.then(Instant::now),
+            invalidated_growth: None,
             counters: None,
             title_mtime: None,
             cost: None,
@@ -5277,12 +5285,27 @@ mod tests {
                 ..Default::default()
             },
         );
-        let snapshot = idx.assemble(&st, &mut Vec::new());
+        st.rows.get_mut(live).unwrap().grew_at = Some(Instant::now());
+        st.rows.get_mut(sibling).unwrap().grew_at = Some(Instant::now());
+        idx.prove_by_growth(&mut st);
+        let mut facts = Vec::new();
+        let snapshot = idx.assemble(&st, &mut facts);
         let row = registry_row(&snapshot, live);
         assert_eq!(row["pid"], 700);
         assert_eq!(row["pidSource"], "claude-registry");
         assert_eq!(row["target"], "w1:p6");
-        assert_eq!(row["conf"], "confirmed");
+        assert!(
+            facts
+                .iter()
+                .find(|fact| fact.sid == live)
+                .unwrap()
+                .confirmed
+        );
+        assert_eq!(
+            row["state"], "growing",
+            "identity expiry must preserve actual activity"
+        );
+        assert_eq!(registry_row(&snapshot, sibling)["state"], "growing");
         assert_eq!(
             row["projActive"], true,
             "the resume restriction remains visible"
@@ -5814,7 +5837,7 @@ mod tests {
             ..Default::default()
         };
         for (sid, _, first) in sessions {
-            let mut row = growth_row(cwd, false);
+            let mut row = growth_row(cwd, true);
             row.one_shot = true;
             row.first_event = Some(first);
             row.tree_mtime = Some(SystemTime::now());
@@ -5825,16 +5848,23 @@ mod tests {
         }
         st.rows.get_mut(parent_a).unwrap().tree_mtime =
             Some(SystemTime::now() - Duration::from_secs(10));
+        idx.prove_by_growth(&mut st);
         idx.bank_started_by(&mut st);
         let snapshot = idx.assemble(&st, &mut Vec::new());
         assert_eq!(registry_row(&snapshot, native)["pid"], 700);
         assert_eq!(registry_row(&snapshot, legacy)["pid"], 701);
+        assert_eq!(registry_row(&snapshot, native)["state"], "growing");
+        assert_eq!(registry_row(&snapshot, legacy)["state"], "growing");
         assert_eq!(registry_row(&snapshot, parent_a)["pid"], 702);
         assert_eq!(st.started_by(native), Some(parent_a));
         assert_eq!(st.started_by(legacy), Some(parent_b));
         // A later registry record for the legacy worker preserves both original parent edges.
         st.procs[1].native_session = Identity::Verified(legacy.into());
+        idx.prove_by_growth(&mut st);
         idx.bank_started_by(&mut st);
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert_eq!(registry_row(&snapshot, native)["state"], "growing");
+        assert_eq!(registry_row(&snapshot, legacy)["state"], "growing");
         assert_eq!(st.started_by(native), Some(parent_a));
         let reloaded = read_started_by(&scratch.join("cache").join(STARTED_BY_FILE));
         assert_eq!(reloaded[native], parent_a);
