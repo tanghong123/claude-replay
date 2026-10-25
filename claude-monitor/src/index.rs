@@ -1204,6 +1204,22 @@ impl Index {
     }
 
     fn prove_by_growth(&self, st: &mut State) {
+        // Invalidate before deriving new proofs: a contradictory native identity refutes both
+        // the stored ownership and its old growth timestamp. Missing evidence on a later scan
+        // must wait for new transcript advancement before growth can prove ownership again.
+        for (sid, row) in &mut st.rows {
+            if let Some((pid, cwd)) = &row.proved_pid {
+                let still = st.procs.iter().any(|p| {
+                    p.pid == *pid
+                        && p.cwd.as_deref() == Some(cwd.as_str())
+                        && p.native_session.permits(sid)
+                });
+                if !still {
+                    row.proved_pid = None;
+                    row.grew_at = None;
+                }
+            }
+        }
         let mut growers: HashMap<String, Vec<String>> = HashMap::new();
         for (sid, row) in &st.rows {
             // #s89: a ONE-SHOT session is written by its own `claude -p`, which is never a
@@ -1231,14 +1247,11 @@ impl Index {
             let Some(agent) = st.rows.get(&sids[0]).map(|r| r.agent) else {
                 continue;
             };
+            // Current native identity cannot narrow who wrote during the earlier linger
+            // window: a registered process may have switched sessions since that write.
             let mut cands = st.procs.iter().filter(|p| {
                 is_agent_exe(&p.exe_base, &p.argv)
                     && serves(p, agent)
-                    // Rejected evidence is still an unknown possible writer. Only an exact
-                    // registration for another session can remove a process from this count.
-                    && p.native_session
-                        .session()
-                        .is_none_or(|registered| registered == sids[0])
                     && !is_helper(&p.argv)
                     && !is_one_shot(&p.argv)
                     && p.cwd.as_deref() == Some(cwd.as_str())
@@ -1261,24 +1274,11 @@ impl Index {
                         .is_some_and(|(q, c)| *q == pid && c == &cwd)
                 {
                     row.proved_pid = None;
+                    row.grew_at = None;
                 }
             }
             if let Some(row) = st.rows.get_mut(&sids[0]) {
                 row.proved_pid = Some((pid, cwd.clone()));
-            }
-        }
-        // A contradictory native identity invalidates a proof permanently. Merely hiding
-        // the proof during this scan would let a later Missing record revive stale ownership.
-        for (sid, row) in &mut st.rows {
-            if let Some((pid, cwd)) = &row.proved_pid {
-                let still = st.procs.iter().any(|p| {
-                    p.pid == *pid
-                        && p.cwd.as_deref() == Some(cwd.as_str())
-                        && p.native_session.permits(sid)
-                });
-                if !still {
-                    row.proved_pid = None;
-                }
             }
         }
     }
@@ -5329,8 +5329,17 @@ mod tests {
         let old = "11111111-2222-4333-8444-555555555555";
         let current = "22222222-2222-4333-8444-555555555555";
         let cwd = "/fixture/project";
-        for identity in [Identity::Verified(current.into()), Identity::Rejected] {
-            let mut procs = parse_ps("700 claude\n701 claude\n");
+        for (identity, extra_process) in [
+            (Identity::Verified(current.into()), false),
+            (Identity::Rejected, false),
+            (Identity::Verified(current.into()), true),
+            (Identity::Rejected, true),
+        ] {
+            let mut procs = parse_ps(if extra_process {
+                "700 claude\n701 claude\n"
+            } else {
+                "700 claude\n"
+            });
             for p in &mut procs {
                 p.cwd = Some(cwd.into());
                 p.pane = Some(format!("%{}", p.pid));
@@ -5341,7 +5350,7 @@ mod tests {
                 procs,
                 ..Default::default()
             };
-            let mut past = growth_row(cwd, false);
+            let mut past = growth_row(cwd, true);
             past.proved_pid = Some((700, cwd.into()));
             past.tree_mtime = Some(SystemTime::now() - Duration::from_secs(10));
             st.rows.insert(old.into(), past);
@@ -5353,7 +5362,11 @@ mod tests {
                 st.rows[old].proved_pid.is_none(),
                 "contradicted evidence expires"
             );
+            let first_snapshot = idx.assemble(&st, &mut Vec::new());
+            assert!(registry_row(&first_snapshot, old).get("pid").is_none());
             st.procs[0].native_session = Identity::Missing;
+            // A production scan runs growth attribution again before assembling the row.
+            idx.prove_by_growth(&mut st);
             let snapshot = idx.assemble(&st, &mut Vec::new());
             let old_row = registry_row(&snapshot, old);
             assert!(
@@ -5361,6 +5374,10 @@ mod tests {
                 "missing identity cannot revive old proof"
             );
             assert_ne!(old_row["injectable"], true);
+            // New transcript advancement may supply new legacy evidence after the transition.
+            st.rows.get_mut(old).unwrap().grew_at = Some(Instant::now());
+            idx.prove_by_growth(&mut st);
+            assert_eq!(st.rows[old].proved_pid.is_some(), !extra_process);
         }
         std::fs::remove_dir_all(scratch).unwrap();
     }
@@ -5396,6 +5413,15 @@ mod tests {
         );
         let snapshot = idx.assemble(&st, &mut Vec::new());
         assert_ne!(registry_row(&snapshot, "growing")["injectable"], true);
+        // Even a valid different session identifies the writer only NOW. It cannot prove
+        // that the other process wrote during the earlier growth window.
+        st.procs[0].native_session =
+            Identity::Verified("11111111-2222-4333-8444-555555555555".into());
+        idx.prove_by_growth(&mut st);
+        assert!(
+            st.rows["growing"].proved_pid.is_none(),
+            "current identity cannot narrow historical growth ambiguity"
+        );
         std::fs::remove_dir_all(scratch).unwrap();
     }
 

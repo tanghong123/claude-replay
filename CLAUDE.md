@@ -311,7 +311,9 @@ Native ownership wins against another process's stale argv; a native background 
 still use its legitimate attach client as the terminal. Rejected records remain possible
 writers when counting growth ambiguity. Native one-shot claims reserve their sessions before
 legacy time pairing and stay excluded from the directory's newest/sibling candidates.
-Contradicted growth proofs are discarded, so a later missing record cannot revive them.
+Contradicted growth proofs and their growth timestamps are discarded before matching,
+so a later missing record requires a new transcript advancement to prove ownership again.
+Current native identity cannot narrow the possible writers during an earlier growth window.
 Registry opening uses OS no-follow/nonblocking flags and reads the effective UID directly
 without creating a scratch file; `libc`, already used by the native feature, is required here too.
 **A one-shot (`claude -p`/`--print`) is headless and pairs by TIME** (#s50): knack's coordinator
