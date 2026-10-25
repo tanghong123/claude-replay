@@ -521,6 +521,12 @@ struct AgentLink {
     terminal: Terminal,
 }
 
+/// Directory matching is allowed only for the selected history and unclaimed processes.
+enum DirectoryMatch<'a> {
+    Disabled,
+    Unclaimed(&'a HashSet<u32>),
+}
+
 /// Does this argv name `sid` by the flag a launch passes — `--session-id <id>`, or `--resume <id>`
 /// outside a fork — as a whole token? What lets a consent grant follow a herdr restore, which runs
 /// `claude --resume <id>` (#s234). Stricter than `session_ref` on purpose (the #s234 review): no
@@ -1178,6 +1184,9 @@ impl Index {
     }
 
     fn prove_by_growth(&self, st: &mut State) {
+        let owners = explicit_process_owners(&st.procs, &st.rows);
+        let known_sids: Vec<String> = st.rows.keys().cloned().collect();
+        let prefix_unique = |pf: &str| known_sids.iter().filter(|s| s.starts_with(pf)).count() == 1;
         let shared_cwds = unclassified_agent_cwds(&st.procs);
         let mut growers: HashMap<(Option<Agent>, String), Vec<String>> = HashMap::new();
         for (sid, row) in &st.rows {
@@ -1210,6 +1219,11 @@ impl Index {
             let mut cands = st.procs.iter().filter(|p| {
                 is_agent_exe(&p.exe_base, &p.argv)
                     && serves(p, agent)
+                    && (session_ref(&p.argv).is_none()
+                        || process_names_session(&p.argv, &sids[0], &prefix_unique))
+                    && owners
+                        .get(&p.pid)
+                        .is_none_or(|ids| ids.iter().all(|id| id == &sids[0]))
                     && !is_helper(&p.argv)
                     && !is_one_shot(&p.argv)
                     && p.cwd.as_deref() == Some(cwd.as_str())
@@ -1352,11 +1366,17 @@ impl Index {
                     row.agent,
                     &row.path,
                     row.cwd.as_deref(),
-                    false,
+                    DirectoryMatch::Disabled,
                     &prefix_unique,
                 )
                 .map(|l| (sid.as_str(), l))
             })
+            .collect();
+        // Reserve every explicitly owned PID, including an additional process naming the
+        // same session. Reserving only the selected session link would leave another owner
+        // available for an unrelated history to claim.
+        let claimed_pids: HashSet<u32> = explicit_process_owners(&st.procs, &st.rows)
+            .into_keys()
             .collect();
         let shared_cwds = unclassified_agent_cwds(&st.procs);
         let mut newest_by_cwd: HashMap<(Option<Agent>, &str), (&str, SystemTime)> = HashMap::new();
@@ -1482,7 +1502,7 @@ impl Index {
                         row.agent,
                         &row.path,
                         row.cwd.as_deref(),
-                        true,
+                        DirectoryMatch::Unclaimed(&claimed_pids),
                         &prefix_unique,
                     )
                 });
@@ -2272,7 +2292,7 @@ fn link(
     agent: Agent,
     transcript: &Path,
     cwd: Option<&str>,
-    heuristic_ok: bool,
+    directory_match: DirectoryMatch<'_>,
     prefix_unique: &dyn Fn(&str) -> bool,
 ) -> Option<AgentLink> {
     let mk = |p: &Proc, confirmed: bool| AgentLink {
@@ -2307,14 +2327,11 @@ fn link(
             std::cmp::Reverse(p.pid),
         )
     };
-    let names = |p: &Proc| match session_ref(&p.argv) {
-        Some(SessionRef::Exact(u)) => u == sid,
-        Some(SessionRef::Prefix(pf)) => sid.starts_with(pf.as_str()) && prefix_unique(&pf),
-        None => false,
-    };
     if let Some(p) = procs
         .iter()
-        .filter(|p| is_agent_exe(&p.exe_base, &p.argv) && names(p))
+        .filter(|p| {
+            is_agent_exe(&p.exe_base, &p.argv) && process_names_session(&p.argv, sid, prefix_unique)
+        })
         .max_by_key(|p| host(p))
     {
         return Some(mk(p, true));
@@ -2325,7 +2342,7 @@ fn link(
     }) {
         return Some(mk(p, true));
     }
-    if let Some(cwd) = cwd.filter(|_| heuristic_ok) {
+    if let (Some(cwd), DirectoryMatch::Unclaimed(claimed)) = (cwd, directory_match) {
         let cands: Vec<&Proc> = procs
             .iter()
             .filter(|p| {
@@ -2335,6 +2352,7 @@ fn link(
                     && !is_one_shot(&p.argv)
                     && p.cwd.as_deref() == Some(cwd)
                     && session_ref(&p.argv).is_none()
+                    && !claimed.contains(&p.pid)
             })
             .collect();
         if let Some(p) = cands.iter().copied().max_by_key(|p| host(p)) {
@@ -2457,6 +2475,35 @@ fn proc_agent(p: &Proc) -> Option<Agent> {
 /// link unconfirmed, so the session read as neither attached nor writable.
 fn serves(p: &Proc, agent: Agent) -> bool {
     proc_agent(p).is_none_or(|a| a == agent)
+}
+
+/// Every session named by each process's argv or open transcript. Keep all owners rather
+/// than only the best-hosted link: a second client of one session is already claimed too.
+fn explicit_process_owners(
+    procs: &[Proc],
+    rows: &HashMap<String, Row>,
+) -> HashMap<u32, HashSet<String>> {
+    let known_sids: Vec<&str> = rows.keys().map(String::as_str).collect();
+    let prefix_unique = |pf: &str| known_sids.iter().filter(|s| s.starts_with(pf)).count() == 1;
+    let mut owners: HashMap<u32, HashSet<String>> = HashMap::new();
+    for p in procs.iter().filter(|p| is_agent_exe(&p.exe_base, &p.argv)) {
+        for (sid, row) in rows {
+            if process_names_session(&p.argv, sid, &prefix_unique)
+                || p.open_jsonl.iter().any(|path| Path::new(path) == row.path)
+            {
+                owners.entry(p.pid).or_default().insert(sid.clone());
+            }
+        }
+    }
+    owners
+}
+
+fn process_names_session(argv: &str, sid: &str, prefix_unique: &dyn Fn(&str) -> bool) -> bool {
+    match session_ref(argv) {
+        Some(SessionRef::Exact(id)) => id == sid,
+        Some(SessionRef::Prefix(prefix)) => sid.starts_with(&prefix) && prefix_unique(&prefix),
+        None => false,
+    }
 }
 
 /// The process scan collects a cwd only for recognized agents. A configured executable
@@ -4448,7 +4495,7 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/nope.jsonl"),
             None,
-            false,
+            DirectoryMatch::Disabled,
             &|_| true,
         )
         .expect("argv link");
@@ -4583,7 +4630,7 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/nope.jsonl"),
             None,
-            false,
+            DirectoryMatch::Disabled,
             &|_| true,
         )
         .expect("argv link");
@@ -4603,7 +4650,7 @@ mod tests {
             Agent::CODEX,
             Path::new("/Users/x/.codex/sessions/2026/08/08/rollout-abc.jsonl"),
             None,
-            false,
+            DirectoryMatch::Disabled,
             &|_| true,
         )
         .expect("fd link");
@@ -4619,7 +4666,7 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             Some("/Users/x/other"),
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
         )
         .expect("cwd link");
@@ -4630,7 +4677,7 @@ mod tests {
                 Agent::CLAUDE,
                 Path::new("/n.jsonl"),
                 Some("/Users/x/other"),
-                false,
+                DirectoryMatch::Disabled,
                 &|_| true
             )
             .is_none(),
@@ -4649,7 +4696,7 @@ mod tests {
             Agent::CODEX,
             Path::new("/n.jsonl"),
             Some("/Users/x/code/repo"),
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
         )
         .expect("codex cwd heuristic");
@@ -4699,7 +4746,7 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             cwd,
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
         )
         .expect("link");
@@ -4718,7 +4765,7 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             cwd,
-            false,
+            DirectoryMatch::Disabled,
             &|_| true
         )
         .is_none());
@@ -4744,7 +4791,7 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             None,
-            false,
+            DirectoryMatch::Disabled,
             &|pf| pf == "f7e03d40",
         )
         .expect("prefix link");
@@ -4760,7 +4807,7 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             None,
-            false,
+            DirectoryMatch::Disabled,
             &|_| false
         )
         .is_none());
@@ -4826,7 +4873,7 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             cwd,
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
         )
         .expect("lone");
@@ -4843,7 +4890,7 @@ mod tests {
                 Agent::CLAUDE,
                 Path::new("/n.jsonl"),
                 cwd,
-                true,
+                DirectoryMatch::Unclaimed(&HashSet::new()),
                 &|_| true
             )
             .unwrap()
@@ -4861,7 +4908,7 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             cwd,
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
         )
         .expect("lone");
@@ -4890,7 +4937,7 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             cwd,
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
         )
         .expect("engine");
@@ -4908,7 +4955,7 @@ mod tests {
                 Agent::CLAUDE,
                 Path::new("/n.jsonl"),
                 cwd,
-                true,
+                DirectoryMatch::Unclaimed(&HashSet::new()),
                 &|_| true
             )
             .is_none(),
@@ -5259,7 +5306,7 @@ n/Users/x/proj
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             Some("/Users/hong/code/knack"),
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
         )
         .expect("cwd link");
@@ -5287,7 +5334,7 @@ n/Users/x/proj
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             Some("/Users/hong/code/knack"),
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
         )
         .expect("cwd link");
@@ -5371,7 +5418,7 @@ n/Users/x/proj
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             None,
-            false,
+            DirectoryMatch::Disabled,
             &|_| true,
         )
         .expect("link");
@@ -5665,6 +5712,132 @@ n/Users/x/proj
         }
         idx.prove_by_growth(&mut st);
         assert!(st.rows.values().all(|row| row.proved_pid.is_none()));
+    }
+
+    /// An open transcript reserves its process as firmly as an argv identity. Removing
+    /// that session from recency must not give its process to an older history.
+    #[test]
+    fn an_open_transcript_owner_cannot_be_claimed_by_an_older_history() {
+        let scratch = std::env::temp_dir().join(format!("cm-open-owner-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let mut procs = parse_ps("900 codex\n");
+        apply_lsof(
+            &mut procs,
+            "p900\nfcwd\nn/w/harbor\nf12\nn/w/current.jsonl\n",
+        );
+        apply_env(&mut procs, "900 codex TMUX_PANE=%1\n");
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        for (sid, modified) in [("older", 1), ("current", 2)] {
+            let mut row = growth_row("/w/harbor", false);
+            row.agent = Agent::CODEX;
+            row.path = PathBuf::from(format!("/w/{sid}.jsonl"));
+            row.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(modified));
+            st.rows.insert(sid.into(), row);
+        }
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        assert_eq!(
+            facts.iter().find(|f| f.sid == "current").unwrap().pid,
+            Some(900)
+        );
+        assert_eq!(facts.iter().find(|f| f.sid == "older").unwrap().pid, None);
+        st.send_links = facts
+            .iter()
+            .map(|f| {
+                (
+                    f.sid.clone(),
+                    SendLink {
+                        pid: f.pid,
+                        pane: f.pane.clone(),
+                        confirmed: f.confirmed,
+                        named: f.named,
+                    },
+                )
+            })
+            .collect();
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        let current = snapshot["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["rows"].as_array().unwrap())
+            .find(|r| r["id"] == "current")
+            .unwrap();
+        assert_eq!(
+            current["injectable"], true,
+            "no phantom live sibling blocks the real owner"
+        );
+        assert!(current.get("projActive").is_none());
+
+        let mut remaining = parse_ps("901 codex\n");
+        apply_lsof(&mut remaining, "p901\nfcwd\nn/w/harbor\n");
+        st.procs.extend(remaining);
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        assert_eq!(
+            facts.iter().find(|f| f.sid == "current").unwrap().pid,
+            Some(900)
+        );
+        assert_eq!(
+            facts.iter().find(|f| f.sid == "older").unwrap().pid,
+            Some(901)
+        );
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    /// A target that exits during the growth linger cannot borrow a named sibling's
+    /// process, even while a different agent is also growing in the directory.
+    #[test]
+    fn lingering_growth_never_takes_a_siblings_explicit_process() {
+        let scratch =
+            std::env::temp_dir().join(format!("cm-growth-exit-owner-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let sibling = "11111111-2222-4333-8444-555555555555";
+        let mut procs = parse_ps(&format!("701 claude --session-id {sibling}\n900 codex\n"));
+        apply_lsof(
+            &mut procs,
+            "p701\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+        );
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        let mut departed = growth_row("/w/harbor", true);
+        departed.proved_pid = Some((700, "/w/harbor".into()));
+        st.rows.insert("departed".into(), departed);
+        let mut owner = growth_row("/w/harbor", false);
+        owner.proved_pid = Some((701, "/w/harbor".into()));
+        st.rows.insert(sibling.into(), owner);
+        let mut codex = growth_row("/w/harbor", true);
+        codex.agent = Agent::CODEX;
+        st.rows.insert("codex".into(), codex);
+        idx.prove_by_growth(&mut st);
+        assert!(
+            st.rows["departed"].proved_pid.is_none(),
+            "the departed process stays departed"
+        );
+        assert_eq!(
+            st.rows[sibling].proved_pid.as_ref().map(|(pid, _)| *pid),
+            Some(701)
+        );
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        assert_eq!(
+            facts.iter().find(|f| f.sid == "departed").unwrap().pid,
+            None
+        );
+        assert_eq!(
+            facts.iter().find(|f| f.sid == sibling).unwrap().pid,
+            Some(701)
+        );
+        std::fs::remove_dir_all(&scratch).unwrap();
     }
 
     /// #s234's review: only the flags a launch passes name a session for a grant to follow — never
@@ -6056,7 +6229,7 @@ n/Users/x/proj
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             cwd,
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
         )
         .expect("the Claude session links");
@@ -6072,7 +6245,7 @@ n/Users/x/proj
             Agent::CODEX,
             Path::new("/r.jsonl"),
             cwd,
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
         )
         .expect("the Codex session links");
