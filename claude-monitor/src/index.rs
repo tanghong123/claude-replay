@@ -1351,6 +1351,28 @@ impl Index {
                 .filter(|(_, r)| r.one_shot)
                 .filter_map(|(sid, r)| Some((sid.as_str(), r.cwd.as_deref()?, r.first_event?))),
         );
+        // Growth proofs have the same priority here as in link resolution. A newer idle
+        // transcript must not reclaim their process through the directory heuristic.
+        let mut proved_links: HashMap<&str, AgentLink> = st
+            .rows
+            .iter()
+            .filter_map(|(sid, row)| {
+                let (pid, cwd) = row.proved_pid.as_ref()?;
+                let p = st
+                    .procs
+                    .iter()
+                    .find(|p| p.pid == *pid && p.cwd.as_deref() == Some(cwd.as_str()))?;
+                Some((
+                    sid.as_str(),
+                    AgentLink {
+                        pid: p.pid,
+                        confirmed: true,
+                        named: names_exactly(&p.argv, sid),
+                        terminal: Terminal::of(p),
+                    },
+                ))
+            })
+            .collect();
         // Exact argv/open-transcript links already own a process; they cannot claim an
         // unnamed sibling just because their transcript was touched later (#s250). Resolve
         // them once and keep them out of the directory heuristic's recency and ambiguity.
@@ -1377,12 +1399,16 @@ impl Index {
         // available for an unrelated history to claim.
         let claimed_pids: HashSet<u32> = explicit_process_owners(&st.procs, &st.rows)
             .into_keys()
+            .chain(proved_links.values().map(|link| link.pid))
             .collect();
         let shared_cwds = unclassified_agent_cwds(&st.procs);
         let mut newest_by_cwd: HashMap<(Option<Agent>, &str), (&str, SystemTime)> = HashMap::new();
         let mut siblings: HashMap<(Option<Agent>, &str), usize> = HashMap::new();
         for (sid, row) in &st.rows {
-            if paired.contains_key(sid.as_str()) || explicit_links.contains_key(sid.as_str()) {
+            if paired.contains_key(sid.as_str())
+                || explicit_links.contains_key(sid.as_str())
+                || proved_links.contains_key(sid.as_str())
+            {
                 continue;
             }
             if let Some(cwd) = row.cwd.as_deref() {
@@ -1468,20 +1494,8 @@ impl Index {
                 .is_some_and(|(newest, _)| *newest == sid.as_str());
             // A pairing that growth proved (#146) outranks the directory heuristic — it is
             // evidence about THIS session, not a pick among the directory's sessions.
-            let link = row
-                .proved_pid
-                .as_ref()
-                .and_then(|(pid, cwd)| {
-                    st.procs
-                        .iter()
-                        .find(|p| p.pid == *pid && p.cwd.as_deref() == Some(cwd.as_str()))
-                })
-                .map(|p| AgentLink {
-                    pid: p.pid,
-                    confirmed: true,
-                    named: names_exactly(&p.argv, sid),
-                    terminal: Terminal::of(p),
-                })
+            let link = proved_links
+                .remove(sid.as_str())
                 .or_else(|| {
                     let &(pid, rivals) = paired.get(sid.as_str())?;
                     st.procs.iter().find(|p| p.pid == pid).map(|p| AgentLink {
@@ -2336,10 +2350,10 @@ fn link(
     {
         return Some(mk(p, true));
     }
-    let t = transcript.to_string_lossy();
-    if let Some(p) = procs.iter().find(|p| {
-        is_agent_exe(&p.exe_base, &p.argv) && p.open_jsonl.iter().any(|f| f.as_str() == t)
-    }) {
+    if let Some(p) = procs
+        .iter()
+        .find(|p| is_agent_exe(&p.exe_base, &p.argv) && holds_transcript(p, transcript))
+    {
         return Some(mk(p, true));
     }
     if let (Some(cwd), DirectoryMatch::Unclaimed(claimed)) = (cwd, directory_match) {
@@ -2488,14 +2502,22 @@ fn explicit_process_owners(
     let mut owners: HashMap<u32, HashSet<String>> = HashMap::new();
     for p in procs.iter().filter(|p| is_agent_exe(&p.exe_base, &p.argv)) {
         for (sid, row) in rows {
-            if process_names_session(&p.argv, sid, &prefix_unique)
-                || p.open_jsonl.iter().any(|path| Path::new(path) == row.path)
+            if process_names_session(&p.argv, sid, &prefix_unique) || holds_transcript(p, &row.path)
             {
                 owners.entry(p.pid).or_default().insert(sid.clone());
             }
         }
     }
     owners
+}
+
+/// Use the same lexical path equality for selecting a link and reserving its process.
+/// `Path` treats redundant separators and dot components alike, without filesystem I/O.
+fn holds_transcript(process: &Proc, transcript: &Path) -> bool {
+    process
+        .open_jsonl
+        .iter()
+        .any(|path| Path::new(path) == transcript)
 }
 
 fn process_names_session(argv: &str, sid: &str, prefix_unique: &dyn Fn(&str) -> bool) -> bool {
@@ -5735,7 +5757,11 @@ n/Users/x/proj
         for (sid, modified) in [("older", 1), ("current", 2)] {
             let mut row = growth_row("/w/harbor", false);
             row.agent = Agent::CODEX;
-            row.path = PathBuf::from(format!("/w/{sid}.jsonl"));
+            row.path = PathBuf::from(if sid == "current" {
+                "/w/./current.jsonl".to_string()
+            } else {
+                format!("/w/{sid}.jsonl")
+            });
             row.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(modified));
             st.rows.insert(sid.into(), row);
         }
@@ -5837,6 +5863,86 @@ n/Users/x/proj
             facts.iter().find(|f| f.sid == sibling).unwrap().pid,
             Some(701)
         );
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    /// A retained growth proof already owns its PID even when an older history receives
+    /// a newer idle-maintenance mtime. The entire facts/send-eligibility chain must agree.
+    #[test]
+    fn a_growth_proven_owner_reserves_its_process_from_newer_idle_history() {
+        let scratch = std::env::temp_dir().join(format!("cm-proof-owner-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let mut procs = parse_ps("700 claude\n900 codex\n");
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+        );
+        apply_env(&mut procs, "700 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/Users/x/.config/herdr/sessions/trial/herdr.sock\n");
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n60 1 herdr\n61 60 zsh\n700 61 claude\n",
+        );
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        for (sid, agent, modified, growing) in [
+            ("current", Agent::CLAUDE, 3, true),
+            ("older", Agent::CLAUDE, 4, false),
+            ("codex", Agent::CODEX, 5, true),
+        ] {
+            let mut row = growth_row("/w/harbor", growing);
+            row.agent = agent;
+            row.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(modified));
+            st.rows.insert(sid.into(), row);
+        }
+        idx.prove_by_growth(&mut st);
+        assert_eq!(
+            st.rows["current"].proved_pid.as_ref().map(|(pid, _)| *pid),
+            Some(700)
+        );
+        for growing in [true, false] {
+            st.rows.get_mut("current").unwrap().grew_at = growing.then(Instant::now);
+            let mut facts = Vec::new();
+            idx.assemble(&st, &mut facts);
+            assert_eq!(
+                facts.iter().find(|f| f.sid == "current").unwrap().pid,
+                Some(700)
+            );
+            assert_eq!(facts.iter().find(|f| f.sid == "older").unwrap().pid, None);
+            st.send_links = facts
+                .iter()
+                .map(|f| {
+                    (
+                        f.sid.clone(),
+                        SendLink {
+                            pid: f.pid,
+                            pane: f.pane.clone(),
+                            confirmed: f.confirmed,
+                            named: f.named,
+                        },
+                    )
+                })
+                .collect();
+            let snapshot = idx.assemble(&st, &mut Vec::new());
+            let current = snapshot["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|g| g["rows"].as_array().unwrap())
+                .find(|r| r["id"] == "current")
+                .unwrap();
+            assert_eq!(current["injectable"], true);
+            assert!(current.get("projActive").is_none());
+        }
+        st.procs.retain(|p| p.pid != 700);
+        idx.prove_by_growth(&mut st);
+        assert!(st.rows["current"].proved_pid.is_none());
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        assert_eq!(facts.iter().find(|f| f.sid == "current").unwrap().pid, None);
         std::fs::remove_dir_all(&scratch).unwrap();
     }
 
