@@ -1267,14 +1267,15 @@ impl Index {
                 row.proved_pid = Some((pid, cwd.clone()));
             }
         }
-        // Forget a proof whose process is gone or has moved on.
-        let alive: Vec<(u32, Option<String>)> =
-            st.procs.iter().map(|p| (p.pid, p.cwd.clone())).collect();
-        for row in st.rows.values_mut() {
+        // A contradictory native identity invalidates a proof permanently. Merely hiding
+        // the proof during this scan would let a later Missing record revive stale ownership.
+        for (sid, row) in &mut st.rows {
             if let Some((pid, cwd)) = &row.proved_pid {
-                let still = alive
-                    .iter()
-                    .any(|(q, c)| q == pid && c.as_deref() == Some(cwd.as_str()));
+                let still = st.procs.iter().any(|p| {
+                    p.pid == *pid
+                        && p.cwd.as_deref() == Some(cwd.as_str())
+                        && p.native_session.permits(sid)
+                });
                 if !still {
                     row.proved_pid = None;
                 }
@@ -5314,6 +5315,53 @@ mod tests {
             .insert(old.into(), growth_row("/fixture/project", true));
         idx.prove_by_growth(&mut st);
         assert!(st.rows[old].proved_pid.is_none());
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn native_registry_contradiction_discards_growth_before_a_record_disappears() {
+        use crate::claude_registry::Identity;
+        let scratch =
+            std::env::temp_dir().join(format!("cm-registry-proof-expiry-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let old = "11111111-2222-4333-8444-555555555555";
+        let current = "22222222-2222-4333-8444-555555555555";
+        let cwd = "/fixture/project";
+        for identity in [Identity::Verified(current.into()), Identity::Rejected] {
+            let mut procs = parse_ps("700 claude\n701 claude\n");
+            for p in &mut procs {
+                p.cwd = Some(cwd.into());
+                p.pane = Some(format!("%{}", p.pid));
+                p.tmux_sock = Some("fixture".into());
+            }
+            procs[0].native_session = identity;
+            let mut st = State {
+                procs,
+                ..Default::default()
+            };
+            let mut past = growth_row(cwd, false);
+            past.proved_pid = Some((700, cwd.into()));
+            past.tree_mtime = Some(SystemTime::now() - Duration::from_secs(10));
+            st.rows.insert(old.into(), past);
+            let mut now = growth_row(cwd, false);
+            now.tree_mtime = Some(SystemTime::now());
+            st.rows.insert(current.into(), now);
+            idx.prove_by_growth(&mut st);
+            assert!(
+                st.rows[old].proved_pid.is_none(),
+                "contradicted evidence expires"
+            );
+            st.procs[0].native_session = Identity::Missing;
+            let snapshot = idx.assemble(&st, &mut Vec::new());
+            let old_row = registry_row(&snapshot, old);
+            assert!(
+                old_row.get("pid").is_none(),
+                "missing identity cannot revive old proof"
+            );
+            assert_ne!(old_row["injectable"], true);
+        }
         std::fs::remove_dir_all(scratch).unwrap();
     }
 

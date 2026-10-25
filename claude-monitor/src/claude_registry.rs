@@ -52,9 +52,9 @@ fn directory() -> PathBuf {
 /// Read registrations only for already discovered Claude processes. The process table is
 /// queried in UTC/C locale because macOS Claude stores `ps lstart` in that representation.
 pub(crate) fn scan(pids: &[u32]) -> HashMap<u32, Identity> {
-    let Ok(uid) = crate::control::effective_uid() else {
-        return pids.iter().map(|pid| (*pid, Identity::Rejected)).collect();
-    };
+    // SAFETY: geteuid has no preconditions and only reads this process's effective UID.
+    // Registry discovery must not depend on being able to write a temporary probe file.
+    let uid = unsafe { libc::geteuid() };
     let root = directory();
     let starts = process_starts(pids, uid);
     pids.iter()
@@ -76,26 +76,35 @@ fn read(root: &Path, pid: u32, uid: u32, start: Option<&str>) -> Identity {
     if !before.is_file() || before.uid() != uid || before.len() > 64 * 1024 {
         return Identity::Rejected;
     }
-    let load = || -> Option<Value> {
-        let file = std::fs::File::open(&path).ok()?;
-        let opened = file.metadata().ok()?;
-        if !opened.is_file()
-            || opened.uid() != uid
-            || opened.dev() != before.dev()
-            || opened.ino() != before.ino()
-        {
-            return None;
-        }
-        let mut bytes = Vec::new();
-        file.take(64 * 1024 + 1).read_to_end(&mut bytes).ok()?;
-        if bytes.len() > 64 * 1024 {
-            return None;
-        }
-        serde_json::from_slice(&bytes).ok()
-    };
-    load()
+    load_record(&path, &before, uid)
         .and_then(|record| validated_session(&record, pid, start))
         .map_or(Identity::Rejected, Identity::Verified)
+}
+
+fn load_record(path: &Path, before: &std::fs::Metadata, uid: u32) -> Option<Value> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    // Metadata inspection cannot prevent a pathname replacement. Refuse symlinks at open,
+    // and do not block if a regular entry was replaced with a FIFO before descriptor checks.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    let opened = file.metadata().ok()?;
+    if !opened.is_file()
+        || opened.uid() != uid
+        || opened.dev() != before.dev()
+        || opened.ino() != before.ino()
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(64 * 1024 + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > 64 * 1024 {
+        return None;
+    }
+    serde_json::from_slice(&bytes).ok()
 }
 
 fn validated_session(record: &Value, pid: u32, start: Option<&str>) -> Option<String> {
@@ -238,5 +247,62 @@ mod tests {
         let stat = "42 (claude ) worker) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 987654 20";
         assert_eq!(linux_start(stat), Some("987654"));
         assert_eq!(linux_start("42 (claude) S 1"), None);
+    }
+
+    #[test]
+    fn replacing_an_inspected_record_with_a_symlink_is_rejected() {
+        use std::os::unix::fs::{symlink, MetadataExt};
+        let root = std::env::temp_dir().join(format!("cm-registry-swap-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("42.json");
+        std::fs::write(&path, "{}").unwrap();
+        let before = std::fs::symlink_metadata(&path).unwrap();
+        let moved = root.join("moved.json");
+        std::fs::rename(&path, &moved).unwrap();
+        symlink(moved, &path).unwrap();
+        assert!(
+            load_record(&path, &before, before.uid()).is_none(),
+            "an unchanged inode does not authorize following a replacement symlink"
+        );
+        std::fs::remove_file(&path).unwrap();
+        let fifo = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: fifo is a valid NUL-terminated path, and this test owns its scratch directory.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(
+            load_record(&path, &before, before.uid()).is_none(),
+            "a replacement FIFO is rejected without waiting for a writer"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn registry_scan_does_not_require_writable_scratch() {
+        const PROBE: &str = "CM_REGISTRY_NO_SCRATCH_PROBE";
+        if std::env::var_os(PROBE).is_some() {
+            let pid = std::process::id();
+            assert_eq!(scan(&[pid]).get(&pid), Some(&Identity::Missing));
+            return;
+        }
+        let root =
+            std::env::temp_dir().join(format!("cm-registry-no-scratch-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        // A fresh child isolates both the environment and the UID helper's cached state.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "claude_registry::tests::registry_scan_does_not_require_writable_scratch",
+            ])
+            .env(PROBE, "1")
+            .env("CLAUDE_CONFIG_DIR", &root)
+            .env("TMPDIR", root.join("unavailable/scratch"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

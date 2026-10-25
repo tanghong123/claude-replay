@@ -19,10 +19,10 @@ path = "src/main.rs"
 
 [features]
 default = []
-codex-native = ["dep:claude-monitor-codex", "dep:libc"]
+codex-native = ["dep:claude-monitor-codex"]
 
 [dependencies]
-libc = { version = "0.2", optional = true }
+libc = "0.2"
 claude-replay-core = { path = "../claude-replay-core" }
 claude-replay-present = { path = "../claude-replay-present" }
 claude-replay-html = { path = "../claude-replay-html" }

@@ -655,7 +655,7 @@ pub fn herdr_pane_id_ok(pane: &str) -> bool {
 /// build; the home directory's owner is not the same thing under a job shell that runs as
 /// another user). It never changes, so it is read once: the state pass checks a herdr socket
 /// every few seconds (#s238).
-pub(crate) fn effective_uid() -> Result<u32> {
+fn effective_uid() -> Result<u32> {
     use std::os::unix::fs::MetadataExt;
     static UID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     if let Some(uid) = UID.get() {
