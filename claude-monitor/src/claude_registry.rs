@@ -281,6 +281,21 @@ mod tests {
         if std::env::var_os(PROBE).is_some() {
             let pid = std::process::id();
             assert_eq!(scan(&[pid]).get(&pid), Some(&Identity::Missing));
+            // Verify a present record too: Missing alone would pass even if UID/start
+            // discovery failed before validation. The fixture does not use TMPDIR.
+            let root = directory();
+            std::fs::create_dir_all(&root).unwrap();
+            // SAFETY: geteuid has no preconditions and only reads the child's effective UID.
+            let start = process_starts(&[pid], unsafe { libc::geteuid() });
+            let sid = "11111111-2222-4333-8444-555555555555";
+            let record = serde_json::json!({
+                "pid": pid, "sessionId": sid, "procStart": start[&pid],
+            });
+            std::fs::write(root.join(format!("{pid}.json")), record.to_string()).unwrap();
+            assert_eq!(
+                scan(&[pid]).get(&pid),
+                Some(&Identity::Verified(sid.into()))
+            );
             return;
         }
         let root =

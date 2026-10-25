@@ -308,10 +308,12 @@ A present but rejected record cannot authorize a guessed pane; a missing registr
 legacy discovery. Session and process discovery do not require Herdr or an added hook, and
 peer credential sidecars are never read. Send and grant resolution refresh process evidence.
 Native ownership wins against another process's stale argv; a native background helper can
-still use its legitimate attach client as the terminal. Rejected records remain possible
-writers when counting growth ambiguity. Native one-shot claims reserve their sessions before
+still use its explicit `claude attach` client as the terminal; stale `--resume` arguments
+cannot supply that helper's pane. Rejected records remain possible writers when counting
+growth and one-shot time ambiguity, including when start/cwd evidence is unavailable.
+Time links affected by a rejected registration stay unconfirmed and cannot bank parent edges. Native one-shot claims reserve their sessions before
 legacy time pairing and stay excluded from the directory's newest/sibling candidates.
-Contradicted growth observations, pending or already proved, lose attribution eligibility
+Native-owned or contradicted growth observations, pending or already proved, lose attribution eligibility
 before matching, so a later missing record needs new transcript advancement to prove ownership.
 The activity timestamp remains visible; attribution expiry does not mark a writing session idle.
 Current native identity cannot narrow the possible writers during an earlier growth window.

@@ -1210,7 +1210,8 @@ impl Index {
             });
         let found: Vec<(String, u32)> = paired
             .into_iter()
-            .map(|(sid, (pid, _))| (sid, pid))
+            .filter(|(_, pair)| pair.evidence.can_bank_parent())
+            .map(|(sid, pair)| (sid, pair.pid))
             .chain(named)
             .collect();
         let mut fresh = false;
@@ -1238,22 +1239,25 @@ impl Index {
     }
 
     fn prove_by_growth(&self, st: &mut State) {
-        // Invalidate before deriving new proofs: a contradictory native identity refutes both
-        // stored ownership and the attribution eligibility of its growth. A later Missing scan
-        // must wait for new transcript advancement before growth can prove ownership again.
+        // Native evidence retires the observed growth from legacy attribution, whether it
+        // owns that write or contradicts a guess. After identity disappears or its owner exits,
+        // only new transcript advancement can supply legacy proof again.
         for (sid, row) in &mut st.rows {
             // Pending growth has the same lifetime as a banked proof. Even when ambiguity
             // prevented a proof, an incompatible native sighting refutes using that old write
             // on a later Missing scan. An unknown cwd cannot rule out this project.
-            let native_contradiction = row.grew_at.is_some()
+            let native_observation = row.grew_at.is_some()
                 && row.agent == Agent::CLAUDE
-                && row.cwd.as_deref().is_some_and(|cwd| {
-                    st.procs.iter().any(|p| {
-                        p.cwd.as_deref().is_none_or(|actual| actual == cwd)
-                            && !p.native_session.permits(sid)
-                    })
+                && st.procs.iter().any(|p| {
+                    p.native_session.session() == Some(sid)
+                        || row.cwd.as_deref().is_some_and(|cwd| {
+                            p.cwd.as_deref().is_none_or(|actual| actual == cwd)
+                                && !p.native_session.permits(sid)
+                        })
                 });
-            if native_contradiction {
+            // Exact native ownership supplies its own link. Its observed write must not
+            // become legacy proof for a different process after the native owner exits.
+            if native_observation {
                 row.invalidated_growth = row.grew_at;
             }
             if let Some((pid, cwd)) = &row.proved_pid {
@@ -1546,13 +1550,16 @@ impl Index {
                         })
                 })
                 .or_else(|| {
-                    let &(pid, rivals) = paired.get(sid.as_str())?;
-                    st.procs.iter().find(|p| p.pid == pid).map(|p| AgentLink {
-                        pid: p.pid,
-                        confirmed: rivals == 0,
-                        named: names_exactly(&p.argv, sid),
-                        terminal: Terminal::Detached,
-                    })
+                    let pair = paired.get(sid.as_str())?;
+                    st.procs
+                        .iter()
+                        .find(|p| p.pid == pair.pid)
+                        .map(|p| AgentLink {
+                            pid: p.pid,
+                            confirmed: pair.evidence.confirmed(),
+                            named: names_exactly(&p.argv, sid),
+                            terminal: Terminal::Detached,
+                        })
                 })
                 .or_else(|| {
                     link(
@@ -1585,7 +1592,7 @@ impl Index {
             let ambiguity = match link.as_ref().filter(|l| !l.confirmed) {
                 Some(_) if paired.contains_key(sid.as_str()) => paired
                     .get(sid.as_str())
-                    .map_or(1, |&(_, rivals)| rivals + 1),
+                    .map_or(1, |pair| pair.evidence.ambiguity()),
                 Some(_) => row
                     .cwd
                     .as_deref()
@@ -2186,7 +2193,42 @@ const ONE_SHOT_SLACK_SECS: u64 = 3;
 /// (2026-10-08, three runs of `claude -p`): 0.7–0.9 s; the rest is room for a loaded machine.
 const ONE_SHOT_WINDOW_SECS: u64 = 60;
 
-/// Pair each one-shot process with the session it created (#s50): sid → (pid, rivals).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OneShotPair {
+    pid: u32,
+    evidence: OneShotEvidence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OneShotEvidence {
+    Registered,
+    Timed {
+        rivals: usize,
+    },
+    /// A rejected registration could belong to any time candidate in this project.
+    RegistryUncertain {
+        rivals: usize,
+    },
+}
+
+impl OneShotEvidence {
+    fn confirmed(self) -> bool {
+        matches!(self, Self::Registered | Self::Timed { rivals: 0 })
+    }
+
+    fn can_bank_parent(self) -> bool {
+        !matches!(self, Self::RegistryUncertain { .. })
+    }
+
+    fn ambiguity(self) -> usize {
+        match self {
+            Self::Registered => 1,
+            Self::Timed { rivals } | Self::RegistryUncertain { rivals } => rivals + 1,
+        }
+    }
+}
+
+/// Pair each one-shot process with the session it created (#s50).
 ///
 /// A legacy no-id launch has no native registration (#145), and the directory rule gives
 /// a process to the NEWEST session of its cwd only. So with a coordinator and several `claude -p`
@@ -2202,7 +2244,7 @@ const ONE_SHOT_WINDOW_SECS: u64 = 60;
 fn pair_one_shots<'a>(
     procs: &[Proc],
     sessions: impl IntoIterator<Item = (&'a str, &'a str, u64)>,
-) -> HashMap<String, (u32, usize)> {
+) -> HashMap<String, OneShotPair> {
     // Exact native claims reserve their sessions before legacy processes compete by time.
     // Keep native workers in the result too: assembly excludes every claimed worker from
     // the directory's newest/sibling candidates, leaving its coordinator eligible.
@@ -2220,8 +2262,11 @@ fn pair_one_shots<'a>(
     let mut out = HashMap::new();
     for p in procs.iter().filter(|p| one_shot(p)) {
         if let Some(sid) = p.native_session.session() {
-            let entry = out.entry(sid.to_string()).or_insert((p.pid, 0));
-            entry.0 = entry.0.min(p.pid);
+            let entry = out.entry(sid.to_string()).or_insert(OneShotPair {
+                pid: p.pid,
+                evidence: OneShotEvidence::Registered,
+            });
+            entry.pid = entry.pid.min(p.pid);
         }
     }
     let mut by_cwd: HashMap<&str, Vec<(u64, &str)>> = HashMap::new();
@@ -2232,9 +2277,7 @@ fn pair_one_shots<'a>(
     }
     let mut shots: HashMap<&str, Vec<(u64, u32)>> = HashMap::new();
     for p in procs {
-        let headless_new = one_shot(p)
-            && p.native_session != crate::claude_registry::Identity::Rejected
-            && p.session_ref().is_none();
+        let headless_new = one_shot(p) && p.session_ref().is_none();
         if let (true, Some(cwd), Some(start)) = (headless_new, p.cwd.as_deref(), p.started) {
             shots.entry(cwd).or_default().push((start, p.pid));
         }
@@ -2248,6 +2291,14 @@ fn pair_one_shots<'a>(
         };
         sessions.sort_unstable();
         here.sort_unstable();
+        // Rejection does not identify which session this worker created. Keep its time
+        // window among rivals, and preserve uncertainty even if its start/cwd is unavailable.
+        // Such a tentative link cannot become a durable worker → parent edge.
+        let registry_uncertain = procs.iter().any(|p| {
+            one_shot(p)
+                && p.native_session == crate::claude_registry::Identity::Rejected
+                && p.cwd.as_deref().is_none_or(|actual| actual == cwd)
+        });
         let mut taken = vec![false; sessions.len()];
         // Each one-shot's claim, in start order: the index of the session it took, if any.
         let mut claims: Vec<Option<usize>> = Vec::with_capacity(here.len());
@@ -2273,7 +2324,12 @@ fn pair_one_shots<'a>(
                     j != k && within(s, first) && claim.is_none_or(|c| within(start, sessions[c].0))
                 })
                 .count();
-            out.insert(sid.to_string(), (pid, rivals));
+            let evidence = if registry_uncertain {
+                OneShotEvidence::RegistryUncertain { rivals }
+            } else {
+                OneShotEvidence::Timed { rivals }
+            };
+            out.insert(sid.to_string(), OneShotPair { pid, evidence });
         }
     }
     out
@@ -2430,12 +2486,22 @@ fn link(
         })
     };
     // Current native ownership wins over a different process's stale launch arguments.
-    // A detached helper may still be hosted by its legitimate legacy attach client; keep
-    // the existing best-hosted selection when native evidence names only helpers.
+    // A detached native helper may use an explicit attach client, but a legacy --resume
+    // argument on another process can be stale. Otherwise retain the helper's detached link.
+    let native_helper =
+        named_candidates().any(|p| p.native_session.session() == Some(sid) && is_helper(&p.argv));
     let named = named_candidates()
         .filter(|p| p.native_session.session() == Some(sid) && !is_helper(&p.argv))
         .max_by_key(|p| host(p))
-        .or_else(|| named_candidates().max_by_key(|p| host(p)));
+        .or_else(|| {
+            named_candidates()
+                .filter(|p| {
+                    !native_helper
+                        || p.native_session.session() == Some(sid)
+                        || p.argv.split_whitespace().nth(1) == Some("attach")
+                })
+                .max_by_key(|p| host(p))
+        });
     if let Some(p) = named {
         return Some(mk(p, true));
     }
@@ -5403,6 +5469,94 @@ mod tests {
     }
 
     #[test]
+    fn native_registry_owner_exit_does_not_transfer_observed_growth() {
+        use crate::claude_registry::Identity;
+        let scratch =
+            std::env::temp_dir().join(format!("cm-registry-exit-growth-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let native = "11111111-2222-4333-8444-555555555555";
+        let legacy = "22222222-2222-4333-8444-555555555555";
+        let cwd = "/fixture/project";
+        let mut procs = parse_ps("700 claude\n701 claude\n");
+        for p in &mut procs {
+            p.cwd = Some(cwd.into());
+            p.pane = Some(format!("%{}", p.pid));
+            p.tmux_sock = Some("fixture".into());
+        }
+        procs[1].native_session = Identity::Verified(native.into());
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        for (sid, age) in [(native, 10), (legacy, 0)] {
+            let mut row = growth_row(cwd, true);
+            row.tree_mtime = Some(SystemTime::now() - Duration::from_secs(age));
+            st.rows.insert(sid.into(), row);
+        }
+        idx.prove_by_growth(&mut st);
+        let before = idx.assemble(&st, &mut Vec::new());
+        assert_eq!(registry_row(&before, native)["pid"], 701);
+        assert_eq!(registry_row(&before, legacy)["pid"], 700);
+        st.procs.retain(|p| p.pid == 700);
+        for _ in 0..3 {
+            idx.prove_by_growth(&mut st);
+            assert!(st.rows[native].proved_pid.is_none(),
+                "a departed native owner's write cannot prove the surviving process owns its session");
+            let mut facts = Vec::new();
+            let snapshot = idx.assemble(&st, &mut facts);
+            assert!(registry_row(&snapshot, native).get("pid").is_none());
+            assert_eq!(
+                registry_row(&snapshot, native)["state"],
+                "growing",
+                "recent activity remains visible after ownership ends"
+            );
+            assert_eq!(registry_row(&snapshot, legacy)["pid"], 700);
+            assert_eq!(registry_row(&snapshot, legacy)["injectable"], true);
+            st.send_links = facts
+                .iter()
+                .map(|f| {
+                    (
+                        f.sid.clone(),
+                        SendLink {
+                            pid: f.pid,
+                            pane: f.pane.clone(),
+                            confirmed: f.confirmed,
+                            named: f.named,
+                        },
+                    )
+                })
+                .collect();
+            assert!(pane_target_from(Agent::CLAUDE, &st.send_links[legacy]).is_ok());
+            assert!(
+                !project_has_other_live(
+                    legacy,
+                    Some(cwd),
+                    &st.send_links,
+                    |_| Some(cwd.into()),
+                    |_| None
+                ),
+                "no departed session remains as a phantom sibling in the pane send guard"
+            );
+            assert!(!unresolved_registry_writer(
+                &st.procs,
+                Agent::CLAUDE,
+                Some(cwd),
+                &st.send_links
+            ));
+        }
+        // New legacy advancement can still establish ownership after native evidence ends.
+        st.rows.get_mut(native).unwrap().grew_at = Some(Instant::now());
+        idx.prove_by_growth(&mut st);
+        assert_eq!(
+            st.rows[native].proved_pid.as_ref().map(|(pid, _)| *pid),
+            Some(700)
+        );
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
     fn native_registry_prevents_growth_from_claiming_a_different_session() {
         use crate::claude_registry::Identity;
         let scratch =
@@ -5784,10 +5938,29 @@ mod tests {
         .unwrap();
         assert_eq!(linked.pid, 700);
         assert_eq!(linked.terminal.target(), Some("%2"));
+        procs[1].argv = format!("claude --bg-pty-host -- --session-id {sid}");
+        let helper = link(
+            &procs,
+            sid,
+            Agent::CLAUDE,
+            Path::new("/fixture/session.jsonl"),
+            None,
+            false,
+            &|_| true,
+        )
+        .unwrap();
+        assert_eq!(
+            helper.pid, 700,
+            "a native helper cannot borrow a stale resume pane"
+        );
+        assert_eq!(helper.terminal.kind(), "detached");
         // A native background engine's inherited pane remains unusable, while its actual
         // attach client can still supply the terminal for this same session.
-        procs[0].argv = format!("claude attach {}", &sid[..8]);
-        procs[1].argv = format!("claude --bg-pty-host -- --session-id {sid}");
+        procs.extend(parse_ps(&format!("800 claude attach {}\n", &sid[..8])));
+        apply_env(
+            &mut procs,
+            "800 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%3\n",
+        );
         let attached = link(
             &procs,
             sid,
@@ -5798,8 +5971,8 @@ mod tests {
             &|_| true,
         )
         .unwrap();
-        assert_eq!(attached.pid, 600);
-        assert_eq!(attached.terminal.target(), Some("%1"));
+        assert_eq!(attached.pid, 800);
+        assert_eq!(attached.terminal.target(), Some("%3"));
     }
 
     #[test]
@@ -5828,10 +6001,19 @@ mod tests {
         let pairs = pair_one_shots(&procs, sessions);
         assert_eq!(
             pairs[native],
-            (700, 0),
+            OneShotPair {
+                pid: 700,
+                evidence: OneShotEvidence::Registered
+            },
             "the native owner reserves its session"
         );
-        assert_eq!(pairs[legacy], (701, 0));
+        assert_eq!(
+            pairs[legacy],
+            OneShotPair {
+                pid: 701,
+                evidence: OneShotEvidence::Timed { rivals: 0 }
+            }
+        );
         let mut st = State {
             procs,
             ..Default::default()
@@ -5877,6 +6059,84 @@ mod tests {
             Some(parent_a),
             "stable on the next scan"
         );
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn native_registry_rejected_workers_do_not_prove_legacy_pairings_or_parents() {
+        use crate::claude_registry::Identity;
+        let scratch = std::env::temp_dir().join(format!(
+            "cm-registry-worker-ambiguity-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let a = "11111111-2222-4333-8444-555555555555";
+        let b = "22222222-2222-4333-8444-555555555555";
+        let known = "33333333-2222-4333-8444-555555555555";
+        let parent_a = "44444444-2222-4333-8444-555555555555";
+        let parent_b = "55555555-2222-4333-8444-555555555555";
+        let cwd = "/fixture/project";
+        let mut procs = parse_ps("700 claude -p a\n701 claude -p b\n702 claude -p known\n");
+        for p in &mut procs {
+            p.cwd = Some(cwd.into());
+        }
+        procs[0].native_session = Identity::Rejected;
+        procs[0].parent_session = Some(parent_a.into());
+        procs[1].parent_session = Some(parent_b.into());
+        procs[1].started = Some(1_002);
+        procs[2].native_session = Identity::Verified(known.into());
+        procs[2].parent_session = Some(parent_a.into());
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        for (sid, first) in [(a, 1_001), (b, 1_003), (known, 1_005)] {
+            let mut row = growth_row(cwd, false);
+            row.one_shot = true;
+            row.first_event = Some(first);
+            st.rows.insert(sid.into(), row);
+        }
+        for (start, process_cwd) in [(Some(1_000), Some(cwd)), (None, Some(cwd)), (None, None)] {
+            st.procs[0].started = start;
+            st.procs[0].cwd = process_cwd.map(str::to_string);
+            let pairs = pair_one_shots(
+                &st.procs,
+                [(a, cwd, 1_001), (b, cwd, 1_003), (known, cwd, 1_005)],
+            );
+            assert!(
+                pairs.get(a).is_some_and(|pair| !pair.evidence.confirmed()),
+                "removing an untrusted worker cannot make another worker's time claim certain"
+            );
+            if start.is_some() {
+                assert_eq!(
+                    pairs[a].evidence,
+                    OneShotEvidence::RegistryUncertain { rivals: 1 }
+                );
+                assert_eq!(
+                    pairs[b].evidence,
+                    OneShotEvidence::RegistryUncertain { rivals: 1 }
+                );
+            }
+            idx.bank_started_by(&mut st);
+            assert!(!st.started_by_edges.contains_key(a));
+            assert!(!st.started_by_edges.contains_key(b));
+            assert_eq!(
+                st.started_by_edges.get(known).map(String::as_str),
+                Some(parent_a)
+            );
+        }
+        st.procs[0].native_session = Identity::Missing;
+        st.procs[0].started = Some(1_000);
+        st.procs[0].cwd = Some(cwd.into());
+        let pairs = pair_one_shots(
+            &st.procs,
+            [(a, cwd, 1_001), (b, cwd, 1_003), (known, cwd, 1_005)],
+        );
+        assert_eq!(pairs[a].evidence, OneShotEvidence::Timed { rivals: 1 });
+        assert_eq!(pairs[b].evidence, OneShotEvidence::Timed { rivals: 1 });
+        assert!(pairs[known].evidence.confirmed());
         std::fs::remove_dir_all(scratch).unwrap();
     }
 
@@ -6291,9 +6551,28 @@ n/Users/x/proj
                 ("s3", "/w", 9_941),
             ],
         );
-        assert_eq!(pairs["s1"], (301, 1));
-        assert_eq!(pairs["s2"], (302, 1));
-        assert_eq!(pairs["s3"], (303, 0), "alone in its window: confirmed");
+        assert_eq!(
+            pairs["s1"],
+            OneShotPair {
+                pid: 301,
+                evidence: OneShotEvidence::Timed { rivals: 1 }
+            }
+        );
+        assert_eq!(
+            pairs["s2"],
+            OneShotPair {
+                pid: 302,
+                evidence: OneShotEvidence::Timed { rivals: 1 }
+            }
+        );
+        assert_eq!(
+            pairs["s3"],
+            OneShotPair {
+                pid: 303,
+                evidence: OneShotEvidence::Timed { rivals: 0 }
+            },
+            "alone in its window: confirmed"
+        );
         // Two workers started fourteen seconds apart (measured here, 2026-10-08): the second's
         // session lies in the first's window, but the first holds its own earlier session, which
         // the second could never have begun. No swap, so both are confirmed.
@@ -6301,8 +6580,20 @@ n/Users/x/proj
         apply_tty(&mut apart, "  501 ?? 01:00\n  502 ?? 00:46\n", 2_060);
         apply_lsof(&mut apart, "p501\nfcwd\nn/w\np502\nfcwd\nn/w\n");
         let pairs = pair_one_shots(&apart, [("a", "/w", 2_001), ("b", "/w", 2_015)]);
-        assert_eq!(pairs["a"], (501, 0));
-        assert_eq!(pairs["b"], (502, 0));
+        assert_eq!(
+            pairs["a"],
+            OneShotPair {
+                pid: 501,
+                evidence: OneShotEvidence::Timed { rivals: 0 }
+            }
+        );
+        assert_eq!(
+            pairs["b"],
+            OneShotPair {
+                pid: 502,
+                evidence: OneShotEvidence::Timed { rivals: 0 }
+            }
+        );
         // A session that began long before any live one-shot is nobody's.
         let none = pair_one_shots(&procs, [("old", "/w", 2_000)]);
         assert!(none.is_empty());
