@@ -5600,13 +5600,14 @@ mod tests {
         let old = "11111111-2222-4333-8444-555555555555";
         let current = "22222222-2222-4333-8444-555555555555";
         let cwd = "/fixture/project";
-        for (identity, extra_process) in [
-            (Identity::Verified(current.into()), false),
-            (Identity::Rejected, false),
-            (Identity::Verified(current.into()), true),
-            (Identity::Rejected, true),
-            (Identity::Verified(old.into()), false),
-            (Identity::Verified(old.into()), true),
+        for (identity, extra_process, registered) in [
+            (Identity::Verified(current.into()), false, 0),
+            (Identity::Rejected, false, 0),
+            (Identity::Verified(current.into()), true, 0),
+            (Identity::Rejected, true, 0),
+            (Identity::Verified(old.into()), false, 0),
+            (Identity::Verified(old.into()), true, 0),
+            (Identity::Verified(old.into()), true, 1),
         ] {
             let mut procs = parse_ps(if extra_process {
                 "700 claude\n701 claude\n"
@@ -5618,7 +5619,7 @@ mod tests {
                 p.pane = Some(format!("%{}", p.pid));
                 p.tmux_sock = Some("fixture".into());
             }
-            procs[0].native_session = identity;
+            procs[registered].native_session = identity;
             let mut st = State {
                 procs,
                 ..Default::default()
@@ -5633,16 +5634,21 @@ mod tests {
             idx.prove_by_growth(&mut st);
             assert!(
                 st.rows[old].proved_pid.is_none(),
-                "contradicted evidence expires"
+                "native-superseded proof expires"
             );
             let first_snapshot = idx.assemble(&st, &mut Vec::new());
-            let native_owned = st.procs[0].native_session.session() == Some(old);
+            let native_owned = st
+                .procs
+                .iter()
+                .any(|p| p.native_session.session() == Some(old));
             assert_eq!(
                 registry_row(&first_snapshot, old).get("pid").is_some(),
                 native_owned,
                 "native ownership supplies a current link without retaining the legacy proof"
             );
-            st.procs[0].native_session = Identity::Missing;
+            for p in &mut st.procs {
+                p.native_session = Identity::Missing;
+            }
             // A production scan runs growth attribution again before assembling the row.
             idx.prove_by_growth(&mut st);
             let snapshot = idx.assemble(&st, &mut Vec::new());
