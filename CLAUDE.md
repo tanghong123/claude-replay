@@ -116,6 +116,11 @@ dock, an open compose box (native mode's is resident) and native mode's runtime 
 while it is drawn, at any width. A match under one is neither counted as already seen nor left there
 by a landing, except at the view's end, where nothing can lift it (a phone's keyboard, a tall
 panel): there it counts as seen, or the steps bounce between the last two hits and never wrap.
+A landing also keeps the match below the turn bar sticking over a desktop's transcript top, drawn
+or faded (`searchCeiling`, #s263): it puts the match a third of the way down the space between the
+bar and the cover, at most 120px down. Measured from the column's top, a cover within 93px of it (a
+short window with the box open) left the match behind the bar. A step's "already seen" keeps the
+column's top: a hit the reader scrolled up behind the bar is behind them, not ahead.
 A step remembers the hit it landed, and the next step goes on from THAT hit when the current one
 is not in sight, while its unit still crosses the view, until the reader moves: a scroll within
 the intent window of input that came after the landing, or a new query (#s259). The jump stamps
@@ -129,8 +134,9 @@ The cases are `a_desktop_search_step_never_leaves_a_match_under_the_compose_box`
 `a_desktop_search_first_step_lands_on_a_first_hit_under_the_compose_box`,
 `a_phone_search_with_the_keyboard_up_wraps_past_a_last_hit_under_the_dock`,
 `native_desktop_search_step_never_leaves_a_match_under_the_composer`,
-`native_search_steps_move_on_when_the_composer_covers_the_whole_column` and
-`a_search_step_after_an_unheard_move_enters_at_the_nearest_hit`.
+`native_search_steps_move_on_when_the_composer_covers_the_whole_column`,
+`a_search_step_after_an_unheard_move_enters_at_the_nearest_hit` and
+`a_search_step_in_a_short_space_leaves_the_match_below_the_turn_bar`.
 **Codex native mode's composer is resident** (the owner): once native mode is
 enabled, its compact composer stays visible on desktop and phone with no close action;
 thread text and image drafts belong to the selected thread. The ordinary writer keeps the

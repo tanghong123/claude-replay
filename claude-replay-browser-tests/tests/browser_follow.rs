@@ -13203,6 +13203,92 @@ fn a_search_step_after_an_unheard_move_enters_at_the_nearest_hit() {
     );
 }
 
+/// #s263 (found by the review of #s259): a step's reveal puts the match a third of the way down the
+/// space above the cover at the transcript's foot. Measured from the column's top, that third fell
+/// behind the turn bar sticking there (about 31px) whenever the cover stopped within 93px of it: a
+/// short window with the compose box open. The match is paragraph 14 of a 30-paragraph answer, so
+/// the landing alone leaves it under the box and only the reveal brings it up; it must end below
+/// the bar and above the box.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_search_step_in_a_short_space_leaves_the_match_below_the_turn_bar() {
+    let _serial = serial();
+    let base = harness::base("search-short-space");
+    let stores = harness::Stores::new(&base);
+    let mut t = harness::long_session(4, harness::Shape::default());
+    let tall = (1..=30)
+        .map(|k| {
+            if k == 14 {
+                "paragraph 14 holds the needle the search looks for.".to_string()
+            } else {
+                format!("paragraph {k} of the long answer.")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    t += &harness::user_at("give me the long answer", &harness::now_minus(600));
+    t += &harness::assistant_at(&tall, &harness::now_minus(590));
+    for k in 0..4u64 {
+        t += &harness::user_at(&format!("follow-up {k}"), &harness::now_minus(500 - 60 * k));
+        t += &harness::assistant_at(
+            &format!("reply {k}: short."),
+            &harness::now_minus(490 - 60 * k),
+        );
+    }
+    stores.claude_session(PHONE_SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3251, &base, Some(&stores), true);
+    let (_b, tab) = desktop_tab(&m);
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "(function(){ document.getElementById('composeFab').click(); var i = document.getElementById('composeInput'); i.value = 'draft line 1\\ndraft line 2\\ndraft line 3'; i.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    // The space between the column's top and the box: 62 to 75px. Room enough below the bar for
+    // the match (a correct landing of its 20px needs about 61), and short enough that the old third
+    // (at most 25) left it well behind the bar's 31. Walked down to, measured at each height, since
+    // how much of the window the browser's frame takes differs between platforms; a 5px step moves
+    // the space about 3px, inside the band.
+    let space = "(function(){ var c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); return Math.round(c.top - t.top); })()";
+    let mut seen = Vec::new();
+    for h in (300..=600).rev().step_by(5) {
+        harness::resize(&tab, 1280.0, h as f64);
+        harness::pause("the box to follow the window", Duration::from_millis(300));
+        let got = harness::eval(&tab, space).as_i64().unwrap_or(-1);
+        seen.push((h, got));
+        if (62..=75).contains(&got) {
+            break;
+        }
+    }
+    let got = seen.last().map(|&(_, s)| s).unwrap_or(-1);
+    assert!(
+        (62..=75).contains(&got),
+        "premise: some window height leaves the box 62 to 75px below the column's top: {seen:?}"
+    );
+    harness::eval(&tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window mark.search-mark.current')",
+        "the search to mark its one match",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    harness::pause("the query to settle", Duration::from_millis(600));
+    harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+    // The bar is on (the turn's card has scrolled past), so behind it the match is hidden.
+    let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), c = document.getElementById('composer').getBoundingClientRect(), bar = document.getElementById('turnStickyBar'), b = bar.getBoundingClientRect(); if (!m) return 'none'; var r = m.getBoundingClientRect(); return JSON.stringify({ between: r.top >= b.bottom - 0.5 && r.bottom <= c.top + 0.5, on: bar.classList.contains('on'), mark: [Math.round(r.top), Math.round(r.bottom)], bar: Math.round(b.bottom), box: Math.round(c.top) }); })()";
+    harness::until(
+        &tab,
+        &format!("(function(){{ var g = {seen}; return g !== 'none' && JSON.parse(g).between && JSON.parse(g).on; }})()"),
+        "a step to leave the match below the turn bar and above the compose box",
+        Duration::from_secs(5),
+        seen,
+    );
+}
+
 /// #s257 (the review of 0fd1bd4d): a step counts a match as seen only when it is in sight above
 /// whatever covers the transcript's foot. But with a phone's keyboard up, the dock rides the
 /// keyboard while the transcript keeps its height (#372), so the end of the transcript can never

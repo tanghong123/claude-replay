@@ -1778,10 +1778,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // #100: stepping re-enters from the viewport once the current hit is off screen; the term lands in view.
 {
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
-  assert.match(app, /const onScreen = !!box && box\.bottom >= view\.top && \(box\.top < searchFloor\(view\) \|\| box\.top <= view\.bottom && viewport\.gapToBottom\(\) <= 1\);/, "the current hit's mark decides whether the sequence continues — in sight above whatever covers the transcript's foot, or at the view's end where nothing can lift it (#s257)");
+  assert.match(app, /const onScreen = !!box && box\.bottom >= view\.top && \(box\.top < searchFloor\(view\) \|\| box\.top <= view\.bottom && viewport\.gapToBottom\(\) <= 1\);/, "the current hit's mark decides whether the sequence continues — in sight above whatever covers the transcript's foot, or at the view's end where nothing can lift it (#s257); a hit behind the turn bar at the top is behind the reader and counts as seen (#s263)");
   assert.match(app, /const k = matches\.findIndex\(index => index >= top\);/, "…else the first hit at or below the viewport top");
   assert.match(app, /recordState\.match = delta > 0 \? \(k >= 0 \? k : 0\) : \(k > 0 \? k - 1 : matches\.length - 1\);/, "forward from there, backward from the one above, wrapping");
   assert.match(app, /function landOnCurrentMark\(\) \{/, "the landing brings the term into view");
+  assert.match(app, /if \(box\.top >= ceiling && box\.bottom <= floor\) return;\n(?:[^\n]*\n){3}\s*viewport\.reveal\(mark, \{ top: Math\.min\(120, ceiling - view\.top \+ Math\.max\(0, floor - ceiling\) \/ 3\) \}\);/, "…between the turn bar and the cover, a third of the way down the space between them (#s263)");
+  assert.match(app, /function searchCeiling\(view\) \{\n\s*if \(getComputedStyle\(turnStickyBar\)\.display === "none"\) return view\.top;/, "…the bar counted wherever it is drawn, on or off; on a phone it is not");
   const vp = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   assert.match(vp, /if \(reveal === "search" \|\| reveal === "hash"\) \{\n\s*const openAll = view =>/, "a search or deep-link reveal opens the nested chain and its caps");
   console.log("#100 hit stepping cases passed");
@@ -2783,7 +2785,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /viewport\.pageBy\(direction, \{ intent: true \}\);/, "paging is the engine's, stamped as before");
   assert.match(app, /viewport\.reveal\(heads\[next\], \{ top: 160, smooth: true, intent: true \}\);/, "a stepped head is revealed smoothly — the classic page's rule, stamped as before");
   assert.match(app, /viewport\.reveal\(nested, \{ top: 18 \}\);/, "a nested hash landing is a reveal");
-  assert.match(app, /viewport\.reveal\(mark, \{ top: Math\.min\(120, \(floor - view\.top\) \/ 3\) \}\);/, "…and so is a search mark below the fold (#s248: a third into the space above the floor)");
+  assert.match(app, /viewport\.reveal\(mark, \{ top: Math\.min\(120, ceiling - view\.top \+ Math\.max\(0, floor - ceiling\) \/ 3\) \}\);/, "…and so is a search mark below the fold (#s248: a third into the space above the floor, #s263: below the turn bar)");
   assert.match(classic, /vw\.jumpTo\(\{ index: ti, top: GOTO_Y \}, \{ dirtyFrom: ti, intent: true \}\);/, "goToId is one landing, stamped");
   assert.match(classic, /vw\.jumpTo\(\{ index: ti, top: dy \}, \{ intent: true \}\);/, "landOn is one landing, stamped as it always was");
   assert.match(classic, /vw\.jumpTo\(\{ index: idIndex\[anchorId\], top: anchorTop \}\);/, "a filter change re-lands the anchored record with no stamp");

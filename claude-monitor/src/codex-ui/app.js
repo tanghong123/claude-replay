@@ -1797,11 +1797,26 @@ function landOnCurrentMark() {
   // with the match out of sight. The block's own scrollLeft, never the transcript's offset.
   revealSideways(mark);
   const box = mark.getBoundingClientRect(), view = viewport.scroller.getBoundingClientRect();
-  // A match under whatever floats over the transcript's foot is not on screen (#s37, #s248, #s257).
-  const floor = searchFloor(view);
-  if (box.top >= view.top && box.bottom <= floor) return;
-  // A third of the space above the floor, so a short one still shows the match.
-  viewport.reveal(mark, { top: Math.min(120, (floor - view.top) / 3) });
+  // A match under whatever floats over the transcript's foot is not on screen (#s37, #s248, #s257),
+  // nor one behind the turn bar at its top (#s263).
+  const floor = searchFloor(view), ceiling = searchCeiling(view);
+  if (box.top >= ceiling && box.bottom <= floor) return;
+  // A third of the space between them, so a short one still shows the match: measured from the
+  // column's top, a cover within 93px of it put the match behind the bar. A cover over the whole
+  // column leaves none, and the match lands just below the bar.
+  viewport.reveal(mark, { top: Math.min(120, ceiling - view.top + Math.max(0, floor - ceiling) / 3) });
+}
+/** Where a landing may put a match at the transcript's top: the bottom of the turn bar while it is
+ *  drawn (#123; hidden on a phone, where the turn is the top bar's subtitle), else the top of `view`.
+ *  On or off, since a landing can turn it on (#s263). Only the landing asks: a step's "already on
+ *  screen" keeps the column's top, since a hit the reader scrolled up behind the bar is behind them,
+ *  and counting it unseen sent the next step back to it. On a desktop a process group's head sticks
+ *  there too (40px, under the bar's 31), and a third of the space clears it wherever a match fits
+ *  below it; a phone has no bar, and its landing has not been measured against that head (#s267). */
+function searchCeiling(view) {
+  if (getComputedStyle(turnStickyBar).display === "none") return view.top;
+  const r = turnStickyBar.getBoundingClientRect();
+  return r.height > 0 && r.bottom > view.top ? Math.min(view.bottom, r.bottom) : view.top;
 }
 /** Where a match stops being in sight at the transcript's foot: the bottom of `view`, or the top of
  *  whatever is drawn over it there — a phone's floating toolbar (#s37), an open compose box (#s245,
