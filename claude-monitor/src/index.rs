@@ -2450,8 +2450,9 @@ fn fork_parent_from_argv(argv: &str) -> Option<(String, String)> {
 
 /// The UUID a row's file STEM ends with — a Codex stem is `rollout-<ts>-<uuid>` and a
 /// Claude stem is bare. This is the bridge the sub-agent roll-up needs (§14): a rollout
-/// names its parent by bare uuid, but the index keys rows by stem.
-fn trailing_uuid(stem: &str) -> Option<String> {
+/// names its parent by bare uuid, but the index keys rows by stem. The Codex CLI resume
+/// transport uses the same bridge without changing the monitor's row identity.
+pub(crate) fn trailing_uuid(stem: &str) -> Option<String> {
     let tail = stem.len().checked_sub(36).and_then(|i| stem.get(i..))?;
     is_uuid(tail).then(|| tail.to_string())
 }
@@ -3272,8 +3273,8 @@ mod tests {
             "Native activation must invalidate the filtered snapshot"
         );
 
-        // Standalone mode still permits the historical command shape. Inspect
-        // it without spawning a CLI or sending anything to a live terminal.
+        // Standalone mode keeps the monitor's row key but resumes the native UUID.
+        // Inspect it without spawning a CLI or sending anything to a live terminal.
         let target = standalone
             .resolve_send(&sid)
             .expect("Standalone mode resolves the newly discovered Codex rollout");
@@ -3282,7 +3283,9 @@ mod tests {
         let (program, arguments) = crate::control::resume_command(&target, "fixture prompt")
             .expect("Codex retains its legacy standalone resume command");
         assert_eq!(program, "codex");
-        assert_eq!(&arguments[..3], &["exec", "resume", sid.as_str()]);
+        assert_eq!(&arguments[..3], &["exec", "resume", thread_id]);
+        assert_eq!(arguments.last().unwrap(), "fixture prompt");
+        assert!(arguments.iter().all(|argument| argument != &sid));
 
         // Assert the resolver refusal before exercising HTTP: even a regression
         // cannot make this test reach spawn_resume with an eligible Codex target.
@@ -3533,11 +3536,43 @@ mod tests {
         assert_eq!(args.last().unwrap(), "do the thing");
         let codex = SendTarget {
             agent: Agent::CODEX,
+            sid: "rollout-2026-01-01T00-00-00-9ff12aca-681c-48c2-a1d9-61f777c795e1".into(),
             ..claude
         };
         let (prog, args) = crate::control::resume_command(&codex, "go").unwrap();
         assert_eq!(prog, "codex");
-        assert!(args.iter().any(|a| a == "resume") && args.contains(&"sid-x".to_string()));
+        assert_eq!(
+            &args[..3],
+            &["exec", "resume", "9ff12aca-681c-48c2-a1d9-61f777c795e1"]
+        );
+        assert_eq!(args.last().unwrap(), "go");
+    }
+
+    /// #s246: both a bare UUID and a rollout row resume the same native thread. An
+    /// unrecognized key must never reach the CLI, where it can start another thread.
+    #[test]
+    fn codex_resume_requires_a_native_uuid() {
+        let native = "9ff12aca-681c-48c2-a1d9-61f777c795e1";
+        for sid in [
+            native.to_string(),
+            format!("rollout-2026-01-01T00-00-00-{native}"),
+        ] {
+            let target = SendTarget {
+                sid,
+                agent: Agent::CODEX,
+                cwd: None,
+            };
+            let (_, arguments) = crate::control::resume_command(&target, "fixture prompt").unwrap();
+            assert_eq!(arguments[2], native);
+        }
+        for sid in ["", "not-a-native-id", "rollout-2026-01-01T00-00-00-invalid"] {
+            let target = SendTarget {
+                sid: sid.into(),
+                agent: Agent::CODEX,
+                cwd: None,
+            };
+            assert!(crate::control::resume_command(&target, "fixture prompt").is_none());
+        }
     }
 
     /// #153, the regression that matters: an `Index` writes its hide list ONLY under the

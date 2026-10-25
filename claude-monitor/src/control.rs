@@ -247,16 +247,21 @@ pub fn resume_command(
                 prompt.to_string(),
             ],
         )),
-        "codex" => Some((
-            "codex".into(),
-            vec![
-                "exec".into(),
-                "resume".into(),
-                target.sid.clone(),
-                "--dangerously-bypass-approvals-and-sandbox".into(),
-                prompt.to_string(),
-            ],
-        )),
+        "codex" => {
+            // Monitor rows use rollout filename stems. Codex resumes by native UUID;
+            // passing the stem can start a new thread instead of continuing this one.
+            let thread_id = index::trailing_uuid(&target.sid)?;
+            Some((
+                "codex".into(),
+                vec![
+                    "exec".into(),
+                    "resume".into(),
+                    thread_id,
+                    "--dangerously-bypass-approvals-and-sandbox".into(),
+                    prompt.to_string(),
+                ],
+            ))
+        }
         _ => None,
     }
 }
