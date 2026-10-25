@@ -2779,7 +2779,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /viewport\.pageBy\(direction, \{ intent: true \}\);/, "paging is the engine's, stamped as before");
   assert.match(app, /viewport\.reveal\(heads\[next\], \{ top: 160, smooth: true, intent: true \}\);/, "a stepped head is revealed smoothly — the classic page's rule, stamped as before");
   assert.match(app, /viewport\.reveal\(nested, \{ top: 18 \}\);/, "a nested hash landing is a reveal");
-  assert.match(app, /viewport\.reveal\(mark, \{ top: Math\.min\(120, view\.height \/ 3\) \}\);/, "…and so is a search mark below the fold");
+  assert.match(app, /viewport\.reveal\(mark, \{ top: Math\.min\(120, \(floor - view\.top\) \/ 3\) \}\);/, "…and so is a search mark below the fold (#s248: a third into the space above the floor)");
   assert.match(classic, /vw\.jumpTo\(\{ index: ti, top: GOTO_Y \}, \{ dirtyFrom: ti, intent: true \}\);/, "goToId is one landing, stamped");
   assert.match(classic, /vw\.jumpTo\(\{ index: ti, top: dy \}, \{ intent: true \}\);/, "landOn is one landing, stamped as it always was");
   assert.match(classic, /vw\.jumpTo\(\{ index: idIndex\[anchorId\], top: anchorTop \}\);/, "a filter change re-lands the anchored record with no stamp");
