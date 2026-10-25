@@ -349,6 +349,13 @@ send gate does not count a session's own worker as "another active session". A f
 anywhere, and `note_forks_from_argv` is how one joins its #142 family. Diagnose against the
 machine, not the API: `term`/`injectable` describe the process the row was LINKED to, so a false
 link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and `ps -axww` first.
+**The scan's probes are bounded and read paths whole** (#s266, from collab #s298): each `ps` and
+`lsof` gets 15 s (`run_bounded`), after which the scan goes on without that source — `lsof -p` once
+sat 210 s in the kernel on Chromium's network service and the page on "Scanning sessions…" — and
+while one program's abandoned probe still runs no other starts, since a child stuck in the kernel
+cannot die; and `ps` joins argv with spaces, so an absolute first word naming no file is joined
+back until it names one (`exe_path`): ChatGPT's `…/Codex Framework.framework/…/Codex (Service)`
+had read as `codex`, an agent.
 **A session in a herdr pane is sent to through herdr** (#s226, Hong's move from tmux to herdr in
 stages, agentdev-setup-hong#s127; herdr 0.9.5 measured on aries-black by its steward). The agent's own
 environment names the pane (`HERDR_PANE_ID`, like `w1:p2`) and its server (`HERDR_SOCKET_PATH`, which

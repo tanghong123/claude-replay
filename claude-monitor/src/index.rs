@@ -2545,14 +2545,10 @@ fn is_agent_exe(exe_base: &str, argv: &str) -> bool {
 /// fds — each from the probe's verified source, all batched so a refresh is a fixed handful
 /// of subprocesses however many sessions exist.
 fn scan_procs() -> Vec<Proc> {
-    let run = |args: &[&str]| -> String {
-        std::process::Command::new(args[0])
-            .args(&args[1..])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_default()
-    };
-    let mut procs = parse_ps(&run(&["ps", "-axo", "pid=,command="]));
+    let run = |args: &[&str]| run_bounded(args, SCAN_PROBE_LIMIT);
+    let mut procs = parse_ps_with(&run(&["ps", "-axo", "pid=,command="]), &|path| {
+        std::path::Path::new(path).is_file()
+    });
     let agent_pids: Vec<String> = procs
         .iter()
         .filter(|p| is_agent_exe(&p.exe_base, &p.argv))
@@ -2640,8 +2636,96 @@ fn lsof_argv(pids: &str) -> [&str; 6] {
     ["lsof", "-n", "-P", "-p", pids, "-Fpfn"]
 }
 
-/// `pid command…` lines → bare [`Proc`]s (identity facts only).
+/// How long one scan subprocess (`ps`, `lsof`) may take before its answer is given up on.
+const SCAN_PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The programs whose last probe was given up on and is still running (#s266).
+fn abandoned_probes() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static ABANDONED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    ABANDONED.get_or_init(Default::default)
+}
+
+/// One scan subprocess's stdout, or nothing when it has not finished within `limit` (#s266,
+/// collab #s298). A probe can hang where no flag helps — `lsof -p` blocked in the kernel on
+/// Chromium's network-service process, 210 s at a time (`-b` too) — and an unbounded wait froze
+/// every refresh with it: the page sat at "Scanning sessions…". Past the limit the child is
+/// killed and left to a thread to reap, and the scan goes on without that one source. A child
+/// stuck in the kernel dies only when it leaves it, so while one program's abandoned probe is
+/// still running (its process not reaped or its output still open) no other probe of that
+/// program is started: each refresh would otherwise leave one more behind.
+fn run_bounded(args: &[&str], limit: std::time::Duration) -> String {
+    use std::process::{Command, Stdio};
+    let program = args[0].to_string();
+    if abandoned_probes().lock().unwrap().contains(&program) {
+        return String::new();
+    }
+    let Ok(mut child) = Command::new(args[0])
+        .args(&args[1..])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return String::new();
+    };
+    let stdout = child.stdout.take();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        if let Some(mut stdout) = stdout {
+            let _ = std::io::Read::read_to_end(&mut stdout, &mut out);
+        }
+        let _ = tx.send(out);
+    });
+    if let Ok(out) = rx.recv_timeout(limit) {
+        let _ = child.wait();
+        return String::from_utf8_lossy(&out).into_owned();
+    }
+    abandoned_probes().lock().unwrap().insert(program.clone());
+    let _ = child.kill();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        let _ = rx.recv();
+        abandoned_probes().lock().unwrap().remove(&program);
+    });
+    String::new()
+}
+
+/// The executable's path at the head of a `ps` command line (#s266). `ps` joins argv with
+/// spaces, so a path that HOLDS one splits mid-path: ChatGPT's helpers live under
+/// `…/Frameworks/Codex Framework.framework/…/Codex (Service)`, whose first word ends `…/Codex` —
+/// an agent's basename. Every helper (the network service, renderers, crashpad) then passed as
+/// Codex and went to the per-agent `lsof`, where the network service hung it. When the first word
+/// is an absolute path naming no file, the words are joined back one at a time until they name
+/// one; when none does (a binary replaced under a running process), the first word stands.
+fn exe_path<'a>(argv: &'a str, is_file: &dyn Fn(&str) -> bool) -> &'a str {
+    let first = argv.split_whitespace().next().unwrap_or("");
+    if !first.starts_with('/') || is_file(first) {
+        return first;
+    }
+    let head = argv.trim_start();
+    let skip = argv.len() - head.len();
+    head.match_indices(' ')
+        .map(|(i, _)| i)
+        .chain(std::iter::once(head.len()))
+        .filter(|&end| end > first.len())
+        .take(16)
+        .map(|end| &argv[skip..skip + end])
+        .find(|path| is_file(path))
+        .unwrap_or(first)
+}
+
+/// `pid command…` lines → bare [`Proc`]s (identity facts only). Every first word is taken for the
+/// executable's whole path — the fixtures' reading; the live scan checks it ([`parse_ps_with`]).
+#[cfg(test)]
 fn parse_ps(out: &str) -> Vec<Proc> {
+    parse_ps_with(out, &|_| true)
+}
+
+/// `pid command…` lines → bare [`Proc`]s, each executable's path checked against `is_file`
+/// ([`exe_path`]). The fixtures' `parse_ps` passes a test that takes every first word whole.
+fn parse_ps_with(out: &str, is_file: &dyn Fn(&str) -> bool) -> Vec<Proc> {
     let mut procs = Vec::new();
     for line in out.lines() {
         let line = line.trim_start();
@@ -2651,10 +2735,9 @@ fn parse_ps(out: &str) -> Vec<Proc> {
         let Ok(pid) = pid.parse::<u32>() else {
             continue;
         };
-        let exe_base = argv
-            .split_whitespace()
+        let exe_base = exe_path(argv, is_file)
+            .rsplit('/')
             .next()
-            .and_then(|exe| exe.rsplit('/').next())
             .unwrap_or("")
             .to_string();
         procs.push(Proc {
@@ -4574,6 +4657,157 @@ mod tests {
             pane_target_from(Agent::CODEX, &send),
             Err(SendRefusal::HerdrClaudeOnly)
         );
+    }
+
+    /// #s266 (collab #s298): ChatGPT's Codex helpers sit under a path with spaces, their first
+    /// word ending `…/Codex`. Read whole they are `Codex (Service)` and friends, not agents, while
+    /// a real `codex` stays one, and a path that names no file at all keeps the first-word reading.
+    #[test]
+    fn an_executable_path_with_spaces_is_read_whole() {
+        const FW: &str = "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/154.0.8037.57/Helpers";
+        let files = [
+            format!("{FW}/Codex (Service).app/Contents/MacOS/Codex (Service)"),
+            format!("{FW}/browser_crashpad_handler"),
+            "/opt/homebrew/bin/codex".to_string(),
+        ];
+        let is_file = |p: &str| files.iter().any(|f| f == p);
+        let procs = parse_ps_with(
+            &format!(
+                "  94402 {FW}/Codex (Service).app/Contents/MacOS/Codex (Service) --type=utility --utility-sub-type=network.mojom.NetworkService\n\
+                 94341 {FW}/browser_crashpad_handler --monitor-self\n\
+                 102 /opt/homebrew/bin/codex exec\n\
+                 103 /gone/after/upgrade/codex resume\n"
+            ),
+            &is_file,
+        );
+        let bases: Vec<&str> = procs.iter().map(|p| p.exe_base.as_str()).collect();
+        assert_eq!(
+            bases,
+            [
+                "Codex (Service)",
+                "browser_crashpad_handler",
+                "codex",
+                "codex"
+            ]
+        );
+        let agents: Vec<u32> = procs
+            .iter()
+            .filter(|p| is_agent_exe(&p.exe_base, &p.argv))
+            .map(|p| p.pid)
+            .collect();
+        assert_eq!(agents, [102, 103], "the helpers are not Codex sessions");
+    }
+
+    /// #s266, on a Mac with the ChatGPT desktop app installed: every helper it ships under its Codex
+    /// framework, written as `ps` writes a running one, is read whole with the real file test —
+    /// named for itself and never an agent — where the first word alone reads `Codex`, an agent's
+    /// name. Ignored, since it needs that app; run it by name where the app is.
+    #[test]
+    #[ignore = "needs the ChatGPT desktop app installed"]
+    fn the_installed_chatgpt_helpers_read_as_helpers() {
+        let versions = std::path::Path::new(
+            "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions",
+        );
+        let mut helpers = Vec::new();
+        for version in std::fs::read_dir(versions)
+            .expect("ChatGPT is installed")
+            .flatten()
+        {
+            let Ok(apps) = std::fs::read_dir(version.path().join("Helpers")) else {
+                continue;
+            };
+            for app in apps.flatten() {
+                let Ok(bins) = std::fs::read_dir(app.path().join("Contents/MacOS")) else {
+                    continue;
+                };
+                helpers.extend(bins.flatten().map(|b| b.path()));
+            }
+        }
+        assert!(!helpers.is_empty(), "no Codex helper is installed");
+        let table: String = helpers
+            .iter()
+            .enumerate()
+            .map(|(i, path)| format!("{} {} --type=utility\n", 9000 + i, path.display()))
+            .collect();
+        let procs = parse_ps_with(&table, &|path| std::path::Path::new(path).is_file());
+        for (p, path) in procs.iter().zip(&helpers) {
+            let name = path.file_name().unwrap().to_string_lossy();
+            assert_eq!(p.exe_base, name, "{} read whole", path.display());
+            assert!(
+                !is_agent_exe(&p.exe_base, &p.argv),
+                "{name} is not an agent"
+            );
+        }
+        let first_word_reads_codex = procs
+            .iter()
+            .filter(|p| {
+                p.argv
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .ends_with("/Codex")
+            })
+            .count();
+        assert!(
+            first_word_reads_codex > 0,
+            "the first word alone read some as Codex"
+        );
+    }
+
+    /// #s266: a scan subprocess that does not finish is given up on within the limit, and the scan
+    /// gets nothing from it rather than waiting; one that finishes is read as before.
+    #[test]
+    fn a_hung_scan_probe_is_given_up_on() {
+        let start = Instant::now();
+        let out = run_bounded(&["sleep", "30"], Duration::from_millis(300));
+        assert_eq!(out, "");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "waited {:?}",
+            start.elapsed()
+        );
+        assert_eq!(
+            run_bounded(&["echo", "p42"], Duration::from_secs(10)),
+            "p42\n"
+        );
+        assert_eq!(run_bounded(&["/no/such/probe"], Duration::from_secs(1)), "");
+    }
+
+    /// #s266: while a program's abandoned probe is still running, no second probe of it starts —
+    /// a child stuck in the kernel dies only when it leaves it, and each refresh would otherwise
+    /// leave one more. Here the abandoned `sh` leaves a `sleep` holding its output open for a
+    /// second; until that closes, `sh` is not run again, and then it is.
+    #[test]
+    fn an_abandoned_scan_probe_is_not_started_again_while_it_runs() {
+        let started = Instant::now();
+        assert_eq!(
+            run_bounded(
+                &["sh", "-c", "sleep 1 & exec sleep 30"],
+                Duration::from_millis(200)
+            ),
+            ""
+        );
+        let marker = std::env::temp_dir().join(format!("cm-probe-guard-{}", std::process::id()));
+        let touch = format!("echo ran > {}", marker.display());
+        assert_eq!(
+            run_bounded(&["sh", "-c", &touch], Duration::from_secs(5)),
+            ""
+        );
+        assert!(
+            !marker.exists(),
+            "a second sh probe ran while the first was abandoned"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(900),
+            "{:?}",
+            started.elapsed()
+        );
+        let ran = (0..60).any(|_| {
+            std::thread::sleep(Duration::from_millis(100));
+            run_bounded(&["sh", "-c", "echo again"], Duration::from_secs(5)) == "again\n"
+        });
+        assert!(ran, "sh is probed again once its abandoned probe has ended");
+        let _ = std::fs::remove_file(&marker);
     }
 
     /// The #112 parsers and link precedence, against fixture strings shaped exactly like
