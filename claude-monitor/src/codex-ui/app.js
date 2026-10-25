@@ -1726,8 +1726,10 @@ function stepSearch(delta) {
   // say this: a fresh query points it at the first hit without taking the reader anywhere, and the
   // first step must land there. Re-entering from the top instead starts at the first hit of the
   // UNIT at the top, so under a cover over the whole column the steps fell back inside a unit
-  // holding several hits.
-  const held = recordState.landed == null ? -1 : matches.indexOf(recordState.landed);
+  // holding several hits. Only while that unit still crosses the view: not every move reaches the
+  // engine as input (a key the browser scrolls with natively, the browser's own find), and a reader
+  // who went elsewhere enters at the hit nearest them.
+  const held = recordState.landed == null || !landedInView(view) ? -1 : matches.indexOf(recordState.landed);
   if (recordState.match >= 0 && onScreen) {
     recordState.match = (recordState.match + delta + matches.length) % matches.length;
   } else if (held >= 0) {
@@ -1744,6 +1746,13 @@ function stepSearch(delta) {
   if (!textual) return;
   markSearch();
   landOnCurrentMark();
+}
+/** Whether the unit holding the record a step last landed still crosses `view` — covered or not. */
+function landedInView(view) {
+  const unit = recordState.units.find(u => recordState.landed >= u.from && recordState.landed <= u.to);
+  const row = unit && [...viewport.window.children].find(child => child.dataset.unitKey === unit.key);
+  const r = row?.getBoundingClientRect();
+  return !!r && r.bottom > view.top && r.top < view.bottom;
 }
 /** A hit inside a head's one-line TARGET is unreachable until the target is shown in full
  *  (#262). The span is `nowrap` with `overflow-x:hidden` — measured 572px wide over a 44,782px

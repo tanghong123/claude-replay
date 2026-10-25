@@ -13142,6 +13142,67 @@ fn a_desktop_search_first_step_lands_on_a_first_hit_under_the_compose_box() {
     );
 }
 
+/// #s259 (the review of 7b4be452): a step goes on from the hit the last step landed while the reader
+/// has not moved since, but not every move reaches the engine as input — a key the browser scrolls
+/// with natively, the browser's own find. A reader who went elsewhere that way must enter at the hit
+/// nearest them, not be taken back beside the old one. Here the move is a script's, which stamps no
+/// input at all.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_search_step_after_an_unheard_move_enters_at_the_nearest_hit() {
+    let _serial = serial();
+    let base = harness::base("search-unheard-move");
+    let stores = harness::Stores::new(&base);
+    let mut t = harness::long_session(4, harness::Shape::default());
+    let filler = (1..=14)
+        .map(|n| format!("filler paragraph {n} of the answer."))
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    for k in 0..10u64 {
+        t += &harness::user_at(&format!("question {k}"), &harness::now_minus(900 - 60 * k));
+        t += &harness::assistant_at(
+            &format!("answer {k} holds the needle.\\n\\n{filler}"),
+            &harness::now_minus(890 - 60 * k),
+        );
+    }
+    stores.claude_session(PHONE_SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3250, &base, Some(&stores), true);
+    let (_b, tab) = desktop_tab(&m);
+    harness::eval(&tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window mark.search-mark.current')",
+        "the query to mark its first hit",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    harness::pause("the query to settle", Duration::from_millis(400));
+    let landed = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); return m ? Number((m.parentElement.textContent.match(/answer (\\d+)/) || [0, -1])[1]) : -1; })()";
+    harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+    harness::pause("the step's landing to settle", Duration::from_millis(600));
+    let first = harness::eval(&tab, landed).as_i64().unwrap_or(-1);
+    assert!(first >= 0, "the first step lands a hit");
+    // Far from it, by script: no wheel, no key, nothing the engine hears as the reader.
+    let to = if first < 5 { 0.7 } else { 0.25 };
+    harness::eval(&tab, &format!("(function(){{ var s = document.querySelector('.session-main>.transcript'); s.scrollTo({{ top: s.scrollHeight * {to}, behavior: 'instant' }}); return 'ok'; }})()"));
+    harness::pause("the move to settle", Duration::from_millis(700));
+    // The nearest hit: the first at or below the unit at the top, as the page reads the top.
+    let nearest = "(function(){ var t = document.querySelector('.session-main>.transcript'), line = t.getBoundingClientRect().top + (parseFloat(getComputedStyle(t).scrollPaddingTop) || 18) + 8; var kids = [...document.querySelector('.virtual-window').children], at = 0; kids.forEach(function (c, i) { if (c.getBoundingClientRect().top <= line) at = i; }); for (var i = at; i < kids.length; i++) { var m = kids[i].textContent.match(/answer (\\d+) holds the needle/); if (m) return Number(m[1]); } return -1; })()";
+    let want = harness::eval(&tab, nearest).as_i64().unwrap_or(-1);
+    assert!(
+        want >= 0 && want != (first + 1) % 10 && want != first,
+        "premise: the move took the reader away from hit {first} and its next: nearest is {want}"
+    );
+    harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+    harness::pause("the step's landing to settle", Duration::from_millis(600));
+    let got = harness::eval(&tab, landed).as_i64().unwrap_or(-1);
+    assert_eq!(
+        got,
+        want,
+        "after a move the engine did not hear, the step enters at the hit nearest the reader (the last landed was {first})"
+    );
+}
+
 /// #s257 (the review of 0fd1bd4d): a step counts a match as seen only when it is in sight above
 /// whatever covers the transcript's foot. But with a phone's keyboard up, the dock rides the
 /// keyboard while the transcript keeps its height (#372), so the end of the transcript can never

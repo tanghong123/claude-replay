@@ -117,16 +117,20 @@ while it is drawn, at any width. A match under one is neither counted as already
 by a landing, except at the view's end, where nothing can lift it (a phone's keyboard, a tall
 panel): there it counts as seen, or the steps bounce between the last two hits and never wrap.
 A step remembers the hit it landed, and the next step goes on from THAT hit when the current one
-is not in sight, until the reader moves: a scroll within the intent window of input that came
-after the landing, or a new query (#s259). The jump stamps intent itself, and its own scroll used
-to clear that memory; and a step re-entering from the top starts at the first hit of the unit
-there. So where a cover reaches the transcript's top (native mode in a short window) every step
-landed the same hit again, or fell back inside a unit holding several.
+is not in sight, while its unit still crosses the view, until the reader moves: a scroll within
+the intent window of input that came after the landing, or a new query (#s259). The jump stamps
+intent itself, and its own scroll used to clear that memory; and a step re-entering from the top
+starts at the first hit of the unit there. So where a cover reaches the transcript's top (native
+mode in a short window) every step landed the same hit again, or fell back inside a unit holding
+several. The unit's being in view is what catches a move the engine never hears as input (a key
+the browser scrolls with natively, the browser's own find): that reader enters at the hit nearest
+them.
 The cases are `a_desktop_search_step_never_leaves_a_match_under_the_compose_box`,
 `a_desktop_search_first_step_lands_on_a_first_hit_under_the_compose_box`,
 `a_phone_search_with_the_keyboard_up_wraps_past_a_last_hit_under_the_dock`,
-`native_desktop_search_step_never_leaves_a_match_under_the_composer` and
-`native_search_steps_move_on_when_the_composer_covers_the_whole_column`.
+`native_desktop_search_step_never_leaves_a_match_under_the_composer`,
+`native_search_steps_move_on_when_the_composer_covers_the_whole_column` and
+`a_search_step_after_an_unheard_move_enters_at_the_nearest_hit`.
 **Codex native mode's composer is resident** (the owner): once native mode is
 enabled, its compact composer stays visible on desktop and phone with no close action;
 thread text and image drafts belong to the selected thread. The ordinary writer keeps the
