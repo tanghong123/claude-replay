@@ -298,6 +298,15 @@ process is a candidate only for sessions of its OWN agent (#s59, `serves`): a Cl
 pane in one repo had the Codex process (the lower pid) linked to the Claude session, unconfirmed and
 unwritable; an exe the monitor cannot place (an extra pattern) stays a candidate for any agent. The send
 gate's "another live session in this project" counts the same agent only, for the same reason.
+**Claude's native live-session registry supplies process identity** (#s258, observed on
+2.1.309–2.1.310): `claude-monitor/src/claude_registry.rs` reads only `sessions/<pid>.json`
+beside the configured projects store (or under `CLAUDE_CONFIG_DIR`). The PID, file owner and
+OS process-start identity must match; reads are bounded and symlinks are rejected. A verified
+`sessionId` takes precedence over launch arguments, retained growth and directory recency,
+including after an interactive session switch. Its row reports `pidSource: "claude-registry"`.
+A present but rejected record cannot authorize a guessed pane; a missing registry retains
+legacy discovery. Session and process discovery do not require Herdr or an added hook, and
+peer credential sidecars are never read. Send and grant resolution refresh process evidence.
 **A one-shot (`claude -p`/`--print`) is headless and pairs by TIME** (#s50): knack's coordinator
 starts workers from its Bash, all in one repo, each inheriting the coordinator's `TMUX_PANE`, and the
 directory rule gave a process to the newest session only — so a worker deep in a long command lost
@@ -338,8 +347,11 @@ pane's shell is the herdr server's direct child, measured; `ucomm` because `comm
 cut at 16 characters). The tmux server is known by the pid in `TMUX`, screen or zellij nearer than
 herdr is a pane we do not drive, and with no answer the agent is in no pane we may drive. The row says `term: "herdr"`, `target` the pane, `herdrSession` a named session
 (the attention report reads `term`, agreed with Aries). The send (`PaneAddr`, `resolve_pane_send`)
-keeps every tmux rule — a proven link, the project's only live session, consent keyed to the pane and
-pid (a herdr key's socket half is `herdr:<socket>`, so a tmux grant can never count) — and then
+requires a proven link and consent keyed to the pane and pid (a herdr key's socket half is
+`herdr:<socket>`, so a tmux grant can never count). Legacy links also require the project's
+only live session; a validated native registry identity can select its exact existing pane
+beside live siblings (#s258). Background resume still requires a quiet project, and registry
+identity does not expand argv-based grant carryover. The Herdr path also has
 one rule tmux does not have: **a grant follows a herdr RESTORE of the same session** (#s234, Hong's
 option 1 on #s233; herdr starts it again as `claude --resume <id>`, a new pid): `consent::carried`
 keeps it when only the pid changed, the server and pane (read from the new process's own
