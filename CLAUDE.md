@@ -116,10 +116,14 @@ dock, an open compose box (native mode's is resident) and native mode's runtime 
 while it is drawn, at any width. A match under one is neither counted as already seen nor left there
 by a landing, except at the view's end, where nothing can lift it (a phone's keyboard, a tall
 panel): there it counts as seen, or the steps bounce between the last two hits and never wrap.
+A step remembers the hit it landed until the reader's own input AFTER the landing (#s259): the
+jump stamps intent itself, and its own scroll used to clear that memory, so where a cover reaches
+the transcript's top (native mode in a short window) every step landed the same hit again.
 The cases are `a_desktop_search_step_never_leaves_a_match_under_the_compose_box`,
 `a_desktop_search_first_step_lands_on_a_first_hit_under_the_compose_box`,
-`a_phone_search_with_the_keyboard_up_wraps_past_a_last_hit_under_the_dock` and
-`native_desktop_search_step_never_leaves_a_match_under_the_composer`.
+`a_phone_search_with_the_keyboard_up_wraps_past_a_last_hit_under_the_dock`,
+`native_desktop_search_step_never_leaves_a_match_under_the_composer` and
+`native_search_steps_move_on_when_the_composer_covers_the_whole_column`.
 **Codex native mode's composer is resident** (the owner): once native mode is
 enabled, its compact composer stays visible on desktop and phone with no close action;
 thread text and image drafts belong to the selected thread. The ordinary writer keeps the

@@ -149,8 +149,10 @@ const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, 
   afterScroll: () => {
     updateStickyHeaders(); updateOutlineFocus(); updateTurnBar();
     // The reader moved themselves: wherever a jump last landed them is no longer where they
-    // are, so the next step enters afresh at the nearest hit rather than stepping past it.
-    if (performance.now() - viewport.lastUserInput < viewport.userIntentMs) recordState.landed = null;
+    // are, so the next step enters afresh at the nearest hit rather than stepping past it. Only
+    // input LATER than the landing (#s259): the jump stamps intent itself, so its own scroll came
+    // inside the window and cleared the landing it had just made.
+    if (viewport.lastUserInput > recordState.landedAt && performance.now() - viewport.lastUserInput < viewport.userIntentMs) recordState.landed = null;
   },
   followChanged: paintJump
 });
@@ -1736,6 +1738,7 @@ function stepSearch(delta) {
   }
   recordState.landed = matches[recordState.match];
   viewport.jumpToRecord(recordState.landed, textual ? "search" : "filter");
+  recordState.landedAt = performance.now();
   if (!textual) return;
   markSearch();
   landOnCurrentMark();
@@ -2330,6 +2333,7 @@ function applyToolFilter() {
     recordState.match = target == null ? -1 : indices.indexOf(target);
     recordState.landed = target ?? null;
     if (target != null) viewport.jumpToRecord(target, "filter");
+    recordState.landedAt = performance.now();
   } else if (recordState.filterHits) {
     const snapshot = recordState.filterSnapshot;
     recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.filterMatches = null;

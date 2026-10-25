@@ -1604,6 +1604,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /const raw = boxQuery\(\);/, "…because the query is the chips and the text together (#303)");
   assert.match(app, /recordState\.landed = matches\[recordState\.match\];\s*\n\s*viewport\.jumpToRecord\(recordState\.landed, textual \? "search" : "filter"\);/, "…landing each one in its surroundings");
   assert.match(app, /const already = matches\[nearest\] === recordState\.landed;/, "pressing next where a jump already landed moves on — while the first step after a fresh query still lands on the first hit");
+  // #s259: the jump stamps intent itself, so its own scroll must not count as the reader moving off.
+  assert.match(app, /viewport\.jumpToRecord\(recordState\.landed, textual \? "search" : "filter"\);\n\s*recordState\.landedAt = performance\.now\(\);/, "…the landing is stamped after the jump's own intent");
+  assert.match(app, /if \(viewport\.lastUserInput > recordState\.landedAt && performance\.now\(\) - viewport\.lastUserInput < viewport\.userIntentMs\) recordState\.landed = null;/, "…and only input later than the landing clears it");
   assert.match(app, /byId\("transcriptSearchCount"\)\.textContent = text \|\| \(hits \? `\$\{hits\} \$\{hits === 1 \? "match" : "matches"\}` : ""\);/, "the box counts what the filter found, the way it counts a search");
   console.log("#110 / #133 tool filter cases passed");
 }
