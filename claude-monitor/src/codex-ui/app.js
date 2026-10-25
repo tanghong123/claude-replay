@@ -1787,7 +1787,8 @@ function landOnCurrentMark() {
   const deskBox = document.querySelector(".workspace.desk-composing #composer");
   if (deskBox) floor = Math.min(floor, deskBox.getBoundingClientRect().top);
   if (box.top >= view.top && box.bottom <= floor) return;
-  viewport.reveal(mark, { top: Math.min(120, view.height / 3) });
+  // A third of the space above the floor, so a short one still shows the match.
+  viewport.reveal(mark, { top: Math.min(120, (floor - view.top) / 3) });
 }
 /** Scroll the nearest horizontally scrolling block holding `mark` so the mark sits in it, with a
  *  little of what precedes it — only when it is not already wholly visible there. */

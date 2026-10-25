@@ -12942,14 +12942,16 @@ fn a_desktop_search_step_never_leaves_a_match_under_the_compose_box() {
     );
     harness::pause("the search's landing to settle", Duration::from_millis(600));
     // Step to it: the record lands near the top, and the match must end in sight above the box.
+    // Its record's head then sits above the column: the landing alone (the head near the top)
+    // would have left the match under the box, so only the reveal can have put it in sight.
     harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
-    let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); if (!m) return 'none'; var r = m.getBoundingClientRect(); return JSON.stringify({ above: r.bottom <= c.top + 0.5 && r.top >= t.top - 0.5, mark: [Math.round(r.top), Math.round(r.bottom)], box: Math.round(c.top), col: [Math.round(t.top), Math.round(t.bottom)] }); })()";
-    harness::pause("the step's landing to settle", Duration::from_millis(800));
-    let g = harness::eval(&tab, seen);
-    let g: serde_json::Value = serde_json::from_str(g.as_str().unwrap_or("{}")).unwrap_or_default();
-    assert_eq!(
-        g["above"], true,
-        "a step leaves the match in sight above the compose box: {g}"
+    let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); if (!m) return 'none'; var r = m.getBoundingClientRect(), rec = m.closest('[data-block-index]').getBoundingClientRect(); return JSON.stringify({ above: r.bottom <= c.top + 0.5 && r.top >= t.top - 0.5, revealed: rec.top < t.top - 0.5, mark: [Math.round(r.top), Math.round(r.bottom)], record: Math.round(rec.top), box: Math.round(c.top), col: [Math.round(t.top), Math.round(t.bottom)] }); })()";
+    harness::until(
+        &tab,
+        &format!("(function(){{ var g = {seen}; return g !== 'none' && JSON.parse(g).above && JSON.parse(g).revealed; }})()"),
+        "a step to leave the match in sight above the compose box",
+        Duration::from_secs(5),
+        seen,
     );
 }
 
