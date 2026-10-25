@@ -1243,18 +1243,26 @@ impl Index {
         // owns that write or contradicts a guess. After identity disappears or its owner exits,
         // only new transcript advancement can supply legacy proof again.
         for (sid, row) in &mut st.rows {
+            let native_owner = row.agent == Agent::CLAUDE
+                && st
+                    .procs
+                    .iter()
+                    .any(|p| p.native_session.session() == Some(sid));
+            if native_owner {
+                row.proved_pid = None;
+            }
             // Pending growth has the same lifetime as a banked proof. Even when ambiguity
             // prevented a proof, an incompatible native sighting refutes using that old write
             // on a later Missing scan. An unknown cwd cannot rule out this project.
             let native_observation = row.grew_at.is_some()
                 && row.agent == Agent::CLAUDE
-                && st.procs.iter().any(|p| {
-                    p.native_session.session() == Some(sid)
-                        || row.cwd.as_deref().is_some_and(|cwd| {
+                && (native_owner
+                    || row.cwd.as_deref().is_some_and(|cwd| {
+                        st.procs.iter().any(|p| {
                             p.cwd.as_deref().is_none_or(|actual| actual == cwd)
                                 && !p.native_session.permits(sid)
                         })
-                });
+                    }));
             // Exact native ownership supplies its own link. Its observed write must not
             // become legacy proof for a different process after the native owner exits.
             if native_observation {
@@ -5597,6 +5605,8 @@ mod tests {
             (Identity::Rejected, false),
             (Identity::Verified(current.into()), true),
             (Identity::Rejected, true),
+            (Identity::Verified(old.into()), false),
+            (Identity::Verified(old.into()), true),
         ] {
             let mut procs = parse_ps(if extra_process {
                 "700 claude\n701 claude\n"
@@ -5626,7 +5636,12 @@ mod tests {
                 "contradicted evidence expires"
             );
             let first_snapshot = idx.assemble(&st, &mut Vec::new());
-            assert!(registry_row(&first_snapshot, old).get("pid").is_none());
+            let native_owned = st.procs[0].native_session.session() == Some(old);
+            assert_eq!(
+                registry_row(&first_snapshot, old).get("pid").is_some(),
+                native_owned,
+                "native ownership supplies a current link without retaining the legacy proof"
+            );
             st.procs[0].native_session = Identity::Missing;
             // A production scan runs growth attribution again before assembling the row.
             idx.prove_by_growth(&mut st);
