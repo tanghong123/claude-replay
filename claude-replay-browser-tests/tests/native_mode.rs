@@ -1605,8 +1605,12 @@ fn native_desktop_search_step_never_leaves_a_match_under_the_composer() {
 /// panel can reach the transcript's top, and then no match is ever in sight above them. Each step
 /// fell back to the hit nearest the top, which is the one the step before had just landed, so it
 /// landed that one again: the jump's own scroll, inside the intent window the jump itself opens,
-/// had cleared the record of where it landed. Every answer here holds the needle; each step must
-/// land a different one.
+/// had cleared the record of where it landed. Remembered, the landing still was not enough while
+/// the step re-entered from the top, which starts at the first hit of the unit there: three
+/// command outputs in one unit fell back to the first. From the top, each step must land the next
+/// hit in order. (Red either way the browser reports the engine's own scroll write: where it fires
+/// a scroll event the landing was forgotten, and where it does not the step fell back inside the
+/// unit.)
 #[test]
 #[ignore = "requires release native Monitor and Chrome"]
 fn native_search_steps_move_on_when_the_composer_covers_the_whole_column() {
@@ -1618,9 +1622,21 @@ fn native_search_steps_move_on_when_the_composer_covers_the_whole_column() {
     let mut items = vec![
         serde_json::json!({"type":"session_meta","payload":{"id":"native-covered","cwd":project,"originator":"codex_cli_rs"}}),
     ];
-    for k in 0..8 {
+    // Turn 2's three commands are ONE unit with three hits, the shape that bounced between its first
+    // two once the landing was remembered: a step re-entering from the top starts at the unit's
+    // first record.
+    for k in 0..6 {
         items.push(serde_json::json!({"timestamp":format!("2026-10-19T04:{k:02}:00Z"),"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":format!("question {k}")}]}}));
-        items.push(serde_json::json!({"timestamp":format!("2026-10-19T04:{k:02}:01Z"),"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":format!("answer {k} holds the needle.\n\nIt goes on for a second paragraph.\n\nAnd a third.")}]}}));
+        let answer = if k == 2 {
+            for j in 0..3 {
+                items.push(serde_json::json!({"timestamp":format!("2026-10-19T04:{k:02}:0{}Z", 1 + 2 * j),"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":format!("call-{j}"),"arguments":format!("{{\"cmd\":\"cat part-{j}.txt\"}}")}}));
+                items.push(serde_json::json!({"timestamp":format!("2026-10-19T04:{k:02}:0{}Z", 2 + 2 * j),"type":"response_item","payload":{"type":"function_call_output","call_id":format!("call-{j}"),"output":format!("output {j} holds the needle.")}}));
+            }
+            "the commands ran.".to_string()
+        } else {
+            format!("answer {k} holds the needle.\n\nIt goes on for a second paragraph.\n\nAnd a third.")
+        };
+        items.push(serde_json::json!({"timestamp":format!("2026-10-19T04:{k:02}:09Z"),"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":answer}]}}));
     }
     let history = items
         .iter()
@@ -1679,7 +1695,7 @@ fn native_search_steps_move_on_when_the_composer_covers_the_whole_column() {
     );
     tab.press_key("Escape").unwrap();
     click(&tab, "[data-session=rollout-native-covered]");
-    wait(&tab, "document.body.dataset.sharedCodex === 'true' && document.getElementById('composer').classList.contains('production-show') && document.getElementById('transcript').innerText.includes('answer 7')");
+    wait(&tab, "document.body.dataset.sharedCodex === 'true' && document.getElementById('composer').classList.contains('production-show') && document.getElementById('transcript').innerText.includes('answer 5')");
     eval(
         &tab,
         "(() => { const i = document.getElementById('composeInput'); i.value = 'draft line 1\\ndraft line 2\\ndraft line 3\\ndraft line 4\\ndraft line 5'; i.dispatchEvent(new Event('input', { bubbles: true })); const q = document.querySelector('.shared-runtime .shared-queue'); const d = document.createElement('div'); d.style.height = '240px'; d.textContent = 'queued'; q.append(d); return true; })()",
@@ -1700,17 +1716,21 @@ fn native_search_steps_move_on_when_the_composer_covers_the_whole_column() {
         "!!document.querySelector('.virtual-window mark.search-mark.current')",
     );
     harness::pause("the search to settle", Duration::from_millis(600));
-    let landed = "(() => { const m = document.querySelector('.virtual-window mark.search-mark.current'); return m ? Number(m.closest('[data-block-index]').dataset.blockIndex) : -1; })()";
+    // From the top, so the first step lands the first hit and the rest follow in order.
+    harness::scroll_by(&tab, harness::Surface::AppShell, -100_000);
+    harness::pause("the move to the top to settle", Duration::from_millis(500));
+    let landed = "(() => { const m = document.querySelector('.virtual-window mark.search-mark.current'); return m ? ((m.parentElement.textContent.match(/(answer|output) \\d/) || ['?'])[0]) : 'none'; })()";
     let mut seen = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..6 {
         click(&tab, "#findNext");
         // Past the jump's own scroll event and the intent window it opened.
         harness::pause("the step's landing to settle", Duration::from_millis(500));
-        seen.push(eval(&tab, landed).as_i64().unwrap_or(-1));
+        seen.push(eval(&tab, landed).as_str().unwrap_or("?").to_string());
     }
-    assert!(
-        seen.iter().all(|&at| at >= 0) && seen.windows(2).all(|pair| pair[0] != pair[1]),
-        "each step lands a different hit, never the one it is on: {seen:?} ({})",
+    assert_eq!(
+        seen,
+        ["answer 0", "answer 1", "output 0", "output 1", "output 2", "answer 3"],
+        "each step lands the next hit, in order ({})",
         eval(&tab, cover)
     );
 }

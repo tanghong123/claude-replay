@@ -1721,24 +1721,26 @@ function stepSearch(delta) {
   // panel): counted unseen there, each step re-entered from the top and bounced between the last
   // two hits without ever wrapping.
   const onScreen = !!box && box.bottom >= view.top && (box.top < searchFloor(view) || box.top <= view.bottom && viewport.gapToBottom() <= 1);
+  // Where the last step LANDED the reader, while they have not moved since (#s259): pressing next
+  // where you already are must move on from there, whatever the rect says. The cursor alone cannot
+  // say this: a fresh query points it at the first hit without taking the reader anywhere, and the
+  // first step must land there. Re-entering from the top instead starts at the first hit of the
+  // UNIT at the top, so under a cover over the whole column the steps fell back inside a unit
+  // holding several hits.
+  const held = recordState.landed == null ? -1 : matches.indexOf(recordState.landed);
   if (recordState.match >= 0 && onScreen) {
     recordState.match = (recordState.match + delta + matches.length) % matches.length;
+  } else if (held >= 0) {
+    recordState.match = (held + delta + matches.length) % matches.length;
   } else {
     const top = recordIndexAtTop();
     const k = matches.findIndex(index => index >= top);
-    const nearest = delta > 0 ? (k >= 0 ? k : 0) : (k > 0 ? k - 1 : matches.length - 1);
-    // The nearest hit from the top can BE the one the reader is already looking at — after a
-    // jump it always is, since the jump put it there — and then "next" has to mean the one
-    // after it, or the control does nothing at all.
-    // Advance only when the nearest hit is the one a jump LANDED the reader on — pressing next
-    // where you already are must move. The cursor alone cannot say this: a fresh query points it
-    // at the first hit without taking the reader anywhere, and the first step must land there.
-    const already = matches[nearest] === recordState.landed;
-    recordState.match = already ? (nearest + delta + matches.length) % matches.length : nearest;
+    recordState.match = delta > 0 ? (k >= 0 ? k : 0) : (k > 0 ? k - 1 : matches.length - 1);
   }
   recordState.landed = matches[recordState.match];
-  viewport.jumpToRecord(recordState.landed, textual ? "search" : "filter");
-  recordState.landedAt = performance.now();
+  // A record a tail-first open has not brought yet is not reached (#314): nothing landed there.
+  if (viewport.jumpToRecord(recordState.landed, textual ? "search" : "filter")) recordState.landedAt = performance.now();
+  else recordState.landed = null;
   if (!textual) return;
   markSearch();
   landOnCurrentMark();
@@ -2331,8 +2333,7 @@ function applyToolFilter() {
     const start = recordIndexAtTop();
     const target = indices.find(index => index >= start) ?? indices[0];
     recordState.match = target == null ? -1 : indices.indexOf(target);
-    recordState.landed = target ?? null;
-    if (target != null) viewport.jumpToRecord(target, "filter");
+    recordState.landed = target != null && viewport.jumpToRecord(target, "filter") ? target : null;
     recordState.landedAt = performance.now();
   } else if (recordState.filterHits) {
     const snapshot = recordState.filterSnapshot;

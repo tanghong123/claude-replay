@@ -116,9 +116,12 @@ dock, an open compose box (native mode's is resident) and native mode's runtime 
 while it is drawn, at any width. A match under one is neither counted as already seen nor left there
 by a landing, except at the view's end, where nothing can lift it (a phone's keyboard, a tall
 panel): there it counts as seen, or the steps bounce between the last two hits and never wrap.
-A step remembers the hit it landed until the reader's own input AFTER the landing (#s259): the
-jump stamps intent itself, and its own scroll used to clear that memory, so where a cover reaches
-the transcript's top (native mode in a short window) every step landed the same hit again.
+A step remembers the hit it landed, and the next step goes on from THAT hit when the current one
+is not in sight, until the reader moves: a scroll within the intent window of input that came
+after the landing, or a new query (#s259). The jump stamps intent itself, and its own scroll used
+to clear that memory; and a step re-entering from the top starts at the first hit of the unit
+there. So where a cover reaches the transcript's top (native mode in a short window) every step
+landed the same hit again, or fell back inside a unit holding several.
 The cases are `a_desktop_search_step_never_leaves_a_match_under_the_compose_box`,
 `a_desktop_search_first_step_lands_on_a_first_hit_under_the_compose_box`,
 `a_phone_search_with_the_keyboard_up_wraps_past_a_last_hit_under_the_dock`,
