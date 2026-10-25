@@ -109,9 +109,11 @@ its column; it is one caption line (name, target, a pane grant's revoke, ✕; th
 over ONE line of field that grows with the draft, at the box's current width, to a cap (a share of the
 column) and then scrolls; the transcript's end is padded above it (`--compose-room`), a reader following
 the end is kept there (`convergeBottom`) and one scrolled up is not moved, the jump to the end rides
-above it, and a search step's landing treats it as an obstacle, as it treats the phone's dock
-(#s248, `a_desktop_search_step_never_leaves_a_match_under_the_compose_box`; native mode's resident
-composer is not one yet). Native mode lays out its own
+above it. A search step treats it as covering the transcript's foot, as it treats the phone's dock
+and native mode's resident composer, both when it asks whether a match is already in sight and when
+it lands one (`searchFloor`; #s248, #s257: `a_desktop_search_step_never_leaves_a_match_under_the_compose_box`,
+`a_desktop_search_first_step_lands_on_a_first_hit_under_the_compose_box`,
+`native_desktop_search_step_never_leaves_a_match_under_the_composer`). Native mode lays out its own
 (`a_desktop_compose_box_keeps_to_the_session_column_and_grows_with_its_draft`).
 **Codex native mode's composer is resident** (the owner): once native mode is
 enabled, its compact composer stays visible on desktop and phone with no close action;

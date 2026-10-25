@@ -1774,7 +1774,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // #100: stepping re-enters from the viewport once the current hit is off screen; the term lands in view.
 {
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
-  assert.match(app, /const onScreen = !!box && box\.bottom >= view\.top && box\.top <= view\.bottom;/, "the current hit's mark decides whether the sequence continues");
+  assert.match(app, /const onScreen = !!box && box\.bottom >= view\.top && box\.top < searchFloor\(view\);/, "the current hit's mark decides whether the sequence continues — in sight above whatever covers the transcript's foot (#s257)");
   assert.match(app, /const k = matches\.findIndex\(index => index >= top\);/, "…else the first hit at or below the viewport top");
   assert.match(app, /const nearest = delta > 0 \? \(k >= 0 \? k : 0\) : \(k > 0 \? k - 1 : matches\.length - 1\);/, "forward from there, backward from the one above, wrapping");
   assert.match(app, /function landOnCurrentMark\(\) \{/, "the landing brings the term into view");

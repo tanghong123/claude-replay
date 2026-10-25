@@ -13070,6 +13070,78 @@ fn a_desktop_search_step_never_leaves_a_match_under_the_compose_box() {
     );
 }
 
+/// #s257 (found by the review of #s248): a fresh query points the search at its FIRST hit without
+/// moving the reader, and the first ↓ lands there, or moves on to the next hit if the first is
+/// already on screen. On a desktop with the compose box open, a first hit under the box counted
+/// as on screen, so ↓ skipped it and the reader never saw it. Here "needle one" sits under the box
+/// when the query is typed; the first ↓ must land on it, above the box, not on "needle two".
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_desktop_search_first_step_lands_on_a_first_hit_under_the_compose_box() {
+    let _serial = serial();
+    let base = harness::base("desktop-compose-first-hit");
+    let stores = harness::Stores::new(&base);
+    let mut t = harness::long_session(6, harness::Shape::default());
+    for (k, (ask, answer)) in [
+        ("where is the first one", "needle one sits in this answer."),
+        ("and the next", "plain words only here."),
+        ("and after that", "needle two sits in this answer."),
+        ("last", "nothing more."),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let k = k as u64;
+        t += &harness::user_at(ask, &harness::now_minus(600 - 60 * k));
+        t += &harness::assistant_at(answer, &harness::now_minus(590 - 60 * k));
+    }
+    stores.claude_session(PHONE_SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3247, &base, Some(&stores), true);
+    let (_b, tab) = desktop_tab(&m);
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "(function(){ document.getElementById('composeFab').click(); var i = document.getElementById('composeInput'); i.value = 'draft line 1\\ndraft line 2\\ndraft line 3'; i.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    harness::pause("the box to take its lines", Duration::from_millis(500));
+    // Bring "needle one" down under the box: the reader scrolls up until it sits in the box's band.
+    let first = "(function(){ var e = [...document.querySelectorAll('.virtual-window [data-block-index]')].find(function (n) { return /needle one/.test(n.textContent) && !n.querySelector('[data-block-index]'); }), c = document.getElementById('composer').getBoundingClientRect(); if (!e) return null; var r = e.getBoundingClientRect(); return JSON.stringify({ top: Math.round(r.top), bottom: Math.round(r.bottom), box: Math.round(c.top), boxBottom: Math.round(c.bottom) }); })()";
+    let at = harness::eval(&tab, first);
+    let at: serde_json::Value = serde_json::from_str(at.as_str().unwrap_or("null")).unwrap();
+    let dy = at["top"].as_f64().unwrap() - (at["box"].as_f64().unwrap() + 12.0);
+    harness::scroll_by(&tab, harness::Surface::AppShell, dy as i64);
+    harness::pause("the scroll to settle", Duration::from_millis(500));
+    let under = harness::eval(&tab, first);
+    let under: serde_json::Value = serde_json::from_str(under.as_str().unwrap_or("null")).unwrap();
+    assert!(
+        under["top"].as_f64().unwrap() >= under["box"].as_f64().unwrap()
+            && under["top"].as_f64().unwrap() < under["boxBottom"].as_f64().unwrap(),
+        "premise: the first hit sits under the box before the query: {under}"
+    );
+    harness::eval(&tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window mark.search-mark.current')",
+        "the query to mark its first hit",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    harness::pause("the query to settle", Duration::from_millis(400));
+    harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+    let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); if (!m) return 'none'; var r = m.getBoundingClientRect(); return JSON.stringify({ text: m.closest('[data-block-index]').textContent.match(/needle \\w+/)[0], above: r.bottom <= c.top + 0.5 && r.top >= t.top - 0.5, mark: Math.round(r.top), box: Math.round(c.top) }); })()";
+    harness::until(
+        &tab,
+        &format!("(function(){{ var g = {seen}; if (g === 'none') return false; g = JSON.parse(g); return g.text === 'needle one' && g.above; }})()"),
+        "the first step to land on the first hit, in sight above the box",
+        Duration::from_secs(5),
+        seen,
+    );
+}
+
 /// #s237: the page's own world for a session in a herdr pane — `/api/sessions` says the phone's
 /// session is a live, consented Claude session in herdr pane w1:p2 that takes images, and
 /// `/api/send` is answered here and recorded (`window.__sent`), so nothing is typed anywhere.

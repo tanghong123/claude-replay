@@ -1463,6 +1463,122 @@ fn delivery_recovery(
         .iter()
         .any(|m| m == "thread/queue/delete"));
 }
+/// #s257 (found by the review of #s248): native mode's composer stays open over the transcript's
+/// foot, and a search step only counted the ordinary box as covering it. A step lands the match's
+/// record near the top; the only match here is paragraph 14 of a 30-paragraph answer, with a few
+/// draft lines in the composer, so the landing alone leaves it under the composer. The step must
+/// leave it in sight above the composer, its record's head above the column (only the reveal does
+/// that).
+#[test]
+#[ignore = "requires release native Monitor and Chrome"]
+fn native_desktop_search_step_never_leaves_a_match_under_the_composer() {
+    let _serial = serial();
+    let root = base("native-desktop-search");
+    let stores = Stores::new(&root);
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let tall = (1..=30)
+        .map(|k| {
+            if k == 14 {
+                "paragraph 14 holds the needle the search looks for.".to_string()
+            } else {
+                format!("paragraph {k} of the long answer.")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let mut items = vec![
+        serde_json::json!({"type":"session_meta","payload":{"id":"native-search","cwd":project,"originator":"codex_cli_rs"}}),
+    ];
+    let turns = [
+        ("give me the long answer".to_string(), tall),
+        ("and a short one".into(), "short.".into()),
+        ("another".into(), "also short.".into()),
+        ("last".into(), "done.".into()),
+    ];
+    for (k, (ask, answer)) in turns.iter().enumerate() {
+        items.push(serde_json::json!({"timestamp":format!("2026-10-19T04:0{k}:00Z"),"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":ask}]}}));
+        items.push(serde_json::json!({"timestamp":format!("2026-10-19T04:0{k}:01Z"),"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":answer}]}}));
+    }
+    let history = items
+        .iter()
+        .map(|value| value.to_string() + "\n")
+        .collect::<String>();
+    let rollout = stores.codex_session("native-search", &history);
+    let native = native::NativeServer::start(&project, &root.join("state-19844"), &rollout);
+    let endpoint = native.endpoint.clone();
+    let args = vec![
+        "--codex-server-url",
+        endpoint.as_str(),
+        "--codex-allowed-root",
+        project.to_str().unwrap(),
+    ];
+    let monitor = Monitor::spawn_with_args(
+        Kind::V1,
+        19844,
+        &root,
+        Some(&stores),
+        true,
+        &[
+            ("HOME", root.to_str().unwrap()),
+            (
+                "CODEX_NATIVE_BINARY",
+                "/nonexistent/native-fixture-must-not-launch-codex",
+            ),
+        ],
+        &args,
+    );
+    let (_browser, tab) = chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    monitor.pair(&tab);
+    monitor.open(&tab, "/?ui=app");
+    wait(
+        &tab,
+        "!!document.getElementById('codexNativeButton') && innerWidth >= 1200",
+    );
+    click(&tab, "#filterBtn");
+    click(&tab, "[data-filter-reset]");
+    click(&tab, "#filterBtn");
+    click(&tab, "#writeSwitch");
+    wait(&tab, "!document.getElementById('codexNativeButton').hidden");
+    click(&tab, "#codexNativeButton");
+    wait(
+        &tab,
+        "document.getElementById('nativeEnable')?.getAttribute('aria-checked') === 'false'",
+    );
+    click(&tab, "#nativeEnable");
+    wait(
+        &tab,
+        "document.getElementById('codexNativeButton')?.dataset.nativeEnabled === 'true'",
+    );
+    wait(
+        &tab,
+        "!!document.querySelector('[data-session=rollout-native-search]')",
+    );
+    tab.press_key("Escape").unwrap();
+    click(&tab, "[data-session=rollout-native-search]");
+    wait(&tab, "document.body.dataset.sharedCodex === 'true' && document.getElementById('composer').classList.contains('production-show') && document.getElementById('transcript').innerText.includes('paragraph 30')");
+    eval(
+        &tab,
+        "(() => { const i = document.getElementById('composeInput'); i.value = 'draft line 1\\ndraft line 2\\ndraft line 3\\ndraft line 4\\ndraft line 5'; i.dispatchEvent(new Event('input', { bubbles: true })); return true; })()",
+    );
+    eval(&tab, "(() => { const b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return true; })()");
+    wait(
+        &tab,
+        "!!document.querySelector('.virtual-window mark.search-mark.current')",
+    );
+    harness::pause("the search to settle", Duration::from_millis(600));
+    click(&tab, "#findNext");
+    // The composer and, when it shows, the runtime panel above it are what cover the foot.
+    let seen = "(() => { const m = document.querySelector('.virtual-window mark.search-mark.current'), t = document.getElementById('transcript').getBoundingClientRect(); if (!m) return 'none'; const covers = [document.getElementById('composer'), document.querySelector('.shared-runtime')].filter(e => e && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().height > 0).map(e => e.getBoundingClientRect().top); const floor = Math.min(t.bottom, ...covers); const r = m.getBoundingClientRect(), rec = m.closest('[data-block-index]').getBoundingClientRect(); return JSON.stringify({ above: r.bottom <= floor + 0.5 && r.top >= t.top - 0.5, revealed: rec.top < t.top - 0.5, mark: [Math.round(r.top), Math.round(r.bottom)], record: Math.round(rec.top), floor: Math.round(floor), col: [Math.round(t.top), Math.round(t.bottom)] }); })()";
+    until(
+        &tab,
+        &format!("(() => {{ const g = {seen}; return g !== 'none' && JSON.parse(g).above && JSON.parse(g).revealed; }})()"),
+        "a step to leave the match in sight above native mode's composer",
+        Duration::from_secs(5),
+        seen,
+    );
+}
 #[test]
 #[ignore = "requires release native Monitor and Chrome"]
 fn native_desktop_lifecycle() {

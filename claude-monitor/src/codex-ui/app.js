@@ -1714,7 +1714,8 @@ function stepSearch(delta) {
     ? viewport.window.querySelector("mark.search-mark.current")
     : (at != null ? [...viewport.window.querySelectorAll("[data-block-index]")].find(element => Number(element.dataset.blockIndex) === at) : null);
   const box = current?.getBoundingClientRect(), view = viewport.scroller.getBoundingClientRect();
-  const onScreen = !!box && box.bottom >= view.top && box.top <= view.bottom;
+  // #s257: a match under the box or the dock is not one the reader has seen; the step lands on it.
+  const onScreen = !!box && box.bottom >= view.top && box.top < searchFloor(view);
   if (recordState.match >= 0 && onScreen) {
     recordState.match = (recordState.match + delta + matches.length) % matches.length;
   } else {
@@ -1779,16 +1780,31 @@ function landOnCurrentMark() {
   // with the match out of sight. The block's own scrollLeft, never the transcript's offset.
   revealSideways(mark);
   const box = mark.getBoundingClientRect(), view = viewport.scroller.getBoundingClientRect();
-  // #s37: on a phone the toolbar floats over the transcript's foot (and the find pill with it), so a
-  // match under it is not on screen.
-  let floor = phoneDock && getComputedStyle(phoneDock).display !== "none" ? Math.min(view.bottom, phoneDock.getBoundingClientRect().top) : view.bottom;
-  // #s248: on a desktop the open compose box covers the transcript's foot (#s245), so a match
-  // under it is not on screen either.
-  const deskBox = document.querySelector(".workspace.desk-composing #composer");
-  if (deskBox) floor = Math.min(floor, deskBox.getBoundingClientRect().top);
+  // A match under whatever floats over the transcript's foot is not on screen (#s37, #s248, #s257).
+  const floor = searchFloor(view);
   if (box.top >= view.top && box.bottom <= floor) return;
   // A third of the space above the floor, so a short one still shows the match.
   viewport.reveal(mark, { top: Math.min(120, (floor - view.top) / 3) });
+}
+/** Where a match stops being in sight at the transcript's foot: the bottom of `view`, or whatever is
+ *  drawn over it there. On a phone the toolbar floats over the foot (#s37); on a desktop an open
+ *  compose box does (#s245, #s248), and native mode's resident composer with its runtime panel
+ *  above it (#s257). A step's "already on screen" and its landing both ask this, so a match under
+ *  any of them is neither seen nor left there. */
+function searchFloor(view) {
+  let floor = view.bottom;
+  const over = element => {
+    if (!element || getComputedStyle(element).display === "none") return;
+    const r = element.getBoundingClientRect();
+    if (r.height > 0 && r.top > view.top) floor = Math.min(floor, r.top);
+  };
+  over(phoneDock);
+  if (!matchMedia(PHONE_QUERY).matches) {
+    const composer = byId("composer");
+    if (composer.classList.contains("production-show")) over(composer);
+    over(document.querySelector(".shared-runtime"));
+  }
+  return floor;
 }
 /** Scroll the nearest horizontally scrolling block holding `mark` so the mark sits in it, with a
  *  little of what precedes it — only when it is not already wholly visible there. */
