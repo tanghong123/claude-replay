@@ -14899,3 +14899,131 @@ fn a_phone_s_turns_list_stays_where_the_finger_left_it() {
         drop(monitor);
     }
 }
+
+/// #s264 (raised by the third review of #s259): a step that re-enters from the reader's place starts
+/// at the first hit at or after the record at the top. That record was the UNIT's first, and a
+/// process unit groups a turn's calls and progress and can be thousands of pixels tall, so a reader
+/// deep inside one was sent back to its first hit. Here one Codex process unit holds four commands,
+/// each output long and holding a hit, every detail opened by the section's own control. Scrolled to the
+/// third output, a fresh query's first step lands there, not on the first; and after a move the
+/// engine never hears, back to the first output inside the same unit, the next step enters there
+/// rather than going on from the third.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_search_step_deep_inside_a_tall_unit_enters_at_the_record_there() {
+    let _serial = serial();
+    let base = harness::base("search-tall-unit");
+    let stores = harness::Stores::new(&base);
+    // A Codex rollout: there each command is a record of its own, where Claude's consecutive calls
+    // are ONE act record, whose hits are one match.
+    let sid = "019a0000-0000-7000-8000-000000000264";
+    let mut items = vec![
+        serde_json::json!({"timestamp": harness::rfc3339_secs_ago(900), "type": "session_meta", "payload": {"id": sid, "cwd": "/r", "originator": "codex-tui", "cli_version": "0.147.0"}}),
+    ];
+    let filler: String = (1..=30).map(|n| format!("plain line {n}\n")).collect();
+    for k in 0..4u64 {
+        let ts = |d: u64| harness::rfc3339_secs_ago(880 - 60 * k - d);
+        items.push(serde_json::json!({"timestamp": ts(0), "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": format!("question {k}")}]}}));
+        if k == 3 {
+            for j in 0..4u64 {
+                items.push(serde_json::json!({"timestamp": ts(1 + 2 * j), "type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "call_id": format!("call-{j}"), "arguments": format!("{{\"cmd\":\"cat part-{j}.txt\"}}")}}));
+                items.push(serde_json::json!({"timestamp": ts(2 + 2 * j), "type": "response_item", "payload": {"type": "function_call_output", "call_id": format!("call-{j}"), "output": format!("output {j} holds the needle.\n{filler}")}}));
+            }
+        }
+        items.push(serde_json::json!({"timestamp": ts(20), "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": format!("answer {k}.")}]}}));
+    }
+    let history: String = items.iter().map(|v| v.to_string() + "\n").collect();
+    stores.codex_session(sid, &history);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3252, &base, Some(&stores), true);
+    let (_b, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    m.pair(&tab);
+    // The monitor keys a Codex session by its file's stem.
+    m.open(&tab, &format!("?ui=app&session=rollout-{sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user') && innerWidth >= 1200 && !!document.querySelector('[data-process-surface]')",
+        "the Codex session to draw its process unit",
+        Duration::from_secs(30),
+        "document.querySelector('.transcript') && document.querySelector('.transcript').innerText.slice(0, 300)",
+    );
+    harness::eval(&tab, "(function(){ var p = [...document.querySelectorAll('[data-process-surface]')].pop(); p.querySelector('[data-process-bulk]').click(); return 'ok'; })()");
+    harness::pause(
+        "every detail of the section to open",
+        Duration::from_millis(800),
+    );
+    // Where each output's record row sits against the line the page reads the top by, and which
+    // unit holds it: all four must be ONE unit, taller than the view, or the case tests nothing.
+    let rows = "(function(){ var t = document.querySelector('.session-main>.transcript'), r = t.getBoundingClientRect(), line = r.top + (parseFloat(getComputedStyle(t).scrollPaddingTop) || 18) + 8; var out = { line: Math.round(line), view: [Math.round(r.top), Math.round(r.bottom)], rows: {} }; [...document.querySelectorAll('.virtual-window [data-block-index]')].forEach(function (e) { var m = e.textContent.match(/output (\\d) holds the needle/); if (!m || e.querySelector('[data-block-index]')) return; var b = e.getBoundingClientRect(), u = e.closest('[data-unit-key]'); var rec = e; while (rec && !Number.isInteger(Number(rec.dataset.blockIndex))) rec = rec.parentElement && rec.parentElement.closest('[data-block-index]'); out.rows[m[1]] = { top: Math.round(b.top), bottom: Math.round(b.bottom), record: rec && rec.dataset.blockIndex, unit: u && u.dataset.unitKey, unitHeight: u && Math.round(u.getBoundingClientRect().height) }; }); return JSON.stringify(out); })()";
+    let read = |tab: &headless_chrome::Tab| -> serde_json::Value {
+        serde_json::from_str(harness::eval(tab, rows).as_str().unwrap_or("null")).unwrap()
+    };
+    let to_row = |tab: &headless_chrome::Tab, k: &str| {
+        // The row's top just above the line: the reader is at that output's start.
+        let g = read(tab);
+        let dy = g["rows"][k]["top"].as_f64().unwrap() - (g["line"].as_f64().unwrap() - 4.0);
+        dy as i64
+    };
+    let g = read(&tab);
+    assert!(
+        (0..4).all(
+            |k| g["rows"][k.to_string()]["unit"] == g["rows"]["0"]["unit"]
+                && !g["rows"]["0"]["unit"].is_null()
+        ) && (0..4)
+            .map(|k| g["rows"][k.to_string()]["record"].to_string())
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            == 4
+            && g["rows"]["0"]["unitHeight"].as_f64().unwrap_or(0.0)
+                > 2.0 * (g["view"][1].as_f64().unwrap() - g["view"][0].as_f64().unwrap()),
+        "premise: the four outputs are four records of one unit, taller than two views: {g}"
+    );
+    let dy = to_row(&tab, "2");
+    harness::scroll_by(&tab, harness::Surface::AppShell, dy);
+    harness::pause("the scroll to settle", Duration::from_millis(500));
+    let g = read(&tab);
+    let (top, line) = (
+        g["rows"]["2"]["top"].as_f64().unwrap_or(f64::NAN),
+        g["line"].as_f64().unwrap(),
+    );
+    assert!(
+        top <= line && top > line - 40.0,
+        "premise: the reader is at the third output's start: {g}"
+    );
+    harness::eval(&tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window mark.search-mark')",
+        "the query to mark its hits",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    harness::pause("the query to settle", Duration::from_millis(400));
+    let landed = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); var e = m && m.closest('[data-block-index]'); var g = e && e.textContent.match(/output (\\d) holds/); return g ? Number(g[1]) : -1; })()";
+    harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+    harness::pause("the step's landing to settle", Duration::from_millis(600));
+    assert_eq!(
+        harness::eval(&tab, landed).as_i64().unwrap_or(-1),
+        2,
+        "a reader at the third output steps onto its hit, not the unit's first: {}",
+        read(&tab)
+    );
+    // Back to the first output by script, which the engine never hears: still inside the unit.
+    let dy = to_row(&tab, "0");
+    harness::eval(&tab, &format!("(function(){{ var s = document.querySelector('.session-main>.transcript'); s.scrollTo({{ top: s.scrollTop + ({dy}), behavior: 'instant' }}); return 'ok'; }})()"));
+    harness::pause("the move to settle", Duration::from_millis(700));
+    let g = read(&tab);
+    assert!(
+        g["rows"]["2"].is_null()
+            || g["rows"]["2"]["top"].as_f64().unwrap() >= g["view"][1].as_f64().unwrap(),
+        "premise: the output the step landed is out of view after the move: {g}"
+    );
+    harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+    harness::pause("the step's landing to settle", Duration::from_millis(600));
+    assert_eq!(
+        harness::eval(&tab, landed).as_i64().unwrap_or(-1),
+        0,
+        "after a move the engine did not hear, the step enters at the output there, not after the one it left: {}",
+        read(&tab)
+    );
+}

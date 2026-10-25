@@ -122,21 +122,30 @@ bar and the cover, at most 120px down. Measured from the column's top, a cover w
 short window with the box open) left the match behind the bar. A step's "already seen" keeps the
 column's top: a hit the reader scrolled up behind the bar is behind them, not ahead.
 A step remembers the hit it landed, and the next step goes on from THAT hit when the current one
-is not in sight, while its unit still crosses the view, until the reader moves: a scroll within
+is not in sight, while its record still crosses the view, until the reader moves: a scroll within
 the intent window of input that came after the landing, or a new query (#s259). The jump stamps
 intent itself, and its own scroll used to clear that memory; and a step re-entering from the top
-starts at the first hit of the unit there. So where a cover reaches the transcript's top (native
+started at the first hit of the unit there. So where a cover reaches the transcript's top (native
 mode in a short window) every step landed the same hit again, or fell back inside a unit holding
-several. The unit's being in view is what catches a move the engine never hears as input (a key
+several. The record's being in view is what catches a move the engine never hears as input (a key
 the browser scrolls with natively, the browser's own find): that reader enters at the hit nearest
-them.
+them. Both read RECORDS, not units (#s264): the re-entry starts at the last record row drawn at or
+above the spy's line inside the unit there (`recordIndexAtTop`, the unit's first where none is
+drawn), and the landed hit is in view by its own row (its unit's where the row is not drawn). A
+process unit groups a turn's calls and can
+be thousands of pixels tall, so the unit sent a reader deep inside one back to its first hit, and
+kept going on from a hit they had scrolled away from inside it. A filter's landing reads the same
+place. A step goes from record to record: a Codex unit holds a record per command, while Claude's
+consecutive Bash, Read and thinking are ONE act record (each call a sub-row under the record's own
+row; Edit, Write and Skill stand alone), whose hits are one match.
 The cases are `a_desktop_search_step_never_leaves_a_match_under_the_compose_box`,
 `a_desktop_search_first_step_lands_on_a_first_hit_under_the_compose_box`,
 `a_phone_search_with_the_keyboard_up_wraps_past_a_last_hit_under_the_dock`,
 `native_desktop_search_step_never_leaves_a_match_under_the_composer`,
 `native_search_steps_move_on_when_the_composer_covers_the_whole_column`,
-`a_search_step_after_an_unheard_move_enters_at_the_nearest_hit` and
-`a_search_step_in_a_short_space_leaves_the_match_below_the_turn_bar`.
+`a_search_step_after_an_unheard_move_enters_at_the_nearest_hit`,
+`a_search_step_in_a_short_space_leaves_the_match_below_the_turn_bar` and
+`a_search_step_deep_inside_a_tall_unit_enters_at_the_record_there`.
 **Codex native mode's composer is resident** (the owner): once native mode is
 enabled, its compact composer stays visible on desktop and phone with no close action;
 thread text and image drafts belong to the selected thread. The ordinary writer keeps the

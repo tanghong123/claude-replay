@@ -1747,11 +1747,13 @@ function stepSearch(delta) {
   markSearch();
   landOnCurrentMark();
 }
-/** Whether the unit holding the record a step last landed still crosses `view` — covered or not. */
+/** Whether the record a step last landed still crosses `view` — covered or not: its own row, or its
+ *  unit's where its row is not drawn (#s264: a reader who moved within a tall unit has left it). */
 function landedInView(view) {
   const unit = recordState.units.find(u => recordState.landed >= u.from && recordState.landed <= u.to);
-  const row = unit && [...viewport.window.children].find(child => child.dataset.unitKey === unit.key);
-  const r = row?.getBoundingClientRect();
+  const row = unit && unitRow(unit.key);
+  const own = row && [...row.querySelectorAll("[data-block-index]")].find(element => Number(element.dataset.blockIndex) === recordState.landed && element.getBoundingClientRect().height > 0);
+  const r = (own || row)?.getBoundingClientRect();
   return !!r && r.bottom > view.top && r.top < view.bottom;
 }
 /** A hit inside a head's one-line TARGET is unreachable until the target is shown in full
@@ -3218,10 +3220,26 @@ function unitAtTop() {
 }
 /** The record index the viewport starts at — `unitAtTop` names a UNIT, and a unit's key is not
  *  a record index; reading `.from` off the key gave `undefined`, so every cold step and every
- *  filter landed on the session's first hit instead of the nearest one (#118). */
+ *  filter landed on the session's first hit instead of the nearest one (#118). Inside the unit it
+ *  is the last record row drawn at or above the same line (#s264): a process unit groups a turn's
+ *  calls and can be thousands of pixels tall, and its `.from` sent a reader deep inside it back to
+ *  its first hit. The unit's `.from` stands in where no row of it is drawn there (a folded one).
+ *  A record's own sub-rows (a call inside an act, `11.1`) are not records and are passed over;
+ *  the first reads `11.0`, which is its record's index again. */
 function recordIndexAtTop() {
   const key = unitAtTop();
-  return recordState.units.find(unit => unit.key === key)?.from ?? 0;
+  const unit = recordState.units.find(u => u.key === key);
+  if (!unit) return 0;
+  const line = viewport.scroller.getBoundingClientRect().top + viewport.landing + 8;
+  let at = unit.from;
+  for (const element of unitRow(key)?.querySelectorAll("[data-block-index]") || []) {
+    const index = Number(element.dataset.blockIndex), r = element.getBoundingClientRect();
+    if (Number.isInteger(index) && index > at && index <= unit.to && r.height > 0 && r.top <= line) at = index;
+  }
+  return at;
+}
+function unitRow(key) {
+  return [...viewport.window.children].find(child => child.dataset.unitKey === key);
 }
 // The turn the reader is in — ONE rule for the turn bar, the navigator pane and the keys. At
 // the bottom no further header can ever cross the line, so the last turn could otherwise never

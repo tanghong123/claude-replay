@@ -2124,7 +2124,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(comp118, /data-record-kind="\$\{escapeText\(view\.raw\?\.kind \|\| view\.renderer\)\}"/, "every renderer row carries its record kind");
   assert.match(comp118, /class="turn user" data-kind="user" data-record-kind="user"/);
   assert.match(comp118, /class="turn user command" data-kind="user" data-record-kind="command"/);
-  assert.match(app, /const key = unitAtTop\(\);\n  return recordState\.units\.find\(unit => unit\.key === key\)\?\.from \?\? 0;/, "a unit key is resolved to a record index");
+  assert.match(app, /const key = unitAtTop\(\);\n  const unit = recordState\.units\.find\(u => u\.key === key\);\n  if \(!unit\) return 0;/, "a unit key is resolved to a record index");
+  assert.match(app, /let at = unit\.from;\n  for \(const element of unitRow\(key\)\?\.querySelectorAll\("\[data-block-index\]"\) \|\| \[\]\) \{\n[^\n]*\n\s*if \(Number\.isInteger\(index\) && index > at && index <= unit\.to && r\.height > 0 && r\.top <= line\) at = index;/, "…the last record row of that unit drawn at or above the line, its `.from` where none is (#s264)");
+  assert.match(app, /const r = \(own \|\| row\)\?\.getBoundingClientRect\(\);/, "…and a landed hit is in view by its own row, its unit's where its row is not drawn (#s264)");
   assert.doesNotMatch(app, /unitAtTop\(\)\?\.from/, "…never read as one");
   const js = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
   assert.match(js, /var q = shared\.splitQuery\(v, undefined, resolveSearchTools\);/, "the classic page runs the same split, with the same letters");
