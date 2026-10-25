@@ -33002,10 +33002,10 @@ function agentLabel(a) {
 // packages/core/dist/shared.js
 init_annotations();
 import { spawn as spawn5 } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync4, readdirSync as readdirSync3, renameSync as renameSync3, rmSync as rmSync2, statSync as statSync3, unlinkSync as unlinkSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { homedir as homedir2, hostname as hostname2, userInfo } from "node:os";
-import { basename as basename2, dirname as dirname3, join as join7 } from "node:path";
+import { createHash as createHash2, randomBytes as randomBytes2 } from "node:crypto";
+import { existsSync as existsSync2, mkdirSync as mkdirSync4, readFileSync as readFileSync5, readdirSync as readdirSync4, renameSync as renameSync4, rmSync as rmSync3, statSync as statSync4, unlinkSync as unlinkSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { homedir as homedir3, hostname as hostname2, userInfo } from "node:os";
+import { basename as basename2, dirname as dirname4, join as join8 } from "node:path";
 
 // packages/core/dist/events.js
 import { appendFileSync, mkdirSync as mkdirSync2, readdirSync as readdirSync2, readFileSync as readFileSync3, renameSync as renameSync2, statSync as statSync2, unlinkSync } from "node:fs";
@@ -33357,6 +33357,549 @@ async function publicRepository(url, cwd) {
   }
 }
 
+// packages/core/dist/service-mode.js
+init_annotations();
+import { execFile as execFile2 } from "node:child_process";
+import { createHash } from "node:crypto";
+import { chmodSync, closeSync, mkdirSync as mkdirSync3, openSync, readFileSync as readFileSync4, readdirSync as readdirSync3, renameSync as renameSync3, rmSync as rmSync2, statSync as statSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { stat as stat2 } from "node:fs/promises";
+import { homedir as homedir2 } from "node:os";
+import { dirname as dirname3, join as join7 } from "node:path";
+
+// packages/core/dist/note-ops.js
+init_annotations();
+import { randomBytes } from "node:crypto";
+var opId = () => `op-${Date.now().toString(36)}-${randomBytes(5).toString("hex")}`;
+var same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+function opsFor(path2, before, after) {
+  if (!before && !after)
+    return [];
+  const id = (after ?? before).id;
+  const base3 = { id, path: path2 };
+  if (!before)
+    return [{ ...base3, op: opId(), kind: "add", record: after }];
+  if (!after)
+    return [{ ...base3, op: opId(), kind: "delete" }];
+  const out = [];
+  const had = new Set((before.replies ?? []).map((r) => r.at));
+  const has = new Set((after.replies ?? []).map((r) => r.at));
+  for (const r of before.replies ?? [])
+    if (!has.has(r.at))
+      out.push({ ...base3, op: opId(), kind: "delete-reply", at: r.at });
+  for (const r of after.replies ?? [])
+    if (!had.has(r.at))
+      out.push({ ...base3, op: opId(), kind: "reply", reply: r });
+  for (const r of after.replies ?? []) {
+    const was2 = (before.replies ?? []).find((b) => b.at === r.at);
+    if (was2?.draft && !was2.draft.shared && r.draft?.shared)
+      out.push({ ...base3, op: opId(), kind: "draft-shared", at: r.at, shared: r.draft.shared, ...after.answered ? { answered: after.answered } : {} });
+  }
+  const was = { status: before.status, body: before.body };
+  if (after.body !== before.body) {
+    const edit = (after.edits ?? []).find((e) => !(before.edits ?? []).some((b) => b.at === e.at));
+    out.push({ ...base3, op: opId(), kind: "edit", body: after.body, ...edit ? { edit } : {}, was });
+  }
+  if (after.status !== before.status || !same(after.resolvedBy, before.resolvedBy)) {
+    out.push({ ...base3, op: opId(), kind: "status", status: after.status, ...after.resolvedBy ? { resolvedBy: after.resolvedBy } : {}, was: { status: before.status, body: after.body } });
+  }
+  return out;
+}
+async function applyOp(home, op) {
+  const all4 = await listAnnotations(home, op.path);
+  const at = all4.findIndex((a) => a.id === op.id);
+  if (op.kind === "add") {
+    if (at === -1)
+      await placeAnnotation(home, op.path, { ...op.record, id: op.id });
+    return { op: op.op, applied: true };
+  }
+  if (at === -1)
+    return op.kind === "delete" ? { op: op.op, applied: true } : { op: op.op, dropped: `${op.id} was deleted on another device` };
+  const note = all4[at];
+  if ((op.kind === "status" || op.kind === "edit") && op.was) {
+    const done = op.kind === "status" ? note.status === op.status && same(note.resolvedBy, op.resolvedBy) : note.body === op.body;
+    if (done)
+      return { op: op.op, applied: true };
+    if (note.status !== op.was.status || note.body !== op.was.body) {
+      const now = note.body !== op.was.body ? "its words were changed" : `it was ${note.status === "open" ? "reopened" : note.status}`;
+      return { op: op.op, dropped: `${op.id} changed on another device since this was done (${now}): read it again` };
+    }
+  }
+  switch (op.kind) {
+    case "delete":
+      all4.splice(at, 1);
+      break;
+    case "reply": {
+      const replies = note.replies ?? [];
+      if (replies.some((r) => r.at === op.reply.at))
+        return { op: op.op, applied: true };
+      all4[at] = { ...note, replies: [...replies, op.reply].sort((a, b) => a.at.localeCompare(b.at)) };
+      break;
+    }
+    case "delete-reply":
+      all4[at] = { ...note, replies: (note.replies ?? []).filter((r) => r.at !== op.at) };
+      break;
+    case "draft-shared": {
+      const replies = (note.replies ?? []).map((r) => r.at === op.at && r.draft && !r.draft.shared ? { ...r, draft: { ...r.draft, shared: op.shared } } : r);
+      all4[at] = { ...note, replies, ...op.answered ? { answered: { ...note.answered ?? {}, ...op.answered } } : {} };
+      break;
+    }
+    case "edit": {
+      const edits = note.edits ?? [];
+      all4[at] = { ...note, body: op.body, ...op.edit && !edits.some((e) => e.at === op.edit.at) ? { edits: [...edits, op.edit] } : {} };
+      break;
+    }
+    case "status": {
+      const { resolvedBy: _was, ...rest } = note;
+      all4[at] = { ...rest, status: op.status, ...op.resolvedBy ? { resolvedBy: op.resolvedBy } : {} };
+      break;
+    }
+  }
+  await writeSidecar(home, op.path, all4);
+  return { op: op.op, applied: true };
+}
+function isNoteOp(v) {
+  const o = v;
+  if (!o || typeof o !== "object" || typeof o.op !== "string" || typeof o.id !== "string" || typeof o.path !== "string")
+    return false;
+  if (!/^ann-[\w-]+$/.test(o.id) || o.path.split("/").some((p2) => p2 === ".." || p2 === "") || o.path.startsWith("/"))
+    return false;
+  switch (o.kind) {
+    case "add":
+      return typeof o.record === "object" && o.record?.id === o.id;
+    case "reply":
+      return typeof o.reply?.at === "string";
+    case "status":
+      return ["open", "resolved", "wontfix"].includes(o.status ?? "");
+    case "edit":
+      return typeof o.body === "string";
+    case "delete":
+      return true;
+    case "delete-reply":
+      return typeof o.at === "string";
+    case "draft-shared":
+      return typeof o.at === "string" && /^shr-[\w-]+$/.test(String(o.shared ?? ""));
+    default:
+      return false;
+  }
+}
+
+// packages/core/dist/service-mode.js
+var ASK_MS = 2e3;
+var QUIET_MS = 6e4;
+var REPOS_MAX_AGE_MS = 10 * 6e4;
+var joinedFile = () => join7(homedir2(), ".config", "mdrev", "service");
+var serviceDir = () => join7(process.env.MDREV_STATE_DIR ?? join7(homedir2(), ".mdrev"), "service");
+var repoDir = (id) => join7(serviceDir(), String(id));
+function readJoined() {
+  try {
+    const j = JSON.parse(readFileSync4(joinedFile(), "utf8"));
+    return typeof j.url === "string" && typeof j.token === "string" && typeof j.device === "string" ? j : null;
+  } catch {
+    return null;
+  }
+}
+function readJson(file) {
+  try {
+    return JSON.parse(readFileSync4(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+function writeJson(file, value2) {
+  mkdirSync3(dirname3(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}`;
+  writeFileSync2(tmp, `${JSON.stringify(value2)}
+`);
+  renameSync3(tmp, file);
+}
+async function withLock(id, fn, waitMs = 5e3) {
+  const file = join7(repoDir(id), "lock");
+  mkdirSync3(dirname3(file), { recursive: true });
+  const until = Date.now() + waitMs;
+  for (; ; ) {
+    try {
+      closeSync(openSync(file, "wx"));
+      break;
+    } catch {
+      try {
+        if (Date.now() - statSync3(file).mtimeMs > LOCK_STALE_MS)
+          rmSync2(file, { force: true });
+      } catch {
+      }
+      if (Date.now() > until)
+        throw new Error(`another mdrev holds ${file}; try again`);
+      await new Promise((done) => setTimeout(done, 25));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    rmSync2(file, { force: true });
+  }
+}
+var LOCK_STALE_MS = 1e4;
+var ServiceError = class extends Error {
+  status;
+  answered;
+  constructor(status, message, answered = status !== 0) {
+    super(message);
+    this.status = status;
+    this.answered = answered;
+  }
+};
+async function ask(joined, method, path2, body3, timeoutMs = ASK_MS) {
+  let r;
+  try {
+    r = await fetch(new URL(path2, joined.url), {
+      method,
+      headers: { authorization: `Bearer ${joined.token}`, ...body3 !== void 0 ? { "content-type": "application/json" } : {} },
+      ...body3 !== void 0 ? { body: JSON.stringify(body3) } : {},
+      signal: AbortSignal.timeout(Math.max(1, timeoutMs))
+    });
+  } catch (e) {
+    throw new ServiceError(0, `the service did not answer (${e.name === "TimeoutError" ? "timed out" : e.message})`);
+  }
+  let parsed = null;
+  try {
+    parsed = await r.json();
+  } catch {
+  }
+  if (r.status >= 500) {
+    const error = parsed?.error;
+    if ((r.status === 503 || r.status === 500) && typeof error === "string")
+      throw new ServiceError(0, error, true);
+    throw new ServiceError(0, `the service did not answer (${r.status} from in front of it)`, false);
+  }
+  if (!r.ok)
+    throw new ServiceError(r.status, parsed?.error ?? `the service answered ${r.status}`);
+  return parsed;
+}
+async function registeredRepos(joined, o = {}) {
+  const file = join7(serviceDir(), "repos.json");
+  const quiet = join7(serviceDir(), "quiet.json");
+  const kept = readJson(file);
+  const usable = kept && kept.url === joined.url ? kept : null;
+  if (usable && !o.refresh && Date.now() - usable.at < REPOS_MAX_AGE_MS)
+    return usable.repos;
+  if (o.timeoutMs === 0)
+    return usable?.repos ?? null;
+  const q = readJson(quiet);
+  if (q && Date.now() - q.at < QUIET_MS)
+    return usable?.repos ?? null;
+  try {
+    const { repos } = await ask(joined, "GET", "/api/device/repos", void 0, o.timeoutMs ?? ASK_MS);
+    writeJson(file, { at: Date.now(), url: joined.url, repos });
+    rmSync2(quiet, { force: true });
+    return repos;
+  } catch (e) {
+    if (e instanceof ServiceError && e.status === 401) {
+      writeJson(file, { at: Date.now(), url: joined.url, repos: [], revoked: true });
+      return [];
+    }
+    if (e instanceof ServiceError && e.status === 0)
+      writeJson(quiet, { at: Date.now() });
+    return usable?.repos ?? null;
+  }
+}
+var run3 = (cwd, args) => new Promise((done) => execFile2("git", args, { cwd, maxBuffer: 16 << 20 }, (e, out, err) => done({ code: e ? typeof e.code === "number" ? e.code : 1 : 0, out: String(out), err: String(err) })));
+function addressOf(url) {
+  const a = url.trim();
+  const scp = /^(?:[\w.-]+@)?([\w.-]+):(?!\/\/)(.+)$/.exec(a);
+  let host;
+  let path2;
+  if (/^[a-z+]+:\/\//i.test(a)) {
+    try {
+      const u = new URL(a);
+      if (u.protocol === "file:")
+        return null;
+      host = u.hostname;
+      path2 = u.pathname;
+    } catch {
+      return null;
+    }
+  } else if (scp) {
+    host = scp[1];
+    path2 = scp[2];
+  } else
+    return null;
+  path2 = path2.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
+  return host && path2 ? { host: host.toLowerCase(), path: path2.toLowerCase() } : null;
+}
+async function serviceRemote(root5, repos) {
+  for (const remote of ["origin", "upstream"]) {
+    const r = await run3(root5, ["config", "--get", `remote.${remote}.url`]);
+    const at = r.code === 0 ? addressOf(r.out) : null;
+    if (!at)
+      continue;
+    const repo = repos.find((x) => x.path.toLowerCase() === at.path && x.hosts.some((h2) => h2.toLowerCase() === at.host));
+    if (repo)
+      return { remote, repo };
+  }
+  return null;
+}
+async function notesOutOfGit(root5) {
+  try {
+    statSync3(join7(root5, ".mdrev"));
+  } catch {
+    mkdirSync3(join7(root5, ".mdrev"), { recursive: true });
+    await ensureNotesIgnored(root5);
+  }
+  const tracked = await run3(root5, ["ls-files", "--", ".mdrev/annotations"]);
+  if (tracked.code === 0 && tracked.out.trim()) {
+    const n = tracked.out.trim().split("\n").length;
+    return `notes here are committed to git (${n} file${n === 1 ? "" : "s"} under .mdrev/annotations); \`mdrev --untrack-notes\` untracks them`;
+  }
+  const ignored = await run3(root5, ["check-ignore", "-q", ".mdrev/annotations/probe.md.jsonl"]);
+  if (ignored.code !== 0)
+    return "git does not ignore .mdrev/ here, so a note could go out with a commit; restore .mdrev/.gitignore (a line `*`) to use the service";
+  return null;
+}
+async function serviceModeOf(root5, o = {}) {
+  const joined = readJoined();
+  if (!joined)
+    return null;
+  const repos = await registeredRepos(joined, { timeoutMs: o.offline ? 0 : o.timeoutMs });
+  if (repos === null)
+    return { not: `${joined.url} has not listed your repositories yet, and did not answer`, joined };
+  const found = await serviceRemote(root5, repos);
+  if (!found)
+    return { not: `this repository is not on your list on ${joined.url} (origin or upstream)`, joined };
+  const why = await notesOutOfGit(root5);
+  if (why)
+    return { not: why, joined };
+  return { mode: { joined, repo: found.repo, remote: found.remote, root: root5 } };
+}
+function modeLine(a) {
+  if (!a)
+    return null;
+  if ("mode" in a)
+    return `service mode: ${a.mode.joined.url}; end the round with \`mdrev --push\``;
+  return `not in service mode: ${a.not}`;
+}
+var keptMark = (id) => join7(repoDir(id), "notify-kept");
+function markKept(id, any) {
+  if (!any)
+    return void rmSync2(keptMark(id), { force: true });
+  mkdirSync3(repoDir(id), { recursive: true, mode: 448 });
+  writeFileSync2(keptMark(id), "", { mode: 384 });
+}
+function keptDue(id, gapMs = 15e3) {
+  try {
+    return Date.now() - statSync3(keptMark(id)).mtimeMs >= gapMs;
+  } catch {
+    return false;
+  }
+}
+var queueDir = (id) => join7(repoDir(id), "queue");
+function enqueue(id, ops) {
+  if (ops.length === 0)
+    return;
+  const dir = queueDir(id);
+  mkdirSync3(dir, { recursive: true });
+  for (const op of ops)
+    writeJson(join7(dir, `${Date.now().toString(36).padStart(10, "0")}-${op.op}.json`), op);
+}
+function queued(id) {
+  const dir = queueDir(id);
+  let names;
+  try {
+    names = readdirSync3(dir).filter((n) => n.endsWith(".json")).sort();
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const n of names) {
+    const op = readJson(join7(dir, n));
+    if (op)
+      out.push({ file: join7(dir, n), op });
+  }
+  return out;
+}
+var BATCH = 200;
+async function flush(mode, timeoutMs = ASK_MS) {
+  const until = Date.now() + timeoutMs;
+  const dropped = [];
+  let sent = 0;
+  let cursor;
+  let waiting = queued(mode.repo.id);
+  while (waiting.length > 0) {
+    const batch = waiting.slice(0, BATCH);
+    let answer;
+    try {
+      answer = await ask(mode.joined, "POST", `/api/device/notes/${mode.repo.id}`, { ops: batch.map((w) => w.op) }, Math.max(1, until - Date.now()));
+    } catch (e) {
+      if (e instanceof ServiceError && e.status >= 400 && e.status !== 401 && e.status !== 404) {
+        const aside = join7(queueDir(mode.repo.id), "refused");
+        mkdirSync3(aside, { recursive: true });
+        for (const w of batch) {
+          renameSync3(w.file, join7(aside, w.file.split("/").pop()));
+          dropped.push({ op: w.op, why: `the service refused it (${e.message}); kept in ${aside}` });
+        }
+        waiting = queued(mode.repo.id);
+        continue;
+      }
+      throw e;
+    }
+    const byOp = new Map(answer.results.map((r) => [r.op, r]));
+    for (const w of batch) {
+      const r = byOp.get(w.op.op);
+      if (!r)
+        continue;
+      sent++;
+      if ("dropped" in r)
+        dropped.push({ op: w.op, why: r.dropped });
+      rmSync2(w.file, { force: true });
+    }
+    if (answer.cursor)
+      cursor = answer.cursor;
+    const left = queued(mode.repo.id);
+    if (left.length >= waiting.length)
+      break;
+    waiting = left;
+  }
+  return { sent, dropped, ...cursor ? { cursor } : {} };
+}
+var checkoutFile = (id, root5) => join7(repoDir(id), "checkouts", `${createHash("sha256").update(root5).digest("hex").slice(0, 16)}.json`);
+var statting = /* @__PURE__ */ new Map();
+function goneOnce(root5) {
+  let pending = statting.get(root5);
+  if (!pending) {
+    pending = stat2(root5).then((s2) => !s2.isDirectory(), (e) => e.code === "ENOENT").finally(() => statting.delete(root5));
+    statting.set(root5, pending);
+  }
+  return pending;
+}
+async function dropGoneCheckouts(id, keep) {
+  const dir = join7(repoDir(id), "checkouts");
+  let names;
+  try {
+    names = readdirSync3(dir);
+  } catch {
+    return;
+  }
+  const gone = (root5) => Promise.race([goneOnce(root5), new Promise((done) => setTimeout(done, 250, false).unref())]);
+  await Promise.all(names.map(async (name) => {
+    const file = join7(dir, name);
+    if (file === keep || !name.endsWith(".json"))
+      return;
+    const root5 = readJson(file)?.root;
+    if (typeof root5 === "string" && await gone(root5))
+      rmSync2(file, { force: true });
+  }));
+}
+async function pull(mode, timeoutMs = ASK_MS) {
+  if (queued(mode.repo.id).length > 0)
+    return 0;
+  const until = Date.now() + timeoutMs;
+  const file = checkoutFile(mode.repo.id, mode.root);
+  const state = readJson(file) ?? { root: mode.root, cursor: "0" };
+  const from = (since) => ask(mode.joined, "GET", `/api/device/notes/${mode.repo.id}?since=${encodeURIComponent(since)}`, void 0, Math.max(1, until - Date.now()));
+  let got = await from(state.cursor);
+  if (!got.reset && state.generation && got.generation && got.generation !== state.generation)
+    got = { ...await from("0"), reset: true };
+  return withLock(mode.repo.id, async () => {
+    if (queued(mode.repo.id).length > 0)
+      return 0;
+    const byPath = /* @__PURE__ */ new Map();
+    const of = (p2) => byPath.get(p2) ?? (byPath.set(p2, { put: [], gone: /* @__PURE__ */ new Set() }), byPath.get(p2));
+    for (const n of got.notes)
+      if (typeof n?.path === "string" && typeof n.id === "string")
+        of(n.path).put.push(n);
+    for (const d of got.deleted)
+      if (typeof d?.path === "string")
+        of(d.path).gone.add(d.id);
+    if (got.reset) {
+      const has = /* @__PURE__ */ new Set([...got.notes.map((n) => n.id), ...got.deleted.map((d) => d.id)]);
+      for (const s2 of await stampedNotes(mode.root))
+        if (!has.has(s2.note.id))
+          enqueue(mode.repo.id, opsFor(s2.path, null, s2.note));
+    }
+    let changed = 0;
+    for (const [path2, { put, gone }] of byPath) {
+      const all4 = await listAnnotations(mode.root, path2);
+      const next2 = all4.filter((a) => !(a.personal && (gone.has(a.id) || put.some((p2) => p2.id === a.id))));
+      const kept = all4.filter((a) => !a.personal && put.some((p2) => p2.id === a.id)).map((a) => a.id);
+      for (const p2 of put)
+        if (!kept.includes(p2.id))
+          next2.push({ ...p2, personal: true });
+      if (JSON.stringify(next2) === JSON.stringify(all4))
+        continue;
+      changed++;
+      await writeSidecar(mode.root, path2, next2);
+    }
+    writeJson(file, { root: mode.root, cursor: got.cursor, ...got.generation ? { generation: got.generation } : {}, answered: Date.now() });
+    await dropGoneCheckouts(mode.repo.id, file);
+    return changed;
+  });
+}
+var quietFile = (id) => join7(repoDir(id), "quiet.json");
+function silence(mode) {
+  const quiet = readJson(quietFile(mode.repo.id));
+  if (!quiet || Date.now() - quiet.at >= QUIET_MS)
+    return null;
+  const s2 = readJson(checkoutFile(mode.repo.id, mode.root));
+  return { asOf: s2?.answered ? new Date(s2.answered).toISOString().replace(/\.\d+Z$/, "Z") : "never" };
+}
+async function sync(mode, o = {}) {
+  const quiet = readJson(quietFile(mode.repo.id));
+  const state = readJson(checkoutFile(mode.repo.id, mode.root));
+  const asOf = () => {
+    const s2 = readJson(checkoutFile(mode.repo.id, mode.root));
+    return s2?.answered ? new Date(s2.answered).toISOString().replace(/\.\d+Z$/, "Z") : "never";
+  };
+  if (o.minGapMs && state?.answered && Date.now() - state.answered < o.minGapMs && queued(mode.repo.id).length === 0)
+    return { said: null, dropped: [] };
+  if (quiet && Date.now() - quiet.at < QUIET_MS)
+    return { said: `as of ${asOf()}: the service did not answer`, dropped: [] };
+  const until = Date.now() + (o.timeoutMs ?? ASK_MS);
+  try {
+    const sent = await flush(mode, until - Date.now());
+    if (o.pull !== false)
+      await pull(mode, until - Date.now());
+    rmSync2(quietFile(mode.repo.id), { force: true });
+    return { said: null, dropped: sent.dropped };
+  } catch (e) {
+    if (e instanceof ServiceError && e.status !== 0)
+      return { said: `the service refused: ${e.message}`, dropped: [] };
+    writeJson(quietFile(mode.repo.id), { at: Date.now() });
+    return { said: `as of ${asOf()}: the service did not answer`, dropped: [] };
+  }
+}
+async function recordChange(mode, path2, before, after) {
+  const stamped = (after ?? before)?.personal;
+  if (!stamped)
+    return [];
+  const ops = opsFor(path2, before, after);
+  enqueue(mode.repo.id, ops);
+  return ops;
+}
+async function stampedNotes(root5) {
+  const out = [];
+  for (const { path: path2, annotations } of await listAllAnnotations(root5))
+    for (const note of annotations)
+      if (note.personal)
+        out.push({ path: path2, note });
+  return out;
+}
+async function waitingForPush(mode) {
+  const sym = await run3(mode.root, ["symbolic-ref", "--short", "-q", "HEAD"]);
+  const branch = sym.code === 0 ? sym.out.trim() : null;
+  const theirs = branch ? (await run3(mode.root, ["rev-parse", "-q", "--verify", `refs/remotes/${mode.remote}/${branch}`])).out.trim() : "";
+  const out = [];
+  for (const s2 of await stampedNotes(mode.root)) {
+    const draft = (s2.note.replies ?? []).findLast((r) => r.draft && !r.draft.shared)?.draft;
+    const commit = s2.note.status !== "open" ? s2.note.resolvedBy?.commit : draft?.commit;
+    if (!commit)
+      continue;
+    if ((await run3(mode.root, ["merge-base", "--is-ancestor", commit, "HEAD"])).code !== 0)
+      continue;
+    if (theirs && (await run3(mode.root, ["merge-base", "--is-ancestor", commit, theirs])).code === 0)
+      continue;
+    out.push(s2);
+  }
+  return out;
+}
+
 // packages/core/dist/shared.js
 var isSharedId = (id) => typeof id === "string" && id.startsWith("shr-");
 var KINDS = /* @__PURE__ */ new Set(["note", "reply", "resolve", "reopen", "hide", "unhide"]);
@@ -33367,6 +33910,7 @@ var DEFAULT_BRANCH = "refs/notes/mdrev-review";
 var NO_POINTER = "this project names no review store: shared review needs .mdrev.json naming the store's repository and ref \u2014 mdrev --review-pointer writes it (from this checkout's remotes, or --store <URL>) and commits it (the design: mdrev --docs shared-review)";
 var refOf = (branch) => branch.startsWith("refs/") ? branch : `refs/heads/${branch}`;
 var TIP = "refs/store/tip";
+var SAFE_ID = /^shr-[A-Za-z0-9_-]{1,80}$/;
 var isQuiet = (r) => typeof r === "object" && r !== null && !("unreadable" in r) && QUIET_KINDS.has(String(r.kind));
 var readable = (r) => !("unreadable" in r);
 var StoreError = class extends GitError {
@@ -33383,27 +33927,27 @@ function setSharedStamp(s2) {
   if (s2.from)
     stamp.from = s2.from;
 }
-var stateHome = () => process.env.MDREV_STATE_DIR ?? join7(homedir2(), ".mdrev");
+var stateHome = () => process.env.MDREV_STATE_DIR ?? join8(homedir3(), ".mdrev");
 function logEvent(kind, fields) {
   appendEvent(stateHome(), eventLine({ from: stamp.from, v: stamp.version, pid: process.pid }, kind, fields));
 }
 function machineId() {
-  const file = join7(stateHome(), "machine-id");
+  const file = join8(stateHome(), "machine-id");
   try {
-    const id2 = readFileSync4(file, "utf8").trim();
+    const id2 = readFileSync5(file, "utf8").trim();
     if (/^[0-9a-f]{12}$/.test(id2))
       return id2;
   } catch {
   }
-  const id = randomBytes(6).toString("hex");
+  const id = randomBytes2(6).toString("hex");
   try {
-    mkdirSync3(stateHome(), { recursive: true, mode: 448 });
-    writeFileSync2(file, `${id}
+    mkdirSync4(stateHome(), { recursive: true, mode: 448 });
+    writeFileSync3(file, `${id}
 `, { flag: "wx", mode: 384 });
     return id;
   } catch {
     try {
-      const theirs = readFileSync4(file, "utf8").trim();
+      const theirs = readFileSync5(file, "utf8").trim();
       if (/^[0-9a-f]{12}$/.test(theirs))
         return theirs;
     } catch {
@@ -33449,7 +33993,7 @@ function sameRepository(remote) {
 function storeKey(p2) {
   const same2 = sameRepository(p2.remote);
   const readable2 = same2.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(-60);
-  const hash = createHash("sha1").update(`${same2}\0${p2.branch}`).digest("hex").slice(0, 8);
+  const hash = createHash2("sha1").update(`${same2}\0${p2.branch}`).digest("hex").slice(0, 8);
   return `${readable2}-${p2.branch.replace(/[^A-Za-z0-9._-]+/g, "-")}-${hash}`;
 }
 var SCRUB = [
@@ -33539,30 +34083,30 @@ function clearGitLocks(dir) {
   const walk = (d) => {
     let names;
     try {
-      names = readdirSync3(d);
+      names = readdirSync4(d);
     } catch {
       return;
     }
     for (const n of names) {
       if (n === "objects")
         continue;
-      const p2 = join7(d, n);
+      const p2 = join8(d, n);
       if (n.endsWith(".lock")) {
-        if (Date.now() - (statSync3(p2, { throwIfNoEntry: false })?.mtimeMs ?? 0) > 6e4)
-          rmSync2(p2, { force: true });
-      } else if (statSync3(p2, { throwIfNoEntry: false })?.isDirectory())
+        if (Date.now() - (statSync4(p2, { throwIfNoEntry: false })?.mtimeMs ?? 0) > 6e4)
+          rmSync3(p2, { force: true });
+      } else if (statSync4(p2, { throwIfNoEntry: false })?.isDirectory())
         walk(p2);
     }
   };
   walk(dir);
 }
-async function withLock(dir, fn, waitMs = 75e3) {
-  const file = join7(dir, "lock");
+async function withLock2(dir, fn, waitMs = 75e3) {
+  const file = join8(dir, "lock");
   const me = JSON.stringify({ pid: process.pid, host: hostname2(), at: (/* @__PURE__ */ new Date()).toISOString() });
   const until = Date.now() + waitMs;
   for (; ; ) {
     try {
-      writeFileSync2(file, me, { flag: "wx" });
+      writeFileSync3(file, me, { flag: "wx" });
       break;
     } catch (e) {
       if (e.code !== "EEXIST")
@@ -33570,14 +34114,14 @@ async function withLock(dir, fn, waitMs = 75e3) {
     }
     let holder = {};
     try {
-      holder = JSON.parse(readFileSync4(file, "utf8"));
+      holder = JSON.parse(readFileSync5(file, "utf8"));
     } catch {
     }
-    const age = Date.now() - (statSync3(file, { throwIfNoEntry: false })?.mtimeMs ?? Date.now());
+    const age = Date.now() - (statSync4(file, { throwIfNoEntry: false })?.mtimeMs ?? Date.now());
     const dead = age > 5 * 6e4 || typeof holder.pid === "number" && holder.host === hostname2() && !alive(holder.pid);
     if (dead) {
-      rmSync2(file, { force: true });
-      clearGitLocks(join7(dir, "store.git"));
+      rmSync3(file, { force: true });
+      clearGitLocks(join8(dir, "store.git"));
       logEvent("review.lock-taken", { store: dir, holder: holder.pid ?? "unknown", since: holder.at ?? "" });
       continue;
     }
@@ -33590,16 +34134,16 @@ async function withLock(dir, fn, waitMs = 75e3) {
     return await fn();
   } finally {
     try {
-      if (readFileSync4(file, "utf8") === me)
+      if (readFileSync5(file, "utf8") === me)
         unlinkSync2(file);
     } catch {
     }
   }
 }
 function writeAtomic(file, text9) {
-  const tmp = `${file}.${process.pid}.${randomBytes(3).toString("hex")}.tmp`;
-  writeFileSync2(tmp, text9, "utf8");
-  renameSync3(tmp, file);
+  const tmp = `${file}.${process.pid}.${randomBytes2(3).toString("hex")}.tmp`;
+  writeFileSync3(tmp, text9, "utf8");
+  renameSync4(tmp, file);
 }
 var canonical = (r) => `${JSON.stringify(r, null, 2)}
 `;
@@ -33663,23 +34207,23 @@ var SharedStore = class {
   gitDir;
   constructor(pointer, stateDir = stateHome()) {
     this.pointer = pointer;
-    this.dir = join7(stateDir, "review", storeKey(pointer));
-    this.gitDir = join7(this.dir, "store.git");
+    this.dir = join8(stateDir, "review", storeKey(pointer));
+    this.gitDir = join8(this.dir, "store.git");
   }
   get outboxDir() {
-    return join7(this.dir, "outbox");
+    return join8(this.dir, "outbox");
   }
   get cacheFile() {
-    return join7(this.dir, "cache.json");
+    return join8(this.dir, "cache.json");
   }
   /** Subscriptions and read marks waiting to go (H7): a directory no older mdrev reads, and nothing that lists the push reads either. */
   get quietDir() {
-    return join7(this.outboxDir, "quiet");
+    return join8(this.outboxDir, "quiet");
   }
   ensureDirs() {
-    mkdirSync3(join7(this.outboxDir, "deleted"), { recursive: true, mode: 448 });
-    mkdirSync3(join7(this.outboxDir, "sent"), { recursive: true, mode: 448 });
-    mkdirSync3(this.quietDir, { recursive: true, mode: 448 });
+    mkdirSync4(join8(this.outboxDir, "deleted"), { recursive: true, mode: 448 });
+    mkdirSync4(join8(this.outboxDir, "sent"), { recursive: true, mode: 448 });
+    mkdirSync4(this.quietDir, { recursive: true, mode: 448 });
   }
   /**
    * A pushed record's outbox file moves to `sent/` rather than going (F3): the
@@ -33688,7 +34232,7 @@ var SharedStore = class {
    */
   keepSent(id) {
     try {
-      renameSync3(join7(this.outboxDir, `${id}.json`), join7(this.outboxDir, "sent", `${id}.json`));
+      renameSync4(join8(this.outboxDir, `${id}.json`), join8(this.outboxDir, "sent", `${id}.json`));
     } catch {
     }
   }
@@ -33700,19 +34244,19 @@ var SharedStore = class {
    */
   savedAs(saveId, path2, reply) {
     const since = Date.now() - 24 * 36e5;
-    for (const dir of [this.outboxDir, join7(this.outboxDir, "sent")]) {
+    for (const dir of [this.outboxDir, join8(this.outboxDir, "sent")]) {
       let names;
       try {
-        names = readdirSync3(dir).filter((n) => n.endsWith(".json"));
+        names = readdirSync4(dir).filter((n) => n.endsWith(".json"));
       } catch {
         continue;
       }
       for (const n of names) {
         try {
-          const file = join7(dir, n);
-          if (statSync3(file).mtimeMs < since)
+          const file = join8(dir, n);
+          if (statSync4(file).mtimeMs < since)
             continue;
-          const e = JSON.parse(readFileSync4(file, "utf8"));
+          const e = JSON.parse(readFileSync5(file, "utf8"));
           if (e?.local?.saveId !== saveId)
             continue;
           if (!reply && e.record?.kind === "note" && e.record.path === path2)
@@ -33728,7 +34272,7 @@ var SharedStore = class {
   /** The ids taken back before a push (not edits that came too late), newest last. */
   takenBack() {
     try {
-      return readdirSync3(join7(this.outboxDir, "deleted")).filter((n) => n.endsWith(".json") && !n.endsWith(".diverged.json")).map((n) => n.replace(/\.\d+\.json$/, ""));
+      return readdirSync4(join8(this.outboxDir, "deleted")).filter((n) => n.endsWith(".json") && !n.endsWith(".diverged.json")).map((n) => n.replace(/\.\d+\.json$/, ""));
     } catch {
       return [];
     }
@@ -33736,8 +34280,8 @@ var SharedStore = class {
   /** The pushed records as of the last fetch. */
   cache() {
     try {
-      const c = JSON.parse(readFileSync4(this.cacheFile, "utf8"));
-      if (c.rewritten && !statSync3(c.rewritten.aside, { throwIfNoEntry: false }))
+      const c = JSON.parse(readFileSync5(this.cacheFile, "utf8"));
+      if (c.rewritten && !statSync4(c.rewritten.aside, { throwIfNoEntry: false }))
         delete c.rewritten;
       if (Array.isArray(c.records))
         return c;
@@ -33749,14 +34293,14 @@ var SharedStore = class {
   outbox() {
     let names;
     try {
-      names = readdirSync3(this.outboxDir).filter((n) => n.endsWith(".json"));
+      names = readdirSync4(this.outboxDir).filter((n) => n.endsWith(".json"));
     } catch {
       return [];
     }
     const out = [];
     for (const n of names) {
       try {
-        const e = JSON.parse(readFileSync4(join7(this.outboxDir, n), "utf8"));
+        const e = JSON.parse(readFileSync5(join8(this.outboxDir, n), "utf8"));
         if (e?.record?.id)
           out.push(e);
       } catch {
@@ -33768,14 +34312,14 @@ var SharedStore = class {
   quietOutbox() {
     let names;
     try {
-      names = readdirSync3(this.quietDir).filter((n) => n.endsWith(".json") && n !== "failed.json");
+      names = readdirSync4(this.quietDir).filter((n) => n.endsWith(".json") && n !== "failed.json");
     } catch {
       return [];
     }
     const out = [];
     for (const n of names) {
       try {
-        const e = JSON.parse(readFileSync4(join7(this.quietDir, n), "utf8"));
+        const e = JSON.parse(readFileSync5(join8(this.quietDir, n), "utf8"));
         if (e?.record?.id)
           out.push(e);
       } catch {
@@ -33786,8 +34330,8 @@ var SharedStore = class {
   /** Save a subscription or a read mark: it counts here at once, and goes with the next send (H7). */
   writeQuiet(record, local2) {
     this.ensureDirs();
-    writeAtomic(join7(this.dir, "store.json"), JSON.stringify(this.pointer));
-    writeAtomic(join7(this.quietDir, `${record.id}.json`), JSON.stringify({ record, local: local2 }, null, 2));
+    writeAtomic(join8(this.dir, "store.json"), JSON.stringify(this.pointer));
+    writeAtomic(join8(this.quietDir, `${record.id}.json`), JSON.stringify({ record, local: local2 }, null, 2));
     if (record.kind !== "read")
       logEvent(`review.${record.kind}`, { store: this.pointer.remote, id: record.id, path: record.path ?? "(project)", email: record.email ?? "", entry: local2.via, ...local2.for ? { asked: local2.for } : {} });
   }
@@ -33845,7 +34389,7 @@ var SharedStore = class {
     if (!now && failedAt && Date.now() - failedAt < QUIET_EVERY_MS)
       return null;
     await this.ensureRepo();
-    return withLock(this.dir, async () => {
+    return withLock2(this.dir, async () => {
       const deadline = Date.now() + 3e4;
       for (let attempt = 1; ; attempt++) {
         let cache;
@@ -33874,7 +34418,7 @@ var SharedStore = class {
           writeAtomic(this.cacheFile, JSON.stringify({ ...cache, tip: commit, fetchedAt: (/* @__PURE__ */ new Date()).toISOString(), quiet }, null, 2));
           for (const e of send)
             this.keepQuietSent(e.record.id);
-          rmSync2(join7(this.quietDir, "failed.json"), { force: true });
+          rmSync3(join8(this.quietDir, "failed.json"), { force: true });
           const kinds = [...new Set(send.map((e) => e.record.kind))].join(" ");
           logEvent("review.quiet-sent", { store: this.pointer.remote, commit, records: send.length, kinds, entry: who.via });
           return { sent: send.length };
@@ -33887,38 +34431,83 @@ var SharedStore = class {
       }
     });
   }
-  /** A pushed record of this machine's that its push has already announced (H2): told once, whichever push found it in the store. */
+  /**
+   * THE RECORDS TOLD OF (H2; s243): one file per record in `notified/`, beside
+   * the outbox — a directory no older mdrev reads. A record this state sent is
+   * stamped in its `sent/` file as well; one it did not send (a joined
+   * laptop's, which a service tells people of) has only this.
+   */
+  get notifiedDir() {
+    return join8(this.dir, "notified");
+  }
+  /** A record already announced (H2): told once, whichever push — or whichever request to tell — found it in the store. */
   wasNotified(id) {
+    if (SAFE_ID.test(id) && existsSync2(join8(this.notifiedDir, id)))
+      return true;
     try {
-      return JSON.parse(readFileSync4(join7(this.outboxDir, "sent", `${id}.json`), "utf8")).notified === true;
+      return JSON.parse(readFileSync5(join8(this.outboxDir, "sent", `${id}.json`), "utf8")).notified === true;
     } catch {
       return false;
     }
   }
   markNotified(id) {
-    const file = join7(this.outboxDir, "sent", `${id}.json`);
+    if (SAFE_ID.test(id)) {
+      mkdirSync4(this.notifiedDir, { recursive: true, mode: 448 });
+      writeFileSync3(join8(this.notifiedDir, id), "", { mode: 384 });
+    }
+    const file = join8(this.outboxDir, "sent", `${id}.json`);
     try {
-      const e = JSON.parse(readFileSync4(file, "utf8"));
+      const e = JSON.parse(readFileSync5(file, "utf8"));
       writeAtomic(file, JSON.stringify({ ...e, notified: true }, null, 2));
     } catch {
     }
   }
+  /**
+   * THE IDS A JOINED LAPTOP KEEPS FOR ITS SERVICE TO TELL (personal-service.md,
+   * "A joined laptop's pushes are told by the service", s243): beside
+   * `cache.json`, read and changed under the store's lock, which is let go
+   * while the service is asked.
+   */
+  get serviceNotifyFile() {
+    return join8(this.dir, "service-notify.json");
+  }
+  serviceKept() {
+    try {
+      const k = JSON.parse(readFileSync5(this.serviceNotifyFile, "utf8"));
+      return { ids: k.ids && typeof k.ids === "object" ? k.ids : {} };
+    } catch {
+      return { ids: {} };
+    }
+  }
+  /** Change what is kept, under the store's lock. */
+  changeServiceKept(fn) {
+    mkdirSync4(this.dir, { recursive: true, mode: 448 });
+    return withLock2(this.dir, async () => {
+      const kept = this.serviceKept();
+      const out = fn(kept);
+      if (Object.keys(kept.ids).length === 0)
+        rmSync3(this.serviceNotifyFile, { force: true });
+      else
+        writeAtomic(this.serviceNotifyFile, JSON.stringify(kept, null, 2));
+      return out;
+    });
+  }
   keepQuietSent(id) {
     try {
-      renameSync3(join7(this.quietDir, `${id}.json`), join7(this.outboxDir, "sent", `${id}.json`));
+      renameSync4(join8(this.quietDir, `${id}.json`), join8(this.outboxDir, "sent", `${id}.json`));
     } catch {
     }
   }
   quietFailedAt() {
     try {
-      return Date.parse(JSON.parse(readFileSync4(join7(this.quietDir, "failed.json"), "utf8")).at) || null;
+      return Date.parse(JSON.parse(readFileSync5(join8(this.quietDir, "failed.json"), "utf8")).at) || null;
     } catch {
       return null;
     }
   }
   quietFailed(e) {
     try {
-      writeAtomic(join7(this.quietDir, "failed.json"), JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), message: e.message }));
+      writeAtomic(join8(this.quietDir, "failed.json"), JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), message: e.message }));
     } catch {
     }
     logEvent("review.quiet-failed", { store: this.pointer.remote, failure: e instanceof StoreError ? e.kind : "other", message: e.message });
@@ -33942,7 +34531,7 @@ var SharedStore = class {
    */
   pairing() {
     try {
-      const p2 = JSON.parse(readFileSync4(join7(this.dir, "pairing.json"), "utf8"));
+      const p2 = JSON.parse(readFileSync5(join8(this.dir, "pairing.json"), "utf8"));
       return sameRepository(p2.remote) === sameRepository(this.pointer.remote) && p2.branch === this.pointer.branch && typeof p2.email === "string" && p2.email ? p2 : null;
     } catch {
       return null;
@@ -33953,7 +34542,7 @@ var SharedStore = class {
     const p2 = this.pairing();
     if (!p2 || p2.root === root5)
       return;
-    writeAtomic(join7(this.dir, "pairing.json"), JSON.stringify({ ...p2, root: root5 }, null, 2));
+    writeAtomic(join8(this.dir, "pairing.json"), JSON.stringify({ ...p2, root: root5 }, null, 2));
   }
   /** Pair this machine with the store, as this person (E3). The CLI asks; this records. */
   pair(identity, extra = {}) {
@@ -33972,19 +34561,19 @@ var SharedStore = class {
       ...extra.by === "agent" ? { by: "agent" } : {},
       ...this.cache().root ? { root: this.cache().root } : {}
     };
-    writeAtomic(join7(this.dir, "pairing.json"), JSON.stringify(pairing, null, 2));
-    rmSync2(join7(this.dir, "pairing.moved.json"), { force: true });
+    writeAtomic(join8(this.dir, "pairing.json"), JSON.stringify(pairing, null, 2));
+    rmSync3(join8(this.dir, "pairing.moved.json"), { force: true });
     this.dropPairRequest();
     let restamped = 0;
     for (const e of this.outbox()) {
       if (e.record.author.email === pairing.email && e.record.author.name === pairing.name)
         continue;
-      writeAtomic(join7(this.outboxDir, `${e.record.id}.json`), JSON.stringify({ ...e, record: { ...e.record, author: { name: pairing.name, email: pairing.email } } }, null, 2));
+      writeAtomic(join8(this.outboxDir, `${e.record.id}.json`), JSON.stringify({ ...e, record: { ...e.record, author: { name: pairing.name, email: pairing.email } } }, null, 2));
       restamped++;
     }
     if (restamped > 0)
       logEvent("review.restamp", { store: this.pointer.remote, records: restamped, email: pairing.email, name: pairing.name });
-    writeAtomic(join7(this.dir, "store.json"), JSON.stringify({ remote: this.pointer.remote, branch: this.pointer.branch }));
+    writeAtomic(join8(this.dir, "store.json"), JSON.stringify({ remote: this.pointer.remote, branch: this.pointer.branch }));
     logEvent("review.pair", { store: this.pointer.remote, branch: this.pointer.branch, email: pairing.email, name: pairing.name, machine: pairing.machine, check: pairing.server?.check ?? "unconfirmed", ...pairing.server?.user ? { serverUser: pairing.server.user } : {}, ...pairing.by ? { by: pairing.by } : {} });
     return pairing;
   }
@@ -33994,7 +34583,7 @@ var SharedStore = class {
    */
   pairRequest() {
     try {
-      const r = JSON.parse(readFileSync4(join7(this.dir, "pair-request.json"), "utf8"));
+      const r = JSON.parse(readFileSync5(join8(this.dir, "pair-request.json"), "utf8"));
       if (Date.now() - Date.parse(r.at) > 24 * 36e5)
         return null;
       return sameRepository(r.remote) === sameRepository(this.pointer.remote) && r.branch === this.pointer.branch ? { email: r.email, name: r.name, at: r.at, ...r.check ? { check: r.check } : {} } : null;
@@ -34005,11 +34594,11 @@ var SharedStore = class {
   /** Record the requested identity with the server's check for the viewer to show; confirming checks again. */
   requestPairing(identity, check) {
     this.ensureDirs();
-    writeAtomic(join7(this.dir, "pair-request.json"), JSON.stringify({ remote: this.pointer.remote, branch: this.pointer.branch, email: identity.email.trim().toLowerCase(), name: identity.name.trim(), at: (/* @__PURE__ */ new Date()).toISOString(), ...check ? { check } : {} }, null, 2));
+    writeAtomic(join8(this.dir, "pair-request.json"), JSON.stringify({ remote: this.pointer.remote, branch: this.pointer.branch, email: identity.email.trim().toLowerCase(), name: identity.name.trim(), at: (/* @__PURE__ */ new Date()).toISOString(), ...check ? { check } : {} }, null, 2));
     logEvent("review.pair-requested", { store: this.pointer.remote, email: identity.email, name: identity.name, check: check?.result ?? "unknown" });
   }
   dropPairRequest() {
-    rmSync2(join7(this.dir, "pair-request.json"), { force: true });
+    rmSync3(join8(this.dir, "pair-request.json"), { force: true });
   }
   /**
    * Edit an unpushed record's words (C5), keeping the earlier ones on this
@@ -34018,11 +34607,11 @@ var SharedStore = class {
    */
   async edit(id, body3, by = { agent: false }) {
     this.ensureDirs();
-    return withLock(this.dir, async () => {
-      const file = join7(this.outboxDir, `${id}.json`);
+    return withLock2(this.dir, async () => {
+      const file = join8(this.outboxDir, `${id}.json`);
       let entry;
       try {
-        entry = JSON.parse(readFileSync4(file, "utf8"));
+        entry = JSON.parse(readFileSync5(file, "utf8"));
       } catch {
         logEvent("review.edit-too-late", { store: this.pointer.remote, id });
         throw new StoreError(`${id} has been pushed: it cannot be edited now, only answered (C5)`, "other");
@@ -34044,8 +34633,8 @@ var SharedStore = class {
   /** Save a record to the outbox: one new file, so no two writers can collide. */
   write(record, local2) {
     this.ensureDirs();
-    writeAtomic(join7(this.dir, "store.json"), JSON.stringify(this.pointer));
-    writeAtomic(join7(this.outboxDir, `${record.id}.json`), JSON.stringify({ record, local: local2 }, null, 2));
+    writeAtomic(join8(this.dir, "store.json"), JSON.stringify(this.pointer));
+    writeAtomic(join8(this.outboxDir, `${record.id}.json`), JSON.stringify({ record, local: local2 }, null, 2));
     logEvent("review.write", { store: this.pointer.remote, id: record.id, recordKind: record.kind, thread: record.thread, entry: local2.via, ...local2.for ? { asked: local2.for } : {} });
   }
   /**
@@ -34055,11 +34644,11 @@ var SharedStore = class {
    */
   async takeBack(ids) {
     this.ensureDirs();
-    return withLock(this.dir, async () => {
+    return withLock2(this.dir, async () => {
       const moved = [];
       for (const id of ids) {
         try {
-          renameSync3(join7(this.outboxDir, `${id}.json`), join7(this.outboxDir, "deleted", `${id}.${Date.now()}.json`));
+          renameSync4(join8(this.outboxDir, `${id}.json`), join8(this.outboxDir, "deleted", `${id}.${Date.now()}.json`));
           moved.push(id);
         } catch {
         }
@@ -34071,7 +34660,7 @@ var SharedStore = class {
   }
   async ensureRepo() {
     this.ensureDirs();
-    if (statSync3(join7(this.gitDir, "HEAD"), { throwIfNoEntry: false })) {
+    if (statSync4(join8(this.gitDir, "HEAD"), { throwIfNoEntry: false })) {
       const now = await git(["remote", "get-url", "origin"], { gitDir: this.gitDir });
       if (now.code === 0 && now.out.trim() !== this.pointer.remote)
         await gitOk(["remote", "set-url", "origin", this.pointer.remote], { gitDir: this.gitDir });
@@ -34082,7 +34671,7 @@ var SharedStore = class {
   }
   /** The URL git will really use, after any `insteadOf` in the person's config (E3). */
   async destination() {
-    if (!statSync3(join7(this.gitDir, "HEAD"), { throwIfNoEntry: false }))
+    if (!statSync4(join8(this.gitDir, "HEAD"), { throwIfNoEntry: false }))
       return `${this.pointer.remote} (${this.pointer.branch.startsWith("refs/") ? "ref" : "branch"} ${this.pointer.branch})`;
     const r = await git(["ls-remote", "--get-url", "origin"], { gitDir: this.gitDir });
     const url = r.code === 0 ? r.out.trim() : this.pointer.remote;
@@ -34091,7 +34680,7 @@ var SharedStore = class {
   /** Fetch the branch and bring `cache.json` up to date. */
   async fetch() {
     await this.ensureRepo();
-    return withLock(this.dir, () => this.fetchLocked(Date.now() + 3e4));
+    return withLock2(this.dir, () => this.fetchLocked(Date.now() + 3e4));
   }
   /**
    * THE COPY IS A CACHE (#13): a store.git that lost its objects, or is not a
@@ -34101,9 +34690,9 @@ var SharedStore = class {
   async repairCopy(why) {
     const aside = `${this.gitDir}.broken-${Date.now()}`;
     try {
-      renameSync3(this.gitDir, aside);
+      renameSync4(this.gitDir, aside);
     } catch {
-      rmSync2(this.gitDir, { recursive: true, force: true });
+      rmSync3(this.gitDir, { recursive: true, force: true });
     }
     await gitOk(["init", "--bare", "--quiet", this.gitDir]);
     await gitOk(["remote", "add", "origin", this.pointer.remote], { gitDir: this.gitDir });
@@ -34140,7 +34729,7 @@ var SharedStore = class {
     }
     let rewritten = before.rewritten;
     if (before.tip && (tip === null || (await git(["merge-base", "--is-ancestor", before.tip, tip], { gitDir: this.gitDir })).code !== 0)) {
-      const aside = join7(this.dir, `cache.${before.tip.slice(0, 12)}.json`);
+      const aside = join8(this.dir, `cache.${before.tip.slice(0, 12)}.json`);
       writeAtomic(aside, JSON.stringify(before, null, 2));
       rewritten = { from: before.tip, to: tip, aside, at: (/* @__PURE__ */ new Date()).toISOString() };
       logEvent("review.rewritten", { store: this.pointer.remote, from: before.tip, to: tip ?? "nothing", aside });
@@ -34261,7 +34850,7 @@ var SharedStore = class {
     await this.ensureRepo();
     const destination = await this.destination();
     const entry = who?.via ?? "unknown";
-    return withLock(this.dir, async () => {
+    return withLock2(this.dir, async () => {
       const deadline = Date.now() + 6e4;
       const wanted = only ? new Set(only) : null;
       const entries = this.outbox().filter((e) => !wanted || wanted.has(e.record.id));
@@ -34291,7 +34880,7 @@ var SharedStore = class {
             continue;
           }
           try {
-            renameSync3(join7(this.outboxDir, `${e2.record.id}.json`), join7(this.outboxDir, "deleted", `${e2.record.id}.${Date.now()}.diverged.json`));
+            renameSync4(join8(this.outboxDir, `${e2.record.id}.json`), join8(this.outboxDir, "deleted", `${e2.record.id}.${Date.now()}.diverged.json`));
           } catch {
           }
           diverged.push(e2.record.id);
@@ -34302,7 +34891,7 @@ var SharedStore = class {
           logEvent("review.push-diverged", { store: this.pointer.remote, ids: diverged.join(" "), entry });
           result.warnings = [
             ...stranded,
-            ...diverged.map((id) => `${id} had already arrived when you changed it: the reviewers have the earlier words \u2014 reply to correct it (your change is kept in ${join7(this.outboxDir, "deleted")})`)
+            ...diverged.map((id) => `${id} had already arrived when you changed it: the reviewers have the earlier words \u2014 reply to correct it (your change is kept in ${join8(this.outboxDir, "deleted")})`)
           ];
         }
         const send = entries.filter((e2) => !known.has(e2.record.id));
@@ -34335,14 +34924,14 @@ var SharedStore = class {
   }
   /** One commit on `tip` adding these records, built through a temporary index. */
   async commitOn(tip, records) {
-    const tmp = join7(this.dir, `push.${process.pid}.${randomBytes(3).toString("hex")}`);
-    mkdirSync3(tmp, { recursive: true });
+    const tmp = join8(this.dir, `push.${process.pid}.${randomBytes2(3).toString("hex")}`);
+    mkdirSync4(tmp, { recursive: true });
     try {
-      const env2 = { GIT_INDEX_FILE: join7(tmp, "index") };
+      const env2 = { GIT_INDEX_FILE: join8(tmp, "index") };
       await gitOk(tip ? ["read-tree", tip] : ["read-tree", "--empty"], { gitDir: this.gitDir, env: env2 });
       const paths = records.map((r) => {
-        const p2 = join7(tmp, `${r.id}.json`);
-        writeFileSync2(p2, canonical(r), "utf8");
+        const p2 = join8(tmp, `${r.id}.json`);
+        writeFileSync3(p2, canonical(r), "utf8");
         return p2;
       });
       const shas = (await gitOk(["hash-object", "-w", "--stdin-paths"], { gitDir: this.gitDir, input: `${paths.join("\n")}
@@ -34371,7 +34960,7 @@ var SharedStore = class {
       };
       return (await gitOk(["commit-tree", tree, ...tip ? ["-p", tip] : [], "-m", message], { gitDir: this.gitDir, env: ident })).trim();
     } finally {
-      rmSync2(tmp, { recursive: true, force: true });
+      rmSync3(tmp, { recursive: true, force: true });
     }
   }
 };
@@ -34542,7 +35131,7 @@ async function suggestedPointer(root5) {
 async function writePointer(root5, storeUrl, change, who) {
   if (isCopy(root5))
     throw new StoreError("a bare copy has no working tree to commit .mdrev.json in: name the store from a checkout of the project, and push it", "other");
-  const file = join7(root5, ".mdrev.json");
+  const file = join8(root5, ".mdrev.json");
   const named = readPointer(root5);
   const p2 = storeUrl?.trim() ? { remote: storeUrl.trim(), branch: DEFAULT_BRANCH } : named ?? await suggestedPointer(root5);
   if (!p2)
@@ -34551,7 +35140,7 @@ async function writePointer(root5, storeUrl, change, who) {
     await agentMayName(root5, p2.remote, change);
   let doc = {};
   try {
-    doc = JSON.parse(readFileSync4(file, "utf8"));
+    doc = JSON.parse(readFileSync5(file, "utf8"));
   } catch {
   }
   const was = JSON.stringify(doc);
@@ -34563,7 +35152,7 @@ async function writePointer(root5, storeUrl, change, who) {
     Object.assign(result, await notifyFor(root5, doc, p2.remote, change));
   if (JSON.stringify(doc) === was)
     return { ...result, commit: null, already: true };
-  writeFileSync2(file, `${JSON.stringify(doc, null, 2)}
+  writeFileSync3(file, `${JSON.stringify(doc, null, 2)}
 `, "utf8");
   await gitOk(["add", "--", ".mdrev.json"], { cwd: root5 });
   const told = result.notify === void 0 ? "" : result.notify ? `tell people through ${spoken(result.notify.channels)}` : "turn review notifications off";
@@ -34657,8 +35246,30 @@ function formatNotified(n) {
     lines.push(`nobody was told: ${n.none}`);
   for (const f of n.failed)
     lines.push(`not told${f.to ? ` ${f.to}` : ""}${f.channel ? ` through ${f.channel}` : ""}: ${f.error}`);
-  if (n.machineHint?.length)
+  if (n.machineHint?.length && !n.service)
     lines.push(formatMachineHint(n.machineHint, "person"));
+  if (n.service)
+    lines.push(...formatServiceTold(n.service));
+  return lines;
+}
+function formatServiceTold(t) {
+  const lines = [];
+  const n = (k, one4, many = `${one4}s`) => `${k} ${k === 1 ? one4 : many}`;
+  if (t.refusedAll)
+    lines.push(`${t.url || "the service"} would not tell people of this push: ${t.why ?? "it refused"}${t.dropped ? `; ${n(t.dropped, "record")} asked of it before with no answer ${t.dropped === 1 ? "was" : "were"} not told again here` : ""}`);
+  else {
+    if (t.telling)
+      lines.push(`${t.url} is telling people of ${n(t.telling, "record")}, as you: its page shows whom`);
+    if (t.told)
+      lines.push(`${n(t.told, "record")} ${t.told === 1 ? "was" : "were"} told of already`);
+    for (const r of t.refused)
+      lines.push(`${t.url} would not tell of ${r.id}: ${r.why}`);
+    const next2 = "with your next push, mdrev --push or mdrev --notes";
+    if (t.kept)
+      lines.push(t.unanswered ? `${t.url || "the service"} did not answer: ${n(t.kept, "record")} wait${t.kept === 1 ? "s" : ""} to be told, and go${t.kept === 1 ? "es" : ""} ${next2}` : `${n(t.kept, "record")} wait${t.kept === 1 ? "s" : ""} for ${t.url || "the service"}${t.why ? ` (${t.why})` : t.pending ? " (not in its copy of the store yet)" : ""}, and go${t.kept === 1 ? "es" : ""} ${next2}`);
+    if (t.dropped)
+      lines.push(`${n(t.dropped, "record")} kept for ${t.url || "the service"} ${t.dropped === 1 ? "was" : "were"} dropped${t.why ? ` (${t.why})` : ""}: telling ${t.dropped === 1 ? "it" : "them"} now might tell people twice`);
+  }
   return lines;
 }
 var spoken = (names) => names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
@@ -34713,10 +35324,10 @@ async function storeVsOrigin(root5, p2) {
   return { kind: "elsewhere", origin };
 }
 async function pairedElsewhere(root5, now) {
-  const home = join7(stateHome(), "review");
+  const home = join8(stateHome(), "review");
   let names;
   try {
-    names = readdirSync3(home);
+    names = readdirSync4(home);
   } catch {
     return null;
   }
@@ -34728,11 +35339,11 @@ async function pairedElsewhere(root5, now) {
       remotes.add(sameRepository(u));
   }
   for (const n of names) {
-    const dir = join7(home, n);
+    const dir = join8(home, n);
     if (dir === now.dir)
       continue;
     try {
-      const p2 = JSON.parse(readFileSync4(join7(dir, "pairing.json"), "utf8"));
+      const p2 = JSON.parse(readFileSync5(join8(dir, "pairing.json"), "utf8"));
       if (p2.project && p2.project === project2 || !p2.project && remotes.has(sameRepository(p2.remote)))
         return { remote: p2.remote, branch: p2.branch };
     } catch {
@@ -34753,7 +35364,7 @@ async function probeStore(p2) {
     return { kind: "unreachable" };
   if (!ls.out.trim())
     return { kind: "absent" };
-  const dir = join7(stateHome(), "review", `.probe-${randomBytes(4).toString("hex")}`);
+  const dir = join8(stateHome(), "review", `.probe-${randomBytes2(4).toString("hex")}`);
   try {
     await gitOk(["init", "--bare", "--quiet", dir]);
     const r = await git(["fetch", "--no-tags", "--quiet", p2.remote, `+${ref}:refs/probe`], { gitDir: dir, timeoutMs: 15e3 });
@@ -34762,25 +35373,25 @@ async function probeStore(p2) {
   } catch {
     return { kind: "unreachable" };
   } finally {
-    rmSync2(dir, { recursive: true, force: true });
+    rmSync3(dir, { recursive: true, force: true });
   }
 }
 async function projectPairings(root5, except) {
-  const home = join7(stateHome(), "review");
+  const home = join8(stateHome(), "review");
   let names;
   try {
-    names = readdirSync3(home).filter((n) => !n.startsWith("."));
+    names = readdirSync4(home).filter((n) => !n.startsWith("."));
   } catch {
     return [];
   }
   const project2 = await commonDir(root5);
   const out = [];
   for (const n of names) {
-    const dir = join7(home, n);
+    const dir = join8(home, n);
     if (dir === except)
       continue;
     try {
-      const p2 = JSON.parse(readFileSync4(join7(dir, "pairing.json"), "utf8"));
+      const p2 = JSON.parse(readFileSync5(join8(dir, "pairing.json"), "utf8"));
       if (p2.email && p2.project && p2.project === project2)
         out.push({ dir, pairing: p2 });
     } catch {
@@ -34819,10 +35430,10 @@ async function follow(root5, store, opts = {}) {
 }
 var PROBE_KEPT = { root: 36e5, absent: 3e5, unreachable: 6e4 };
 async function probeKept(p2, fresh) {
-  const file = join7(stateHome(), "review", ".probes.json");
+  const file = join8(stateHome(), "review", ".probes.json");
   let memo = {};
   try {
-    memo = JSON.parse(readFileSync4(file, "utf8"));
+    memo = JSON.parse(readFileSync5(file, "utf8"));
   } catch {
   }
   const key2 = storeKey(p2);
@@ -34844,7 +35455,7 @@ async function carryMoved(root5, store, fresh) {
   const probe = await probeKept(store.pointer, fresh);
   if (probe.kind === "unreachable")
     return { pairing: null };
-  const roots = await Promise.all(candidates.map(async (c2) => c2.pairing.root ?? await rootOf(join7(c2.dir, "store.git"), TIP)));
+  const roots = await Promise.all(candidates.map(async (c2) => c2.pairing.root ?? await rootOf(join8(c2.dir, "store.git"), TIP)));
   let pick3 = -1;
   if (probe.kind === "root") {
     pick3 = roots.indexOf(probe.root);
@@ -34860,19 +35471,19 @@ async function carryMoved(root5, store, fresh) {
       const had = roots.findIndex((r) => r !== null);
       const c2 = candidates[had];
       if (c2)
-        return { pairing: null, leftBehind: { from: c2.pairing.remote, branch: c2.pairing.branch, copy: join7(c2.dir, "store.git") } };
+        return { pairing: null, leftBehind: { from: c2.pairing.remote, branch: c2.pairing.branch, copy: join8(c2.dir, "store.git") } };
       return { pairing: null };
     }
   }
   if (pick3 < 0)
     return { pairing: null };
   const c = candidates[pick3];
-  if (statSync3(store.dir, { throwIfNoEntry: false })) {
+  if (statSync4(store.dir, { throwIfNoEntry: false })) {
     if (store.outbox().length > 0)
       return { pairing: null };
-    rmSync2(store.dir, { recursive: true, force: true });
+    rmSync3(store.dir, { recursive: true, force: true });
   }
-  renameSync3(c.dir, store.dir);
+  renameSync4(c.dir, store.dir);
   const old = c.pairing;
   const now = store.pointer;
   let server = old.server;
@@ -34888,14 +35499,14 @@ async function carryMoved(root5, store, fresh) {
   }
   const { root: _was, ...kept } = old;
   const next2 = { ...kept, remote: now.remote, branch: now.branch, ...probe.kind === "root" ? { root: probe.root } : {}, moved: [...old.moved ?? [], { from: old.remote, branch: old.branch, at: (/* @__PURE__ */ new Date()).toISOString() }], ...server ? { server } : {} };
-  writeAtomic(join7(store.dir, "store.json"), JSON.stringify({ remote: now.remote, branch: now.branch }));
+  writeAtomic(join8(store.dir, "store.json"), JSON.stringify({ remote: now.remote, branch: now.branch }));
   if (why) {
-    writeAtomic(join7(store.dir, "pairing.moved.json"), JSON.stringify({ ...next2, why }, null, 2));
-    rmSync2(join7(store.dir, "pairing.json"), { force: true });
+    writeAtomic(join8(store.dir, "pairing.moved.json"), JSON.stringify({ ...next2, why }, null, 2));
+    rmSync3(join8(store.dir, "pairing.json"), { force: true });
     logEvent("review.moved", { from: old.remote, to: now.remote, carried: "records only", why });
     return { pairing: null };
   }
-  writeAtomic(join7(store.dir, "pairing.json"), JSON.stringify(next2, null, 2));
+  writeAtomic(join8(store.dir, "pairing.json"), JSON.stringify(next2, null, 2));
   logEvent("review.moved", { from: old.remote, to: now.remote, carried: "pairing", by: probe.kind === "root" ? "root commit" : "checkout remote", check: next2.server?.check ?? "unconfirmed" });
   return { pairing: next2 };
 }
@@ -34911,7 +35522,7 @@ function formatFollowed(p2) {
 }
 function movedAwaitingPairing(store) {
   try {
-    const p2 = JSON.parse(readFileSync4(join7(store.dir, "pairing.moved.json"), "utf8"));
+    const p2 = JSON.parse(readFileSync5(join8(store.dir, "pairing.moved.json"), "utf8"));
     const last = p2.moved?.at(-1);
     return last ? { from: last.from, why: p2.why ?? "" } : null;
   } catch {
@@ -35056,11 +35667,11 @@ function defaultDisplayName(gitName) {
   return `${gitName.trim() || userInfo().username}-on-${hostname2().split(".")[0]}`;
 }
 function machineConfigPath() {
-  return join7(process.env.XDG_CONFIG_HOME || join7(homedir2(), ".config"), "taskq", "config.json");
+  return join8(process.env.XDG_CONFIG_HOME || join8(homedir3(), ".config"), "taskq", "config.json");
 }
 function machineConfig() {
   try {
-    const c = JSON.parse(readFileSync4(machineConfigPath(), "utf8"));
+    const c = JSON.parse(readFileSync5(machineConfigPath(), "utf8"));
     return c && typeof c === "object" && !Array.isArray(c) ? c : {};
   } catch {
     return {};
@@ -35082,7 +35693,7 @@ function setMachineDisplayName(name) {
     delete cfg.display_name;
   const sorted = Object.fromEntries(Object.keys(cfg).sort().map((k) => [k, cfg[k]]));
   const file = machineConfigPath();
-  mkdirSync3(join7(file, ".."), { recursive: true });
+  mkdirSync4(join8(file, ".."), { recursive: true });
   writeAtomic(file, `${JSON.stringify(sorted, null, 1)}
 `);
   logEvent("review.display-name", { name: name.trim() || "(cleared)", file });
@@ -35216,16 +35827,16 @@ async function confirmPairing(root5, who, shown, opts = {}) {
   setMachineDisplayName(asked.name);
   return { ...paired, machineName: asked.name };
 }
-var mint = () => `shr-${Date.now().toString(36)}-${randomBytes(3).toString("hex").slice(0, 4)}`;
+var mint = () => `shr-${Date.now().toString(36)}-${randomBytes2(3).toString("hex").slice(0, 4)}`;
 async function headOf(root5) {
   const r = await git(["rev-parse", "--verify", "--quiet", "HEAD"], { cwd: root5 });
   return r.code === 0 ? r.out.trim() : void 0;
 }
 function sharedReviewInPlay(root5) {
-  if (isCopy(root5) ? readPointerOrNull(root5) !== null : statSync3(join7(root5, ".mdrev.json"), { throwIfNoEntry: false }))
+  if (isCopy(root5) ? readPointerOrNull(root5) !== null : statSync4(join8(root5, ".mdrev.json"), { throwIfNoEntry: false }))
     return true;
   try {
-    return readdirSync3(join7(stateHome(), "review")).length > 0;
+    return readdirSync4(join8(stateHome(), "review")).length > 0;
   } catch {
     return false;
   }
@@ -35425,7 +36036,7 @@ async function setSharedState(source, recordId, kind, why, who) {
   store.write(base2(kind, id, thread.id, last?.id ?? thread.id, me, (why ?? "").trim(), who, await headOf(source.repoRoot)), local(who, source.repoRoot));
   return foldThreads(store.records(), me.email).find((t) => t.id === thread.id);
 }
-var mintDraft = () => `dft-${Date.now().toString(36)}-${randomBytes(3).toString("hex").slice(0, 4)}`;
+var mintDraft = () => `dft-${Date.now().toString(36)}-${randomBytes2(3).toString("hex").slice(0, 4)}`;
 function draftsOn(note) {
   return (note.replies ?? []).flatMap((r) => r.draft ? [{ at: r.at, draft: r.draft, body: r.body }] : []);
 }
@@ -35718,6 +36329,7 @@ async function reviewStatus(source, opts = {}) {
     ...arrived.length ? { arrivedAfterTakeBack: arrived } : {},
     ...cache.changed?.length || cache.removed?.length ? { storeEdited: { changed: cache.changed ?? [], removed: cache.removed ?? [] } } : {},
     ...store.pointer.remoteName ? { remoteName: store.pointer.remoteName } : {},
+    ...await serviceTellsFor(source.repoRoot, store, pairing?.email),
     ...store.pointer.skipped ? { skipped: store.pointer.skipped } : {},
     ...moved ? { storeChanged: { paired: moved.remote, branch: moved.branch } } : {},
     // said for a week after the move, then it is simply where the store is
@@ -35741,10 +36353,10 @@ async function commonDir(root5) {
   return r.code === 0 ? r.out.trim() : null;
 }
 async function otherOutboxes(root5, except) {
-  const home = join7(stateHome(), "review");
+  const home = join8(stateHome(), "review");
   let names;
   try {
-    names = readdirSync3(home);
+    names = readdirSync4(home);
   } catch {
     return [];
   }
@@ -35753,12 +36365,12 @@ async function otherOutboxes(root5, except) {
     return [];
   const out = [];
   for (const n of names) {
-    const dir = join7(home, n);
+    const dir = join8(home, n);
     if (dir === except)
       continue;
     let files;
     try {
-      files = readdirSync3(join7(dir, "outbox")).filter((f) => f.endsWith(".json"));
+      files = readdirSync4(join8(dir, "outbox")).filter((f) => f.endsWith(".json"));
     } catch {
       continue;
     }
@@ -35766,7 +36378,7 @@ async function otherOutboxes(root5, except) {
       continue;
     let theirs = null;
     try {
-      const e = JSON.parse(readFileSync4(join7(dir, "outbox", files[0]), "utf8"));
+      const e = JSON.parse(readFileSync5(join8(dir, "outbox", files[0]), "utf8"));
       theirs = await commonDir(e.local.root);
     } catch {
       continue;
@@ -35775,7 +36387,7 @@ async function otherOutboxes(root5, except) {
       continue;
     let store = n;
     try {
-      store = JSON.parse(readFileSync4(join7(dir, "store.json"), "utf8")).remote ?? n;
+      store = JSON.parse(readFileSync5(join8(dir, "store.json"), "utf8")).remote ?? n;
     } catch {
     }
     out.push({ store, count: files.length });
@@ -35803,13 +36415,202 @@ async function reviewPush(source, ids, who, opts = {}) {
   await store.sendQuiet(who, true).catch(() => null);
   if (opts.notify !== false) {
     const { me } = await pairedStore(source.repoRoot);
-    result.notified = await notifyPush(source, store, me, [...result.sent, ...result.already]).catch((e) => ({ sent: [], failed: [{ error: e.message }] }));
+    const landed = [...result.sent, ...result.already];
+    result.notified = await tellOf(source, store, me, landed).catch((e) => ({ sent: [], failed: [{ error: e.message }] }));
   }
   if (pushedCode) {
     result.code = pushedCode;
     result.warnings = [];
   }
   return result;
+}
+var TELL_BATCH = 200;
+var TELL_WAIT_MS = 25e3;
+var TELL_KEEP_MS = 7 * 864e5;
+async function branchOf(root5, mode) {
+  const r = await git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: root5 });
+  const b = r.code === 0 ? r.out.trim() : "";
+  return b && b !== "HEAD" ? b : mode.repo.defaultBranch ?? "main";
+}
+async function tellOf(source, store, me, landed) {
+  const answer = await serviceModeOf(source.repoRoot).catch(() => null);
+  if (!answer || !("mode" in answer)) {
+    const left = await dropKept(store);
+    const n = await notifyPush(source, store, me, landed);
+    return left ? { ...n, service: { url: answer && "joined" in answer ? answer.joined.url : "", telling: 0, told: 0, pending: 0, refused: [], kept: 0, dropped: left, why: "this checkout is no longer in service mode" } } : n;
+  }
+  const { service, fallback } = await tellThroughService(answer.mode, store, landed, await branchOf(source.repoRoot, answer.mode));
+  const local2 = fallback.length ? await notifyPush(source, store, me, fallback) : { sent: [], failed: [] };
+  return { ...local2, service };
+}
+async function dropKept(store) {
+  if (Object.keys(store.serviceKept().ids).length === 0)
+    return 0;
+  return store.changeServiceKept((k) => {
+    const n = Object.keys(k.ids).length;
+    k.ids = {};
+    return n;
+  });
+}
+async function tellThroughService(mode, store, add, branch) {
+  const url = mode.joined.url;
+  const now = Date.now();
+  let dropped = 0;
+  const mark3 = randomBytes2(6).toString("hex");
+  const batch = await store.changeServiceKept((k) => {
+    for (const id of add)
+      if (!k.ids[id] && !store.wasNotified(id))
+        k.ids[id] = { since: new Date(now).toISOString() };
+    for (const [id, e] of Object.entries(k.ids)) {
+      if (store.wasNotified(id))
+        delete k.ids[id];
+      else if (now - Date.parse(e.since) > TELL_KEEP_MS) {
+        dropped++;
+        delete k.ids[id];
+      }
+    }
+    const ids = Object.keys(k.ids).slice(0, TELL_BATCH);
+    const prior = new Map(ids.map((id) => [id, marksOf(k.ids[id])]));
+    for (const id of ids)
+      k.ids[id].asked = [...prior.get(id), mark3];
+    return { ids, prior };
+  });
+  const counts = (kept2) => ({ url, telling: 0, told: 0, pending: 0, refused: [], kept: kept2, dropped });
+  if (batch.ids.length === 0) {
+    markKept(mode.repo.id, false);
+    return { service: counts(0), fallback: [] };
+  }
+  markKept(mode.repo.id, true);
+  const unmark = (k, id, also = []) => {
+    const e = k.ids[id];
+    if (!e)
+      return [];
+    const left = marksOf(e).filter((m) => m !== mark3 && !also.includes(m));
+    if (left.length)
+      e.asked = left;
+    else
+      delete e.asked;
+    return left;
+  };
+  let a;
+  try {
+    a = await ask(mode.joined, "POST", "/api/device/notify", { repo: mode.repo.id, branch, store: { remote: store.pointer.remote, branch: store.pointer.branch }, ids: batch.ids }, TELL_WAIT_MS);
+  } catch (e) {
+    const err = e instanceof ServiceError ? e : new ServiceError(0, e.message, false);
+    if (err.status === 0 || err.status === 429) {
+      const kept2 = await store.changeServiceKept((k) => {
+        if (err.answered)
+          for (const id of batch.ids)
+            unmark(k, id);
+        return Object.keys(k.ids).length;
+      });
+      return { service: { ...counts(kept2), ...err.answered ? { why: err.message } : { unanswered: true } }, fallback: [] };
+    }
+    const fallback2 = await store.changeServiceKept((k) => {
+      const out = [];
+      for (const id of Object.keys(k.ids)) {
+        if (unmark(k, id).length)
+          dropped++;
+        else
+          out.push(id);
+        delete k.ids[id];
+      }
+      return out;
+    });
+    markKept(mode.repo.id, false);
+    return { service: { ...counts(0), dropped, why: err.message, refusedAll: true }, fallback: fallback2 };
+  }
+  const telling = a.telling ?? [];
+  const told = a.told ?? [];
+  const pending = a.pending ?? [];
+  const refused = (a.refused ?? []).filter((r) => r && typeof r.id === "string");
+  const fallback = [];
+  const kept = await store.changeServiceKept((k) => {
+    for (const id of [...telling, ...told]) {
+      if (!batch.ids.includes(id))
+        continue;
+      store.markNotified(id);
+      delete k.ids[id];
+    }
+    for (const id of pending)
+      if (batch.ids.includes(id))
+        unmark(k, id, batch.prior.get(id));
+    for (const r of refused) {
+      if (!batch.ids.includes(r.id) || !k.ids[r.id])
+        continue;
+      if (unmark(k, r.id).length)
+        dropped++;
+      else
+        fallback.push(r.id);
+      delete k.ids[r.id];
+    }
+    const named = /* @__PURE__ */ new Set([...telling, ...told, ...pending, ...refused.map((r) => r.id)]);
+    for (const id of batch.ids)
+      if (!named.has(id))
+        delete k.ids[id];
+    return Object.keys(k.ids).length;
+  });
+  markKept(mode.repo.id, kept > 0);
+  const mine = (ids) => ids.filter((id) => batch.ids.includes(id)).length;
+  return { service: { url, telling: mine(telling), told: mine(told), pending: mine(pending), refused: refused.filter((r) => batch.ids.includes(r.id)), kept, dropped }, fallback };
+}
+function marksOf(e) {
+  return e.asked === void 0 ? [] : e.asked === true ? ["earlier"] : typeof e.asked === "string" ? [e.asked] : e.asked;
+}
+async function flushServiceNotify(source, mode) {
+  if (!keptDue(mode.repo.id))
+    return null;
+  let paired;
+  try {
+    paired = await pairedStore(source.repoRoot);
+  } catch {
+    return null;
+  }
+  if (Object.keys(paired.store.serviceKept().ids).length === 0) {
+    markKept(mode.repo.id, false);
+    return null;
+  }
+  const { service, fallback } = await tellThroughService(mode, paired.store, [], await branchOf(source.repoRoot, mode));
+  const local2 = fallback.length ? await notifyPush(source, paired.store, paired.me, fallback).catch((e) => ({ sent: [], failed: [{ error: e.message }] })) : { sent: [], failed: [] };
+  return { ...local2, service };
+}
+async function serviceTellsFor(root5, store, pairedEmail) {
+  const answer = await serviceModeOf(root5).catch(() => null);
+  if (!answer || !("mode" in answer))
+    return {};
+  const email = answer.mode.joined.person.email ?? void 0;
+  const kept = Object.keys(store.serviceKept().ids).length;
+  const differs = Boolean(email && pairedEmail && email.toLowerCase() !== pairedEmail.toLowerCase());
+  return { serviceTells: { url: answer.mode.joined.url, ...email ? { email } : {}, ...differs ? { emailDiffers: true } : {}, ...kept ? { kept } : {} } };
+}
+async function reviewSort(source, ids, o) {
+  const { store } = await pairedStore(source.repoRoot);
+  const byId = new Map(store.cache().records.filter(readable).map((r) => [r.id, r]));
+  const author = o.author.trim().toLowerCase();
+  const since = Date.parse(o.since) - 5 * 6e4;
+  const out = { telling: [], told: [], pending: [], refused: [] };
+  for (const id of [...new Set(ids)]) {
+    if (!SAFE_ID.test(id))
+      continue;
+    if (store.wasNotified(id)) {
+      out.told.push(id);
+      continue;
+    }
+    const r = byId.get(id);
+    if (!r) {
+      out.pending.push(id);
+      continue;
+    }
+    if (r.kind !== "note" && r.kind !== "reply")
+      continue;
+    if (r.author.email.trim().toLowerCase() !== author)
+      out.refused.push({ id, why: "written by someone else" });
+    else if (Number.isFinite(since) && Date.parse(r.at) < since)
+      out.refused.push({ id, why: "written before this computer joined" });
+    else
+      out.telling.push(id);
+  }
+  return out;
 }
 async function reviewNotify(source, ids, who) {
   if (who.via !== "viewer" && who.via !== "person")
@@ -35848,7 +36649,7 @@ async function subscribers(source, path2) {
 }
 var codeChannel = (channels) => channels.includes("email") ? "email" : channels[0];
 var CODE_LIFE_MS = 10 * 6e4;
-var codeHash = (code4) => createHash("sha256").update(code4).digest("hex");
+var codeHash = (code4) => createHash2("sha256").update(code4).digest("hex");
 async function subscribe(source, opts, who) {
   const { store, me } = await pairedStore(source.repoRoot);
   const person = who.via === "viewer" || who.via === "person";
@@ -35873,9 +36674,9 @@ async function subscribe(source, opts, who) {
   return { subscribed: { author: me.email.toLowerCase(), name: me.name, email, ...opts.path ? { path: opts.path } : {}, at: record.at } };
 }
 async function sendCode(source, store, me, want) {
-  const file = join7(store.dir, "subscribe-request.json");
+  const file = join8(store.dir, "subscribe-request.json");
   try {
-    const was = JSON.parse(readFileSync4(file, "utf8"));
+    const was = JSON.parse(readFileSync5(file, "utf8"));
     if (was.email === want.email && Date.now() - Date.parse(was.at) < CODE_LIFE_MS) {
       throw new StoreError(`a code went to ${want.email} at ${was.at.slice(11, 16)}: type it, or wait ten minutes for another`, "other");
     }
@@ -35890,7 +36691,7 @@ async function sendCode(source, store, me, want) {
   const tool = toolFor(channel);
   if (!tool)
     throw new StoreError(`no tool for ${channel} on this machine to send the code \u2014 install your organisation's plugin`, "other");
-  const code4 = String(randomBytes(4).readUInt32BE(0) % 1e6).padStart(6, "0");
+  const code4 = String(randomBytes2(4).readUInt32BE(0) % 1e6).padStart(6, "0");
   const project2 = basename2(source.repoRoot);
   const from = { name: await senderName(source.repoRoot, me, hostNotify().host), email: me.email };
   const text9 = `${from.name} <${from.email}> asked mdrev to send review notifications for ${project2} to this address. The code is ${code4}; it lasts ten minutes. If you did not ask, ignore this.`;
@@ -35905,20 +36706,20 @@ async function confirmSubscription(source, code4, who) {
   if (who.via !== "viewer" && who.via !== "person")
     throw new StoreError("a code is typed back by its person, in the viewer or at their terminal", "other");
   const { store, me } = await pairedStore(source.repoRoot);
-  const file = join7(store.dir, "subscribe-request.json");
+  const file = join8(store.dir, "subscribe-request.json");
   let want;
   try {
-    want = JSON.parse(readFileSync4(file, "utf8"));
+    want = JSON.parse(readFileSync5(file, "utf8"));
   } catch {
     throw new StoreError("no code is waiting: subscribe again to have one sent", "other");
   }
   if (Date.now() - Date.parse(want.at) >= CODE_LIFE_MS) {
-    rmSync2(file, { force: true });
+    rmSync3(file, { force: true });
     throw new StoreError("that code is more than ten minutes old: subscribe again to have another sent", "other");
   }
   if (codeHash(code4.trim()) !== want.hash)
     throw new StoreError("that is not the code that was sent", "other");
-  rmSync2(file, { force: true });
+  rmSync3(file, { force: true });
   const record = { ...await quietBase("subscribe", me, source.repoRoot), ...want.path ? { path: want.path } : {}, email: want.email };
   store.writeQuiet(record, { via: who.via, root: source.repoRoot });
   await store.sendQuiet(who).catch(() => null);
@@ -36190,7 +36991,11 @@ function formatStatus(s2) {
       lines.push(`subscribed: ${s2.subscriptions.map((x) => `${x.path ?? "the whole project"} (as ${x.email})`).join(", ")}`);
     else
       lines.push("subscribed to nothing here \u2014 mdrev --review-subscribe DOC, or --project");
-    if (s2.channels?.length)
+    if (s2.serviceTells) {
+      lines.push(`notifications: told by ${s2.serviceTells.url}, as you \u2014 this checkout is in service mode, so this machine's channels are not used${s2.serviceTells.kept ? ` (${s2.serviceTells.kept} record${s2.serviceTells.kept === 1 ? "" : "s"} wait to be handed to it)` : ""}`);
+      if (s2.serviceTells.emailDiffers)
+        lines.push(`  it knows you as ${s2.serviceTells.email}, and this machine is paired as ${s2.paired.email}: it tells people only of records written as ${s2.serviceTells.email}, so pair again with that email (mdrev --review-pair) or this machine's channels tell people of the rest`);
+    } else if (s2.channels?.length)
       lines.push(`notifications: through ${s2.channels.map((c) => c.tool ? `${c.name} (${c.tool})` : `${c.name} (no tool on this machine \u2014 install your organisation's plugin)`).join(", ")}${s2.channelsByHost ? ", the host's: they apply whatever the project's file names" : s2.channelsByMachine ? " \u2014 this machine's (mdrev --channels): the project names none" : ""}`);
     else if (s2.channelsQuiet)
       lines.push(`notifications: none \u2014 the project's .mdrev.json ${s2.channelsRefused?.length ? "names no channel mdrev can use (below)" : "names an empty list"}: it tells nobody, whatever this machine's channels`);
@@ -36661,8 +37466,8 @@ function ellipsis(s2, n) {
 
 // packages/core/dist/agent-read.js
 init_annotations();
-import { mkdirSync as mkdirSync4, readFileSync as readFileSync5, renameSync as renameSync4, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname as dirname4, join as join8 } from "node:path";
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync6, renameSync as renameSync5, writeFileSync as writeFileSync4 } from "node:fs";
+import { dirname as dirname5, join as join9 } from "node:path";
 var ms = (at) => {
   const t = Date.parse(at);
   return Number.isNaN(t) ? 0 : t;
@@ -36683,11 +37488,11 @@ function instructionOf(a) {
   const said = personWords(a).filter((w) => w.kind !== "edit");
   return [a.body, ...said.map((r) => `[${r.author.split("@")[0]} ${r.kind === "reopen" ? "reopened it" : "replied"}, ${r.at}] ${r.body}`)].join("\n\n");
 }
-var fileOf = (home) => join8(dirname4(sidecarPath(home, "x")), ".agent-read.json");
+var fileOf = (home) => join9(dirname5(sidecarPath(home, "x")), ".agent-read.json");
 var KEEP = 5e3;
 function readMarks(home) {
   try {
-    const d = JSON.parse(readFileSync5(fileOf(home), "utf8"));
+    const d = JSON.parse(readFileSync6(fileOf(home), "utf8"));
     return d && typeof d === "object" && !Array.isArray(d) ? d : {};
   } catch {
     return {};
@@ -36703,11 +37508,11 @@ function agentRead(home, notes, now = /* @__PURE__ */ new Date()) {
   const kept = Object.entries(marks).sort((x, y) => y[1].at.localeCompare(x[1].at)).slice(0, KEEP);
   const file = fileOf(home);
   try {
-    mkdirSync4(dirname4(file), { recursive: true });
+    mkdirSync5(dirname5(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
-    writeFileSync3(tmp, `${JSON.stringify(Object.fromEntries(kept))}
+    writeFileSync4(tmp, `${JSON.stringify(Object.fromEntries(kept))}
 `);
-    renameSync4(tmp, file);
+    renameSync5(tmp, file);
   } catch {
   }
 }
@@ -36717,7 +37522,7 @@ function agentLastRead(home, id) {
 
 // packages/core/dist/review.js
 import { hostname as hostname4, userInfo as userInfo3 } from "node:os";
-import { dirname as dirname5, extname, resolve as resolvePath, sep } from "node:path";
+import { dirname as dirname6, extname, resolve as resolvePath, sep } from "node:path";
 init_annotations();
 var Lru = class {
   max;
@@ -37088,7 +37893,7 @@ var Review = class {
   }
   /** Adopt an already-opened source and record the document as recent. */
   async open(file) {
-    const source = await openRepo(dirname5(file));
+    const source = await openRepo(dirname6(file));
     this.registry.adopt(source);
     const path2 = await source.relPath(file);
     this.recents.note(source.repoRoot, path2);
@@ -37173,500 +37978,8 @@ async function canonicalAnchor(source, blob, anchor) {
   }
 }
 
-// packages/core/dist/note-ops.js
-init_annotations();
-import { randomBytes as randomBytes2 } from "node:crypto";
-var opId = () => `op-${Date.now().toString(36)}-${randomBytes2(5).toString("hex")}`;
-var same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
-function opsFor(path2, before, after) {
-  if (!before && !after)
-    return [];
-  const id = (after ?? before).id;
-  const base3 = { id, path: path2 };
-  if (!before)
-    return [{ ...base3, op: opId(), kind: "add", record: after }];
-  if (!after)
-    return [{ ...base3, op: opId(), kind: "delete" }];
-  const out = [];
-  const had = new Set((before.replies ?? []).map((r) => r.at));
-  const has = new Set((after.replies ?? []).map((r) => r.at));
-  for (const r of before.replies ?? [])
-    if (!has.has(r.at))
-      out.push({ ...base3, op: opId(), kind: "delete-reply", at: r.at });
-  for (const r of after.replies ?? [])
-    if (!had.has(r.at))
-      out.push({ ...base3, op: opId(), kind: "reply", reply: r });
-  for (const r of after.replies ?? []) {
-    const was2 = (before.replies ?? []).find((b) => b.at === r.at);
-    if (was2?.draft && !was2.draft.shared && r.draft?.shared)
-      out.push({ ...base3, op: opId(), kind: "draft-shared", at: r.at, shared: r.draft.shared, ...after.answered ? { answered: after.answered } : {} });
-  }
-  const was = { status: before.status, body: before.body };
-  if (after.body !== before.body) {
-    const edit = (after.edits ?? []).find((e) => !(before.edits ?? []).some((b) => b.at === e.at));
-    out.push({ ...base3, op: opId(), kind: "edit", body: after.body, ...edit ? { edit } : {}, was });
-  }
-  if (after.status !== before.status || !same(after.resolvedBy, before.resolvedBy)) {
-    out.push({ ...base3, op: opId(), kind: "status", status: after.status, ...after.resolvedBy ? { resolvedBy: after.resolvedBy } : {}, was: { status: before.status, body: after.body } });
-  }
-  return out;
-}
-async function applyOp(home, op) {
-  const all4 = await listAnnotations(home, op.path);
-  const at = all4.findIndex((a) => a.id === op.id);
-  if (op.kind === "add") {
-    if (at === -1)
-      await placeAnnotation(home, op.path, { ...op.record, id: op.id });
-    return { op: op.op, applied: true };
-  }
-  if (at === -1)
-    return op.kind === "delete" ? { op: op.op, applied: true } : { op: op.op, dropped: `${op.id} was deleted on another device` };
-  const note = all4[at];
-  if ((op.kind === "status" || op.kind === "edit") && op.was) {
-    const done = op.kind === "status" ? note.status === op.status && same(note.resolvedBy, op.resolvedBy) : note.body === op.body;
-    if (done)
-      return { op: op.op, applied: true };
-    if (note.status !== op.was.status || note.body !== op.was.body) {
-      const now = note.body !== op.was.body ? "its words were changed" : `it was ${note.status === "open" ? "reopened" : note.status}`;
-      return { op: op.op, dropped: `${op.id} changed on another device since this was done (${now}): read it again` };
-    }
-  }
-  switch (op.kind) {
-    case "delete":
-      all4.splice(at, 1);
-      break;
-    case "reply": {
-      const replies = note.replies ?? [];
-      if (replies.some((r) => r.at === op.reply.at))
-        return { op: op.op, applied: true };
-      all4[at] = { ...note, replies: [...replies, op.reply].sort((a, b) => a.at.localeCompare(b.at)) };
-      break;
-    }
-    case "delete-reply":
-      all4[at] = { ...note, replies: (note.replies ?? []).filter((r) => r.at !== op.at) };
-      break;
-    case "draft-shared": {
-      const replies = (note.replies ?? []).map((r) => r.at === op.at && r.draft && !r.draft.shared ? { ...r, draft: { ...r.draft, shared: op.shared } } : r);
-      all4[at] = { ...note, replies, ...op.answered ? { answered: { ...note.answered ?? {}, ...op.answered } } : {} };
-      break;
-    }
-    case "edit": {
-      const edits = note.edits ?? [];
-      all4[at] = { ...note, body: op.body, ...op.edit && !edits.some((e) => e.at === op.edit.at) ? { edits: [...edits, op.edit] } : {} };
-      break;
-    }
-    case "status": {
-      const { resolvedBy: _was, ...rest } = note;
-      all4[at] = { ...rest, status: op.status, ...op.resolvedBy ? { resolvedBy: op.resolvedBy } : {} };
-      break;
-    }
-  }
-  await writeSidecar(home, op.path, all4);
-  return { op: op.op, applied: true };
-}
-function isNoteOp(v) {
-  const o = v;
-  if (!o || typeof o !== "object" || typeof o.op !== "string" || typeof o.id !== "string" || typeof o.path !== "string")
-    return false;
-  if (!/^ann-[\w-]+$/.test(o.id) || o.path.split("/").some((p2) => p2 === ".." || p2 === "") || o.path.startsWith("/"))
-    return false;
-  switch (o.kind) {
-    case "add":
-      return typeof o.record === "object" && o.record?.id === o.id;
-    case "reply":
-      return typeof o.reply?.at === "string";
-    case "status":
-      return ["open", "resolved", "wontfix"].includes(o.status ?? "");
-    case "edit":
-      return typeof o.body === "string";
-    case "delete":
-      return true;
-    case "delete-reply":
-      return typeof o.at === "string";
-    case "draft-shared":
-      return typeof o.at === "string" && /^shr-[\w-]+$/.test(String(o.shared ?? ""));
-    default:
-      return false;
-  }
-}
-
-// packages/core/dist/service-mode.js
-init_annotations();
-import { execFile as execFile2 } from "node:child_process";
-import { createHash as createHash2 } from "node:crypto";
-import { chmodSync, closeSync, mkdirSync as mkdirSync5, openSync, readFileSync as readFileSync6, readdirSync as readdirSync4, renameSync as renameSync5, rmSync as rmSync3, statSync as statSync4, writeFileSync as writeFileSync4 } from "node:fs";
-import { homedir as homedir3 } from "node:os";
-import { dirname as dirname6, join as join9 } from "node:path";
-var ASK_MS = 2e3;
-var QUIET_MS = 6e4;
-var REPOS_MAX_AGE_MS = 10 * 6e4;
-var joinedFile = () => join9(homedir3(), ".config", "mdrev", "service");
-var serviceDir = () => join9(process.env.MDREV_STATE_DIR ?? join9(homedir3(), ".mdrev"), "service");
-var repoDir = (id) => join9(serviceDir(), String(id));
-function readJoined() {
-  try {
-    const j = JSON.parse(readFileSync6(joinedFile(), "utf8"));
-    return typeof j.url === "string" && typeof j.token === "string" && typeof j.device === "string" ? j : null;
-  } catch {
-    return null;
-  }
-}
-function readJson(file) {
-  try {
-    return JSON.parse(readFileSync6(file, "utf8"));
-  } catch {
-    return null;
-  }
-}
-function writeJson(file, value2) {
-  mkdirSync5(dirname6(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}`;
-  writeFileSync4(tmp, `${JSON.stringify(value2)}
-`);
-  renameSync5(tmp, file);
-}
-async function withLock2(id, fn, waitMs = 5e3) {
-  const file = join9(repoDir(id), "lock");
-  mkdirSync5(dirname6(file), { recursive: true });
-  const until = Date.now() + waitMs;
-  for (; ; ) {
-    try {
-      closeSync(openSync(file, "wx"));
-      break;
-    } catch {
-      try {
-        if (Date.now() - statSync4(file).mtimeMs > LOCK_STALE_MS)
-          rmSync3(file, { force: true });
-      } catch {
-      }
-      if (Date.now() > until)
-        throw new Error(`another mdrev holds ${file}; try again`);
-      await new Promise((done) => setTimeout(done, 25));
-    }
-  }
-  try {
-    return await fn();
-  } finally {
-    rmSync3(file, { force: true });
-  }
-}
-var LOCK_STALE_MS = 1e4;
-var ServiceError = class extends Error {
-  status;
-  constructor(status, message) {
-    super(message);
-    this.status = status;
-  }
-};
-async function ask(joined, method, path2, body3, timeoutMs = ASK_MS) {
-  let r;
-  try {
-    r = await fetch(new URL(path2, joined.url), {
-      method,
-      headers: { authorization: `Bearer ${joined.token}`, ...body3 !== void 0 ? { "content-type": "application/json" } : {} },
-      ...body3 !== void 0 ? { body: JSON.stringify(body3) } : {},
-      signal: AbortSignal.timeout(Math.max(1, timeoutMs))
-    });
-  } catch (e) {
-    throw new ServiceError(0, `the service did not answer (${e.name === "TimeoutError" ? "timed out" : e.message})`);
-  }
-  let parsed = null;
-  try {
-    parsed = await r.json();
-  } catch {
-  }
-  if (r.status >= 500)
-    throw new ServiceError(0, `the service answered ${r.status}`);
-  if (!r.ok)
-    throw new ServiceError(r.status, parsed?.error ?? `the service answered ${r.status}`);
-  return parsed;
-}
-async function registeredRepos(joined, o = {}) {
-  const file = join9(serviceDir(), "repos.json");
-  const quiet = join9(serviceDir(), "quiet.json");
-  const kept = readJson(file);
-  const usable = kept && kept.url === joined.url ? kept : null;
-  if (usable && !o.refresh && Date.now() - usable.at < REPOS_MAX_AGE_MS)
-    return usable.repos;
-  if (o.timeoutMs === 0)
-    return usable?.repos ?? null;
-  const q = readJson(quiet);
-  if (q && Date.now() - q.at < QUIET_MS)
-    return usable?.repos ?? null;
-  try {
-    const { repos } = await ask(joined, "GET", "/api/device/repos", void 0, o.timeoutMs ?? ASK_MS);
-    writeJson(file, { at: Date.now(), url: joined.url, repos });
-    rmSync3(quiet, { force: true });
-    return repos;
-  } catch (e) {
-    if (e instanceof ServiceError && e.status === 401) {
-      writeJson(file, { at: Date.now(), url: joined.url, repos: [], revoked: true });
-      return [];
-    }
-    if (e instanceof ServiceError && e.status === 0)
-      writeJson(quiet, { at: Date.now() });
-    return usable?.repos ?? null;
-  }
-}
-var run3 = (cwd, args) => new Promise((done) => execFile2("git", args, { cwd, maxBuffer: 16 << 20 }, (e, out, err) => done({ code: e ? typeof e.code === "number" ? e.code : 1 : 0, out: String(out), err: String(err) })));
-function addressOf(url) {
-  const a = url.trim();
-  const scp = /^(?:[\w.-]+@)?([\w.-]+):(?!\/\/)(.+)$/.exec(a);
-  let host;
-  let path2;
-  if (/^[a-z+]+:\/\//i.test(a)) {
-    try {
-      const u = new URL(a);
-      if (u.protocol === "file:")
-        return null;
-      host = u.hostname;
-      path2 = u.pathname;
-    } catch {
-      return null;
-    }
-  } else if (scp) {
-    host = scp[1];
-    path2 = scp[2];
-  } else
-    return null;
-  path2 = path2.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
-  return host && path2 ? { host: host.toLowerCase(), path: path2.toLowerCase() } : null;
-}
-async function serviceRemote(root5, repos) {
-  for (const remote of ["origin", "upstream"]) {
-    const r = await run3(root5, ["config", "--get", `remote.${remote}.url`]);
-    const at = r.code === 0 ? addressOf(r.out) : null;
-    if (!at)
-      continue;
-    const repo = repos.find((x) => x.path.toLowerCase() === at.path && x.hosts.some((h2) => h2.toLowerCase() === at.host));
-    if (repo)
-      return { remote, repo };
-  }
-  return null;
-}
-async function notesOutOfGit(root5) {
-  try {
-    statSync4(join9(root5, ".mdrev"));
-  } catch {
-    mkdirSync5(join9(root5, ".mdrev"), { recursive: true });
-    await ensureNotesIgnored(root5);
-  }
-  const tracked = await run3(root5, ["ls-files", "--", ".mdrev/annotations"]);
-  if (tracked.code === 0 && tracked.out.trim()) {
-    const n = tracked.out.trim().split("\n").length;
-    return `notes here are committed to git (${n} file${n === 1 ? "" : "s"} under .mdrev/annotations); \`mdrev --untrack-notes\` untracks them`;
-  }
-  const ignored = await run3(root5, ["check-ignore", "-q", ".mdrev/annotations/probe.md.jsonl"]);
-  if (ignored.code !== 0)
-    return "git does not ignore .mdrev/ here, so a note could go out with a commit; restore .mdrev/.gitignore (a line `*`) to use the service";
-  return null;
-}
-async function serviceModeOf(root5, o = {}) {
-  const joined = readJoined();
-  if (!joined)
-    return null;
-  const repos = await registeredRepos(joined, { timeoutMs: o.offline ? 0 : o.timeoutMs });
-  if (repos === null)
-    return { not: `${joined.url} has not listed your repositories yet, and did not answer`, joined };
-  const found = await serviceRemote(root5, repos);
-  if (!found)
-    return { not: `this repository is not on your list on ${joined.url} (origin or upstream)`, joined };
-  const why = await notesOutOfGit(root5);
-  if (why)
-    return { not: why, joined };
-  return { mode: { joined, repo: found.repo, remote: found.remote, root: root5 } };
-}
-function modeLine(a) {
-  if (!a)
-    return null;
-  if ("mode" in a)
-    return `service mode: ${a.mode.joined.url}; end the round with \`mdrev --push\``;
-  return `not in service mode: ${a.not}`;
-}
-var queueDir = (id) => join9(repoDir(id), "queue");
-function enqueue(id, ops) {
-  if (ops.length === 0)
-    return;
-  const dir = queueDir(id);
-  mkdirSync5(dir, { recursive: true });
-  for (const op of ops)
-    writeJson(join9(dir, `${Date.now().toString(36).padStart(10, "0")}-${op.op}.json`), op);
-}
-function queued(id) {
-  const dir = queueDir(id);
-  let names;
-  try {
-    names = readdirSync4(dir).filter((n) => n.endsWith(".json")).sort();
-  } catch {
-    return [];
-  }
-  const out = [];
-  for (const n of names) {
-    const op = readJson(join9(dir, n));
-    if (op)
-      out.push({ file: join9(dir, n), op });
-  }
-  return out;
-}
-var BATCH = 200;
-async function flush(mode, timeoutMs = ASK_MS) {
-  const until = Date.now() + timeoutMs;
-  const dropped = [];
-  let sent = 0;
-  let cursor;
-  let waiting = queued(mode.repo.id);
-  while (waiting.length > 0) {
-    const batch = waiting.slice(0, BATCH);
-    let answer;
-    try {
-      answer = await ask(mode.joined, "POST", `/api/device/notes/${mode.repo.id}`, { ops: batch.map((w) => w.op) }, Math.max(1, until - Date.now()));
-    } catch (e) {
-      if (e instanceof ServiceError && e.status >= 400 && e.status !== 401 && e.status !== 404) {
-        const aside = join9(queueDir(mode.repo.id), "refused");
-        mkdirSync5(aside, { recursive: true });
-        for (const w of batch) {
-          renameSync5(w.file, join9(aside, w.file.split("/").pop()));
-          dropped.push({ op: w.op, why: `the service refused it (${e.message}); kept in ${aside}` });
-        }
-        waiting = queued(mode.repo.id);
-        continue;
-      }
-      throw e;
-    }
-    const byOp = new Map(answer.results.map((r) => [r.op, r]));
-    for (const w of batch) {
-      const r = byOp.get(w.op.op);
-      if (!r)
-        continue;
-      sent++;
-      if ("dropped" in r)
-        dropped.push({ op: w.op, why: r.dropped });
-      rmSync3(w.file, { force: true });
-    }
-    if (answer.cursor)
-      cursor = answer.cursor;
-    const left = queued(mode.repo.id);
-    if (left.length >= waiting.length)
-      break;
-    waiting = left;
-  }
-  return { sent, dropped, ...cursor ? { cursor } : {} };
-}
-var checkoutFile = (id, root5) => join9(repoDir(id), "checkouts", `${createHash2("sha256").update(root5).digest("hex").slice(0, 16)}.json`);
-async function pull(mode, timeoutMs = ASK_MS) {
-  if (queued(mode.repo.id).length > 0)
-    return 0;
-  const until = Date.now() + timeoutMs;
-  const file = checkoutFile(mode.repo.id, mode.root);
-  const state = readJson(file) ?? { root: mode.root, cursor: "0" };
-  const from = (since) => ask(mode.joined, "GET", `/api/device/notes/${mode.repo.id}?since=${encodeURIComponent(since)}`, void 0, Math.max(1, until - Date.now()));
-  let got = await from(state.cursor);
-  if (!got.reset && state.generation && got.generation && got.generation !== state.generation)
-    got = { ...await from("0"), reset: true };
-  return withLock2(mode.repo.id, async () => {
-    if (queued(mode.repo.id).length > 0)
-      return 0;
-    const byPath = /* @__PURE__ */ new Map();
-    const of = (p2) => byPath.get(p2) ?? (byPath.set(p2, { put: [], gone: /* @__PURE__ */ new Set() }), byPath.get(p2));
-    for (const n of got.notes)
-      if (typeof n?.path === "string" && typeof n.id === "string")
-        of(n.path).put.push(n);
-    for (const d of got.deleted)
-      if (typeof d?.path === "string")
-        of(d.path).gone.add(d.id);
-    if (got.reset) {
-      const has = /* @__PURE__ */ new Set([...got.notes.map((n) => n.id), ...got.deleted.map((d) => d.id)]);
-      for (const s2 of await stampedNotes(mode.root))
-        if (!has.has(s2.note.id))
-          enqueue(mode.repo.id, opsFor(s2.path, null, s2.note));
-    }
-    let changed = 0;
-    for (const [path2, { put, gone }] of byPath) {
-      const all4 = await listAnnotations(mode.root, path2);
-      const next2 = all4.filter((a) => !(a.personal && (gone.has(a.id) || put.some((p2) => p2.id === a.id))));
-      const kept = all4.filter((a) => !a.personal && put.some((p2) => p2.id === a.id)).map((a) => a.id);
-      for (const p2 of put)
-        if (!kept.includes(p2.id))
-          next2.push({ ...p2, personal: true });
-      if (JSON.stringify(next2) === JSON.stringify(all4))
-        continue;
-      changed++;
-      await writeSidecar(mode.root, path2, next2);
-    }
-    writeJson(file, { root: mode.root, cursor: got.cursor, ...got.generation ? { generation: got.generation } : {}, answered: Date.now() });
-    return changed;
-  });
-}
-var quietFile = (id) => join9(repoDir(id), "quiet.json");
-function silence(mode) {
-  const quiet = readJson(quietFile(mode.repo.id));
-  if (!quiet || Date.now() - quiet.at >= QUIET_MS)
-    return null;
-  const s2 = readJson(checkoutFile(mode.repo.id, mode.root));
-  return { asOf: s2?.answered ? new Date(s2.answered).toISOString().replace(/\.\d+Z$/, "Z") : "never" };
-}
-async function sync(mode, o = {}) {
-  const quiet = readJson(quietFile(mode.repo.id));
-  const state = readJson(checkoutFile(mode.repo.id, mode.root));
-  const asOf = () => {
-    const s2 = readJson(checkoutFile(mode.repo.id, mode.root));
-    return s2?.answered ? new Date(s2.answered).toISOString().replace(/\.\d+Z$/, "Z") : "never";
-  };
-  if (o.minGapMs && state?.answered && Date.now() - state.answered < o.minGapMs && queued(mode.repo.id).length === 0)
-    return { said: null, dropped: [] };
-  if (quiet && Date.now() - quiet.at < QUIET_MS)
-    return { said: `as of ${asOf()}: the service did not answer`, dropped: [] };
-  const until = Date.now() + (o.timeoutMs ?? ASK_MS);
-  try {
-    const sent = await flush(mode, until - Date.now());
-    if (o.pull !== false)
-      await pull(mode, until - Date.now());
-    rmSync3(quietFile(mode.repo.id), { force: true });
-    return { said: null, dropped: sent.dropped };
-  } catch (e) {
-    if (e instanceof ServiceError && e.status !== 0)
-      return { said: `the service refused: ${e.message}`, dropped: [] };
-    writeJson(quietFile(mode.repo.id), { at: Date.now() });
-    return { said: `as of ${asOf()}: the service did not answer`, dropped: [] };
-  }
-}
-async function recordChange(mode, path2, before, after) {
-  const stamped = (after ?? before)?.personal;
-  if (!stamped)
-    return [];
-  const ops = opsFor(path2, before, after);
-  enqueue(mode.repo.id, ops);
-  return ops;
-}
-async function stampedNotes(root5) {
-  const out = [];
-  for (const { path: path2, annotations } of await listAllAnnotations(root5))
-    for (const note of annotations)
-      if (note.personal)
-        out.push({ path: path2, note });
-  return out;
-}
-async function waitingForPush(mode) {
-  const sym = await run3(mode.root, ["symbolic-ref", "--short", "-q", "HEAD"]);
-  const branch = sym.code === 0 ? sym.out.trim() : null;
-  const theirs = branch ? (await run3(mode.root, ["rev-parse", "-q", "--verify", `refs/remotes/${mode.remote}/${branch}`])).out.trim() : "";
-  const out = [];
-  for (const s2 of await stampedNotes(mode.root)) {
-    const draft = (s2.note.replies ?? []).findLast((r) => r.draft && !r.draft.shared)?.draft;
-    const commit = s2.note.status !== "open" ? s2.note.resolvedBy?.commit : draft?.commit;
-    if (!commit)
-      continue;
-    if ((await run3(mode.root, ["merge-base", "--is-ancestor", commit, "HEAD"])).code !== 0)
-      continue;
-    if (theirs && (await run3(mode.root, ["merge-base", "--is-ancestor", commit, theirs])).code === 0)
-      continue;
-    out.push(s2);
-  }
-  return out;
-}
-
 // packages/cli/dist/conform.js
-import { stat as stat2 } from "node:fs/promises";
+import { stat as stat3 } from "node:fs/promises";
 async function conform(opts, fetchImpl = fetch) {
   const base3 = opts.url.replace(/\/$/, "");
   const checks2 = [];
@@ -37982,7 +38295,7 @@ async function conform(opts, fetchImpl = fetch) {
       fail("GET /annotations lists the new note", `${e instanceof Error ? e.message : e}`);
     }
     if (opts.root) {
-      const here = await stat2(opts.root).then((st) => st.isDirectory(), () => false);
+      const here = await stat3(opts.root).then((st) => st.isDirectory(), () => false);
       if (!here)
         skip("the note is in the sidecar mdrev reads", `${opts.root} is not a directory on this machine`);
       else
@@ -38114,7 +38427,7 @@ function formatChecks(checks2, opts) {
 }
 
 // packages/cli/dist/notes-follow.js
-import { readFile as readFile3, readdir as readdir3, stat as stat3 } from "node:fs/promises";
+import { readFile as readFile3, readdir as readdir3, stat as stat4 } from "node:fs/promises";
 import { join as join10 } from "node:path";
 var FOLLOW_INTERVAL_MS = 1e3;
 function isAgentReply(reply) {
@@ -38144,7 +38457,7 @@ async function sidecarFingerprint(source) {
         await walk(join10(dir, e.name), `${rel}${e.name}/`);
       else if (e.name.endsWith(".jsonl")) {
         try {
-          const s2 = await stat3(join10(dir, e.name), { bigint: true });
+          const s2 = await stat4(join10(dir, e.name), { bigint: true });
           parts.push(`${rel}${e.name} ${s2.size} ${s2.mtimeNs} ${s2.ctimeNs}`);
         } catch (e2) {
           if (e2.code !== "ENOENT")
@@ -38313,7 +38626,7 @@ var InService = class _InService {
   async changing(id, act) {
     if (isSharedId(id))
       return act();
-    return withLock2(this.mode.repo.id, async () => {
+    return withLock(this.mode.repo.id, async () => {
       const before = await findAnnotation(this.source.notesHome, id);
       const done = await act();
       if (!before)
@@ -38336,7 +38649,7 @@ var InService = class _InService {
   }
   /** A note filed here, under the lock: written, then queued whole. */
   async adding(file) {
-    return withLock2(this.mode.repo.id, async () => {
+    return withLock(this.mode.repo.id, async () => {
       const made = await file();
       if (made && (await recordChange(this.mode, made.path, null, made.note)).length)
         this.sent = true;
@@ -38364,6 +38677,10 @@ var InService = class _InService {
       say(r.said);
     for (const d of r.dropped)
       say(`${d.op.id}: ${d.why}; this change was not kept`);
+    const told = r.said || !o.flush ? null : await flushServiceNotify(this.source, this.mode).catch(() => null);
+    if (told && (told.sent.length || told.failed.length || told.service?.telling || told.service?.refused.length || told.service?.dropped))
+      for (const l of formatNotified(told))
+        say(l);
   }
   /**
    * A viewer's records, each closed note whose commit its service remote
@@ -38474,6 +38791,9 @@ var USAGE = `mdrev-cli \u2014 mdrev's store, from the command line, for a host a
   mdrev-cli review push [--ids A,B] [--no-notify]   send the unpushed shared records (only these, given --ids); lists them and the destination;
                                                 --no-notify leaves telling people to review notify, for a host that answers first
   mdrev-cli review notify --ids A,B             a viewer's (--viewer): tell the people a push concerns, of these landed records, each once
+  mdrev-cli review sort --ids A,B --email E --since T   a host's (--viewer), after a fetch: of records a joined computer
+                                                pushed, which are told already, E's to tell (written after T), not
+                                                in the store yet, or refused (docs/service-devices.md, s243)
   mdrev-cli review fetch                        bring the machine's copy of the store up to date \u2014 and, for a viewer
                                                 (--viewer) or a person at their terminal, send the read marks and
                                                 subscriptions due to go (draft 8, H7)
@@ -38614,6 +38934,8 @@ function parse5(argv) {
       o.ids = next2().split(",").map((x) => x.trim()).filter(Boolean);
     else if (a === "--email")
       o.email = next2();
+    else if (a === "--since")
+      o.since = next2();
     else if (a === "--name")
       o.name = next2();
     else if (a === "--confirm")
@@ -38838,7 +39160,7 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
             if (line)
               say(line);
             if (side)
-              await side.listing(say, o.records ? { timeoutMs: 1e3, minGapMs: 5e3 } : {});
+              await side.listing(say, o.records ? { timeoutMs: 1e3, minGapMs: 5e3 } : { flush: true });
             if (o.follow) {
               const wired = as.signal ? { signal: as.signal, off: () => {
               } } : followSignals();
@@ -39389,6 +39711,14 @@ ${formatCodeOffer(before.code).join("\n")}
           if (!o.ids?.length)
             throw new UsageError("review notify needs --ids, the records a push landed");
           emit(await reviewNotify(source, o.ids, personal));
+          return 0;
+        }
+        case "sort": {
+          if (!o.viewer)
+            throw new UsageError("review sort is a host's, with --viewer and its key");
+          if (!o.ids?.length || !o.email || !o.since)
+            throw new UsageError("review sort needs --ids, --email and --since");
+          emit(await reviewSort(source, o.ids, { author: o.email, since: o.since }));
           return 0;
         }
         default:

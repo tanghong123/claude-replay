@@ -811,7 +811,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.61",
+  "mdrev": "1.1.63",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
@@ -1196,13 +1196,26 @@ push on a machine does, with `MDREV_NOTIFY_FILE` naming five things only the
 service knows: the tools' whole environment (that person's sign-in, never
 mdrev-cli's own), a link to the service's page at the thread on its branch in
 place of the project's `link`, the people who turned the service's
-messages off (they are still told of what a colleague pushes from their own
-machine), and the channels it tells people through, whatever the project's
+messages off (still told of what a colleague's machine tells with its own
+channels), and the channels it tells people through, whatever the project's
 `.mdrev.json` names — DingTalk and email, the company's, so notifications are
 simply on there (#s186, #s187) — and the pusher's own name, from single sign-on,
 which every message says it is from ("Hong Tang", not the pairing's
 "Hong-on-service", #s223). A tool's protocol does not change; the page shows "telling…", then
 whom it told.
+
+**A machine joined to such a service** ([personal-service.md](personal-service.md),
+"A joined laptop's pushes are told by the service"; s243) hands it the ids a
+push landed instead of running its own channels, and the service tells people
+as above, as the person, each record once: what decides that is made when
+telling, against a ledger of what was told. Whom and what are decided as they
+always are. The machine's own channels are used only when the service refuses —
+an older service, the person's sign-in not connected there, a record it will
+not vouch is theirs — and only for ids not asked before in a request that went
+unanswered; never when it does not answer, is busy, or has not seen
+the records yet: then the ids wait beside the store's cache and go with the
+machine's next shared push, `mdrev --push` or `mdrev --notes` — never with the
+viewer's poll or a follow, which do not wait on the service.
 
 ### Turning notifications on, once per machine (#s188)
 
