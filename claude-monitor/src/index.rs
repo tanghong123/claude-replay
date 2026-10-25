@@ -1178,7 +1178,8 @@ impl Index {
     }
 
     fn prove_by_growth(&self, st: &mut State) {
-        let mut growers: HashMap<String, Vec<String>> = HashMap::new();
+        let shared_cwds = unclassified_agent_cwds(&st.procs);
+        let mut growers: HashMap<(Option<Agent>, String), Vec<String>> = HashMap::new();
         for (sid, row) in &st.rows {
             // #s89: a ONE-SHOT session is written by its own `claude -p`, which is never a
             // candidate below, so its growth says nothing about the interactive process sharing
@@ -1192,19 +1193,20 @@ impl Index {
             if row.grew_at.is_some_and(|t| t.elapsed() < GROW_LINGER) {
                 if let Some(cwd) = row.cwd.as_deref() {
                     growers
-                        .entry(cwd.to_string())
+                        .entry((
+                            matching_scope(row.agent, cwd, &shared_cwds).0,
+                            cwd.to_string(),
+                        ))
                         .or_default()
                         .push(sid.clone());
                 }
             }
         }
-        for (cwd, sids) in growers {
+        for ((_, cwd), sids) in growers {
             if sids.len() != 1 {
-                continue; // two sessions writing in one directory prove nothing
+                continue; // several sessions sharing candidate processes prove nothing
             }
-            let Some(agent) = st.rows.get(&sids[0]).map(|r| r.agent) else {
-                continue;
-            };
+            let agent = st.rows[&sids[0]].agent;
             let mut cands = st.procs.iter().filter(|p| {
                 is_agent_exe(&p.exe_base, &p.argv)
                     && serves(p, agent)
@@ -1319,8 +1321,9 @@ impl Index {
             }
             cur.to_string()
         };
-        // A cwd's NEWEST session is the one allowed to claim a process heuristically — and
-        // `siblings` counts how many sessions that cwd holds, which is the size of the doubt
+        // Each agent's NEWEST session in a cwd may claim its process heuristically. Another
+        // agent's newer transcript cannot drive that process (#s250), just as `serves` filters
+        // the candidates by agent. `siblings` counts that agent's sessions in the cwd: the doubt
         // (#145). One session in the directory means the heuristic has nothing to get wrong;
         // several means the claim is a pick among them.
         //
@@ -1334,16 +1337,21 @@ impl Index {
                 .filter(|(_, r)| r.one_shot)
                 .filter_map(|(sid, r)| Some((sid.as_str(), r.cwd.as_deref()?, r.first_event?))),
         );
-        let mut newest_by_cwd: HashMap<&str, (&str, SystemTime)> = HashMap::new();
-        let mut siblings: HashMap<&str, usize> = HashMap::new();
+        let shared_cwds = unclassified_agent_cwds(&st.procs);
+        let mut newest_by_cwd: HashMap<(Option<Agent>, &str), (&str, SystemTime)> = HashMap::new();
+        let mut siblings: HashMap<(Option<Agent>, &str), usize> = HashMap::new();
         for (sid, row) in &st.rows {
             if paired.contains_key(sid.as_str()) {
                 continue;
             }
             if let Some(cwd) = row.cwd.as_deref() {
-                *siblings.entry(cwd).or_insert(0) += 1;
+                *siblings
+                    .entry(matching_scope(row.agent, cwd, &shared_cwds))
+                    .or_insert(0) += 1;
                 if let Some(m) = row.tree_mtime {
-                    let e = newest_by_cwd.entry(cwd).or_insert((sid, m));
+                    let e = newest_by_cwd
+                        .entry(matching_scope(row.agent, cwd, &shared_cwds))
+                        .or_insert((sid, m));
                     if m > e.1 {
                         *e = (sid, m);
                     }
@@ -1419,7 +1427,7 @@ impl Index {
             let heuristic_ok = row
                 .cwd
                 .as_deref()
-                .and_then(|c| newest_by_cwd.get(c))
+                .and_then(|c| newest_by_cwd.get(&matching_scope(row.agent, c, &shared_cwds)))
                 .is_some_and(|(newest, _)| *newest == sid.as_str());
             // A pairing that growth proved (#146) outranks the directory heuristic — it is
             // evidence about THIS session, not a pick among the directory's sessions.
@@ -1481,7 +1489,11 @@ impl Index {
                 Some(_) => row
                     .cwd
                     .as_deref()
-                    .and_then(|c| siblings.get(c).copied())
+                    .and_then(|c| {
+                        siblings
+                            .get(&matching_scope(row.agent, c, &shared_cwds))
+                            .copied()
+                    })
                     .unwrap_or(1),
                 None => 1,
             };
@@ -2424,6 +2436,25 @@ fn proc_agent(p: &Proc) -> Option<Agent> {
 /// link unconfirmed, so the session read as neither attached nor writable.
 fn serves(p: &Proc, agent: Agent) -> bool {
     proc_agent(p).is_none_or(|a| a == agent)
+}
+
+/// The process scan collects a cwd only for recognized agents. A configured executable
+/// whose agent kind is unknown remains a candidate for every agent (`serves`), so that
+/// directory must retain the shared recency and growth scope instead of proving two owners.
+fn unclassified_agent_cwds(procs: &[Proc]) -> HashSet<&str> {
+    procs
+        .iter()
+        .filter(|p| proc_agent(p).is_none() && !is_helper(&p.argv) && !is_one_shot(&p.argv))
+        .filter_map(|p| p.cwd.as_deref())
+        .collect()
+}
+
+fn matching_scope<'a>(
+    agent: Agent,
+    cwd: &'a str,
+    shared_cwds: &HashSet<&str>,
+) -> (Option<Agent>, &'a str) {
+    ((!shared_cwds.contains(cwd)).then_some(agent), cwd)
 }
 
 /// The one marker of a Claude FORK the machine offers (#269): the engine's argv,
@@ -5441,6 +5472,178 @@ n/Users/x/proj
         let snapshot = idx.assemble(&st, &mut Vec::new());
         assert_eq!(find(&snapshot, "h1").expect("the row")["consented"], true);
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// A newer session from another agent must not take the directory heuristic away from
+    /// an unnamed Claude process in Herdr. A named Claude sibling still blocks writing.
+    #[test]
+    fn a_newer_codex_session_does_not_hide_an_unnamed_herdr_claude() {
+        let scratch =
+            std::env::temp_dir().join(format!("cm-herdr-agent-scope-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let sibling = "11111111-2222-4333-8444-555555555555";
+        let mut procs = parse_ps(&format!(
+            "700 claude\n701 claude --session-id {sibling}\n900 codex\n"
+        ));
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/w/harbor\np701\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+        );
+        apply_env(&mut procs, "700 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/Users/x/.config/herdr/sessions/trial/herdr.sock\n");
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n60 1 herdr\n61 60 zsh\n700 61 claude\n",
+        );
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        for (sid, agent, modified) in [
+            ("older", Agent::CLAUDE, 1),
+            (sibling, Agent::CLAUDE, 2),
+            ("current", Agent::CLAUDE, 3),
+            ("codex", Agent::CODEX, 4),
+        ] {
+            let mut row = growth_row("/w/harbor", false);
+            row.agent = agent;
+            row.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(modified));
+            st.rows.insert(sid.into(), row);
+        }
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        let current = facts.iter().find(|f| f.sid == "current").unwrap();
+        assert_eq!(
+            current.pid,
+            Some(700),
+            "another agent's newer transcript cannot hide Claude"
+        );
+        assert!(current.confirmed);
+        assert!(matches!(&current.pane, Some(PaneAddr::Herdr { pane, .. }) if pane == "w1:p6"));
+        assert_eq!(facts.iter().find(|f| f.sid == "older").unwrap().pid, None);
+        assert_eq!(
+            facts.iter().find(|f| f.sid == "codex").unwrap().pid,
+            Some(900)
+        );
+        st.send_links = facts
+            .iter()
+            .map(|f| {
+                (
+                    f.sid.clone(),
+                    SendLink {
+                        pid: f.pid,
+                        pane: f.pane.clone(),
+                        confirmed: f.confirmed,
+                        named: f.named,
+                    },
+                )
+            })
+            .collect();
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        let current = snapshot["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["rows"].as_array().unwrap())
+            .find(|r| r["id"] == "current")
+            .unwrap();
+        assert_eq!(current["target"], "w1:p6");
+        assert_eq!(
+            current["projActive"], true,
+            "the named Claude sibling still blocks sending"
+        );
+        assert!(current.get("injectable").is_none());
+
+        // The Codex session alone cannot suppress the live Claude pane's compose affordance.
+        st.rows.remove(sibling);
+        st.procs.retain(|p| p.pid != 701);
+        st.send_links.remove(sibling);
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        let current = snapshot["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["rows"].as_array().unwrap())
+            .find(|r| r["id"] == "current")
+            .unwrap();
+        assert_eq!(current["injectable"], true);
+        assert!(current.get("projActive").is_none());
+
+        // A second unnamed Claude keeps the link unconfirmed, with only Claude histories
+        // counted as possible owners; the newer Codex history adds no ambiguity.
+        let mut second = parse_ps("702 claude\n");
+        apply_lsof(&mut second, "p702\nfcwd\nn/w/harbor\n");
+        st.procs.extend(second);
+        let mut facts = Vec::new();
+        let snapshot = idx.assemble(&st, &mut facts);
+        assert!(!facts.iter().find(|f| f.sid == "current").unwrap().confirmed);
+        let current = snapshot["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["rows"].as_array().unwrap())
+            .find(|r| r["id"] == "current")
+            .unwrap();
+        assert_eq!(current["ambig"], 2);
+        assert!(current.get("injectable").is_none());
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    /// Growth by another agent in the same directory is not a second possible writer of
+    /// this transcript; two growing sessions of the same agent remain ambiguous.
+    #[test]
+    fn growth_proofs_are_scoped_to_each_agent_in_a_shared_directory() {
+        let scratch =
+            std::env::temp_dir().join(format!("cm-growth-agent-scope-{}", std::process::id()));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let mut procs = parse_ps("700 claude\n900 codex\n");
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+        );
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        st.rows
+            .insert("claude".into(), growth_row("/w/harbor", true));
+        let mut codex = growth_row("/w/harbor", true);
+        codex.agent = Agent::CODEX;
+        st.rows.insert("codex".into(), codex);
+        idx.prove_by_growth(&mut st);
+        assert_eq!(
+            st.rows["claude"].proved_pid.as_ref().map(|(pid, _)| *pid),
+            Some(700)
+        );
+        assert_eq!(
+            st.rows["codex"].proved_pid.as_ref().map(|(pid, _)| *pid),
+            Some(900)
+        );
+        for row in st.rows.values_mut() {
+            row.proved_pid = None;
+        }
+        st.rows
+            .insert("second-claude".into(), growth_row("/w/harbor", true));
+        idx.prove_by_growth(&mut st);
+        assert!(st.rows["claude"].proved_pid.is_none());
+        assert!(st.rows["second-claude"].proved_pid.is_none());
+        assert_eq!(
+            st.rows["codex"].proved_pid.as_ref().map(|(pid, _)| *pid),
+            Some(900)
+        );
+
+        // An extra recognized process whose kind is unknown may serve either agent. Its cwd
+        // is a shared scope, so neither grower acquires a proof from that ambiguous evidence.
+        let mut unclassified = parse_ps("800 custom-agent\n");
+        apply_lsof(&mut unclassified, "p800\nfcwd\nn/w/harbor\n");
+        st.procs.extend(unclassified);
+        st.rows.remove("second-claude");
+        for row in st.rows.values_mut() {
+            row.proved_pid = None;
+        }
+        idx.prove_by_growth(&mut st);
+        assert!(st.rows.values().all(|row| row.proved_pid.is_none()));
     }
 
     /// #s234's review: only the flags a launch passes name a session for a grant to follow — never
