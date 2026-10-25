@@ -13190,7 +13190,7 @@ fn a_phone_search_with_the_keyboard_up_wraps_past_a_last_hit_under_the_dock() {
     harness::eval(&tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
     harness::until(
         &tab,
-        "/3/.test(document.getElementById('transcriptSearchCount').textContent)",
+        "/^3\\b/.test(document.getElementById('transcriptSearchCount').textContent)",
         "the query to count its three hits",
         Duration::from_secs(10),
         "document.getElementById('transcriptSearchCount').textContent",
