@@ -1337,11 +1337,32 @@ impl Index {
                 .filter(|(_, r)| r.one_shot)
                 .filter_map(|(sid, r)| Some((sid.as_str(), r.cwd.as_deref()?, r.first_event?))),
         );
+        // Exact argv/open-transcript links already own a process; they cannot claim an
+        // unnamed sibling just because their transcript was touched later (#s250). Resolve
+        // them once and keep them out of the directory heuristic's recency and ambiguity.
+        let sids: Vec<&str> = st.rows.keys().map(String::as_str).collect();
+        let prefix_unique = |pf: &str| sids.iter().filter(|s| s.starts_with(pf)).count() == 1;
+        let mut explicit_links: HashMap<&str, AgentLink> = st
+            .rows
+            .iter()
+            .filter_map(|(sid, row)| {
+                link(
+                    &st.procs,
+                    sid,
+                    row.agent,
+                    &row.path,
+                    row.cwd.as_deref(),
+                    false,
+                    &prefix_unique,
+                )
+                .map(|l| (sid.as_str(), l))
+            })
+            .collect();
         let shared_cwds = unclassified_agent_cwds(&st.procs);
         let mut newest_by_cwd: HashMap<(Option<Agent>, &str), (&str, SystemTime)> = HashMap::new();
         let mut siblings: HashMap<(Option<Agent>, &str), usize> = HashMap::new();
         for (sid, row) in &st.rows {
-            if paired.contains_key(sid.as_str()) {
+            if paired.contains_key(sid.as_str()) || explicit_links.contains_key(sid.as_str()) {
                 continue;
             }
             if let Some(cwd) = row.cwd.as_deref() {
@@ -1358,10 +1379,6 @@ impl Index {
                 }
             }
         }
-        // #269: `claude attach <prefix>` names a session by its first characters; a prefix
-        // links only when exactly one known session starts with it.
-        let sids: Vec<&str> = st.rows.keys().map(String::as_str).collect();
-        let prefix_unique = |pf: &str| sids.iter().filter(|s| s.starts_with(pf)).count() == 1;
         let mut groups: HashMap<String, Group> = HashMap::new();
         for (sid, row) in &st.rows {
             // The group key IS the persisted `p:`/`a:` hide key (#27, #113): compute it in ONE
@@ -1454,14 +1471,18 @@ impl Index {
                         terminal: Terminal::Detached,
                     })
                 })
+                .or_else(|| explicit_links.remove(sid.as_str()))
                 .or_else(|| {
+                    if !heuristic_ok {
+                        return None;
+                    }
                     link(
                         &st.procs,
                         sid,
                         row.agent,
                         &row.path,
                         row.cwd.as_deref(),
-                        heuristic_ok,
+                        true,
                         &prefix_unique,
                     )
                 });
@@ -5502,7 +5523,7 @@ n/Users/x/proj
         };
         for (sid, agent, modified) in [
             ("older", Agent::CLAUDE, 1),
-            (sibling, Agent::CLAUDE, 2),
+            (sibling, Agent::CLAUDE, 5),
             ("current", Agent::CLAUDE, 3),
             ("codex", Agent::CODEX, 4),
         ] {
