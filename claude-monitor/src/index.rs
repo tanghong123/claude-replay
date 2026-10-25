@@ -1234,7 +1234,11 @@ impl Index {
             let mut cands = st.procs.iter().filter(|p| {
                 is_agent_exe(&p.exe_base, &p.argv)
                     && serves(p, agent)
-                    && p.native_session.permits(&sids[0])
+                    // Rejected evidence is still an unknown possible writer. Only an exact
+                    // registration for another session can remove a process from this count.
+                    && p.native_session
+                        .session()
+                        .is_none_or(|registered| registered == sids[0])
                     && !is_helper(&p.argv)
                     && !is_one_shot(&p.argv)
                     && p.cwd.as_deref() == Some(cwd.as_str())
@@ -1242,6 +1246,9 @@ impl Index {
             let (Some(p), None) = (cands.next(), cands.next()) else {
                 continue; // zero or several candidates — no forced pairing
             };
+            if !p.native_session.permits(&sids[0]) {
+                continue;
+            }
             let pid = p.pid;
             // #s89: a process writes ONE session at a time, so a fresh proof takes its pid from
             // any other session's older proof (a `/resume` or `/clear` moves it on). Two rows
@@ -2138,16 +2145,36 @@ fn pair_one_shots<'a>(
     procs: &[Proc],
     sessions: impl IntoIterator<Item = (&'a str, &'a str, u64)>,
 ) -> HashMap<String, (u32, usize)> {
-    let mut by_cwd: HashMap<&str, Vec<(u64, &str)>> = HashMap::new();
-    for (sid, cwd, first) in sessions {
-        by_cwd.entry(cwd).or_default().push((first, sid));
-    }
-    let mut shots: HashMap<&str, Vec<(u64, u32)>> = HashMap::new();
-    for p in procs {
-        let headless_new = is_agent_exe(&p.exe_base, &p.argv)
+    // Exact native claims reserve their sessions before legacy processes compete by time.
+    // Keep native workers in the result too: assembly excludes every claimed worker from
+    // the directory's newest/sibling candidates, leaving its coordinator eligible.
+    let reserved: HashSet<&str> = procs
+        .iter()
+        .filter(|p| serves(p, Agent::CLAUDE))
+        .filter_map(|p| p.native_session.session())
+        .collect();
+    let one_shot = |p: &Proc| {
+        is_agent_exe(&p.exe_base, &p.argv)
             && serves(p, Agent::CLAUDE)
             && is_one_shot(&p.argv)
             && !is_helper(&p.argv)
+    };
+    let mut out = HashMap::new();
+    for p in procs.iter().filter(|p| one_shot(p)) {
+        if let Some(sid) = p.native_session.session() {
+            let entry = out.entry(sid.to_string()).or_insert((p.pid, 0));
+            entry.0 = entry.0.min(p.pid);
+        }
+    }
+    let mut by_cwd: HashMap<&str, Vec<(u64, &str)>> = HashMap::new();
+    for (sid, cwd, first) in sessions {
+        if !reserved.contains(sid) {
+            by_cwd.entry(cwd).or_default().push((first, sid));
+        }
+    }
+    let mut shots: HashMap<&str, Vec<(u64, u32)>> = HashMap::new();
+    for p in procs {
+        let headless_new = one_shot(p)
             && p.native_session != crate::claude_registry::Identity::Rejected
             && p.session_ref().is_none();
         if let (true, Some(cwd), Some(start)) = (headless_new, p.cwd.as_deref(), p.started) {
@@ -2157,7 +2184,6 @@ fn pair_one_shots<'a>(
     let within = |start: u64, first: u64| {
         first + ONE_SHOT_SLACK_SECS >= start && first <= start + ONE_SHOT_WINDOW_SECS
     };
-    let mut out = HashMap::new();
     for (cwd, mut here) in shots {
         let Some(sessions) = by_cwd.get_mut(cwd) else {
             continue;
@@ -2337,16 +2363,22 @@ fn link(
         Some(SessionRef::Prefix(pf)) => sid.starts_with(pf.as_str()) && prefix_unique(&pf),
         None => false,
     };
-    if let Some(p) = procs
-        .iter()
-        .filter(|p| {
+    let named_candidates = || {
+        procs.iter().filter(|p| {
             is_agent_exe(&p.exe_base, &p.argv)
                 && serves(p, agent)
                 && p.native_session.permits(sid)
                 && names(p)
         })
+    };
+    // Current native ownership wins over a different process's stale launch arguments.
+    // A detached helper may still be hosted by its legitimate legacy attach client; keep
+    // the existing best-hosted selection when native evidence names only helpers.
+    let named = named_candidates()
+        .filter(|p| p.native_session.session() == Some(sid) && !is_helper(&p.argv))
         .max_by_key(|p| host(p))
-    {
+        .or_else(|| named_candidates().max_by_key(|p| host(p)));
+    if let Some(p) = named {
         return Some(mk(p, true));
     }
     let t = transcript.to_string_lossy();
@@ -5282,6 +5314,151 @@ mod tests {
             .insert(old.into(), growth_row("/fixture/project", true));
         idx.prove_by_growth(&mut st);
         assert!(st.rows[old].proved_pid.is_none());
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn native_registry_rejection_does_not_make_growth_unambiguous() {
+        use crate::claude_registry::Identity;
+        let scratch = std::env::temp_dir().join(format!(
+            "cm-registry-rejected-growth-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let mut procs = parse_ps("700 claude\n701 claude\n");
+        for p in &mut procs {
+            p.cwd = Some("/fixture/project".into());
+            p.pane = Some(format!("%{}", p.pid));
+            p.tmux_sock = Some("fixture".into());
+        }
+        procs[0].native_session = Identity::Rejected;
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        st.rows
+            .insert("growing".into(), growth_row("/fixture/project", true));
+        st.rows.get_mut("growing").unwrap().tree_mtime = Some(SystemTime::now());
+        idx.prove_by_growth(&mut st);
+        assert!(
+            st.rows["growing"].proved_pid.is_none(),
+            "an unreadable identity remains a possible writer, not evidence for the other PID"
+        );
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert_ne!(registry_row(&snapshot, "growing")["injectable"], true);
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn native_registry_ownership_beats_other_processes_stale_arguments() {
+        use crate::claude_registry::Identity;
+        let sid = "11111111-2222-4333-8444-555555555555";
+        let mut procs = parse_ps(&format!("600 claude --resume {sid}\n700 claude\n"));
+        apply_env(
+            &mut procs,
+            "600 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%1\n700 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%2\n",
+        );
+        procs[1].native_session = Identity::Verified(sid.into());
+        let linked = link(
+            &procs,
+            sid,
+            Agent::CLAUDE,
+            Path::new("/fixture/session.jsonl"),
+            None,
+            false,
+            &|_| true,
+        )
+        .unwrap();
+        assert_eq!(linked.pid, 700);
+        assert_eq!(linked.terminal.target(), Some("%2"));
+        // A native background engine's inherited pane remains unusable, while its actual
+        // attach client can still supply the terminal for this same session.
+        procs[0].argv = format!("claude attach {}", &sid[..8]);
+        procs[1].argv = format!("claude --bg-pty-host -- --session-id {sid}");
+        let attached = link(
+            &procs,
+            sid,
+            Agent::CLAUDE,
+            Path::new("/fixture/session.jsonl"),
+            None,
+            false,
+            &|_| true,
+        )
+        .unwrap();
+        assert_eq!(attached.pid, 600);
+        assert_eq!(attached.terminal.target(), Some("%1"));
+    }
+
+    #[test]
+    fn native_registry_workers_reserve_sessions_and_bank_exact_parents() {
+        use crate::claude_registry::Identity;
+        let scratch =
+            std::env::temp_dir().join(format!("cm-registry-workers-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let native = "11111111-2222-4333-8444-555555555555";
+        let legacy = "22222222-2222-4333-8444-555555555555";
+        let parent_a = "33333333-2222-4333-8444-555555555555";
+        let parent_b = "44444444-2222-4333-8444-555555555555";
+        let cwd = "/fixture/project";
+        let mut procs = parse_ps("700 claude -p native\n701 claude -p legacy\n702 claude\n");
+        for p in &mut procs {
+            p.cwd = Some(cwd.into());
+        }
+        procs[0].started = Some(1_000);
+        procs[0].native_session = Identity::Verified(native.into());
+        procs[0].parent_session = Some(parent_a.into());
+        procs[1].started = Some(1_002);
+        procs[1].parent_session = Some(parent_b.into());
+        let sessions = [(native, cwd, 1_001), (legacy, cwd, 1_003)];
+        let pairs = pair_one_shots(&procs, sessions);
+        assert_eq!(
+            pairs[native],
+            (700, 0),
+            "the native owner reserves its session"
+        );
+        assert_eq!(pairs[legacy], (701, 0));
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        for (sid, _, first) in sessions {
+            let mut row = growth_row(cwd, false);
+            row.one_shot = true;
+            row.first_event = Some(first);
+            row.tree_mtime = Some(SystemTime::now());
+            st.rows.insert(sid.into(), row);
+        }
+        for parent in [parent_a, parent_b] {
+            st.rows.insert(parent.into(), growth_row(cwd, false));
+        }
+        st.rows.get_mut(parent_a).unwrap().tree_mtime =
+            Some(SystemTime::now() - Duration::from_secs(10));
+        idx.bank_started_by(&mut st);
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert_eq!(registry_row(&snapshot, native)["pid"], 700);
+        assert_eq!(registry_row(&snapshot, legacy)["pid"], 701);
+        assert_eq!(registry_row(&snapshot, parent_a)["pid"], 702);
+        assert_eq!(st.started_by(native), Some(parent_a));
+        assert_eq!(st.started_by(legacy), Some(parent_b));
+        // A later registry record for the legacy worker preserves both original parent edges.
+        st.procs[1].native_session = Identity::Verified(legacy.into());
+        idx.bank_started_by(&mut st);
+        assert_eq!(st.started_by(native), Some(parent_a));
+        let reloaded = read_started_by(&scratch.join("cache").join(STARTED_BY_FILE));
+        assert_eq!(reloaded[native], parent_a);
+        assert_eq!(reloaded[legacy], parent_b);
+        let again = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        assert_eq!(again.state.lock().unwrap().started_by_edges, reloaded);
+        idx.bank_started_by(&mut st);
+        assert_eq!(
+            st.started_by(native),
+            Some(parent_a),
+            "stable on the next scan"
+        );
         std::fs::remove_dir_all(scratch).unwrap();
     }
 
