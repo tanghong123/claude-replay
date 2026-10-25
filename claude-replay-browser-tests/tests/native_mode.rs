@@ -1481,6 +1481,8 @@ fn native_desktop_search_step_never_leaves_a_match_under_the_composer() {
         .map(|k| {
             if k == 14 {
                 "paragraph 14 holds the needle the search looks for.".to_string()
+            } else if k == 8 {
+                "paragraph 8 holds the marker the second search looks for.".to_string()
             } else {
                 format!("paragraph {k} of the long answer.")
             }
@@ -1575,6 +1577,26 @@ fn native_desktop_search_step_never_leaves_a_match_under_the_composer() {
         &tab,
         &format!("(() => {{ const g = {seen}; return g !== 'none' && JSON.parse(g).above && JSON.parse(g).revealed; }})()"),
         "a step to leave the match in sight above native mode's composer",
+        Duration::from_secs(5),
+        seen,
+    );
+    // With the runtime panel showing above the composer (a queued message, a pending approval), the
+    // panel is what covers the foot. "marker" (paragraph 8) lands between the panel's top and the
+    // composer's: under the panel, though above the composer, so only a floor that counts the panel
+    // reveals it.
+    eval(&tab, "(() => { const q = document.querySelector('.shared-runtime .shared-queue'); const d = document.createElement('div'); d.style.height = '150px'; d.textContent = 'queued'; q.append(d); return true; })()");
+    wait(&tab, "getComputedStyle(document.querySelector('.shared-runtime')).display !== 'none' && document.querySelector('.shared-runtime').getBoundingClientRect().height > 100");
+    eval(&tab, "(() => { const b = document.getElementById('transcriptSearchInput'); b.value = 'marker'; b.dispatchEvent(new Event('input', { bubbles: true })); return true; })()");
+    wait(
+        &tab,
+        "!!document.querySelector('.virtual-window mark.search-mark.current') && /marker/.test(document.querySelector('.virtual-window mark.search-mark.current').textContent)",
+    );
+    harness::pause("the search to settle", Duration::from_millis(600));
+    click(&tab, "#findNext");
+    until(
+        &tab,
+        &format!("(() => {{ const g = {seen}; return g !== 'none' && JSON.parse(g).above && JSON.parse(g).revealed; }})()"),
+        "a step to leave the match in sight above native mode's runtime panel",
         Duration::from_secs(5),
         seen,
     );

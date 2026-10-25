@@ -109,12 +109,17 @@ its column; it is one caption line (name, target, a pane grant's revoke, ✕; th
 over ONE line of field that grows with the draft, at the box's current width, to a cap (a share of the
 column) and then scrolls; the transcript's end is padded above it (`--compose-room`), a reader following
 the end is kept there (`convergeBottom`) and one scrolled up is not moved, the jump to the end rides
-above it. A search step treats it as covering the transcript's foot, as it treats the phone's dock
-and native mode's resident composer, both when it asks whether a match is already in sight and when
-it lands one (`searchFloor`; #s248, #s257: `a_desktop_search_step_never_leaves_a_match_under_the_compose_box`,
-`a_desktop_search_first_step_lands_on_a_first_hit_under_the_compose_box`,
-`native_desktop_search_step_never_leaves_a_match_under_the_composer`). Native mode lays out its own
+above it. Native mode lays out its own
 (`a_desktop_compose_box_keeps_to_the_session_column_and_grows_with_its_draft`).
+**A search step knows what covers the transcript's foot** (`searchFloor`, #s248, #s257): the phone's
+dock, an open compose box (native mode's is resident) and native mode's runtime panel above it, each
+while it is drawn, at any width. A match under one is neither counted as already seen nor left there
+by a landing, except at the view's end, where nothing can lift it (a phone's keyboard, a tall
+panel): there it counts as seen, or the steps bounce between the last two hits and never wrap.
+The cases are `a_desktop_search_step_never_leaves_a_match_under_the_compose_box`,
+`a_desktop_search_first_step_lands_on_a_first_hit_under_the_compose_box`,
+`a_phone_search_with_the_keyboard_up_wraps_past_a_last_hit_under_the_dock` and
+`native_desktop_search_step_never_leaves_a_match_under_the_composer`.
 **Codex native mode's composer is resident** (the owner): once native mode is
 enabled, its compact composer stays visible on desktop and phone with no close action;
 thread text and image drafts belong to the selected thread. The ordinary writer keeps the

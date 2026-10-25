@@ -1715,7 +1715,10 @@ function stepSearch(delta) {
     : (at != null ? [...viewport.window.querySelectorAll("[data-block-index]")].find(element => Number(element.dataset.blockIndex) === at) : null);
   const box = current?.getBoundingClientRect(), view = viewport.scroller.getBoundingClientRect();
   // #s257: a match under the box or the dock is not one the reader has seen; the step lands on it.
-  const onScreen = !!box && box.bottom >= view.top && box.top < searchFloor(view);
+  // Unless the view is at its end and cannot lift it further (a phone's keyboard, a tall runtime
+  // panel): counted unseen there, each step re-entered from the top and bounced between the last
+  // two hits without ever wrapping.
+  const onScreen = !!box && box.bottom >= view.top && (box.top < searchFloor(view) || box.top <= view.bottom && viewport.gapToBottom() <= 1);
   if (recordState.match >= 0 && onScreen) {
     recordState.match = (recordState.match + delta + matches.length) % matches.length;
   } else {
@@ -1786,24 +1789,22 @@ function landOnCurrentMark() {
   // A third of the space above the floor, so a short one still shows the match.
   viewport.reveal(mark, { top: Math.min(120, (floor - view.top) / 3) });
 }
-/** Where a match stops being in sight at the transcript's foot: the bottom of `view`, or whatever is
- *  drawn over it there. On a phone the toolbar floats over the foot (#s37); on a desktop an open
- *  compose box does (#s245, #s248), and native mode's resident composer with its runtime panel
- *  above it (#s257). A step's "already on screen" and its landing both ask this, so a match under
- *  any of them is neither seen nor left there. */
+/** Where a match stops being in sight at the transcript's foot: the bottom of `view`, or the top of
+ *  whatever is drawn over it there — a phone's floating toolbar (#s37), an open compose box (#s245,
+ *  #s248; native mode's is resident) and native mode's runtime panel above it (#s257), each when it
+ *  is drawn, at any width. A step's "already on screen" and its landing both ask this, so a match
+ *  under any of them is neither seen nor left there. */
 function searchFloor(view) {
   let floor = view.bottom;
   const over = element => {
     if (!element || getComputedStyle(element).display === "none") return;
     const r = element.getBoundingClientRect();
-    if (r.height > 0 && r.top > view.top) floor = Math.min(floor, r.top);
+    if (r.height > 0 && r.bottom > view.top) floor = Math.min(floor, Math.max(view.top, r.top));
   };
   over(phoneDock);
-  if (!matchMedia(PHONE_QUERY).matches) {
-    const composer = byId("composer");
-    if (composer.classList.contains("production-show")) over(composer);
-    over(document.querySelector(".shared-runtime"));
-  }
+  const composer = byId("composer");
+  if (composer.classList.contains("production-show")) over(composer);
+  over(document.querySelector(".shared-runtime"));
   return floor;
 }
 /** Scroll the nearest horizontally scrolling block holding `mark` so the mark sits in it, with a

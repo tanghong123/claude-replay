@@ -13142,6 +13142,83 @@ fn a_desktop_search_first_step_lands_on_a_first_hit_under_the_compose_box() {
     );
 }
 
+/// #s257 (the review of 0fd1bd4d): a step counts a match as seen only when it is in sight above
+/// whatever covers the transcript's foot. But with a phone's keyboard up, the dock rides the
+/// keyboard while the transcript keeps its height (#372), so the end of the transcript can never
+/// rise above it. A last hit there, once landed on, read as unseen, and the next step re-entered
+/// from the hit nearest the top: ↓ went back and forth between the last two hits and never wrapped.
+/// At the view's end a match that cannot be lifted further counts as seen; three steps from the
+/// end visit "needle high", "needle low" and then wrap to "needle first".
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_search_with_the_keyboard_up_wraps_past_a_last_hit_under_the_dock() {
+    let _serial = serial();
+    let mut extra = String::new();
+    let mut at = 59u64;
+    let mut pair = |ask: &str, answer: &str| {
+        extra += &harness::user_at(ask, &harness::now_minus(at));
+        extra += &harness::assistant_at(answer, &harness::now_minus(at - 1));
+        at -= 2;
+    };
+    pair("the first one", "needle first is here.");
+    for k in 0..8 {
+        pair(&format!("filler {k}"), "plain words.");
+    }
+    // With the keyboard up a phone shows about 340px above the dock: "needle high" in it, one
+    // exchange above "needle low", which the view's end leaves under the dock.
+    pair("the high one", "needle high is here.");
+    pair("a spacer", "plain words.");
+    pair("the low one", "needle low is here.");
+    let (_m, _b, tab, _path) = phone_world_at(3248, "phone-search-keyboard-wrap", 390, 844, &extra);
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open')",
+        "a tap on the search to open the find pill",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    harness::eval(&tab, "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 336; } }); visualViewport.dispatchEvent(new Event('resize')); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "(function(){ var d = document.getElementById('phoneDock').getBoundingClientRect(); return Math.abs(d.bottom - (innerHeight - 336 - 8)) <= 1; })()",
+        "the find pill resting just above the keyboard",
+        Duration::from_secs(5),
+        "document.getElementById('phoneDock').getBoundingClientRect().bottom",
+    );
+    harness::eval(&tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "/3/.test(document.getElementById('transcriptSearchCount').textContent)",
+        "the query to count its three hits",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    harness::pause("the query to settle", Duration::from_millis(400));
+    let current = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); if (!m) return 'none'; var d = document.getElementById('phoneDock').getBoundingClientRect(), t = document.querySelector('.transcript'); return JSON.stringify({ text: m.closest('[data-block-index]').textContent.match(/needle \\w+/)[0], under: m.getBoundingClientRect().top >= d.top, end: t.scrollHeight - t.clientHeight - t.scrollTop <= 1 }); })()";
+    let step = |want: &str| -> serde_json::Value {
+        harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+        harness::until(
+            &tab,
+            &format!("(function(){{ var g = {current}; return g !== 'none' && JSON.parse(g).text === '{want}'; }})()"),
+            &format!("the step to land on {want}"),
+            Duration::from_secs(5),
+            current,
+        );
+        harness::pause("the step to settle", Duration::from_millis(400));
+        serde_json::from_str(harness::eval(&tab, current).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    step("needle high");
+    let low = step("needle low");
+    assert!(
+        low["under"] == true && low["end"] == true,
+        "premise: the last hit lands at the view's end, still under the dock: {low}"
+    );
+    step("needle first");
+}
+
 /// #s237: the page's own world for a session in a herdr pane — `/api/sessions` says the phone's
 /// session is a live, consented Claude session in herdr pane w1:p2 that takes images, and
 /// `/api/send` is answered here and recorded (`window.__sent`), so nothing is typed anywhere.
