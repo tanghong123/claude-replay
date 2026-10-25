@@ -271,8 +271,10 @@ herdr looked). A wait herdr saw publishes at once, and the row's `stateSource` s
 `derived`. The app shell's session filter (a glyph in the sidebar's head-actions row,
 between Expand every group and the sidebar collapse, opening Active recently / Blocked / Idle /
 Include hidden checkboxes; Active recently and Blocked by default, remembered, never an empty
-set; "Everything" checks the three and leaves Include hidden alone) filters by a COVER of that partition: Active recently is an hour of
-activity or busy now and overlaps Blocked by design (`sessionFilterBuckets`). It replaced the
+set; "Everything" checks the three and leaves Include hidden alone) filters by a COVER of that partition: Active recently is six hours of
+activity or busy now (`RECENT_SECS`; #202 set an hour, and #s253, the owner, "make it 6 hours", after
+an idle session an hour and five minutes old dropped out of view; the checkbox reads "Active in the
+last 6 hours") and overlaps Blocked by design (`sessionFilterBuckets`). It replaced the
 Needs attention and Show Hidden controls.
 
 **Which process a session is linked to** (#269, `index.rs` `link()`) decides liveness AND whether

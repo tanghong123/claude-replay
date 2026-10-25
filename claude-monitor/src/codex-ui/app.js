@@ -456,7 +456,7 @@ function renderTree() {
 
 // The session filter (#202, the owner's shape): a glyph in the head-actions row — between
 // Expand every group and the sidebar collapse — opening a sheet under the sidebar's head with
-// three checkboxes: Active recently (any activity in the last hour, and every session busy
+// three checkboxes: Active in the last 6 hours (#s253; any activity then, and every session busy
 // now), Blocked (what "needs attention" means: a wait, or an idle reason that cut the work
 // short) and Idle (neither), then Include hidden. "Everything" in the sheet's head checks the
 // three and leaves Include hidden alone. Recent and blocked overlap by design (the shared
@@ -478,11 +478,11 @@ byId("sidebarCollapse").insertAdjacentElement("beforebegin", filterBtn);
 const filterSheet = document.createElement("div");
 filterSheet.className = "navigator-options session-filter-options"; filterSheet.id = "sessionFilter"; filterSheet.hidden = true;
 filterSheet.setAttribute("role", "group"); filterSheet.setAttribute("aria-label", "Show sessions");
-filterSheet.innerHTML = `<div class="scope-menu-head"><strong>SHOW</strong><button class="scope-menu-action" type="button" data-filter-reset title="Every state — Active recently, Blocked and Idle; Include hidden stays as it is">Everything</button></div>
+filterSheet.innerHTML = `<div class="scope-menu-head"><strong>SHOW</strong><button class="scope-menu-action" type="button" data-filter-reset title="Every state — active in the last 6 hours, blocked and idle; Include hidden stays as it is">Everything</button></div>
 <div class="scope-menu-list">
-<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-bucket="recent" title="Any activity in the last hour, and every session that is busy now"><span class="scope-check"></span><span>${FILTER_LABELS.recent}</span><span class="scope-count" data-bucket-count="recent"></span></button>
+<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-bucket="recent" title="Any activity in the last 6 hours, and every session that is busy now"><span class="scope-check"></span><span>${FILTER_LABELS.recent}</span><span class="scope-count" data-bucket-count="recent"></span></button>
 <button class="scope-option" type="button" role="checkbox" aria-checked="false" data-bucket="blocked" title="${BLOCKED_SUMMARY}"><span class="scope-check"></span><span>${FILTER_LABELS.blocked}</span><span class="scope-count" data-bucket-count="blocked"></span></button>
-<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-bucket="idle" title="Neither of the two — no activity in the last hour and nothing owed"><span class="scope-check"></span><span>${FILTER_LABELS.idle}</span><span class="scope-count" data-bucket-count="idle"></span></button>
+<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-bucket="idle" title="Neither of the two — no activity in the last 6 hours and nothing owed"><span class="scope-check"></span><span>${FILTER_LABELS.idle}</span><span class="scope-count" data-bucket-count="idle"></span></button>
 </div>
 <div class="scope-menu-divider"></div>
 <div class="scope-menu-list">
@@ -645,7 +645,7 @@ function renderFilterControl(counts, shown, total) {
   const filtered = bucketFilterActive();
   const chosen = FILTER_BUCKETS.filter(bucket => indexState.buckets.has(bucket)).map(bucket => FILTER_LABELS[bucket]);
   filterBtn.classList.toggle("on", filtered); filterMini.classList.toggle("on", filtered);
-  filterBtn.title = filtered ? `Showing ${chosen.join(" and ")} — ${shown} of ${total}` : "Filter the sessions — active recently, blocked, idle — and include hidden ones";
+  filterBtn.title = filtered ? `Showing ${chosen.join(" and ")} — ${shown} of ${total}` : "Filter the sessions — active in the last 6 hours, blocked, idle — and include hidden ones";
   for (const option of filterSheet.querySelectorAll("[data-bucket]")) {
     const on = indexState.buckets.has(option.dataset.bucket);
     option.classList.toggle("on", on); option.setAttribute("aria-checked", String(on));

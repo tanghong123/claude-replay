@@ -650,19 +650,19 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(sessionBucket({ state: "growing" }), "active", "legacy growing is active");
   assert.equal(sessionBucket({ state: "finished" }), "idle", "legacy finished is idle");
   assert.equal(sessionBucket({ state: "idle" }), "idle");
-  // The filter's buckets: recent is an hour of activity or busy now, blocked is needsPerson,
+  // The filter's buckets: recent is six hours of activity or busy now, blocked is needsPerson,
   // idle is neither; a row may be in two.
-  assert.equal(RECENT_SECS, 3600, "an hour, the owner's word");
+  assert.equal(RECENT_SECS, 6 * 3600, "six hours, the owner's word (#s253)");
   assert.deepEqual(FILTER_BUCKETS, ["recent", "blocked", "idle"]);
-  assert.deepEqual(FILTER_LABELS, { recent: "Active recently", blocked: "Blocked", idle: "Idle" });
-  const now = 1_000_000, fresh = now - 60, stale = now - 7200;
+  assert.deepEqual(FILTER_LABELS, { recent: "Active in the last 6 hours", blocked: "Blocked", idle: "Idle" });
+  const now = 1_000_000, fresh = now - 60, stale = now - RECENT_SECS - 3600;
   assert.deepEqual(sessionFilterBuckets({ agentState: "busy", stateReason: "tool", activityTs: stale }, now), ["recent"], "busy is recent whatever its clock says");
-  assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "done", activityTs: fresh }, now), ["recent"], "an hour of activity is recent");
+  assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "done", activityTs: fresh }, now), ["recent"], "recent activity is recent");
   assert.deepEqual(sessionFilterBuckets({ agentState: "wait", stateReason: "question", activityTs: fresh }, now), ["recent", "blocked"], "a fresh wait is both");
   assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "stalled", activityTs: stale }, now), ["blocked"], "an old stall is blocked only");
   assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "done", activityTs: stale }, now), ["idle"], "an old answer is idle");
   assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "exited" }, now), ["idle"], "no clock at all is idle");
-  assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "done", activityTs: now - RECENT_SECS - 1 }, now), ["idle"], "the hour is a boundary");
+  assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "done", activityTs: now - RECENT_SECS - 1 }, now), ["idle"], "six hours is a boundary");
   const rows = [{ id: "b", agentState: "wait", stateReason: "question", activityTs: fresh }, { id: "a", agentState: "busy", stateReason: "tool", activityTs: fresh }, { id: "i", agentState: "idle", stateReason: "done", activityTs: stale }, { id: "s", agentState: "idle", stateReason: "stalled", activityTs: stale }];
   const agents = groupSessions([{ label: "p", rows }]);
   const ids = tree => tree.flatMap(a => a.projects.flatMap(p => p.rows.map(r => r.id)));

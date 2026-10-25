@@ -308,10 +308,11 @@ the cut-short idles, idle = `done` and `exited`) and the tree's bucket filter.
 
 
 **The filter's three checkboxes are a COVER of the rows, not the partition above** (owner,
-2026-09-13): *Active recently* is any activity in the last hour (`activityTs` within
-`RECENT_SECS` = 3600) and every session busy now; *Blocked* is `needsPerson`; *Idle* is
+2026-09-13): *Active recently* is any activity in the last six hours (`activityTs` within
+`RECENT_SECS` = 6 × 3600; an hour until #s253, the owner: "make it 6 hours", after an idle
+session an hour and five minutes old dropped out of view) and every session busy now; *Blocked* is `needsPerson`; *Idle* is
 neither. A fresh wait is in two of them by design — the owner's "Active recently" is everything
-with activity in the last hour, a blocked session among them — so unchecking Blocked alone
+with recent activity, a blocked session among them — so unchecking Blocked alone
 changes nothing while Active recently still covers those rows, and Blocked alone is the old
 attention filter. `sessionFilterBuckets(row, now)` in the shared table is the one definition;
 the state partition (`sessionBucket`) stays for the chip and the table above.

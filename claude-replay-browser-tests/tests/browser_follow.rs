@@ -6558,8 +6558,8 @@ fn fake_agent(sid: &str, transcript: &std::path::Path) -> harness::Reap {
 
 fn bucket_world(base: &std::path::Path) -> BucketWorld {
     let stores = Stores::new(base);
-    // Minutes ago: the four live rows are "active recently"; the finished one, two hours back,
-    // is not.
+    // Minutes ago: the four live rows are recent; the finished one, eight hours back, is not
+    // (the window is six hours since #s253).
     let t = |i: u32| harness::rfc3339_secs_ago(120 - u64::from(i));
     let q = stores.claude_session(
         BUCKET_Q,
@@ -6590,8 +6590,8 @@ fn bucket_world(base: &std::path::Path) -> BucketWorld {
             harness::tool_open_at("toolu_m", &t(1))
         ),
     );
-    // Finished two hours ago: idle, and not "active recently".
-    let old = |i: u64| harness::rfc3339_secs_ago(7200 + 60 - i);
+    // Finished eight hours ago: idle, and not recent.
+    let old = |i: u64| harness::rfc3339_secs_ago(8 * 3600 + 60 - i);
     stores.claude_session(
         BUCKET_D,
         &format!(
@@ -6761,7 +6761,8 @@ const BUCKET_SHEET_JS: &str = "(function () { var s = document.getElementById('s
 /// #202: the session filter on the app shell — the glyph in the head-actions row (between
 /// Expand every group and the sidebar collapse) opens a sheet of checkboxes under the sidebar's
 /// head: Active recently, Blocked, Idle and Include hidden, with a count beside each — and the
-/// tree follows every click. Active recently is an hour of activity (busy included) and overlaps
+/// tree follows every click. Active recently is six hours of activity since #s253 (busy included;
+/// its label says so) and overlaps
 /// Blocked by design; a bucket unchecked leaves the tree; the last one unchecked puts every bucket
 /// back (a set is never empty); Everything restores the three and leaves Include hidden alone;
 /// the choice survives a reload; Include hidden shows a hidden row dimmed; Escape closes the sheet.
@@ -6865,8 +6866,8 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     assert_eq!(s1["open"], true, "the glyph opens the sheet: {s1}");
     assert_eq!(
         eval(&tab, "document.querySelector('#sessionFilter [data-bucket=\"all\"]') === null && document.querySelector('#sessionFilter [data-bucket=\"recent\"] span:nth-child(2)').textContent", false).as_str(),
-        Some("Active recently"),
-        "no All checkbox, and the first is Active recently"
+        Some("Active in the last 6 hours"),
+        "no All checkbox, and the first is the recent choice, its window in its label (#s253)"
     );
     assert_eq!(
         (
