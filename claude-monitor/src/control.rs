@@ -231,7 +231,10 @@ pub fn passcode_check(
 /// shapes from agent-jdi: Claude resumes the SAME session id (append, not fork) with
 /// `-p`; Codex resumes by id. `--dangerously-skip-permissions` is deliberate (owner
 /// decision): a headless `-p` turn with no TTY would otherwise STALL on the first
-/// permission prompt — so an idle-send is an autonomous agent turn, not a chat.
+/// permission prompt — so an idle-send is an autonomous agent turn, not a chat. The prompt
+/// always follows `--` (#s251, measured on Claude Code 2.1.310 and codex 0.164.0): without it a
+/// prompt that starts with "-" is read as options, and `claude -p "-v please"` printed the
+/// version and exited 0, so the turn never ran and nothing said so.
 pub fn resume_command(
     target: &crate::index::SendTarget,
     prompt: &str,
@@ -244,6 +247,7 @@ pub fn resume_command(
                 target.sid.clone(),
                 "--dangerously-skip-permissions".into(),
                 "-p".into(),
+                "--".into(),
                 prompt.to_string(),
             ],
         )),
@@ -258,6 +262,7 @@ pub fn resume_command(
                     "resume".into(),
                     thread_id,
                     "--dangerously-bypass-approvals-and-sandbox".into(),
+                    "--".into(),
                     prompt.to_string(),
                 ],
             ))
@@ -268,7 +273,24 @@ pub fn resume_command(
 
 /// Spawn a resume DETACHED, in the session's cwd, output discarded — the monitor does not
 /// supervise it; the turn's progress shows up as the row going active (its transcript grows).
+///
+/// Refused before anything runs: a Codex row whose key names no thread id, and a Codex prompt
+/// that is just "-", which codex reads as "take the prompt from standard input" even after `--`
+/// (#s251), so the turn would fail with no one to see it.
 pub fn spawn_resume(target: &crate::index::SendTarget, prompt: &str) -> Result<()> {
+    if target.agent.label() == "codex" {
+        if index::trailing_uuid(&target.sid).is_none() {
+            anyhow::bail!(
+                "this Codex session's key ({}) names no thread id, so it cannot be resumed",
+                target.sid
+            );
+        }
+        if prompt == "-" {
+            anyhow::bail!(
+                "Codex reads a prompt of just \"-\" as \"read the prompt from standard input\"; add a word to it"
+            );
+        }
+    }
     let (program, args) = resume_command(target, prompt)
         .ok_or_else(|| anyhow::anyhow!("no resume shape for {}", target.agent.label()))?;
     let mut cmd = std::process::Command::new(program);

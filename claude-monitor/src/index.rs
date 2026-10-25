@@ -3548,6 +3548,60 @@ mod tests {
         assert_eq!(args.last().unwrap(), "go");
     }
 
+    /// #s251: the prompt follows `--` in both shapes, so one that starts with "-" (a list item,
+    /// "-v please") arrives as the prompt. Measured without it: `claude -p "-v please"` printed
+    /// the version and exited 0, and codex refused `-v` as an unexpected argument.
+    #[test]
+    fn a_dash_leading_prompt_resumes_as_the_prompt() {
+        let claude = SendTarget {
+            sid: "sid-x".into(),
+            agent: Agent::CLAUDE,
+            cwd: None,
+        };
+        let codex = SendTarget {
+            sid: "9ff12aca-681c-48c2-a1d9-61f777c795e1".into(),
+            agent: Agent::CODEX,
+            cwd: None,
+        };
+        for target in [&claude, &codex] {
+            for prompt in ["-v please", "- a list item", "--help", "-"] {
+                let (_, args) = crate::control::resume_command(target, prompt).unwrap();
+                assert_eq!(
+                    &args[args.len() - 2..],
+                    &["--", prompt],
+                    "{} resumes {prompt:?} as its prompt",
+                    target.agent.label()
+                );
+                assert_eq!(args.iter().filter(|a| *a == "--").count(), 1);
+            }
+        }
+    }
+
+    /// #s251: what a Codex resume refuses before anything runs — a prompt of just "-", which
+    /// codex reads as "take the prompt from stdin" even after `--`, and a row key with no thread
+    /// id, named for what is missing rather than "no resume shape". Neither spawns a process.
+    #[test]
+    fn a_codex_resume_refuses_a_bare_dash_and_a_key_with_no_thread_id() {
+        let codex = SendTarget {
+            sid: "9ff12aca-681c-48c2-a1d9-61f777c795e1".into(),
+            agent: Agent::CODEX,
+            cwd: None,
+        };
+        let why = crate::control::spawn_resume(&codex, "-")
+            .unwrap_err()
+            .to_string();
+        assert!(why.contains("standard input"), "{why}");
+        let keyless = SendTarget {
+            sid: "not-a-native-id".into(),
+            ..codex
+        };
+        let why = crate::control::spawn_resume(&keyless, "go on")
+            .unwrap_err()
+            .to_string();
+        assert!(why.contains("names no thread id"), "{why}");
+        assert!(why.contains("not-a-native-id"), "{why}");
+    }
+
     /// #s246: both a bare UUID and a rollout row resume the same native thread. An
     /// unrecognized key must never reach the CLI, where it can start another thread.
     #[test]
