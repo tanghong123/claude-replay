@@ -1,7 +1,6 @@
-// SHARED between the app shell (served as an ES module at /monitor-ui/shared/…), the classic
-// rail and the v2 splice (inlined at serve time through {{SHARED}}) and the html crate's pages
-// (inlined by html_export/shared.rs). Conventions the inliner relies on: no imports, exactly
-// one trailing `export { … };` line.
+// SHARED between the app shell (served as an ES module at /monitor-ui/shared/…) and the html
+// crate's pages (inlined by html_export/shared.rs). Conventions the inliner relies on: no
+// imports, exactly one trailing `export { … };` line.
 // The app shell's keyboard, as one table (parity #11) — the classic view's keys, so muscle
 // memory transfers, in one place rather than handlers scattered across modules. DOM-free: the
 // contract test checks the table (no key bound twice, every classic key present) and the guard

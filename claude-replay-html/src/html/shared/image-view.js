@@ -1,10 +1,9 @@
 // shared: image-view — zoom and pan for an image shown over the page, one implementation for
 // every viewer that shows one (#228).
 //
-// SHARED between the app shell (served as an ES module at /monitor-ui/shared/…), the classic
-// rail and the v2 splice (inlined at serve time through {{SHARED}}) and the html crate's pages
-// (inlined by html_export/shared.rs). Conventions the inliner relies on: no imports, exactly
-// one trailing `export { … };` line.
+// SHARED between the app shell (served as an ES module at /monitor-ui/shared/…) and the html
+// crate's pages (inlined by html_export/shared.rs). Conventions the inliner relies on: no
+// imports, exactly one trailing `export { … };` line.
 //
 // The owner, on the enlarged view: "allow me to have zoom control and move control (when the
 // image is too big to fit). By default, zoom to fit on screen."

@@ -102,6 +102,15 @@ fn both_shells_copy_a_path_offered_without_a_stamp() {
         );
         eval(&tab, STUB_REVEAL);
         stub_clipboard(&tab);
+        // The path sits in its block's header, whose click folds the block: a click on the path
+        // acts on the path alone.
+        // A fold keeps its state in data attributes (`cycleFold`), never in its class list.
+        let fold = format!("(function(){{ var p = document.querySelector({link:?}), f = p.closest('.fold-h') && p.closest('.fold'); return f ? JSON.stringify({{ open: f.dataset.open || '', full: f.dataset.full || '', step: f.dataset.step || '' }}) : null; }})()");
+        let folded = eval(&tab, &fold);
+        assert!(
+            folded.is_string(),
+            "the premise: the path is in a fold's header: {folded}"
+        );
         eval(
             &tab,
             &format!("document.querySelector({link:?}).click(); 'ok'"),
@@ -117,6 +126,11 @@ fn both_shells_copy_a_path_offered_without_a_stamp() {
             reveals(&tab),
             Vec::<String>::new(),
             "Classic: no unsigned reveal is sent — the server would refuse it"
+        );
+        assert_eq!(
+            eval(&tab, &fold),
+            folded,
+            "Classic: the click on the path leaves its block folded as it was"
         );
     }
 

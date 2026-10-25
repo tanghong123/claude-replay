@@ -617,11 +617,10 @@ accessing locally and offer download the file when accessing remotely"): `reveal
 (`shared/capabilities.js`) is LOCALITY — the page loaded from a loopback host, the server's own test
 for gzip and masking — and `besideAction` puts, beside a file's own action, the file manager for a
 reader here and the file as a download for one elsewhere (a phone over the tailnet, another
-desktop), each where the server offered what it needs; a reveal-only path is COPIED elsewhere, and
-the classic page's refusal no longer falls back to a reveal for a remote reader. It was the 760px
-breakpoint (#335), which missed a remote desktop and a narrow local window both; the width still
-decides what a phone's LAYOUT withholds (`onPhone()`: the pane's ↗, whose page has no way back) and
-offers (the review sheet). **A download on a touch-first device is the system share sheet** (#s36, the
+desktop), each where the server offered what it needs; a reveal-only path is COPIED elsewhere. It
+was the 760px breakpoint (#335), which missed a remote desktop and a narrow local window both; the
+width still decides what a phone's LAYOUT withholds (`onPhone()`: the pane's ↗, whose page has no
+way back) and offers (the review sheet). **A download on a touch-first device is the system share sheet** (#s36, the
 owner: Photos, Files, or an app, where Safari showed a preview box): `attachment-viewer.js` hands the
 file to `navigator.share` on `pointer: coarse` (a phone or a tablet; never a desktop, whose share sheet
 is not a download), keeps it ready for the next tap when iOS says the tap expired during the fetch,

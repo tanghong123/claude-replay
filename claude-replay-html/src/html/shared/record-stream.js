@@ -1,7 +1,6 @@
-// SHARED between the app shell (served as an ES module at /monitor-ui/shared/…), the classic
-// rail and the v2 splice (inlined at serve time through {{SHARED}}) and the html crate's pages
-// (inlined by html_export/shared.rs). Conventions the inliner relies on: no imports, exactly
-// one trailing `export { … };` line.
+// SHARED between the app shell (served as an ES module at /monitor-ui/shared/…) and the html
+// crate's pages (inlined by html_export/shared.rs). Conventions the inliner relies on: no
+// imports, exactly one trailing `export { … };` line.
 //
 // The `/pull` + `/records` protocol's CLIENT HALF, once (#49, design/monitor-shell-duplication.md
 // §1(e)). The server returns a self-describing pull reply with TWO zones — `committed`

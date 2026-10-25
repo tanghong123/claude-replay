@@ -81,7 +81,7 @@
   // served page the delegated `.tool-path` click, where the shared two-stamp rule decides what it
   // does — reveal, or (with no stamp at all) copy the path, #275. This page asks the rule with the
   // reveal stamp alone: showing a file's bytes is the app shell's preview pane. `offer` is a
-  // head's `{path, sig, fsig}`, or one of a send's `files`.
+  // head's `{path, sig}`, or one of a send's `files`.
   function toolPathLink(offer, text) {
     var a = el("a", "tool-path", text);
     a.href = "file://" + offer.path.split("/").map(encodeURIComponent).join("/");
@@ -664,12 +664,9 @@
             var pathAction = shared.referenceAction({ revealSig: sig, reveal: shared.revealHere() });
             an.title = ({ reveal: "reveal in file manager", copy: "copy path" })[pathAction];
             an.onclick = function () {
-                // Two stamps, because they permit different things: `sig` reveals the
-                // path, `fsig` renders its bytes and exists only when the render policy
-                // allows that path. A route refuses the other's stamp, so a link cannot be
-                // edited from one capability into the other. Which one a click uses is the
-                // shared rule's call (html/shared/capabilities.js, #46) — the same rule the
-                // app shell applies; this page asks it with the reveal stamp alone (#s99).
+                // The shared rule decides (html/shared/capabilities.js, #46), the one the
+                // app shell applies too. This page asks it with the reveal stamp alone: the
+                // file stamp reads the bytes, which is the app shell's preview pane (#s99).
                 if (pathAction === "reveal") fetch("__reveal?" + shared.stampQuery({ path: path, sig: sig }));
                 // #275: no stamp, nothing the server will act on — copy the path (see the
                 // tool-path click, which had the same unsigned reveal).
@@ -918,8 +915,8 @@
   // #139: show an image at full size over the page. Built on demand and torn down on
   // close, so a session with hundreds of screenshots carries no standing DOM for them.
   // #228 — the enlarged image zooms and pans, fitted to the screen on open. The behaviour is
-  // the shared module's (html/shared/image-view.js), so this page, its file view and the app
-  // shell's lightbox all answer the same gestures. The stage is a box INSIDE the backdrop:
+  // the shared module's (html/shared/image-view.js), so this page and the app shell's preview
+  // pane answer the same gestures. The stage is a box INSIDE the backdrop:
   // clicks on the backdrop still close, and the stage clips a magnified image instead of
   // letting it cover the caption and the close affordance.
   function imageStage(box, src, alt) {
@@ -2134,9 +2131,10 @@
   });
 
   // ── the same view you left, across a reload (#170) ──────────────────────────────
-  // The monitor reloads this page on every session switch, so "where I was" cannot live
-  // in memory. It parks in the tab's session store under the session id: per tab, gone when
-  // the tab closes, and never shared between two sessions (in memory alone, with --no-storage).
+  // Moving between sessions reloads this page (a sub-agent's link is a full page load to
+  // `?session=<id>`), so "where I was" cannot live in memory. It parks in the tab's session
+  // store under the session id: per tab, gone when the tab closes, and never shared between two
+  // sessions (in memory alone, with --no-storage).
   //
   // Three facts, because a view that LOOKS the same needs all three: where the viewport
   // was, what was folded, and how much had been read (so the badge counts what arrived
@@ -2166,7 +2164,7 @@
       return st && st.v === 1 ? st : null;
     } catch (e) { return null; }
   }
-  // `pagehide` covers the monitor swapping the iframe's src, a reload, and a close;
+  // `pagehide` covers a move to another session, a reload, and a close;
   // `visibilitychange` covers a tab switch that never unloads the document.
   window.addEventListener("pagehide", saveView);
   document.addEventListener("visibilitychange", function () { if (document.hidden) saveView(); });
@@ -2273,8 +2271,8 @@
       // quietly forever, which is right for a mid-write or a stale range and exactly wrong for
       // "this session is not servable" — that used to render as a blank page with no clue.
       // A reply the page cannot act on is said out loud ONCE and the poll goes on (#72): a
-      // server that restarted under this page knows no session until its list is fetched
-      // again — the rail beside this page does that every few seconds — so "not served" is
+      // server that restarted under this page knows a session again only once it is registered
+      // (a root as the server starts, a sub-agent when its parent is pulled), so "not served" is
       // usually a spell, not a verdict. Stopping the feed on it left a pinned reader parked
       // above a box that never went away; the first feed reply after the spell removes the
       // box, and the apply's own settle lands a following view back at the tail.
