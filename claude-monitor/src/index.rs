@@ -162,8 +162,9 @@ fn pane_target_from(agent: Agent, link: &SendLink) -> Result<(u32, PaneAddr), Se
 
 /// Does ANOTHER session in the same project (cwd) have a live process? PURE over one scan's
 /// data — the owner's constraint 2: with a live sibling we cannot tell which session drives
-/// the project, so neither a resume (would fork the live work) nor an injection (could hit the
-/// wrong pane) is safe. Both send paths gate on this; `cwd_of` maps a sid to its cwd.
+/// the project, so resuming would fork live work. Legacy pane association uses the same guard;
+/// a current native registry identity can select its exact existing pane despite siblings.
+/// `cwd_of` maps a sid to its cwd.
 ///
 /// A headless worker the target STARTED is part of it, not another session (#s53, the owner):
 /// a coordinator whose `claude -p` workers run in its repo keeps its compose box. `started_by`
@@ -465,6 +466,8 @@ struct Counters {
 /// The expensive facts (env, fds, tty) are filled for AGENT processes only.
 struct Proc {
     pid: u32,
+    /// Claude's PID-keyed registration, validated against the live OS process identity.
+    native_session: crate::claude_registry::Identity,
     argv: String,
     exe_base: String,
     /// Working directory (`lsof -Fpfn`, the `cwd` fd) — the Claude heuristic link.
@@ -499,6 +502,26 @@ struct Proc {
     /// running worker whose parent pid was 1, so the process tree alone would not have said. Set
     /// only when both are present.
     parent_session: Option<String>,
+}
+
+impl Proc {
+    fn session_ref(&self) -> Option<SessionRef> {
+        match &self.native_session {
+            crate::claude_registry::Identity::Verified(session) => {
+                Some(SessionRef::Exact(session.clone()))
+            }
+            crate::claude_registry::Identity::Missing => session_ref(&self.argv),
+            crate::claude_registry::Identity::Rejected => None,
+        }
+    }
+}
+
+/// Native identity permits addressing an existing pane even beside another live Claude.
+/// This exception never authorizes starting a background resume in an occupied project.
+fn registry_identifies(procs: &[Proc], pid: u32, sid: &str) -> bool {
+    procs
+        .iter()
+        .any(|p| p.pid == pid && p.native_session.session() == Some(sid))
 }
 
 /// A terminal multiplexer that hosts panes (#s226).
@@ -763,6 +786,7 @@ impl Index {
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         // Liveness must be current — a session that went live one second ago must not be
         // resumed. Always rescan for a send (it is rare and consequential).
+        st.procs_at = None;
         self.scan(&mut st, &|_| {});
         st.scanned_at = Some(Instant::now());
 
@@ -798,12 +822,12 @@ impl Index {
 
     /// Resolve a LIVE send target (#133 tmux slice, #s226 herdr): the session must be LIVE with a
     /// PROVEN link (§3.1 — never a cwd guess; injecting into the wrong pane runs your text in a
-    /// different agent) that is in a tmux or herdr pane, AND it must be the ONLY live session in
-    /// its project (constraint 2, mirrored from the resume path): with a live sibling we cannot
-    /// tell which session drives the project, so we refuse rather than pick. A fresh scan is
-    /// forced.
+    /// different agent) that is in a tmux or herdr pane. Legacy association also requires a
+    /// project without live siblings. A native Claude registry identity names the exact pane's
+    /// process independently of its cwd and may coexist with siblings. Always refresh processes.
     pub fn resolve_pane_send(&self, sid: &str) -> Result<PaneTarget, SendRefusal> {
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.procs_at = None;
         self.scan(&mut st, &|_| {});
         st.scanned_at = Some(Instant::now());
 
@@ -814,21 +838,23 @@ impl Index {
         st.legacy_send_policy.allow_session(agent, sid)?;
         let link = st.send_links.get(sid).cloned().unwrap_or_default();
         let (pid, addr) = pane_target_from(agent, &link)?;
-        // The project must have no OTHER live session — else injecting here while another
-        // session drives the same cwd forks divergent work (constraint 2).
-        if project_has_other_live(
-            sid,
-            cwd.as_deref(),
-            &st.send_links,
-            // #s59: a sibling of another agent drives nothing of this session.
-            |o| {
-                st.rows
-                    .get(o)
-                    .filter(|r| r.agent == agent)
-                    .and_then(|r| r.cwd.clone())
-            },
-            |o| st.started_by(o).map(str::to_string),
-        ) {
+        // Only native process identity can bypass the legacy project-ambiguity guard.
+        // Background resume keeps the unqualified same-project guard in resolve_send.
+        if !registry_identifies(&st.procs, pid, sid)
+            && project_has_other_live(
+                sid,
+                cwd.as_deref(),
+                &st.send_links,
+                // #s59: a sibling of another agent drives nothing of this session.
+                |o| {
+                    st.rows
+                        .get(o)
+                        .filter(|r| r.agent == agent)
+                        .and_then(|r| r.cwd.clone())
+                },
+                |o| st.started_by(o).map(str::to_string),
+            )
+        {
             return Err(SendRefusal::ProjectHasActiveSession);
         }
         Ok(PaneTarget {
@@ -1144,7 +1170,7 @@ impl Index {
             .procs
             .iter()
             .filter(|p| is_one_shot(&p.argv))
-            .filter_map(|p| match session_ref(&p.argv) {
+            .filter_map(|p| match p.session_ref() {
                 Some(SessionRef::Exact(sid)) => Some((sid, p.pid)),
                 _ => None,
             });
@@ -1208,6 +1234,7 @@ impl Index {
             let mut cands = st.procs.iter().filter(|p| {
                 is_agent_exe(&p.exe_base, &p.argv)
                     && serves(p, agent)
+                    && p.native_session.permits(&sids[0])
                     && !is_helper(&p.argv)
                     && !is_one_shot(&p.argv)
                     && p.cwd.as_deref() == Some(cwd.as_str())
@@ -1423,19 +1450,41 @@ impl Index {
                 .is_some_and(|(newest, _)| *newest == sid.as_str());
             // A pairing that growth proved (#146) outranks the directory heuristic — it is
             // evidence about THIS session, not a pick among the directory's sessions.
-            let link = row
-                .proved_pid
-                .as_ref()
-                .and_then(|(pid, cwd)| {
-                    st.procs
-                        .iter()
-                        .find(|p| p.pid == *pid && p.cwd.as_deref() == Some(cwd.as_str()))
-                })
-                .map(|p| AgentLink {
-                    pid: p.pid,
-                    confirmed: true,
-                    named: names_exactly(&p.argv, sid),
-                    terminal: Terminal::of(p),
+            // A current native registration outranks retained growth and recency guesses.
+            let registry_link = (row.agent == Agent::CLAUDE
+                && st
+                    .procs
+                    .iter()
+                    .any(|p| p.native_session.session() == Some(sid.as_str())))
+            .then(|| {
+                link(
+                    &st.procs,
+                    sid,
+                    row.agent,
+                    &row.path,
+                    row.cwd.as_deref(),
+                    false,
+                    &prefix_unique,
+                )
+            })
+            .flatten();
+            let link = registry_link
+                .or_else(|| {
+                    row.proved_pid
+                        .as_ref()
+                        .and_then(|(pid, cwd)| {
+                            st.procs.iter().find(|p| {
+                                p.pid == *pid
+                                    && p.cwd.as_deref() == Some(cwd.as_str())
+                                    && p.native_session.permits(sid)
+                            })
+                        })
+                        .map(|p| AgentLink {
+                            pid: p.pid,
+                            confirmed: true,
+                            named: names_exactly(&p.argv, sid),
+                            terminal: Terminal::of(p),
+                        })
                 })
                 .or_else(|| {
                     let &(pid, rivals) = paired.get(sid.as_str())?;
@@ -1556,15 +1605,17 @@ impl Index {
                     j["brief"] = json!(brief);
                 }
             }
-            // #133 constraint 2: another live session in this project → no send affordance on
-            // this row (the resume path refuses it, the inject path is suppressed). The rail
-            // hides `✎` when `projActive`, so the button and the route's rule agree.
+            // Another live session prevents background resume. A native-identified pane can
+            // still be injectable below; the shared composer prioritizes that capability.
             let proj_active = proj_has_other_live(sid, row.agent, row.cwd.as_deref());
             if proj_active {
                 j["projActive"] = json!(true);
             }
             if let Some(l) = &link {
                 j["pid"] = json!(l.pid);
+                if registry_identifies(&st.procs, l.pid, sid) {
+                    j["pidSource"] = json!("claude-registry");
+                }
                 j["term"] = json!(l.terminal.kind());
                 if let Terminal::Tmux {
                     sock: Some(sock), ..
@@ -1585,7 +1636,8 @@ impl Index {
                 }
                 // #133 tmux slice: this row can be INJECTED into iff the link is PROVEN
                 // (§3.1 — never a cwd guess), it is in tmux, the agent has a driven shape
-                // (claude/codex), AND its project has no other live session (constraint 2). The
+                // (claude/codex), AND its project has no other live session or native process
+                // identity selects this exact pane. The
                 // rail offers the terminal-send affordance only on these rows; `consented` says
                 // whether a standing grant already covers this exact pane/pid (send now) or one
                 // is needed first.
@@ -1594,7 +1646,12 @@ impl Index {
                 let pane = l.terminal.pane_addr().filter(|addr| {
                     !matches!(addr, PaneAddr::Herdr { .. }) || row.agent == Agent::CLAUDE
                 });
-                if let (true, Some(addr)) = (l.confirmed && driven && !proj_active, pane) {
+                if let (true, Some(addr)) = (
+                    l.confirmed
+                        && driven
+                        && (!proj_active || registry_identifies(&st.procs, l.pid, sid)),
+                    pane,
+                ) {
                     j["injectable"] = json!(true);
                     // #s237: images reach a Claude session in a herdr pane only, pasted as
                     // its path (`control::herdr_send`); a tmux pane has no measured way.
@@ -2091,7 +2148,8 @@ fn pair_one_shots<'a>(
             && serves(p, Agent::CLAUDE)
             && is_one_shot(&p.argv)
             && !is_helper(&p.argv)
-            && session_ref(&p.argv).is_none();
+            && p.native_session != crate::claude_registry::Identity::Rejected
+            && p.session_ref().is_none();
         if let (true, Some(cwd), Some(start)) = (headless_new, p.cwd.as_deref(), p.started) {
             shots.entry(cwd).or_default().push((start, p.pid));
         }
@@ -2274,21 +2332,29 @@ fn link(
             std::cmp::Reverse(p.pid),
         )
     };
-    let names = |p: &Proc| match session_ref(&p.argv) {
+    let names = |p: &Proc| match p.session_ref() {
         Some(SessionRef::Exact(u)) => u == sid,
         Some(SessionRef::Prefix(pf)) => sid.starts_with(pf.as_str()) && prefix_unique(&pf),
         None => false,
     };
     if let Some(p) = procs
         .iter()
-        .filter(|p| is_agent_exe(&p.exe_base, &p.argv) && names(p))
+        .filter(|p| {
+            is_agent_exe(&p.exe_base, &p.argv)
+                && serves(p, agent)
+                && p.native_session.permits(sid)
+                && names(p)
+        })
         .max_by_key(|p| host(p))
     {
         return Some(mk(p, true));
     }
     let t = transcript.to_string_lossy();
     if let Some(p) = procs.iter().find(|p| {
-        is_agent_exe(&p.exe_base, &p.argv) && p.open_jsonl.iter().any(|f| f.as_str() == t)
+        is_agent_exe(&p.exe_base, &p.argv)
+            && serves(p, agent)
+            && p.native_session.permits(sid)
+            && p.open_jsonl.iter().any(|f| f.as_str() == t)
     }) {
         return Some(mk(p, true));
     }
@@ -2301,11 +2367,14 @@ fn link(
                     && !is_helper(&p.argv)
                     && !is_one_shot(&p.argv)
                     && p.cwd.as_deref() == Some(cwd)
-                    && session_ref(&p.argv).is_none()
+                    && p.session_ref().is_none()
             })
             .collect();
         if let Some(p) = cands.iter().copied().max_by_key(|p| host(p)) {
-            return Some(mk(p, cands.len() == 1));
+            return Some(mk(
+                p,
+                cands.len() == 1 && p.native_session != crate::claude_registry::Identity::Rejected,
+            ));
         }
     }
     None
@@ -2457,7 +2526,7 @@ pub(crate) fn trailing_uuid(stem: &str) -> Option<String> {
     is_uuid(tail).then(|| tail.to_string())
 }
 
-fn is_uuid(t: &str) -> bool {
+pub(crate) fn is_uuid(t: &str) -> bool {
     t.len() == 36
         && t.bytes().enumerate().all(|(i, b)| match i {
             8 | 13 | 18 | 23 => b == b'-',
@@ -2584,6 +2653,17 @@ fn scan_procs() -> Vec<Proc> {
         apply_nesting(&mut procs, &run(&["ps", "-axo", "pid=,ppid=,ucomm="]));
     }
     apply_lsof(&mut procs, &run(&lsof_argv(&pids)));
+    let claude_pids: Vec<u32> = procs
+        .iter()
+        .filter(|p| proc_agent(p) == Some(Agent::CLAUDE))
+        .map(|p| p.pid)
+        .collect();
+    let mut native = crate::claude_registry::scan(&claude_pids);
+    for process in &mut procs {
+        if let Some(identity) = native.remove(&process.pid) {
+            process.native_session = identity;
+        }
+    }
     procs
 }
 
@@ -2659,6 +2739,7 @@ fn parse_ps(out: &str) -> Vec<Proc> {
             .to_string();
         procs.push(Proc {
             pid,
+            native_session: crate::claude_registry::Identity::Missing,
             argv: argv.to_string(),
             exe_base,
             cwd: None,
@@ -5025,6 +5106,183 @@ mod tests {
             title_mtime: None,
             cost: None,
         }
+    }
+
+    fn registry_row<'a>(snapshot: &'a Value, sid: &str) -> &'a Value {
+        snapshot["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|group| group["rows"].as_array().unwrap())
+            .find(|row| row["id"] == sid)
+            .expect("registered session in snapshot")
+    }
+
+    #[test]
+    fn native_registry_identifies_plain_claude_beside_newer_histories_and_live_siblings() {
+        use crate::claude_registry::Identity;
+        let scratch =
+            std::env::temp_dir().join(format!("cm-registry-assembly-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let live = "11111111-2222-4333-8444-555555555555";
+        let sibling = "22222222-2222-4333-8444-555555555555";
+        let old = "33333333-2222-4333-8444-555555555555";
+        let cwd = "/fixture/project";
+        let mut procs = parse_ps("700 claude\n701 claude\n702 codex\n");
+        for p in &mut procs {
+            p.cwd = Some(cwd.into());
+        }
+        procs[0].native_session = Identity::Verified(live.into());
+        procs[1].native_session = Identity::Verified(sibling.into());
+        apply_env(&mut procs, "700 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n701 claude HERDR_PANE_ID=w1:p4 HERDR_SOCKET_PATH=/fixture/herdr.sock\n");
+        apply_nesting(
+            &mut procs,
+            "60 1 herdr\n61 60 zsh\n700 61 claude\n701 61 claude\n",
+        );
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        for (sid, age) in [(live, 300), (sibling, 200), (old, 10)] {
+            let mut row = growth_row(cwd, false);
+            row.tree_mtime = Some(SystemTime::now() - Duration::from_secs(age));
+            st.rows.insert(sid.into(), row);
+        }
+        // A proof banked before the native reader existed must not retain this PID.
+        st.rows.get_mut(old).unwrap().proved_pid = Some((700, cwd.into()));
+        st.send_links.insert(
+            sibling.into(),
+            SendLink {
+                pid: Some(701),
+                confirmed: true,
+                ..Default::default()
+            },
+        );
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        let row = registry_row(&snapshot, live);
+        assert_eq!(row["pid"], 700);
+        assert_eq!(row["pidSource"], "claude-registry");
+        assert_eq!(row["target"], "w1:p6");
+        assert_eq!(row["conf"], "confirmed");
+        assert_eq!(
+            row["projActive"], true,
+            "the resume restriction remains visible"
+        );
+        assert_eq!(
+            row["injectable"], true,
+            "native identity selects this existing pane"
+        );
+        assert!(
+            registry_row(&snapshot, old).get("pid").is_none(),
+            "a newer history cannot borrow the registered process"
+        );
+        assert!(registry_identifies(&st.procs, 700, live));
+        assert!(!registry_identifies(&st.procs, 700, old));
+        assert_eq!(
+            send_liveness_ok(
+                old,
+                Some(cwd),
+                &st.send_links,
+                |_| Some(cwd.into()),
+                |_| None
+            ),
+            Err(SendRefusal::ProjectHasActiveSession)
+        );
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn native_registry_switches_override_launch_arguments_and_retained_growth() {
+        use crate::claude_registry::Identity;
+        let old = "11111111-2222-4333-8444-555555555555";
+        let current = "22222222-2222-4333-8444-555555555555";
+        let mut procs = parse_ps(&format!("700 claude --resume {old}\n"));
+        procs[0].native_session = Identity::Verified(current.into());
+        procs[0].cwd = Some("/fixture/project".into());
+        let unique = |_: &str| true;
+        assert!(link(
+            &procs,
+            old,
+            Agent::CLAUDE,
+            Path::new("/old.jsonl"),
+            Some("/fixture/project"),
+            true,
+            &unique
+        )
+        .is_none());
+        let linked = link(
+            &procs,
+            current,
+            Agent::CLAUDE,
+            Path::new("/current.jsonl"),
+            Some("/fixture/project"),
+            false,
+            &unique,
+        )
+        .unwrap();
+        assert_eq!(linked.pid, 700);
+        assert!(linked.confirmed);
+        assert!(
+            !linked.named,
+            "registry identity does not expand argv-based grant carryover"
+        );
+        procs[0].native_session = Identity::Rejected;
+        let guessed = link(
+            &procs,
+            old,
+            Agent::CLAUDE,
+            Path::new("/old.jsonl"),
+            Some("/fixture/project"),
+            true,
+            &unique,
+        )
+        .unwrap();
+        assert!(
+            !guessed.confirmed,
+            "a rejected registration cannot authorize a guessed pane"
+        );
+        procs[0].native_session = Identity::Missing;
+        assert!(
+            link(
+                &procs,
+                old,
+                Agent::CLAUDE,
+                Path::new("/old.jsonl"),
+                None,
+                false,
+                &unique
+            )
+            .unwrap()
+            .confirmed,
+            "older installations keep exact argv matching"
+        );
+    }
+
+    #[test]
+    fn native_registry_prevents_growth_from_claiming_a_different_session() {
+        use crate::claude_registry::Identity;
+        let scratch =
+            std::env::temp_dir().join(format!("cm-registry-growth-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let live = "11111111-2222-4333-8444-555555555555";
+        let old = "22222222-2222-4333-8444-555555555555";
+        let mut procs = parse_ps("700 claude\n");
+        procs[0].native_session = Identity::Verified(live.into());
+        procs[0].cwd = Some("/fixture/project".into());
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        st.rows
+            .insert(live.into(), growth_row("/fixture/project", false));
+        st.rows
+            .insert(old.into(), growth_row("/fixture/project", true));
+        idx.prove_by_growth(&mut st);
+        assert!(st.rows[old].proved_pid.is_none());
+        std::fs::remove_dir_all(scratch).unwrap();
     }
 
     /// Sessions in different SUBDIRS of one repo collapse into a single project group

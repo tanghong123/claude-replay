@@ -6,6 +6,7 @@
 
 #[cfg(feature = "codex-native")]
 pub use claude_monitor_codex as codex_gateway;
+mod claude_registry;
 #[cfg(feature = "codex-native")]
 pub mod codex_workspace;
 pub mod consent;
