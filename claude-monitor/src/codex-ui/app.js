@@ -1781,7 +1781,11 @@ function landOnCurrentMark() {
   const box = mark.getBoundingClientRect(), view = viewport.scroller.getBoundingClientRect();
   // #s37: on a phone the toolbar floats over the transcript's foot (and the find pill with it), so a
   // match under it is not on screen.
-  const floor = phoneDock && getComputedStyle(phoneDock).display !== "none" ? Math.min(view.bottom, phoneDock.getBoundingClientRect().top) : view.bottom;
+  let floor = phoneDock && getComputedStyle(phoneDock).display !== "none" ? Math.min(view.bottom, phoneDock.getBoundingClientRect().top) : view.bottom;
+  // #s248: on a desktop the open compose box covers the transcript's foot (#s245), so a match
+  // under it is not on screen either.
+  const deskBox = document.querySelector(".workspace.desk-composing #composer");
+  if (deskBox) floor = Math.min(floor, deskBox.getBoundingClientRect().top);
   if (box.top >= view.top && box.bottom <= floor) return;
   viewport.reveal(mark, { top: Math.min(120, view.height / 3) });
 }

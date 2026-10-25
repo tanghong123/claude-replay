@@ -12882,6 +12882,77 @@ fn a_desktop_compose_box_keeps_to_the_session_column_and_grows_with_its_draft() 
     );
 }
 
+/// #s248 (found by the review of #s245): a search step lands a match's record near the top and
+/// then checks the match itself is on screen. On a desktop with the compose box open, the box
+/// covers the transcript's foot, and a match deep in a tall record landed in that band counted
+/// as on screen and stayed hidden under it. The only match here is paragraph 14 of a 30-paragraph
+/// answer, with eight lines in the box; a step must leave it above the box.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_desktop_search_step_never_leaves_a_match_under_the_compose_box() {
+    let _serial = serial();
+    let base = harness::base("desktop-compose-search");
+    let stores = harness::Stores::new(&base);
+    let mut t = harness::long_session(4, harness::Shape::default());
+    let tall = (1..=30)
+        .map(|k| {
+            if k == 14 {
+                "paragraph 14 holds the needle the search looks for.".to_string()
+            } else {
+                format!("paragraph {k} of the long answer.")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    t += &harness::user_at("give me the long answer", &harness::now_minus(600));
+    t += &harness::assistant_at(&tall, &harness::now_minus(590));
+    for k in 0..4u64 {
+        t += &harness::user_at(&format!("follow-up {k}"), &harness::now_minus(500 - 60 * k));
+        t += &harness::assistant_at(
+            &format!("reply {k}: short."),
+            &harness::now_minus(490 - 60 * k),
+        );
+    }
+    stores.claude_session(PHONE_SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3246, &base, Some(&stores), true);
+    let (_b, tab) = desktop_tab(&m);
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "(function(){ document.getElementById('composeFab').click(); var i = document.getElementById('composeInput'); i.value = [1, 2, 3, 4, 5, 6, 7, 8].map(function (n) { return 'draft line ' + n; }).join('\\n'); i.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "document.getElementById('composer').getBoundingClientRect().height > 150",
+        "the box to grow with its eight lines",
+        Duration::from_secs(5),
+        "document.getElementById('composer').getBoundingClientRect().height",
+    );
+    harness::eval(&tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window mark.search-mark.current')",
+        "the search to mark its one match",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    harness::pause("the search's landing to settle", Duration::from_millis(600));
+    // Step to it: the record lands near the top, and the match must end in sight above the box.
+    harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+    let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); if (!m) return 'none'; var r = m.getBoundingClientRect(); return JSON.stringify({ above: r.bottom <= c.top + 0.5 && r.top >= t.top - 0.5, mark: [Math.round(r.top), Math.round(r.bottom)], box: Math.round(c.top), col: [Math.round(t.top), Math.round(t.bottom)] }); })()";
+    harness::pause("the step's landing to settle", Duration::from_millis(800));
+    let g = harness::eval(&tab, seen);
+    let g: serde_json::Value = serde_json::from_str(g.as_str().unwrap_or("{}")).unwrap_or_default();
+    assert_eq!(
+        g["above"], true,
+        "a step leaves the match in sight above the compose box: {g}"
+    );
+}
+
 /// #s237: the page's own world for a session in a herdr pane — `/api/sessions` says the phone's
 /// session is a live, consented Claude session in herdr pane w1:p2 that takes images, and
 /// `/api/send` is answered here and recorded (`window.__sent`), so nothing is typed anywhere.
