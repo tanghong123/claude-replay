@@ -280,7 +280,7 @@ const RESUME_STARTUP_WATCH: std::time::Duration = std::time::Duration::from_secs
 const RESUME_ERROR_TAIL: usize = 400;
 
 /// Spawn a resume in the session's cwd and watch it start (#s247): an agent that exits with a
-/// failure within [`RESUME_STARTUP_WATCH`] is an error carrying the end of what it wrote to
+/// failure within `RESUME_STARTUP_WATCH` is an error carrying the end of what it wrote to
 /// stderr, which the page shows in place of "Resuming the session"; one still running is left to
 /// run, a thread of its own reaping it. The monitor never sends the prompt again, so a resume
 /// whose fate is unknown cannot become two. The turn's progress shows as the row going active.
