@@ -13096,7 +13096,7 @@ fn a_desktop_search_first_step_lands_on_a_first_hit_under_the_compose_box() {
         t += &harness::assistant_at(answer, &harness::now_minus(590 - 60 * k));
     }
     stores.claude_session(PHONE_SID, &t);
-    let m = harness::Monitor::spawn(harness::Kind::V1, 3247, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3249, &base, Some(&stores), true);
     let (_b, tab) = desktop_tab(&m);
     harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
     harness::until(
