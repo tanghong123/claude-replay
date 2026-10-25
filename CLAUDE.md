@@ -314,6 +314,10 @@ legacy time pairing and stay excluded from the directory's newest/sibling candid
 Contradicted growth proofs and their growth timestamps are discarded before matching,
 so a later missing record requires a new transcript advancement to prove ownership again.
 Current native identity cannot narrow the possible writers during an earlier growth window.
+Rejected identity still counts as an existing process in its project, including for unlinked
+headless workers: it blocks background resume and legacy pane sends without granting a pane.
+A verified native session whose transcript has not been indexed yet also keeps the project
+occupied; identified workers retain the existing coordinator exception.
 Registry opening uses OS no-follow/nonblocking flags and reads the effective UID directly
 without creating a scratch file; `libc`, already used by the native feature, is required here too.
 **A one-shot (`claude -p`/`--print`) is headless and pairs by TIME** (#s50): knack's coordinator

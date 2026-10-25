@@ -192,13 +192,17 @@ fn send_liveness_ok(
     sid: &str,
     cwd: Option<&str>,
     links: &HashMap<String, SendLink>,
+    procs: &[Proc],
+    agent: Agent,
     cwd_of: impl Fn(&str) -> Option<String>,
     started_by: impl Fn(&str) -> Option<String>,
 ) -> Result<(), SendRefusal> {
     if links.get(sid).and_then(|l| l.pid).is_some() {
         return Err(SendRefusal::SessionIsLive);
     }
-    if project_has_other_live(sid, cwd, links, cwd_of, started_by) {
+    if unresolved_registry_writer(procs, agent, cwd, links)
+        || project_has_other_live(sid, cwd, links, cwd_of, started_by)
+    {
         return Err(SendRefusal::ProjectHasActiveSession);
     }
     Ok(())
@@ -524,6 +528,29 @@ fn registry_identifies(procs: &[Proc], pid: u32, sid: &str) -> bool {
         .any(|p| p.pid == pid && p.native_session.session() == Some(sid))
 }
 
+/// Rejection withdraws session/pane authority, not the process's existence. In particular,
+/// an unlinked headless worker still occupies its project and must prevent a new resume.
+fn unresolved_registry_writer(
+    procs: &[Proc],
+    agent: Agent,
+    cwd: Option<&str>,
+    links: &HashMap<String, SendLink>,
+) -> bool {
+    let Some(cwd) = cwd else { return false };
+    agent == Agent::CLAUDE
+        && procs.iter().any(|p| {
+            // An unavailable cwd cannot prove that this live writer is in another project.
+            p.cwd.as_deref().is_none_or(|actual| actual == cwd)
+                && match &p.native_session {
+                    crate::claude_registry::Identity::Missing => false,
+                    crate::claude_registry::Identity::Rejected => true,
+                    crate::claude_registry::Identity::Verified(sid) => {
+                        links.get(sid).and_then(|link| link.pid).is_none()
+                    }
+                }
+        })
+}
+
 /// A terminal multiplexer that hosts panes (#s226).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mux {
@@ -804,6 +831,8 @@ impl Index {
             sid,
             cwd.as_deref(),
             &st.send_links,
+            &st.procs,
+            agent,
             // #s59: a sibling of another agent drives nothing of this session.
             |o| {
                 st.rows
@@ -841,19 +870,20 @@ impl Index {
         // Only native process identity can bypass the legacy project-ambiguity guard.
         // Background resume keeps the unqualified same-project guard in resolve_send.
         if !registry_identifies(&st.procs, pid, sid)
-            && project_has_other_live(
-                sid,
-                cwd.as_deref(),
-                &st.send_links,
-                // #s59: a sibling of another agent drives nothing of this session.
-                |o| {
-                    st.rows
-                        .get(o)
-                        .filter(|r| r.agent == agent)
-                        .and_then(|r| r.cwd.clone())
-                },
-                |o| st.started_by(o).map(str::to_string),
-            )
+            && (unresolved_registry_writer(&st.procs, agent, cwd.as_deref(), &st.send_links)
+                || project_has_other_live(
+                    sid,
+                    cwd.as_deref(),
+                    &st.send_links,
+                    // #s59: a sibling of another agent drives nothing of this session.
+                    |o| {
+                        st.rows
+                            .get(o)
+                            .filter(|r| r.agent == agent)
+                            .and_then(|r| r.cwd.clone())
+                    },
+                    |o| st.started_by(o).map(str::to_string),
+                ))
         {
             return Err(SendRefusal::ProjectHasActiveSession);
         }
@@ -1615,7 +1645,13 @@ impl Index {
             }
             // Another live session prevents background resume. A native-identified pane can
             // still be injectable below; the shared composer prioritizes that capability.
-            let proj_active = proj_has_other_live(sid, row.agent, row.cwd.as_deref());
+            let proj_active = proj_has_other_live(sid, row.agent, row.cwd.as_deref())
+                || unresolved_registry_writer(
+                    &st.procs,
+                    row.agent,
+                    row.cwd.as_deref(),
+                    &st.send_links,
+                );
             if proj_active {
                 j["projActive"] = json!(true);
             }
@@ -3265,23 +3301,57 @@ mod tests {
         live.insert("elsewhere".into(), link(Some(999))); // live, but a DIFFERENT project
 
         // A finished session in a quiet project: OK.
-        assert!(send_liveness_ok("idle-a", Some("/proj"), &live, cwd_of, |_| None).is_ok());
+        assert!(send_liveness_ok(
+            "idle-a",
+            Some("/proj"),
+            &live,
+            &[],
+            Agent::CLAUDE,
+            cwd_of,
+            |_| None
+        )
+        .is_ok());
         // The target itself is live → refuse (tmux path).
         live.insert("idle-a".into(), link(Some(123)));
         assert_eq!(
-            send_liveness_ok("idle-a", Some("/proj"), &live, cwd_of, |_| None),
+            send_liveness_ok(
+                "idle-a",
+                Some("/proj"),
+                &live,
+                &[],
+                Agent::CLAUDE,
+                cwd_of,
+                |_| None
+            ),
             Err(SendRefusal::SessionIsLive)
         );
         // Target finished, but a SIBLING in the same project is live → refuse.
         live.insert("idle-a".into(), link(None));
         live.insert("live-b".into(), link(Some(456)));
         assert_eq!(
-            send_liveness_ok("idle-c", Some("/proj"), &live, cwd_of, |_| None),
+            send_liveness_ok(
+                "idle-c",
+                Some("/proj"),
+                &live,
+                &[],
+                Agent::CLAUDE,
+                cwd_of,
+                |_| None
+            ),
             Err(SendRefusal::ProjectHasActiveSession)
         );
         // A live session in ANOTHER project does not block this one.
         live.remove("live-b");
-        assert!(send_liveness_ok("idle-c", Some("/proj"), &live, cwd_of, |_| None).is_ok());
+        assert!(send_liveness_ok(
+            "idle-c",
+            Some("/proj"),
+            &live,
+            &[],
+            Agent::CLAUDE,
+            cwd_of,
+            |_| None
+        )
+        .is_ok());
     }
 
     #[test]
@@ -5218,6 +5288,8 @@ mod tests {
                 old,
                 Some(cwd),
                 &st.send_links,
+                &st.procs,
+                Agent::CLAUDE,
                 |_| Some(cwd.into()),
                 |_| None
             ),
@@ -5422,6 +5494,152 @@ mod tests {
             st.rows["growing"].proved_pid.is_none(),
             "current identity cannot narrow historical growth ambiguity"
         );
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn native_registry_rejected_worker_still_blocks_background_resume() {
+        use crate::claude_registry::Identity;
+        let scratch =
+            std::env::temp_dir().join(format!("cm-registry-occupied-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let active = "11111111-2222-4333-8444-555555555555";
+        let idle = "22222222-2222-4333-8444-555555555555";
+        let cwd = "/fixture/project";
+        let mut procs = parse_ps(&format!("700 claude -p --resume {active}\n"));
+        procs[0].cwd = Some(cwd.into());
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        let mut worker = growth_row(cwd, false);
+        worker.one_shot = true;
+        st.rows.insert(active.into(), worker);
+        st.rows.insert(idle.into(), growth_row(cwd, false));
+        for identity in [Identity::Verified(active.into()), Identity::Rejected] {
+            st.procs[0].native_session = identity;
+            let mut facts = Vec::new();
+            let snapshot = idx.assemble(&st, &mut facts);
+            let links: HashMap<String, SendLink> = facts
+                .iter()
+                .map(|f| {
+                    (
+                        f.sid.clone(),
+                        SendLink {
+                            pid: f.pid,
+                            pane: f.pane.clone(),
+                            confirmed: f.confirmed,
+                            named: f.named,
+                        },
+                    )
+                })
+                .collect();
+            for sid in [active, idle] {
+                assert!(
+                    send_liveness_ok(
+                        sid,
+                        Some(cwd),
+                        &links,
+                        &st.procs,
+                        Agent::CLAUDE,
+                        |_| Some(cwd.into()),
+                        |_| None
+                    )
+                    .is_err(),
+                    "a still-running rejected worker must not make its project resumable"
+                );
+            }
+            if st.procs[0].native_session == Identity::Rejected {
+                assert!(registry_row(&snapshot, active).get("pid").is_none());
+                assert_ne!(registry_row(&snapshot, active)["injectable"], true);
+                assert_eq!(registry_row(&snapshot, idle)["projActive"], true);
+                assert!(
+                    send_liveness_ok(
+                        idle,
+                        Some(cwd),
+                        &links,
+                        &st.procs,
+                        Agent::CODEX,
+                        |_| None,
+                        |_| None
+                    )
+                    .is_ok(),
+                    "another agent family retains its own occupancy rules"
+                );
+                assert!(
+                    send_liveness_ok(
+                        idle,
+                        Some("/fixture/other-project"),
+                        &links,
+                        &st.procs,
+                        Agent::CLAUDE,
+                        |_| Some(cwd.into()),
+                        |_| None
+                    )
+                    .is_ok(),
+                    "another project remains resumable"
+                );
+                let known_cwd = st.procs[0].cwd.take();
+                assert!(
+                    send_liveness_ok(
+                        idle,
+                        Some(cwd),
+                        &links,
+                        &st.procs,
+                        Agent::CLAUDE,
+                        |_| Some(cwd.into()),
+                        |_| None
+                    )
+                    .is_err(),
+                    "losing cwd evidence must not make a rejected worker resumable"
+                );
+                st.procs[0].cwd = known_cwd;
+            } else {
+                assert!(
+                    send_liveness_ok(
+                        idle,
+                        Some(cwd),
+                        &links,
+                        &st.procs,
+                        Agent::CLAUDE,
+                        |_| Some(cwd.into()),
+                        |sid| (sid == active).then(|| idle.into())
+                    )
+                    .is_ok(),
+                    "an identified coordinator's own worker keeps its existing exception"
+                );
+                let worker = st.rows.remove(active).unwrap();
+                let snapshot = idx.assemble(&st, &mut Vec::new());
+                assert_eq!(registry_row(&snapshot, idle)["projActive"], true);
+                assert!(
+                    send_liveness_ok(
+                        idle,
+                        Some(cwd),
+                        &HashMap::new(),
+                        &st.procs,
+                        Agent::CLAUDE,
+                        |_| Some(cwd.into()),
+                        |_| None
+                    )
+                    .is_err(),
+                    "an unindexed native session still occupies its project"
+                );
+                st.rows.insert(active.into(), worker);
+            }
+        }
+        st.procs.clear();
+        assert!(send_liveness_ok(
+            idle,
+            Some(cwd),
+            &HashMap::new(),
+            &st.procs,
+            Agent::CLAUDE,
+            |_| None,
+            |_| None
+        )
+        .is_ok());
         std::fs::remove_dir_all(scratch).unwrap();
     }
 
