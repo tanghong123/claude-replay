@@ -12777,6 +12777,24 @@ fn a_desktop_compose_box_keeps_to_the_session_column_and_grows_with_its_draft() 
             Duration::from_secs(5),
             jump,
         );
+        // And the box growing does not move them: only a reader following the end is kept at it.
+        let offset = "(function(){ var t = document.querySelector('.session-main>.transcript'); return JSON.stringify([Math.round(t.scrollTop), Math.round(t.scrollHeight - t.clientHeight - t.scrollTop)]); })()";
+        let before = harness::eval(&tab, offset);
+        type_lines(8);
+        let grown = geometry("the box to grow under a reader who scrolled up");
+        let after = harness::eval(&tab, offset);
+        let read = |v: &serde_json::Value| -> Vec<f64> {
+            serde_json::from_str(v.as_str().unwrap_or("[]")).unwrap_or_default()
+        };
+        let (b, a) = (read(&before), read(&after));
+        assert!(
+            px(&grown, "box", "h") > px(&four, "box", "h") + lh
+                && b.len() == 2
+                && a.len() == 2
+                && (a[0] - b[0]).abs() <= 1.0
+                && a[1] > 2.0,
+            "a reader scrolled up stays where they were as the box grows at {w}px: {before:?} then {after:?}, {grown}"
+        );
         harness::jump_to_end(&tab, harness::Surface::AppShell);
         harness::until(
             &tab,
@@ -12805,6 +12823,62 @@ fn a_desktop_compose_box_keeps_to_the_session_column_and_grows_with_its_draft() 
         );
         ends_above(&again, "emptied");
     }
+    // A draft that wraps is fitted again when the box's width changes under it — the right pane
+    // opening at 1280px narrows the session's column — not only on the next keystroke.
+    harness::resize(&tab, 1280.0, 900.0);
+    harness::until(
+        &tab,
+        "Math.abs(innerWidth - 1280) < 40",
+        "the window to take its width",
+        Duration::from_secs(5),
+        "innerWidth",
+    );
+    harness::pause("the page to take the new width", Duration::from_millis(700));
+    // Short enough to stay under the cap even in the narrowed box (205px at this width).
+    let paragraph = "a paragraph long enough to wrap ".repeat(4);
+    harness::eval(&tab, &format!("(function(){{ var i = document.getElementById('composeInput'); i.focus(); i.value = '{paragraph}'; i.dispatchEvent(new Event('input', {{ bubbles: true }})); return 'ok'; }})()"));
+    let wide = geometry("the paragraph to wrap in the wide box");
+    let pane = |open: bool| {
+        harness::eval(
+            &tab,
+            &format!(
+                "document.getElementById('{}').click(); 'ok'",
+                if open { "previewBtn" } else { "closePreview" }
+            ),
+        );
+        harness::until(
+            &tab,
+            &format!(
+                "!document.getElementById('app').classList.contains('preview-off') === {open}"
+            ),
+            "the right pane to open or close",
+            Duration::from_secs(10),
+            "document.getElementById('app').className",
+        );
+    };
+    pane(true);
+    let narrow = geometry("the paragraph to wrap in the narrowed box");
+    pane(false);
+    let back = geometry("the paragraph to wrap in the wide box again");
+    eprintln!("#s245 wrap: {wide}\n{narrow}\n{back}");
+    let fits = |g: &serde_json::Value| {
+        g["fieldScroll"].as_f64().unwrap_or(0.0) <= g["fieldH"].as_f64().unwrap_or(0.0) + 1.0
+    };
+    assert!(
+        px(&narrow, "box", "r") - px(&narrow, "box", "l")
+            < px(&wide, "box", "r") - px(&wide, "box", "l") - 100.0,
+        "the pane narrows the box: {wide} then {narrow}"
+    );
+    assert!(
+        fits(&wide)
+            && fits(&narrow)
+            && fits(&back)
+            && narrow["fieldH"].as_f64() > wide["fieldH"].as_f64()
+            && (back["fieldH"].as_f64().unwrap_or(0.0) - wide["fieldH"].as_f64().unwrap_or(0.0))
+                .abs()
+                <= 1.0,
+        "the field shows the whole paragraph at each width, taller while narrow: {wide}\n{narrow}\n{back}"
+    );
 }
 
 /// #s237: the page's own world for a session in a herdr pane — `/api/sessions` says the phone's

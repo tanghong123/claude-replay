@@ -3508,22 +3508,16 @@ var phoneDock;
   const composeNote = document.createElement("div");
   composeNote.className = "compose-note";
   composer.prepend(composeNote);
-  // The field grows with its text to five lines, then scrolls.
+  // The field grows with its text to five lines, then scrolls. On a desktop `placeDeskCompose`
+  // fits it, once the box has the width the text wraps in.
   const fitCompose = () => {
     if (controls.nativeActive) { controls.fitComposer(); return; }
     composeInput.style.height = "";
-    if (!composer.classList.contains("production-show")) return;
-    if (PHONE.matches) { composeInput.style.height = `${Math.min(composeInput.scrollHeight, 132)}px`; return; }
-    // #s245: on a desktop it starts at one line and grows with the draft to the stylesheet's cap,
-    // then scrolls; measured from no height at all, so a shorter draft shrinks it again.
-    const kept = composeInput.scrollTop;
-    composeInput.style.height = "0px";
-    composeInput.style.height = `${composeInput.scrollHeight}px`;
-    composeInput.scrollTop = kept;
+    if (PHONE.matches && composer.classList.contains("production-show")) composeInput.style.height = `${Math.min(composeInput.scrollHeight, 132)}px`;
   };
   // #s245: a desktop's open box keeps to the session's reading column — the transcript's own text
   // width, inside its column, never over the outline beside it — and the transcript's end is
-  // pushed above it (`--compose-room`), so a reader at the end still sees it as the box grows.
+  // pushed above it (`--compose-room`), so a reader following the end still sees it as the box grows.
   const workspace = composer.closest(".workspace"), transcriptInner = byId("transcriptInner");
   let deskRoom = null, deskFrame = 0;
   const placeDeskCompose = () => {
@@ -3536,20 +3530,35 @@ var phoneDock;
       workspace.style.setProperty("--compose-x", `${(left + right) / 2 - ws.left}px`);
       workspace.style.setProperty("--compose-w", `${right - left}px`);
       workspace.style.setProperty("--compose-bottom", `${ws.bottom - col.bottom + 16}px`);
+      // The field's cap is a share of the column, so the box never takes most of a short one.
+      workspace.style.setProperty("--compose-cap", `${Math.round(Math.max(42, Math.min(264, col.height * 0.35)))}px`);
+      // One line at rest, growing with the draft at THIS width to the cap, then scrolling: measured
+      // from no height at all, so a shorter draft or a wider box shrinks it again.
+      const kept = composeInput.scrollTop;
+      composeInput.style.height = "0px";
+      composeInput.style.height = `${composeInput.scrollHeight}px`;
+      composeInput.scrollTop = kept;
       const box = composer.getBoundingClientRect(), jumpHome = byId("jumpToBottom").offsetParent;
       deskRoom = Math.round(box.height + 16);
       workspace.style.setProperty("--compose-room", `${deskRoom}px`);
       // The jump to the end sits above the box, measured from its own container's foot.
       if (jumpHome) workspace.style.setProperty("--compose-lift", `${Math.round(jumpHome.getBoundingClientRect().bottom - (col.bottom - deskRoom)) + 10}px`);
     } else deskRoom = null;
-    // The end moved under a reader who is at it: keep them there, as new records would.
+    // The end moved under a reader who is following it: keep them there, as new records would.
     if (deskRoom !== was && viewport.following) viewport.convergeBottom();
   };
-  // A column or text width that changes (a pane, the outline, Wide transcript, the window) moves
-  // the box in the next frame: writing it inside the observer's delivery would resize what it
-  // watches and loop.
-  const deskObserver = new ResizeObserver(() => {
-    if (deskFrame) return;
+  // A column that changes size or a text width that changes (a pane, the outline, Wide transcript,
+  // the window) moves the box in the next frame: writing it inside the observer's delivery would
+  // resize what it watches and loop. The text column's height changes with every record drawn,
+  // and that alone moves nothing.
+  const deskSizes = new WeakMap();
+  const deskObserver = new ResizeObserver(entries => {
+    let moved = false;
+    for (const { target, contentRect: r } of entries) {
+      const size = target === transcriptInner ? `${r.width}` : `${r.width}x${r.height}`;
+      if (deskSizes.get(target) !== size) { deskSizes.set(target, size); moved = true; }
+    }
+    if (!moved || deskFrame) return;
     deskFrame = requestAnimationFrame(() => { deskFrame = 0; placeDeskCompose(); });
   });
   for (const box of [transcript, transcriptInner]) deskObserver.observe(box);
@@ -3563,7 +3572,7 @@ var phoneDock;
     const sharedFocus = !!controls.nativeActive && (document.activeElement === composeInput || keyboardOpen && (composer.contains(document.activeElement) || controls.runtimePanel?.contains(document.activeElement)));
     app.classList.toggle("composing", PHONE.matches && composer.classList.contains("production-show") && (!controls.nativeActive || sharedFocus));
     if (controls.nativeActive) { controls.fitComposer(); placeDeskCompose(); return; }
-    // #s236: the phone's note is the same one line the desktop's foot shows (`composeTargetLine`).
+    // #s236: the phone's note is the same one line the desktop's caption shows (`composeTargetLine`).
     composeNote.textContent = byId("composeTarget").textContent;
     fitCompose();
     placeDeskCompose();

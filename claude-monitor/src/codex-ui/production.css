@@ -11,11 +11,12 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .markdown-table-scroll{width:100%;max-width:100%;margin:14px 0 18px;overflow-x:auto;border-radius:10px}.markdown-table-scroll>table{display:table!important;width:100%!important;min-width:100%;margin:0!important;overflow:visible!important}
 .transcript{overflow-anchor:none}.virtual-pad{width:1px;pointer-events:none}.virtual-window{display:block}.monitor-empty{min-height:280px;display:grid;place-content:center;justify-items:center;gap:6px;padding:32px;color:var(--faint);text-align:center}.monitor-empty[hidden]{display:none!important}.monitor-empty strong{color:var(--sub);font-size:13px}.monitor-empty span{max-width:430px;font-size:11px}.monitor-error{color:var(--red)}.monitor-disabled{opacity:.48;cursor:not-allowed!important}.monitor-disabled-note{margin:7px 0;padding:9px 11px;border:1px solid var(--process-content-border,var(--line));border-radius:8px;background:var(--process-control-bg,var(--panel));color:var(--faint);font-size:11px}.fallback-raw{max-height:260px;overflow:auto;white-space:pre-wrap}.search-scope-note{padding:8px 10px;color:var(--faint);font-size:10.5px}.preview-error{min-height:240px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:7px;padding:28px;color:var(--sub);font-size:12px}.preview-error strong{color:var(--ink);font-size:14px}.preview-error>span{max-width:340px;line-height:1.6}.preview-error-actions{display:flex;gap:7px;margin-top:7px}.artifact-text{white-space:pre-wrap;font:12px/1.7 var(--mono)}.artifact-image{display:block;max-width:100%;height:auto;margin:0 auto}.artifact-html-frame{display:block;width:100%;height:100%;min-height:420px;border:0;background:#fff}.outline-placeholder{padding:9px 11px;color:var(--faint);font-size:10.5px}.session-state.inferred{box-shadow:0 0 0 1px currentColor;background:transparent}.process-surface[data-prod-sticky="true"] .process-surface-headbar{position:sticky;top:0;z-index:3}.write-help.show{display:block}.composer.production-show{display:block}.confirm-layer.production-open,.search-layer.production-open{display:grid}.search-layer.production-open{display:flex}.preview-body.production-loading{display:grid;place-items:center;color:var(--faint)}.passcode-input{width:100%;height:38px;margin:-7px 0 14px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);outline:0}.passcode-input:focus{border-color:var(--blue)}.production-revoke{margin-left:auto;border:0;background:transparent;color:var(--faint);font:10px var(--sans);cursor:pointer}.production-revoke:hover{color:var(--red)}
 /* #s236 (Hong: the compose box said too much, and "writes to live tmux" for a herdr pane): the head is the
-   session's name alone, the foot ONE line from `composeTargetLine` (amber for a live pane), and the
+   session's name alone, the foot ONE line from `composeTargetLine` (amber for a live pane; on a
+   desktop it sits in the caption row beside the name, #s245), and the
    reference's static "· writes to live tmux" and its inert "＋" are gone. */
 #app .composer>.composer-head>span,#app .composer .risk,#app .composer .compose-foot:before{display:none}
 #app .composer.live #composeTarget{color:var(--amber)}
-/* #s237: images for a Claude session in a herdr pane: the attach control leads the foot, the strip sits above the field. */
+/* #s237: images for a Claude session in a herdr pane: the attach control leads the foot (inside the field at its left, on a desktop as on a phone, #s245), the strip sits above the field. */
 #app .composer .compose-attach{flex:none;width:30px;height:30px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--sub);display:grid;place-items:center;cursor:pointer}
 #app .composer .compose-attach:hover{background:var(--hover);color:var(--ink)}
 #app .composer .compose-attach[hidden]{display:none}
@@ -30,11 +31,13 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
 /* #s245 (Hong, 2026-10-25, at about 2000px): on a desktop the open box was centred on the whole
    workspace, so it lay over the outline column, and stood 169px tall over the transcript's last
    lines. It keeps to the session's reading column now (`--compose-x`/`-w`/`-bottom`, measured by
-   `placeDeskCompose` in app.js), one caption line (the session's name, where the message goes, ✕)
-   over ONE line of field that grows with the draft to a cap and then scrolls; and the transcript
-   ends above it (`--compose-room`), pushed up rather than covered. Native mode lays out its own. */
+   `placeDeskCompose` in app.js), one caption line (the session's name, where the message goes, a
+   pane grant's revoke, ✕; the name gives way first) over ONE line of field that grows with the draft
+   to a cap (`--compose-cap`, a share of the column) and then scrolls, the send beside it rather than
+   over its scrollbar; and the transcript ends above it (`--compose-room`, never less than the 140px
+   it keeps without the box), pushed up rather than covered. Native mode lays out its own. */
 @media(min-width:761px) and (min-height:501px),(min-width:761px) and (pointer:fine){
-  body:not([data-shared-codex]) #app .workspace .composer.production-show{left:var(--compose-x,50%);bottom:var(--compose-bottom,17px);width:var(--compose-w,min(880px,calc(100% - 44px)));max-width:none;min-height:0;display:grid;grid-template-columns:fit-content(45%) minmax(0,1fr) auto auto;grid-template-areas:"title target revoke close" "images images images images" "field field field field";align-items:center;column-gap:8px;row-gap:1px;padding:4px 7px 7px 13px;border-radius:14px}
+  body:not([data-shared-codex]) #app .workspace .composer.production-show{left:var(--compose-x,50%);bottom:var(--compose-bottom,17px);width:var(--compose-w,min(880px,calc(100% - 44px)));max-width:none;min-height:0;display:grid;grid-template-columns:fit-content(25%) minmax(0,1fr) auto auto;grid-template-areas:"title target revoke close" "images images images images" "field field field field";align-items:center;column-gap:8px;row-gap:1px;padding:4px 7px 7px 13px;border-radius:14px}
   body:not([data-shared-codex]) #app .composer.production-show>:is(.composer-head,.compose-foot){display:contents}
   body:not([data-shared-codex]) #app .composer.production-show>.compose-note{display:none}
   body:not([data-shared-codex]) #app .composer.production-show #composerTitle{grid-area:title;min-width:0;font-size:11px}
@@ -42,11 +45,11 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
   body:not([data-shared-codex]) #app .composer.production-show .production-revoke{grid-area:revoke}
   body:not([data-shared-codex]) #app .composer.production-show #closeComposer{grid-area:close;width:24px;height:24px}
   body:not([data-shared-codex]) #app .composer.production-show .compose-images{grid-area:images}
-  body:not([data-shared-codex]) #app .composer.production-show textarea{grid-area:field;box-sizing:border-box;min-height:0;max-height:min(264px,32vh);padding:6px 40px 6px 0;font-size:14px;line-height:21px;overflow-y:auto}
+  body:not([data-shared-codex]) #app .composer.production-show textarea{grid-area:field;box-sizing:border-box;width:auto;min-height:0;max-height:var(--compose-cap,min(264px,32vh));margin-right:38px;padding:6px 4px 6px 0;font-size:14px;line-height:21px;overflow-y:auto}
   body:not([data-shared-codex]) #app .composer.production-show.attachable textarea{padding-left:32px}
   body:not([data-shared-codex]) #app .composer.production-show #sendBtn{grid-area:field;justify-self:end;align-self:end;width:30px;height:30px;margin:0 0 1px}
   body:not([data-shared-codex]) #app .composer.production-show .compose-attach{grid-area:field;justify-self:start;align-self:end;margin:0 0 1px -6px}
-  body:not([data-shared-codex]) #app .workspace.desk-composing .transcript-inner{padding-bottom:calc(var(--compose-room,140px) + 24px)}
+  body:not([data-shared-codex]) #app .workspace.desk-composing .transcript-inner{padding-bottom:max(140px,calc(var(--compose-room,140px) + 24px))}
   body:not([data-shared-codex]) #app .workspace.desk-composing .jump-to-bottom{bottom:var(--compose-lift,150px)}
 }
 
