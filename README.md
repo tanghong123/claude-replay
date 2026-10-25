@@ -41,8 +41,9 @@ and the blocked ones.
 ## What it does
 
 - **Who is waiting for you.** Each session is *active*, *blocked* or *idle*, and a blocked
-  one carries its reason (awaiting your permission, for example). The filter offers recently
-  active, blocked, idle, and hidden sessions. The tree groups sessions by agent, then by
+  one carries its reason (awaiting your permission, for example); a session in a herdr pane
+  takes the state herdr itself reports. The filter offers recently active, blocked, idle, and
+  hidden sessions. The tree groups sessions by agent, then by
   project; One list by activity in the filter menu shows them as one list ordered by
   activity instead, and remembers the choice.
 - **Passive observation.** No hook, no plugin and no special way to start an agent: it reads
@@ -70,7 +71,9 @@ and the blocked ones.
   (`o(B)` is Bash, `o(Bash,Read)` two tools); `w` matches whole words only; a colon ends the
   prefix, as in `w: tag`.
 - **File preview.** A text file a session mentions opens in a preview pane, in the bundled
-  mdrev viewer, highlighted by language with numbered lines. An HTML page renders as a
+  mdrev viewer, highlighted by language with numbered lines. On a machine joined to an mdrev
+  service you can add, edit, close and delete your own notes there, while shared review stays
+  in the detached Markdown tab. An HTML page renders as a
   sandboxed page on a paired monitor, and as text on an unpaired one. Consecutive images form
   one group: click one to open it in the pane, or Open all for the whole group. A finger's
   double-tap zooms in and back to fit; a mouse double-click switches between 1:1 and fit.
@@ -81,8 +84,10 @@ and the blocked ones.
 - **Phone access.** A phone on your tailnet can read a *paired* monitor (see below). On a
   phone the page is a reader: the session list is a drawer, and the tools float at the foot.
 - **Write mode.** On a paired monitor, and only after you turn it on and grant it, you can
-  reply to a session that is waiting for you from the page. Typing into a live terminal pane
-  takes a grant for that pane, and can also require a passcode set only in a terminal.
+  reply to a session that is waiting for you from the page. Typing into a session in a tmux or
+  herdr pane takes a grant for that pane, and can also require a passcode set only in a
+  terminal. A Claude Code session in a herdr pane can also take images: PNG, JPEG, WebP or GIF,
+  at most four, each up to 4 MiB and 8 MiB in all.
 - **Codex native mode.** Release binaries include it from 1.400.0: on a paired monitor, turn
   on Write and then Codex native to start or continue Codex conversations through a local
   Codex app-server, with text and images, interrupts, approvals and questions
@@ -140,8 +145,10 @@ Content leaves the machine only if you choose to:
 - **An mdrev service.** On a machine joined to one, opening a Markdown file from a registered
   repository syncs your personal notes there.
 
-Codex native also receives the text, images and actions you submit. Its action receipts
-(status and ids, no conversation text) stay on this machine for 30 days.
+Images write mode sends to a herdr pane are saved in the local cache, readable by you alone,
+and are not deleted automatically, because the session's transcript names that file as the
+image's source. Codex native also receives the text, images and actions you submit. Its action
+receipts (status and ids, no conversation text) stay on this machine for 30 days.
 `agent-monitor-fleet`, a separate tool, reaches the hosts you configure over SSH.
 
 ## Also in this repository
@@ -398,7 +405,8 @@ cargo build --release -p claude-monitor --features codex-native
 agent-monitor --pair --no-open --codex-allowed-root /path/to/project
 ```
 
-The default is `ws://127.0.0.1:4500` with Monitor's independent capability token.
+The default is `ws://127.0.0.1:4500` with Monitor's independent capability token, sent only
+to a Codex server run by this OS user.
 Codex App cannot directly share this endpoint unless its local connection can
 supply the required Bearer header; an endpoint override alone is insufficient.
 App sharing is an explicit Unix option on macOS and Linux. `unix://` selects
