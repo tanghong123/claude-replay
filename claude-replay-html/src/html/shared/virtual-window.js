@@ -931,7 +931,13 @@ class VirtualWindow {
     this.trace("rest", { tail: this.pendingTail, estimates: this.estimatesPending });
     if (this.estimatesPending) {
       this.estimatesPending = false;
-      this.transact("estimates", { mutate: () => this.applyLate(), range: p0 => this.rangeFor(p0) });
+      // The mounted heights first (#s269): this runs on a timer, and a size change the observer has
+      // not delivered yet — it delivers only in a frame, and a headless tab draws lazily — is in the
+      // DOM but not the sums. The anchor's placement reads its rect and holds the reader, but the
+      // window was then judged by sums that lacked the growth, re-mounted around the raw offset and
+      // lost the anchor (measured: a block above a landed turn grew 2500px at t=843, the first
+      // frame came at 1078, the rest ran at 1040).
+      this.transact("estimates", { mutate: () => { this.measureMounted(); this.applyLate(); }, range: p0 => this.rangeFor(p0) });
     }
     if (this.pendingTail) {
       this.pendingTail = false;
