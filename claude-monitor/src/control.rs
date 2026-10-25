@@ -612,14 +612,16 @@ pub fn herdr_send_verdict(
     }
 }
 
-/// A herdr pane id as herdr writes it (`w1:p2`, measured): anything else, from another
-/// process's environment, is never handed to the herdr CLI, where it could read as a flag.
+/// A herdr pane id as herdr writes it: `w`, the workspace, `:p`, the pane, each part letters or
+/// digits (#s244, measured on herdr 0.9.5: workspaces count `w2`…`w7` then `wA`…`wM`, so `wH:p1`
+/// is as much herdr's as `w1:p2`). Anything else, from another process's environment, is never
+/// handed to the herdr CLI, where it could read as a flag.
 pub fn herdr_pane_id_ok(pane: &str) -> bool {
     let Some((w, p)) = pane.split_once(":p") else {
         return false;
     };
-    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
-    w.strip_prefix('w').is_some_and(digits) && digits(p)
+    let part = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric());
+    w.strip_prefix('w').is_some_and(part) && part(p)
 }
 
 /// This process's effective uid, read as the owner of a file it just made (no libc in a plain
@@ -1481,7 +1483,14 @@ mod tests {
         );
         // Pane ids come from another process's environment: only herdr's own shape passes.
         assert!(herdr_pane_id_ok("w1:p2") && herdr_pane_id_ok("w12:p305"));
-        for bad in ["--help", "w1:p", "w:p2", "w1:p2 ", "p2", "w1:p2;x", ""] {
+        // #s244: herdr's workspaces count on past 9 in letters (measured: wA…wM).
+        for good in ["wH:p1", "wA:p12", "w5:p3", "wM:pB"] {
+            assert!(herdr_pane_id_ok(good), "{good:?}");
+        }
+        for bad in [
+            "--help", "w1:p", "w:p2", "w1:p2 ", "p2", "w1:p2;x", "", "wH:p1\n", "w-1:p2",
+            "wH:p1:p2",
+        ] {
             assert!(!herdr_pane_id_ok(bad), "{bad:?}");
         }
     }
