@@ -1567,7 +1567,10 @@ const ARTIFACT_CREATE_SHAPE: &[&str] = &[
 /// `path` relative to the call input's `root` and equal, entry for entry, to the keys of the call
 /// input's `files` map. It is that map again, plus a digest per file: the client's own integrity
 /// bookkeeping. REVISIT: a `files_written` that differs from the input's `files` map, since a file
-/// asked for and not written is a failure the card would not show.
+/// asked for and not written is a failure the card would not show. Since client 2.1.310 a publish
+/// from a file also carries `owned` beside `icon` (#s268, one record, measured 2026-10-26), true
+/// as in a create and a typed publish (#s181): a flag the card has no use for, eleven facts
+/// nothing renders. REVISIT: `owned` arriving false.
 const ARTIFACT_PUBLISH_SHAPE: &[&str] = &[
     "artifact_id",
     "audience",
@@ -1575,6 +1578,7 @@ const ARTIFACT_PUBLISH_SHAPE: &[&str] = &[
     "files_written",
     "icon",
     "liveSubscription",
+    "owned",
     "path",
     "seq",
     "title",
@@ -1602,8 +1606,9 @@ const ARTIFACT_PUBLISH_SHAPE: &[&str] = &[
 /// `preferredContract` and `read` sit inside `stored`, not beside it. One of the 17 ends with
 /// `editsApplied`, an edit of the artifact by `old_str`/`new_str` (client 2.1.303): it is in this
 /// array so that record stays in the shape, and it is READ (#s182, `TOOL_RESULT_READ`): the card
-/// draws the edit's diff and says when fewer edits were applied than sent. REVISIT: `owned` arriving false, or a plain publish from a file
-/// ([`ARTIFACT_PUBLISH_SHAPE`]) reporting `owned` beside `icon`, which no client has written yet.
+/// draws the edit's diff and says when fewer edits were applied than sent. REVISIT: `owned` arriving
+/// false. (A plain publish from a file reporting `owned` beside `icon`, once a REVISIT here, was met
+/// with client 2.1.310 and joined [`ARTIFACT_PUBLISH_SHAPE`], #s268.)
 const ARTIFACT_TYPED_PUBLISH_SHAPE: &[&str] = &[
     "artifact_id",
     "audience",
@@ -1644,6 +1649,18 @@ const ARTIFACT_OPEN_SHAPE: &[&str] = &["artifact_id", "opened", "title", "url"];
 /// carries both whole. REVISIT: a read whose text does not carry the files (a binary or a very
 /// large file), where `saved_to` would be the reader's only handle and the card should offer it.
 const ARTIFACT_READ_SHAPE: &[&str] = &["files_read"];
+
+/// The whole of an ArtifactComments `watch` result (#s268, client 2.1.310, one record, measured
+/// 2026-10-26; the call input is `{action: "watch", url}`): `{watch: {url, watching, outcome,
+/// task_id, since, token_expires_at, auto_reply}}`, a string url, a boolean, two strings, a short
+/// string id, two integers (epoch milliseconds) and a string. Met as `watching` true, `outcome`
+/// `already_watching` (the publish had started a live subscription) and `auto_reply` `armed`. The
+/// card is the generic tool card, which draws the result TEXT, and the text says the session is
+/// watching the artifact, what the watch tracks and that auto-replies are armed; `task_id`, `since`
+/// and `token_expires_at` are the client's bookkeeping for the connection. REVISIT: `watching`
+/// false, an `outcome` or `auto_reply` whose result text does not say what happened, or a key
+/// beside `watch`.
+const ARTIFACT_COMMENTS_WATCH_SHAPE: &[&str] = &["watch"];
 
 /// Every key an Artifact list result was met with (#s62, client 2.1.288, one record): `{artifacts:
 /// array, scope: string, pins_enabled: boolean}`. `pins_enabled` is a service feature flag (whether
@@ -1817,6 +1834,10 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // Artifact's publish result (#325): `icon` is a generic word, so it is known only in the
     // publish's own shape; the adapter takes the word from the call's input, not from here.
     ("icon", ARTIFACT_PUBLISH_SHAPE),
+    // #s268 (client 2.1.310): a publish from a file now carries `owned` beside `icon`, true as in a
+    // create and a typed publish. Known only in this shape; adding it also silences `icon` again,
+    // which came back beside it.
+    ("owned", ARTIFACT_PUBLISH_SHAPE),
     // #s87 (client 2.1.296): a publish's `files_written` repeats the call input's `files` map with a
     // digest per file, and an open's `opened` is a boolean its result text states. Both are generic
     // enough to mean something else on another tool, so each is known only in its own shape;
@@ -1838,6 +1859,10 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // #s181 (client 2.1.303): an Artifact read's whole result is `{files_read}`, whose text the card
     // draws in full. Known only as the whole result, as CronList's `jobs` is.
     ("files_read", ARTIFACT_READ_SHAPE),
+    // #s268 (client 2.1.310): an ArtifactComments watch's whole result is `{watch}`, connection
+    // bookkeeping beside what the result text already says. `watch` is a generic word, so it is
+    // known only as the whole result, never on the flat ignored list.
+    ("watch", ARTIFACT_COMMENTS_WATCH_SHAPE),
     // Artifact's list result (#s62): `pins_enabled` is an account's feature flag, and a word
     // another tool could use for anything, so it is known only in the list's own shape.
     ("pins_enabled", ARTIFACT_LIST_SHAPE),
@@ -8819,6 +8844,37 @@ mod tests {
             unknown_tool_result_keys(&elsewhere),
             vec!["icon", "somethingNew"],
             "outside the publish shape, icon is reported with what it came beside"
+        );
+        // #s268: since client 2.1.310 a publish from a file also says it is the caller's own.
+        let mut owned = publish.clone();
+        owned["owned"] = serde_json::json!(true);
+        assert!(
+            unknown_tool_result_keys(&owned).is_empty(),
+            "owned beside icon is known whole: {:?}",
+            unknown_tool_result_keys(&owned)
+        );
+    }
+
+    /// #s268: an ArtifactComments `watch` result (client 2.1.310) is known whole, and `watch` beside
+    /// a key from outside its shape is reported.
+    #[test]
+    fn an_artifact_comments_watch_result_is_known_in_its_own_shape() {
+        let watch = serde_json::json!({
+            "watch": {
+                "url": "https://example.test/artifact/x", "watching": true,
+                "outcome": "already_watching", "task_id": "t1", "since": 1_700_000_000_000_u64,
+                "token_expires_at": 1_700_000_900_000_u64, "auto_reply": "armed"
+            }
+        });
+        assert!(
+            unknown_tool_result_keys(&watch).is_empty(),
+            "a whole watch result is known: {:?}",
+            unknown_tool_result_keys(&watch)
+        );
+        assert_eq!(
+            unknown_tool_result_keys(&serde_json::json!({"watch": {}, "stdout": "ok"})),
+            vec!["watch"],
+            "outside its shape, watch is reported"
         );
     }
 
