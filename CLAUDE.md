@@ -313,6 +313,7 @@ writers when counting growth ambiguity. Native one-shot claims reserve their ses
 legacy time pairing and stay excluded from the directory's newest/sibling candidates.
 Contradicted growth proofs and their growth timestamps are discarded before matching,
 so a later missing record requires a new transcript advancement to prove ownership again.
+This also expires pending growth that had not yet produced a PID proof.
 Current native identity cannot narrow the possible writers during an earlier growth window.
 Rejected identity still counts as an existing process in its project, including for unlinked
 headless workers: it blocks background resume and legacy pane sends without granting a pane.

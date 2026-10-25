@@ -1238,6 +1238,20 @@ impl Index {
         // the stored ownership and its old growth timestamp. Missing evidence on a later scan
         // must wait for new transcript advancement before growth can prove ownership again.
         for (sid, row) in &mut st.rows {
+            // Pending growth has the same lifetime as a banked proof. Even when ambiguity
+            // prevented a proof, an incompatible native sighting refutes using that old write
+            // on a later Missing scan. An unknown cwd cannot rule out this project.
+            let native_contradiction = row.grew_at.is_some()
+                && row.agent == Agent::CLAUDE
+                && row.cwd.as_deref().is_some_and(|cwd| {
+                    st.procs.iter().any(|p| {
+                        p.cwd.as_deref().is_none_or(|actual| actual == cwd)
+                            && !p.native_session.permits(sid)
+                    })
+                });
+            if native_contradiction {
+                row.grew_at = None;
+            }
             if let Some((pid, cwd)) = &row.proved_pid {
                 let still = st.procs.iter().any(|p| {
                     p.pid == *pid
@@ -5494,6 +5508,88 @@ mod tests {
             st.rows["growing"].proved_pid.is_none(),
             "current identity cannot narrow historical growth ambiguity"
         );
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn native_registry_unproved_growth_expires_before_identity_disappears() {
+        use crate::claude_registry::Identity;
+        let scratch =
+            std::env::temp_dir().join(format!("cm-registry-pending-growth-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let old = "11111111-2222-4333-8444-555555555555";
+        let current = "22222222-2222-4333-8444-555555555555";
+        let cwd = "/fixture/project";
+        for (identity, missing_cwd) in [
+            (Identity::Verified(current.into()), false),
+            (Identity::Rejected, false),
+            (Identity::Verified(current.into()), true),
+            (Identity::Rejected, true),
+        ] {
+            let mut procs = parse_ps("700 claude\n");
+            procs[0].pane = Some("%0".into());
+            procs[0].tmux_sock = Some("fixture".into());
+            if !missing_cwd {
+                procs[0].cwd = Some(cwd.into());
+            }
+            procs[0].native_session = identity;
+            let mut st = State {
+                procs,
+                ..Default::default()
+            };
+            let mut past = growth_row(cwd, true);
+            past.tree_mtime = Some(SystemTime::now() - Duration::from_secs(10));
+            st.rows.insert(old.into(), past);
+            let mut now = growth_row(cwd, false);
+            now.tree_mtime = Some(SystemTime::now());
+            st.rows.insert(current.into(), now);
+            idx.prove_by_growth(&mut st);
+            let first = idx.assemble(&st, &mut Vec::new());
+            assert!(registry_row(&first, old).get("pid").is_none());
+            st.procs[0].native_session = Identity::Missing;
+            st.procs[0].cwd = Some(cwd.into());
+            idx.prove_by_growth(&mut st);
+            let mut facts = Vec::new();
+            let next = idx.assemble(&st, &mut facts);
+            assert!(registry_row(&next, old).get("pid").is_none(),
+                "an unproved pre-contradiction write cannot gain authority after identity disappears");
+            st.send_links = facts
+                .iter()
+                .map(|f| {
+                    (
+                        f.sid.clone(),
+                        SendLink {
+                            pid: f.pid,
+                            pane: f.pane.clone(),
+                            confirmed: f.confirmed,
+                            named: f.named,
+                        },
+                    )
+                })
+                .collect();
+            assert!(st.send_links[old].pid.is_none());
+            assert_eq!(st.send_links[current].pid, Some(700));
+            assert!(
+                !project_has_other_live(
+                    current,
+                    Some(cwd),
+                    &st.send_links,
+                    |_| Some(cwd.into()),
+                    |_| None
+                ),
+                "no phantom sibling reaches the send guard"
+            );
+            let following = idx.assemble(&st, &mut Vec::new());
+            assert_eq!(registry_row(&following, current)["injectable"], true);
+            st.rows.get_mut(old).unwrap().grew_at = Some(Instant::now());
+            idx.prove_by_growth(&mut st);
+            assert_eq!(
+                st.rows[old].proved_pid.as_ref().map(|(pid, _)| *pid),
+                Some(700)
+            );
+        }
         std::fs::remove_dir_all(scratch).unwrap();
     }
 
