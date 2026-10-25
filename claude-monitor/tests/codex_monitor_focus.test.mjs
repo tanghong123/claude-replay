@@ -21,9 +21,11 @@ for (const shared of [false, true]) test(`${shared ? "shared" : "ordinary"} phon
       dockCompose: { classList: { toggle() {} }, setAttribute() {} },
       app: { classList: { toggle: (name, value) => calls.push([name, value]) } },
       byId: () => ({ textContent: "Session" }), composeNote: {}, fitCompose: () => calls.push("ordinary-fit"),
+      placeDeskCompose: () => calls.push("desk-place"),
     };
     assert.doesNotThrow(() => vm.runInNewContext(callback, scope));
-    assert.deepEqual(calls.splice(0), [["composing", shared ? active !== outside : true], shared ? "shared-fit" : "ordinary-fit"]);
+    // #s245: the desktop's placement follows every fit (it stands down on a phone and in native mode).
+    assert.deepEqual(calls.splice(0), [["composing", shared ? active !== outside : true], shared ? "shared-fit" : "ordinary-fit", "desk-place"]);
     // #s236: the phone's note is the foot's one line, nothing added.
     if (!shared) assert.equal(scope.composeNote.textContent, "Session");
   }

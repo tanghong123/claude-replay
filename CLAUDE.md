@@ -96,6 +96,13 @@ session's name alone, and the reference shell's "Write to this session ·", stat
 tmux" and inert "＋" are hidden in `production.css` (the generated files untouched). A send that goes
 empties the field and keeps the box (and, on the desktop, the focus); one that is refused keeps the
 draft; only ✕ closes it.
+**On a desktop the open box keeps to the session's reading column** (#s245, Hong: it was centred on the
+whole workspace, so with the right pane open it lay over the outline, and stood 169px tall over the
+transcript's end): `placeDeskCompose` (`app.js`) sets its edges from the transcript's text width inside
+its column; it is one caption line (name, target, ✕) over ONE line of field that grows with the draft
+to a cap and then scrolls; the transcript's end is padded above it (`--compose-room`), a reader at the
+end is kept there (`convergeBottom`), and the jump to the end rides above it. Native mode lays out its
+own (`a_desktop_compose_box_keeps_to_the_session_column_and_grows_with_its_draft`).
 **Codex native mode's composer is resident** (the owner): once native mode is
 enabled, its compact composer stays visible on desktop and phone with no close action;
 thread text and image drafts belong to the selected thread. The ordinary writer keeps the

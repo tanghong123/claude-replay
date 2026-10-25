@@ -12597,6 +12597,216 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
     );
 }
 
+/// #s245: where the desktop's compose box sits against the session's column — the box, the
+/// transcript (the column it must keep inside), the outline beside it, the field and how much of its
+/// draft it shows, the last record drawn, and how far the transcript is from its end.
+const DESKTOP_COMPOSE_GEOMETRY: &str = "(function(){ var R = function (e) { if (!e) return null; var b = e.getBoundingClientRect(); return { l: Math.round(b.left), t: Math.round(b.top), r: Math.round(b.right), b: Math.round(b.bottom), h: Math.round(b.height) }; }; var c = document.getElementById('composer'), t = document.querySelector('.session-main>.transcript'), n = document.getElementById('sessionNavigator'), i = document.getElementById('composeInput'), w = document.querySelector('.transcript .virtual-window'), cs = getComputedStyle(i); var rows = w ? [...w.children].filter(function (e) { return e.getBoundingClientRect().height > 0; }) : []; return JSON.stringify({ w: innerWidth, h: innerHeight, shown: c.classList.contains('production-show'), box: R(c), col: R(t), nav: R(n), field: R(i), fieldH: i.clientHeight, fieldScroll: i.scrollHeight, lh: parseFloat(cs.lineHeight), last: R(rows[rows.length - 1]), gap: Math.round(t.scrollHeight - t.clientHeight - t.scrollTop), jump: R(document.getElementById('jumpToBottom')) }); })()";
+
+/// #s245 (Hong, 2026-10-25, a screenshot at about 2000px wide): the open compose box on a desktop
+/// spanned the outline column to the right edge and stood tall over the transcript's last lines.
+/// It keeps to the session's column, at a wide window and at narrow ones, never over the outline;
+/// empty it is one line of field under its one-line caption; it grows with the draft to a cap and
+/// then scrolls inside; and the transcript ends ABOVE it, pushed up rather than covered, as Claude
+/// Code's own composer does — at rest, with a few lines and at the cap, the last record drawn sits
+/// above the box. The phone's reply box (#s39) is its own layout and its cases hold it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_desktop_compose_box_keeps_to_the_session_column_and_grows_with_its_draft() {
+    let _serial = serial();
+    let base = harness::base("desktop-compose");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        PHONE_SID,
+        &harness::long_session(24, harness::Shape::default()),
+    );
+    stores.claude_tasks(
+        PHONE_SID,
+        &[
+            ("1", "fit the box to the column", "in_progress"),
+            ("2", "grow it with the draft", "pending"),
+        ],
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3245, &base, Some(&stores), true);
+    let (_b, tab) = desktop_tab(&m);
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "document.getElementById('composeFab').click(); 'ok'");
+    let geometry = |what: &str| -> serde_json::Value {
+        harness::pause(what, Duration::from_millis(500));
+        let g = harness::eval(&tab, DESKTOP_COMPOSE_GEOMETRY);
+        let g: serde_json::Value = serde_json::from_str(g.as_str().unwrap_or("{}")).unwrap();
+        // For a person to look at: each state, in each theme.
+        if let Some(dir) = std::env::var_os("CR_COMPOSE_SCREENSHOT_DIR") {
+            use headless_chrome::protocol::cdp::Page;
+            for theme in ["light", "dark"] {
+                harness::eval(
+                    &tab,
+                    &format!("document.documentElement.dataset.theme = '{theme}'; 'ok'"),
+                );
+                harness::pause("the theme to paint", Duration::from_millis(200));
+                let png = tab
+                    .capture_screenshot(Page::CaptureScreenshotFormatOption::Png, None, None, true)
+                    .unwrap();
+                let name = format!("compose-{}-{}-{theme}.png", g["w"], what.replace(' ', "-"));
+                std::fs::write(std::path::Path::new(&dir).join(name), png).unwrap();
+            }
+            harness::eval(&tab, "delete document.documentElement.dataset.theme; 'ok'");
+        }
+        g
+    };
+    let type_lines = |n: usize| {
+        let text = (1..=n)
+            .map(|i| format!("line {i} of the draft"))
+            .collect::<Vec<_>>()
+            .join("\\n");
+        harness::eval(&tab, &format!("(function(){{ var i = document.getElementById('composeInput'); i.focus(); i.value = '{text}'; i.dispatchEvent(new Event('input', {{ bubbles: true }})); return 'ok'; }})()"));
+    };
+    let px = |g: &serde_json::Value, a: &str, b: &str| g[a][b].as_f64().unwrap_or(f64::NAN);
+    // Hong's own layout too: a wide window with the right pane open, where the session's column
+    // is narrow and the box centred on the workspace lay half over the outline.
+    for (w, h, pane) in [
+        (2000.0, 1100.0, false),
+        (2000.0, 1100.0, true),
+        (1280.0, 900.0, false),
+        (1000.0, 800.0, false),
+    ] {
+        let open = harness::eval(
+            &tab,
+            "!document.getElementById('app').classList.contains('preview-off')",
+        );
+        if open.as_bool() != Some(pane) {
+            harness::eval(
+                &tab,
+                &format!(
+                    "document.getElementById('{}').click(); 'ok'",
+                    if pane { "previewBtn" } else { "closePreview" }
+                ),
+            );
+            harness::until(
+                &tab,
+                &format!(
+                    "!document.getElementById('app').classList.contains('preview-off') === {pane}"
+                ),
+                "the right pane to open or close",
+                Duration::from_secs(10),
+                "document.getElementById('app').className",
+            );
+        }
+        let w = if pane { w - 1.0 } else { w };
+        harness::resize(&tab, w, h);
+        harness::until(
+            &tab,
+            &format!("Math.abs(innerWidth - {w}) < 40"),
+            "the window to take its width",
+            Duration::from_secs(5),
+            "innerWidth",
+        );
+        // The page hears a resize in a frame and remeasures after it; a jump sent into that is
+        // overtaken by the remeasure's own anchor, and the reader would no longer be at the end.
+        harness::pause("the page to take the new width", Duration::from_millis(700));
+        harness::jump_to_end(&tab, harness::Surface::AppShell);
+        harness::until(
+            &tab,
+            "(function(){ var t = document.querySelector('.session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop <= 2; })()",
+            "the reader to be at the end",
+            Duration::from_secs(5),
+            "(function(){ var t = document.querySelector('.session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop; })()",
+        );
+        type_lines(0);
+        let empty = geometry("the box to settle empty");
+        eprintln!("#s245 {w}x{h} empty: {empty}");
+        assert_eq!(empty["shown"], true, "{empty}");
+        // Inside the session's column, and never over the outline beside it.
+        assert!(
+            px(&empty, "box", "l") >= px(&empty, "col", "l") - 1.0
+                && px(&empty, "box", "r") <= px(&empty, "col", "r") + 1.0,
+            "the box keeps to the session's column at {w}px: {empty}"
+        );
+        if px(&empty, "nav", "r") - px(&empty, "nav", "l") > 10.0 {
+            assert!(
+                px(&empty, "box", "l") >= px(&empty, "nav", "r") - 1.0,
+                "the box stays off the outline at {w}px: {empty}"
+            );
+        }
+        // Empty: one line of field under a one-line caption.
+        let lh = empty["lh"].as_f64().unwrap_or(20.0);
+        assert!(
+            px(&empty, "field", "h") <= lh + 18.0 && px(&empty, "box", "h") <= 96.0,
+            "the empty box is one line of field at {w}px: {empty}"
+        );
+        // The transcript ends above the box: the last record drawn is in view, and over it.
+        let ends_above = |g: &serde_json::Value, what: &str| {
+            let held = g["gap"].as_f64().unwrap_or(99.0) <= 2.0
+                && px(g, "last", "b") <= px(g, "box", "t") + 1.0
+                && px(g, "last", "b") > px(g, "col", "t");
+            if !held {
+                let states = harness::eval(
+                    &tab,
+                    "JSON.stringify((window.__viewportHistory || { states: [] }).states.slice(-6))",
+                );
+                panic!(
+                    "{what} at {w}px: the transcript ends above the box: {g}\nengine: {states:?}"
+                );
+            }
+        };
+        ends_above(&empty, "empty");
+        // A few lines: the field grows to show them all, and the transcript is pushed up.
+        type_lines(4);
+        let four = geometry("the box to grow with four lines");
+        eprintln!("#s245 {w}x{h} four: {four}");
+        assert!(
+            px(&four, "field", "h") >= px(&empty, "field", "h") + 3.0 * lh - 2.0
+                && four["fieldScroll"].as_f64().unwrap_or(0.0)
+                    <= four["fieldH"].as_f64().unwrap_or(0.0) + 1.0,
+            "four lines are all in sight at {w}px: {four}"
+        );
+        ends_above(&four, "four lines");
+        // A reader who has scrolled up is offered the way back to the end above the box, not under it.
+        harness::scroll_by(&tab, harness::Surface::AppShell, -400);
+        let jump = "(function(){ var j = document.getElementById('jumpToBottom'), c = document.getElementById('composer').getBoundingClientRect(), r = j.getBoundingClientRect(), at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return j.classList.contains('show') + '|' + (r.bottom <= c.top || r.right <= c.left || r.left >= c.right) + '|' + (!!at && j.contains(at)); })()";
+        harness::until(
+            &tab,
+            &format!("{jump} === 'true|true|true'"),
+            "the jump to the end to show clear of the box",
+            Duration::from_secs(5),
+            jump,
+        );
+        harness::jump_to_end(&tab, harness::Surface::AppShell);
+        harness::until(
+            &tab,
+            "(function(){ var t = document.querySelector('.session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop <= 2; })()",
+            "the reader to be back at the end",
+            Duration::from_secs(5),
+            "(function(){ var t = document.querySelector('.session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop; })()",
+        );
+        // A long draft: the field stops at its cap and scrolls inside.
+        type_lines(60);
+        let long = geometry("the box to reach its cap");
+        eprintln!("#s245 {w}x{h} long: {long}");
+        assert!(
+            long["fieldScroll"].as_f64().unwrap_or(0.0)
+                > long["fieldH"].as_f64().unwrap_or(0.0) + lh
+                && px(&long, "box", "h") <= 0.5 * px(&long, "col", "h"),
+            "a long draft scrolls inside a capped field at {w}px: {long}"
+        );
+        ends_above(&long, "a long draft");
+        // Emptied, it is one line again.
+        type_lines(0);
+        let again = geometry("the box to shrink back");
+        assert!(
+            (px(&again, "box", "h") - px(&empty, "box", "h")).abs() <= 1.0,
+            "emptied, the box is as short as it began at {w}px: {again}"
+        );
+        ends_above(&again, "emptied");
+    }
+}
+
 /// #s237: the page's own world for a session in a herdr pane — `/api/sessions` says the phone's
 /// session is a live, consented Claude session in herdr pane w1:p2 that takes images, and
 /// `/api/send` is answered here and recorded (`window.__sent`), so nothing is typed anywhere.
@@ -12741,11 +12951,13 @@ fn a_herdr_session_takes_images_from_the_compose_box() {
     );
     harness::eval(&desk, "document.getElementById('composeFab').click(); 'ok'");
     harness::eval(&desk, ADD_IMAGES);
-    let desktop = "(function(){ var a = document.getElementById('composeAttach'), foot = document.querySelector('#composer .compose-foot'), s = document.getElementById('composeImages').getBoundingClientRect(), f = document.getElementById('composeInput').getBoundingClientRect(); return !a.hidden + '|' + (foot.firstElementChild === a) + '|' + document.querySelectorAll('#composeImages img').length + '|' + (s.bottom <= f.top + 1); })()";
+    // #s245: the desktop's field is one line with the attach control inside it at its left, clear
+    // of the text, and reachable there.
+    let desktop = "(function(){ var a = document.getElementById('composeAttach'), i = document.getElementById('composeInput'), foot = document.querySelector('#composer .compose-foot'), s = document.getElementById('composeImages').getBoundingClientRect(), f = i.getBoundingClientRect(), r = a.getBoundingClientRect(), at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !a.hidden + '|' + (foot.firstElementChild === a) + '|' + document.querySelectorAll('#composeImages img').length + '|' + (s.bottom <= f.top + 1) + '|' + (r.left >= f.left - 8 && r.right <= f.left + parseFloat(getComputedStyle(i).paddingLeft) + 1 && r.top >= f.top - 1 && r.bottom <= f.bottom + 1 && !!at && a.contains(at)); })()";
     harness::until(
         &desk,
-        &format!("{desktop} === 'true|true|2|true'"),
-        "the desktop's attach control first in the foot and both images above the field",
+        &format!("{desktop} === 'true|true|2|true|true'"),
+        "the desktop's attach control first in the foot, inside the field at its left, and both images above the field",
         Duration::from_secs(5),
         desktop,
     );

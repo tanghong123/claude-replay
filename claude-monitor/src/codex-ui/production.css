@@ -27,6 +27,28 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
 #app .compose-image img{display:block;width:100%;height:100%;object-fit:cover}
 #app .compose-image-loading{display:grid;place-content:center;height:100%;font-size:10px;color:var(--sub)}
 #app .compose-image-remove{position:absolute;right:0;top:0;width:24px;height:24px;padding:0;border:0;border-radius:0 0 0 8px;background:var(--bg);color:var(--ink);font-size:18px;line-height:1;cursor:pointer}
+/* #s245 (Hong, 2026-10-25, at about 2000px): on a desktop the open box was centred on the whole
+   workspace, so it lay over the outline column, and stood 169px tall over the transcript's last
+   lines. It keeps to the session's reading column now (`--compose-x`/`-w`/`-bottom`, measured by
+   `placeDeskCompose` in app.js), one caption line (the session's name, where the message goes, ✕)
+   over ONE line of field that grows with the draft to a cap and then scrolls; and the transcript
+   ends above it (`--compose-room`), pushed up rather than covered. Native mode lays out its own. */
+@media(min-width:761px) and (min-height:501px),(min-width:761px) and (pointer:fine){
+  body:not([data-shared-codex]) #app .workspace .composer.production-show{left:var(--compose-x,50%);bottom:var(--compose-bottom,17px);width:var(--compose-w,min(880px,calc(100% - 44px)));max-width:none;min-height:0;display:grid;grid-template-columns:fit-content(45%) minmax(0,1fr) auto auto;grid-template-areas:"title target revoke close" "images images images images" "field field field field";align-items:center;column-gap:8px;row-gap:1px;padding:4px 7px 7px 13px;border-radius:14px}
+  body:not([data-shared-codex]) #app .composer.production-show>:is(.composer-head,.compose-foot){display:contents}
+  body:not([data-shared-codex]) #app .composer.production-show>.compose-note{display:none}
+  body:not([data-shared-codex]) #app .composer.production-show #composerTitle{grid-area:title;min-width:0;font-size:11px}
+  body:not([data-shared-codex]) #app .composer.production-show #composeTarget{grid-area:target;min-width:0;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  body:not([data-shared-codex]) #app .composer.production-show .production-revoke{grid-area:revoke}
+  body:not([data-shared-codex]) #app .composer.production-show #closeComposer{grid-area:close;width:24px;height:24px}
+  body:not([data-shared-codex]) #app .composer.production-show .compose-images{grid-area:images}
+  body:not([data-shared-codex]) #app .composer.production-show textarea{grid-area:field;box-sizing:border-box;min-height:0;max-height:min(264px,32vh);padding:6px 40px 6px 0;font-size:14px;line-height:21px;overflow-y:auto}
+  body:not([data-shared-codex]) #app .composer.production-show.attachable textarea{padding-left:32px}
+  body:not([data-shared-codex]) #app .composer.production-show #sendBtn{grid-area:field;justify-self:end;align-self:end;width:30px;height:30px;margin:0 0 1px}
+  body:not([data-shared-codex]) #app .composer.production-show .compose-attach{grid-area:field;justify-self:start;align-self:end;margin:0 0 1px -6px}
+  body:not([data-shared-codex]) #app .workspace.desk-composing .transcript-inner{padding-bottom:calc(var(--compose-room,140px) + 24px)}
+  body:not([data-shared-codex]) #app .workspace.desk-composing .jump-to-bottom{bottom:var(--compose-lift,150px)}
+}
 
 /* Explicit session debug identities, revealed from the header title without changing the demo shell. */
 .session-heading{position:relative}.session-heading>#sessionTitle{max-width:290px;padding:4px 5px;margin-left:-5px;border-radius:6px;outline:0;cursor:default}.session-heading>#sessionTitle:hover,.session-heading>#sessionTitle:focus-visible,.session-heading>#sessionTitle[aria-expanded="true"]{background:var(--hover)}.session-heading>#sessionTitle:focus-visible{box-shadow:0 0 0 2px color-mix(in srgb,var(--primary) 18%,transparent)}.session-copy-menu{position:absolute;left:-5px;top:calc(100% + 12px);z-index:70;width:min(330px,calc(100vw - 32px));padding:6px;border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb,var(--bg) 98%,transparent);box-shadow:0 14px 38px rgba(34,43,73,.14);opacity:0;visibility:hidden;transform:translateY(-4px);transition:opacity .12s ease,transform .12s ease,visibility .12s;pointer-events:none}.session-copy-menu:before{content:"";position:absolute;left:0;right:0;top:-13px;height:13px}.session-copy-menu.open{opacity:1;visibility:visible;transform:none;pointer-events:auto}.session-copy-caption{padding:5px 8px 4px;color:var(--faint);font-size:9px;font-weight:680;letter-spacing:.08em;text-transform:uppercase}.session-copy-menu>button{width:100%;min-height:45px;padding:7px 8px;border-radius:8px;background:transparent;display:grid;grid-template-columns:18px minmax(0,1fr);align-items:center;gap:8px;text-align:left;color:var(--sub);cursor:pointer}.session-copy-menu>button:hover:not(:disabled),.session-copy-menu>button:focus-visible{background:var(--hover);color:var(--ink);outline:0}.session-copy-menu>button:disabled{opacity:.48;cursor:default}.session-copy-menu>button>.icon{width:14px;height:14px;color:var(--faint)}.session-copy-menu>button span,.session-copy-menu>button strong,.session-copy-menu>button small{display:block;min-width:0}.session-copy-menu>button strong{font-size:11px;font-weight:620}.session-copy-menu>button small{margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--faint);font:9px var(--mono)}@media(max-width:700px){.session-heading>#sessionTitle{max-width:42vw}.session-copy-menu{position:fixed;left:10px;top:51px;width:min(330px,calc(100vw - 20px))}}
