@@ -1792,7 +1792,12 @@ pub fn launch_within(
         ));
     });
     match rx.recv_timeout(patience) {
-        Ok(Ok(browser)) => Ok(browser),
+        Ok(Ok(browser)) => {
+            if let Some(pid) = browser.get_process_id() {
+                profiles().lock().unwrap().insert(pid, profile);
+            }
+            Ok(browser)
+        }
         Ok(Err(e)) => Err(format!("chrome did not launch: {e}")),
         Err(_) => Err(format!(
             "chrome printed no DevTools address in {:.0}s; killed its {} process(es) (load {})",
@@ -1844,11 +1849,133 @@ fn browser_profile() -> PathBuf {
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).unwrap();
+    give_downloads_a_home(&dir);
     case_root(&dir);
     dir
 }
 
 const BROWSER_PROFILE_MARK: &str = "cr-browser-chrome-";
+
+/// The folder inside a profile its browser saves downloads to.
+const DOWNLOADS: &str = "downloads";
+
+/// Point the profile's downloads at a folder inside it (#s254), before the browser starts. A fresh
+/// profile saves to the user's own `~/Downloads`, and headless Chrome is no exception: every suite
+/// run left a 9 MB `tour (N).mp4` there (the #374 film, which a case really downloads) and a
+/// `.crdownload` stub, 87 and 81 of them before anyone noticed. The profile's preference is read
+/// at launch, so it covers every tab of the browser however the case opens it, and the folder goes
+/// with the profile, which is a case root.
+fn give_downloads_a_home(profile: &Path) {
+    let downloads = profile.join(DOWNLOADS);
+    std::fs::create_dir_all(&downloads).unwrap();
+    std::fs::create_dir_all(profile.join("Default")).unwrap();
+    let prefs = serde_json::json!({
+        "download": { "default_directory": downloads, "prompt_for_download": false, "directory_upgrade": true },
+        "savefile": { "default_directory": downloads },
+    });
+    std::fs::write(
+        profile.join("Default").join("Preferences"),
+        prefs.to_string(),
+    )
+    .unwrap();
+}
+
+/// Each launched browser's profile, by the browser's pid.
+fn profiles() -> &'static std::sync::Mutex<std::collections::HashMap<u32, PathBuf>> {
+    static PROFILES: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<u32, PathBuf>>,
+    > = std::sync::OnceLock::new();
+    PROFILES.get_or_init(Default::default)
+}
+
+/// Where `browser` saves its downloads: the folder inside its own profile.
+pub fn downloads(browser: &headless_chrome::Browser) -> PathBuf {
+    let pid = browser
+        .get_process_id()
+        .expect("a browser this harness launched");
+    profiles()
+        .lock()
+        .unwrap()
+        .get(&pid)
+        .expect("a browser this harness launched")
+        .join(DOWNLOADS)
+}
+
+/// Wait until `browser` has saved `name` whole — the file there and no `.crdownload` beside it —
+/// and answer its path.
+pub fn until_downloaded(
+    browser: &headless_chrome::Browser,
+    name: &str,
+    timeout: Duration,
+) -> PathBuf {
+    let dir = downloads(browser);
+    let end = Instant::now() + timeout;
+    loop {
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if names.iter().any(|n| n == name) && !names.iter().any(|n| n.ends_with(".crdownload")) {
+            return dir.join(name);
+        }
+        assert!(
+            Instant::now() < end,
+            "{name} never finished downloading into {}: {names:?}",
+            dir.display()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The developer's `~/Downloads` by name, to show a case saved nothing there (#s254).
+pub struct HomeDownloads(Option<std::collections::BTreeSet<String>>);
+
+impl HomeDownloads {
+    fn list() -> Option<std::collections::BTreeSet<String>> {
+        let dir = PathBuf::from(std::env::var_os("HOME")?).join("Downloads");
+        match std::fs::read_dir(&dir) {
+            Ok(entries) => Some(
+                entries
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect(),
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Default::default()),
+            Err(e) => {
+                eprintln!(
+                    "harness: cannot read {} ({e}); not checking that it gains nothing",
+                    dir.display()
+                );
+                None
+            }
+        }
+    }
+
+    pub fn now() -> Self {
+        Self(Self::list())
+    }
+
+    /// Fail if, since [`HomeDownloads::now`], `~/Downloads` gained a file named like `stem` or
+    /// an in-flight download (`.crdownload`). Only those, so a file the developer downloads
+    /// meanwhile is not taken for the case's.
+    pub fn assert_gained_nothing_like(&self, stem: &str) {
+        let (Some(before), Some(after)) = (&self.0, Self::list()) else {
+            return;
+        };
+        let gained: Vec<&String> = after
+            .difference(before)
+            .filter(|n| n.starts_with(stem) || n.ends_with(".crdownload"))
+            .collect();
+        assert!(
+            gained.is_empty(),
+            "a test browser saved into ~/Downloads: {gained:?}"
+        );
+    }
+}
 
 /// Kill the browsers a previous run left behind, once per process, before the first launch.
 ///
