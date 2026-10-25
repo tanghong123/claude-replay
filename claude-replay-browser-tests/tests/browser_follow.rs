@@ -12882,6 +12882,121 @@ fn a_desktop_compose_box_keeps_to_the_session_column_and_grows_with_its_draft() 
     );
 }
 
+/// #s247: a resume whose agent fails as it starts tells the page why. The monitor answered a resume
+/// the moment its process was spawned, so the page said "Resuming the session" while the agent had
+/// already stopped (a session it could not find, a login, a flag). It now watches the start: a
+/// failure is the send's answer, its draft kept; an agent still running is the "Resuming" it always
+/// was. A fake `claude` on the MONITOR's PATH alone records its argv, and a mode file says whether
+/// it fails.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_resume_that_fails_as_it_starts_tells_the_page_why() {
+    let _serial = serial();
+    let base = harness::base("resume-startup");
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        PHONE_SID,
+        &harness::long_session(6, harness::Shape::default()).replace(
+            "\"cwd\":\"/r\"",
+            &format!("\"cwd\":{:?}", repo.display().to_string()),
+        ),
+    );
+    let bin = base.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let (mode, argv) = (base.join("mode"), base.join("argv"));
+    std::fs::write(&mode, "fail").unwrap();
+    let fake = bin.join("claude");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{argv}'\nif [ \"$(cat '{mode}')\" = fail ]; then printf 'No conversation found with session ID: %s\\n' \"$2\" >&2; exit 1; fi\nsleep 4\n",
+            argv = argv.display(),
+            mode = mode.display()
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let m = harness::Monitor::spawn_with(
+        harness::Kind::V1,
+        3247,
+        &base,
+        Some(&stores),
+        true,
+        &[("PATH", path.as_str())],
+    );
+    let (_b, tab) = desktop_tab(&m);
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "document.getElementById('composeFab').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.querySelector('#composer .compose-target, #composer .compose-note, #composer') && /Resumes this session/.test(document.getElementById('composer').textContent)",
+        "the box to say it resumes this session",
+        Duration::from_secs(10),
+        "document.getElementById('composer').textContent",
+    );
+    let send = |text: &str| {
+        harness::eval(
+            &tab,
+            &format!("(function(){{ var i = document.getElementById('composeInput'); i.focus(); i.value = {text:?}; i.dispatchEvent(new Event('input', {{ bubbles: true }})); document.getElementById('sendBtn').click(); return 'ok'; }})()"),
+        );
+    };
+    let seen = "JSON.stringify({ toast: document.getElementById('toast').textContent, draft: document.getElementById('composeInput').value })";
+
+    // The agent stops at once: the page says why, and the draft stays for another try.
+    send("try the resume");
+    harness::until(
+        &tab,
+        &format!("/No conversation found with session ID: {PHONE_SID}/.test(document.getElementById('toast').textContent) && /exit status: 1/.test(document.getElementById('toast').textContent)"),
+        "the agent's own failure in place of \"Resuming the session\"",
+        Duration::from_secs(15),
+        seen,
+    );
+    assert_eq!(
+        harness::eval(&tab, "document.getElementById('composeInput').value"),
+        serde_json::Value::String("try the resume".into()),
+        "a resume that failed keeps its draft"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&argv).unwrap(),
+        format!("--resume\n{PHONE_SID}\n--dangerously-skip-permissions\n-p\n--\ntry the resume\n"),
+        "the resume was the agent's own shape, the prompt after --"
+    );
+
+    // The agent starts and keeps running: the send went, as before.
+    std::fs::write(&mode, "run").unwrap();
+    send("now it starts");
+    harness::until(
+        &tab,
+        "document.getElementById('toast').textContent === 'Resuming the session' && document.getElementById('composeInput').value === ''",
+        "a resume that started to read as one",
+        Duration::from_secs(15),
+        seen,
+    );
+    assert!(
+        std::fs::read_to_string(&argv)
+            .unwrap()
+            .ends_with("--\nnow it starts\n"),
+        "the second resume carried its own prompt"
+    );
+}
+
 /// #s248 (found by the review of #s245): a search step lands a match's record near the top and
 /// then checks the match itself is on screen. On a desktop with the compose box open, the box
 /// covers the transcript's foot, and a match deep in a tall record landed in that band counted

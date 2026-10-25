@@ -95,7 +95,13 @@ session", the desktop's caption (amber for a live pane, beside the session's nam
 phone's note alike, and the reference shell's "Write to this session ·", static "· writes to live
 tmux" and inert "＋" are hidden in `production.css` (the generated files untouched). A send that goes
 empties the field and keeps the box (and, on the desktop, the focus); one that is refused keeps the
-draft; only ✕ closes it.
+draft; only ✕ closes it. **A resume is watched as it starts** (#s247, `control::watch_resume`): the
+agent's stderr is drained and its first 3 s watched (a session it cannot find fails in 0.7 s for
+Claude Code, 2 s for codex, measured), so one that stops is the send's answer, its exit status and
+the end of what it said, where the page used to say "Resuming the session"; one still running is
+left to run and reaped by a thread of its own, its late failure one stderr line (the status, never
+its output); the prompt is never sent twice (`a_resume_that_fails_as_it_starts_tells_the_page_why`,
+a fake `claude` on the monitor's PATH).
 **On a desktop the open box keeps to the session's reading column** (#s245, Hong: it was centred on the
 whole workspace, so with the right pane open it lay over the outline, and stood 169px tall over the
 transcript's end): `placeDeskCompose` (`app.js`) sets its edges from the transcript's text width inside
