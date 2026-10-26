@@ -9369,6 +9369,50 @@ fn app_shell_lists_the_whole_session_before_the_head_lands() {
     );
 }
 
+/// #s276: a tap on a turn still coming is held until it arrives — unless the reader moves first.
+/// Here they tap turn 10 while the head is held, then scroll the tail: when the head lands they stay
+/// where they scrolled, on a tail turn, and turn 10 is not forced on them.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_held_turn_tap_gives_way_to_the_reader() {
+    let _serial = serial();
+    let (_m, _b, tab) = tail_first_world(2839, "tail-first-held-tap");
+    harness::until(
+        &tab,
+        "!!document.querySelector('#navigatorTurns .outline-turn-pending[data-turn-number=\"10\"]')",
+        "turn 10 listed from the index while still coming",
+        Duration::from_secs(10),
+        OUTLINE_TURNS,
+    );
+    tab.find_element("#navigatorTurns .outline-turn-pending[data-turn-number=\"10\"]")
+        .expect("turn 10's row")
+        .click()
+        .expect("tap it");
+    std::thread::sleep(Duration::from_millis(300));
+    harness::scroll_by(&tab, harness::Surface::AppShell, -400);
+    std::thread::sleep(Duration::from_millis(600));
+    let here = harness::sticky_turn(&tab, harness::Surface::AppShell).map(|t| t.0);
+    assert!(
+        here.is_some_and(|t| t > 50),
+        "the reader is in the tail: {here:?}"
+    );
+    harness::eval(&tab, "window.__releaseHead(); 1");
+    harness::until(
+        &tab,
+        HEAD_LANDED,
+        "the head to land",
+        Duration::from_secs(20),
+        OUTLINE_TURNS,
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    assert_eq!(
+        harness::sticky_turn(&tab, harness::Surface::AppShell).map(|t| t.0),
+        here,
+        "the reader stays where they scrolled; the held tap gave way"
+    );
+    assert_eq!(harness::eval(&tab, VIOLATIONS).as_str(), Some("[]"));
+}
+
 /// #314: a reader who has scrolled up INSIDE the tail keeps their place when the head lands in
 /// front of it — the same unit at the same pixel, ±1 — because the engine moves their position
 /// with the index space (option A), and the landing is not a move of theirs: they stay unpinned.

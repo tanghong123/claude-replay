@@ -848,10 +848,10 @@ function applyRecords({ records, meta, changedFrom, prepended }) {
   viewport.setUnits(recordState.units, changedUnit, shift);
   if (prepended) recordState.headIndex = null;
   landOnHash();
-  if (heldTurnJump && records[heldTurnJump.record]?.kind !== "pending") {
-    const held = heldTurnJump; heldTurnJump = null;
-    if (viewport.lastUserInput <= held.at) viewport.jumpToRecord(held.record, "turn");
-  }
+  // A held turn goes when the records under it are rewritten (a resync) or the reader moved;
+  // otherwise it is landed on as soon as `jumpToRecord` takes it, which it refuses while pending.
+  if (heldTurnJump && ((!prepended && changedFrom <= heldTurnJump.record) || viewport.lastUserInput > heldTurnJump.at)) heldTurnJump = null;
+  if (heldTurnJump && viewport.jumpToRecord(heldTurnJump.record, "turn")) heldTurnJump = null;
   // What arrived since the last apply is "new" only once the session is OPEN (#84): the first
   // apply after a reset is the session's own content — a re-open restored to a remembered
   // position is not following, and counting that batch said "11696 new messages" on a session
@@ -1343,6 +1343,8 @@ function renderNavigator() {
   const loading = recordState.units.some(unit => unit.type === "pending");
   // #s276: while the head is out, the turn index lists the turns it holds, so the pane is whole
   // from the first moment; a row whose records are still coming is marked, and a tap on it is held.
+  // Rows follow the UNITS (a held landing keeps the head pending there); the compaction ticks
+  // below follow the records they are read from.
   const index = loading ? recordState.headIndex : null;
   const owed = index ? index.turns.map(t => ({ at: t.r, unit: indexedTurn(t) })) : [];
   // #342: without the index, the turns drawn are the last few — the owner's 141-turn session read
@@ -1356,7 +1358,7 @@ function renderNavigator() {
   // for how it happened and the context size from → to, in the rows' own type, no prose — so a
   // session that compacted fifteen times reads as fifteen chapters. The tick jumps to the
   // compaction record like a turn row jumps to its turn.
-  const epochs = index ? index.compactions.map(c => ({ at: c.r, tick: compactionTick(c.head || {}), pending: true })) : [];
+  const epochs = (owedIndex()?.compactions || []).map(c => ({ at: c.r, tick: compactionTick(c.head || {}), pending: true }));
   recordState.records.forEach((record, i) => { if (record.kind === "compaction") epochs.push({ at: i, tick: compactionTick(record.head || {}) }); });
   const rows = [...owed, ...turns.map(unit => ({ at: unit.from, unit })), ...epochs].sort((a, b) => a.at - b.at);
   // #s138, Hong: a turn another session opened is told from the person's own, and one sender from
@@ -1574,7 +1576,7 @@ const navigatorClick = event => {
     heldTurnJump = null;
     // #s276: a turn the index listed whose records have not arrived is not a place to land yet
     // (`jumpToRecord` refuses the loading card): the page goes there when they do.
-    if (!viewport.jumpToRecord(record, "turn") && recordState.records[record]?.kind === "pending") {
+    if (!viewport.jumpToRecord(record, "turn") && turn.classList.contains("outline-turn-pending")) {
       heldTurnJump = { record, at: performance.now() };
       toast("Still loading — the page goes there when it arrives");
     }
@@ -2090,10 +2092,12 @@ function boxQuery() {
 function toolLetters() {
   return sessionToolLetters(sessionToolCounts());
 }
-/** The turn index while the records it answers for are still on their way here (#s276), else null:
- *  the records below its `upto` are the head's placeholders, so nothing it counts is counted twice. */
+/** The turn index while the records it answers for are still placeholders in the array the page
+ *  scans (#s276), else null — so nothing is counted twice. Not the units: while a landing is held
+ *  (#340) the store has already written the head into that array and the units still show it
+ *  pending. */
 function owedIndex() {
-  return recordState.units.some(unit => unit.type === "pending") ? recordState.headIndex : null;
+  return recordState.records[0]?.kind === "pending" ? recordState.headIndex : null;
 }
 /** How many calls of each tool the session holds: the records here, and the index's count of the
  *  ones still coming (#s276), so the letters and counts are the whole session's before it lands. */

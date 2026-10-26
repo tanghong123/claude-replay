@@ -193,22 +193,29 @@ impl Entry {
 }
 
 /// The sidecar and how far it reaches. Its lines are records `[0, lines)`, contiguous; `mark` is
-/// the log byte they cover through, so a line is appended only for the record that starts there.
+/// the log byte they cover through, so a line is appended only for the record that starts there;
+/// `bytes` is the sidecar's own length as this store left it, so an append that finds the file
+/// another length (a second process wrote it) starts it over rather than interleave with it.
 pub(crate) struct IndexFile {
     path: PathBuf,
     lines: usize,
     mark: u64,
+    bytes: u64,
+    file: Option<std::fs::File>,
 }
 
 impl IndexFile {
     /// Open the sidecar beside a log of `log_len` bytes at `log`, keeping what still describes it:
     /// a torn last line is cut, and lines that reach past the log or whose last record is no
-    /// longer the one they fingerprinted are dropped whole (they are rebuilt from the log).
+    /// longer the one they fingerprinted are dropped whole (they are rebuilt from the log). Every
+    /// read checks the whole sidecar again before it is served (`entries`).
     pub(crate) fn open(path: PathBuf, log: &Path, log_len: u64) -> Self {
         let mut ix = IndexFile {
             path,
             lines: 0,
             mark: 0,
+            bytes: 0,
+            file: None,
         };
         let Ok(bytes) = std::fs::read(&ix.path) else {
             return ix;
@@ -219,23 +226,23 @@ impl IndexFile {
             .iter()
             .rposition(|b| *b == b'\n')
             .map_or(0, |i| i + 1);
-        let keep = lines > 0
-            && serde_json::from_slice::<Entry>(&bytes[last..complete - 1])
-                .ok()
-                .is_some_and(|e| {
-                    e.end() <= log_len
-                        && read_at(log, e.o, e.n).is_some_and(|r| fingerprint(&r) == e.h)
-                });
-        if keep {
-            ix.lines = lines;
-            ix.mark = serde_json::from_slice::<Entry>(&bytes[last..complete - 1])
-                .map(|e| e.end())
-                .unwrap_or(0);
-            if complete < bytes.len() {
-                ix.truncate(complete as u64);
+        let tail = (lines > 0)
+            .then(|| serde_json::from_slice::<Entry>(&bytes[last..complete - 1]).ok())
+            .flatten()
+            .filter(|e| {
+                e.end() <= log_len && read_at(log, e.o, e.n).is_some_and(|r| fingerprint(&r) == e.h)
+            });
+        match tail {
+            Some(e) => {
+                ix.lines = lines;
+                ix.mark = e.end();
+                ix.bytes = complete as u64;
+                if complete < bytes.len() {
+                    ix.truncate(complete as u64);
+                }
             }
-        } else if !bytes.is_empty() {
-            ix.truncate(0);
+            None if !bytes.is_empty() => ix.truncate(0),
+            None => {}
         }
         ix
     }
@@ -244,35 +251,52 @@ impl IndexFile {
         if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&self.path) {
             let _ = f.set_len(len);
         }
+        self.bytes = len;
         if len == 0 {
             self.lines = 0;
             self.mark = 0;
         }
     }
 
-    fn write(&mut self, entries: &[Entry]) {
+    /// Append `entries` as lines; `false` when they were not written, and the sidecar has been
+    /// started over (an I/O error, or a file another process changed under this store).
+    fn write(&mut self, entries: &[Entry]) -> bool {
         if entries.is_empty() {
-            return;
+            return true;
         }
         let mut out = Vec::new();
         for e in entries {
             if serde_json::to_writer(&mut out, e).is_err() {
-                return;
+                return false;
             }
             out.push(b'\n');
         }
-        let written = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .and_then(|mut f| f.write_all(&out));
-        if written.is_ok() {
+        if self.file.is_none() {
+            self.file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+                .ok();
+        }
+        let ours = self
+            .file
+            .as_ref()
+            .and_then(|f| f.metadata().ok())
+            .is_some_and(|m| m.len() == self.bytes);
+        let written = ours
+            && self
+                .file
+                .as_mut()
+                .is_some_and(|f| f.write_all(&out).is_ok());
+        if written {
             self.lines += entries.len();
             self.mark = entries.last().map_or(self.mark, Entry::end);
+            self.bytes += out.len() as u64;
         } else {
-            // A half-written append would put lines out of step with records: start over.
+            self.file = None;
             self.truncate(0);
         }
+        written
     }
 
     /// Whether a record appended at `o` would be the sidecar's next line.
@@ -347,25 +371,49 @@ impl IndexFile {
             };
             batch.push(Entry::of(&record, at, bytes));
             at += line.len() as u64;
-            if batch.len() >= 512 {
-                self.write(&std::mem::take(&mut batch));
+            if batch.len() >= 512 && !self.write(&std::mem::take(&mut batch)) {
+                return;
             }
         }
         self.write(&batch);
     }
 
-    /// The reply for a page still waiting for records `[0, upto)`: their turns (each with its
-    /// record and byte range), compactions, tool counts, artifacts and offered files.
-    pub(crate) fn reply(&self, epoch: u64, upto: usize) -> Value {
-        let entries: Vec<Entry> = std::fs::read(&self.path)
-            .map(|bytes| {
+    /// Every line, checked whole before it is served: as many as the sidecar claims, each parsing,
+    /// each starting where the one before ended, from byte 0 to the log's end. A sidecar that fails
+    /// any of it (a damaged line would shift every record index after it) is rebuilt from the log.
+    fn entries(&mut self, log: &Path, log_len: u64) -> Vec<Entry> {
+        for attempt in 0..2 {
+            self.catch_up(log, log_len);
+            let read: Option<Vec<Entry>> = std::fs::read(&self.path).ok().and_then(|bytes| {
                 bytes
                     .split(|b| *b == b'\n')
                     .take(self.lines)
-                    .filter_map(|l| serde_json::from_slice::<Entry>(l).ok())
+                    .map(|l| serde_json::from_slice::<Entry>(l).ok())
                     .collect()
-            })
-            .unwrap_or_default();
+            });
+            if let Some(entries) = read {
+                let chained = entries.len() == self.lines
+                    && entries
+                        .iter()
+                        .try_fold(0u64, |at, e| (e.o == at).then(|| e.end()))
+                        == Some(log_len);
+                if chained {
+                    return entries;
+                }
+            }
+            if attempt == 0 {
+                self.file = None;
+                self.truncate(0);
+            }
+        }
+        Vec::new()
+    }
+
+    /// The reply for a page still waiting for records `[0, upto)` of the log at `log` (`log_len`
+    /// bytes): their turns (each with its record and byte range), compactions, tool counts,
+    /// artifacts and offered files.
+    pub(crate) fn reply(&mut self, log: &Path, log_len: u64, epoch: u64, upto: usize) -> Value {
+        let entries = self.entries(log, log_len);
         let upto = upto.min(entries.len());
         let opens: Vec<usize> = (0..entries.len())
             .filter(|&i| entries[i].turn.is_some())
@@ -377,10 +425,7 @@ impl IndexFile {
             row.insert("r".into(), json!(r));
             row.insert("last".into(), json!(next.unwrap_or(entries.len()) - 1));
             row.insert("o".into(), json!(entries[r].o));
-            row.insert(
-                "end".into(),
-                json!(next.map_or(self.mark, |n| entries[n].o)),
-            );
+            row.insert("end".into(), json!(next.map_or(log_len, |n| entries[n].o)));
             turns.push(Value::Object(row));
         }
         let mut tools: BTreeMap<&str, u64> = BTreeMap::new();
@@ -417,7 +462,7 @@ impl IndexFile {
         }
         json!({
             "t": "turn-index", "epoch": epoch, "upto": upto,
-            "records": entries.len(), "bytes": self.mark,
+            "records": entries.len(), "bytes": log_len,
             "turns": turns, "compactions": compactions, "tools": tools,
             "artifacts": artifacts, "files": files,
         })
@@ -536,7 +581,7 @@ mod tests {
         ix.catch_up(&path, len);
         assert_eq!((ix.lines, ix.mark), (recs.len(), len));
 
-        let all = ix.reply(7, recs.len());
+        let all = ix.reply(&path, len, 7, recs.len());
         assert_eq!(all["epoch"], 7);
         assert_eq!(all["records"], recs.len());
         let turns = all["turns"].as_array().unwrap();
@@ -576,7 +621,7 @@ mod tests {
         );
 
         // Waiting for the first four records: turn 2 opens at 3 and runs on past the boundary.
-        let head = ix.reply(7, 4);
+        let head = ix.reply(&path, len, 7, 4);
         assert_eq!(head["upto"], 4);
         let turns = head["turns"].as_array().unwrap();
         assert_eq!(turns.len(), 2, "turns that open below the boundary");
@@ -622,12 +667,12 @@ mod tests {
             o += bytes.len() as u64 + 1;
         }
         assert_eq!(ix.lines, recs.len());
-        let full = ix.reply(1, recs.len());
+        let full = ix.reply(&path, o, 1, recs.len());
 
         // Reopened, it is level with the log and answers the same.
-        let reopened = IndexFile::open(side.clone(), &path, o);
+        let mut reopened = IndexFile::open(side.clone(), &path, o);
         assert_eq!((reopened.lines, reopened.mark), (recs.len(), o));
-        assert_eq!(reopened.reply(1, recs.len()), full);
+        assert_eq!(reopened.reply(&path, o, 1, recs.len()), full);
 
         // Cut with the log to three records.
         let mut cut = IndexFile::open(side.clone(), &path, o);
@@ -652,10 +697,54 @@ mod tests {
         let mut ix = IndexFile::open(side.clone(), &path, len);
         assert_eq!((ix.lines, ix.mark), (0, 0), "dropped");
         ix.catch_up(&path, len);
-        assert!(ix.reply(1, other.len())["compactions"]
+        assert!(ix.reply(&path, len, 1, other.len())["compactions"]
             .as_array()
             .unwrap()
             .is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What is served is checked whole first: a damaged line in the middle (which would shift every
+    /// record index after it) and lines another process appended under this store are both found,
+    /// and the sidecar is rebuilt from the log rather than served.
+    #[test]
+    fn a_damaged_or_foreign_sidecar_is_rebuilt_not_served() {
+        let dir = tmp("damaged");
+        let recs = records();
+        let (path, _) = log(&dir, &recs);
+        let len = std::fs::metadata(&path).unwrap().len();
+        let side = dir.join("records.index");
+        let mut ix = IndexFile::open(side.clone(), &path, len);
+        let good = ix.reply(&path, len, 1, recs.len());
+        assert_eq!(good["turns"].as_array().unwrap().len(), 3);
+
+        // A middle line no longer parses.
+        let text = std::fs::read_to_string(&side).unwrap();
+        let mut lines: Vec<&str> = text.lines().collect();
+        lines[2] = "{\"o\":";
+        std::fs::write(&side, lines.join("\n") + "\n").unwrap();
+        let mut damaged = IndexFile::open(side.clone(), &path, len);
+        assert_eq!(
+            damaged.reply(&path, len, 1, recs.len()),
+            good,
+            "rebuilt, not shifted"
+        );
+
+        // Another process appended a line: this store's next append finds the file longer than it
+        // left it and starts over, and the next read rebuilds it.
+        let mut ours = IndexFile::open(side.clone(), &path, len);
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&side)
+            .unwrap();
+        f.write_all(text.lines().next().unwrap().as_bytes())
+            .unwrap();
+        f.write_all(b"\n").unwrap();
+        assert!(
+            !ours.write(&[Entry::of(&recs[0], len, b"x")]),
+            "not appended after another writer's line"
+        );
+        assert_eq!(ours.reply(&path, len, 1, recs.len()), good);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -679,7 +768,8 @@ fn probe_index_a_real_log() {
     ix.catch_up(&log, len);
     let built = t.elapsed();
     let t = std::time::Instant::now();
-    let reply = ix.reply(1, ix.lines).to_string();
+    let lines = ix.lines;
+    let reply = ix.reply(&log, len, 1, lines).to_string();
     let replied = t.elapsed();
     let t = std::time::Instant::now();
     let reopened = IndexFile::open(side.clone(), &log, len);
