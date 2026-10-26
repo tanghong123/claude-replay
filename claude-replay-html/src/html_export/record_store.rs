@@ -10,6 +10,7 @@
 //! so this store implements [`BlockStore`] but NOT `BlockRead` — the type system then keeps
 //! every committed consumer on the pointer path.
 
+use super::turn_index::IndexFile;
 use super::{render_blocks, EmitState};
 use crate::cache::DurableStore;
 use crate::engine::{BlockStore, SessionMeta};
@@ -47,6 +48,9 @@ pub struct RecordStore {
     log: Log,
     cx: RenderCx,
     emit: EmitState,
+    /// The turn index beside the log (#s276), behind a lock of its own so a read through the
+    /// session's shared store can bring a lagging one level with the log.
+    index: std::sync::Mutex<IndexFile>,
 }
 
 impl RecordStore {
@@ -67,7 +71,9 @@ impl RecordStore {
             .append(true)
             .open(path)?;
         let len = file.metadata()?.len();
+        let index = IndexFile::open(path.with_extension("index"), path, len);
         Ok(Self {
+            index: std::sync::Mutex::new(index),
             log: Log {
                 path: path.to_path_buf(),
                 file,
@@ -109,7 +115,20 @@ impl RecordStore {
         self.log.file.set_len(len)?;
         self.log.file.seek(SeekFrom::End(0))?;
         self.log.len = len;
+        self.index_file().cut_to(len);
         Ok(())
+    }
+
+    fn index_file(&self) -> std::sync::MutexGuard<'_, IndexFile> {
+        self.index.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The `/turn-index` reply (#s276) for a page still waiting for records `[0, upto)`, after
+    /// indexing whatever the sidecar lacks.
+    pub(crate) fn turn_index(&self, epoch: u64, upto: usize) -> serde_json::Value {
+        let mut index = self.index_file();
+        index.catch_up(&self.log.path, self.log.len);
+        index.reply(epoch, upto)
     }
 
     /// Current log length (EOF) — the end bound of a committed `{offset, len}` pointer.
@@ -212,6 +231,14 @@ impl BlockStore for RecordStore {
         let _ = self.log.file.write_all(rec.as_bytes());
         let _ = self.log.file.write_all(b"\n");
         self.log.len += rec.len() as u64 + 1;
+        // The turn index grows with the log (#s276), parsed only while it is level with it.
+        let mut index = self.index_file();
+        if index.level_at(locator.offset) {
+            if let Ok(record) = serde_json::from_str::<serde_json::Value>(rec) {
+                index.push(&record, locator.offset, rec.as_bytes());
+            }
+        }
+        drop(index);
         locator
     }
 

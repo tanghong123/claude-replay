@@ -136,11 +136,11 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
         // The session view the classic hosts framed (#s99): a link saved from before says so in a
         // plain 404, whatever the scratch directory beneath the static fallback holds.
         "session" => HttpResponse::not_found("the /session page is retired; open the session at /"),
-        // Everything else is the session service's own wire surface — /pull, /records,
+        // Everything else is the session service's own wire surface — /pull, /records, /turn-index,
         // /__reveal, static assets (§6.3). A session's feed is asked for by id, and the
         // service must have been shown that id first (#309).
         _ => {
-            if matches!(name, "pull" | "records") {
+            if matches!(name, "pull" | "records" | "turn-index") {
                 if let Some(id) = query_get(query, "session") {
                     ensure_known(backend, &index::percent_decode(id));
                 }
