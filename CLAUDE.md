@@ -120,7 +120,12 @@ A landing also keeps the match below the turn bar sticking over a desktop's tran
 or faded (`searchCeiling`, #s263): it puts the match a third of the way down the space between the
 bar and the cover, at most 120px down. Measured from the column's top, a cover within 93px of it (a
 short window with the box open) left the match behind the bar. A step's "already seen" keeps the
-column's top: a hit the reader scrolled up behind the bar is behind them, not ahead.
+column's top: a hit the reader scrolled up behind the bar is behind them, not ahead. Inside a
+process group the landing also keeps the match below the group's head (#s267), which sticks at the
+top once a match deep inside is revealed: a phone held sideways with the keyboard up leaves about
+75px above the find pill, and a third of it put the match behind the 40px head. And the landing never
+puts the match so far down that it crosses the cover: in a short space the third is capped at the
+space less the match's own height.
 A step remembers the hit it landed, and the next step goes on from THAT hit when the current one
 is not in sight, while its record still crosses the view, until the reader moves: a scroll within
 the intent window of input that came after the landing, or a new query (#s259). The jump stamps
@@ -144,8 +149,9 @@ The cases are `a_desktop_search_step_never_leaves_a_match_under_the_compose_box`
 `native_desktop_search_step_never_leaves_a_match_under_the_composer`,
 `native_search_steps_move_on_when_the_composer_covers_the_whole_column`,
 `a_search_step_after_an_unheard_move_enters_at_the_nearest_hit`,
-`a_search_step_in_a_short_space_leaves_the_match_below_the_turn_bar` and
-`a_search_step_deep_inside_a_tall_unit_enters_at_the_record_there`.
+`a_search_step_in_a_short_space_leaves_the_match_below_the_turn_bar`,
+`a_search_step_deep_inside_a_tall_unit_enters_at_the_record_there` and
+`a_phone_search_held_sideways_lands_a_match_below_its_process_head`.
 **Codex native mode's composer is resident** (the owner): once native mode is
 enabled, its compact composer stays visible on desktop and phone with no close action;
 thread text and image drafts belong to the selected thread. The ordinary writer keeps the

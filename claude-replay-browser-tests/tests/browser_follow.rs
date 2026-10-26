@@ -15027,3 +15027,88 @@ fn a_search_step_deep_inside_a_tall_unit_enters_at_the_record_there() {
         read(&tab)
     );
 }
+
+/// #s267 (raised by the second review of #s263): a search landing puts the match a third of the way
+/// down the space between the top and whatever covers the foot. Inside a process group whose head
+/// sticks at the top (about 40px), a short space put it behind the head: a phone held sideways with
+/// the keyboard up leaves about 75px above the find pill, and a third of that is 25. Measured before
+/// the fix: the match at 76-92 under a head at 51-91, not hit-testable. The landing now counts the
+/// head of the group holding the match, and never puts the match past the pill: at 59px a third
+/// under the head would cross it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_search_held_sideways_lands_a_match_below_its_process_head() {
+    let _serial = serial();
+    let mut extra = String::new();
+    extra += &harness::user_at("run the long one", &harness::now_minus(59));
+    extra += &harness::bash_call_at("cat long.txt", "toolu_s267", &harness::now_minus(58));
+    let body: String = (1..=60)
+        .map(|n| {
+            if n == 30 {
+                "line 30 holds the needle\\n".to_string()
+            } else {
+                format!("plain line {n}\\n")
+            }
+        })
+        .collect();
+    extra += &harness::tool_result_text("toolu_s267", &body, &harness::now_minus(57));
+    extra += &harness::assistant_at("it ran.", &harness::now_minus(56));
+    for k in 0..6u64 {
+        extra += &harness::user_at(&format!("after {k}"), &harness::now_minus(50 - 2 * k));
+        extra += &harness::assistant_at(
+            "plain words here.\\n\\nanother paragraph.",
+            &harness::now_minus(49 - 2 * k),
+        );
+    }
+    // Two spaces above the find pill: 75px, where a third clears the head, and 59px, where a third
+    // under the head would cross the pill and the landing must stop at the space less the match.
+    for target in [75i64, 59] {
+        let (_m, _b, tab, _path) = phone_world_at(
+            3253,
+            &format!("phone-search-process-head-{target}"),
+            844,
+            390,
+            &extra,
+        );
+        let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+        phone_tap_at(&tab, gx, gy);
+        harness::until(
+            &tab,
+            "document.querySelector('.header-searchbox').classList.contains('phone-open')",
+            "the search to open",
+            Duration::from_secs(5),
+            "document.querySelector('.header-searchbox').className",
+        );
+        // The keyboard as the keyboard-wrap case raises it, sized from the space with none, so the
+        // space is the target whatever the platform's chrome: the find pill rides it one for one.
+        let space = "(function(){ var d = document.getElementById('phoneDock').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); return Math.round(d.top - t.top); })()";
+        let open = harness::eval(&tab, space).as_i64().unwrap_or(0);
+        let kb = open - target;
+        harness::eval(&tab, &format!("(function(){{ Object.defineProperty(visualViewport, 'height', {{ configurable: true, get: function () {{ return innerHeight - {kb}; }} }}); visualViewport.dispatchEvent(new Event('resize')); return 'ok'; }})()"));
+        harness::until(
+            &tab,
+            &format!("Math.abs({space} - {target}) <= 3"),
+            "the find pill to ride the keyboard up to the target space",
+            Duration::from_secs(5),
+            space,
+        );
+        harness::eval(&tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+        harness::until(
+            &tab,
+            "!!document.querySelector('.virtual-window mark.search-mark')",
+            "the query to mark its hit",
+            Duration::from_secs(10),
+            "document.getElementById('transcriptSearchCount').textContent",
+        );
+        harness::pause("the query to settle", Duration::from_millis(400));
+        harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+        let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); if (!m) return 'none'; var s = m.closest('[data-process-surface]'), h = s && s.querySelector('.process-surface-headbar'), d = document.getElementById('phoneDock').getBoundingClientRect(), r = m.getBoundingClientRect(), hr = h && h.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return JSON.stringify({ ok: !!hr && s.dataset.prodSticky === 'true' && r.top >= hr.bottom - 0.5 && r.bottom <= d.top + 0.5 && !!hit && (hit === m || m.contains(hit)), mark: [Math.round(r.top), Math.round(r.bottom)], head: hr ? [Math.round(hr.top), Math.round(hr.bottom)] : null, stuck: s && s.dataset.prodSticky, dock: Math.round(d.top) }); })()";
+        harness::until(
+            &tab,
+            &format!("(function(){{ var g = {seen}; return g !== 'none' && JSON.parse(g).ok; }})()"),
+            &format!("the step to land the match below its group's stuck head and above the find pill, {target}px between them"),
+            Duration::from_secs(5),
+            seen,
+        );
+    }
+}

@@ -1801,24 +1801,33 @@ function landOnCurrentMark() {
   const box = mark.getBoundingClientRect(), view = viewport.scroller.getBoundingClientRect();
   // A match under whatever floats over the transcript's foot is not on screen (#s37, #s248, #s257),
   // nor one behind the turn bar at its top (#s263).
-  const floor = searchFloor(view), ceiling = searchCeiling(view);
+  const floor = searchFloor(view), ceiling = searchCeiling(view, mark);
   if (box.top >= ceiling && box.bottom <= floor) return;
   // A third of the space between them, so a short one still shows the match: measured from the
-  // column's top, a cover within 93px of it put the match behind the bar. A cover over the whole
-  // column leaves none, and the match lands just below the bar.
-  viewport.reveal(mark, { top: Math.min(120, ceiling - view.top + Math.max(0, floor - ceiling) / 3) });
+  // column's top, a cover within 93px of it put the match behind the bar. Never so far down that the
+  // match crosses the cover (#s267: a third of a short space under a group's 40px head did), and a
+  // cover over the whole column leaves none: the match lands just below the bar or the head.
+  const space = Math.max(0, floor - ceiling);
+  viewport.reveal(mark, { top: Math.min(120, ceiling - view.top + Math.min(space / 3, Math.max(0, space - box.height))) });
 }
-/** Where a landing may put a match at the transcript's top: the bottom of the turn bar while it is
- *  drawn (#123; hidden on a phone, where the turn is the top bar's subtitle), else the top of `view`.
- *  On or off, since a landing can turn it on (#s263). Only the landing asks: a step's "already on
- *  screen" keeps the column's top, since a hit the reader scrolled up behind the bar is behind them,
- *  and counting it unseen sent the next step back to it. On a desktop a process group's head sticks
- *  there too (40px, under the bar's 31), and a third of the space clears it wherever a match fits
- *  below it; a phone has no bar, and its landing has not been measured against that head (#s267). */
-function searchCeiling(view) {
-  if (getComputedStyle(turnStickyBar).display === "none") return view.top;
-  const r = turnStickyBar.getBoundingClientRect();
-  return r.height > 0 && r.bottom > view.top ? Math.min(view.bottom, r.bottom) : view.top;
+/** Where a landing may put `mark` at the transcript's top: below the turn bar while it is drawn
+ *  (#123; hidden on a phone, where the turn is the top bar's subtitle), on or off, since a landing can
+ *  turn it on (#s263); and below the head of the process group holding the mark (#s267), which sticks
+ *  there whenever the group spans the top, as it does once a match deep inside it is revealed. Its
+ *  height, not where it is now: the reveal is what makes it stick. On a phone held sideways with the
+ *  keyboard up the space above the find pill is about 75px, and a third of it put the match behind
+ *  the 40px head. Only the landing asks: a step's "already on screen" keeps the column's top, since a
+ *  hit the reader scrolled up behind the bar is behind them, and counting it unseen sent the next
+ *  step back to it. */
+function searchCeiling(view, mark) {
+  let ceiling = view.top;
+  if (getComputedStyle(turnStickyBar).display !== "none") {
+    const r = turnStickyBar.getBoundingClientRect();
+    if (r.height > 0 && r.bottom > view.top) ceiling = r.bottom;
+  }
+  const head = mark?.closest("[data-process-surface]")?.querySelector(".process-surface-headbar");
+  if (head && !head.contains(mark)) ceiling = Math.max(ceiling, view.top + head.getBoundingClientRect().height);
+  return Math.min(view.bottom, ceiling);
 }
 /** Where a match stops being in sight at the transcript's foot: the bottom of `view`, or the top of
  *  whatever is drawn over it there — a phone's floating toolbar (#s37), an open compose box (#s245,
