@@ -287,12 +287,19 @@ export class RecordStore {
   apply(reply, headCount = 0) {
     const plan = reducePull(this.cursor, this.records.length, reply);
     // A resync drops everything, a head still in flight with it: that head belongs to a log the
-    // server no longer has.
-    if (plan.resync && !headCount) { this.head = null; this.index = null; }
+    // server no longer has. So does a pull that rewrites a record the head still owes, whatever its
+    // epoch (#s280): a client ahead of a log that was cut, or one that meets a session resumed from
+    // the cache at epoch 1 again, is sent the log from 0 under the SAME epoch, and a head that went
+    // on reading would write the old log's records over the new ones when it finished.
+    const owed = this.head;
+    const cut = !!owed && !headCount && plan.changedFrom < owed.count;
+    if ((plan.resync && !headCount) || cut) { this.head = null; this.index = null; }
     for (const step of plan.steps) {
       if (step.op === "truncate") this.records.length = step.to;
       else this.records.push(...step.records);
     }
+    // A placeholder left with no head to fill it would wait for ever: start over instead.
+    if (cut && this.records.includes(PENDING)) { this.recover(); return; }
     // The shared plan truncated the empty store to `headCount` before appending the tail, which
     // leaves that many empty slots: they are the head, still to come.
     for (let i = 0; i < headCount; i++) this.records[i] = PENDING;
@@ -301,6 +308,8 @@ export class RecordStore {
     // The update gate is what the store must REPAINT (changedFrom), not the classic page's
     // idle rule (both zones empty): a shorter provisional zone with nothing to append is idle
     // by that rule yet truncates the store, and the viewport must hear it.
-    if (plan.changedFrom !== Infinity || reply.meta) this.handlers.update?.({ records: this.records, meta: this.meta, changedFrom: plan.changedFrom === Infinity ? this.records.length : plan.changedFrom });
+    // The placeholders a cut replaced are the head landing, to the page (#314): it is reported as
+    // one, so the reader keeps the turn they were on and the change waits for a still view (#340).
+    if (plan.changedFrom !== Infinity || reply.meta) this.handlers.update?.({ records: this.records, meta: this.meta, changedFrom: plan.changedFrom === Infinity ? this.records.length : plan.changedFrom, ...(cut ? { prepended: owed.count } : {}) });
   }
 }

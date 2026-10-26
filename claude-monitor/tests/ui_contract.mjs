@@ -238,6 +238,37 @@ assert.deepEqual(store.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 });
     await misfit.loadHead(misfit.generation, owed);
     assert.equal(resets, 1, "a head whose count is not the one the pull named starts the session over");
     assert.deepEqual(misfit.records, [], "…and is never spliced in");
+
+    // #s280: a pull that rewrites what the head still owes under the SAME epoch (a client ahead of a
+    // log that was cut is sent it from 0, pull.rs) drops the head in flight, which then never writes
+    // over the records the pull brought; the placeholders it replaced are the head landing.
+    const cutSeen = [];
+    const cutStore = new RecordStore({ update: update => cutSeen.push(update) }, { tailBudget: 1024 });
+    cutStore.apply(tail(), 3);
+    cutStore.session = "s";
+    const inFlight = { count: 3, len: logOf(head).length, epoch: 3 };
+    cutStore.head = inFlight;
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    globalThis.fetch = async url => { await gate; return ranged(logOf(head))(url); };
+    const reading = cutStore.loadHead(cutStore.generation, inFlight);
+    const fresh = [{ kind: "user", id: "n1", turn: 1, body: [] }, { kind: "assistant", id: "n2", phase: "final", body: [] }, { kind: "user", id: "n3", turn: 2, body: [] }, ...tail().committed];
+    cutStore.apply({ epoch: 3, committed_from: 0, committed: fresh, provisional_gen: 0, provisional_from: 0, provisional: [], meta: null });
+    assert.equal(cutStore.head, null, "a same-epoch rewrite below the head boundary drops the head in flight");
+    assert.equal(cutStore.index, null, "…and its turn index");
+    assert.equal(cutSeen.at(-1).prepended, 3, "…and the placeholders it replaced are reported as the head landing");
+    release();
+    await reading;
+    assert.deepEqual(cutStore.records.map(record => record.id), fresh.map(record => record.id), "the late head never writes over the records the pull brought");
+    assert.equal(cutSeen.at(-1).prepended, 3, "…nor reports a landing of its own");
+
+    let cutResets = 0;
+    const partial = new RecordStore({ update: () => {}, reset: () => cutResets++ }, { tailBudget: 1024 });
+    partial.apply(tail(), 3);
+    partial.head = { count: 3, len: logOf(head).length, epoch: 3 };
+    partial.apply({ epoch: 3, committed_from: 1, committed: fresh.slice(1), provisional_gen: 0, provisional_from: 0, provisional: [], meta: null });
+    assert.equal(cutResets, 1, "a cut that leaves a placeholder with no head to fill it starts the session over");
+    assert.deepEqual(partial.records, [], "…rather than waiting on it for ever");
   } finally {
     globalThis.fetch = realFetch;
   }
