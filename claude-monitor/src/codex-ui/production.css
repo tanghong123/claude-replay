@@ -1663,7 +1663,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 :root{--inbox:#9a5b00}[data-theme="dark"]{--inbox:#f0b45c}
 .turn.user.inbox .user-prompt{display:flex;flex-direction:column;align-items:flex-end}
 .turn.user.inbox .user-prompt>.prompt-copy-shell,.turn.user.inbox .user-prompt>.prompt-attachments{align-self:stretch}
-.turn.user.inbox .body{box-shadow:inset 3px 0 0 var(--inbox)}
+.turn.user.inbox .body,:root[data-theme="dark"] .turn.user.inbox .body{box-shadow:inset 3px 0 0 var(--inbox)}
 .inbox-head{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:baseline;gap:4px 6px;margin:0 0 6px;font-size:12px;line-height:1.4}
 .inbox-from{color:var(--inbox);font-weight:650}
 .inbox-chip{color:var(--sub);border:1px solid var(--line);border-radius:999px;padding:0 7px;line-height:18px;white-space:nowrap}
