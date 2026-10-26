@@ -377,7 +377,10 @@ fn push_inbox(
         }
     }
     if inbox_ids.insert(inbox.id.clone()) {
-        out.push(Block::UserInbox { text: words, inbox });
+        out.push(Block::UserInbox {
+            text: words,
+            inbox: *inbox,
+        });
         out.extend(images.into_iter().map(Block::Attachment));
     } else {
         out.push(Block::UserText(text));
@@ -5557,7 +5560,7 @@ fn inbox_message(raw: &str, text: impl FnOnce() -> String) -> Option<Message> {
     Some(Message::UserInbox {
         text: text(),
         words: v.words,
-        inbox: v.inbox,
+        inbox: Box::new(v.inbox),
         images: v.images,
     })
 }

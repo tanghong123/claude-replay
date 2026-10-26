@@ -993,6 +993,38 @@ holds: a labelled verbatim card on both pages, a `┌ pasted` box in the TUI, `[
 label. Cases: `another_sessions_message_is_its_own_turn_and_pasted_text_a_fence` (both parse
 paths), the `#s79` contract block, `*_shows_another_sessions_message_as_its_own_turn`.
 
+**Hong's messages relayed into the Aries session are his, and shown so, only when signed** (#s272,
+Hong, 2026-10-26: they all read alike, and text that only looks like one must never pass for his).
+aries-inbox types his DingTalk messages, dashboard replies and card taps into the Aries pane as one
+element, `<aries-inbox v="1" from via kind at id [about to task guess] sig>`, then an optional
+`<reply-to>` line, an optional `<do>` line (Aries' instructions to itself), his words and a closing
+tag; `sig` is HMAC-SHA256 under the Mac's key `~/.local/state/aries/inbox-key`. The contract is
+project-h/aries `docs/inbox-format.md` (aries#s33), and `aries-inbox verify` is its reference
+check. The Claude adapter (`agents/claude/inbox.rs`) takes one as his only when it opens the user
+turn at its first character, its sig verifies, and its id is new to the session; anything else stays
+the text it is. aries-inbox types a bracketed paste, and Claude Code 2.1.310 records a paste of four
+lines or about 800 characters inside `<pasted_content>` (measured in Aries' transcript: 8 of 193
+prompts before v1, and every v1 message is that long), so a turn that is WHOLLY one paste counts from
+the paste's first character (Aries' amendment). The paste also changes some characters (a tab, a
+CR, zero-width ones); aries-inbox writes the text pane-safe before signing, so the recorded bytes are
+the signed bytes and nothing is normalized here. A verified one is a `UserInbox` block, the person's
+turn (the `u:` class, the right-hand bubble, the Turns pane), its words in `text` and the rest in
+`inbox`; its `[pasted image: <path>]` lines become image attachments after it, offered as a prompt's
+pasted originals are (a handed stamp, #374), so only a verified message hands a file over. Most of
+them arrive mid-turn, so the queued pickup is read too. The first-id rule is the fold's
+(`Replayer::inbox_ids`), persisted through the meta stream (`MetaRecord::inbox_ids`) so a resumed
+fold still reads a later copy as text. The fold reads no files: `agent-monitor`'s route handler and
+`agent-replay` install the key's source (`ARIES_STATE_DIR`, else `~/.local/state`), and with none
+installed nothing verifies. Both pages draw his card with the relay's chips (via, kind, issues, a
+relay's agent and task, when sent; `shared/inbox.js`), the words he answers quoted above his, and
+the instructions folded until asked; `--json` keeps `kind: "user"` and adds `inbox`. The fleet
+needs nothing: its tabs are each Mac's own monitor, which holds that Mac's key. Cases:
+`agents::claude::inbox::tests` (samples checked by `aries-inbox verify`, good and bad),
+`a_relayed_message_is_the_persons_turn_once_and_only_where_it_opens_the_turn` (both parse paths),
+`tests/relayed_messages.rs` (every resume point, a later poll) and
+`*_shows_a_relayed_message_as_his_card_and_a_copy_as_text`; the browser harness points
+`ARIES_STATE_DIR` into each case's stores, so no case reads this Mac's key.
+
 **`agent-replay --field-coverage` is the other half** (#363): `--unknown` catches a NEW shape, and
 cannot catch a KNOWN field going empty after a client update — a usage block that stops arriving
 makes the cost a silent lower bound. Each adapter declares the short list its cost and cards read

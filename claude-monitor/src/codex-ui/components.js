@@ -8,6 +8,7 @@ import { rememberCap, resultBodyHtml } from "./shared/parts.js";
 import { interactionHtml } from "./shared/interaction.js";
 import { headStepOf, headStepState, nextHeadStep } from "./shared/tool-head.js";
 import { fmtTime, fmtDur } from "./shared/time.js";
+import { inboxChips, INBOX_DO_LABEL } from "./shared/inbox.js";
 
 const element = html => {
   const template = document.createElement("template");
@@ -372,6 +373,11 @@ export function renderUnit(unit, state) {
     const peer = unit.view.peer;
     html = `<div class="turn peer" style="--peer-hue:${peerHue(peer.from)}" data-kind="peer" data-record-kind="peer" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="peer-card"><div class="peer-head"><span class="peer-glyph" aria-hidden="true">⇄</span><span class="peer-from">${escapeText(peer.from)}</span><span class="peer-what">another session</span>${peer.mode ? `<span class="peer-mode" title="The sending session's permission mode">${escapeText(peer.mode)}</span>` : ""}</div><div class="body markdown">${unit.view.html}</div>${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}</div>`;
   }
+  else if (unit.type === "user" && unit.view.inbox) {
+    // A relayed message from the person, verified (#s272): their bubble, headed by what the relay
+    // says of it, the words it answers quoted above, the relay's instructions folded below.
+    html = `<div class="turn user inbox" data-kind="user" data-record-kind="user" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt">${inboxHeadHtml(unit.view.inbox)}<div class="prompt-copy-shell" data-prompt-key="${escapeText(unit.key)}"><div class="body markdown">${body}</div></div>${renderPromptAttachments(unit.attachments)}${inboxDoHtml(unit, state)}</div>${turnTime(unit)}${spot}${rawToggle}</div>`;
+  }
   else if (unit.type === "user") {
     // Drawn whole: whether it collapses is measured once it is mounted (`clampPrompts`, #s139).
     html = `<div class="turn user" data-kind="user" data-record-kind="user" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt"><div class="prompt-copy-shell" data-prompt-key="${escapeText(unit.key)}"><div class="body markdown">${body}</div></div>${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}${rawToggle}</div>`;
@@ -427,6 +433,25 @@ export function clampPrompts(roots, state) {
     if (!expanded) shell.classList.add("collapsed");
     shell.insertAdjacentHTML("beforeend", promptExpanderHtml(key, expanded, hidden));
   }
+}
+
+/** #s272: the chips of a relayed message's head, and the words it replies to. */
+function inboxHeadHtml(inbox) {
+  const chips = inboxChips(inbox, fmtTime).map(c => `<span class="inbox-chip" data-chip="${escapeText(c.cls)}" title="${escapeText(c.title)}">${escapeText(c.text)}</span>`).join("");
+  const q = inbox.reply_to;
+  const quote = q && typeof q.text === "string" && q.text
+    ? `<blockquote class="inbox-quote">${q.from ? `<span class="inbox-quote-from">${escapeText(q.from)}</span>` : ""}<span class="inbox-quote-text">${literalText(q.text)}</span></blockquote>`
+    : "";
+  return `<div class="inbox-head"><span class="inbox-from">${escapeText(inbox.from)}</span>${chips}</div>${quote}`;
+}
+
+/** #s272: the relay's instructions to the agent, folded until the reader opens them — the prompt
+ *  toggle's own state (`promptExpanded`), under a key of their own. */
+function inboxDoHtml(unit, state) {
+  const text = unit.view.inbox.do;
+  if (typeof text !== "string" || !text) return "";
+  const key = `${unit.key}#do`, open = state.promptExpanded.has(key);
+  return `<div class="inbox-do${open ? " open" : ""}"><button class="inbox-do-h" type="button" data-prompt-toggle="${escapeText(key)}" aria-expanded="${open}">${escapeText(INBOX_DO_LABEL)}</button>${open ? `<div class="inbox-do-b">${literalText(text)}</div>` : ""}</div>`;
 }
 
 function renderPromptAttachments(attachments = []) {

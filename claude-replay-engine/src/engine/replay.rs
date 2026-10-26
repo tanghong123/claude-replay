@@ -317,7 +317,7 @@ impl<'a> Replayer<'a> {
                     if self.inbox_ids.insert(inbox.id.clone()) {
                         self.out.push(Block::UserInbox {
                             text: words.clone(),
-                            inbox: inbox.clone(),
+                            inbox: (**inbox).clone(),
                         });
                         self.out
                             .extend(images.iter().cloned().map(Block::Attachment));

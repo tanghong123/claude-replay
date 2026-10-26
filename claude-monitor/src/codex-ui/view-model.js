@@ -6,6 +6,7 @@ import { recordText, stripTags } from "./shared/search.js";
 // display name, failed / running / completed from the words the server writes, and the exit
 // code and duration as facts — one vocabulary with the classic page's chips.
 import { displayName, toolHead, stateLabel } from "./shared/tool-head.js";
+import { inboxOf } from "./shared/inbox.js";
 import { svg } from "./icons.js";
 
 export const escapeText = value => String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
@@ -290,7 +291,8 @@ export function viewRecord(record) {
   const head = record.head || {};
   if (record.kind === "user") {
     const reply = replyContext(record);
-    return { t: "user", id: record.id, html: reply ? replyHtml(reply) : partsHtml(record.body), reply, markdown: true, source: record };
+    // #s272: a relayed message from the person, verified — what the relay says of it rides along.
+    return { t: "user", id: record.id, html: reply ? replyHtml(reply) : partsHtml(record.body), reply, inbox: inboxOf(record), markdown: true, source: record };
   }
   // Another session's message (#s79): a turn like a prompt (so the Turns pane and the sticky strip
   // count it), drawn as its own card and never as the person's bubble.

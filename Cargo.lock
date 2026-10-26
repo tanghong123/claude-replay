@@ -335,6 +335,7 @@ name = "claude-replay-browser-tests"
 version = "1.427.0"
 dependencies = [
  "clap",
+ "claude-replay-core",
  "claude-replay-html",
  "claude-replay-present",
  "headless_chrome",

@@ -2357,7 +2357,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 {
   const components174 = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   const stamped = [...components174.matchAll(/<div class="turn [^"]*"[^>]*?data-record-id="\$\{escapeText\(unit\.view\?\.id \|\| ""\)\}"/g)];
-  assert.equal(stamped.length, 4, "the four prose turn wrappers — user, slash command, another session's message (#s79), assistant — each stamp the record id the classic page has always carried");
+  assert.equal(stamped.length, 5, "the five prose turn wrappers — slash command, another session's message (#s79), a relayed message from the person (#s272), user, assistant — each stamp the record id the classic page has always carried");
   assert.match(components174, /data-record-id="\$\{escapeText\(key\)\}"/, "…and a tool rendering still stamps its own, on the `.renderer` inside the turn");
   // The painter that means "a tool head" must stay scoped to one, or widening the attribute
   // silently widens what it paints.

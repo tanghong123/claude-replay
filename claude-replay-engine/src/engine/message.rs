@@ -128,7 +128,7 @@ pub enum Message {
     UserInbox {
         text: String,
         words: String,
-        inbox: crate::model::Inbox,
+        inbox: Box<crate::model::Inbox>,
         images: Vec<Attachment>,
     },
     /// A message from another agent session (#s79): opens a turn like a prompt and becomes a

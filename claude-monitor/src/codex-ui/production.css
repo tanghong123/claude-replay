@@ -1657,6 +1657,25 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    the person's right-hand bubble and the agent's prose: a rule in the peer hue down its left edge,
    its sender above the message. */
 :root{--peer:#2b6f8e}[data-theme="dark"]{--peer:#7ab8d6}
+/* #s272: a relayed message from the person, verified — their bubble, marked in its own hue, what
+   the relay says of it as chips above it, the words it answers quoted, the relay's instructions
+   folded below. */
+:root{--inbox:#9a5b00}[data-theme="dark"]{--inbox:#f0b45c}
+.turn.user.inbox .user-prompt{display:flex;flex-direction:column;align-items:flex-end}
+.turn.user.inbox .user-prompt>.prompt-copy-shell,.turn.user.inbox .user-prompt>.prompt-attachments{align-self:stretch}
+.turn.user.inbox .body{box-shadow:inset 3px 0 0 var(--inbox)}
+.inbox-head{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:baseline;gap:4px 6px;margin:0 0 6px;font-size:12px;line-height:1.4}
+.inbox-from{color:var(--inbox);font-weight:650}
+.inbox-chip{color:var(--sub);border:1px solid var(--line);border-radius:999px;padding:0 7px;line-height:18px;white-space:nowrap}
+.inbox-chip[data-chip="kind"],.inbox-chip[data-chip="to"]{color:var(--inbox)}
+.inbox-quote{align-self:stretch;margin:0 0 6px;padding:2px 0 2px 10px;border-left:2px solid var(--line);color:var(--sub);font-size:13px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
+.inbox-quote-from{font-weight:650;margin-right:6px}
+.inbox-do{align-self:stretch;margin:6px 0 0;text-align:right}
+.inbox-do-h{all:unset;cursor:pointer;color:var(--faint);font-size:12px;min-height:24px}
+.inbox-do-h::before{content:"▸";margin-right:5px}.inbox-do.open .inbox-do-h::before{content:"▾"}
+.inbox-do-h:focus-visible{outline:2px solid var(--inbox);outline-offset:2px;border-radius:3px}
+.inbox-do-b{margin:4px 0 0;color:var(--sub);font-size:12.5px;line-height:1.5;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere}
+@media(hover:none){.inbox-do-h{min-height:44px;display:inline-flex;align-items:center}}
 .turn.peer{position:relative;display:flex;flex-direction:column;align-items:flex-start}
 .turn.peer .peer-card{width:max-content;max-width:min(86%,720px);padding:10px 14px 12px 13px;border:1px solid var(--line);border-left:3px solid var(--peer);border-radius:4px 12px 12px 4px;background:var(--bg)}
 .turn.peer .peer-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;margin:0 0 6px;font-size:12.5px;line-height:1.4}

@@ -1036,7 +1036,20 @@ impl Stores {
             ("CLAUDE_JDI_TASKS_ROOT", self.root.join("claude-tasks")),
             // #283: Claude Code's per-user scratch (`/tmp/claude-<uid>` on a real machine).
             ("CLAUDE_SCRATCH_ROOT", self.root.join("claude-scratch")),
+            // #s272: where a relayed message's key is read, so no case reads this Mac's own.
+            ("ARIES_STATE_DIR", self.root.join("aries")),
         ]
+    }
+
+    /// #s272: the inbox key the relayed messages are signed with — the format's test key, 32
+    /// zero bytes, 0600 as aries-inbox makes it.
+    pub fn aries_key(&self) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = self.root.join("aries");
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = dir.join("inbox-key");
+        std::fs::write(&key, [0u8; 32]).unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
 
     /// A Claude session `sid` under the project slug `-r` (the builders' cwd), with `jsonl`.
