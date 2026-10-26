@@ -3617,7 +3617,7 @@ pub(crate) fn decode_line_known(
                                 text: peer.body,
                                 queued: Some(fence_pasted(p).into_owned()),
                             });
-                        } else if let Some(m) = (!meta && a.is_some_and(relayable))
+                        } else if let Some(m) = (!meta && relayable(&v) && a.is_some_and(relayable))
                             .then(|| inbox_message(p, || fence_pasted(p).into_owned()))
                             .flatten()
                         {
@@ -4897,7 +4897,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     text: peer.body,
                                 }),
                                 // #s272 mirror: a relayed message picked up mid-turn.
-                                None => match (!meta && a.is_some_and(relayable))
+                                None => match (!meta && relayable(&v) && a.is_some_and(relayable))
                                     .then(|| inbox_message(raw, || p.to_string()))
                                     .flatten()
                                 {
@@ -5551,10 +5551,6 @@ fn summary_description(summary: &str) -> String {
     summary.trim().to_string()
 }
 
-/// A relayed message from the person (#s272), when `text` is one whose signature verifies: the
-/// prompt the fold makes their turn, carrying the text it would otherwise be — what an ordinary
-/// prompt's text is, and what a queued copy of it was queued under (#52). The fold takes only the
-/// first message with an id as theirs.
 /// Whether a record (a `user` record, or a queued prompt's attachment) can carry a message the
 /// person relayed (#s272): not a sub-agent's (a sidechain), and no origin but a person's.
 fn relayable(v: &Value) -> bool {
@@ -5563,6 +5559,10 @@ fn relayable(v: &Value) -> bool {
             .is_none_or(|o| o.get("kind").and_then(Value::as_str) == Some("human"))
 }
 
+/// A relayed message from the person (#s272), when `text` is one whose signature verifies: the
+/// prompt the fold makes their turn, carrying the text it would otherwise be — what an ordinary
+/// prompt's text is, and what a queued copy of it was queued under (#52). The fold takes only the
+/// first message with an id as theirs.
 fn inbox_message(raw: &str, text: impl FnOnce() -> String) -> Option<Message> {
     let v = super::inbox::verified(raw)?;
     Some(Message::UserInbox {
@@ -6742,6 +6742,19 @@ mod tests {
     fn a_relayed_message_is_the_persons_turn_once_and_only_where_it_opens_the_turn() {
         use crate::agents::claude::inbox::tests::{wrapped, zero_key, A, B};
         crate::agents::claude::inbox::install_key_source(zero_key);
+        // B again under another id, signed: only the rule under test can refuse it.
+        let b_as = |id: &str| {
+            let start = B.find(" sig=\"").unwrap();
+            let unsigned = format!(
+                "{} sig=\"-\"{}",
+                &B[..start],
+                &B[start + " sig=\"\"".len() + 32..]
+            );
+            crate::agents::claude::inbox::sign_for_test(
+                &[0; 32],
+                &unsigned.replace("dash-1&amp;skua", id),
+            )
+        };
         let user = |at: &str, content: &str| {
             serde_json::json!({"type": "user", "timestamp": at, "message": {"role": "user", "content": content}}).to_string()
         };
@@ -6756,8 +6769,9 @@ mod tests {
             user("2026-10-26T08:02:00.000Z", &wrapped(&B.replace("ship it", "drop it"), "608f")),
             serde_json::json!({"type": "user", "timestamp": "2026-10-26T08:03:00.000Z", "isMeta": true, "origin": {"kind": "peer", "name": "skua-HD", "fromMode": "bypass", "body": A}, "message": {"role": "user", "content": format!("Another Claude session sent a message:\n<cross-session-message from-name=\"skua-HD\">\n{A}\n</cross-session-message>")}}).to_string(),
             // A sub-agent's prompt, and a pickup whose origin is not a person: never his.
-            serde_json::json!({"type": "user", "timestamp": "2026-10-26T08:04:00.000Z", "isSidechain": true, "message": {"role": "user", "content": wrapped(&B.replace("dash-1&amp;skua", "dash-side"), "608f")}}).to_string(),
-            serde_json::json!({"type": "attachment", "timestamp": "2026-10-26T08:05:00.000Z", "attachment": {"type": "queued_command", "commandMode": "prompt", "origin": {"kind": "task-notification"}, "prompt": wrapped(&B.replace("dash-1&amp;skua", "dash-note"), "608f")}}).to_string(),
+            serde_json::json!({"type": "user", "timestamp": "2026-10-26T08:04:00.000Z", "isSidechain": true, "message": {"role": "user", "content": wrapped(&b_as("dash-side"), "608f")}}).to_string(),
+            serde_json::json!({"type": "attachment", "timestamp": "2026-10-26T08:05:00.000Z", "attachment": {"type": "queued_command", "commandMode": "prompt", "origin": {"kind": "task-notification"}, "prompt": wrapped(&b_as("dash-note"), "608f")}}).to_string(),
+            serde_json::json!({"type": "attachment", "timestamp": "2026-10-26T08:06:00.000Z", "isSidechain": true, "attachment": {"type": "queued_command", "commandMode": "prompt", "origin": {"kind": "human"}, "prompt": wrapped(&b_as("dash-side-pickup"), "608f")}}).to_string(),
         ];
         let jsonl = lines.join("\n");
         let streamed = parse(&jsonl);
@@ -6796,8 +6810,8 @@ mod tests {
             .collect();
         assert_eq!(
             texts.len(),
-            4,
-            "the copy, the tampered one, the sidechain's and the notification's: {turns:#?}"
+            5,
+            "the copy, the tampered one, the notification's and both sidechain ones: {turns:#?}"
         );
         assert!(texts.iter().all(|t| t.contains("```pasted\n<aries-inbox")));
         assert!(

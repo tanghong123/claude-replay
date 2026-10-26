@@ -176,6 +176,11 @@ fn parse(element: &str) -> Option<Parsed> {
     let body = body.strip_suffix('\n').unwrap_or(body);
     let (reply_to, body) = reply_to(body);
     let (instructions, body) = instructions(body);
+    // A `<reply-to>` or `<do>` that did not close on its line is not the format's: read on, it
+    // would put the relay's own words among the person's.
+    if body.starts_with("<reply-to") || body.starts_with("<do>") {
+        return None;
+    }
     let words = unescape_body(body);
     let inbox = Inbox {
         from: get("from").filter(|f| !f.is_empty())?,
@@ -583,5 +588,26 @@ a closing tag in his words: <\/aries-inbox>
         );
         assert_eq!(v.inbox.instructions, "relay to x");
         assert_eq!(v.words, "ok");
+    }
+
+    /// A `<do>` (or `<reply-to>`) spread over lines is no message of his: shown as text, never with
+    /// the relay's words read as his (the review of 4492d436).
+    #[test]
+    fn an_element_line_that_does_not_close_on_its_line_is_text() {
+        install_key_source(zero_key);
+        let signed = |body: &str| {
+            sign_for_test(
+                &[0; 32],
+                &format!("<aries-inbox v=\"1\" from=\"Hong\" via=\"dingtalk\" kind=\"message\" at=\"2026-10-26T16:35:20+08:00\" id=\"m1\" sig=\"-\">\n{body}\n</aries-inbox>"),
+            )
+        };
+        for body in [
+            "<do>answer; recorded: line one\nline two</do>\nok",
+            "<reply-to from=\"Aries\">a quote\nover two lines</reply-to>\nok",
+            "<reply-to from=\"Aries\">one line</reply-to>\n<do>first\nsecond</do>\nok",
+        ] {
+            assert!(verified(&signed(body)).is_none(), "{body:?}");
+        }
+        assert!(verified(&signed("<do>one line</do>\nok")).is_some());
     }
 }
