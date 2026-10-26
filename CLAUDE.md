@@ -1293,7 +1293,18 @@ The preview pane remeasures the transcript only when it changes the transcript's
 `paneLayoutChanged` in `app.js`): on a phone and below 1180px it is an overlay, and a remeasure there
 only threw every measured height away (`a_phone_reader_who_opens_a_file_and_closes_the_pane_…`).
 While the head is still coming the phone's Turns count is the highest turn NUMBER drawn (#342). The
-classic page never asks for a tail and is unchanged.
+classic page never asks for a tail and is unchanged. **The head comes in ranges** (#s274, Hong on a
+phone over the tailnet: the head climbed to 48% and fell back to 1%, again and again, because one
+`/records` read of it restarted from the top after every drop): `RecordStore.loadHead` reads at most
+`HEAD_PIECE_BYTES` (1 MiB; `?headPiece=` for a case) a range, parses each record as it completes and
+starts the next range at the first record it has not finished, so the progress only climbs. **A
+`/records` reply is always whole records** (`RecordStore::read_records`): an end inside a record is
+carried on to its end and a start inside one is refused (400), because secret masking (#365) reads a
+JSON string's quotes from the first byte of a reply; a reply cut inside a record carried a private
+key's body to the phone unmasked (`a_masked_piece_of_the_record_log_shows_no_part_of_a_secret`). A
+409, a head that does not parse or one whose count differs starts the session over
+(`app_shell_head_cut_mid_transfer_goes_on_from_the_record_it_was_reading`). The rest of the
+slow-link work is `design/slow-links.md`.
 
 **`claude-replay`** (root) — the thin assembly crate: clap CLI (`run_viewer`), `jdi/` the
 **`agent-jdi`** binary (unattended-run supervisor; see `src/jdi/DESIGN.md`), and compat

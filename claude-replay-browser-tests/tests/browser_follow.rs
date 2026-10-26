@@ -9007,13 +9007,14 @@ const VIOLATIONS: &str = "JSON.stringify(window.__viewportViolations || [])";
 
 /// #s274 (Hong, on a phone over the tailnet: "Loading earlier turns" climbed to 48% and fell back to
 /// 1%, again and again). The head was ONE `/records` read, and a link that dropped it mid-transfer
-/// started it again from the top. Now it comes as ranges, its bytes kept as they arrive, so a drop
-/// costs only what was in flight: the read goes on from the byte where it stopped. Here the head is
-/// cut once, part way, and the card's percentages are read throughout: they never step back, the
-/// card says the connection dropped, and the head lands whole.
+/// started it again from the top. Now it comes as ranges the server answers in whole records, each
+/// record kept as it completes, so a drop costs at most the record in flight: the read goes on from
+/// the first record it had not finished. Here the head is cut once, part way, and the card's
+/// percentages are read throughout: they never step back, the card says the connection dropped, and
+/// the head lands whole.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
-fn app_shell_head_cut_mid_transfer_goes_on_from_where_it_stopped() {
+fn app_shell_head_cut_mid_transfer_goes_on_from_the_record_it_was_reading() {
     let _serial = serial();
     let base = harness::base("head-cut-mid-transfer");
     let stores = harness::Stores::new(&base);
@@ -9095,9 +9096,16 @@ fn app_shell_head_cut_mid_transfer_goes_on_from_where_it_stopped() {
     let reads = harness::eval(&tab, "JSON.stringify(window.__headReads)");
     let reads: Vec<(u64, u64)> =
         serde_json::from_str(reads.as_str().unwrap_or("[]")).unwrap_or_default();
+    // The server answers in whole records, so the read after the cut starts at the first record
+    // the cut one had not finished: after that read's start, at or before the cut.
+    let cut_at = reads
+        .iter()
+        .position(|&(from, len)| from <= 30000 && from + len > 30000)
+        .expect("a read held the cut");
+    let after = reads.get(cut_at + 1).map(|r| r.0);
     assert!(
-        reads.iter().any(|&(from, _)| from == 30000),
-        "the read after the cut went on from the byte where it stopped: {reads:?}"
+        after.is_some_and(|from| from > reads[cut_at].0 && from <= 30000),
+        "the read after the cut went on from the first record it had not finished: {reads:?}"
     );
     assert_eq!(
         reads.iter().filter(|&&(from, _)| from == 0).count(),

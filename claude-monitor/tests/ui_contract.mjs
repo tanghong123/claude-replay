@@ -244,80 +244,85 @@ assert.deepEqual(store.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 });
   console.log("#314 tail-first open cases passed");
 }
 
-// #s274: the head comes in ranges of at most HEAD_PIECE_BYTES, its bytes kept as they arrive. A read
-// that drops goes on from the byte it stopped at, so the progress only climbs; a range may end
-// inside a character, so the bytes are joined before they are decoded; and a 409 under the same epoch (the server dropped an idle
-// session and a pull brings it back) carries on, where a new epoch starts the session over.
+// #s274: the head comes in ranges of at most HEAD_PIECE_BYTES, which the server answers in WHOLE
+// records (an end inside one carried on to its end, a start inside one refused: secret masking reads
+// whole records). A read that drops keeps the records it finished, and the next range starts at the
+// first record it did not, so the progress only climbs. A 409, or a head that will not parse, starts
+// the session over.
 {
   const { HEAD_PIECE_BYTES } = await import("../../claude-monitor/src/codex-ui/record-store.js");
   const realFetch = globalThis.fetch;
-  // ~2.4 MB of records written in a three-byte character, so the 1 MiB boundaries (not multiples
-  // of three) fall inside one.
-  const big = Array.from({ length: 8 }, (_, i) => ({ kind: i % 2 ? "assistant" : "user", id: `h${i}`, turn: i, body: [{ p: "md", h: "中".repeat(100_000) }] }));
+  // ~2.4 MB of records in a three-byte character, so a cut anywhere may fall inside one.
+  const big = Array.from({ length: 24 }, (_, i) => ({ kind: i % 2 ? "assistant" : "user", id: `h${i}`, turn: i, body: [{ p: "md", h: "中".repeat(33_000) }] }));
   const bytes = new TextEncoder().encode(big.map(record => JSON.stringify(record)).join("\n") + "\n");
-  assert.ok(bytes.length > 2 * HEAD_PIECE_BYTES && HEAD_PIECE_BYTES % 3 !== 0, "the fixture spans three pieces, split inside characters");
-  const tailReply = () => ({ epoch: 7, committed_from: 8, committed: [{ kind: "user", id: "t8", turn: 9, body: [] }], provisional_gen: 0, provisional_from: 0, provisional: [], meta: { tasks: [], children: [] } });
-  const slice = url => { const q = new URL(url, "http://x").searchParams; const from = Number(q.get("from")), len = Number(q.get("len")); return bytes.slice(from, from + len); };
+  assert.ok(bytes.length > 2 * HEAD_PIECE_BYTES, "the fixture spans three ranges");
+  const tailReply = () => ({ epoch: 7, committed_from: 24, committed: [{ kind: "user", id: "t24", turn: 25, body: [] }], provisional_gen: 0, provisional_from: 0, provisional: [], meta: { tasks: [], children: [] } });
+  // The server's range read: whole records, or 400 for a start inside one.
+  const served = [];
+  const serve = (url, cutAfter = Infinity) => {
+    const q = new URL(url, "http://x").searchParams, from = Number(q.get("from"));
+    let end = Math.min(bytes.length, from + Number(q.get("len")));
+    served.push(from);
+    if (from > 0 && bytes[from - 1] !== 10) return new Response("from is not where a record starts", { status: 400 });
+    while (end < bytes.length && bytes[end - 1] !== 10) end++;
+    const body = bytes.slice(from, end);
+    let at = 0;
+    // Pull-based, so the bytes before a drop really arrive before the error (#s274's review).
+    return new Response(new ReadableStream({ pull(c) {
+      if (at >= Math.min(body.length, cutAfter)) { if (cutAfter < body.length) c.error(new TypeError("network connection was lost")); else c.close(); return; }
+      const next = Math.min(body.length, cutAfter, at + 65_536); c.enqueue(body.slice(at, next)); at = next;
+    } }), { status: 200 });
+  };
   const landed = store => new Promise(resolve => { const update = store.handlers.update; store.handlers.update = u => { update?.(u); if (u.prepended) resolve(u); }; });
   try {
     const progress = [], failures = [];
-    let calls = 0;
+    let dropped = false;
     const store = new RecordStore({ update: () => {}, headProgress: got => progress.push(got), headFailed: (e, n) => failures.push(n) }, { tailBudget: 1024 });
     store.session = "s";
-    store.apply(tailReply(), 8);
-    const head = { count: 8, len: bytes.length, epoch: 7 };
+    store.apply(tailReply(), 24);
+    const head = { count: 24, len: bytes.length, epoch: 7 };
     store.head = head;
+    // The second range drops 300 KB in, inside a record.
     globalThis.fetch = async url => {
-      calls++;
-      // The second piece's first read drops halfway through.
-      if (calls === 2) {
-        const part = slice(url).slice(0, 4096);
-        return new Response(new ReadableStream({ start(c) { c.enqueue(part); c.error(new Error("dropped")); } }), { status: 200 });
-      }
-      return new Response(slice(url), { status: 200 });
+      const from = Number(new URL(url, "http://x").searchParams.get("from"));
+      if (!dropped && from > 0) { dropped = true; return serve(url, 300_000); }
+      return serve(url);
     };
     const done = landed(store);
     await store.loadHead(store.generation, head);
     await done;
-    assert.deepEqual(store.records.slice(0, 8).map(record => record.id), big.map(record => record.id), "the head lands whole, in place");
-    assert.equal(store.records[3].body[0].h, "中".repeat(100_000), "…its characters intact across the piece boundaries");
-    assert.deepEqual(failures, [1], "one piece failed, once");
-    assert.equal(calls, 4, "three ranges and one more after the drop, never the whole head again");
+    assert.deepEqual(store.records.slice(0, 24).map(record => record.id), big.map(record => record.id), "the head lands whole, in place");
+    assert.equal(store.records[5].body[0].h, "中".repeat(33_000), "…its characters intact");
+    assert.deepEqual(failures, [1], "one read dropped, once");
+    assert.ok(served.every(from => from === 0 || bytes[from - 1] === 10), `every range started where a record starts: ${served}`);
+    const second = served[1], resumed = served[2];
+    assert.ok(resumed > second && resumed <= second + 300_000, `after the drop the read went on from the first record it had not finished (${second} -> ${resumed}), never from the start`);
+    assert.equal(served.filter(from => from === 0).length, 1, "the head's start was asked for once");
     const backwards = progress.findIndex((got, i) => i && got < progress[i - 1]);
-    assert.equal(backwards, -1, `the progress never steps back: the read that dropped went on from the byte it stopped at (${progress[backwards - 1]} -> ${progress[backwards]})`);
-    assert.ok(progress.at(-1) === bytes.length, "…and ends at the whole head");
+    assert.equal(backwards, -1, `the progress never steps back (${progress[backwards - 1]} -> ${progress[backwards]})`);
+    assert.equal(progress.at(-1), bytes.length, "…and ends at the whole head");
 
-    // A 409 under the same epoch: the session comes back with a pull, and the head goes on.
-    let resets = 0, served = [];
-    const again = new RecordStore({ update: () => {}, reset: () => resets++ }, { tailBudget: 1024 });
-    again.session = "s"; again.apply(tailReply(), 8);
-    const owed = { count: 8, len: bytes.length, epoch: 7 };
-    again.head = owed;
-    let refused = false;
-    globalThis.fetch = async url => {
-      served.push(String(url).split("?")[0]);
-      if (String(url).startsWith("/pull")) return new Response(JSON.stringify({ ...tailReply(), committed: [] }), { status: 200 });
-      if (!refused && new URL(url, "http://x").searchParams.get("from") !== "0") { refused = true; return new Response("stale epoch", { status: 409 }); }
-      return new Response(slice(url), { status: 200 });
-    };
-    const back = landed(again);
-    await again.loadHead(again.generation, owed);
-    await back;
-    assert.equal(resets, 0, "a session the server brought back under the same epoch is not started over");
-    assert.ok(served.includes("/pull"), "…it was pulled back first");
-    assert.equal(again.records[7].id, "h7");
+    // A 409 starts the session over: the log left that epoch (and the epoch number of a rebuilt
+    // log can be the same as before, so a 409 is never taken as "carry on").
+    let resets = 0;
+    const stale = new RecordStore({ update: () => {}, reset: () => resets++ }, { tailBudget: 1024 });
+    stale.session = "s"; stale.apply(tailReply(), 24);
+    const gone = { count: 24, len: bytes.length, epoch: 7 };
+    stale.head = gone;
+    globalThis.fetch = async () => new Response("stale epoch", { status: 409 });
+    await stale.loadHead(stale.generation, gone);
+    assert.equal(resets, 1, "a 409 starts the session over");
+    assert.deepEqual(stale.records, []);
 
-    // A 409 under a NEW epoch: the log changed, and the session starts over.
-    const changed = new RecordStore({ update: () => {}, reset: () => resets++ }, { tailBudget: 1024 });
-    changed.session = "s"; changed.apply(tailReply(), 8);
-    const stale = { count: 8, len: bytes.length, epoch: 7 };
-    changed.head = stale;
-    globalThis.fetch = async url => String(url).startsWith("/pull")
-      ? new Response(JSON.stringify({ ...tailReply(), epoch: 8, committed: [] }), { status: 200 })
-      : new Response("stale epoch", { status: 409 });
-    await changed.loadHead(changed.generation, stale);
-    assert.equal(resets, 1, "a new epoch starts the session over");
-    assert.deepEqual(changed.records, []);
+    // A head that will not parse is not this head: it starts over, never retries the same bytes.
+    const broken = new RecordStore({ update: () => {}, reset: () => resets++, headFailed: () => { throw new Error("a broken head must not be retried"); } }, { tailBudget: 1024 });
+    broken.session = "s"; broken.apply(tailReply(), 24);
+    const junk = new TextEncoder().encode("{not json\n");
+    const owed = { count: 24, len: junk.length, epoch: 7 };
+    broken.head = owed;
+    globalThis.fetch = async () => new Response(junk, { status: 200 });
+    await broken.loadHead(broken.generation, owed);
+    assert.equal(resets, 2, "a head that does not parse starts the session over");
   } finally {
     globalThis.fetch = realFetch;
   }

@@ -1112,7 +1112,10 @@ impl SessionService {
     }
 
     /// Serve `[from, from+len)` off `<id>.records` — the client's committed range read (the
-    /// second phase of a pull whose reply carried a `committed_ext` pointer). `Err(StaleEpoch)` → **409**
+    /// second phase of a pull whose reply carried a `committed_ext` pointer, or a piece of a
+    /// tail-first open's head, #s274) — in whole records: an end inside a record is carried on to
+    /// its end, and a `from` that is not where a record starts is refused (`NotARecordStart` →
+    /// **400**), so secret masking always reads whole records. `Stale` → **409**
     /// when `epoch` doesn't match the log's current epoch: a reset recreated the log since the
     /// pointer was issued, so the bytes would be wrong — the client drops the whole reply and
     /// re-pulls with its old cursor (the epoch bump then resyncs it). Read under the session
@@ -1123,16 +1126,21 @@ impl SessionService {
         from: u64,
         len: u64,
         epoch: u64,
-    ) -> Result<Vec<u8>, StaleEpoch> {
+    ) -> Result<Vec<u8>, RecordsRefusal> {
         // Through the resident store, under the session lock — the epoch check can't tear
         // against a concurrent reset. A reaped resident yields 409; the client's next pull
         // rematerializes it and reissues the pointer.
-        let ss = self.cache.shared_peek(id).ok_or(StaleEpoch)?;
+        let ss = self
+            .cache
+            .shared_peek(id)
+            .ok_or(RecordsRefusal::Stale(StaleEpoch))?;
         ss.store_read(|cur_epoch, store| {
             if cur_epoch != epoch {
-                return Err(StaleEpoch);
+                return Err(RecordsRefusal::Stale(StaleEpoch));
             }
-            Ok(store.read_range(from, from.saturating_add(len)))
+            store
+                .read_records(from, from.saturating_add(len))
+                .ok_or(RecordsRefusal::NotARecordStart)
         })
     }
 }
@@ -1347,6 +1355,15 @@ fn spawn_http_server(
 /// the reply whole and re-pulls (the 409 path).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StaleEpoch;
+
+/// Why a `/records` range read was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordsRefusal {
+    /// The log has left that epoch (409).
+    Stale(StaleEpoch),
+    /// `from` is inside a record (400): a reply must hold whole records, for secret masking.
+    NotARecordStart,
+}
 
 /// Every plain-text reply's type (#317): WITH its charset. The refusal and error texts carry an em
 /// dash, and a browser in a zh locale decodes charset-less text as GBK, showing mojibake.
@@ -2963,10 +2980,17 @@ pub fn service_routes(
         }
         return match live.records_bytes(id, num("from"), num("len"), num("epoch")) {
             Ok(bytes) => HttpResponse::ok("application/json; charset=utf-8", bytes),
-            Err(StaleEpoch) => HttpResponse {
+            Err(RecordsRefusal::Stale(StaleEpoch)) => HttpResponse {
                 code: "409 Conflict",
                 content_type: TEXT_PLAIN,
                 body: b"stale epoch".to_vec(),
+                headers: Vec::new(),
+                stream: None,
+            },
+            Err(RecordsRefusal::NotARecordStart) => HttpResponse {
+                code: "400 Bad Request",
+                content_type: TEXT_PLAIN,
+                body: b"from is not where a record starts".to_vec(),
                 headers: Vec::new(),
                 stream: None,
             },
@@ -4541,7 +4565,7 @@ mod tests {
                         r["epoch"].as_u64().unwrap(),
                     );
                     match live.records_bytes(id, from, len, epoch) {
-                        Err(StaleEpoch) => return, // 409: drop the reply whole; re-pull next tick
+                        Err(_) => return, // 409: drop the reply whole; re-pull next tick
                         Ok(bytes) => std::str::from_utf8(&bytes)
                             .expect("utf8 records")
                             .lines()
@@ -4947,6 +4971,89 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// #s274: what a phone reads of a long session is pieces of the record log, and secret
+    /// masking (#365) reads each reply from its first byte. A reply is whole records, wherever a
+    /// piece asked to end, so a masked piece shows no part of a secret — the reviewer's leak was a
+    /// piece starting or ending inside a record. Fake secrets are assembled at run time (CI runs
+    /// gitleaks over every line).
+    #[test]
+    fn a_masked_piece_of_the_record_log_shows_no_part_of_a_secret() {
+        use crate::cache::Cursor;
+        use crate::Transcript;
+        let base =
+            std::env::temp_dir().join(format!("cr-serve-mask-pieces-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("sid.jsonl");
+        std::fs::create_dir_all(&base).unwrap();
+        let key = format!("{}{}", ["sk", "ant", "api03-"].join("-"), "Q".repeat(40));
+        let tail = ["PRIVATE", "KEY-----"].join(" ");
+        let pem = format!(
+            "-----BEGIN RSA {tail}\n{}\n-----END RSA {tail}",
+            "Z".repeat(64)
+        );
+        let mut transcript = String::new();
+        for i in 0..6 {
+            let text = format!("turn {i}: the key {key} and the block {pem} and more words");
+            transcript += &serde_json::json!({"type": "user", "cwd": "/r", "timestamp": format!("2026-07-26T10:00:{:02}Z", i * 2), "message": {"role": "user", "content": [{"type": "text", "text": text}]}}).to_string();
+            transcript += "\n";
+            transcript += &serde_json::json!({"type": "assistant", "timestamp": format!("2026-07-26T10:00:{:02}Z", i * 2 + 1), "message": {"role": "assistant", "content": [{"type": "text", "text": format!("noted {i}")}]}}).to_string();
+            transcript += "\n";
+        }
+        std::fs::write(&sess, transcript).unwrap();
+        let live = SessionService {
+            fold: FoldPolicy::default(),
+            roots: std::sync::Mutex::new(vec![Root {
+                id: "sid".into(),
+                agent: Agent::CLAUDE,
+                path: sess.clone(),
+                cwd: "/r".into(),
+            }]),
+            cache: test_cache(&base),
+            port: std::sync::Arc::new(std::sync::OnceLock::new()),
+        };
+        live.cache
+            .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
+        let v: Value =
+            serde_json::from_str(&body(live.pull_response("sid", Cursor::default()))).unwrap();
+        let (end, epoch) = (
+            v["committed_ext"]["offset"].as_u64().unwrap()
+                + v["committed_ext"]["len"].as_u64().unwrap(),
+            v["epoch"].as_u64().unwrap(),
+        );
+        let whole = live.records_bytes("sid", 0, end, epoch).unwrap();
+        assert!(
+            String::from_utf8_lossy(&whole).contains(&"Q".repeat(40)),
+            "the fixture's records carry the key unmasked on disk"
+        );
+        let starts: Vec<u64> = std::iter::once(0)
+            .chain(
+                whole
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, b)| **b == b'\n')
+                    .map(|(i, _)| i as u64 + 1),
+            )
+            .filter(|&at| at < end)
+            .collect();
+        let mut pieces = 0;
+        for &from in &starts {
+            for len in (1..=(end - from)).step_by(37) {
+                let mut piece = live.records_bytes("sid", from, len, epoch).unwrap();
+                super::super::mask::mask_body("application/json; charset=utf-8", &mut piece);
+                let text = String::from_utf8_lossy(&piece);
+                for part in ["QQQQQQQQ", "ZZZZZZZZ"] {
+                    assert!(
+                        !text.contains(part),
+                        "a piece [{from}, +{len}) masked still shows {part:?}"
+                    );
+                }
+                pieces += 1;
+            }
+        }
+        assert!(pieces > 100, "many cuts were tried: {pieces}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// Part 2 end-to-end (no HTTP): a pull whose reply carries a `committed_ext` pointer, the
     /// `/records` range read materializing exactly the committed records, the applied cursor
     /// round-tripping to an idle re-pull, and the stale-epoch 409 path.
@@ -5018,7 +5125,44 @@ mod tests {
         assert_eq!(idle["provisional"].as_array().unwrap().len(), 0);
 
         // A pointer issued before a reset must not read a recreated log: stale epoch ⇒ Err (409).
-        assert!(live.records_bytes("sid", from, len, epoch + 1).is_err());
+        assert_eq!(
+            live.records_bytes("sid", from, len, epoch + 1),
+            Err(RecordsRefusal::Stale(StaleEpoch))
+        );
+
+        // #s274: a range read is whole records, for secret masking. An end inside a record is
+        // carried on to the record's end; a start inside one is refused.
+        let first_end = bytes.iter().position(|b| *b == b'\n').unwrap() as u64 + 1;
+        assert!(
+            bytes.len() as u64 > first_end,
+            "the fixture has a second record"
+        );
+        let cut = live
+            .records_bytes("sid", from, first_end / 2, epoch)
+            .expect("a range from a record start serves");
+        assert_eq!(
+            cut,
+            bytes[..first_end as usize],
+            "an end inside the first record is carried on to its end"
+        );
+        let at_boundary = live
+            .records_bytes("sid", from, first_end, epoch)
+            .expect("an end on a boundary serves");
+        assert_eq!(
+            at_boundary, cut,
+            "…and one already on a boundary is left as it is"
+        );
+        assert_eq!(
+            live.records_bytes("sid", from + first_end / 2, 10, epoch),
+            Err(RecordsRefusal::NotARecordStart),
+            "a start inside a record is refused"
+        );
+        assert_eq!(
+            live.records_bytes("sid", from + first_end, len - first_end, epoch)
+                .unwrap(),
+            bytes[first_end as usize..],
+            "a start right after a framing newline serves the rest"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 

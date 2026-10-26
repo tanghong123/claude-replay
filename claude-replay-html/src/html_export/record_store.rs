@@ -143,6 +143,37 @@ impl RecordStore {
             Err(_) => Vec::new(),
         }
     }
+
+    /// The `/records` range read, in WHOLE records (#s274): `None` when `start` is not where a
+    /// record starts (byte 0, or just after a framing newline), and an end inside a record carried
+    /// on to that record's end. Secret masking (#365) finds a JSON string's quotes by counting from
+    /// the first byte of a reply, so a reply that starts or ends inside a record could carry a
+    /// secret unmasked to a phone; every pointer the server issues is a record boundary, and a
+    /// client reading a long range in pieces asks from boundaries it has seen.
+    pub(crate) fn read_records(&self, start: u64, end: u64) -> Option<Vec<u8>> {
+        use std::io::BufRead;
+        if start > 0 {
+            let mut before = [0u8; 1];
+            let mut f = std::fs::File::open(&self.log.path).ok()?;
+            f.seek(SeekFrom::Start(start - 1)).ok()?;
+            f.read_exact(&mut before).ok()?;
+            if before[0] != b'\n' {
+                return None;
+            }
+        }
+        let mut bytes = self.read_range(start, end);
+        let end = start + bytes.len() as u64;
+        if end < self.log.len && bytes.last().is_some_and(|b| *b != b'\n') {
+            if let Ok(mut f) = std::fs::File::open(&self.log.path) {
+                if f.seek(SeekFrom::Start(end)).is_ok() {
+                    let mut rest =
+                        std::io::BufReader::new(std::io::Read::take(f, self.log.len - end));
+                    let _ = rest.read_until(b'\n', &mut bytes);
+                }
+            }
+        }
+        Some(bytes)
+    }
 }
 
 impl BlockStore for RecordStore {

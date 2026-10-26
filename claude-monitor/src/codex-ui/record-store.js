@@ -10,9 +10,13 @@ const WAITING_AFTER_MS = 1200;
 /** The head of a tail-first open is read in pieces of this many bytes of the log, each its own
  *  `/records` range, so a link that drops a long transfer costs one piece and never the whole head
  *  (#s274: a phone over the tailnet climbed to 48% and fell back to 1%, again and again, while one
- *  9.7 MB read restarted from the top after every drop). A piece may end mid-record, even inside
- *  a character, so the head is kept as BYTES and decoded once, joined. */
+ *  9.7 MB read restarted from the top after every drop). The server answers a range in whole
+ *  records, and a dropped read keeps the records it finished. */
 export const HEAD_PIECE_BYTES = 1024 * 1024;
+
+/** How many reads of the head in a row may fail without bringing a record before the page starts
+ *  the session over. A drop that brought records resets the count. */
+const HEAD_TRIES = 12;
 
 /** A record that has not arrived yet: the HEAD of a tail-first open (#314,
  *  design/tail-first-open.md). One frozen object stands for each of them; the projection folds
@@ -164,79 +168,84 @@ export class RecordStore {
 
   /** The head of a tail-first open, read behind the tail the page has already drawn (#314). It
    *  replaces the placeholders IN PLACE — record indices never move — and is reported as a
-   *  prepend (`prepended`: how many records it brought in front of the tail). It is read as ranges
-   *  of at most `headPieceBytes` (#s274), its bytes kept as they arrive, so a read that drops starts
-   *  again at the byte where it stopped and the progress only climbs. A 409 means the server no
-   *  longer holds the log under that epoch: it dropped an idle session from memory (a pull brings it
-   *  back under the SAME epoch, and the head carries on), or the log was recreated (a new epoch, so
-   *  the session starts over). A head whose count is not the one the pull named starts the session
-   *  over too; one is never spliced in. */
+   *  prepend (`prepended`: how many records it brought in front of the tail).
+   *
+   *  It is read as ranges of at most `headPieceBytes` (#s274), and the server answers each in
+   *  whole records (an end inside one is carried on to its end; secret masking reads whole
+   *  records). Each range's records are parsed as they complete, so a read that drops keeps every
+   *  record it finished and the next range starts at the first one it did not: the progress only
+   *  climbs, and a drop costs at most one record's bytes. A 409 (the log left that epoch), a head
+   *  that will not parse, a count other than the one the pull named, or a range that keeps coming
+   *  back empty starts the session over; a head is never spliced in. */
   async loadHead(generation, head) {
     const current = () => generation === this.generation && this.head === head;
-    head.parts ??= [];
+    head.records ??= [];
     head.got ??= 0;
+    head.shown ??= 0;
+    const show = got => {
+      head.shown = Math.max(head.shown, got);
+      this.handlers.headProgress?.(head.shown, head.len);
+    };
     try {
       while (head.got < head.len) {
         const len = Math.min(this.headPieceBytes, head.len - head.got);
         const response = await fetch(`/records?${recordsQuery(this.session, { offset: head.got, len }, head.epoch)}`, { cache: "no-store" });
         if (!current()) return;
-        if (response.status === 409) { await this.rematerialize(generation, head); return; }
+        if (response.status === 409) { this.recover(); return; }
         if (!response.ok) throw new Error(`records HTTP ${response.status}`);
         const before = head.got;
-        const keep = bytes => {
-          head.parts.push(bytes);
-          head.got += bytes.byteLength;
-          this.handlers.headProgress?.(head.got, head.len);
+        // Every record the bytes so far complete is parsed and kept; the bytes after the last
+        // newline wait, as chunks, for the rest of their record.
+        let pending = [], pendingLength = 0;
+        const take = bytes => {
+          const cut = bytes.lastIndexOf(10);
+          if (cut < 0) { pending.push(bytes); pendingLength += bytes.length; return; }
+          const whole = new Uint8Array(pendingLength + cut + 1);
+          let at = 0;
+          for (const chunk of pending) { whole.set(chunk, at); at += chunk.length; }
+          whole.set(bytes.subarray(0, cut + 1), at);
+          for (const record of parseRecords(new TextDecoder().decode(whole))) head.records.push(record);
+          head.got += whole.length;
+          pending = [bytes.slice(cut + 1)]; pendingLength = bytes.length - cut - 1;
         };
-        if (!response.body) keep(new Uint8Array(await response.arrayBuffer()));
-        else {
-          const reader = response.body.getReader();
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (!current()) { reader.cancel().catch(() => {}); return; }
-            if (done) break;
-            keep(value);
+        try {
+          if (!response.body) {
+            const bytes = new Uint8Array(await response.arrayBuffer());
+            if (!current()) return;
+            take(bytes);
+            show(head.got);
+          } else {
+            const reader = response.body.getReader();
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (!current()) { reader.cancel().catch(() => {}); return; }
+              if (done) break;
+              take(value);
+              show(head.got + pendingLength);
+            }
           }
+        } catch (error) {
+          // What the read finished is kept; a record it was part way through is read again.
+          if (head.got > before) head.failures = 0;
+          throw error;
         }
-        // The log holds less than the pull said it did: not this head.
-        if (head.got === before) { this.recover(); return; }
+        if (head.got === before) throw new Error("records: a range brought no whole record");
         head.failures = 0;
       }
-      const whole = new Uint8Array(head.got);
-      let at = 0;
-      for (const part of head.parts) { whole.set(part, at); at += part.byteLength; }
-      const records = parseRecords(new TextDecoder().decode(whole));
-      if (records.length !== head.count) { this.recover(); return; }
-      for (let i = 0; i < records.length; i++) this.records[i] = records[i];
+      if (head.records.length !== head.count) { this.recover(); return; }
+      for (let i = 0; i < head.records.length; i++) this.records[i] = head.records[i];
       this.head = null;
       this.handlers.update?.({ records: this.records, meta: this.meta, changedFrom: 0, prepended: head.count });
     } catch (error) {
       if (!current()) return;
+      // A head that does not parse is not this head.
+      if (error instanceof SyntaxError) { this.recover(); return; }
       head.failures = (head.failures || 0) + 1;
+      // A link that fails again and again without bringing a record is given up on: start over.
+      if (head.failures > HEAD_TRIES) { this.recover(); return; }
       this.handlers.headFailed?.(error, head.failures);
-      // Back off on a link that keeps failing, up to 8 s; what arrived is kept either way.
       setTimeout(() => { if (current()) this.loadHead(generation, head); }, Math.min(8000, 1000 * head.failures));
     }
-  }
-
-  /** A head piece met 409. Pull once with the store's own cursor: under the SAME epoch the server
-   *  has the session back and the head goes on from where it was; under another, or no answer,
-   *  the log changed and the session starts over. */
-  async rematerialize(generation, head) {
-    const current = () => generation === this.generation && this.head === head;
-    try {
-      const response = await fetch(`/pull?${pullQuery(this.session, this.cursor)}`, { cache: "no-store" });
-      if (!current()) return;
-      const reply = response.ok ? await response.json() : null;
-      if (!current()) return;
-      if (reply && reply.epoch === head.epoch) {
-        setTimeout(() => { if (current()) this.loadHead(generation, head); }, 250);
-        return;
-      }
-    } catch (error) {
-      if (!current()) return;
-    }
-    this.recover();
   }
 
   apply(reply, headCount = 0) {
