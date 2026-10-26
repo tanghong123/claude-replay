@@ -350,6 +350,40 @@ fn task_op(name: &str, id: &str, input: &Value) -> Option<claude_replay_engine::
     }
 }
 
+/// #s272 mirror of the fold's `UserInbox` arm: pop a queued copy by its text (`queue` is `None`
+/// where the caller already did), then the person's turn for the first message with an id and
+/// the text it is for a later copy.
+#[cfg(test)]
+fn push_inbox(
+    m: Message,
+    out: &mut Vec<Block>,
+    queue: Option<(&mut Vec<QueueItem>, &mut Vec<BlockIndex>)>,
+    inbox_ids: &mut std::collections::HashSet<String>,
+) {
+    let Message::UserInbox {
+        text,
+        words,
+        inbox,
+        images,
+    } = m
+    else {
+        return;
+    };
+    if let Some((queue, suppress)) = queue {
+        if let Some(pos) = queue.iter().position(|q| q.content == text.trim()) {
+            if let Some(mi) = queue.remove(pos).marker_idx {
+                suppress.push(mi);
+            }
+        }
+    }
+    if inbox_ids.insert(inbox.id.clone()) {
+        out.push(Block::UserInbox { text: words, inbox });
+        out.extend(images.into_iter().map(Block::Attachment));
+    } else {
+        out.push(Block::UserText(text));
+    }
+}
+
 /// Turn one plain-string `user` message into block(s) — a slash command becomes a
 /// `Command`, a task-notification collapses to its summary, caveat noise is dropped, and
 /// the rest is `UserText`. Used by the frozen reference parser [`parse_main`]; the streaming
@@ -3415,6 +3449,17 @@ pub(crate) fn decode_line_known(
                 });
                 return;
             }
+            // #s272: a relayed message from the person, verified, is the whole prompt.
+            if let Some(m) = (injected == Injected::No)
+                .then(|| {
+                    let s = content.as_str()?;
+                    inbox_message(s, || fence_pasted(&strip_caveat(s)).into_owned())
+                })
+                .flatten()
+            {
+                msgs.push(m);
+                return;
+            }
             note_reply_drift(&v);
             if let Some(s) = content.as_str() {
                 if let Some(m) = classify_user_string(s, injected) {
@@ -3569,6 +3614,12 @@ pub(crate) fn decode_line_known(
                                 text: peer.body,
                                 queued: Some(fence_pasted(p).into_owned()),
                             });
+                        } else if let Some(m) = (!meta)
+                            .then(|| inbox_message(p, || fence_pasted(p).into_owned()))
+                            .flatten()
+                        {
+                            // #s272: picked up mid-turn, which is how most of them arrive.
+                            msgs.push(m);
                         } else {
                             msgs.push(Message::AttachmentPrompt {
                                 text: fence_pasted(p).into_owned(),
@@ -4271,6 +4322,8 @@ pub(crate) fn parse_main<S: AsRef<str>>(
     // for this skill: …"); we nest that body into this block so a skill load reads as
     // ONE collapsible unit named by the skill, instead of a loose result block beside it.
     let mut last_skill: Option<BlockIndex> = None;
+    // #s272 mirror: the ids of the relayed messages already taken as the person's.
+    let mut inbox_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for line in lines {
         let line = line.as_ref().trim();
@@ -4588,6 +4641,22 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     });
                     continue;
                 }
+                // #s272 mirror of the decode's `UserInbox`, and of the fold's first-id rule.
+                if let Some(m) = (injection == Injected::No)
+                    .then(|| {
+                        let s = content.as_str()?;
+                        inbox_message(s, || fence_pasted(&strip_caveat(s)).into_owned())
+                    })
+                    .flatten()
+                {
+                    push_inbox(
+                        m,
+                        &mut out,
+                        Some((&mut queue, &mut suppress)),
+                        &mut inbox_ids,
+                    );
+                    continue;
+                }
                 note_reply_drift(&v);
                 if let Some(s) = content.as_str() {
                     if injection == Injected::CompactSummary {
@@ -4803,6 +4872,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                 if is_prompt {
                     if let Some(p) = a.and_then(|a| a.get("prompt")).and_then(|p| p.as_str()) {
                         if !p.trim().is_empty() {
+                            let raw = p;
                             // #52 op-less delivery, attachment form (see above). The pickup
                             // ALWAYS renders its turn (kept in lockstep with the streaming
                             // fold's `AttachmentPrompt` arm).
@@ -4823,7 +4893,14 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     mode: peer.mode,
                                     text: peer.body,
                                 }),
-                                None => out.push(Block::UserText(p.into_owned())),
+                                // #s272 mirror: a relayed message picked up mid-turn.
+                                None => match (!meta)
+                                    .then(|| inbox_message(raw, || p.to_string()))
+                                    .flatten()
+                                {
+                                    Some(m) => push_inbox(m, &mut out, None, &mut inbox_ids),
+                                    None => out.push(Block::UserText(p.into_owned())),
+                                },
                             }
                         }
                     }
@@ -5469,6 +5546,20 @@ fn summary_description(summary: &str) -> String {
         }
     }
     summary.trim().to_string()
+}
+
+/// A relayed message from the person (#s272), when `text` is one whose signature verifies: the
+/// prompt the fold makes their turn, carrying the text it would otherwise be — what an ordinary
+/// prompt's text is, and what a queued copy of it was queued under (#52). The fold takes only the
+/// first message with an id as theirs.
+fn inbox_message(raw: &str, text: impl FnOnce() -> String) -> Option<Message> {
+    let v = super::inbox::verified(raw)?;
+    Some(Message::UserInbox {
+        text: text(),
+        words: v.words,
+        inbox: v.inbox,
+        images: v.images,
+    })
 }
 
 /// A message from ANOTHER Claude Code session (#s79), read from the record's own `origin`
@@ -6629,6 +6720,91 @@ mod tests {
         assert_eq!(
             notes[2], "API error: overloaded (HTTP 529) — retry 2 of 10",
             "{notes:?}"
+        );
+    }
+
+    /// #s272: a relayed message from the person, verified, is THEIR turn wherever a prompt
+    /// arrives — the user record and the mid-turn pickup, its queued marker consumed — the first
+    /// time its id appears; a later copy, a tampered one, and one inside a tool result or another
+    /// session's message are what they are. Both parse paths agree.
+    #[test]
+    fn a_relayed_message_is_the_persons_turn_once_and_only_where_it_opens_the_turn() {
+        use crate::agents::claude::inbox::tests::{wrapped, zero_key, A, B};
+        crate::agents::claude::inbox::install_key_source(zero_key);
+        let user = |at: &str, content: &str| {
+            serde_json::json!({"type": "user", "timestamp": at, "message": {"role": "user", "content": content}}).to_string()
+        };
+        let lines = [
+            user("2026-10-26T08:00:00.000Z", &wrapped(A, "608f")),
+            r#"{"type":"assistant","timestamp":"2026-10-26T08:00:05.000Z","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_i1","name":"Bash","input":{"command":"cat note"}}]}}"#.to_string(),
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-10-26T08:00:06.000Z", "content": wrapped(B, "608f")}).to_string(),
+            serde_json::json!({"type": "user", "timestamp": "2026-10-26T08:00:07.000Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_i1", "content": A}]}}).to_string(),
+            serde_json::json!({"type": "attachment", "timestamp": "2026-10-26T08:00:08.000Z", "attachment": {"type": "queued_command", "commandMode": "prompt", "origin": {"kind": "human"}, "prompt": wrapped(B, "608f")}}).to_string(),
+            r#"{"type":"assistant","timestamp":"2026-10-26T08:00:09.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"relayed"}]}}"#.to_string(),
+            user("2026-10-26T08:01:00.000Z", &wrapped(A, "608f")),
+            user("2026-10-26T08:02:00.000Z", &wrapped(&B.replace("ship it", "drop it"), "608f")),
+            serde_json::json!({"type": "user", "timestamp": "2026-10-26T08:03:00.000Z", "isMeta": true, "origin": {"kind": "peer", "name": "skua-HD", "fromMode": "bypass", "body": A}, "message": {"role": "user", "content": format!("Another Claude session sent a message:\n<cross-session-message from-name=\"skua-HD\">\n{A}\n</cross-session-message>")}}).to_string(),
+        ];
+        let jsonl = lines.join("\n");
+        let streamed = parse(&jsonl);
+        let reference = parse_main(lines.iter(), &mut Vec::new());
+        assert_eq!(streamed, reference, "the two parse paths agree");
+
+        let turns: Vec<&Block> = streamed.iter().filter(|b| b.opens_turn()).collect();
+        let ids: Vec<&str> = turns
+            .iter()
+            .filter_map(|b| match b {
+                Block::UserInbox { inbox, .. } => Some(inbox.id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["msgTERN0000000001==", "dash-1&skua"], "{streamed:#?}");
+        match &streamed[..2] {
+            [Block::UserInbox { text, .. }, Block::Attachment(a)] => {
+                assert_eq!(text, "this is the bug, see the **picture**");
+                assert_eq!(
+                    (a.kind, a.path.as_deref()),
+                    (
+                        AttachmentKind::Image,
+                        Some("/tmp/inbox-fixture/uploads/tern.png")
+                    ),
+                    "the picture follows the message"
+                );
+            }
+            other => panic!("the first turn is his, then his picture: {other:?}"),
+        }
+        let texts: Vec<&str> = turns
+            .iter()
+            .filter_map(|b| match b {
+                Block::UserText(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), 2, "the copy and the tampered one: {turns:#?}");
+        assert!(texts.iter().all(|t| t.contains("```pasted\n<aries-inbox")));
+        assert!(
+            matches!(turns.last(), Some(Block::PeerText { from, .. }) if from == "skua-HD"),
+            "inside another session's message it is that session's"
+        );
+        assert!(
+            !streamed
+                .iter()
+                .any(|b| matches!(b, Block::QueueEvent { .. })),
+            "the pickup consumed its marker: {streamed:#?}"
+        );
+        assert_eq!(
+            streamed
+                .iter()
+                .filter(|b| matches!(b, Block::Attachment(_)))
+                .count(),
+            1,
+            "only the verified message offers its picture, never a copy: {streamed:#?}"
+        );
+        let output = |b: &Block| matches!(b, Block::ToolUse { output: Some(o), .. } if o.contains("<aries-inbox"));
+        assert!(
+            streamed.iter().any(|b| output(b)
+                || matches!(b, Block::Thinking { tools, .. } if tools.iter().any(output))),
+            "inside a tool result it is output: {streamed:#?}"
         );
     }
 

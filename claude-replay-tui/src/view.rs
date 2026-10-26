@@ -2762,6 +2762,13 @@ fn block_occurrences(b: &Block, needle: &str, whole: bool) -> usize {
         Block::AssistantMessage { text, .. } => count(text, needle),
         Block::QueueEvent { text } => count(text, needle),
         Block::PeerText { from, text, .. } => count(from, needle) + count(text, needle),
+        Block::UserInbox { text, inbox } => {
+            count(text, needle)
+                + inbox
+                    .reply_to
+                    .as_ref()
+                    .map_or(0, |q| count(&q.text, needle))
+        }
         Block::Thinking { text, tools, .. } => {
             count(text, needle)
                 + tools

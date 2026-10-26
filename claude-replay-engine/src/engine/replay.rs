@@ -129,6 +129,10 @@ pub struct Replayer<'a> {
     // `AgentDone` resolve its spawn's id/type at emit-time from O(#agents) state instead of a
     // finalize-time scan over all blocks — so resolution survives emit-and-drop of the spawn.
     agent_ids: HashMap<String, (String, String)>,
+    /// The ids of the relayed messages already taken as the person's (#s272): a later message
+    /// with one of them is a copy, and folds as text. Persisted through the meta stream
+    /// (`MetaRecord::inbox_ids`) so a resumed fold knows the committed ones.
+    inbox_ids: std::collections::HashSet<String>,
 }
 
 /// Upsert a `SubAgent` spawn's identity into the running resolution map (keyed by both its
@@ -172,6 +176,7 @@ impl<'a> Replayer<'a> {
             suppress: Vec::new(),
             last_skill: None,
             agent_ids: HashMap::new(),
+            inbox_ids: std::collections::HashSet::new(),
         }
     }
 
@@ -292,6 +297,33 @@ impl<'a> Replayer<'a> {
                         },
                         _ => Block::UserText(text.clone()),
                     });
+                }
+                Message::UserInbox {
+                    text,
+                    words,
+                    inbox,
+                    images,
+                } => {
+                    // Delivered like any prompt: a queued copy is popped by the text it was
+                    // queued under (#52), whether this arrived as the user record or the pickup.
+                    if let Some(pos) = self.queue.iter().position(|q| q.content == text.trim()) {
+                        let item = self.queue.remove(pos);
+                        if let Some(mi) = item.marker_idx {
+                            self.suppress.push(mi);
+                        }
+                    }
+                    // Only the first message with an id is the person's (#s272), its pictures
+                    // offered after it; a later copy reads as the text it is, and offers none.
+                    if self.inbox_ids.insert(inbox.id.clone()) {
+                        self.out.push(Block::UserInbox {
+                            text: words.clone(),
+                            inbox: inbox.clone(),
+                        });
+                        self.out
+                            .extend(images.iter().cloned().map(Block::Attachment));
+                    } else {
+                        self.out.push(Block::UserText(text.clone()));
+                    }
                 }
                 Message::PeerText {
                     from,
@@ -662,11 +694,12 @@ impl<'a> Replayer<'a> {
     fn patch_image_paths(&mut self, paths: &[String]) {
         let is_image =
             |b: &Block| matches!(b, Block::Attachment(a) if a.kind == AttachmentKind::Image);
-        let Some(prompt) = self
-            .out
-            .iter()
-            .rposition(|b| matches!(b, Block::UserText(_) | Block::UserReply { .. }))
-        else {
+        let Some(prompt) = self.out.iter().rposition(|b| {
+            matches!(
+                b,
+                Block::UserText(_) | Block::UserReply { .. } | Block::UserInbox { .. }
+            )
+        }) else {
             return;
         };
         let mut first = prompt;
@@ -781,12 +814,14 @@ impl<'a> Replayer<'a> {
     pub(crate) fn reseed(
         &mut self,
         agent_ids: HashMap<String, (String, String)>,
+        inbox_ids: std::collections::HashSet<String>,
         user_times: Vec<Option<EpochSeconds>>,
         turn_durations: Vec<Option<u64>>,
         prev_ts: Option<EpochSeconds>,
         pending_ts: Option<EpochSeconds>,
     ) {
         self.agent_ids = agent_ids;
+        self.inbox_ids = inbox_ids;
         self.turn_durations = turn_durations;
         self.turn_durations.resize(user_times.len(), None);
         self.user_times = user_times;

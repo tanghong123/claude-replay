@@ -30,6 +30,11 @@ pub fn run_viewer() -> Result<()> {
     // A machine used only for dumps would keep the leftovers forever, and those are exactly the
     // ones nobody is watching.
     sys::reclaim();
+    // #s272: this Mac's key for the relayed messages a session holds, read where aries-inbox keeps
+    // it; the fold itself reads no files.
+    claude_replay_core::claude_inbox::install_key_source(
+        claude_replay_core::claude_inbox::key_from_state_dir,
+    );
     // The two flags `--unknown` shares (#276) each go with either of two others, which clap's own
     // `requires` cannot say — so they are refused here, before anything runs, rather than ignored.
     anyhow::ensure!(

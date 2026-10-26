@@ -61,9 +61,13 @@ pub struct Frontend {
 }
 
 /// The listener's handler over one backend and one frontend. It also installs the pinned mdrev,
-/// because this is the one constructor the monitor goes through.
+/// and where a relayed message's key is read (#s272), because this is the one constructor the
+/// monitor goes through.
 pub fn handler(backend: Arc<Backend>, front: Frontend) -> RouteHandler {
     install_mdrev(&backend.scratch);
+    claude_replay_core::claude_inbox::install_key_source(
+        claude_replay_core::claude_inbox::key_from_state_dir,
+    );
     Arc::new(move |req: &Request| dispatch(&backend, &front, req))
 }
 

@@ -486,6 +486,7 @@ fn pulse_within(adapter: &dyn TranscriptAdapter, path: &Path, window: u64) -> Op
         match m {
             Message::UserText { .. }
             | Message::UserReply { .. }
+            | Message::UserInbox { .. }
             | Message::PeerText { .. }
             | Message::Command { .. } => {
                 last_user = true;

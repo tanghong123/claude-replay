@@ -17,5 +17,7 @@ pub use adapters::{
 // The per-agent discovery modules keep their long-standing public paths (the facade
 // re-exports them as `claude_discover`/`codex_discover`/`qoderwork_discover`).
 pub use agents::claude::discover as claude_discover;
+// #s272: a relayed message's key source, which a binary installs (the fold reads no files).
+pub use agents::claude::inbox as claude_inbox;
 pub use agents::codex::discover as codex_discover;
 pub use agents::qoderwork::discover as qoderwork_discover;
