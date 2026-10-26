@@ -18328,9 +18328,7 @@ fn peer_fixture(name: &str) -> Fixture {
 fn inbox_fixture(name: &str) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
-    stores.aries_key();
-    let picture = base.join("uploads").join("tern.png");
-    std::fs::create_dir_all(picture.parent().unwrap()).unwrap();
+    let picture = stores.aries_key().join("tern.png");
     std::fs::write(
         &picture,
         claude_replay_core::diff::base64_decode(harness::TINY_PNG_B64).unwrap(),

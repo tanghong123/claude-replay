@@ -1042,14 +1042,16 @@ impl Stores {
     }
 
     /// #s272: the inbox key the relayed messages are signed with — the format's test key, 32
-    /// zero bytes, 0600 as aries-inbox makes it.
-    pub fn aries_key(&self) {
+    /// zero bytes, 0600 as aries-inbox makes it — and the `uploads/` beside it, where aries-inbox
+    /// saves a message's pictures (a picture line names a file only there), returned.
+    pub fn aries_key(&self) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let dir = self.root.join("aries");
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("uploads")).unwrap();
         let key = dir.join("inbox-key");
         std::fs::write(&key, [0u8; 32]).unwrap();
         std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        dir.join("uploads")
     }
 
     /// A Claude session `sid` under the project slug `-r` (the builders' cwd), with `jsonl`.

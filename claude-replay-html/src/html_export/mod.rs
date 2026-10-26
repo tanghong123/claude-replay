@@ -1298,7 +1298,8 @@ impl Emitter<'_> {
                 o.insert("id".into(), json!(id));
                 o.insert("turn".into(), json!(self.turn));
                 o.insert("label".into(), json!(prompt_label(text, None, 80)));
-                o.insert("src".into(), json!(text));
+                // No `src`: what was typed is the element, not these words, so the card offers no
+                // "show as typed" (the paste is in the transcript).
                 body.extend(user_body_parts(text));
                 o.insert("inbox".into(), self.inbox_json(inbox));
             }

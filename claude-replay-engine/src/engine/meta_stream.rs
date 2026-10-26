@@ -500,7 +500,7 @@ pub struct MaterializedMeta {
     pub cwd: String,
     pub span: Option<(EpochSeconds, EpochSeconds)>,
     /// The ids of the relayed messages from the person already committed (#s272).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub inbox_ids: std::collections::BTreeSet<String>,
 }
 

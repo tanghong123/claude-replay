@@ -4,8 +4,11 @@ use claude_replay_agents::{claude_inbox, ClaudeAdapter};
 use claude_replay_engine::{adapter::TranscriptAdapter, model::Block, SessionAccumulator};
 use serde_json::json;
 
-fn zero_key() -> Option<Vec<u8>> {
-    Some(vec![0u8; 32])
+fn zero_key() -> Option<claude_inbox::InboxKey> {
+    Some(claude_inbox::InboxKey {
+        key: vec![0u8; 32],
+        dir: "/tmp/inbox-fixture".into(),
+    })
 }
 
 /// A relay from the dashboard, signed with the format's zero test key.

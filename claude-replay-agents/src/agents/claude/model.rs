@@ -3453,7 +3453,7 @@ pub(crate) fn decode_line_known(
                 return;
             }
             // #s272: a relayed message from the person, verified, is the whole prompt.
-            if let Some(m) = (injected == Injected::No)
+            if let Some(m) = (injected == Injected::No && relayable(&v))
                 .then(|| {
                     let s = content.as_str()?;
                     inbox_message(s, || fence_pasted(&strip_caveat(s)).into_owned())
@@ -3617,7 +3617,7 @@ pub(crate) fn decode_line_known(
                                 text: peer.body,
                                 queued: Some(fence_pasted(p).into_owned()),
                             });
-                        } else if let Some(m) = (!meta)
+                        } else if let Some(m) = (!meta && a.is_some_and(relayable))
                             .then(|| inbox_message(p, || fence_pasted(p).into_owned()))
                             .flatten()
                         {
@@ -4645,7 +4645,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     continue;
                 }
                 // #s272 mirror of the decode's `UserInbox`, and of the fold's first-id rule.
-                if let Some(m) = (injection == Injected::No)
+                if let Some(m) = (injection == Injected::No && relayable(&v))
                     .then(|| {
                         let s = content.as_str()?;
                         inbox_message(s, || fence_pasted(&strip_caveat(s)).into_owned())
@@ -4897,7 +4897,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     text: peer.body,
                                 }),
                                 // #s272 mirror: a relayed message picked up mid-turn.
-                                None => match (!meta)
+                                None => match (!meta && a.is_some_and(relayable))
                                     .then(|| inbox_message(raw, || p.to_string()))
                                     .flatten()
                                 {
@@ -5555,6 +5555,14 @@ fn summary_description(summary: &str) -> String {
 /// prompt the fold makes their turn, carrying the text it would otherwise be — what an ordinary
 /// prompt's text is, and what a queued copy of it was queued under (#52). The fold takes only the
 /// first message with an id as theirs.
+/// Whether a record (a `user` record, or a queued prompt's attachment) can carry a message the
+/// person relayed (#s272): not a sub-agent's (a sidechain), and no origin but a person's.
+fn relayable(v: &Value) -> bool {
+    v.get("isSidechain").and_then(Value::as_bool) != Some(true)
+        && v.get("origin")
+            .is_none_or(|o| o.get("kind").and_then(Value::as_str) == Some("human"))
+}
+
 fn inbox_message(raw: &str, text: impl FnOnce() -> String) -> Option<Message> {
     let v = super::inbox::verified(raw)?;
     Some(Message::UserInbox {
@@ -6747,6 +6755,9 @@ mod tests {
             user("2026-10-26T08:01:00.000Z", &wrapped(A, "608f")),
             user("2026-10-26T08:02:00.000Z", &wrapped(&B.replace("ship it", "drop it"), "608f")),
             serde_json::json!({"type": "user", "timestamp": "2026-10-26T08:03:00.000Z", "isMeta": true, "origin": {"kind": "peer", "name": "skua-HD", "fromMode": "bypass", "body": A}, "message": {"role": "user", "content": format!("Another Claude session sent a message:\n<cross-session-message from-name=\"skua-HD\">\n{A}\n</cross-session-message>")}}).to_string(),
+            // A sub-agent's prompt, and a pickup whose origin is not a person: never his.
+            serde_json::json!({"type": "user", "timestamp": "2026-10-26T08:04:00.000Z", "isSidechain": true, "message": {"role": "user", "content": wrapped(&B.replace("dash-1&amp;skua", "dash-side"), "608f")}}).to_string(),
+            serde_json::json!({"type": "attachment", "timestamp": "2026-10-26T08:05:00.000Z", "attachment": {"type": "queued_command", "commandMode": "prompt", "origin": {"kind": "task-notification"}, "prompt": wrapped(&B.replace("dash-1&amp;skua", "dash-note"), "608f")}}).to_string(),
         ];
         let jsonl = lines.join("\n");
         let streamed = parse(&jsonl);
@@ -6783,10 +6794,16 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(texts.len(), 2, "the copy and the tampered one: {turns:#?}");
+        assert_eq!(
+            texts.len(),
+            4,
+            "the copy, the tampered one, the sidechain's and the notification's: {turns:#?}"
+        );
         assert!(texts.iter().all(|t| t.contains("```pasted\n<aries-inbox")));
         assert!(
-            matches!(turns.last(), Some(Block::PeerText { from, .. }) if from == "skua-HD"),
+            turns
+                .iter()
+                .any(|b| matches!(b, Block::PeerText { from, .. } if from == "skua-HD")),
             "inside another session's message it is that session's"
         );
         assert!(

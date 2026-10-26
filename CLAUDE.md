@@ -1002,20 +1002,28 @@ tag; `sig` is HMAC-SHA256 under the Mac's key `~/.local/state/aries/inbox-key`. 
 project-h/aries `docs/inbox-format.md` (aries#s33), and `aries-inbox verify` is its reference
 check. The Claude adapter (`agents/claude/inbox.rs`) takes one as his only when it opens the user
 turn at its first character, its sig verifies, and its id is new to the session; anything else stays
-the text it is. aries-inbox types a bracketed paste, and Claude Code 2.1.310 records a paste of four
+the text it is. It reads the element as `verify` does, and refuses where `verify` would read two
+ways (an attribute given twice), a sub-agent's record (`isSidechain`) and a queued pickup whose
+`origin` is not a person's. aries-inbox types a bracketed paste, and Claude Code 2.1.310 records a paste of four
 lines or about 800 characters inside `<pasted_content>` (measured in Aries' transcript: 8 of 193
 prompts before v1, and every v1 message is that long), so a turn that is WHOLLY one paste counts from
 the paste's first character (Aries' amendment). The paste also changes some characters (a tab, a
 CR, zero-width ones); aries-inbox writes the text pane-safe before signing, so the recorded bytes are
 the signed bytes and nothing is normalized here. A verified one is a `UserInbox` block, the person's
 turn (the `u:` class, the right-hand bubble, the Turns pane), its words in `text` and the rest in
-`inbox`; its `[pasted image: <path>]` lines become image attachments after it, offered as a prompt's
-pasted originals are (a handed stamp, #374), so only a verified message hands a file over. Most of
+`inbox`; its `[pasted image: <path>]` lines naming a file under aries-inbox's own `uploads/` (by a
+plain path) become image attachments after it, offered as a prompt's pasted originals are (a handed
+stamp, #374): only a picture aries-inbox saved, in a verified message, is a file handed over, and any
+other such line (a path he typed or forwarded) is his words. `<reply-to>` and `<do>` are one line
+each, so a quote holding `</reply-to>` stays a quote. The card has no "show as typed": what was
+typed is the element, which the transcript keeps. Most of
 them arrive mid-turn, so the queued pickup is read too. The first-id rule is the fold's
 (`Replayer::inbox_ids`), persisted through the meta stream (`MetaRecord::inbox_ids`) so a resumed
 fold still reads a later copy as text. The fold reads no files: `agent-monitor`'s route handler and
-`agent-replay` install the key's source (`ARIES_STATE_DIR`, else `~/.local/state`), and with none
-installed nothing verifies. Both pages draw his card with the relay's chips (via, kind, issues, a
+`agent-replay` install the key's source (`$ARIES_STATE_DIR`, else `~/.local/state/aries`; a key file
+others may write, or not 32 bytes, is refused with one stderr line), and with none installed nothing
+verifies. The verdict is part of the cached fold, which nothing ties to the key: replacing the key
+leaves cards already folded as they were until the cache is cleared or `FOLD_VERSION` moves. Both pages draw his card with the relay's chips (via, kind, issues, a
 relay's agent and task, when sent; `shared/inbox.js`), the words he answers quoted above his, and
 the instructions folded until asked; `--json` keeps `kind: "user"` and adds `inbox`. The fleet
 needs nothing: its tabs are each Mac's own monitor, which holds that Mac's key. Cases:

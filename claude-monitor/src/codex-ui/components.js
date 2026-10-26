@@ -376,7 +376,8 @@ export function renderUnit(unit, state) {
   else if (unit.type === "user" && unit.view.inbox) {
     // A relayed message from the person, verified (#s272): their bubble, headed by what the relay
     // says of it, the words it answers quoted above, the relay's instructions folded below.
-    html = `<div class="turn user inbox" data-kind="user" data-record-kind="user" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt">${inboxHeadHtml(unit.view.inbox)}<div class="prompt-copy-shell" data-prompt-key="${escapeText(unit.key)}"><div class="body markdown">${body}</div></div>${renderPromptAttachments(unit.attachments)}${inboxDoHtml(unit, state)}</div>${turnTime(unit)}${spot}${rawToggle}</div>`;
+    // What was typed is the element, not these words, so it has no raw toggle and is never raw.
+    html = `<div class="turn user inbox" data-kind="user" data-record-kind="user" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt">${inboxHeadHtml(unit.view.inbox)}<div class="prompt-copy-shell" data-prompt-key="${escapeText(unit.key)}"><div class="body markdown">${unit.view.html}</div></div>${renderPromptAttachments(unit.attachments)}${inboxDoHtml(unit, state)}</div>${turnTime(unit)}${spot}</div>`;
   }
   else if (unit.type === "user") {
     // Drawn whole: whether it collapses is measured once it is mounted (`clampPrompts`, #s139).
