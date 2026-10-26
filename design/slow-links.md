@@ -1,8 +1,8 @@
 # agent-monitor over a slow link (#s274)
 
-**Status: proposed (2026-10-27).** Hong's direction, from a phone over the tailnet: a server-side
-turn index, fetching only the records the view needs, and server-side search. Nothing here is built
-yet except stage 0.
+**Status: approved (Hong, 2026-10-27, #s275); stage 0 and stage 1 built (#s274, #s276).** Hong's
+direction, from a phone over the tailnet: a server-side turn index, fetching only the records the
+view needs, and server-side search.
 
 ## 1. What it is for
 
@@ -51,6 +51,11 @@ Each stage ships and is measured on its own.
      counts, the compaction marks, the file roster.
    - The head is still read whole, in the background. Low risk, and it moves those features off the
      head.
+   - Built (#s276): the sidecar is `records.index`, one line per record; the reply covers the
+     records below the boundary the page names (`upto`), because a turn can straddle it. It serves
+     every tail-first open, the desktop's too: here the head still loads whole for everyone, so D3's
+     "remote first" is stage 2's to apply. There is no files pane, so "the file roster" is the
+     offered paths a link resolves to, beside the artifact roster.
 2. **Records by turn.**
    - The page holds placeholders for the turns it has not fetched, the way it holds the head today.
    - It fills them in place as their records arrive. The viewport engine already does this for the

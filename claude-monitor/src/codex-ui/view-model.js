@@ -243,20 +243,24 @@ export function taskDetails(task = {}, target = null) {
 /** The session's published artifacts (#78), as the classic page's `collectArtifacts` groups
  *  them: one entry per URL — the stable identity; a republish keeps it — in first-seen order,
  *  with how many times it was published, the latest name / icon / description, and the index
- *  of the record that published it last. Walks nested blocks the way the classic page does. */
-export function artifactRoster(records = []) {
+ *  of the record that published it last. Walks nested blocks the way the classic page does.
+ *  `owed` is the turn index's list of what the records still coming published (#s276), each with
+ *  its record (`at`), in order: they come first in the session. */
+export function artifactRoster(records = [], owed = []) {
   const by = new Map();
+  const add = (a, at) => {
+    const e = by.get(a.url) || { url: a.url, count: 0, name: "", icon: "", desc: "", at };
+    e.count += 1;
+    e.name = a.name || e.name;
+    e.icon = a.icon || e.icon;
+    e.desc = a.desc || e.desc;
+    e.at = at;
+    by.set(a.url, e);
+  };
+  for (const a of owed || []) if (a && a.url) add(a, a.at);
   const scan = (block, at) => {
     const a = block?.head?.artifact;
-    if (a && a.url) {
-      const e = by.get(a.url) || { url: a.url, count: 0, name: "", icon: "", desc: "", at };
-      e.count += 1;
-      e.name = a.name || e.name;
-      e.icon = a.icon || e.icon;
-      e.desc = a.desc || e.desc;
-      e.at = at;
-      by.set(a.url, e);
-    }
+    if (a && a.url) add(a, at);
     for (const part of block?.body || []) if (part.p === "blocks") for (const item of part.items || []) scan(item, at);
   };
   records.forEach((record, i) => scan(record, i));

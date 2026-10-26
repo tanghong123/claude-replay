@@ -1303,8 +1303,24 @@ carried on to its end and a start inside one is refused (400), because secret ma
 JSON string's quotes from the first byte of a reply; a reply cut inside a record carried a private
 key's body to the phone unmasked (`a_masked_piece_of_the_record_log_shows_no_part_of_a_secret`). A
 409, a head that does not parse or one whose count differs starts the session over
-(`app_shell_head_cut_mid_transfer_goes_on_from_the_record_it_was_reading`). The rest of the
-slow-link work is `design/slow-links.md`.
+(`app_shell_head_cut_mid_transfer_goes_on_from_the_record_it_was_reading`). **The turn index**
+(#s276, `design/slow-links.md` stage 1) is the log's map: a sidecar `records.index` beside
+`records.jsonl`, one JSON line per committed record (its offset and a fingerprint; a turn opener's
+number, kind, label, time, sender and quoted reply; its tool calls by name, nested ones included;
+a compaction's head; the paths it offers with their stamps; its artifacts), read off the RENDERED
+record by the page's own rules (`turn_index.rs`). It grows in `RecordStore::put` and is cut in
+`cut_to`, the one seam every cut of the log goes through; a log from before it, or one that grew
+while it lagged, is indexed from the log at the next read (117 MB in 0.22 s, measured). `/turn-index
+?session=&epoch=&upto=` answers for the records BELOW `upto` exactly, since a turn can straddle the
+head's boundary (409 on a stale epoch, masked and gzipped like `/records`). The page asks for it
+beside the head and uses it only while the head is out: the Turns pane lists every turn and
+compaction (those still coming marked `outline-turn-pending`, a tap on one held until it arrives,
+unless the reader moves first), and the turn count, the tool letters and counts, the artifact
+roster and a link to a file the head offered are the whole session's
+(`app_shell_lists_the_whole_session_before_the_head_lands` reads them held, then landed, and
+compares). Search still reads the records (stage 3). Without the index (a refusal, five failed
+reads) the page reads the tail as before (`a_phone_tail_first_open_counts_the_whole_session`
+refuses it). The rest of the slow-link work is `design/slow-links.md`.
 
 **`claude-replay`** (root) — the thin assembly crate: clap CLI (`run_viewer`), `jdi/` the
 **`agent-jdi`** binary (unattended-run supervisor; see `src/jdi/DESIGN.md`), and compat

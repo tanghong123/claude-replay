@@ -360,6 +360,80 @@ assert.deepEqual(store.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 });
   console.log("#s274 head in pieces cases passed");
 }
 
+// #s276: the turn index. Asked for beside the head, under its epoch and for exactly the records the
+// page still waits for; kept only while that head is out; a reply for another boundary or epoch is
+// not this head's; a 409 is the head's to handle; a failed read is tried a few times, then the page
+// does without it. The roster folds the index's artifacts in ahead of the records here.
+{
+  const realFetch = globalThis.fetch, realTimeout = globalThis.setTimeout;
+  const tailReply = () => ({ epoch: 4, committed_from: 5, committed: [{ kind: "user", id: "t9", turn: 9, body: [] }], provisional_gen: 0, provisional_from: 0, provisional: [], meta: { tasks: [], children: [] } });
+  const index = { t: "turn-index", epoch: 4, upto: 5, records: 6, turns: [{ r: 0, kind: "user", id: "t1", turn: 1, label: "first" }], compactions: [], tools: { Bash: 2 }, artifacts: [], files: [] };
+  const asked = [];
+  globalThis.setTimeout = fn => { queueMicrotask(fn); return 0; };
+  try {
+    const heard = [];
+    const store = new RecordStore({ update: () => {}, indexed: ix => heard.push(ix) }, { tailBudget: 1024 });
+    store.session = "s 1"; store.apply(tailReply(), 5);
+    const head = { count: 5, len: 100, epoch: 4 };
+    store.head = head;
+    globalThis.fetch = async url => { asked.push(url); return new Response(JSON.stringify(index), { status: 200 }); };
+    await store.loadIndex(store.generation, head);
+    assert.deepEqual(asked, ["/turn-index?session=s%201&epoch=4&upto=5"], "asked once, for the head's records under its epoch");
+    assert.equal(store.index.turns[0].label, "first", "kept while the head is out");
+    assert.equal(heard.length, 1, "…and the page hears of it");
+
+    // The head lands: the index no longer answers for anything.
+    const log = new TextEncoder().encode(Array.from({ length: 5 }, (_, i) => JSON.stringify({ kind: "assistant", id: `a${i}`, body: [] })).join("\n") + "\n");
+    head.len = log.length;
+    globalThis.fetch = async url => { const q = new URL(url, "http://x").searchParams; const from = Number(q.get("from")); return new Response(log.slice(from, from + Number(q.get("len"))), { status: 200 }); };
+    await store.loadHead(store.generation, head);
+    assert.equal(store.head, null);
+    assert.equal(store.index, null, "dropped once the head lands");
+
+    // Not this head's: another boundary, another epoch, a 409 (the head's to handle), a stale open.
+    for (const [reply, why] of [[{ ...index, upto: 4 }, "another boundary"], [{ ...index, epoch: 5 }, "another epoch"]]) {
+      const other = new RecordStore({ update: () => {}, indexed: () => { throw new Error(`taken: ${why}`); } }, { tailBudget: 1024 });
+      other.session = "s"; other.apply(tailReply(), 5);
+      const owed = { count: 5, len: 100, epoch: 4 };
+      other.head = owed;
+      globalThis.fetch = async () => new Response(JSON.stringify(reply), { status: 200 });
+      await other.loadIndex(other.generation, owed);
+      assert.equal(other.index, null, `a reply for ${why} is not this head's`);
+    }
+    let tries = 0;
+    const stale = new RecordStore({ update: () => {} }, { tailBudget: 1024 });
+    stale.session = "s"; stale.apply(tailReply(), 5);
+    const gone = { count: 5, len: 100, epoch: 4 };
+    stale.head = gone;
+    globalThis.fetch = async () => { tries++; return new Response("stale epoch", { status: 409 }); };
+    await stale.loadIndex(stale.generation, gone);
+    assert.equal(tries, 1, "a 409 is not retried: the head starts the session over");
+
+    // A failed read is tried a few times, then the page does without it.
+    tries = 0;
+    const flaky = new RecordStore({ update: () => {} }, { tailBudget: 1024 });
+    flaky.session = "s"; flaky.apply(tailReply(), 5);
+    const away = { count: 5, len: 100, epoch: 4 };
+    flaky.head = away;
+    globalThis.fetch = async () => { tries++; throw new TypeError("Load failed"); };
+    await flaky.loadIndex(flaky.generation, away);
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    assert.equal(tries, 5, "tried five times, then left alone");
+    assert.equal(flaky.index, null);
+  } finally {
+    globalThis.fetch = realFetch;
+    globalThis.setTimeout = realTimeout;
+  }
+
+  const { artifactRoster } = await import("../../claude-monitor/src/codex-ui/view-model.js");
+  const roster = artifactRoster(
+    [{ kind: "tool", head: { artifact: { url: "u1", name: "Deck v2" } }, body: [] }, { kind: "tool", head: { artifact: { url: "u3", name: "New" } }, body: [] }],
+    [{ url: "u1", name: "Deck", icon: "chart", at: 0 }, { url: "u2", name: "Notes", at: 2 }]
+  );
+  assert.deepEqual(roster.map(e => [e.url, e.count, e.name, e.icon, e.at]), [["u1", 2, "Deck v2", "chart", 0], ["u2", 1, "Notes", "", 2], ["u3", 1, "New", "", 1]], "the index's artifacts come first, then the records here, one row per URL");
+  console.log("#s276 turn index cases passed");
+}
+
 const fixtures = [
   "user", "assistant", "think", "act", "bash", "read", "write", "edit", "skill", "tool",
   "agent", "task", "queue", "command", "compaction", "attachment", "unknown-kind"
@@ -1451,7 +1525,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /display\.kind === "priced"/, "only a complete total is split into own and sub-agent components");
   assert.match(appSource, /\["cache read", usage\.cache_read\], \.\.\.\(usage\.compacted \? \[\["compacted", usage\.compacted\]\] : \[\]\)/, "cached-read tokens and the compaction summary, when there is one");
   assert.match(appSource, /if \(record\.kind === "compaction"\) epochs\.push\(\{ at: i, tick: compactionTick\(record\.head \|\| \{\}\) \}\)/, "a compaction becomes an epoch tick from the record's facts");
-  assert.match(appSource, /<button class="outline-epoch" type="button" data-turn-record="\$\{r\.at\}"/, "…that jumps to the compaction record");
+  assert.match(appSource, /<button class="outline-epoch\$\{r\.pending \? " outline-turn-pending" : ""\}" type="button" data-turn-record="\$\{r\.at\}"/, "…that jumps to the compaction record (#s276: marked while its record is still coming)");
   console.log("#67/#68/#69 info and turns pane cases passed");
 }
 
@@ -1573,7 +1647,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(artifactRoster([]), []);
   // #95: the roster is the right pane's pinned first tab, not a header menu.
   assert.ok(!/artifactsBtn|artifactsMenu/.test(appSource) && !/artifacts-btn|artifacts-menu/.test(productionCss), "the header control is gone");
-  assert.match(appSource, /preview\.setRoster\(recordState\.session === indexState\.selected \? artifactRoster\(recordState\.records\) : \[\]\)/, "the header render hands the roster to the pane");
+  assert.match(appSource, /preview\.setRoster\(recordState\.session === indexState\.selected \? artifactRoster\(recordState\.records, owedIndex\(\)\?\.artifacts\) : \[\]\)/, "the header render hands the roster to the pane");
   assert.match(previewSource, /class="preview-tab pinned \$\{roster \? "on" : ""\}" data-preview-tab="\$\{ROSTER_ID\}"/, "…which pins it as a tab");
   assert.match(previewSource, /<span class="preview-tab-label">Artifacts \(\$\{this\.roster\.length\}\)<\/span>/, "…labelled with the count");
   assert.match(previewSource, /const roster = !item && this\.roster\.length > 0;/, "…and shown when no file tab is selected, so an opened pane lands on it");
@@ -1835,7 +1909,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const appSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   const nav = appSrc.slice(appSrc.indexOf("function renderNavigator("), appSrc.indexOf("const tasks = recordState.meta?.tasks"));
   assert.match(nav, /r\.unit\?\.view\?\.peer \? peerRow\(r\.unit\)/, "a peer turn's row is drawn by peerRow");
-  assert.match(nav, /class="outline-turn-row outline-peer" style="--peer-hue:\$\{peerHue\(from\)\}"/, "…in its sender's hue");
+  assert.match(nav, /class="outline-turn-row outline-peer\$\{unit\.pending \? " outline-turn-pending" : ""\}" style="--peer-hue:\$\{peerHue\(from\)\}"/, "…in its sender's hue");
   assert.match(nav, /class="outline-peer-from"/, "…with the sender as a chip");
   console.log("#s138 peer row cases passed");
 }

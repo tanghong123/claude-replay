@@ -9002,8 +9002,13 @@ fn tail_first_world(
 }
 
 const OUTLINE_TURNS: &str = "document.querySelectorAll('#navigatorTurns .outline-turn-row').length";
-const HEAD_LANDED: &str = "document.querySelectorAll('#navigatorTurns .outline-turn-row').length === 60 && !document.querySelector('.turn.pending-head')";
+/// The Turns pane's rows whose records are here — not the turn index's rows for records still
+/// coming (#s276).
+const LOADED_TURNS: &str = "document.querySelectorAll('#navigatorTurns .outline-turn-row:not(.outline-turn-pending)').length";
+const HEAD_LANDED: &str = "document.querySelectorAll('#navigatorTurns .outline-turn-row:not(.outline-turn-pending)').length === 60 && !document.querySelector('#navigatorTurns .outline-turn-pending') && !document.querySelector('.turn.pending-head')";
 const VIOLATIONS: &str = "JSON.stringify(window.__viewportViolations || [])";
+/// The head landed in a session of any length: no row still coming, no loading card.
+const HEAD_LANDED_ALL: &str = "!document.querySelector('#navigatorTurns .outline-turn-pending') && !document.querySelector('.turn.pending-head') && document.querySelectorAll('#navigatorTurns .outline-turn-row').length > 0";
 
 /// #s274 (Hong, on a phone over the tailnet: "Loading earlier turns" climbed to 48% and fell back to
 /// 1%, again and again). The head was ONE `/records` read, and a link that dropped it mid-transfer
@@ -9129,10 +9134,18 @@ fn app_shell_head_cut_mid_transfer_goes_on_from_the_record_it_was_reading() {
 fn app_shell_opens_a_long_session_at_its_tail_first() {
     let _serial = serial();
     let (_m, _b, tab) = tail_first_world(2801, "tail-first-open");
-    let loaded = harness::eval(&tab, OUTLINE_TURNS).as_i64().unwrap_or(0);
+    let loaded = harness::eval(&tab, LOADED_TURNS).as_i64().unwrap_or(0);
     assert!(
         loaded > 0 && loaded < 60,
-        "only the tail's turns before the head lands: {loaded}"
+        "only the tail's turns are here before the head lands: {loaded}"
+    );
+    // #s276: the turn index lists the rest, marked as still coming.
+    harness::until(
+        &tab,
+        &format!("{OUTLINE_TURNS} === 60"),
+        "the Turns pane to list every turn from the index",
+        Duration::from_secs(10),
+        OUTLINE_TURNS,
     );
     assert_eq!(
         harness::sticky_turn(&tab, harness::Surface::AppShell).map(|t| t.0),
@@ -9169,6 +9182,190 @@ fn app_shell_opens_a_long_session_at_its_tail_first() {
     assert!(
         shift.as_i64().unwrap_or(0) > 0,
         "the history records the landing as a prepend, with its shift: {shift}"
+    );
+}
+
+/// #s276 (design/slow-links.md stage 1): while the head of a tail-first open is still coming, the
+/// turn index fills what the page used to read off the records it had — the tail alone. Here the
+/// head holds nearly everything: a peer's turn, a compaction, Read/Grep/Edit/Write/MCP calls, an
+/// artifact and an offered file. Held, the Turns pane lists every turn and the compaction (those
+/// still coming marked), the turn count, the tool letters and counts and the artifact roster are
+/// the whole session's, and a link in the tail to a file the head offered opens it. Then the head
+/// lands, and each is read again: the same, with nothing marked. A turn chosen while it was still
+/// coming is landed on once it arrives.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_lists_the_whole_session_before_the_head_lands() {
+    let _serial = serial();
+    let base = harness::base("turn-index");
+    let stores = harness::Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("notes.txt"), "plain notes from the head").unwrap();
+    let notes = repo.join("notes.txt").display().to_string();
+    let at = |m: u32, s: u32| harness::at(&format!("{m:02}:{s:02}"));
+    let mut jsonl = harness::user_at("set the stage", &at(0, 1));
+    jsonl += &harness::read_tool_at("r1", &notes, &at(0, 2));
+    jsonl += &harness::tool_result_at("r1", &at(0, 2));
+    jsonl += &harness::named_tool_at("g1", "Grep", "petrel", &at(0, 3));
+    jsonl += &harness::named_tool_at("m1", "mcp__notes__search", "tern", &at(0, 3));
+    jsonl += &harness::edit_tool_at("e1", &notes, &at(0, 4));
+    jsonl += &harness::tool_result_at("e1", &at(0, 4));
+    jsonl += &harness::write_tool_at(
+        "w1",
+        &repo.join("draft.py").display().to_string(),
+        4,
+        &at(0, 5),
+    );
+    jsonl += &harness::tool_result_at("w1", &at(0, 5));
+    jsonl += &harness::artifact_publish_at(
+        "p1",
+        &repo.join("deck.html").display().to_string(),
+        "Skua deck",
+        "chart",
+        "https://claude.ai/artifact/skua-deck",
+        &at(0, 6),
+    );
+    jsonl += &harness::assistant_at("set", &at(0, 7));
+    jsonl += &harness::compaction_at(&at(0, 8));
+    let body = "skua-HD here: the nightly moved";
+    jsonl += &format!(
+        "{}\n",
+        serde_json::json!({
+            "type": "user", "cwd": "/r", "timestamp": at(0, 9), "isMeta": true,
+            "promptSource": "system", "turnOrigin": "peer",
+            "origin": {"kind": "peer", "from": "uds:/tmp/s.sock", "verifiedPeerPid": 1, "msg_id": "m1",
+                       "name": "skua-HD", "fromMode": "bypass", "body": body},
+            "message": {"role": "user", "content": format!("Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/s.sock\" from-name=\"skua-HD\" from-mode=\"bypass\">\n{body}\n</cross-session-message>\n\nThis came from another Claude session — not typed by your user.")}
+        })
+    );
+    jsonl += &harness::assistant_at("noted", &at(0, 10));
+    jsonl += &harness::long_session(40, harness::Shape::default());
+    jsonl += &harness::user_at("where are the notes?", &at(59, 50));
+    jsonl += &harness::assistant_at(&format!("They are in [the notes]({notes})."), &at(59, 51));
+    let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(TAIL_SID, &jsonl);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2838, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    m.pair(&tab);
+    harness::hold_the_head(&tab);
+    m.open(&tab, &format!("?ui=app&session={TAIL_SID}&tailBudget=8192"));
+    harness::until(
+        &tab,
+        "window.__headRequested >= 1 && !!document.querySelector('#navigatorTurns .outline-turn-pending')",
+        "the tail drawn and the turn index read while the head is held",
+        Duration::from_secs(20),
+        OUTLINE_TURNS,
+    );
+    // What the panes say: every Turns row (number, label, sender), the compaction ticks, the
+    // turn count, the filter menu's tools with their letters and counts, and the roster.
+    const PANES: &str = r#"(function(){
+      var rows = [].slice.call(document.querySelectorAll('#navigatorTurns > *')).map(function (r) {
+        return (r.classList.contains('outline-epoch') ? 'epoch ' : '') + r.textContent.replace(/\s+/g, ' ').trim();
+      });
+      document.getElementById('filterTranscriptBtn').click();
+      var tools = document.getElementById('filterOptions').innerText.replace(/\s+/g, ' ').trim();
+      document.getElementById('filterTranscriptBtn').click();
+      return JSON.stringify({ rows: rows, count: document.getElementById('navigatorTurnCount').textContent, tools: tools, roster: (document.getElementById('previewBtn').title.match(/\d+ published artifacts?/) || [''])[0] });
+    })()"#;
+    let held = harness::eval(&tab, PANES);
+    let pending = harness::eval(
+        &tab,
+        "document.querySelectorAll('#navigatorTurns .outline-turn-pending').length",
+    )
+    .as_i64()
+    .unwrap_or(0);
+    let loaded = harness::eval(&tab, LOADED_TURNS).as_i64().unwrap_or(0);
+    assert!(
+        loaded > 0 && pending > loaded,
+        "most turns are still coming ({pending} listed from the index, {loaded} here): {held}"
+    );
+    let held_text = held.as_str().unwrap_or("");
+    for want in [
+        "skua-HD",
+        "epoch ",
+        "Grep 1",
+        "MCP 1",
+        "Update 1",
+        "Write 1",
+        "Bash 14",
+        "1 published artifact",
+        "\"count\":\"43\"",
+    ] {
+        assert!(
+            held_text.contains(want),
+            "held, the panes are the whole session's ({want:?}): {held_text}"
+        );
+    }
+
+    // A link in the tail to a file only the head offered opens it.
+    harness::eval(&tab, "(function(){ var a = [].slice.call(document.querySelectorAll('.transcript .markdown a')).pop(); a.click(); return 1; })()");
+    harness::until(
+        &tab,
+        "(document.getElementById('previewBody') || {}).textContent.indexOf('plain notes from the head') >= 0",
+        "the head's file to open in the pane from a link in the tail",
+        Duration::from_secs(10),
+        "(document.getElementById('previewBody') || {}).textContent || document.getElementById('toast').textContent",
+    );
+    harness::eval(&tab, "document.getElementById('closePreview') && document.getElementById('closePreview').click(); 1");
+
+    // A turn chosen while still coming is held, and landed on once it arrives.
+    tab.find_element("#navigatorTurns .outline-turn-pending[data-turn-number=\"5\"]")
+        .expect("turn 5 is listed while still coming")
+        .click()
+        .expect("click it");
+    harness::until(
+        &tab,
+        "document.getElementById('toast').textContent.indexOf('Still loading') >= 0",
+        "the page to say the turn is still coming",
+        Duration::from_secs(5),
+        "document.getElementById('toast').textContent",
+    );
+    harness::eval(&tab, "window.__releaseHead(); 1");
+    harness::until(
+        &tab,
+        HEAD_LANDED_ALL,
+        "the head to land",
+        Duration::from_secs(20),
+        OUTLINE_TURNS,
+    );
+    harness::until(
+        &tab,
+        "((document.querySelector('#navigatorTurns .outline-turn-row.current') || {}).dataset || {}).turnNumber === '5'",
+        "the held turn to be landed on",
+        Duration::from_secs(10),
+        "((document.querySelector('#navigatorTurns .outline-turn-row.current') || {}).textContent || '')",
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    let landed = harness::eval(&tab, PANES);
+    let (h, l): (serde_json::Value, serde_json::Value) = (
+        serde_json::from_str(held_text).unwrap(),
+        serde_json::from_str(landed.as_str().unwrap_or("{}")).unwrap(),
+    );
+    let mut differ = Vec::new();
+    for k in ["count", "tools", "roster"] {
+        if h[k] != l[k] {
+            differ.push(format!("{k}: held {} landed {}", h[k], l[k]));
+        }
+    }
+    let (hr, lr) = (h["rows"].as_array().unwrap(), l["rows"].as_array().unwrap());
+    for i in 0..hr.len().max(lr.len()) {
+        if hr.get(i) != lr.get(i) {
+            differ.push(format!(
+                "row {i}: held {:?} landed {:?}",
+                hr.get(i),
+                lr.get(i)
+            ));
+        }
+    }
+    assert!(
+        differ.is_empty(),
+        "the panes read the same once the head has landed: {differ:#?}"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
     );
 }
 
@@ -9305,7 +9502,9 @@ fn app_shell_a_search_typed_before_the_head_lands_finds_it_after() {
         &tab,
         "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'question'; b.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()",
     );
-    let loaded = harness::eval(&tab, OUTLINE_TURNS).as_i64().unwrap_or(0);
+    // The turns whose records are here: the Turns pane lists the rest from the index (#s276), but
+    // the search reads the records (on the server it is stage 3, design/slow-links.md).
+    let loaded = harness::eval(&tab, LOADED_TURNS).as_i64().unwrap_or(0);
     harness::until(
         &tab,
         &format!("({count}) > 0"),
@@ -10117,6 +10316,7 @@ fn tail_first_phone(
     budget: u32,
     head: &str,
     tasks: &[(&str, &str, &str)],
+    index: bool,
 ) -> (
     harness::Monitor,
     headless_chrome::Browser,
@@ -10139,6 +10339,9 @@ fn tail_first_phone(
     harness::phone(&tab, 390, 844);
     m.pair(&tab);
     harness::hold_the_head(&tab);
+    if !index {
+        harness::refuse_the_index(&tab);
+    }
     m.open(
         &tab,
         &format!("?ui=app&session={TAIL_SID}&tailBudget={budget}"),
@@ -10169,7 +10372,7 @@ fn tail_first_phone(
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_fling_keeps_its_turn_when_the_head_lands() {
     let _serial = serial();
-    let (_m, _b, tab) = tail_first_phone(2722, "tail-first-fling", 24576, "", &[]);
+    let (_m, _b, tab) = tail_first_phone(2722, "tail-first-fling", 24576, "", &[], true);
     let s = harness::Surface::AppShell;
     let room = harness::eval(
         &tab,
@@ -10262,7 +10465,7 @@ fn a_phone_fling_keeps_its_turn_when_the_head_lands() {
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_fling_heard_late_still_holds_the_head() {
     let _serial = serial();
-    let (_m, _b, tab) = tail_first_phone(2935, "tail-first-fling-deaf", 24576, "", &[]);
+    let (_m, _b, tab) = tail_first_phone(2935, "tail-first-fling-deaf", 24576, "", &[], true);
     let s = harness::Surface::AppShell;
     harness::eval(
         &tab,
@@ -10479,7 +10682,9 @@ fn a_phone_fling_over_under_estimated_answers_does_not_jitter() {
 /// how many had been drawn. While the head is held here the icon reads the session's count (the
 /// highest turn number), the Turns list says which turns are still loading, and Tasks and Agents —
 /// from the whole session's meta, including agents spawned in the head — are whole too; once the
-/// head lands the three are the same and the note is gone.
+/// head lands the three are the same and the note is gone. This is the page WITHOUT the turn index
+/// (#s276), which lists every turn from the first moment: a server that has none, or a link that
+/// failed to bring it, is refused it here.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_tail_first_open_counts_the_whole_session() {
@@ -10504,6 +10709,7 @@ fn a_phone_tail_first_open_counts_the_whole_session() {
             ("2", "land the head", "in_progress"),
             ("3", "count the turns", "pending"),
         ],
+        false,
     );
     let counts = "JSON.stringify([].slice.call(document.querySelectorAll('.phone-pane-count')).map(function (c) { return c.hidden ? '' : c.textContent; }))";
     let drawn = harness::eval(

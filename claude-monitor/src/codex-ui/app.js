@@ -18,7 +18,7 @@ import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
 import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, querySpans, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, prefixOf, CLASS_ORDER, wholeAt, toolMatches, recordHasTool, toolLetters as sessionToolLetters, resolveTools as resolveToolSpec } from "./shared/search.js";
 import { parseJumpQuery } from "./jump-query.js";
-import { agentRecordTargets, currentTurnIndex, escapeText, peerHue, peerLabelRest, plainText, recordForSearch, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
+import { agentRecordTargets, currentTurnIndex, escapeText, peerHue, peerLabelRest, plainText, recordForSearch, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick, replyContext } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 import { sharedKeyboardFrame } from "./phone-keyboard.js";
 import { revealMermaidSource } from "./shared/mermaid.js";
@@ -268,8 +268,10 @@ const sessionIndex = new SessionIndexStore({
   error: error => { console.warn("Session index refresh failed", error); toast("Session scan failed — retrying"); }
 });
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = -1; heldRecords = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; heldRecords = null; heldTurnJump = null; recordState.headIndex = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
+  // #s276: the map of the records the head still owes — the panes it fills are whole from now on.
+  indexed: index => { recordState.headIndex = index; renderNavigator(); renderArtifacts(); renderChips(); if (byId("navigatorOptions").classList.contains("open")) renderFilterMenu(); },
   empty: () => viewport.showEmpty("Start this session", "Send the first message below. Codex runs in the selected directory."),
   materializing: () => viewport.showEmpty("Loading session history…", "Waiting for the latest messages to become available."),
   // #221: a first open with no cache waits on the server folding the whole transcript. Say so,
@@ -815,6 +817,9 @@ let lastRecordCount = -1; // -1: nothing applied since the last reset — the ne
 // delivers them lazily — the case caught the head landing into a glide that way once #372 stopped
 // the engine's own writes, whose echoes had been keeping that clock fresh.
 let heldRecords = null;
+// #s276: a turn the reader chose in the Turns pane while its records were still on their way: it is
+// landed on once they arrive, unless the reader has moved since (`at` against the engine's input).
+let heldTurnJump = null;
 function updateRecords(update) {
   if (!heldRecords && !(update.prepended && (viewport.readerMoving() || viewport.touchGlide))) { applyRecords(update); return; }
   const first = !heldRecords;
@@ -841,7 +846,12 @@ function applyRecords({ records, meta, changedFrom, prepended }) {
   recordState.units = projection.units;
   const shift = after ? Math.max(0, projection.units.findIndex(unit => unit.key === after) - was) : 0;
   viewport.setUnits(recordState.units, changedUnit, shift);
+  if (prepended) recordState.headIndex = null;
   landOnHash();
+  if (heldTurnJump && records[heldTurnJump.record]?.kind !== "pending") {
+    const held = heldTurnJump; heldTurnJump = null;
+    if (viewport.lastUserInput <= held.at) viewport.jumpToRecord(held.record, "turn");
+  }
   // What arrived since the last apply is "new" only once the session is OPEN (#84): the first
   // apply after a reset is the session's own content — a re-open restored to a remembered
   // position is not following, and counting that batch said "11696 new messages" on a session
@@ -1319,31 +1329,45 @@ function toggleDrawer(key) {
   setDrawerOpen(key, closing ? 0 : 1);
 }
 window.addEventListener("resize", stackOutlineHeads);
+/** What a Turns pane row whose records are still coming adds to its title (#s276). */
+const STILL_LOADING = " — still loading; the page goes there when it arrives";
+/** A turn the turn index lists (#s276), shaped as a Turns pane row reads a unit: its first record,
+ *  its number and label, and the sender or the quoted reply it carries. Its records are still on
+ *  their way (`pending`). */
+function indexedTurn(t) {
+  const view = t.kind === "peer" ? { peer: { from: t.head?.from || "another session", mode: t.head?.mode || "" } } : { reply: t.kind === "user" ? replyContext(t) || undefined : undefined };
+  return { from: t.r, turn: Number(t.turn) || 0, label: t.label || "", view, pending: true };
+}
 function renderNavigator() {
   const turns = recordState.units.filter(unit => unit.type === "user");
-  // #342: while a tail-first open's head is still coming (#314), the turns drawn are the last few —
-  // the owner's 141-turn session read "8" — but their NUMBERS are the true ones from the first
-  // moment, so the session's count is the highest of them. Once the head lands they are all here.
-  const loading = turns.length > 0 && recordState.units.some(unit => unit.type === "pending");
-  const turnCount = loading ? Math.max(...turns.map(unit => unit.turn || 0)) : turns.length;
-  const earlier = loading ? (turns[0].turn || 1) - 1 : 0;
+  const loading = recordState.units.some(unit => unit.type === "pending");
+  // #s276: while the head is out, the turn index lists the turns it holds, so the pane is whole
+  // from the first moment; a row whose records are still coming is marked, and a tap on it is held.
+  const index = loading ? recordState.headIndex : null;
+  const owed = index ? index.turns.map(t => ({ at: t.r, unit: indexedTurn(t) })) : [];
+  // #342: without the index, the turns drawn are the last few — the owner's 141-turn session read
+  // "8" — but their NUMBERS are the true ones from the first moment, so the session's count is the
+  // highest of them. Once the head lands they are all here.
+  const partial = !index && loading && turns.length > 0;
+  const turnCount = partial ? Math.max(...turns.map(unit => unit.turn || 0)) : owed.length + turns.length;
+  const earlier = partial ? (turns[0].turn || 1) - 1 : 0;
   byId("navigatorTurnCount").textContent = turnCount;
   // A compaction is an epoch tick between turns (#69, restyled in #86): a hairline with a glyph
   // for how it happened and the context size from → to, in the rows' own type, no prose — so a
   // session that compacted fifteen times reads as fifteen chapters. The tick jumps to the
   // compaction record like a turn row jumps to its turn.
-  const epochs = [];
+  const epochs = index ? index.compactions.map(c => ({ at: c.r, tick: compactionTick(c.head || {}), pending: true })) : [];
   recordState.records.forEach((record, i) => { if (record.kind === "compaction") epochs.push({ at: i, tick: compactionTick(record.head || {}) }); });
-  const rows = [...turns.map(unit => ({ at: unit.from, unit })), ...epochs].sort((a, b) => a.at - b.at);
+  const rows = [...owed, ...turns.map(unit => ({ at: unit.from, unit })), ...epochs].sort((a, b) => a.at - b.at);
   // #s138, Hong: a turn another session opened is told from the person's own, and one sender from
   // another — its row carries the sender as a chip in the sender's own hue (the card's too).
   const peerRow = unit => {
     const from = unit.view.peer.from;
-    return `<button class="outline-turn-row outline-peer" style="--peer-hue:${peerHue(from)}" data-turn-record="${unit.from}" data-peer-from="${escapeText(from)}" title="${escapeText(unit.label)}"><span class="outline-number">${String(unit.turn).padStart(2, "0")} ·</span><span class="outline-peer-from" title="Sent by ${escapeText(from)}, another session"><span class="outline-peer-glyph" aria-hidden="true">⇄</span>${escapeText(from)}</span><span class="outline-label">${escapeText(peerLabelRest(unit.label, from))}</span></button>`;
+    return `<button class="outline-turn-row outline-peer${unit.pending ? " outline-turn-pending" : ""}" style="--peer-hue:${peerHue(from)}" data-turn-record="${unit.from}" data-turn-number="${unit.turn}" data-peer-from="${escapeText(from)}" title="${escapeText(unit.label)}${unit.pending ? STILL_LOADING : ""}"><span class="outline-number">${String(unit.turn).padStart(2, "0")} ·</span><span class="outline-peer-from" title="Sent by ${escapeText(from)}, another session"><span class="outline-peer-glyph" aria-hidden="true">⇄</span>${escapeText(from)}</span><span class="outline-label">${escapeText(peerLabelRest(unit.label, from))}</span></button>`;
   };
   byId("navigatorTurns").innerHTML = (earlier > 0 ? `<div class="activity-empty outline-turns-loading" role="status">Turns 1–${earlier} are still loading</div>` : "") + rows.map(r => r.unit?.view?.peer ? peerRow(r.unit) : r.unit
-    ? `<button class="outline-turn-row${r.unit.view?.reply ? " outline-quoted" : ""}" data-turn-record="${r.unit.from}" title="${escapeText(r.unit.label)}"><span class="outline-number">${String(r.unit.turn).padStart(2, "0")} ·</span>${r.unit.view?.reply ? `<span class="outline-quote-marker" role="img" aria-label="Quoted reply" title="Reply to selected text">│</span>` : ""}<span class="outline-label">${escapeText(r.unit.label)}</span>${r.unit.view?.reply?.items.length > 1 ? `<span class="outline-reply-count" aria-label="${r.unit.view.reply.items.length - 1} more annotations">+${r.unit.view.reply.items.length - 1}</span>` : ""}</button>`
-    : `<button class="outline-epoch" type="button" data-turn-record="${r.at}" title="${escapeText(r.tick.title)}${r.tick.sizes ? ` · ${escapeText(r.tick.sizes)}` : ""} — jump to the compaction" aria-label="${escapeText(r.tick.title)}${r.tick.sizes ? `, ${escapeText(r.tick.sizes)}` : ""}"><span class="outline-epoch-line" aria-hidden="true"></span><span class="outline-epoch-glyph" aria-hidden="true">${r.tick.glyph}</span>${r.tick.sizes ? `<span class="outline-epoch-sizes">${escapeText(r.tick.sizes)}</span>` : ""}<span class="outline-epoch-line" aria-hidden="true"></span></button>`
+    ? `<button class="outline-turn-row${r.unit.view?.reply ? " outline-quoted" : ""}${r.unit.pending ? " outline-turn-pending" : ""}" data-turn-record="${r.unit.from}" data-turn-number="${r.unit.turn}" title="${escapeText(r.unit.label)}${r.unit.pending ? STILL_LOADING : ""}"><span class="outline-number">${String(r.unit.turn).padStart(2, "0")} ·</span>${r.unit.view?.reply ? `<span class="outline-quote-marker" role="img" aria-label="Quoted reply" title="Reply to selected text">│</span>` : ""}<span class="outline-label">${escapeText(r.unit.label)}</span>${r.unit.view?.reply?.items.length > 1 ? `<span class="outline-reply-count" aria-label="${r.unit.view.reply.items.length - 1} more annotations">+${r.unit.view.reply.items.length - 1}</span>` : ""}</button>`
+    : `<button class="outline-epoch${r.pending ? " outline-turn-pending" : ""}" type="button" data-turn-record="${r.at}" title="${escapeText(r.tick.title)}${r.tick.sizes ? ` · ${escapeText(r.tick.sizes)}` : ""} — jump to the compaction" aria-label="${escapeText(r.tick.title)}${r.tick.sizes ? `, ${escapeText(r.tick.sizes)}` : ""}"><span class="outline-epoch-line" aria-hidden="true"></span><span class="outline-epoch-glyph" aria-hidden="true">${r.tick.glyph}</span>${r.tick.sizes ? `<span class="outline-epoch-sizes">${escapeText(r.tick.sizes)}</span>` : ""}<span class="outline-epoch-line" aria-hidden="true"></span></button>`
   ).join("") || '<div class="activity-empty">No turns</div>';
   const tasks = recordState.meta?.tasks || [];
   // #224, the owner: the head counts what the pane SHOWS. A task the session recorded no title for
@@ -1543,7 +1567,19 @@ function renderSessionInfo(turns, agents) {
 // has to reach both hosts — a handler bound to the navigator alone stopped hearing the fold
 // clicks the moment `#navigatorSession` left it.
 const navigatorClick = event => {
-  const turn = event.target.closest("[data-turn-record]"); if (turn) { setTurnsFollow(true, false); viewport.jumpToRecord(Number(turn.dataset.turnRecord), "turn"); return; }
+  const turn = event.target.closest("[data-turn-record]");
+  if (turn) {
+    setTurnsFollow(true, false);
+    const record = Number(turn.dataset.turnRecord);
+    heldTurnJump = null;
+    // #s276: a turn the index listed whose records have not arrived is not a place to land yet
+    // (`jumpToRecord` refuses the loading card): the page goes there when they do.
+    if (!viewport.jumpToRecord(record, "turn") && recordState.records[record]?.kind === "pending") {
+      heldTurnJump = { record, at: performance.now() };
+      toast("Still loading — the page goes there when it arrives");
+    }
+    return;
+  }
   const infoFold = event.target.closest("[data-info-fold]");
   if (infoFold) {
     const key = infoFold.dataset.infoFold;
@@ -2052,7 +2088,19 @@ function boxQuery() {
 /** The session's tools, each with its LETTER — the shared table (#367: the common tools' letters are
  *  reserved and never change; the rest depend on the session). */
 function toolLetters() {
-  return sessionToolLetters(toolCounts(recordState.records));
+  return sessionToolLetters(sessionToolCounts());
+}
+/** The turn index while the records it answers for are still on their way here (#s276), else null:
+ *  the records below its `upto` are the head's placeholders, so nothing it counts is counted twice. */
+function owedIndex() {
+  return recordState.units.some(unit => unit.type === "pending") ? recordState.headIndex : null;
+}
+/** How many calls of each tool the session holds: the records here, and the index's count of the
+ *  ones still coming (#s276), so the letters and counts are the whole session's before it lands. */
+function sessionToolCounts() {
+  const counts = toolCounts(recordState.records);
+  for (const [name, n] of Object.entries(owedIndex()?.tools || {})) counts[name] = (counts[name] || 0) + n;
+  return counts;
 }
 /** An `o(…)` text → the tool KEYS it means (names, `mcp__<server>__*` for a family). */
 function resolveTools(value) {
@@ -2217,7 +2265,7 @@ function renderFilterMenu() {
   // a top-level scan listed nothing (#110) — and MCP calls collapsed into one expandable family
   // instead of one row per `mcp__server__tool`, which is what a session with dozens of them needs.
   // Most-used first here; the classic page keeps its alphabetical order.
-  const groups = toolTree(toolCounts(recordState.records), uiState.toolTreeOpen, "count");
+  const groups = toolTree(sessionToolCounts(), uiState.toolTreeOpen, "count");
   const rows = groups.flatMap(g => g.rows);
   const letterOf = new Map(toolLetters().map(e => [e.key, e.letter]));
   byId("filterOptions").innerHTML = rows
@@ -2750,6 +2798,10 @@ function openReference(path) {
     for (const part of record.body || []) if (part.p === "blocks") for (const child of part.items || []) visit(child);
   };
   recordState.records.forEach(visit);
+  // #s276: a path offered in the records still coming, from the index — first in the session's
+  // order, so its file stamp stands where the records here offer none.
+  const owed = offered?.fileSig ? null : owedIndex()?.files?.find(file => candidates.has(file.path));
+  if (owed && (owed.fsig || !offered)) offered = { record: null, path: owed.path, fileSig: owed.fsig || "", revealSig: owed.sig || "" };
   if (offered) { openReferenceOffer(offered); return; }
   const copy = navigator.clipboard?.writeText(decoded);
   if (copy) copy.then(
@@ -3085,7 +3137,7 @@ byId("navigatorToggle")?.remove();
 // as the pane's pinned first tab, and the count on the pane's own button so a closed pane
 // still says there is something to see.
 function renderArtifacts() {
-  preview.setRoster(recordState.session === indexState.selected ? artifactRoster(recordState.records) : []);
+  preview.setRoster(recordState.session === indexState.selected ? artifactRoster(recordState.records, owedIndex()?.artifacts) : []);
 }
 // The task details popover (#60): one element, filled per task, anchored beside the row;
 // Escape and its close control dismiss it and focus returns to the row it came from.

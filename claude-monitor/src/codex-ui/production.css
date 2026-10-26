@@ -1705,3 +1705,6 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 #app .outline-reply-count{flex:none;color:var(--faint);font:11px var(--mono);margin-left:auto}
 
 #app .outline-turn-row.outline-quoted{grid-template-columns:24px 7px minmax(0,1fr) auto}
+/* #s276: a turn the turn index lists whose records are still coming reads as the other rows, in
+   the quieter text colour, until they arrive; a tap on it is held until then. */
+#app .outline-turn-pending .outline-label,#app .outline-turn-pending .outline-number,#app .outline-epoch.outline-turn-pending{color:var(--faint)}

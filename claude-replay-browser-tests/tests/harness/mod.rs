@@ -3357,6 +3357,19 @@ pub fn hold_the_head(tab: &headless_chrome::Tab) {
     .expect("the head is held");
 }
 
+/// Answer every `/turn-index` read with a refusal (#s276), as a server from before the turn index
+/// would: the page then reads the panes from the records it has, as it did before.
+pub fn refuse_the_index(tab: &headless_chrome::Tab) {
+    use headless_chrome::protocol::cdp::Page;
+    tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+        source: r#"(function(){ var real = window.fetch; window.__indexRefused = 0; window.fetch = function(input, init){ var url = String(input && input.url || input); if (/\/turn-index\?/.test(url)) { window.__indexRefused++; return Promise.resolve(new Response("not found", { status: 404 })); } return real.call(this, input, init); }; })();"#.to_string(),
+        world_name: None,
+        include_command_line_api: None,
+        run_immediately: None,
+    })
+    .expect("the index is refused");
+}
+
 /// A finger's TAP at `(x, y)` (#330): Chrome's own synthesized touch tap, so the page sees what a
 /// phone sends — touch pointer events (down, up, and the LEAVE a lifted finger makes) and then the
 /// click — where a CDP mouse click is a mouse that never leaves.

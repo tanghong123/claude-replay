@@ -22,6 +22,10 @@ export const HEAD_PIECE_BYTES = 1024 * 1024;
  *  682 KB, against drops 3 MB or more apart. */
 const HEAD_REFUSALS = 12;
 
+/** How many times the turn index is asked for before the page does without it (#s276): it is small,
+ *  and without it the page reads the tail alone until the head lands, as it did before. */
+const INDEX_TRIES = 5;
+
 /** A record that has not arrived yet: the HEAD of a tail-first open (#314,
  *  design/tail-first-open.md). One frozen object stands for each of them; the projection folds
  *  the run into a single pending unit, so nothing ever renders one as a record. */
@@ -39,6 +43,9 @@ export class RecordStore {
     this.sessionFailure = options.sessionFailure;
     // The head still to come after a tail-first open: `{ count, len, epoch }`, or null.
     this.head = null;
+    // The turn index for that head (#s276): what the records still to come hold — their turns,
+    // compactions, tool counts, artifacts and offered files — or null. Only while the head is out.
+    this.index = null;
     this.session = "";
     this.records = [];
     this.meta = null;
@@ -56,7 +63,7 @@ export class RecordStore {
     this.meta = null;
     this.cursor = freshCursor();
     this.shown = false; this.confirmedEmpty = false; this.missingSince = null;
-    this.head = null;
+    this.head = null; this.index = null;
     const generation = ++this.generation;
     this.handlers.reset?.();
     this.poll(generation);
@@ -68,7 +75,7 @@ export class RecordStore {
     this.records = [];
     this.meta = null;
     this.cursor = freshCursor();
-    this.head = null;
+    this.head = null; this.index = null;
     this.handlers.reset?.();
   }
 
@@ -139,6 +146,7 @@ export class RecordStore {
         this.apply(reply, headCount);
         if (headCount) {
           this.head = { count: headCount, len: reply.committed_ext.offset, epoch: reply.epoch };
+          this.loadIndex(generation, this.head);
           this.loadHead(generation, this.head);
         }
         if (!this.shown) { this.shown = true; this.handlers.opened?.(); }
@@ -239,7 +247,7 @@ export class RecordStore {
       }
       if (head.records.length !== head.count) { this.recover(); return; }
       for (let i = 0; i < head.records.length; i++) this.records[i] = head.records[i];
-      this.head = null;
+      this.head = null; this.index = null;
       this.handlers.update?.({ records: this.records, meta: this.meta, changedFrom: 0, prepended: head.count });
     } catch (error) {
       if (!current()) return;
@@ -257,11 +265,30 @@ export class RecordStore {
     }
   }
 
+  /** The turn index for the head still to come (#s276): what its records hold, from the server's
+   *  map of the log, so the Turns pane, the tool letters and counts, the compaction marks, the
+   *  artifact roster and the offered files are whole before the head lands. It answers for the
+   *  records below `head.count` exactly, under the head's epoch; a 409 is the head's to handle. */
+  async loadIndex(generation, head, tries = 1) {
+    const current = () => generation === this.generation && this.head === head;
+    try {
+      const response = await fetch(`/turn-index?session=${encodeURIComponent(this.session)}&epoch=${head.epoch}&upto=${head.count}`, { cache: "no-store" });
+      if (!current() || response.status === 409) return;
+      if (!response.ok) throw new Error(`turn-index HTTP ${response.status}`);
+      const index = await response.json();
+      if (!current() || index.epoch !== head.epoch || index.upto !== head.count) return;
+      this.index = index;
+      this.handlers.indexed?.(index);
+    } catch (error) {
+      if (current() && tries < INDEX_TRIES) setTimeout(() => this.loadIndex(generation, head, tries + 1), 1000 * tries);
+    }
+  }
+
   apply(reply, headCount = 0) {
     const plan = reducePull(this.cursor, this.records.length, reply);
     // A resync drops everything, a head still in flight with it: that head belongs to a log the
     // server no longer has.
-    if (plan.resync && !headCount) this.head = null;
+    if (plan.resync && !headCount) { this.head = null; this.index = null; }
     for (const step of plan.steps) {
       if (step.op === "truncate") this.records.length = step.to;
       else this.records.push(...step.records);
