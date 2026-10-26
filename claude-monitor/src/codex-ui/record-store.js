@@ -14,9 +14,13 @@ const WAITING_AFTER_MS = 1200;
  *  records, and a dropped read keeps the records it finished. */
 export const HEAD_PIECE_BYTES = 1024 * 1024;
 
-/** How many reads of the head in a row may fail without bringing a record before the page starts
- *  the session over. A drop that brought records resets the count. */
-const HEAD_TRIES = 12;
+/** How many times in a row the server may REFUSE a read of the head (an HTTP error, or a range that
+ *  brings no whole record) before the page starts the session over. A network drop is never
+ *  counted: a phone out of signal keeps what it has and tries again every few seconds, however
+ *  long. A drop costs the record in flight, so a record larger than what the link carries between
+ *  drops would never finish; the largest record measured across hong-devserver's sessions was
+ *  682 KB, against drops 3 MB or more apart. */
+const HEAD_REFUSALS = 12;
 
 /** A record that has not arrived yet: the HEAD of a tail-first open (#314,
  *  design/tail-first-open.md). One frozen object stands for each of them; the projection folds
@@ -174,9 +178,10 @@ export class RecordStore {
    *  whole records (an end inside one is carried on to its end; secret masking reads whole
    *  records). Each range's records are parsed as they complete, so a read that drops keeps every
    *  record it finished and the next range starts at the first one it did not: the progress only
-   *  climbs, and a drop costs at most one record's bytes. A 409 (the log left that epoch), a head
-   *  that will not parse, a count other than the one the pull named, or a range that keeps coming
-   *  back empty starts the session over; a head is never spliced in. */
+   *  climbs, and a drop costs at most one record's bytes; drops are retried for as long as they
+   *  last. A 409 (the log left that epoch), a head that will not parse, a count other than the one
+   *  the pull named, or a server that keeps refusing (`HEAD_REFUSALS`) starts the session over; a
+   *  head is never spliced in. */
   async loadHead(generation, head) {
     const current = () => generation === this.generation && this.head === head;
     head.records ??= [];
@@ -226,11 +231,11 @@ export class RecordStore {
           }
         } catch (error) {
           // What the read finished is kept; a record it was part way through is read again.
-          if (head.got > before) head.failures = 0;
+          if (head.got > before) { head.refusals = 0; head.drops = 0; }
           throw error;
         }
         if (head.got === before) throw new Error("records: a range brought no whole record");
-        head.failures = 0;
+        head.refusals = 0; head.drops = 0;
       }
       if (head.records.length !== head.count) { this.recover(); return; }
       for (let i = 0; i < head.records.length; i++) this.records[i] = head.records[i];
@@ -240,11 +245,15 @@ export class RecordStore {
       if (!current()) return;
       // A head that does not parse is not this head.
       if (error instanceof SyntaxError) { this.recover(); return; }
-      head.failures = (head.failures || 0) + 1;
-      // A link that fails again and again without bringing a record is given up on: start over.
-      if (head.failures > HEAD_TRIES) { this.recover(); return; }
-      this.handlers.headFailed?.(error, head.failures);
-      setTimeout(() => { if (current()) this.loadHead(generation, head); }, Math.min(8000, 1000 * head.failures));
+      // A network failure (fetch and a dropped body both reject with a TypeError) is retried for as
+      // long as it lasts; a server that keeps refusing is given up on, and the session starts over.
+      const dropped = error instanceof TypeError;
+      if (dropped) head.drops = (head.drops || 0) + 1;
+      else head.refusals = (head.refusals || 0) + 1;
+      if (head.refusals > HEAD_REFUSALS) { this.recover(); return; }
+      const tries = (head.drops || 0) + (head.refusals || 0);
+      this.handlers.headFailed?.(error, tries);
+      setTimeout(() => { if (current()) this.loadHead(generation, head); }, Math.min(8000, 1000 * tries));
     }
   }
 

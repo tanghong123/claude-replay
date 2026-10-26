@@ -323,6 +323,37 @@ assert.deepEqual(store.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 });
     globalThis.fetch = async () => new Response(junk, { status: 200 });
     await broken.loadHead(broken.generation, owed);
     assert.equal(resets, 2, "a head that does not parse starts the session over");
+
+    // A phone out of signal: thirty network failures in a row are retried, never given up on, and
+    // the head lands when the link comes back. A server that keeps REFUSING is given up on. (Timers
+    // run at once here, so the back-off costs the test nothing.)
+    const realTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = fn => { queueMicrotask(fn); return 0; };
+    try {
+      const outage = new RecordStore({ update: () => {}, reset: () => resets++ }, { tailBudget: 1024 });
+      outage.session = "s"; outage.apply(tailReply(), 24);
+      const away = { count: 24, len: bytes.length, epoch: 7 };
+      outage.head = away;
+      let tries = 0;
+      globalThis.fetch = async url => { if (++tries <= 30) throw new TypeError("Load failed"); return serve(url); };
+      const back = landed(outage);
+      await outage.loadHead(outage.generation, away);
+      await back;
+      assert.equal(resets, 2, "a long outage never starts the session over");
+      assert.equal(outage.records[23].id, "h23", "…and the head lands when the link is back");
+
+      const refusing = new RecordStore({ update: () => {}, reset: () => resets++ }, { tailBudget: 1024 });
+      refusing.session = "s"; refusing.apply(tailReply(), 24);
+      const no = { count: 24, len: bytes.length, epoch: 7 };
+      refusing.head = no;
+      globalThis.fetch = async () => new Response("busy", { status: 503 });
+      const gaveUp = new Promise(resolve => { refusing.handlers.reset = () => { resets++; resolve(); }; });
+      await refusing.loadHead(refusing.generation, no);
+      await gaveUp;
+      assert.equal(resets, 3, "a server that keeps refusing is given up on: the session starts over");
+    } finally {
+      globalThis.setTimeout = realTimeout;
+    }
   } finally {
     globalThis.fetch = realFetch;
   }
