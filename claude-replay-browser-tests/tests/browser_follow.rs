@@ -9005,6 +9005,112 @@ const OUTLINE_TURNS: &str = "document.querySelectorAll('#navigatorTurns .outline
 const HEAD_LANDED: &str = "document.querySelectorAll('#navigatorTurns .outline-turn-row').length === 60 && !document.querySelector('.turn.pending-head')";
 const VIOLATIONS: &str = "JSON.stringify(window.__viewportViolations || [])";
 
+/// #s274 (Hong, on a phone over the tailnet: "Loading earlier turns" climbed to 48% and fell back to
+/// 1%, again and again). The head was ONE `/records` read, and a link that dropped it mid-transfer
+/// started it again from the top. Now it comes as ranges, its bytes kept as they arrive, so a drop
+/// costs only what was in flight: the read goes on from the byte where it stopped. Here the head is
+/// cut once, part way, and the card's percentages are read throughout: they never step back, the
+/// card says the connection dropped, and the head lands whole.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_head_cut_mid_transfer_goes_on_from_where_it_stopped() {
+    let _serial = serial();
+    let base = harness::base("head-cut-mid-transfer");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        TAIL_SID,
+        &harness::long_session(60, harness::Shape::default()),
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2837, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    m.pair(&tab);
+    // Before the page's own scripts: every `/records` read is held 150 ms and then fed 4 KB every
+    // 20 ms, as a slow link feeds it, so the card can be watched; the first whose range holds byte
+    // CUT of the head ends there with an error, once, as a dropped link does; and the pending card's
+    // text is sampled every 20 ms. The head is about 56 KB, read 8 KB at a time.
+    {
+        use headless_chrome::protocol::cdp::Page;
+        tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+            source: r#"(function(){
+  var CUT = 30000, STEP = 4096, real = window.fetch, cut = false;
+  window.__headReads = []; window.__pendingSeen = [];
+  setInterval(function(){ var t = document.querySelector('[data-pending-text]'); if (t) window.__pendingSeen.push(t.textContent); }, 20);
+  var wait = function(ms){ return new Promise(function(done){ setTimeout(done, ms); }); };
+  window.fetch = function(input, init){
+    var url = String(input && input.url || input), m = /\/records\?.*[?&]from=(\d+)&len=(\d+)/.exec(url);
+    var answer = real.call(this, input, init);
+    if (!m) return answer;
+    var from = Number(m[1]), len = Number(m[2]), cutHere = !cut && from <= CUT && from + len > CUT;
+    if (cutHere) cut = true;
+    window.__headReads.push([from, len]);
+    return answer.then(function(r){
+      return wait(150).then(function(){ return r.arrayBuffer(); }).then(function(buffer){
+        var bytes = new Uint8Array(buffer), at = 0, stop = cutHere ? CUT - from : bytes.length;
+        var body = new ReadableStream({ pull: function(c){
+          return wait(20).then(function(){
+            if (at >= stop) { if (cutHere) c.error(new TypeError('network connection was lost')); else c.close(); return; }
+            var next = Math.min(stop, at + STEP); c.enqueue(bytes.slice(at, next)); at = next;
+          });
+        }});
+        return new Response(body, { status: r.status, headers: r.headers });
+      });
+    });
+  };
+})();"#
+                .to_string(),
+            world_name: None,
+            include_command_line_api: None,
+            run_immediately: None,
+        })
+        .expect("the cut is installed");
+    }
+    m.open(
+        &tab,
+        &format!("?ui=app&session={TAIL_SID}&tailBudget=8192&headPiece=8192"),
+    );
+    harness::until(
+        &tab,
+        HEAD_LANDED,
+        "the head to land in front of the tail, after the cut",
+        Duration::from_secs(30),
+        "JSON.stringify({ turns: document.querySelectorAll('#navigatorTurns .outline-turn-row').length, reads: window.__headReads, seen: (window.__pendingSeen || []).slice(-3) })",
+    );
+    let seen = harness::eval(&tab, "JSON.stringify(window.__pendingSeen)");
+    let seen: Vec<String> = serde_json::from_str(seen.as_str().unwrap_or("[]")).unwrap_or_default();
+    let shares: Vec<u64> = seen
+        .iter()
+        .filter_map(|t| {
+            let (_, rest) = t.split_once("— ")?;
+            rest.split('%').next()?.trim().parse().ok()
+        })
+        .collect();
+    assert!(
+        shares.windows(2).all(|w| w[1] >= w[0]),
+        "the share never steps back across the cut: {shares:?}"
+    );
+    assert!(
+        seen.iter().any(|t| t.contains("the connection dropped")),
+        "the card said the connection dropped while it read again: {seen:?}"
+    );
+    let reads = harness::eval(&tab, "JSON.stringify(window.__headReads)");
+    let reads: Vec<(u64, u64)> =
+        serde_json::from_str(reads.as_str().unwrap_or("[]")).unwrap_or_default();
+    assert!(
+        reads.iter().any(|&(from, _)| from == 30000),
+        "the read after the cut went on from the byte where it stopped: {reads:?}"
+    );
+    assert_eq!(
+        reads.iter().filter(|&&(from, _)| from == 0).count(),
+        1,
+        "the head's start was never asked for again: {reads:?}"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken across the landing"
+    );
+}
+
 /// #314 (design/tail-first-open.md; the owner chose option A — "this may help the desktop case as
 /// well"): a long session opens at its TAIL. While the head is still coming the reader is at the
 /// end, reading the true turn numbers; when it lands in front of the tail the reader is still at

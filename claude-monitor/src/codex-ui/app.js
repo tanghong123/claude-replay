@@ -292,6 +292,11 @@ const recordStore = new RecordStore({
   opened: () => sessionLoading?.hide(),
   // #314: how much of a tail-first open's head has arrived — the pending card says it in place,
   // without a render (its height is its own and does not change).
+  // #s274: a head piece that failed is read again; the card says so until the next bytes arrive.
+  headFailed: () => {
+    recordState.headProgress = { ...(recordState.headProgress || { got: 0, total: 0 }), retrying: true };
+    for (const text of viewport.window.querySelectorAll("[data-pending-text]")) text.textContent = pendingHeadText(recordState.headProgress);
+  },
   headProgress: (got, total) => {
     recordState.headProgress = { got, total };
     for (const text of viewport.window.querySelectorAll("[data-pending-text]")) text.textContent = pendingHeadText(recordState.headProgress);
@@ -299,7 +304,7 @@ const recordStore = new RecordStore({
 // #314 (design/tail-first-open.md): a first open asks for the last 512 KB of the committed log and
 // draws it, then reads the head behind it; the server sends a log under twice that whole. A case
 // sets `?tailBudget=` so a small fixture exercises it, as `?trace=` and `?historyMs=` serve cases.
-}, { tailBudget: Number(new URLSearchParams(location.search).get("tailBudget")) || 512 * 1024, emptySession: null, sessionFailure: null });
+}, { tailBudget: Number(new URLSearchParams(location.search).get("tailBudget")) || 512 * 1024, headPieceBytes: Number(new URLSearchParams(location.search).get("headPiece")) || 0, emptySession: null, sessionFailure: null });
 
 function toast(message) {
   const element = byId("toast"); element.textContent = message; element.classList.add("show");

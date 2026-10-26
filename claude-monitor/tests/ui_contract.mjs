@@ -214,12 +214,14 @@ assert.deepEqual(store.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 });
   assert.equal(noTurn.units[1].type, "process");
 
   const realFetch = globalThis.fetch;
-  const lines = records => new Response(records.map(record => JSON.stringify(record)).join("\n") + "\n", { status: 200 });
+  // The server answers a `/records` range with exactly those bytes of the log.
+  const logOf = records => new TextEncoder().encode(records.map(record => JSON.stringify(record)).join("\n") + "\n");
+  const ranged = log => async url => { const q = new URL(url, "http://x").searchParams; const from = Number(q.get("from")); return new Response(log.slice(from, from + Number(q.get("len"))), { status: 200 }); };
   const head = [{ kind: "user", id: "u1", turn: 1, body: [] }, { kind: "assistant", id: "a1", phase: "final", body: [] }, { kind: "user", id: "u2", turn: 2, body: [] }];
   try {
-    globalThis.fetch = async () => lines(head);
+    globalThis.fetch = ranged(logOf(head));
     tailStore.session = "s";
-    const pending = { count: 3, len: 300, epoch: 3 };
+    const pending = { count: 3, len: logOf(head).length, epoch: 3 };
     tailStore.head = pending;
     await tailStore.loadHead(tailStore.generation, pending);
     assert.deepEqual(tailStore.records.map(record => record.id), ["u1", "a1", "u2", "b3", "u4", "a5"], "the head replaces its placeholders in place");
@@ -230,9 +232,9 @@ assert.deepEqual(store.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 });
     const misfit = new RecordStore({ update: () => {}, reset: () => resets++ }, { tailBudget: 1024 });
     misfit.apply(tail(), 3);
     misfit.session = "s";
-    const owed = { count: 3, len: 300, epoch: 3 };
+    const owed = { count: 3, len: logOf(head.slice(0, 1)).length, epoch: 3 };
     misfit.head = owed;
-    globalThis.fetch = async () => lines(head.slice(0, 1));
+    globalThis.fetch = ranged(logOf(head.slice(0, 1)));
     await misfit.loadHead(misfit.generation, owed);
     assert.equal(resets, 1, "a head whose count is not the one the pull named starts the session over");
     assert.deepEqual(misfit.records, [], "…and is never spliced in");
@@ -240,6 +242,86 @@ assert.deepEqual(store.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 });
     globalThis.fetch = realFetch;
   }
   console.log("#314 tail-first open cases passed");
+}
+
+// #s274: the head comes in ranges of at most HEAD_PIECE_BYTES, its bytes kept as they arrive. A read
+// that drops goes on from the byte it stopped at, so the progress only climbs; a range may end
+// inside a character, so the bytes are joined before they are decoded; and a 409 under the same epoch (the server dropped an idle
+// session and a pull brings it back) carries on, where a new epoch starts the session over.
+{
+  const { HEAD_PIECE_BYTES } = await import("../../claude-monitor/src/codex-ui/record-store.js");
+  const realFetch = globalThis.fetch;
+  // ~2.4 MB of records written in a three-byte character, so the 1 MiB boundaries (not multiples
+  // of three) fall inside one.
+  const big = Array.from({ length: 8 }, (_, i) => ({ kind: i % 2 ? "assistant" : "user", id: `h${i}`, turn: i, body: [{ p: "md", h: "中".repeat(100_000) }] }));
+  const bytes = new TextEncoder().encode(big.map(record => JSON.stringify(record)).join("\n") + "\n");
+  assert.ok(bytes.length > 2 * HEAD_PIECE_BYTES && HEAD_PIECE_BYTES % 3 !== 0, "the fixture spans three pieces, split inside characters");
+  const tailReply = () => ({ epoch: 7, committed_from: 8, committed: [{ kind: "user", id: "t8", turn: 9, body: [] }], provisional_gen: 0, provisional_from: 0, provisional: [], meta: { tasks: [], children: [] } });
+  const slice = url => { const q = new URL(url, "http://x").searchParams; const from = Number(q.get("from")), len = Number(q.get("len")); return bytes.slice(from, from + len); };
+  const landed = store => new Promise(resolve => { const update = store.handlers.update; store.handlers.update = u => { update?.(u); if (u.prepended) resolve(u); }; });
+  try {
+    const progress = [], failures = [];
+    let calls = 0;
+    const store = new RecordStore({ update: () => {}, headProgress: got => progress.push(got), headFailed: (e, n) => failures.push(n) }, { tailBudget: 1024 });
+    store.session = "s";
+    store.apply(tailReply(), 8);
+    const head = { count: 8, len: bytes.length, epoch: 7 };
+    store.head = head;
+    globalThis.fetch = async url => {
+      calls++;
+      // The second piece's first read drops halfway through.
+      if (calls === 2) {
+        const part = slice(url).slice(0, 4096);
+        return new Response(new ReadableStream({ start(c) { c.enqueue(part); c.error(new Error("dropped")); } }), { status: 200 });
+      }
+      return new Response(slice(url), { status: 200 });
+    };
+    const done = landed(store);
+    await store.loadHead(store.generation, head);
+    await done;
+    assert.deepEqual(store.records.slice(0, 8).map(record => record.id), big.map(record => record.id), "the head lands whole, in place");
+    assert.equal(store.records[3].body[0].h, "中".repeat(100_000), "…its characters intact across the piece boundaries");
+    assert.deepEqual(failures, [1], "one piece failed, once");
+    assert.equal(calls, 4, "three ranges and one more after the drop, never the whole head again");
+    const backwards = progress.findIndex((got, i) => i && got < progress[i - 1]);
+    assert.equal(backwards, -1, `the progress never steps back: the read that dropped went on from the byte it stopped at (${progress[backwards - 1]} -> ${progress[backwards]})`);
+    assert.ok(progress.at(-1) === bytes.length, "…and ends at the whole head");
+
+    // A 409 under the same epoch: the session comes back with a pull, and the head goes on.
+    let resets = 0, served = [];
+    const again = new RecordStore({ update: () => {}, reset: () => resets++ }, { tailBudget: 1024 });
+    again.session = "s"; again.apply(tailReply(), 8);
+    const owed = { count: 8, len: bytes.length, epoch: 7 };
+    again.head = owed;
+    let refused = false;
+    globalThis.fetch = async url => {
+      served.push(String(url).split("?")[0]);
+      if (String(url).startsWith("/pull")) return new Response(JSON.stringify({ ...tailReply(), committed: [] }), { status: 200 });
+      if (!refused && new URL(url, "http://x").searchParams.get("from") !== "0") { refused = true; return new Response("stale epoch", { status: 409 }); }
+      return new Response(slice(url), { status: 200 });
+    };
+    const back = landed(again);
+    await again.loadHead(again.generation, owed);
+    await back;
+    assert.equal(resets, 0, "a session the server brought back under the same epoch is not started over");
+    assert.ok(served.includes("/pull"), "…it was pulled back first");
+    assert.equal(again.records[7].id, "h7");
+
+    // A 409 under a NEW epoch: the log changed, and the session starts over.
+    const changed = new RecordStore({ update: () => {}, reset: () => resets++ }, { tailBudget: 1024 });
+    changed.session = "s"; changed.apply(tailReply(), 8);
+    const stale = { count: 8, len: bytes.length, epoch: 7 };
+    changed.head = stale;
+    globalThis.fetch = async url => String(url).startsWith("/pull")
+      ? new Response(JSON.stringify({ ...tailReply(), epoch: 8, committed: [] }), { status: 200 })
+      : new Response("stale epoch", { status: 409 });
+    await changed.loadHead(changed.generation, stale);
+    assert.equal(resets, 1, "a new epoch starts the session over");
+    assert.deepEqual(changed.records, []);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log("#s274 head in pieces cases passed");
 }
 
 const fixtures = [

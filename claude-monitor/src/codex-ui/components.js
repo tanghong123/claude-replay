@@ -336,8 +336,9 @@ function turnTime(unit) {
 
 /** The pending head's words (#314): how much of the earlier turns has arrived, when it is known. */
 export function pendingHeadText(progress) {
-  if (!progress || !progress.total) return "Loading earlier turns…";
-  return `Loading earlier turns — ${Math.min(100, Math.round((progress.got * 100) / progress.total))}%`;
+  if (!progress || !progress.total) return progress?.retrying ? "Loading earlier turns — the connection dropped, trying again" : "Loading earlier turns…";
+  const share = `${Math.min(100, Math.round((progress.got * 100) / progress.total))}%`;
+  return progress.retrying ? `Loading earlier turns — ${share}, the connection dropped, trying again` : `Loading earlier turns — ${share}`;
 }
 
 export function renderUnit(unit, state) {

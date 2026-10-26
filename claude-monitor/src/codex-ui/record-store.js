@@ -7,6 +7,13 @@ import { cursorText, freshCursor, parseRecords, pullQuery, recordsQuery, reduceP
  *  look hung. */
 const WAITING_AFTER_MS = 1200;
 
+/** The head of a tail-first open is read in pieces of this many bytes of the log, each its own
+ *  `/records` range, so a link that drops a long transfer costs one piece and never the whole head
+ *  (#s274: a phone over the tailnet climbed to 48% and fell back to 1%, again and again, while one
+ *  9.7 MB read restarted from the top after every drop). A piece may end mid-record, even inside
+ *  a character, so the head is kept as BYTES and decoded once, joined. */
+export const HEAD_PIECE_BYTES = 1024 * 1024;
+
 /** A record that has not arrived yet: the HEAD of a tail-first open (#314,
  *  design/tail-first-open.md). One frozen object stands for each of them; the projection folds
  *  the run into a single pending unit, so nothing ever renders one as a record. */
@@ -19,6 +26,7 @@ export class RecordStore {
   constructor(handlers, options = {}) {
     this.handlers = handlers;
     this.tailBudget = options.tailBudget || 0;
+    this.headPieceBytes = options.headPieceBytes || HEAD_PIECE_BYTES;
     this.emptySession = options.emptySession;
     this.sessionFailure = options.sessionFailure;
     // The head still to come after a tail-first open: `{ count, len, epoch }`, or null.
@@ -156,26 +164,79 @@ export class RecordStore {
 
   /** The head of a tail-first open, read behind the tail the page has already drawn (#314). It
    *  replaces the placeholders IN PLACE — record indices never move — and is reported as a
-   *  prepend (`prepended`: how many records it brought in front of the tail). A head that does
-   *  not fit — a 409 because the log was recreated, or a count other than the one the pull named
-   *  — starts the session over; one is never spliced in. A failed read is retried. */
+   *  prepend (`prepended`: how many records it brought in front of the tail). It is read as ranges
+   *  of at most `headPieceBytes` (#s274), its bytes kept as they arrive, so a read that drops starts
+   *  again at the byte where it stopped and the progress only climbs. A 409 means the server no
+   *  longer holds the log under that epoch: it dropped an idle session from memory (a pull brings it
+   *  back under the SAME epoch, and the head carries on), or the log was recreated (a new epoch, so
+   *  the session starts over). A head whose count is not the one the pull named starts the session
+   *  over too; one is never spliced in. */
   async loadHead(generation, head) {
     const current = () => generation === this.generation && this.head === head;
+    head.parts ??= [];
+    head.got ??= 0;
     try {
-      const response = await fetch(`/records?${recordsQuery(this.session, { offset: 0, len: head.len }, head.epoch)}`, { cache: "no-store" });
-      if (!current()) return;
-      if (response.status === 409) { this.recover(); return; }
-      if (!response.ok) throw new Error(`records HTTP ${response.status}`);
-      const text = await this.read(response, head.len, generation, (got, total) => { if (current()) this.handlers.headProgress?.(got, total); });
-      if (!current()) return;
-      const records = parseRecords(text);
+      while (head.got < head.len) {
+        const len = Math.min(this.headPieceBytes, head.len - head.got);
+        const response = await fetch(`/records?${recordsQuery(this.session, { offset: head.got, len }, head.epoch)}`, { cache: "no-store" });
+        if (!current()) return;
+        if (response.status === 409) { await this.rematerialize(generation, head); return; }
+        if (!response.ok) throw new Error(`records HTTP ${response.status}`);
+        const before = head.got;
+        const keep = bytes => {
+          head.parts.push(bytes);
+          head.got += bytes.byteLength;
+          this.handlers.headProgress?.(head.got, head.len);
+        };
+        if (!response.body) keep(new Uint8Array(await response.arrayBuffer()));
+        else {
+          const reader = response.body.getReader();
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (!current()) { reader.cancel().catch(() => {}); return; }
+            if (done) break;
+            keep(value);
+          }
+        }
+        // The log holds less than the pull said it did: not this head.
+        if (head.got === before) { this.recover(); return; }
+        head.failures = 0;
+      }
+      const whole = new Uint8Array(head.got);
+      let at = 0;
+      for (const part of head.parts) { whole.set(part, at); at += part.byteLength; }
+      const records = parseRecords(new TextDecoder().decode(whole));
       if (records.length !== head.count) { this.recover(); return; }
       for (let i = 0; i < records.length; i++) this.records[i] = records[i];
       this.head = null;
       this.handlers.update?.({ records: this.records, meta: this.meta, changedFrom: 0, prepended: head.count });
     } catch (error) {
-      if (current()) setTimeout(() => { if (current()) this.loadHead(generation, head); }, 1000);
+      if (!current()) return;
+      head.failures = (head.failures || 0) + 1;
+      this.handlers.headFailed?.(error, head.failures);
+      // Back off on a link that keeps failing, up to 8 s; what arrived is kept either way.
+      setTimeout(() => { if (current()) this.loadHead(generation, head); }, Math.min(8000, 1000 * head.failures));
     }
+  }
+
+  /** A head piece met 409. Pull once with the store's own cursor: under the SAME epoch the server
+   *  has the session back and the head goes on from where it was; under another, or no answer,
+   *  the log changed and the session starts over. */
+  async rematerialize(generation, head) {
+    const current = () => generation === this.generation && this.head === head;
+    try {
+      const response = await fetch(`/pull?${pullQuery(this.session, this.cursor)}`, { cache: "no-store" });
+      if (!current()) return;
+      const reply = response.ok ? await response.json() : null;
+      if (!current()) return;
+      if (reply && reply.epoch === head.epoch) {
+        setTimeout(() => { if (current()) this.loadHead(generation, head); }, 250);
+        return;
+      }
+    } catch (error) {
+      if (!current()) return;
+    }
+    this.recover();
   }
 
   apply(reply, headCount = 0) {
