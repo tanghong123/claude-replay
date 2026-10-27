@@ -1,7 +1,7 @@
 # agent-monitor over a slow link (#s274)
 
-**Status: approved (Hong, 2026-10-27, #s275); stage 0 and stage 1 built (#s274, #s276); stage 2
-designed in §6 (#s277), waiting on Hong before any code.** Hong's direction, from a phone over the
+**Status: approved (Hong, 2026-10-27, #s275); stages 0, 1 and 2 built (#s274, #s276, #s277; stage 2
+as designed in §6, Hong's option 1 on #s279, with the changes in §6.11).** Hong's direction, from a phone over the
 tailnet: a server-side turn index, fetching only the records the view needs, and server-side search.
 
 ## 1. What it is for
@@ -134,8 +134,8 @@ its records arrive.
   commentary, and its id. These are what `buildUnits` groups by, so the page runs its own grouping
   rule over them and the placeholders are exactly the units the real records will make, keyed as
   they will be (`user:t12`, `process:b57`). There is one grouping rule, the page's; the server
-  reports facts, never a grouping verdict. Under 10 bytes a record: the largest log measured here
-  has 11,260 records and 2,702 units, about 90 KB before gzip.
+  reports facts, never a grouping verdict. About 20 bytes a record: on the 117 MB log the reply grew
+  from 259 KB to 479 KB before gzip (10,965 records).
 - **The store still holds `PENDING` for every record not fetched**, as today, so nothing that scans
   the records sees anything new.
 - **A unit is a placeholder until every record it spans has arrived.** Only then is it drawn,
@@ -366,3 +366,25 @@ Then:
     placeholders stay; they fill about a fifth of a second after the reader stops.
   - Otherwise: absorb it into the top pad mid-glide, as #372 does for a unit first mounted then. The
     content appears sooner, but near the session's top the pad runs out and the view jumps.
+
+### 6.11 As built (#s277)
+
+What changed between this design and the code, each decided in the build:
+- **The record check is the facts, not a fingerprint.** A fingerprint per record would add 16 bytes to
+  each of the reply's records; the facts already name each record's kind and id, and a fetched record
+  that differs from them (a log rewritten under one epoch) starts the session over before it fills.
+  With the I12 rule (any pull that rewrites below `upto` starts over, #s280) that is the same promise.
+- **The pending card is a kind of its own** (`pending`, with its 84 px as its floor) rather than a
+  placeholder: it is short by design and measured, and now teaches only its own mean.
+- **A late measure mounts the window where the reader is.** The observer reports a resize in a frame;
+  placeholders refitted to a moved estimate made a report that arrived after the reader had scrolled
+  into a pad common, and the measure transaction did not remount (I10, I11). It now does, without a
+  placement, as a yielded correction does (#372).
+- **A process group's placeholder says how much of it has arrived** ("Loading — 12 of 40 steps"); a
+  prompt's shows its turn number and label.
+- **The cases** are `tests/records_by_turn.rs`: the index lands and nothing moves the reader (a far fill
+  redraws no mounted element), the tail stays followed through every fill, a fill at or above the
+  reader waits through a glide and under a finger, a turn tap lands at once and is read first, a link
+  lands on its row unless the reader moves, the tail grows and a queued prompt is picked up while the
+  head fills, a stale epoch starts over, a turn of many records shows its prompt from its first piece,
+  and a placeholder is never measured and moves no mean. Removing the fill hold fails the third.

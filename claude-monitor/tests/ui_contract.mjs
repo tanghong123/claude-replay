@@ -566,6 +566,18 @@ assert.deepEqual(store.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 });
     short.startReads(short.generation, owed, { turns: [{ ...rowsWithBytes[0], last: 6 }] });
     for (let i = 0; i < 20 && resets === 0; i++) await new Promise(resolve => setImmediate(resolve));
     assert.equal(resets, 1, "a turn that brings more records than the index said starts over");
+
+    // A record that is not the one the index described there (the log rewritten under one epoch).
+    let renamed = 0;
+    const other = new RecordStore({ update: () => {}, reset: () => renamed++ }, { tailBudget: 1024, windowed: true });
+    other.session = "s"; other.records = R.map((r, i) => (i < upto ? PENDING : r));
+    const changed = { count: upto, len: bytes.length, epoch: 1 };
+    other.head = changed;
+    other.index = { facts: facts.map((f, i) => (i === 1 ? [f[0], "b99"] : f)) };
+    other.startReads(other.generation, changed, { turns: [rowsWithBytes[0]] });
+    for (let i = 0; i < 20 && renamed === 0; i++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(renamed, 1, "a record that is not the one the index described starts over, and fills nothing");
+    assert.ok(!other.fills.length, "…not a piece of it");
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -2101,7 +2113,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   assert.match(app, /const index = recordState\.records\.findIndex\(record => recordChain\(record, id, chain\)\);/, "a hash resolves through nested records");
   assert.match(app, /for \(const rid of chain\) recordState\.folds\.set\(rid, false\);/, "…opening the chain to it");
-  assert.match(app, /if \(!viewport\.jumpToRecord\(index, "hash"\)\) return false;/, "…and lands there");
+  assert.match(app, /if \(!viewport\.jumpToRecord\(index, "hash"\)\) \{ recordStore\.want\(index, index \+ 1, 0\); return false; \}/, "…and lands there");
   console.log("#116 deep link cases passed");
 }
 

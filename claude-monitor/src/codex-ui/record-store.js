@@ -340,7 +340,7 @@ export class RecordStore {
       if (!read) { r++; continue; }
       if (!read.done) {
         owed = true;
-        if (priority < read.want || priority === read.want) { read.want = priority; read.asked = ++head.asked; }
+        if (priority <= read.want) { read.want = priority; read.asked = ++head.asked; }
       }
       r = read.last + 1;
     }
@@ -381,6 +381,10 @@ export class RecordStore {
       if (cut < 0) throw new Error("records: a range brought no whole record");
       const records = parseRecords(new TextDecoder().decode(bytes.subarray(0, cut + 1)));
       if (!records.length || read.next + records.length > read.last + 1) { this.recover(); return; }
+      // Each record is the one the index described there — its kind and id — or the log was
+      // rewritten under the same epoch, and nothing is filled from it (framework I12).
+      const facts = this.index?.facts;
+      if (facts && records.some((record, k) => { const fact = facts[read.next + k]; return !fact || fact[0] !== record.kind || (fact[1] || "") !== (record.id || ""); })) { this.recover(); return; }
       this.fills.push({ from: read.next, records });
       read.next += records.length;
       read.at += cut + 1;

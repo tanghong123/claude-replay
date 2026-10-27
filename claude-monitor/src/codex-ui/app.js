@@ -38,6 +38,8 @@ const transcript = byId("transcript");
 const projection = new Projection();
 let toastTimer = 0;
 let landedHash = "";
+// #s277: a link waiting for its turn to arrive, and when it began to wait (`landOnHash`).
+let hashWait = null;
 
 document.querySelectorAll("[data-icon]").forEach(element => { element.innerHTML = svg(element.dataset.icon); });
 // The sidebar head's controls (#75, #76): the generated shell gives the theme toggle and
@@ -1024,10 +1026,18 @@ function landOnHash() {
   // brought to the top and flashed.
   const chain = [];
   const index = recordState.records.findIndex(record => recordChain(record, id, chain));
-  // #s277: a link into a turn still on its way reads that turn first, and lands once it is here.
-  if (index < 0) { const owed = owedRecordFor(id); if (owed >= 0) recordStore.want(owed, owed + 1, 0); return false; }
+  // #s277: a link into a turn still on its way reads that turn first, and lands once it is here —
+  // unless the reader has moved since it was opened: then it stops waiting, as a held tap does.
+  if (index < 0) {
+    const owed = owedRecordFor(id);
+    if (owed < 0) return false;
+    if (hashWait?.identity !== identity) hashWait = { identity, at: performance.now() };
+    else if (viewport.lastUserInput > hashWait.at) { landedHash = identity; hashWait = null; return false; }
+    recordStore.want(owed, owed + 1, 0);
+    return false;
+  }
   for (const rid of chain) recordState.folds.set(rid, false);
-  if (!viewport.jumpToRecord(index, "hash")) return false;
+  if (!viewport.jumpToRecord(index, "hash")) { recordStore.want(index, index + 1, 0); return false; }
   landedHash = identity;
   const nested = chain.length > 1 ? viewport.window.querySelector(`[data-record-id="${CSS.escape(id)}"]`) : null;
   if (nested) {

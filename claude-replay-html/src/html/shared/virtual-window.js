@@ -1449,6 +1449,15 @@ class VirtualWindow {
         const again = this.rangeForScroll();
         mounted = this.mountRange(again.lo, again.hi, Infinity, null) || mounted;
       }
+      // A measure the observer delivered after the reader scrolled into a pad and before their
+      // scroll's own transaction ran (the observer reports in a frame, and a lazy tab draws its next
+      // one only when the reader moves, #204 — placeholders resized by a moved estimate made it common,
+      // #s277): their scroll placed them, so the window follows them there without a placement, as for
+      // a yielded correction, and `syncPosition` reads `P` there (I10, I11).
+      if (options.measure && !options.range && placed === "placed" && p0 && p0.source !== "tail" && !this.viewportMounted()) {
+        const again = this.rangeForScroll();
+        mounted = this.mountRange(again.lo, again.hi, Infinity, null) || mounted;
+      }
       // A position the reader asked for (§4.10) is `P` from here on; `syncPosition` keeps it.
       if (p0 && p0.commanded) this.position = p0;
       this.syncPosition();

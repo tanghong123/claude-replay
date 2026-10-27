@@ -1320,7 +1320,27 @@ roster and a link to a file the head offered are the whole session's
 (`app_shell_lists_the_whole_session_before_the_head_lands` reads them held, then landed, and
 compares). Search still reads the records (stage 3). Without the index (a refusal, five failed
 reads) the page reads the tail as before (`a_phone_tail_first_open_counts_the_whole_session`
-refuses it). The rest of the slow-link work is `design/slow-links.md`.
+refuses it). **Records by turn** (#s277, `design/slow-links.md` §6, Hong's #s279: stage 2) is a
+reader across a network's path (`WINDOWED`: not `revealHere()`; `?windowed=1|0` for a case; the
+desktop keeps stage 1). When the index lands, the card gives way to the units every earlier turn will
+make, keyed as they will be: the index reply carries each record's kind, commentary bit and id
+(`facts`), and the page's own `buildUnits` groups them (`Projection.stub`); a unit owes (`owed`)
+until its last record is here, and is a PLACEHOLDER (`placeholderAt`), which the engine draws at its
+height in the sums (margins included), never measures and never learns from, refitting the mounted
+ones wherever the applied estimate moves. The store reads the head turn by turn from the index's map
+(`startReads`): a jump's turn first, then what the window shows (`wantWindow`, after every
+transaction), then the rest from the tail backwards, in pieces of `headPiece` whose records must be the
+ones the facts describe (else the session starts over), each waiting until the page takes it
+(`takeFills`). A fill is a rewrite in place of its own units (`Projection.fill`; a records change
+naming its run, `{from, to}`, redraws only that run); one that would redraw a mounted unit at or above
+the reader waits for a still view and no thumb held (D5). A turn tap lands at once on its placeholder;
+a record jump (a task, an agent, an artifact, a link) reads its turn and lands when its unit is whole,
+unless the reader moves first (`jumpOrFetch`, `owedRecordFor`). While the head is out the index answers
+for the records below `upto` and the scans only for those above it (`scanFrom`). The pending card is
+an estimator kind of its own (it used to teach the process mean). A measure the observer delivers late,
+after the reader scrolled into a pad, mounts the window where they are. The cases are
+`tests/records_by_turn.rs` (ports 2770–2778, with a shim that queues the head's reads). The rest of
+the slow-link work is `design/slow-links.md`.
 
 **`claude-replay`** (root) — the thin assembly crate: clap CLI (`run_viewer`), `jdi/` the
 **`agent-jdi`** binary (unattended-run supervisor; see `src/jdi/DESIGN.md`), and compat
