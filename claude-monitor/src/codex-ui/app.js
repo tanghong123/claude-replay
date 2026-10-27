@@ -322,8 +322,9 @@ const recordStore = new RecordStore({
   },
 // #314 (design/tail-first-open.md): a first open asks for the last 512 KB of the committed log and
 // draws it, then reads the head behind it; the server sends a log under twice that whole. A case
-// sets `?tailBudget=` so a small fixture exercises it, as `?trace=` and `?historyMs=` serve cases.
-}, { tailBudget: Number(new URLSearchParams(location.search).get("tailBudget")) || 512 * 1024, headPieceBytes: Number(new URLSearchParams(location.search).get("headPiece")) || 0, windowed: WINDOWED, emptySession: null, sessionFailure: null });
+// sets `?tailBudget=` so a small fixture exercises it, as `?trace=` and `?historyMs=` serve cases;
+// `?keepBytes=` does the same for what a reader across a network keeps of the head (#s285).
+}, { tailBudget: Number(new URLSearchParams(location.search).get("tailBudget")) || 512 * 1024, headPieceBytes: Number(new URLSearchParams(location.search).get("headPiece")) || 0, keepBytes: Number(new URLSearchParams(location.search).get("keepBytes")) || 0, windowed: WINDOWED, emptySession: null, sessionFailure: null });
 
 function toast(message) {
   const element = byId("toast"); element.textContent = message; element.classList.add("show");
@@ -981,6 +982,7 @@ function takeFills() {
     }
     applyFill(recordStore.takeFill());
   }
+  dropFar();
 }
 function fillMustWait({ from, to }) {
   const a = unitAt(from), b = unitAt(to - 1);
@@ -990,35 +992,81 @@ function fillMustWait({ from, to }) {
   // be a scroll batch old there, so "below the reader" is not known well enough to let one in.
   return viewport.dragging || viewport.touchGlide || viewport.readerMoving();
 }
-function applyFill({ from, to }) {
-  const records = recordStore.records;
-  for (let i = from; i < to; i++) recordState.recSizes[i] = recordTextSize(records[i]);
-  const run = projection.fill(records, from, to);
+function applyFill(fill) {
   // Units that did not come out as their placeholders were: the index and the log disagree, and
   // nothing may be renamed (framework I12) — the session starts over.
-  if (!run) { recordStore.recover(); return; }
-  recordState.units = projection.units;
-  recordState.taskTargets = taskRecordTargets(recordState.meta?.tasks || [], records);
-  recordState.agentTargets = agentTargetsNow(records);
-  viewport.setUnits(recordState.units, run);
+  if (!rewriteInPlace(fill)) { recordStore.recover(); return; }
+  recordState.taskTargets = taskRecordTargets(recordState.meta?.tasks || [], recordStore.records);
+  recordState.agentTargets = agentTargetsNow(recordStore.records);
   landOnHash();
   if (heldTurnJump && viewport.lastUserInput > heldTurnJump.at) heldTurnJump = null;
   landHeldJump();
   renderNavigator(); refreshFilterHits(); updateSearch(false);
 }
+/** Records `[from, to)` were rewritten where they stand — filled, or let go (#s285): the units over
+ *  them are rebuilt under their own keys, and the engine redraws that run alone. False when the units
+ *  did not come out as they were. */
+function rewriteInPlace({ from, to }) {
+  const records = recordStore.records;
+  for (let i = from; i < to; i++) recordState.recSizes[i] = recordTextSize(records[i]);
+  const run = projection.fill(records, from, to);
+  if (!run) return false;
+  recordState.units = projection.units;
+  viewport.setUnits(recordState.units, run);
+  return true;
+}
+/** The unit the reader is on, for what to read first and what to let go of last. */
+function readerUnit() {
+  const p = viewport.position;
+  return !p ? viewport.lo : p.source === "tail" ? recordState.units.length - 1 : p.index ?? viewport.lo;
+}
 /** #s277: ask the store for what the window shows — a screen's worth of units beyond it either way,
- *  the nearest to the reader asked last, which the store reads first. */
+ *  the nearest to the reader asked last, which the store reads first. What it asked for before and
+ *  no longer shows goes back to the background order (#s285). */
 function wantWindow() {
   if (!recordStore.head?.reads) return;
   const units = recordState.units;
-  const p = viewport.position;
-  const at = !p ? viewport.lo : p.source === "tail" ? units.length - 1 : p.index ?? viewport.lo;
+  const at = readerUnit();
   const span = Math.max(8, viewport.hi - viewport.lo);
   const lo = Math.max(0, viewport.lo - span), hi = Math.min(units.length, viewport.hi + span);
   const owed = [];
   for (let i = lo; i < hi; i++) if (units[i].owed > 0) owed.push(i);
   owed.sort((x, y) => Math.abs(y - at) - Math.abs(x - at));
+  recordStore.unwantWindow();
   for (const i of owed) recordStore.want(units[i].from, units[i].to + 1, 1);
+}
+/** #s285 (design/slow-links.md §6.6; Hong on #s290: "Read up to about 16 MB, then only what I
+ *  visit"): once the turns read hold more than the page keeps, the farthest from the reader are let
+ *  go. Their units become placeholders again under the same keys, at the heights they were measured
+ *  at, so the sums do not move and nothing mounted is redrawn; a visit reads them again. Never a turn
+ *  in or near the window (twice the reach `wantWindow` asks for, so nothing it asks for is let go),
+ *  nor the head's last turn, which the tail may go on with. */
+function dropFar() {
+  const reads = recordStore.head?.reads;
+  if (!reads || recordStore.held <= recordStore.keepBytes) return;
+  const at = readerUnit();
+  const span = 2 * Math.max(8, viewport.hi - viewport.lo);
+  const lo = Math.min(at, viewport.lo) - span, hi = Math.max(at, viewport.hi) + span;
+  const far = [];
+  for (const read of reads.slice(0, -1)) {
+    if (read.next === read.r) continue;
+    const a = unitAt(read.r), b = unitAt(read.next - 1);
+    if (a < 0 || b < 0 || (b >= lo && a < hi)) continue;
+    far.push({ read, distance: b < at ? at - b : a - at });
+  }
+  far.sort((x, y) => y.distance - x.distance);
+  let dropped = false;
+  for (const { read } of far) {
+    if (recordStore.held <= recordStore.keepBytes) break;
+    const run = recordStore.drop(read);
+    if (!run) continue;
+    if (!rewriteInPlace(run)) { recordStore.recover(); return; }
+    dropped = true;
+  }
+  if (!dropped) return;
+  recordState.taskTargets = taskRecordTargets(recordState.meta?.tasks || [], recordStore.records);
+  recordState.agentTargets = agentTargetsNow(recordStore.records);
+  renderNavigator(); refreshFilterHits(); updateSearch(false);
 }
 /** A jump to record `r`, or, while its turn is on its way, the turn fetched first (#s277): a TURN
  *  lands at once on its placeholder; a record inside one waits for its unit, unless the reader

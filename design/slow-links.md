@@ -289,6 +289,29 @@ say 16 MB kept around `P`) go back to `PENDING`. Their units become placeholders
 measured heights, so a drop is a rewrite in place that moves nothing, and a later fetch is a fill.
 Only head turns are dropped, whose offsets the index knows; never the live tail.
 
+**As built (#s285)**, after Hong chose on #s290 ("Read up to about 16 MB, then only what I visit"):
+- **The background read ends at the budget.** D4 reads the rest from the tail backwards and stops
+  before the turn that would take the head's reads past `KEEP_BYTES` (16 MiB of the log;
+  `?keepBytes=` for a case). Reaching the budget never drops anything: what the background read is one
+  run behind the tail. After that only what the window shows or a jump names is read. A head under the budget is read whole, as before, and
+  the head and its index then go.
+- **The window's asks lapse.** The page asks again for what it shows after every transaction, and
+  what it asked for before goes back to the background order (`unwantWindow`). So a turn the reader
+  scrolled past is not read once the background read is over. A jump's ask stands.
+- **The farthest go after each fill** (`dropFar`): while the reads hold more than the budget, the read
+  turns farthest from the reader's unit go back to `PENDING` through the store's `drop`. Their units
+  are rebuilt in place by the fill's own path (`Projection.fill`), as placeholders under the same keys.
+  Their heights are kept by key, so the sums do not move and nothing mounted is redrawn.
+- **What is never dropped:** a turn within twice the reach the window asks for (so nothing it asks
+  for is dropped and read again), the read in flight, one with a piece still waiting to go in, and the
+  head's last turn, which the tail may go on with.
+- **What a dropped turn costs:** what any turn still on its way costs. The counts, search and the
+  filter answer from the index and the server for every record below `upto`, so a drop changes none of
+  them. A task whose record was dropped says "still loading" until its turn is read again.
+- **The bound** is the budget, plus whatever the window and its reach hold that cannot be let go. A
+  single turn larger than the budget, read because the reader is in it, is held whole.
+- **The case** is `a_reader_across_a_network_keeps_about_its_budget_of_a_long_session`.
+
 ### 6.7 Who gets it
 
 D3 as decided: a reader over the network (a `Host` that is not the loopback, the test gzip uses)
@@ -482,7 +505,8 @@ server keeps no lowercased text.
 - **Dropping far turns on a phone** (§6.6) becomes possible once search no longer needs every record in
   the page; it is a change to the store and the projection of its own, filed as its own task.
 - Fetching the rest behind the reader (D4) stays: with search on the server it could stop, which is a
-  choice for Hong once stage 3 has run on the phone.
+  choice for Hong once stage 3 has run on the phone. (He chose on #s290: it stops once the page holds
+  about 16 MB, §6.6.)
 
 ### 7.6 As built (#s278)
 

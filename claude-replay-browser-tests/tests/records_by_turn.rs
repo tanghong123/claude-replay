@@ -11,7 +11,8 @@
 //! The page takes stage 2 for a reader across a network; a case opens a local monitor with
 //! `?windowed=1`, which picks that path, and queues every read of the head (`queue_the_head`) so it
 //! decides when each piece arrives. Searching the earlier turns on the server while the head is out
-//! (#s278, stage 3) is here too. Ports 2770–2779, and 2785–2789 for stage 3 (the sandbox holds 2780–2781).
+//! (#s278, stage 3) is here too, and so is what a reader keeps of a long session (#s285). Ports
+//! 2770–2779, 2782 for what a reader keeps, and 2785–2789 for stage 3 (the sandbox holds 2780–2781).
 
 mod harness;
 
@@ -809,6 +810,216 @@ fn a_group_of_steps_reaching_into_the_tail_stays_drawn_while_it_fills() {
     assert!(
         harness::at_tail(&tab, Surface::AppShell),
         "still at the tail"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
+}
+
+/// Release the head's reads one at a time until the page stops asking: no read waits, twice, 800 ms
+/// apart.
+fn release_until_quiet(tab: &headless_chrome::Tab, what: &str) {
+    let started = std::time::Instant::now();
+    let mut quiet = 0;
+    while quiet < 2 {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "{what}: {}",
+            harness::eval(tab, STATE)
+        );
+        if harness::eval(tab, "window.__heldReads.length").as_i64() == Some(0) {
+            quiet += 1;
+            std::thread::sleep(Duration::from_millis(800));
+        } else {
+            quiet = 0;
+            harness::eval(tab, "window.__release(1)");
+            std::thread::sleep(Duration::from_millis(120));
+        }
+    }
+}
+
+/// The head's turns from the index the monitor serves, each with whether the Turns pane lists it as
+/// here (`held`) and its bytes in the head: `{turns: [[number, bytes, held]…], last}`, `last` the head's
+/// last turn.
+const HEAD_TURNS: &str = r#"(async function(){
+  var r = await fetch('/turn-index?session=SID&epoch=1&upto=1000000'), j = await r.json(), tail = window.__tailFrom;
+  var turns = (j.turns || []).filter(function (t) { return t.o < tail; }).map(function (t) {
+    var row = document.querySelector('#navigatorTurns .outline-turn-row[data-turn-number="' + t.turn + '"]');
+    return [Number(t.turn), Math.min(t.end, tail) - t.o, !!row && !row.classList.contains('outline-turn-pending')];
+  });
+  return JSON.stringify({ turns: turns, last: turns.length ? turns[turns.length - 1][0] : null });
+})()"#;
+
+/// The bytes of the head the page holds, by the Turns pane, and the head's last turn.
+fn head_held(tab: &headless_chrome::Tab) -> (i64, i64, serde_json::Value) {
+    let v: serde_json::Value = serde_json::from_str(
+        harness::eval(tab, &HEAD_TURNS.replace("SID", SID))
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let held = v["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t[2].as_bool() == Some(true))
+        .map(|t| t[1].as_i64().unwrap())
+        .sum();
+    (held, v["last"].as_i64().unwrap(), v)
+}
+
+/// #s285 (design/slow-links.md §6.6; Hong on #s290: "Read up to about 16 MB, then only what I
+/// visit"). With what the page keeps set small (`?keepBytes=`), a reader at the tail has the head read
+/// behind them only until the turns read hold that much: there the background read stops, the earliest
+/// turns still on their way. A tap on turn 1 reads it and the turns around it, and the turns read first,
+/// now the farthest from the reader, are let go: back to placeholders, listed as coming again, so what
+/// the page holds stays near its budget. The reader's turn does not move, nothing reads the turns let go
+/// back while the reader stays, and a tap on one of them reads it again, as a fill.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_reader_across_a_network_keeps_about_its_budget_of_a_long_session() {
+    const KEEP: i64 = 24 * 1024;
+    // What a held count may run past the budget by once the reader visits: the turns the window holds
+    // that the page could not let go of.
+    const SLACK: i64 = 4096 + 4096;
+    let _serial = serial();
+    let (_m, _b, tab, _) = open(
+        2782,
+        "by-turn-keep",
+        &session(120),
+        false,
+        false,
+        &format!("&keepBytes={KEEP}"),
+    );
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
+    release_until_quiet(&tab, "the background read to stop");
+    let (held, last, turns) = head_held(&tab);
+    let head: i64 = turns["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t[1].as_i64().unwrap())
+        .sum();
+    assert!(
+        head > 4 * KEEP,
+        "the head is several budgets long: {head} bytes"
+    );
+    assert!(
+        (KEEP - 2048..=KEEP).contains(&held),
+        "the background read stops before the turn that would pass the budget: {held} of {KEEP}, {turns}"
+    );
+    let gaps = turns["turns"]
+        .as_array()
+        .unwrap()
+        .windows(2)
+        .filter(|w| w[0][2].as_bool() == Some(true) && w[1][2].as_bool() == Some(false))
+        .count();
+    assert_eq!(
+        gaps, 0,
+        "…and what it read is one run behind the tail, with no turn let go: {turns}"
+    );
+    assert!(
+        state(&tab)["pending"].as_i64().unwrap() > 0,
+        "the earliest turns are still on their way"
+    );
+    assert!(
+        harness::at_tail(&tab, Surface::AppShell),
+        "the reader is still at the tail"
+    );
+
+    // A visit to the session's first turn reads it, and the turns read first are let go.
+    tab.find_element("#navigatorTurns .outline-turn-pending[data-turn-number=\"1\"]")
+        .expect("turn 1 is listed while still coming")
+        .click()
+        .expect("click it");
+    release_until_quiet(&tab, "turn 1 and its neighbours to be read");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window > [data-unit-key=\"user:t1\"]:not(.unit-placeholder)')",
+        "turn 1 filled",
+        Duration::from_secs(10),
+        STATE,
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    let (key, top) = anchor(&tab);
+    let (held, _, turns) = head_held(&tab);
+    assert!(
+        held <= KEEP + SLACK,
+        "what the page holds stays near its budget: {held} of {KEEP}, {turns}"
+    );
+    let dropped = last - 1;
+    let gone = format!(
+        "!!document.querySelector('#navigatorTurns .outline-turn-pending[data-turn-number=\"{dropped}\"]')"
+    );
+    assert_eq!(
+        harness::eval(&tab, &gone).as_bool(),
+        Some(true),
+        "turn {dropped}, read first and now the farthest, is let go: {turns}"
+    );
+    assert_eq!(
+        harness::eval(
+            &tab,
+            &format!("(function(){{ var row = document.querySelector('#navigatorTurns .outline-turn-row[data-turn-number=\"{last}\"]'); return !!row && !row.classList.contains('outline-turn-pending'); }})()")
+        )
+        .as_bool(),
+        Some(true),
+        "…but never the head's last turn, which the tail goes on with"
+    );
+    // Nothing reads them back while the reader stays.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(
+        harness::eval(&tab, "window.__heldReads.length").as_i64(),
+        Some(0),
+        "no read asked for while the reader stays: {}",
+        harness::eval(&tab, "JSON.stringify(window.__readLog)")
+    );
+    let now = top_of(&tab, &key).expect("the reader's unit is still mounted");
+    assert!(
+        (now - top).abs() <= 1.0,
+        "letting turns go moves nothing: {key} {top} → {now}"
+    );
+
+    // A visit to a turn let go reads it again.
+    let offset = turn_offset(&tab, dropped);
+    tab.find_element(&format!(
+        "#navigatorTurns .outline-turn-pending[data-turn-number=\"{dropped}\"]"
+    ))
+    .expect("the turn let go is listed as coming")
+    .click()
+    .expect("click it");
+    harness::until(
+        &tab,
+        "window.__heldReads.length >= 1",
+        "a read asked for",
+        Duration::from_secs(10),
+        STATE,
+    );
+    assert_eq!(
+        harness::eval(&tab, "window.__heldReads[0].from").as_i64(),
+        Some(offset),
+        "the turn let go is read first: {}",
+        harness::eval(&tab, "JSON.stringify(window.__readLog)")
+    );
+    release_until_quiet(&tab, "the turn let go to be read again");
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.virtual-window > [data-unit-key=\"user:t{dropped}\"]:not(.unit-placeholder)')"),
+        "the turn let go filled again",
+        Duration::from_secs(10),
+        STATE,
+    );
+    let (held, _, turns) = head_held(&tab);
+    assert!(
+        held <= KEEP + SLACK,
+        "and the page still holds about its budget: {held} of {KEEP}, {turns}"
     );
     assert_eq!(
         harness::eval(&tab, VIOLATIONS).as_str(),
