@@ -37,6 +37,18 @@ pub(crate) struct Entry {
     pub n: u64,
     /// FNV-1a of the record's bytes: what tells this line still describes the record at `o`.
     pub h: String,
+    /// The record's kind, whether an answer is commentary, and its id: what the page's
+    /// `buildUnits` groups records into units by, so a page lays out the units a turn will have,
+    /// keyed as they will be, before its records arrive (#s277, `design/slow-links.md` §6.2).
+    /// `k` is required, so a sidecar from before these facts fails to parse and is rebuilt.
+    pub k: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub c: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    /// The sub-agent sessions it starts, nested calls included (`agentRecordTargets`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<String>,
     /// The turn it opens: the record trimmed to what a Turns pane row reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn: Option<Map<String, Value>>,
@@ -84,6 +96,19 @@ fn children(record: &Value) -> impl Iterator<Item = &Value> {
         .flatten()
 }
 
+/// The `session` query parameter of a link (`new URL(link).searchParams.get("session")` in the
+/// page): the sub-agent a `head.child` link opens. Session ids need no decoding.
+fn session_of(link: &str) -> &str {
+    let query = link.split('#').next().unwrap_or("");
+    let Some((_, query)) = query.split_once('?') else {
+        return "";
+    };
+    query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("session="))
+        .unwrap_or("")
+}
+
 /// FNV-1a, 64-bit, as hex — a fingerprint, not a defence: it tells a line from a record that
 /// replaced its own after a log was cut and grown again.
 fn fingerprint(bytes: &[u8]) -> String {
@@ -106,6 +131,10 @@ impl Entry {
             ..Entry::default()
         };
         let kind = record.get("kind").and_then(Value::as_str).unwrap_or("");
+        e.k = kind.to_string();
+        e.c = kind == "assistant"
+            && record.get("phase").and_then(Value::as_str) == Some("commentary");
+        e.id = first_str(record, &["id"]).to_string();
         if TURN_KINDS.contains(&kind) {
             let mut row = Map::new();
             for k in ["kind", "id", "turn", "label", "ts", "reply_context"] {
@@ -162,6 +191,14 @@ impl Entry {
                 }
                 self.artifacts.push(Value::Object(item));
             }
+        }
+        // `head.child_id`, else the session the `head.child` link names (`agentRecordTargets`).
+        let child = match first_str(head, &["child_id"]) {
+            "" => session_of(first_str(head, &["child"])),
+            id => id,
+        };
+        if !child.is_empty() && !self.agents.iter().any(|a| a == child) {
+            self.agents.push(child.to_string());
         }
         let path = first_str(head, &["att_path", "path"]);
         let fsig = first_str(head, &["att_fsig", "fsig"]);
@@ -433,7 +470,21 @@ impl IndexFile {
         let mut artifacts = Vec::new();
         let mut files: Vec<Value> = Vec::new();
         let mut file_at: BTreeMap<&str, usize> = BTreeMap::new();
+        // Per record, what `buildUnits` groups by: `[kind, id]`, and a third `1` for commentary.
+        let mut facts = Vec::with_capacity(upto);
+        let mut agents = Vec::new();
+        let mut agent_seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for (r, e) in entries.iter().enumerate().take(upto) {
+            facts.push(if e.c {
+                json!([e.k, e.id, 1])
+            } else {
+                json!([e.k, e.id])
+            });
+            for a in &e.agents {
+                if agent_seen.insert(a) {
+                    agents.push(json!({"id": a, "r": r}));
+                }
+            }
             for (name, n) in &e.tools {
                 *tools.entry(name).or_default() += n;
             }
@@ -464,7 +515,7 @@ impl IndexFile {
             "t": "turn-index", "epoch": epoch, "upto": upto,
             "records": entries.len(), "bytes": log_len,
             "turns": turns, "compactions": compactions, "tools": tools,
-            "artifacts": artifacts, "files": files,
+            "artifacts": artifacts, "files": files, "facts": facts, "agents": agents,
         })
     }
 }
@@ -525,6 +576,84 @@ mod tests {
         }
         std::fs::write(&path, &bytes).unwrap();
         (path, at)
+    }
+
+    /// What the page's `buildUnits` groups by, per record below `upto` — so it lays out the units a
+    /// turn will have before its records arrive (#s277) — and the sub-agents `agentRecordTargets`
+    /// finds, each at the first record that starts it. A sidecar from before these facts is rebuilt.
+    #[test]
+    fn the_reply_carries_what_the_page_groups_records_by() {
+        let recs = vec![
+            json!({"t": "block", "kind": "user", "id": "t1", "turn": 1, "label": "go", "body": []}),
+            json!({"t": "block", "kind": "assistant", "id": "b1", "phase": "commentary", "body": []}),
+            json!({"t": "block", "kind": "act", "id": "b2", "head": {}, "body": [{"p": "blocks", "items": [
+                {"kind": "tool", "tool": "Agent", "head": {"name": "Agent", "child_id": "sub-a"}},
+            ]}]}),
+            json!({"t": "block", "kind": "tool", "tool": "Agent", "id": "b4", "head": {"name": "Agent", "child": "/?ui=app&session=sub-b#b2"}}),
+            json!({"t": "block", "kind": "tool", "tool": "Agent", "id": "b5", "head": {"name": "Agent", "child_id": "sub-a"}}),
+            json!({"t": "block", "kind": "assistant", "id": "b6", "phase": "final", "body": []}),
+        ];
+        let e = Entry::of(&recs[1], 0, b"x");
+        assert_eq!(
+            (e.k.as_str(), e.c, e.id.as_str()),
+            ("assistant", true, "b1")
+        );
+        assert!(
+            !Entry::of(&recs[5], 0, b"x").c,
+            "an answer is commentary only by its phase"
+        );
+        assert_eq!(
+            Entry::of(&recs[2], 0, b"x").agents,
+            ["sub-a"],
+            "a nested call's sub-agent counts"
+        );
+        assert_eq!(
+            Entry::of(&recs[3], 0, b"x").agents,
+            ["sub-b"],
+            "…and the session a child link names"
+        );
+        assert_eq!(session_of("/?ui=app&session=s-1&x=2"), "s-1");
+        assert_eq!(
+            session_of("/?ui=app#session=s-1"),
+            "",
+            "a fragment is not the query"
+        );
+
+        let dir = tmp("facts");
+        let (path, _) = log(&dir, &recs);
+        let len = std::fs::metadata(&path).unwrap().len();
+        let mut ix = IndexFile::open(dir.join("records.index"), &path, len);
+        let reply = ix.reply(&path, len, 1, 5);
+        assert_eq!(
+            reply["facts"],
+            json!([
+                ["user", "t1"],
+                ["assistant", "b1", 1],
+                ["act", "b2"],
+                ["tool", "b4"],
+                ["tool", "b5"]
+            ]),
+            "one fact per record below upto, in order"
+        );
+        assert_eq!(
+            reply["agents"],
+            json!([{"id": "sub-a", "r": 2}, {"id": "sub-b", "r": 3}]),
+            "each at its first record"
+        );
+
+        // A sidecar from before the facts (no `k`) does not parse: it is rebuilt, never served.
+        let old: String = std::fs::read_to_string(dir.join("records.index"))
+            .unwrap()
+            .lines()
+            .map(|l| {
+                let mut v: Value = serde_json::from_str(l).unwrap();
+                v.as_object_mut().unwrap().remove("k");
+                format!("{v}\n")
+            })
+            .collect();
+        std::fs::write(dir.join("records.index"), old).unwrap();
+        let mut again = IndexFile::open(dir.join("records.index"), &path, len);
+        assert_eq!(again.reply(&path, len, 1, 5)["facts"], reply["facts"]);
     }
 
     /// The page's own reading of each record kind, case by case.
