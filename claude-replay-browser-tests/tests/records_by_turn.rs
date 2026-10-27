@@ -10,7 +10,8 @@
 //!
 //! The page takes stage 2 for a reader across a network; a case opens a local monitor with
 //! `?windowed=1`, which picks that path, and queues every read of the head (`queue_the_head`) so it
-//! decides when each piece arrives. Ports 2770–2779.
+//! decides when each piece arrives. Searching the earlier turns on the server while the head is out
+//! (#s278, stage 3) is here too. Ports 2770–2782.
 
 mod harness;
 
@@ -819,10 +820,7 @@ fn a_group_of_steps_reaching_into_the_tail_stays_drawn_while_it_fills() {
 /// Type a query into the box and press Enter, as a reader does where search runs on Enter (#s278:
 /// while a records-by-turn head is out), then wait until the count is an answer, not "Searching…".
 fn search_on_enter(tab: &headless_chrome::Tab, query: &str) -> String {
-    harness::eval(
-        tab,
-        &format!("(function(){{ var i = document.getElementById('transcriptSearchInput'); i.focus(); i.value = {query:?}; i.dispatchEvent(new Event('input', {{ bubbles: true }})); i.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', bubbles: true }})); return 1; }})()"),
-    );
+    type_and_enter(tab, query);
     harness::until(
         tab,
         "/^\\d+ (hit|match)/.test(document.getElementById('transcriptSearchCount').textContent)",
@@ -837,6 +835,13 @@ fn search_on_enter(tab: &headless_chrome::Tab, query: &str) -> String {
     .as_str()
     .unwrap_or("")
     .to_string()
+}
+
+fn type_and_enter(tab: &headless_chrome::Tab, query: &str) {
+    harness::eval(
+        tab,
+        &format!("(function(){{ var i = document.getElementById('transcriptSearchInput'); i.focus(); i.value = {query:?}; i.dispatchEvent(new Event('input', {{ bubbles: true }})); i.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', bubbles: true }})); return 1; }})()"),
+    );
 }
 
 fn count_text(tab: &headless_chrome::Tab) -> String {
@@ -952,7 +957,31 @@ fn the_filter_counts_records_still_on_their_way() {
         Duration::from_secs(10),
         STATE,
     );
-    let held = search_on_enter(&tab, "o(B):");
+    // While the server's answer is on its way the count says so, never the tail's part of it.
+    harness::eval(&tab, "window.__holdSearch = true");
+    type_and_enter(&tab, "o(B):");
+    harness::until(
+        &tab,
+        "window.__heldSearch.length > 0",
+        "the filter to ask the server",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        count_text(&tab),
+        "Searching…",
+        "no partial count while the answer is out"
+    );
+    harness::eval(&tab, "window.__releaseSearch()");
+    harness::until(
+        &tab,
+        "/^\\d+ (hit|match)/.test(document.getElementById('transcriptSearchCount').textContent)",
+        "the count to be an answer",
+        Duration::from_secs(20),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    let held = count_text(&tab);
     release_until(&tab, WHOLE, "the whole head to arrive");
     std::thread::sleep(Duration::from_millis(600));
     let whole = count_text(&tab);

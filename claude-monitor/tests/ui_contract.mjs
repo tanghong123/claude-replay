@@ -1969,7 +1969,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /recordState\.landed = target != null && viewport\.jumpToRecord\(target, "filter"\) \? target : null;\n\s*recordState\.landedAt = performance\.now\(\);/, "…and the tool filter's landing is stamped the same way (#s259)");
   // #s259: the jump stamps intent itself, so its own scroll must not count as the reader moving off.
   assert.match(app, /if \(viewport\.lastUserInput > recordState\.landedAt && performance\.now\(\) - viewport\.lastUserInput < viewport\.userIntentMs\) recordState\.landed = null;/, "…and only input later than the landing clears it");
-  assert.match(app, /byId\("transcriptSearchCount"\)\.textContent = text \|\| \(hits \? `\$\{hits\} \$\{hits === 1 \? "match" : "matches"\}` : ""\);/, "the box counts what the filter found, the way it counts a search");
+  assert.match(app, /byId\("transcriptSearchCount"\)\.textContent = text \|\| \(waiting \? "Searching…" : hits \? `\$\{hits\} \$\{hits === 1 \? "match" : "matches"\}` : ""\);/, "the box counts what the filter found, the way it counts a search — and says it is searching while the server's part is out (#s278), never the tail's part alone");
   console.log("#110 / #133 tool filter cases passed");
 }
 
@@ -2471,7 +2471,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   assert.match(app, /const q = splitQuery\(raw, undefined, spec => resolveToolSpec\(spec, toolLetters\(\)\)\);/, "the app shell splits the query through the module, its letters the shared table's");
   // The count is the shared label (#367: no clash to name instead — none can be built).
-  assert.match(app, /paintMatchCount\(query \? \(remote\.ready \? countLabel\(total, set, whole, q\.toolSpec\) : "Searching…"\) : ""\);/);
+  assert.match(app, /paintMatchCount\(query \? \(remote\.ready \? countLabel\(total, set, whole, q\.toolSpec\) \+ \(remote\.found\?\.failed \? " · earlier turns not searched" : ""\) : "Searching…"\) : ""\);/);
   assert.doesNotMatch(app, /facetClash|toolConflict|scopeConflict/, "#356's greying is gone with the clashes it greyed");
   // #303: the scope rows set the box's scope CHIP; the typed text keeps no prefix of its own.
   assert.match(app, /input\.value = writePrefix\(input\.value, \[\]\);\n\s*setScopeChip\(letters\);/);

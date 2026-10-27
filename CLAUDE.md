@@ -1346,13 +1346,16 @@ after the reader scrolled into a pad, mounts the window where they are. The case
 the server** (#s278, `design/slow-links.md` §7, stage 3): while a records-by-turn head is out, search
 runs on Enter and the server answers for the records below `upto` (`/search?session&epoch&upto&q`,
 the page's structured query — needle, whole words, class mask, resolved tools — never the box's
-grammar, which stays the page's); the page counts the rest and sums (`remoteFound`, one answer per
-query, dropped with the index), the filter's matches include records still on their way, a step onto
-an unfetched hit reads its turn and lands on its mark (`landHeldJump`), and an Enter before the answer
-steps once it lands. The server's matcher (`html_export/search_match.rs`) is `shared/search.js`'s
-matching half ported literally, and `parity_with_the_page` runs both (node) over the rendering audit's
-corpus and edge records for 4,000+ queries; the reply quotes no text. The rest of the slow-link work
-is `design/slow-links.md`.
+grammar, which stays the page's); the page counts the rest and sums (`remoteFound`: text and the
+filter keep an answer each, dropped with the index; "Searching…" until it lands, and after five failed
+reads "earlier turns not searched"), the filter's matches include records still on their way, a step
+onto an unfetched hit reads its turn and lands on its mark (`landHeldJump`), and an Enter while the
+answer is out steps once it lands unless the reader moved (`stepWhenFound`). The server's matcher
+(`html_export/search_match.rs`) is `shared/search.js`'s matching half ported literally, and
+`parity_with_the_page` runs both (node) over the rendering audit's corpus and edge records for 4,000+
+queries; the reply quotes no text, and a client the mask policy covers (#365) is searched over masked
+records (`Request::masked`), or its counts would read a masked secret back. The rest of the slow-link
+work is `design/slow-links.md`.
 
 **`claude-replay`** (root) — the thin assembly crate: clap CLI (`run_viewer`), `jdi/` the
 **`agent-jdi`** binary (unattended-run supervisor; see `src/jdi/DESIGN.md`), and compat

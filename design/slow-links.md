@@ -430,7 +430,7 @@ half of `shared/search.js`: `directMask`, `ownTextParts`, `recordTextParts`, `st
 `countOcc`, `toolMatches`, `partWanted`, `countRecord` and `recordHasTool`. It is ported literally,
 traps included (five sequential entity replaces, so `&amp;lt;` reads `<`; JavaScript truthiness on
 head fields; `String(undefined)` for a part with no text; the whole-word classes `\p{L}\p{N}\p{M}_`
-through the `regex` crate, already in the lockfile; the unscoped total counted over the whole text,
+from `regex-syntax`'s Unicode tables, already shipped through syntect; the unscoped total counted over the whole text,
 not summed from the parts). Where the two pages strip HTML differently, the server matches the app
 shell's (`stripTags`): stage 3 serves only the app shell.
 
@@ -440,7 +440,9 @@ shell's (`stripTags`): stage 3 serves only the app shell.
 exactly as `/turn-index` does: 409 on a stale epoch, behind `ensure_known`, through `prepare_reply`.
 The reply is `{t: "search", epoch, upto, records: [[r, hits], …], counts: {u, a, t, o}, total}`; a
 query with tools and no text (the filter) answers the records holding such a call. **It quotes no
-text**, so secret masking has nothing to mask, by construction; the query is never logged. It reads
+text**, so nothing it sends needs masking; but for a client that is sent masked records (#365) it
+matches each record as masked, so its counts are over what the page will hold and cannot read a
+masked secret back a character at a time. The query is never logged. It reads
 the log outside the session lock, so a search never holds the page's polls, and asks the epoch again
 after the read. Measured on the 117 MB log (`CR_SEARCH_PROBE`, release build): 0.21 to 0.27 s for a
 text query over all 10,965 records, 0.09 s for the filter's tools alone — well within an Enter, so the
@@ -468,23 +470,12 @@ server keeps no lowercased text.
   CI). The query set covers every prefix letter and combinations, `w`, `o(B)`, `o(Bash,Read)`,
   `o(mcp__x__*)`, the escape, a needle too short, CJK and accented needles, a head field against body
   parts, nested blocks, punctuation at word edges.
-- **The route:** its 409, its masking (nothing quoted), the boundary `upto`.
+- **The route:** its 409, its masking (nothing quoted; a masked client never finds a masked secret),
+  the boundary `upto`.
 - **Browser cases** (`tests/records_by_turn.rs`): with the head held, a search counts the whole
   session, equal to the count once it is whole; a step to an unfetched hit lands on its mark once the
   turn arrives; the filter's matches include records still on their way, and placeholders stay drawn.
 - The whole local suite and a Simulator walk (search with the keyboard up while the head is out).
-
-### 7.6 As built (#s278)
-
-- **An Enter before the server's answer steps once it lands** (`stepWhenFound`): the first Enter runs the
-  search and steps, and over a slow link the answer comes after the step has found nothing to land on.
-- **The page's filter is the shell's own chain** (`filterChain`: a tool-call kind whose `tool`, else its
-  head's `name`, answers the tools), not `recordHasTool`, which only the classic page uses; the server
-  ports the shell's.
-- **Measured** on the 117 MB log: 0.21 to 0.27 s a text query, 0.09 s the filter, read outside the
-  session lock; no text cache.
-- **The parity test** runs 4,165 queries; a word class from `char::is_alphanumeric` and the entities
-  decoded out of order each fail it.
 
 ### 7.5 Not in stage 3
 
@@ -492,3 +483,22 @@ server keeps no lowercased text.
   the page; it is a change to the store and the projection of its own, filed as its own task.
 - Fetching the rest behind the reader (D4) stays: with search on the server it could stop, which is a
   choice for Hong once stage 3 has run on the phone.
+
+### 7.6 As built (#s278)
+
+- **An Enter while the server's answer is out steps once it lands** (`stepWhenFound`), unless the reader
+  has moved or changed the query since: a step taken before it would have stepped through the tail's
+  hits alone.
+- **The page's filter is the shell's own chain** (`filterChain`: a tool-call kind whose `tool`, else its
+  head's `name`, answers the tools), not `recordHasTool`, which only the classic page uses; the server
+  ports the shell's.
+- **Measured** on the 117 MB log: 0.21 to 0.27 s a text query, 0.09 s the filter, read outside the
+  session lock; no text cache.
+- **Text and the filter keep an answer each**, and the filter asks only while no text is in the box: one
+  slot for both lost an answer whenever the two crossed. A query whose answer is still out keeps the
+  count at "Searching…", never the tail's part of it; a failed read is tried again every 3 s, and after
+  five, or on a stale epoch, the count says "earlier turns not searched".
+- **A masked client is searched as masked** (the review's finding): the counts over unmasked text would
+  have differed from the page's own and answered, a query at a time, what the mask hides.
+- **The parity test** runs 4,165 queries; a word class from `char::is_alphanumeric` and the entities
+  decoded out of order each fail it.
