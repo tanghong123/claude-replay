@@ -12,7 +12,8 @@
 //! `?windowed=1`, which picks that path, and queues every read of the head (`queue_the_head`) so it
 //! decides when each piece arrives. Searching the earlier turns on the server while the head is out
 //! (#s278, stage 3) is here too, and so is what a reader keeps of a long session (#s285). Ports
-//! 2770–2779, 2782 for what a reader keeps, and 2785–2789 for stage 3 (the sandbox holds 2780–2781).
+//! 2770–2779, 2782–2783 for what a reader keeps, and 2785–2789 for stage 3 (the sandbox holds
+//! 2780–2781).
 
 mod harness;
 
@@ -36,9 +37,30 @@ fn open(
     std::sync::Arc<headless_chrome::Tab>,
     std::path::PathBuf,
 ) {
+    open_with_tasks(port, case, jsonl, phone, hold_index, extra, &[])
+}
+
+/// `open`, with the session's task list (`id`, `subject`, `status`).
+fn open_with_tasks(
+    port: u16,
+    case: &str,
+    jsonl: &str,
+    phone: bool,
+    hold_index: bool,
+    extra: &str,
+    tasks: &[(&str, &str, &str)],
+) -> (
+    harness::Monitor,
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+    std::path::PathBuf,
+) {
     let base = harness::base(case);
     let stores = harness::Stores::new(&base);
     let path = stores.claude_session(SID, jsonl);
+    if !tasks.is_empty() {
+        stores.claude_tasks(SID, tasks);
+    }
     let m = harness::Monitor::spawn(harness::Kind::V1, port, &base, Some(&stores), true);
     let (browser, tab) = harness::chrome_tab();
     if phone {
@@ -885,10 +907,22 @@ fn a_reader_across_a_network_keeps_about_its_budget_of_a_long_session() {
     // that the page could not let go of.
     const SLACK: i64 = 4096 + 4096;
     let _serial = serial();
+    // The last turn is a long run of steps the tail starts in the middle of: the head's part of it is
+    // the live turn's, never let go.
+    let mut jsonl = session(120);
+    jsonl += &harness::user_at("the long one", &harness::at("50:00"));
+    for k in 0..30 {
+        jsonl += &harness::edit_tool_at(
+            &format!("e{k}"),
+            &format!("/r/skua/src/module_{k:03}.rs"),
+            &harness::at("50:01"),
+        );
+        jsonl += &harness::tool_result_at(&format!("e{k}"), &harness::at("50:01"));
+    }
     let (_m, _b, tab, _) = open(
         2782,
         "by-turn-keep",
-        &session(120),
+        &jsonl,
         false,
         false,
         &format!("&keepBytes={KEEP}"),
@@ -949,7 +983,6 @@ fn a_reader_across_a_network_keeps_about_its_budget_of_a_long_session() {
         STATE,
     );
     std::thread::sleep(Duration::from_millis(400));
-    let (key, top) = anchor(&tab);
     let (held, _, turns) = head_held(&tab);
     assert!(
         held <= KEEP + SLACK,
@@ -981,11 +1014,6 @@ fn a_reader_across_a_network_keeps_about_its_budget_of_a_long_session() {
         "no read asked for while the reader stays: {}",
         harness::eval(&tab, "JSON.stringify(window.__readLog)")
     );
-    let now = top_of(&tab, &key).expect("the reader's unit is still mounted");
-    assert!(
-        (now - top).abs() <= 1.0,
-        "letting turns go moves nothing: {key} {top} → {now}"
-    );
 
     // A reader who passes through turn 80 and goes on to turn 35 before its neighbours arrive has
     // them read for nobody: what the window asked for there lapses. Only turn 80, already in flight
@@ -1010,8 +1038,37 @@ fn a_reader_across_a_network_keeps_about_its_budget_of_a_long_session() {
     std::thread::sleep(Duration::from_millis(300));
     tap(35);
     std::thread::sleep(Duration::from_millis(300));
+    release_until(
+        &tab,
+        "!!document.querySelector('.virtual-window > [data-unit-key=\"user:t35\"]:not(.unit-placeholder)')",
+        "turn 35's prompt filled",
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    // The turns read around turn 35 take the page past its budget, and the turns let go for them
+    // include turns ABOVE the reader: their units keep their heights, so the reader does not move.
+    let top = top_of(&tab, "user:t35").expect("turn 35 mounted");
+    let (_, _, before) = head_held(&tab);
     release_until_quiet(&tab, "turn 35 and its neighbours to be read");
     let (_, _, turns) = head_held(&tab);
+    let was_held = |v: &serde_json::Value, n: i64| {
+        v["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t[0].as_i64() == Some(n) && t[2].as_bool() == Some(true))
+    };
+    let above: Vec<i64> = (1..35)
+        .filter(|&n| was_held(&before, n) && !was_held(&turns, n))
+        .collect();
+    assert!(
+        !above.is_empty(),
+        "turns above the reader are let go: {before} → {turns}"
+    );
+    let now = top_of(&tab, "user:t35").expect("turn 35 still mounted");
+    assert!(
+        (now - top).abs() <= 1.0,
+        "letting turns {above:?} go above the reader moves nothing: {top} → {now}"
+    );
     let near80: Vec<i64> = turns["turns"]
         .as_array()
         .unwrap()
@@ -1065,6 +1122,119 @@ fn a_reader_across_a_network_keeps_about_its_budget_of_a_long_session() {
     assert!(
         held <= KEEP + SLACK,
         "and the page still holds about its budget: {held} of {KEEP}, {turns}"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
+}
+
+/// #s285: a task whose status was recorded in a turn the page never read (the background read stops
+/// at what the page keeps, far below it) is still found: the task's "Go to the turn" asks the server
+/// where it was last recorded, reads that turn and lands there. Before, it said "still loading" for as
+/// long as the head was out, which over the budget is for good.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_task_recorded_in_a_turn_never_read_is_found_on_the_server() {
+    const SUBJECT: &str = "settle the drawer offsets";
+    let _serial = serial();
+    // Turn 3 records the task's status.
+    let mut lines: Vec<String> = session(120).lines().map(|l| format!("{l}\n")).collect();
+    let at = lines
+        .iter()
+        .position(|l| l.contains("question 2:"))
+        .expect("turn 3's prompt");
+    let ts = lines[at]
+        .split("\"timestamp\":\"")
+        .nth(1)
+        .and_then(|t| t.split('"').next())
+        .expect("its timestamp")
+        .to_string();
+    lines.insert(
+        at + 1,
+        harness::named_tool_at("tu3", "TaskUpdate", SUBJECT, &ts),
+    );
+    let (_m, _b, tab, _) = open_with_tasks(
+        2783,
+        "by-turn-task",
+        &lines.concat(),
+        false,
+        false,
+        "&keepBytes=24576",
+        &[("1", SUBJECT, "in_progress")],
+    );
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
+    release_until_quiet(&tab, "the background read to stop");
+    assert_eq!(
+        harness::eval(&tab, "!!document.querySelector('#navigatorTurns .outline-turn-pending[data-turn-number=\"3\"]')").as_bool(),
+        Some(true),
+        "turn 3 is never read: {}",
+        harness::eval(&tab, STATE)
+    );
+    harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    harness::show_every_pane_row(&tab);
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 1",
+        "the task listed",
+        Duration::from_secs(20),
+        "document.getElementById('navigatorWork').innerText.slice(0, 200)",
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('#navigatorWork .work-task-head').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "!document.getElementById('taskPopover').hidden",
+        "the task's details",
+        Duration::from_secs(5),
+        "document.getElementById('taskPopover').innerHTML.slice(0, 300)",
+    );
+    assert_eq!(
+        harness::eval(&tab, "(function(){ var b = document.querySelector('#taskPopover .task-popover-jump'); return !!b && !b.disabled && b.hasAttribute('data-task-find'); })()").as_bool(),
+        Some(true),
+        "the jump is offered, to be found on the server: {}",
+        harness::eval(&tab, "document.getElementById('taskPopover').innerText")
+    );
+    let o3 = turn_offset(&tab, 3);
+    harness::eval(
+        &tab,
+        "document.querySelector('#taskPopover [data-task-find]').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "window.__heldReads.length >= 1",
+        "turn 3's read asked for",
+        Duration::from_secs(10),
+        STATE,
+    );
+    assert_eq!(
+        harness::eval(&tab, "window.__heldReads[0].from").as_i64(),
+        Some(o3),
+        "the turn that recorded the task is read: {}",
+        harness::eval(&tab, "JSON.stringify(window.__readLog)")
+    );
+    release_until_quiet(&tab, "turn 3 to be read");
+    harness::until(
+        &tab,
+        "((document.querySelector('#navigatorTurns .outline-turn-row.current') || {}).dataset || {}).turnNumber === '3'",
+        "the reader on turn 3",
+        Duration::from_secs(10),
+        STATE,
+    );
+    let shown = harness::eval(&tab, &format!("(function(){{ var s = document.querySelector('.transcript').getBoundingClientRect(); return [].some.call(document.querySelectorAll('.virtual-window *'), function (e) {{ if (e.children.length || e.textContent.indexOf('{SUBJECT}') < 0) return false; var r = e.getBoundingClientRect(); return r.bottom > s.top && r.top < s.bottom; }}); }})()"));
+    assert_eq!(
+        shown.as_bool(),
+        Some(true),
+        "the record that names the task is on the screen"
     );
     assert_eq!(
         harness::eval(&tab, VIOLATIONS).as_str(),

@@ -1356,15 +1356,18 @@ for the records below `upto` and the scans only for those above it (`scanFrom`).
 an estimator kind of its own (it used to teach the process mean). A measure the observer delivers late,
 after the reader scrolled into a pad, mounts the window where they are. **A reader keeps about 16 MB
 of the head** (#s285, §6.6; Hong on #s290: "Read up to about 16 MB, then only what I visit"): the
-background read stops once the head's reads hold `KEEP_BYTES` (`?keepBytes=` for a case), the
-window's asks lapse when it moves on (`unwantWindow`), and after each fill the read turns farthest from
-the reader go back to `PENDING` (`dropFar`, the store's `drop`), placeholders again under their keys
-at their measured heights: the sums do not move and nothing mounted is redrawn. Never a turn within
-twice the window's reach, the read in flight, or the head's last turn. The counts, search and the
-filter answer for those records from the index and the server, so a drop changes none of them; a
-task whose record went says "still loading". A head under the budget is read whole, as before. The
-cases are `tests/records_by_turn.rs` (ports 2770–2779, 2782 and 2785–2789, with a shim that queues
-the head's reads). **Search on
+background read stops before the turn that would take the head's reads past `KEEP_BYTES`
+(`?keepBytes=` for a case), every ask lapses after each transaction except what the window shows and
+the jump still waited on (`unwant`), a read starts once every ask made with it is in, and after each
+fill the read turns farthest from the reader go back to `PENDING` (`dropFar`, the store's `drop`),
+placeholders again under their keys at their measured heights: the sums do not move and nothing
+mounted is redrawn. Never a turn within twice the window's reach, the read in flight, one with a piece
+waiting to go in, or the head's last turn when the tail goes on with it. The counts, search and the
+filter answer for those records from the index and the server, so a drop changes none of them; the
+filter remembers what it opened (`filterSeen`). A task's "Go to the turn" trusts a held record only in
+the tail and otherwise asks the server's search for the latest record naming it (`findTaskRecord`). A
+head under the budget is read whole, as before. The cases are `tests/records_by_turn.rs` (ports
+2770–2779, 2782–2783 and 2785–2789, with a shim that queues the head's reads). **Search on
 the server** (#s278, `design/slow-links.md` §7, stage 3): while a records-by-turn head is out, search
 runs on Enter and the server answers for the records below `upto` (`/search?session&epoch&upto&q`,
 the page's structured query — needle, whole words, class mask, resolved tools — never the box's

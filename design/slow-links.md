@@ -280,37 +280,48 @@ can be a scroll batch old while the reader moves, so "below the reader" is not k
 
 ### 6.6 Memory on a phone
 
-With D4's first option the page ends up holding every record, as it does today. A bound has to wait
-for stage 3: search and the filter read the records in the page, and dropping some would make them
-wrong.
+With D4's first option the page ends up holding every record. A bound had to wait for stage 3:
+search and the filter read the records in the page, and dropping some would have made them wrong.
+Stage 3 (§7) answers them on the server, and #s285 built the bound below.
 
-Designed now, built with stage 3: the records of turns far from the reader (by bytes, not turns:
-say 16 MB kept around `P`) go back to `PENDING`. Their units become placeholders again at their kept
-measured heights, so a drop is a rewrite in place that moves nothing, and a later fetch is a fill.
-Only head turns are dropped, whose offsets the index knows; never the live tail.
+Designed with stage 2: the records of turns far from the reader (by bytes, not turns: say 16 MB kept
+around `P`) go back to `PENDING`. Their units become placeholders again at their kept measured
+heights, so a drop is a rewrite in place that moves nothing, and a later fetch is a fill. Only head
+turns are dropped, whose offsets the index knows; never the live tail.
 
 **As built (#s285)**, after Hong chose on #s290 ("Read up to about 16 MB, then only what I visit"):
-- **The background read ends at the budget.** D4 reads the rest from the tail backwards and stops
+- **The background read stops at the budget.** D4 reads the rest from the tail backwards. It stops
   before the turn that would take the head's reads past `KEEP_BYTES` (16 MiB of the log;
-  `?keepBytes=` for a case). Reaching the budget never drops anything: what the background read is one
-  run behind the tail. After that only what the window shows or a jump names is read. A head under the budget is read whole, as before, and
-  the head and its index then go.
-- **The window's asks lapse.** The page asks again for what it shows after every transaction, and
-  what it asked for before goes back to the background order (`unwantWindow`). So a turn the reader
-  scrolled past is not read once the background read is over. A jump's ask stands.
+  `?keepBytes=` for a case). Reaching the budget drops nothing, so what the background has read is
+  one unbroken run of turns behind the tail. After that, only what the window shows or a jump names
+  is read. A head under the budget is read whole, as before, and the head and its index then go.
+- **Asks lapse.** After every transaction the page asks again for what the window shows and for the
+  jump it still waits on (a held turn, record or search hit, a link on its way). Every earlier ask
+  goes back to the background order first (`unwant`). So a turn the reader scrolled past, or a jump
+  they gave up, is not read once the background read is over.
+- **A read starts once every ask made with it is in** (a microtask): the store is idle when the
+  reader asks, and a read started on the first ask read the window's farthest turn first.
 - **The farthest go after each fill** (`dropFar`): while the reads hold more than the budget, the read
   turns farthest from the reader's unit go back to `PENDING` through the store's `drop`. Their units
   are rebuilt in place by the fill's own path (`Projection.fill`), as placeholders under the same keys.
   Their heights are kept by key, so the sums do not move and nothing mounted is redrawn.
 - **What is never dropped:** a turn within twice the reach the window asks for (so nothing it asks
-  for is dropped and read again), the read in flight, one with a piece still waiting to go in, and the
-  head's last turn, which the tail may go on with.
+  for is dropped and read again; the reach is taken again before each drop), the read in flight, one
+  with a piece still waiting to go in, and the head's last turn when the tail goes on with it (its
+  last unit reaches into the tail).
 - **What a dropped turn costs:** what any turn still on its way costs. The counts, search and the
   filter answer from the index and the server for every record below `upto`, so a drop changes none of
-  them. A task whose record was dropped says "still loading" until its turn is read again.
+  them. The filter remembers every record it has opened (`filterSeen`), so a turn read again does not
+  open a fold the reader closed, and nothing is redrawn for it.
+- **A task's "Go to the turn"** reads its target from what the page holds only when that record is in
+  the tail. The tail is always held, and it comes after every record of the head. Otherwise the button
+  asks the server's search for the latest record of the head that names the task (`findTaskRecord`),
+  then jumps there, reading the turn. Without this, a task recorded in a turn never read said "still
+  loading" for good, and one whose latest record was dropped pointed at an older one.
 - **The bound** is the budget, plus whatever the window and its reach hold that cannot be let go. A
   single turn larger than the budget, read because the reader is in it, is held whole.
-- **The case** is `a_reader_across_a_network_keeps_about_its_budget_of_a_long_session`.
+- **The cases** are `a_reader_across_a_network_keeps_about_its_budget_of_a_long_session` and
+  `a_task_recorded_in_a_turn_never_read_is_found_on_the_server`.
 
 ### 6.7 Who gets it
 

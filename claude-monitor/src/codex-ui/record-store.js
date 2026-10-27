@@ -370,11 +370,12 @@ export class RecordStore {
     return owed;
   }
 
-  /** What the window asked for and has not been read goes back to the background order (#s285): the
-   *  page asks again for what it shows after every transaction, so a turn the reader has left is no
-   *  longer read for them once the background read is over. A jump's ask stands. */
-  unwantWindow() {
-    for (const read of this.head?.reads || []) if (read.want === 1) read.want = Infinity;
+  /** Every ask not yet read goes back to the background order (#s285): the page asks again after
+   *  every transaction for what the window shows and for the jump it still waits on, so a turn the
+   *  reader has left, or a jump they gave up, is no longer read for them once the background read is
+   *  over. */
+  unwant() {
+    for (const read of this.head?.reads || []) if (read.want < Infinity) read.want = Infinity;
   }
 
   readNext(generation, head) {

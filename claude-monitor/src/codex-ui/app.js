@@ -1021,8 +1021,9 @@ function readerUnit() {
   return !p ? viewport.lo : p.source === "tail" ? recordState.units.length - 1 : p.index ?? viewport.lo;
 }
 /** #s277: ask the store for what the window shows — a screen's worth of units beyond it either way,
- *  the nearest to the reader asked last, which the store reads first. What it asked for before and
- *  no longer shows goes back to the background order (#s285). */
+ *  the nearest to the reader asked last, which the store reads first — and for the jump the page
+ *  still waits on. Every earlier ask lapses first (#s285): a turn the reader left, or a jump they gave
+ *  up, is not read for them once the background read is over. */
 function wantWindow() {
   if (!recordStore.head?.reads) return;
   const units = recordState.units;
@@ -1032,32 +1033,46 @@ function wantWindow() {
   const owed = [];
   for (let i = lo; i < hi; i++) if (units[i].owed > 0) owed.push(i);
   owed.sort((x, y) => Math.abs(y - at) - Math.abs(x - at));
-  recordStore.unwantWindow();
+  recordStore.unwant();
   for (const i of owed) recordStore.want(units[i].from, units[i].to + 1, 1);
+  // A held turn, record or search hit, and a link on its way, keep their asks while they wait.
+  for (const r of [heldTurnJump?.record, hashWait?.record]) {
+    const unit = r == null ? null : units[unitAt(r)];
+    if (unit?.owed > 0) recordStore.want(unit.from, unit.to + 1, 0);
+  }
+}
+/** Units `[lo, hi)` the page never lets go of (#s285): the window and the reader's unit, and twice the
+ *  reach `wantWindow` asks for either way, so nothing it asks for is let go. */
+function keptAround() {
+  const at = readerUnit(), span = 2 * Math.max(8, viewport.hi - viewport.lo);
+  return [Math.min(at, viewport.lo) - span, Math.max(at, viewport.hi) + span, at];
 }
 /** #s285 (design/slow-links.md §6.6; Hong on #s290: "Read up to about 16 MB, then only what I
  *  visit"): once the turns read hold more than the page keeps, the farthest from the reader are let
  *  go. Their units become placeholders again under the same keys, at the heights they were measured
  *  at, so the sums do not move and nothing mounted is redrawn; a visit reads them again. Never a turn
- *  in or near the window (twice the reach `wantWindow` asks for, so nothing it asks for is let go),
- *  nor the head's last turn, which the tail may go on with. */
+ *  in or near the window (`keptAround`), nor the head's last turn when the tail goes on with it. */
 function dropFar() {
   const reads = recordStore.head?.reads;
   if (!reads || recordStore.held <= recordStore.keepBytes) return;
-  const at = readerUnit();
-  const span = 2 * Math.max(8, viewport.hi - viewport.lo);
-  const lo = Math.min(at, viewport.lo) - span, hi = Math.max(at, viewport.hi) + span;
+  const units = recordState.units;
+  const last = reads.at(-1);
+  const goesOn = (units[unitAt(last.last)]?.to ?? -1) > last.last;
+  const [lo, hi, at] = keptAround();
   const far = [];
-  for (const read of reads.slice(0, -1)) {
+  for (const read of goesOn ? reads.slice(0, -1) : reads) {
     if (read.next === read.r) continue;
     const a = unitAt(read.r), b = unitAt(read.next - 1);
     if (a < 0 || b < 0 || (b >= lo && a < hi)) continue;
-    far.push({ read, distance: b < at ? at - b : a - at });
+    far.push({ read, a, b, distance: b < at ? at - b : a - at });
   }
   far.sort((x, y) => y.distance - x.distance);
   let dropped = false;
-  for (const { read } of far) {
+  for (const { read, a, b } of far) {
     if (recordStore.held <= recordStore.keepBytes) break;
+    // Each drop is a transaction of its own: what the window holds is asked again before the next.
+    const [nowLo, nowHi] = keptAround();
+    if (b >= nowLo && a < nowHi) continue;
     const run = recordStore.drop(read);
     if (!run) continue;
     if (!rewriteInPlace(run)) { recordStore.recover(); return; }
@@ -1080,6 +1095,33 @@ function jumpOrFetch(r, reveal) {
   if (unit?.owed > 0) recordStore.want(unit.from, unit.to + 1, 0);
   if (!landed && (unit?.owed > 0 || recordState.records[r]?.kind === "pending")) { heldTurnJump = { record: r, reveal, at: performance.now() }; toast("Still loading — the page goes there when it arrives"); }
   return landed;
+}
+
+/** The kinds of record `taskRecordTargets` reads a task's status from: a task, a tool call (a plan or
+ *  todo update), or an agent call named for one. */
+const TASK_RECORD_KINDS = new Set(["task", "tool", "agent"]);
+/** #s285: where a task's status was last recorded while a records-by-turn head is out and the page
+ *  does not hold it — the latest record below the head's boundary that mentions the task (its
+ *  subject, else `#<id>`), of a kind `taskRecordTargets` reads, asked of the server's search, which
+ *  answers for every record of the head whether read or not. Then the jump any target takes. */
+async function findTaskRecord(task) {
+  const head = recordStore.head, owed = owedIndex(), session = recordState.session;
+  const subject = String(task.subject || task.title || "").trim().toLowerCase();
+  const id = String(task.id ?? "").trim().toLowerCase();
+  const lc = subject || (id ? `#${id}` : "");
+  if (!head || !owed || !lc) return;
+  let found = null;
+  try {
+    const q = { lc, whole: false, wanted: 0, tools: [] };
+    const response = await fetch(`/search?session=${encodeURIComponent(session)}&epoch=${head.epoch}&upto=${owed.upto}&q=${encodeURIComponent(JSON.stringify(q))}`, { cache: "no-store" });
+    if (response.ok) found = await response.json();
+  } catch (_) {}
+  if (recordState.session !== session || recordStore.head !== head) return;
+  if (!found) { toast("Could not ask the monitor where the task was recorded — try again"); return; }
+  let best = -1;
+  for (const [r] of found.records || []) if (r > best && TASK_RECORD_KINDS.has(owed.facts?.[r]?.[0])) best = r;
+  if (best < 0) { toast("This record stream did not keep where the task's status was set"); return; }
+  jumpOrFetch(best, "task");
 }
 
 /** #s277 (design/slow-links.md §6.5): the record a link names while its turn is on its way, from the
@@ -1115,7 +1157,7 @@ function landOnHash() {
   if (index < 0) {
     const owed = owedRecordFor(id);
     if (owed < 0) return false;
-    if (hashWait?.identity !== identity) hashWait = { identity, at: performance.now() };
+    if (hashWait?.identity !== identity) hashWait = { identity, at: performance.now(), record: owed };
     else if (viewport.lastUserInput > hashWait.at) { landedHash = identity; hashWait = null; return false; }
     recordStore.want(owed, owed + 1, 0);
     return false;
@@ -1123,7 +1165,7 @@ function landOnHash() {
   for (const rid of chain) recordState.folds.set(rid, false);
   if (!viewport.jumpToRecord(index, "hash")) {
     // Here, but its unit still owes records (#s277): the same wait, which a reader who moves ends.
-    if (hashWait?.identity !== identity) hashWait = { identity, at: performance.now() };
+    if (hashWait?.identity !== identity) hashWait = { identity, at: performance.now(), record: index };
     else if (viewport.lastUserInput > hashWait.at) { landedHash = identity; hashWait = null; return false; }
     const unit = recordState.units[unitAt(index)];
     if (unit?.owed > 0) recordStore.want(unit.from, unit.to + 1, 0);
@@ -2754,6 +2796,10 @@ function computeFilterHits() {
   // one out — the owner's "1577 matches", none visible, cannot be built any more (#356).
   const wanted = queryTools();
   const before = recordState.filterHits;
+  // Every record id this filter has opened, kept beyond the hits of the records here (#s285): a turn
+  // let go and read again brings its ids back, which are not new, so a fold the reader closed stays
+  // closed and nothing is redrawn for it. A fresh filter starts it again.
+  const seen = before && recordState.filterSeen ? recordState.filterSeen : (recordState.filterSeen = new Set());
   const hits = new Set(), direct = new Set(), indices = [];
   // An EMPTY list means "every tool" to the shared matcher, so no tools must match nothing here.
   if (wanted.length) recordState.records.forEach((record, index) => { if (filterChain(record, wanted, hits, direct)) indices.push(index); });
@@ -2772,7 +2818,7 @@ function computeFilterHits() {
   // same way as one that was there when it was applied — and opening a fold is a change to what
   // is rendered, not to what is painted, so the caller has to re-render for it to be seen.
   let opened = false;
-  for (const id of hits) if (!before?.has(id)) { recordState.folds.set(id, false); opened = true; }
+  for (const id of hits) if (!seen.has(id)) { seen.add(id); recordState.folds.set(id, false); opened = true; }
   for (const unit of projection.units) {
     if (unit.type !== "process" || recordState.processExpanded.has(unit.key)) continue;
     if (indices.some(index => index >= unit.from && index <= unit.to)) { recordState.processFolds.set(unit.key, false); recordState.processExpanded.add(unit.key); opened = true; }
@@ -3556,8 +3602,16 @@ function openTaskPopover(index, opener) {
   const task = tasks[index];
   if (!task) return;
   const key = String(task.id ?? index);
-  const d = taskDetails(task, recordState.taskTargets.get(key) ?? null);
-  const jump = d.target == null && recordStore.head
+  // #s285: while a records-by-turn head is out, a record the page holds is where the task's status
+  // was last recorded only when it is in the tail, which is always held and comes after every record
+  // of the head. Otherwise the server is asked (`findTaskRecord`): the turn that holds the latest one
+  // may never have been read, or been let go.
+  const owed = recordStore.windowed ? owedIndex() : null;
+  const held = recordState.taskTargets.get(key) ?? null;
+  const d = taskDetails(task, owed && held != null && held < owed.upto ? null : held);
+  const jump = d.target == null && owed
+    ? `<button type="button" class="task-popover-jump" data-task-find="${index}">Go to the turn where this task's status was recorded</button>`
+    : d.target == null && recordStore.head
     ? `<button type="button" class="task-popover-jump" disabled title="The session's earlier turns are still loading">Go to the turn — still loading</button>`
     : d.target == null
     ? `<button type="button" class="task-popover-jump" disabled title="This record stream did not keep where the task's status was set">Go to the turn — not kept in this stream</button>`
@@ -3581,7 +3635,9 @@ function openTaskPopover(index, opener) {
 taskPopover.addEventListener("click", event => {
   if (event.target.closest(".task-popover-close")) { closeTaskPopover(); return; }
   const jump = event.target.closest("[data-task-record]");
-  if (jump) { const at = Number(jump.dataset.taskRecord); closeTaskPopover(false); jumpOrFetch(at, "task"); }
+  if (jump) { const at = Number(jump.dataset.taskRecord); closeTaskPopover(false); jumpOrFetch(at, "task"); return; }
+  const find = event.target.closest("[data-task-find]");
+  if (find) { const task = (recordState.meta?.tasks || [])[Number(find.dataset.taskFind)]; closeTaskPopover(false); if (task) findTaskRecord(task); }
 });
 document.addEventListener("keydown", event => { if (event.key === "Escape" && !taskPopover.hidden) { event.stopPropagation(); closeTaskPopover(); } }, true);
 document.addEventListener("pointerdown", event => { if (!taskPopover.hidden && !taskPopover.contains(event.target) && !event.target.closest("[data-task-open]")) closeTaskPopover(false); });
@@ -4236,7 +4292,7 @@ var phoneDock;
   });
   addEventListener("keydown", event => { if (event.key === "Escape") closePane(); });
   // The card's own jump to the turn leaves for the transcript: the list goes with the card.
-  taskPopover.addEventListener("click", event => { if (event.target.closest("[data-task-record]")) closePane(); });
+  taskPopover.addEventListener("click", event => { if (event.target.closest("[data-task-record], [data-task-find]")) closePane(); });
 
   // #s37 (design/phone-landscape.md §3.2): on a WIDE phone held sideways the session list is a
   // column beside the session, and the handle hides and shows it. That is its own remembered choice
