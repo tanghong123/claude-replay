@@ -1963,7 +1963,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // #303: ticking a tool sets the box's tools CHIP — part of the box, parsed with its text.
   assert.match(app, /uiState\.chips\.tools = names\.slice\(\);\n\s*setScopeChip\(\[\.\.\.uiState\.chips\.scope\]\);\n\s*updateSearch\(true\);/, "…and ticking a tool sets the box's chip, which is part of the query (#101, #292, #303); `o(…)` is the tools chip, so the scope chip drops a bare `o` (#367)");
   assert.match(app, /const raw = boxQuery\(\);/, "…because the query is the chips and the text together (#303)");
-  assert.match(app, /recordState\.landed = matches\[recordState\.match\];\s*\n(?:\s*\/\/.*\n)*\s*if \(viewport\.jumpToRecord\(recordState\.landed, textual \? "search" : "filter"\)\) recordState\.landedAt = performance\.now\(\);\n\s*else recordState\.landed = null;/, "…landing each one in its surroundings, stamped after the jump's own intent, and nothing landed where the jump could not go (#s259)");
+  assert.match(app, /recordState\.landed = matches\[recordState\.match\];\s*\n(?:\s*\/\/.*\n)*\s*if \(viewport\.jumpToRecord\(recordState\.landed, textual \? "search" : "filter"\)\) recordState\.landedAt = performance\.now\(\);\n\s*else \{\n[\s\S]*?\n\s*recordState\.landed = null;\n\s*\}/, "…landing each one in its surroundings, stamped after the jump's own intent, and nothing landed where the jump could not go (#s259; #s278: a hit still on its way is held for its turn)");
   assert.match(app, /const held = recordState\.landed == null \|\| !landedInView\(view\) \? -1 : matches\.indexOf\(recordState\.landed\);/, "pressing next where a jump already landed moves on from that hit while its unit is still in view — while the first step after a fresh query still lands on the first hit (#s259)");
   assert.match(app, /\} else if \(held >= 0\) \{\n\s*recordState\.match = \(held \+ delta \+ matches\.length\) % matches\.length;/, "…from the landed hit itself, never the first hit of the unit at the top (#s259)");
   assert.match(app, /recordState\.landed = target != null && viewport\.jumpToRecord\(target, "filter"\) \? target : null;\n\s*recordState\.landedAt = performance\.now\(\);/, "…and the tool filter's landing is stamped the same way (#s259)");
@@ -2190,7 +2190,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(recordTextSize(record), 4 + 9 + 100, "head strings, part strings, nested records — without building the text");
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   assert.match(app, /const liveSearchLimit = Number\(new URLSearchParams\(location\.search\)\.get\("liveSearchLimit"\)\) \|\| LIVE_SEARCH_LIMIT;/, "the shared limit, which a case may lower for one page (#308)");
-  assert.match(app, /function searchIsLive\(\) \{ let n = 0; for \(const s of recordState\.recSizes\) n \+= s; return n <= liveSearchLimit; \}/, "live while small");
+  assert.match(app, /function searchIsLive\(\) \{\n(?:\s*\/\/.*\n)*\s*if \(recordStore\.windowed && owedIndex\(\)\) return false;\n\s*let n = 0; for \(const s of recordState\.recSizes\) n \+= s; return n <= liveSearchLimit;\n\}/, "live while small (#s278: and on Enter while a records-by-turn head is out, where the server answers)");
   // #308: the Enter that runs a pending search also steps — to the nearest hit from the reader.
   assert.match(app, /if \(recordState\.pendingSearch\) \{ recordState\.pendingSearch = false; updateSearch\(true\); \}\n\s*stepSearch\(event\.shiftKey \? -1 : 1\);/, "Enter runs a pending search AND steps (#308)");
   console.log("#104 large-session search cases passed");
@@ -2471,7 +2471,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   assert.match(app, /const q = splitQuery\(raw, undefined, spec => resolveToolSpec\(spec, toolLetters\(\)\)\);/, "the app shell splits the query through the module, its letters the shared table's");
   // The count is the shared label (#367: no clash to name instead — none can be built).
-  assert.match(app, /paintMatchCount\(query \? countLabel\(total, set, whole, q\.toolSpec\) : ""\);/);
+  assert.match(app, /paintMatchCount\(query \? \(remote\.ready \? countLabel\(total, set, whole, q\.toolSpec\) : "Searching…"\) : ""\);/);
   assert.doesNotMatch(app, /facetClash|toolConflict|scopeConflict/, "#356's greying is gone with the clashes it greyed");
   // #303: the scope rows set the box's scope CHIP; the typed text keeps no prefix of its own.
   assert.match(app, /input\.value = writePrefix\(input\.value, \[\]\);\n\s*setScopeChip\(letters\);/);

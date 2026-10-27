@@ -274,7 +274,7 @@ const sessionIndex = new SessionIndexStore({
 // whole (stage 1). `?windowed=1|0` picks either path for a case.
 const WINDOWED = (() => { const q = new URLSearchParams(location.search).get("windowed"); return q === "1" ? true : q === "0" ? false : !revealHere(); })();
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = -1; heldRecords = null; heldTurnJump = null; fillWaiting = false; recordState.headIndex = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; projection.stub = null; projection.upto = Infinity; hashWait = null; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; heldRecords = null; heldTurnJump = null; fillWaiting = false; recordState.headIndex = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; projection.stub = null; projection.upto = Infinity; hashWait = null; remoteSearch = null; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
   // #s276: the map of the records the head still owes — the panes it fills are whole from now on.
   indexed: index => {
@@ -837,6 +837,8 @@ let heldRecords = null;
 // #s276: a turn the reader chose in the Turns pane while its records were still on their way: it is
 // landed on once they arrive, unless the reader has moved since (`at` against the engine's input).
 let heldTurnJump = null;
+// #s278: the server's answer to the search or filter a records-by-turn head is out for (`remoteFound`).
+let remoteSearch = null;
 function updateRecords(update) {
   if (!heldRecords && !(update.prepended && (viewport.readerMoving() || viewport.touchGlide))) { applyRecords(update); return; }
   const first = !heldRecords;
@@ -875,7 +877,7 @@ function applyRecords({ records, meta, changedFrom, prepended }) {
   // A held turn goes when the records under it are rewritten (a resync) or the reader moved;
   // otherwise it is landed on as soon as `jumpToRecord` takes it, which it refuses while pending.
   if (heldTurnJump && ((!prepended && changedFrom <= heldTurnJump.record) || viewport.lastUserInput > heldTurnJump.at)) heldTurnJump = null;
-  if (heldTurnJump && viewport.jumpToRecord(heldTurnJump.record, heldTurnJump.reveal || "turn")) heldTurnJump = null;
+  landHeldJump();
   // What arrived since the last apply is "new" only once the session is OPEN (#84): the first
   // apply after a reset is the session's own content — a re-open restored to a remembered
   // position is not following, and counting that batch said "11696 new messages" on a session
@@ -932,6 +934,16 @@ function agentTargetsNow(records, meta = recordState.meta) {
   return targets;
 }
 
+/** A jump held for its records (a turn, a record, a search hit) lands once they are here; a search
+ *  hit then lands on its own mark, as a step does (#s278). */
+function landHeldJump() {
+  if (!heldTurnJump || !viewport.jumpToRecord(heldTurnJump.record, heldTurnJump.reveal || "turn")) return;
+  const { record, reveal } = heldTurnJump;
+  heldTurnJump = null;
+  if (reveal === "search" || reveal === "filter") { recordState.landed = record; recordState.landedAt = performance.now(); }
+  if (reveal === "search") { markSearch(); landOnCurrentMark(); }
+}
+
 /** The unit that holds record `r`, by its index, or -1. */
 function unitAt(r) {
   const units = recordState.units;
@@ -983,7 +995,7 @@ function applyFill({ from, to }) {
   viewport.setUnits(recordState.units, run);
   landOnHash();
   if (heldTurnJump && viewport.lastUserInput > heldTurnJump.at) heldTurnJump = null;
-  if (heldTurnJump && viewport.jumpToRecord(heldTurnJump.record, heldTurnJump.reveal || "turn")) heldTurnJump = null;
+  landHeldJump();
   renderNavigator(); refreshFilterHits(); updateSearch(false);
 }
 /** #s277: ask the store for what the window shows — a screen's worth of units beyond it either way,
@@ -1848,7 +1860,16 @@ function updateSearch(reset) {
   recordState.matches = [];
   const classCounts = zeroCounts();
   let total = 0;
+  // #s278: the server answers for the records below a records-by-turn head's boundary, and the page
+  // counts the rest itself — never both for one record (`scanFrom`, as the panes count).
+  const from = scanFrom();
+  const remote = query ? remoteFound({ lc: query, whole, wanted, tools }) : { ready: true, found: null };
+  if (remote.found) {
+    for (const [r, n] of remote.found.records) { recordState.matches.push(r); total += n; }
+    for (const k of CLASS_ORDER) classCounts[k] += remote.found.counts[k] || 0;
+  }
   if (query) recordState.records.forEach((record, index) => {
+    if (index < from) return;
     const { text, parts } = searchTextOf(record);
     // `o(…)` narrows the TOOLS class: "Bash calls whose text matches", counted inside the call's
     // own words (design §4), beside whatever the other letters ask for.
@@ -1858,7 +1879,7 @@ function updateSearch(reset) {
   if (toolsChanged) applyToolFilter();
   for (const k of CLASS_ORDER) { const cell = byId("scopeRow").querySelector(`[data-scope-count="${k}"]`); if (cell) cell.textContent = query ? String(classCounts[k]) : ""; }
   if (reset) { recordState.match = recordState.matches.length ? 0 : -1; recordState.landed = null; } else recordState.match = Math.min(recordState.match, recordState.matches.length - 1);
-  paintMatchCount(query ? countLabel(total, set, whole, q.toolSpec) : "");
+  paintMatchCount(query ? (remote.ready ? countLabel(total, set, whole, q.toolSpec) : "Searching…") : "");
   markSearch();
   applyFilters();
 }
@@ -1953,7 +1974,17 @@ function stepSearch(delta) {
   recordState.landed = matches[recordState.match];
   // A record a tail-first open has not brought yet is not reached (#314): nothing landed there.
   if (viewport.jumpToRecord(recordState.landed, textual ? "search" : "filter")) recordState.landedAt = performance.now();
-  else recordState.landed = null;
+  else {
+    // #s278: a hit whose turn is still on its way reads that turn and lands once its unit is whole
+    // (`landHeldJump`), unless the reader moves first.
+    const unit = recordState.units[unitAt(recordState.landed)];
+    if (unit?.owed > 0 || recordState.records[recordState.landed]?.kind === "pending") {
+      if (unit) recordStore.want(unit.from, unit.to + 1, 0);
+      heldTurnJump = { record: recordState.landed, reveal: textual ? "search" : "filter", at: performance.now() };
+      toast("Still loading — the page goes there when it arrives");
+    }
+    recordState.landed = null;
+  }
   if (!textual) return;
   markSearch();
   landOnCurrentMark();
@@ -2102,7 +2133,30 @@ function markSearch() {
 // `?liveSearchLimit=<chars>` lowers the limit for one page — a case's way onto the large-session
 // path (#308) without a ten-megabyte fixture, in the manner of `?historyMs`.
 const liveSearchLimit = Number(new URLSearchParams(location.search).get("liveSearchLimit")) || LIVE_SEARCH_LIMIT;
-function searchIsLive() { let n = 0; for (const s of recordState.recSizes) n += s; return n <= liveSearchLimit; }
+function searchIsLive() {
+  // #s278: while a records-by-turn head is out the server answers for it — on Enter, never a round
+  // trip per keystroke over a slow link (design/slow-links.md §7.3).
+  if (recordStore.windowed && owedIndex()) return false;
+  let n = 0; for (const s of recordState.recSizes) n += s; return n <= liveSearchLimit;
+}
+// #s278 (design/slow-links.md §7): search and the filter for the records below a records-by-turn
+// head's boundary, asked of the server while the head is out, one answer per query (its words, class
+// mask, whole words and tools, under the head's epoch and boundary). It quotes no text; it lives as
+// long as the index does (`remoteSearch`, declared beside the other state a reset clears).
+function remoteFound(q) {
+  const head = recordStore.head, owed = owedIndex();
+  if (!recordStore.windowed || !head || !owed) return { ready: true, found: null };
+  const key = `${JSON.stringify(q)}@${head.epoch}/${owed.upto}`;
+  if (remoteSearch?.key === key) return { ready: !!remoteSearch.found, found: remoteSearch.found };
+  const mine = remoteSearch = { key, found: null };
+  const again = () => (q.lc ? updateSearch(false) : refreshFilterHits());
+  fetch(`/search?session=${encodeURIComponent(recordState.session)}&epoch=${head.epoch}&upto=${owed.upto}&q=${encodeURIComponent(JSON.stringify(q))}`, { cache: "no-store" })
+    .then(response => (response.ok ? response.json() : Promise.reject(new Error(`search HTTP ${response.status}`))))
+    .then(found => { if (remoteSearch === mine) { mine.found = found; again(); } })
+    // A failed ask is asked again shortly, while the same query stands.
+    .catch(() => { if (remoteSearch === mine) { remoteSearch = null; setTimeout(() => { if (!remoteSearch) again(); }, 3000); } });
+  return { ready: false, found: null };
+}
 byId("transcriptSearchInput").oninput = () => {
   if (searchIsLive()) { recordState.pendingSearch = false; updateSearch(true); return; }
   recordState.pendingSearch = true;
@@ -2561,6 +2615,13 @@ function computeFilterHits() {
   const hits = new Set(), direct = new Set(), indices = [];
   // An EMPTY list means "every tool" to the shared matcher, so no tools must match nothing here.
   if (wanted.length) recordState.records.forEach((record, index) => { if (filterChain(record, wanted, hits, direct)) indices.push(index); });
+  // #s278: a record still on its way answers the filter when the server says it holds such a call;
+  // its folds open when it arrives (design/slow-links.md §7.3).
+  const remote = wanted.length ? remoteFound({ lc: "", whole: false, wanted: 0, tools: wanted }) : null;
+  if (remote?.found) {
+    for (const [r] of remote.found.records) if (recordState.records[r]?.kind === "pending") indices.push(r);
+    indices.sort((x, y) => x - y);
+  }
   recordState.filterHits = hits;
   recordState.filterDirect = direct;
   recordState.filterMatches = indices;
