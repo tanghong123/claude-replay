@@ -1708,6 +1708,19 @@ const ARTIFACT_READ_SHAPE: &[&str] = &["files_read"];
 /// beside `watch`.
 const ARTIFACT_COMMENTS_WATCH_SHAPE: &[&str] = &["watch"];
 
+/// The whole of an ArtifactComments watch LISTING (#s283, client 2.1.310, one record, measured
+/// 2026-10-27; the call input is `{action: "watch"}` with NO url, which lists what the session
+/// watches rather than starting a watch): `{watches: [], arms: [{url, state, reason, at}]}`, three
+/// strings and an integer (epoch milliseconds) per arm. Met with `watches` empty and one arm,
+/// `state` "failed" and `reason` "not_found": a pending auto-reply whose artifact was gone, as the
+/// same turn's read of it had found. The card is the generic tool card, which draws the result
+/// TEXT, and the text names the artifact's address, says nothing is watched, that the auto-reply
+/// arm failed because the artifact is gone, and when. It shares no key with the `{watch}` result,
+/// so it is a shape of its own. REVISIT: a `watches` entry (none has been seen, so check then
+/// whether the text states it), an arm whose `state` is not "failed" or whose `reason` is not
+/// "not_found", or a key beside these two.
+const ARTIFACT_COMMENTS_WATCH_LIST_SHAPE: &[&str] = &["arms", "watches"];
+
 /// Every key an Artifact list result was met with (#s62, client 2.1.288, one record): `{artifacts:
 /// array, scope: string, pins_enabled: boolean}`. `pins_enabled` is a service feature flag (whether
 /// the account may pin artifacts), not something the call did; the result TEXT the page draws
@@ -1909,6 +1922,11 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // bookkeeping beside what the result text already says. `watch` is a generic word, so it is
     // known only as the whole result, never on the flat ignored list.
     ("watch", ARTIFACT_COMMENTS_WATCH_SHAPE),
+    // #s283 (client 2.1.310): an ArtifactComments watch listing's whole result is `{watches,
+    // arms}`, which its result text states. Both are generic words, so each is known only as the
+    // whole result, never on the flat ignored list.
+    ("arms", ARTIFACT_COMMENTS_WATCH_LIST_SHAPE),
+    ("watches", ARTIFACT_COMMENTS_WATCH_LIST_SHAPE),
     // Artifact's list result (#s62): `pins_enabled` is an account's feature flag, and a word
     // another tool could use for anything, so it is known only in the list's own shape.
     ("pins_enabled", ARTIFACT_LIST_SHAPE),
@@ -9122,6 +9140,34 @@ mod tests {
             unknown_tool_result_keys(&serde_json::json!({"watch": {}, "stdout": "ok"})),
             vec!["watch"],
             "outside its shape, watch is reported"
+        );
+    }
+
+    /// #s283: an ArtifactComments watch listing (`{action: "watch"}` with no url, client 2.1.310)
+    /// is known whole, and `arms` beside a key from outside its shape is reported.
+    #[test]
+    fn an_artifact_comments_watch_list_result_is_known_in_its_own_shape() {
+        let listing = serde_json::json!({
+            "watches": [],
+            "arms": [{
+                "url": "https://example.test/artifact/x", "state": "failed",
+                "reason": "not_found", "at": 1_700_000_000_000_u64
+            }]
+        });
+        assert!(
+            unknown_tool_result_keys(&listing).is_empty(),
+            "a whole watch listing is known: {:?}",
+            unknown_tool_result_keys(&listing)
+        );
+        assert_eq!(
+            unknown_tool_result_keys(&serde_json::json!({"arms": [], "stdout": "ok"})),
+            vec!["arms"],
+            "outside its shape, arms is reported"
+        );
+        assert_eq!(
+            unknown_tool_result_keys(&serde_json::json!({"watches": [], "watch": {}})),
+            vec!["watch", "watches"],
+            "the listing and the watch are two shapes, not one"
         );
     }
 
