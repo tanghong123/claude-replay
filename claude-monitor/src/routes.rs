@@ -140,7 +140,7 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
         // /__reveal, static assets (§6.3). A session's feed is asked for by id, and the
         // service must have been shown that id first (#309).
         _ => {
-            if matches!(name, "pull" | "records" | "turn-index") {
+            if matches!(name, "pull" | "records" | "turn-index" | "search") {
                 if let Some(id) = query_get(query, "session") {
                     ensure_known(backend, &index::percent_decode(id));
                 }

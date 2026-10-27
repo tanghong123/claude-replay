@@ -467,6 +467,93 @@ impl Found {
     }
 }
 
+/// Search the first `upto` records of the record log at `path` (no further than `log_len` bytes):
+/// each committed record is one JSON line, read and matched in turn. A line that does not parse ends
+/// the read, as the turn index's does (the page starts over on what it then cannot match).
+pub(crate) fn search_log(
+    path: &std::path::Path,
+    log_len: u64,
+    upto: usize,
+    q: &Query,
+) -> std::io::Result<Found> {
+    use std::io::{BufRead, Read};
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::new(file.take(log_len));
+    let mut found = Found::default();
+    let mut line = Vec::new();
+    for r in 0..upto {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 || line.last() != Some(&b'\n') {
+            break;
+        }
+        let Ok(record) = serde_json::from_slice::<Value>(&line[..line.len() - 1]) else {
+            break;
+        };
+        found.take(r, &record, q);
+    }
+    Ok(found)
+}
+
+/// What a search costs on a real record log (`design/slow-links.md` §7.2: whether the server should
+/// keep each record's lowercased text decides on this): `CR_SEARCH_PROBE=<records.jsonl> cargo test
+/// --release -p claude-replay-html probe_search -- --ignored --nocapture`. Prints timings and counts,
+/// never text.
+#[test]
+#[ignore = "reads a real record log named by CR_SEARCH_PROBE"]
+fn probe_search_a_real_log() {
+    let Ok(log) = std::env::var("CR_SEARCH_PROBE") else {
+        return;
+    };
+    let path = std::path::Path::new(&log);
+    let len = std::fs::metadata(path).unwrap().len();
+    let probes = [
+        (
+            "the, everywhere",
+            Query {
+                lc: "the".into(),
+                ..Query::default()
+            },
+        ),
+        (
+            "deploy, whole words",
+            Query {
+                lc: "deploy".into(),
+                whole: true,
+                ..Query::default()
+            },
+        ),
+        (
+            "error in tools",
+            Query {
+                lc: "error".into(),
+                wanted: O,
+                ..Query::default()
+            },
+        ),
+        (
+            "Bash calls (the filter)",
+            Query {
+                tools: vec![Tool {
+                    name: "Bash".into(),
+                    prefix: false,
+                }],
+                ..Query::default()
+            },
+        ),
+    ];
+    for (what, q) in probes {
+        let t = std::time::Instant::now();
+        let found = search_log(path, len, usize::MAX, &q).unwrap();
+        eprintln!(
+            "log {} MB, {what}: {:?}, {} records with hits, {} in all",
+            len / 1_000_000,
+            t.elapsed(),
+            found.records.len(),
+            found.total
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -135,6 +135,11 @@ impl RecordStore {
         self.log.len
     }
 
+    /// The log's path: search on the server (#s278) reads its records outside the session lock.
+    pub(crate) fn log_path(&self) -> &std::path::Path {
+        &self.log.path
+    }
+
     /// The render continuation as of the committed frontier — the open turn renders each poll
     /// from a CLONE of this (its ephemeral anchors never pollute the committed state).
     pub(crate) fn emit_snapshot(&self) -> EmitState {

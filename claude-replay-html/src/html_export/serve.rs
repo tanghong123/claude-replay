@@ -1161,6 +1161,34 @@ impl SessionService {
             Ok(store.turn_index(epoch, upto).to_string().into_bytes())
         })
     }
+
+    /// Search and the filter for a page still waiting for records `[0, upto)` (#s278,
+    /// `design/slow-links.md` §7): the records with hits and the counts, quoting no text. The log is
+    /// read OUTSIDE the session lock — a search of a long log must not hold the page's polls — and
+    /// the epoch is asked again after the read: a log that left it is refused (**409**) as
+    /// `/records` is.
+    pub(crate) fn search_json(
+        &self,
+        id: &str,
+        epoch: u64,
+        upto: usize,
+        q: &super::search_match::Query,
+    ) -> Result<Vec<u8>, StaleEpoch> {
+        let ss = self.cache.shared_peek(id).ok_or(StaleEpoch)?;
+        let (path, len) = ss.store_read(|cur_epoch, store| {
+            if cur_epoch != epoch {
+                return Err(StaleEpoch);
+            }
+            Ok((store.log_path().to_path_buf(), store.log_len()))
+        })?;
+        let found = super::search_match::search_log(&path, len, upto, q).map_err(|_| StaleEpoch)?;
+        ss.store_read(|cur_epoch, store| {
+            if cur_epoch != epoch || store.log_len() < len {
+                return Err(StaleEpoch);
+            }
+            Ok(found.reply(epoch, upto).to_string().into_bytes())
+        })
+    }
 }
 
 /// Build the `/pull` wire reply string. The **provisional** records are spliced inline (already
@@ -3030,6 +3058,44 @@ pub fn service_routes(
             return HttpResponse::not_found("no such agent");
         }
         return match live.turn_index_json(id, num("epoch"), num("upto") as usize) {
+            Ok(bytes) => HttpResponse::ok("application/json; charset=utf-8", bytes),
+            Err(StaleEpoch) => HttpResponse {
+                code: "409 Conflict",
+                content_type: TEXT_PLAIN,
+                body: b"stale epoch".to_vec(),
+                headers: Vec::new(),
+                stream: None,
+            },
+        };
+    }
+    // `/search?session=<id>&epoch=<e>&upto=<n>&q=<the structured query, JSON>` — search and the
+    // filter for a page still waiting for its first `upto` records (#s278); 409 on a stale epoch,
+    // 400 for a query that is not one.
+    if name == "search" {
+        let Some(live) = live else {
+            return HttpResponse::not_found("no live server");
+        };
+        let id = query_get(query, "session").unwrap_or("");
+        let num = |k| {
+            query_get(query, k)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        if id.is_empty() || id.contains('/') || id.contains("..") {
+            return HttpResponse::not_found("no such agent");
+        }
+        let Ok(q) = serde_json::from_str::<super::search_match::Query>(&percent_decode(
+            query_get(query, "q").unwrap_or(""),
+        )) else {
+            return HttpResponse {
+                code: "400 Bad Request",
+                content_type: TEXT_PLAIN,
+                body: b"not a search query".to_vec(),
+                headers: Vec::new(),
+                stream: None,
+            };
+        };
+        return match live.search_json(id, num("epoch"), num("upto") as usize, &q) {
             Ok(bytes) => HttpResponse::ok("application/json; charset=utf-8", bytes),
             Err(StaleEpoch) => HttpResponse {
                 code: "409 Conflict",
@@ -5209,6 +5275,151 @@ mod tests {
         assert!(
             serde_json::from_slice::<Value>(&piece).is_ok(),
             "still JSON once masked"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// #s278: search for a page still waiting for its first `upto` records. The reply is the
+    /// matcher's answer over exactly the records the page would read below the boundary — the log's
+    /// own lines — under its epoch (a stale one is 409); the filter's tools alone find the records
+    /// holding such a call; and it quotes no text, so a secret in a prompt never leaves in it.
+    #[test]
+    fn search_answers_the_records_below_the_boundary_and_quotes_nothing() {
+        use super::super::search_match::{Found, Query, Tool};
+        use crate::cache::Cursor;
+        use crate::Transcript;
+        let base = std::env::temp_dir().join(format!("cr-serve-search-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("sid.jsonl");
+        std::fs::create_dir_all(&base).unwrap();
+        let key = format!("{}{}", ["sk", "ant", "api03-"].join("-"), "Q".repeat(40));
+        let mut transcript = String::new();
+        for i in 0..6 {
+            let text = format!("ask petrel {i} with {key}");
+            transcript += &serde_json::json!({"type": "user", "cwd": "/r", "timestamp": format!("2026-07-26T10:00:{:02}Z", i * 3), "message": {"role": "user", "content": [{"type": "text", "text": text}]}}).to_string();
+            transcript += "\n";
+            transcript += &serde_json::json!({"type": "assistant", "timestamp": format!("2026-07-26T10:00:{:02}Z", i * 3 + 1), "message": {"role": "assistant", "content": [{"type": "tool_use", "id": format!("c{i}"), "name": "Bash", "input": {"command": "ls petrel"}}]}}).to_string();
+            transcript += "\n";
+            transcript += &serde_json::json!({"type": "user", "timestamp": format!("2026-07-26T10:00:{:02}Z", i * 3 + 2), "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{i}"), "content": "out"}]}}).to_string();
+            transcript += "\n";
+        }
+        std::fs::write(&sess, transcript).unwrap();
+        let live = SessionService {
+            fold: FoldPolicy::default(),
+            roots: std::sync::Mutex::new(vec![Root {
+                id: "sid".into(),
+                agent: Agent::CLAUDE,
+                path: sess.clone(),
+                cwd: "/r".into(),
+            }]),
+            cache: test_cache(&base),
+            port: std::sync::Arc::new(std::sync::OnceLock::new()),
+        };
+        live.cache
+            .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
+        let v: Value =
+            serde_json::from_str(&body(live.pull_response("sid", Cursor::default()))).unwrap();
+        let epoch = v["epoch"].as_u64().unwrap();
+        let ext = &v["committed_ext"];
+        let records = live
+            .records_bytes(
+                "sid",
+                0,
+                ext["offset"].as_u64().unwrap() + ext["len"].as_u64().unwrap(),
+                epoch,
+            )
+            .unwrap();
+        let recs: Vec<Value> = String::from_utf8(records)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let opens: Vec<usize> = (0..recs.len())
+            .filter(|&i| recs[i]["kind"] == "user")
+            .collect();
+        assert!(
+            opens.len() >= 5,
+            "the committed log holds the turns: {opens:?}"
+        );
+        let upto = opens[3];
+        let query = |lc: &str, wanted: u8, tools: &[&str]| Query {
+            lc: lc.into(),
+            whole: false,
+            wanted,
+            tools: tools
+                .iter()
+                .map(|t| Tool {
+                    name: (*t).into(),
+                    prefix: false,
+                })
+                .collect(),
+        };
+        for q in [
+            query("petrel", 0, &[]),
+            query("petrel", super::super::search_match::U, &[]),
+            query("petrel", super::super::search_match::O, &["Bash"]),
+            query("", 0, &["Bash"]),
+        ] {
+            let reply: Value =
+                serde_json::from_slice(&live.search_json("sid", epoch, upto, &q).unwrap()).unwrap();
+            let mut expect = Found::default();
+            for (r, record) in recs[..upto].iter().enumerate() {
+                expect.take(r, record, &q);
+            }
+            assert_eq!(
+                reply,
+                expect.reply(epoch, upto),
+                "the matcher over the records below the boundary: {q:?}"
+            );
+            assert!(
+                reply["records"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|r| r[0].as_u64().unwrap() < upto as u64),
+                "nothing at or past the boundary"
+            );
+        }
+        let user: Value = serde_json::from_slice(
+            &live
+                .search_json(
+                    "sid",
+                    epoch,
+                    upto,
+                    &query("petrel", super::super::search_match::U, &[]),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            user["total"].as_u64(),
+            Some(3),
+            "the three prompts below the boundary: {user}"
+        );
+        let calls: Value = serde_json::from_slice(
+            &live
+                .search_json("sid", epoch, upto, &query("", 0, &["bash"]))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            calls["records"].as_array().unwrap().len(),
+            3,
+            "the filter finds each call: {calls}"
+        );
+
+        // Nothing quoted: not the prompt's words, not the secret in it.
+        let raw = String::from_utf8(
+            live.search_json("sid", epoch, upto, &query("petrel", 0, &[]))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(!raw.contains("petrel") && !raw.contains("QQQQ"), "{raw}");
+
+        // A stale epoch is refused, as `/records` refuses it.
+        assert_eq!(
+            live.search_json("sid", epoch + 1, upto, &query("petrel", 0, &[])),
+            Err(StaleEpoch)
         );
         let _ = std::fs::remove_dir_all(&base);
     }

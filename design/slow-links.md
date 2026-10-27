@@ -440,9 +440,11 @@ shell's (`stripTags`): stage 3 serves only the app shell.
 exactly as `/turn-index` does: 409 on a stale epoch, behind `ensure_known`, through `prepare_reply`.
 The reply is `{t: "search", epoch, upto, records: [[r, hits], …], counts: {u, a, t, o}, total}`; a
 query with tools and no text (the filter) answers the records holding such a call. **It quotes no
-text**, so secret masking has nothing to mask, by construction; the query is never logged. Its cost is
-measured on the 117 MB log before deciding whether the server keeps each record's lowercased text
-(`CR_SEARCH_PROBE`, as the index's probe).
+text**, so secret masking has nothing to mask, by construction; the query is never logged. It reads
+the log outside the session lock, so a search never holds the page's polls, and asks the epoch again
+after the read. Measured on the 117 MB log (`CR_SEARCH_PROBE`, release build): 0.21 to 0.27 s for a
+text query over all 10,965 records, 0.09 s for the filter's tools alone — well within an Enter, so the
+server keeps no lowercased text.
 
 ### 7.3 The page
 
