@@ -3389,6 +3389,7 @@ mod tests {
             body: b"fixture prompt",
             authenticated: true,
             origin_ok: true,
+            masked: false,
         };
         let assert_shared_refusal = |response: claude_replay_html::HttpResponse, route: &str| {
             assert_eq!(response.code, "409 Conflict");

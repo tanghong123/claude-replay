@@ -1173,6 +1173,7 @@ impl SessionService {
         epoch: u64,
         upto: usize,
         q: &super::search_match::Query,
+        masked: bool,
     ) -> Result<Vec<u8>, StaleEpoch> {
         let ss = self.cache.shared_peek(id).ok_or(StaleEpoch)?;
         let (path, len) = ss.store_read(|cur_epoch, store| {
@@ -1181,7 +1182,8 @@ impl SessionService {
             }
             Ok((store.log_path().to_path_buf(), store.log_len()))
         })?;
-        let found = super::search_match::search_log(&path, len, upto, q).map_err(|_| StaleEpoch)?;
+        let found =
+            super::search_match::search_log(&path, len, upto, q, masked).map_err(|_| StaleEpoch)?;
         ss.store_read(|cur_epoch, store| {
             if cur_epoch != epoch || store.log_len() < len {
                 return Err(StaleEpoch);
@@ -1601,6 +1603,7 @@ pub fn get_request<'a>(name: &'a str, query: &'a str, authenticated: bool) -> Re
         body: &[],
         authenticated,
         origin_ok: true,
+        masked: false,
     }
 }
 
@@ -1622,6 +1625,10 @@ pub struct Request<'a> {
     /// `Origin`; a DNS-rebound one carries a foreign `Host`; both are refused here even if
     /// they somehow held a token.
     pub origin_ok: bool,
+    /// What this client is sent is masked (`mask_for`'s own question: the mask policy, and whether
+    /// the `Host` is the loopback). A route that answers from text it does not send — search on the
+    /// server (#s278) — asks it of what it reads, or its counts would see a secret the page cannot.
+    pub masked: bool,
 }
 
 impl Request<'_> {
@@ -2493,6 +2500,7 @@ fn serve_connection<R: Into<HttpReply>>(
         body: &body,
         authenticated: gate.token_ok(presented.as_deref()),
         origin_ok: !public && origin_ok(&headers, local_port, gate.trusted_hosts.as_ref()),
+        masked: super::mask::policy().masks(host_is_local(header_value(&headers, "host"))),
     };
 
     let (r, set_cookie, redirect_root) = match access {
@@ -3095,7 +3103,7 @@ pub fn service_routes(
                 stream: None,
             };
         };
-        return match live.search_json(id, num("epoch"), num("upto") as usize, &q) {
+        return match live.search_json(id, num("epoch"), num("upto") as usize, &q, req.masked) {
             Ok(bytes) => HttpResponse::ok("application/json; charset=utf-8", bytes),
             Err(StaleEpoch) => HttpResponse {
                 code: "409 Conflict",
@@ -4279,6 +4287,7 @@ mod tests {
             body: b"",
             authenticated,
             origin_ok,
+            masked: false,
         };
         // Wrong method → 405, before anything else is even checked.
         assert_eq!(
@@ -5361,7 +5370,8 @@ mod tests {
             query("", 0, &["Bash"]),
         ] {
             let reply: Value =
-                serde_json::from_slice(&live.search_json("sid", epoch, upto, &q).unwrap()).unwrap();
+                serde_json::from_slice(&live.search_json("sid", epoch, upto, &q, false).unwrap())
+                    .unwrap();
             let mut expect = Found::default();
             for (r, record) in recs[..upto].iter().enumerate() {
                 expect.take(r, record, &q);
@@ -5387,6 +5397,7 @@ mod tests {
                     epoch,
                     upto,
                     &query("petrel", super::super::search_match::U, &[]),
+                    false,
                 )
                 .unwrap(),
         )
@@ -5398,7 +5409,7 @@ mod tests {
         );
         let calls: Value = serde_json::from_slice(
             &live
-                .search_json("sid", epoch, upto, &query("", 0, &["bash"]))
+                .search_json("sid", epoch, upto, &query("", 0, &["bash"]), false)
                 .unwrap(),
         )
         .unwrap();
@@ -5410,15 +5421,34 @@ mod tests {
 
         // Nothing quoted: not the prompt's words, not the secret in it.
         let raw = String::from_utf8(
-            live.search_json("sid", epoch, upto, &query("petrel", 0, &[]))
+            live.search_json("sid", epoch, upto, &query("petrel", 0, &[]), false)
                 .unwrap(),
         )
         .unwrap();
         assert!(!raw.contains("petrel") && !raw.contains("QQQQ"), "{raw}");
 
+        // A client sent masked records (#365) is answered from masked records: the key's
+        // characters are found unmasked, and never through the mask, so a count cannot read a
+        // masked secret back one character at a time.
+        let total = |masked: bool| {
+            let reply: Value = serde_json::from_slice(
+                &live
+                    .search_json("sid", epoch, upto, &query("qqqq", 0, &[]), masked)
+                    .unwrap(),
+            )
+            .unwrap();
+            reply["total"].as_u64().unwrap()
+        };
+        assert!(total(false) >= 3, "the key is in every prompt");
+        assert_eq!(
+            total(true),
+            0,
+            "a masked client's search never sees the key"
+        );
+
         // A stale epoch is refused, as `/records` refuses it.
         assert_eq!(
-            live.search_json("sid", epoch + 1, upto, &query("petrel", 0, &[])),
+            live.search_json("sid", epoch + 1, upto, &query("petrel", 0, &[]), false),
             Err(StaleEpoch)
         );
         let _ = std::fs::remove_dir_all(&base);
@@ -6634,6 +6664,7 @@ mod tests {
             &dir,
             &Request {
                 origin_ok: false,
+                masked: false,
                 ..get_request("file", &a_rs, true)
             },
         );

@@ -188,6 +188,7 @@ mod tests {
             body: b"",
             authenticated: false,
             origin_ok: true,
+            masked: false,
         }
     }
 

@@ -469,12 +469,15 @@ impl Found {
 
 /// Search the first `upto` records of the record log at `path` (no further than `log_len` bytes):
 /// each committed record is one JSON line, read and matched in turn. A line that does not parse ends
-/// the read, as the turn index's does (the page starts over on what it then cannot match).
+/// the read, as the turn index's does (the page starts over on what it then cannot match). `masked`:
+/// the client is sent masked records (#365), so each is masked before it is matched — the counts are
+/// over what the page will hold, and never a way to read a masked secret back a character at a time.
 pub(crate) fn search_log(
     path: &std::path::Path,
     log_len: u64,
     upto: usize,
     q: &Query,
+    masked: bool,
 ) -> std::io::Result<Found> {
     use std::io::{BufRead, Read};
     let file = std::fs::File::open(path)?;
@@ -486,7 +489,11 @@ pub(crate) fn search_log(
         if reader.read_until(b'\n', &mut line)? == 0 || line.last() != Some(&b'\n') {
             break;
         }
-        let Ok(record) = serde_json::from_slice::<Value>(&line[..line.len() - 1]) else {
+        line.pop();
+        if masked {
+            super::mask::mask_json_bytes(&mut line);
+        }
+        let Ok(record) = serde_json::from_slice::<Value>(&line) else {
             break;
         };
         found.take(r, &record, q);
@@ -543,7 +550,7 @@ fn probe_search_a_real_log() {
     ];
     for (what, q) in probes {
         let t = std::time::Instant::now();
-        let found = search_log(path, len, usize::MAX, &q).unwrap();
+        let found = search_log(path, len, usize::MAX, &q, false).unwrap();
         eprintln!(
             "log {} MB, {what}: {:?}, {} records with hits, {} in all",
             len / 1_000_000,
