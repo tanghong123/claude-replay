@@ -265,12 +265,14 @@ fn is_blob(s: &[u8]) -> bool {
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=')))
 }
 
-/// Replace `bytes[from..to]` with `*`, leaving every escape (a backslash and the byte after it).
+/// Replace `bytes[from..to]` with `*`, leaving every escape whole: a backslash and the byte after
+/// it, or a `\uXXXX` and its four hex digits (#s286: a control character inside a private key's span,
+/// as an ANSI colour code in terminal output is, read `\u****` and the record stopped being JSON).
 fn star(bytes: &mut [u8], from: usize, to: usize) {
     let mut k = from;
     while k < to {
         if bytes[k] == b'\\' {
-            k += 2;
+            k += if unicode_escape_at(bytes, k) { 6 } else { 2 };
             continue;
         }
         // A non-ASCII byte is part of a multi-byte character: left whole, so UTF-8 stays UTF-8.
@@ -281,6 +283,14 @@ fn star(bytes: &mut [u8], from: usize, to: usize) {
         bytes[k] = b'*';
         k += 1;
     }
+}
+
+/// A JSON `\uXXXX` escape starts at `k`: a backslash, a `u` and four hex digits.
+fn unicode_escape_at(bytes: &[u8], k: usize) -> bool {
+    bytes.get(k + 1) == Some(&b'u')
+        && bytes
+            .get(k + 2..k + 6)
+            .is_some_and(|h| h.iter().all(u8::is_ascii_hexdigit))
 }
 
 /// A word boundary before `i`: a token never starts inside another word (`risk-` is not `sk-`).
@@ -547,6 +557,40 @@ mod tests {
             "an image's bytes are never touched"
         );
         assert_eq!(v["q"].as_str().unwrap(), "say \"hi\"");
+    }
+
+    /// #s286: a private key's span in terminal output carries colour codes, which JSON writes as
+    /// `\u001b`; the mask leaves each escape whole, so the record is still JSON and the escape still
+    /// the character it was, while every character of the key's body is starred.
+    #[test]
+    fn an_escape_inside_a_masked_span_stays_whole() {
+        let (begin, end) = pem_lines("OPENSSH");
+        let body = fake("", 40, 'n');
+        let text = format!("\u{1b}[1m{begin}\n{body}\u{1b}[0m\n\u{7}{end}\u{1b}[0m");
+        let doc = serde_json::json!({ "out": text }).to_string() + "\n";
+        assert!(
+            doc.contains("\\u001b"),
+            "serde writes the colour code as an escape: {doc}"
+        );
+        let mut b = doc.clone().into_bytes();
+        assert_eq!(mask_json_bytes(&mut b), 1, "the key's body");
+        let out = String::from_utf8(b).unwrap();
+        assert_eq!(out.len(), doc.len(), "same length, so offsets hold");
+        let v: serde_json::Value =
+            serde_json::from_str(out.trim_end()).unwrap_or_else(|e| panic!("{e}: {out}"));
+        let got = v["out"].as_str().unwrap();
+        assert!(!got.contains("nnnn"), "the body is masked: {got}");
+        assert!(got.contains(&begin) && got.contains(&end), "{got}");
+        assert_eq!(
+            got.matches('\u{1b}').count(),
+            3,
+            "every colour code survives as itself: {got:?}"
+        );
+        assert!(got.contains('\u{7}'), "and the bell: {got:?}");
+        // A backslash that starts no `\u` escape is still skipped with the byte after it alone.
+        let mut b = br#"{"t":"\uZZ ok"}"#.to_vec();
+        star(&mut b, 6, 10);
+        assert_eq!(&b, br#"{"t":"\u** ok"}"#);
     }
 
     #[test]

@@ -665,7 +665,9 @@ masks a `--dump-html`/`--dump-all-html` file. Applied to what is SERVED, never t
 or the cache, so the desktop and the phone read one cache. The rules are prefix scans (provider
 keys, JWTs, bearer tokens, a private key's body, a URL's password) replacing the secret with `*` of
 the SAME length — `/records` range-reads by byte offset, and a JSON string stays one — never
-touching a backslash or the byte after it, nor a `data:` URI or a long base64 run (a pasted image).
+touching an escape (a backslash and the byte after it, or a whole `\uXXXX`: a colour code inside a
+private key's span once read `\u****`, which is not JSON, #s286), nor a `data:` URI or a long base64
+run (a pasted image).
 The cases are `a_phone_over_the_tailnet_sees_secrets_masked_and_the_desktop_does_not` and
 `tests/dump_html_mask.rs`; their fake keys are assembled at run time because CI runs gitleaks over
 every line.

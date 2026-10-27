@@ -565,6 +565,34 @@ fn probe_search_a_real_log() {
 mod tests {
     use super::*;
 
+    /// #s286: a masked search reads on past a record whose private key's span holds a JSON `\u`
+    /// escape (terminal colour codes); the mask once broke that record's JSON, the read stopped
+    /// there, and every hit after it went uncounted.
+    #[test]
+    fn a_masked_search_reads_past_a_key_span_holding_an_escape() {
+        let tail = ["PRIVATE", "KEY-----"].join(" ");
+        let out = format!(
+            "\u{1b}[1m-----BEGIN OPENSSH {tail}\n{}\u{1b}[0m\n-----END OPENSSH {tail}",
+            "k".repeat(40)
+        );
+        let log = [
+            json!({"kind": "bash", "tool": "Bash", "body": [{"p": "pre", "x": out}]}),
+            json!({"kind": "bash", "tool": "Bash", "body": [{"p": "pre", "x": "count the petrel nests"}]}),
+        ]
+        .iter()
+        .map(|r| r.to_string() + "\n")
+        .collect::<String>();
+        let path =
+            std::env::temp_dir().join(format!("cr-search-escape-{}.jsonl", std::process::id()));
+        std::fs::write(&path, &log).unwrap();
+        let len = log.len() as u64;
+        for masked in [false, true] {
+            let found = search_log(&path, len, 2, &q("petrel", false, 0, &[]), masked).unwrap();
+            assert_eq!(found.total, 1, "the hit after the key (masked: {masked})");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
     fn q(lc: &str, whole: bool, wanted: u8, tools: &[(&str, bool)]) -> Query {
         Query {
             lc: lc.into(),
