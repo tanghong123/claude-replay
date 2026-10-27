@@ -413,3 +413,68 @@ What changed between this design and the code, each decided in the build:
   head fills, a stale epoch starts over, a turn of many records shows its prompt from its first piece,
   a placeholder is never measured and moves no mean, and a tail with no prompt stays drawn while its
   turn fills, its reader on their step. Removing the fill hold fails the third.
+
+## 7. Stage 3, the build plan (#s278)
+
+Stage 3 follows the design Hong approved (D1, D2): search and the filter answered by the server for the
+records the page does not hold, with one Rust matcher held to the page's by a parity test. This is the
+plan the build follows, decided in the build; nothing here changes what a query means.
+
+### 7.1 The page keeps the grammar; the server matches
+
+The box's grammar (`design/in-session-search.md` §9: the prefix letters, `o(…)`, the escape, the tool
+letters) stays the page's. The page already reads the box into a structured query (`splitQuery`,
+`resolveTools` with the session's letters), and sends THAT: the lowercased needle, whole words, the
+wanted class mask, and the resolved tools as `[{name, prefix}]`. So the server needs only the matching
+half of `shared/search.js`: `directMask`, `ownTextParts`, `recordTextParts`, `stripTags`, `wholeAt`,
+`countOcc`, `toolMatches`, `partWanted`, `countRecord` and `recordHasTool`. It is ported literally,
+traps included (five sequential entity replaces, so `&amp;lt;` reads `<`; JavaScript truthiness on
+head fields; `String(undefined)` for a part with no text; the whole-word classes `\p{L}\p{N}\p{M}_`
+through the `regex` crate, already in the lockfile; the unscoped total counted over the whole text,
+not summed from the parts). Where the two pages strip HTML differently, the server matches the app
+shell's (`stripTags`): stage 3 serves only the app shell.
+
+### 7.2 The route
+
+`/search?session=&epoch=&upto=&q=<the structured query, JSON>` answers for the records below `upto`,
+exactly as `/turn-index` does: 409 on a stale epoch, behind `ensure_known`, through `prepare_reply`.
+The reply is `{t: "search", epoch, upto, records: [[r, hits], …], counts: {u, a, t, o}, total}`; a
+query with tools and no text (the filter) answers the records holding such a call. **It quotes no
+text**, so secret masking has nothing to mask, by construction; the query is never logged. Its cost is
+measured on the 117 MB log before deciding whether the server keeps each record's lowercased text
+(`CR_SEARCH_PROBE`, as the index's probe).
+
+### 7.3 The page
+
+- While a records-by-turn head is out, the page counts the records at or above `upto` itself and asks
+  the server for the ones below it, whatever has been fetched (the panes' rule, `scanFrom`), then sums.
+  The answer lives as long as the index does: dropped when the head is whole, on a resync, on a reset.
+- Search then runs on Enter, as one over the live limit does (`LIVE_SEARCH_LIMIT`, #104): no round
+  trip per keystroke over a slow link.
+- A step onto a hit in a turn still on its way reads that turn and lands once its unit is whole
+  (`jumpOrFetch`, `search`); its marks appear then.
+- The filter: a record still on its way is in the filter's matches when the server says it holds such a
+  call. A placeholder is never hidden or dimmed (it holds nothing to filter, and its height is the
+  sums'); the filter applies to its unit once it fills.
+- The desktop and the classic page are unchanged: they hold every record.
+
+### 7.4 What proves it
+
+- **Parity:** a `cargo test` in `claude-replay-html` renders the rendering audit's corpus to records,
+  runs the Rust matcher over a query set, and has node run `shared/search.js` over the same records
+  and queries; any difference fails. It runs where `ui_contract` runs (skipped without node, run in
+  CI). The query set covers every prefix letter and combinations, `w`, `o(B)`, `o(Bash,Read)`,
+  `o(mcp__x__*)`, the escape, a needle too short, CJK and accented needles, a head field against body
+  parts, nested blocks, punctuation at word edges.
+- **The route:** its 409, its masking (nothing quoted), the boundary `upto`.
+- **Browser cases** (`tests/records_by_turn.rs`): with the head held, a search counts the whole
+  session, equal to the count once it is whole; a step to an unfetched hit lands on its mark once the
+  turn arrives; the filter's matches include records still on their way, and placeholders stay drawn.
+- The whole local suite and a Simulator walk (search with the keyboard up while the head is out).
+
+### 7.5 Not in stage 3
+
+- **Dropping far turns on a phone** (§6.6) becomes possible once search no longer needs every record in
+  the page; it is a change to the store and the projection of its own, filed as its own task.
+- Fetching the rest behind the reader (D4) stays: with search on the server it could stop, which is a
+  choice for Hong once stage 3 has run on the phone.
