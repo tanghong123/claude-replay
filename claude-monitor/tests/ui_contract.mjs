@@ -1944,7 +1944,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /function filterChain\(record, wanted, hits, direct\) \{/, "a hit chain: the record or a nested one carries a selected tool");
   // Only what is NEWLY on the chain opens (#126): a live session must not re-open a fold the
   // reader closed a moment ago, and a record that arrives under a filter must still be added.
-  assert.match(app, /for \(const id of hits\) if \(!before\?\.has\(id\)\) \{ recordState\.folds\.set\(id, false\); opened = true; \}/, "every record newly on a chain opens");
+  // What this filter has already opened is remembered beyond the records here (#s285): a turn let go
+  // and read again brings its ids back, and they are not new.
+  assert.match(app, /const seen = before && recordState\.filterSeen \? recordState\.filterSeen : \(recordState\.filterSeen = new Set\(\)\);/, "a fresh filter starts what it has opened afresh");
+  assert.match(app, /for \(const id of hits\) if \(!seen\.has\(id\)\) \{ seen\.add\(id\); recordState\.folds\.set\(id, false\); opened = true; \}/, "every record newly on a chain opens");
   assert.match(app, /if \(recordState\.filterOpened\) viewport\.rerender\(\);/, "…and a fold opened for an ARRIVING record reaches the DOM, which only a render does");
   assert.match(app, /function refreshFilterHits\(\) \{/, "…and records arriving under a filter join it");
   assert.match(app, /renderNavigator\(\); refreshFilterHits\(\); updateSearch\(false\);/, "…on the arrival path");
