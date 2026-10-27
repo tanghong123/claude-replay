@@ -671,6 +671,15 @@ const RECORD_TYPES_KNOWN: &[&str] = &[
     "pr-link",
     "queue-operation",
     "system",
+    // #s282 (client 2.1.311): `{type, tools, sessionId}`, type first, with no timestamp or uuid —
+    // the session's tool names so far, de-duplicated in first-use order, written again each time
+    // it first calls a tool it had not called (3 to 7 per session). Met 2026-10-27 in all 10
+    // transcripts on this machine that run 2.1.311, every one headless (entrypoint `sdk-cli`).
+    // Nothing is drawn: each call is its own card and the search filter already names a session's
+    // tools, and with no time it cannot date a first use. REVISIT if an interactive session writes
+    // it with something more: a key beyond these three, or a list naming a tool the transcript
+    // never called (it would then count something the page does not show).
+    "tools-used",
     "user",
 ];
 
@@ -7508,6 +7517,34 @@ mod tests {
             .filter(|s| s.example.as_deref() == Some("s-s134"))
             .collect();
         assert!(seen.is_empty(), "and is not reported as new: {seen:?}");
+    }
+
+    /// #s282: Claude Code 2.1.311's `tools-used` record is known bookkeeping. It draws nothing and
+    /// is not reported, while a record type outside the list beside it still is. Removing it from
+    /// `RECORD_TYPES_KNOWN` turns this red.
+    #[test]
+    fn a_tools_used_record_is_known() {
+        let prompt = r#"{"type":"user","version":"2.1.311","sessionId":"s-s282","uuid":"u1","timestamp":"2026-10-27T01:00:00.000Z","message":{"role":"user","content":"write the notes"}}"#;
+        let tools = r#"{"type":"tools-used","tools":["Bash","Write"],"sessionId":"s-s282"}"#;
+        let answer = r#"{"type":"assistant","version":"2.1.311","sessionId":"s-s282","uuid":"a1","parentUuid":"u1","timestamp":"2026-10-27T01:00:03.000Z","requestId":"r1","message":{"id":"m1","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"Written."}],"stop_reason":"end_turn"}}"#;
+        let future = r#"{"type":"a-record-type-nobody-has-met-s282","sessionId":"s-s282"}"#;
+        let blocks = parse(&[prompt, tools, answer].join("\n"));
+        assert_eq!(
+            format!("{blocks:?}"),
+            format!("{:?}", parse(&[prompt, answer].join("\n"))),
+            "the record draws nothing"
+        );
+        let _ = parse(future);
+        let seen: Vec<String> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.at == UnknownAt::RecordType && s.example.as_deref() == Some("s-s282"))
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(
+            seen,
+            vec!["a-record-type-nobody-has-met-s282".to_string()],
+            "tools-used is known; a type nobody has met is still reported"
+        );
     }
 
     /// #s134: a request-log line is never the conversation to the monitor's raw-line reads. A
