@@ -474,6 +474,18 @@ server keeps no lowercased text.
   turn arrives; the filter's matches include records still on their way, and placeholders stay drawn.
 - The whole local suite and a Simulator walk (search with the keyboard up while the head is out).
 
+### 7.6 As built (#s278)
+
+- **An Enter before the server's answer steps once it lands** (`stepWhenFound`): the first Enter runs the
+  search and steps, and over a slow link the answer comes after the step has found nothing to land on.
+- **The page's filter is the shell's own chain** (`filterChain`: a tool-call kind whose `tool`, else its
+  head's `name`, answers the tools), not `recordHasTool`, which only the classic page uses; the server
+  ports the shell's.
+- **Measured** on the 117 MB log: 0.21 to 0.27 s a text query, 0.09 s the filter, read outside the
+  session lock; no text cache.
+- **The parity test** runs 4,165 queries; a word class from `char::is_alphanumeric` and the entities
+  decoded out of order each fail it.
+
 ### 7.5 Not in stage 3
 
 - **Dropping far turns on a phone** (§6.6) becomes possible once search no longer needs every record in

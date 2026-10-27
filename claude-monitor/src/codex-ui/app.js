@@ -274,7 +274,7 @@ const sessionIndex = new SessionIndexStore({
 // whole (stage 1). `?windowed=1|0` picks either path for a case.
 const WINDOWED = (() => { const q = new URLSearchParams(location.search).get("windowed"); return q === "1" ? true : q === "0" ? false : !revealHere(); })();
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = -1; heldRecords = null; heldTurnJump = null; fillWaiting = false; recordState.headIndex = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; projection.stub = null; projection.upto = Infinity; hashWait = null; remoteSearch = null; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; heldRecords = null; heldTurnJump = null; fillWaiting = false; recordState.headIndex = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; projection.stub = null; projection.upto = Infinity; hashWait = null; remoteSearch = null; stepWhenFound = 0; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
   // #s276: the map of the records the head still owes — the panes it fills are whole from now on.
   indexed: index => {
@@ -837,8 +837,10 @@ let heldRecords = null;
 // #s276: a turn the reader chose in the Turns pane while its records were still on their way: it is
 // landed on once they arrive, unless the reader has moved since (`at` against the engine's input).
 let heldTurnJump = null;
-// #s278: the server's answer to the search or filter a records-by-turn head is out for (`remoteFound`).
+// #s278: the server's answer to the search or filter a records-by-turn head is out for (`remoteFound`),
+// and a step an Enter asked for before it landed.
 let remoteSearch = null;
+let stepWhenFound = 0;
 function updateRecords(update) {
   if (!heldRecords && !(update.prepended && (viewport.readerMoving() || viewport.touchGlide))) { applyRecords(update); return; }
   const first = !heldRecords;
@@ -1939,7 +1941,8 @@ function activeMatches() {
 }
 function stepSearch(delta) {
   const matches = activeMatches();
-  if (!matches.length) return;
+  // #s278: an Enter while the server's answer is still on its way steps once it lands.
+  if (!matches.length) { if (remoteSearch && !remoteSearch.found) stepWhenFound = delta; return; }
   const textual = !!recordState.search;
   const at = recordState.match >= 0 ? matches[recordState.match] : null;
   // Find the record by the NUMBER its attribute holds, not by string equality: a block index
@@ -2152,7 +2155,12 @@ function remoteFound(q) {
   const again = () => (q.lc ? updateSearch(false) : refreshFilterHits());
   fetch(`/search?session=${encodeURIComponent(recordState.session)}&epoch=${head.epoch}&upto=${owed.upto}&q=${encodeURIComponent(JSON.stringify(q))}`, { cache: "no-store" })
     .then(response => (response.ok ? response.json() : Promise.reject(new Error(`search HTTP ${response.status}`))))
-    .then(found => { if (remoteSearch === mine) { mine.found = found; again(); } })
+    .then(found => {
+      if (remoteSearch !== mine) return;
+      mine.found = found;
+      again();
+      if (q.lc && stepWhenFound) { const delta = stepWhenFound; stepWhenFound = 0; stepSearch(delta); }
+    })
     // A failed ask is asked again shortly, while the same query stands.
     .catch(() => { if (remoteSearch === mine) { remoteSearch = null; setTimeout(() => { if (!remoteSearch) again(); }, 3000); } });
   return { ready: false, found: null };

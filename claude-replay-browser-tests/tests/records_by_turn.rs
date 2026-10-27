@@ -815,3 +815,157 @@ fn a_group_of_steps_reaching_into_the_tail_stays_drawn_while_it_fills() {
         "no invariant broken"
     );
 }
+
+/// Type a query into the box and press Enter, as a reader does where search runs on Enter (#s278:
+/// while a records-by-turn head is out), then wait until the count is an answer, not "Searching…".
+fn search_on_enter(tab: &headless_chrome::Tab, query: &str) -> String {
+    harness::eval(
+        tab,
+        &format!("(function(){{ var i = document.getElementById('transcriptSearchInput'); i.focus(); i.value = {query:?}; i.dispatchEvent(new Event('input', {{ bubbles: true }})); i.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', bubbles: true }})); return 1; }})()"),
+    );
+    harness::until(
+        tab,
+        "/^\\d+ (hit|match)/.test(document.getElementById('transcriptSearchCount').textContent)",
+        "the count to be an answer",
+        Duration::from_secs(20),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    harness::eval(
+        tab,
+        "document.getElementById('transcriptSearchCount').textContent",
+    )
+    .as_str()
+    .unwrap_or("")
+    .to_string()
+}
+
+fn count_text(tab: &headless_chrome::Tab) -> String {
+    harness::eval(
+        tab,
+        "document.getElementById('transcriptSearchCount').textContent",
+    )
+    .as_str()
+    .unwrap_or("")
+    .to_string()
+}
+
+/// #s278 (`design/slow-links.md` §7.3): with the head of a records-by-turn open still out, a search
+/// runs on Enter and counts the WHOLE session — the server answers for the records the page has not
+/// fetched — and the count is the one the page gives once every record is here.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_search_while_the_head_is_out_counts_the_whole_session() {
+    let _serial = serial();
+    let (_m, _b, tab, _) = open(2780, "by-turn-search", &session(60), false, false, "");
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
+    harness::eval(&tab, "(function(){ var i = document.getElementById('transcriptSearchInput'); i.focus(); i.value = 'lorem'; i.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()");
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(
+        count_text(&tab).contains('⏎'),
+        "while the head is out a search waits for Enter: {}",
+        count_text(&tab)
+    );
+    let held = search_on_enter(&tab, "lorem");
+    assert!(
+        harness::eval(
+            &tab,
+            "document.querySelectorAll('#navigatorTurns .outline-turn-pending').length"
+        )
+        .as_i64()
+        .unwrap_or(0)
+            > 40,
+        "most turns were still on their way when it counted"
+    );
+    release_until(&tab, WHOLE, "the whole head to arrive");
+    std::thread::sleep(Duration::from_millis(600));
+    let whole = count_text(&tab);
+    let n = |t: &str| t.split_whitespace().next().unwrap_or("").to_string();
+    assert_eq!(
+        n(&held),
+        n(&whole),
+        "the count with the head out is the whole session's: {held} vs {whole}"
+    );
+    assert!(
+        n(&held).parse::<u32>().unwrap_or(0) >= 60,
+        "every turn's prompt: {held}"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
+}
+
+/// #s278: a step onto a hit whose turn is still on its way reads that turn and lands on the hit's
+/// own mark once it is here.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_step_to_a_hit_still_on_its_way_lands_on_its_mark() {
+    let _serial = serial();
+    let (_m, _b, tab, _) = open(2781, "by-turn-step", &session(60), false, false, "");
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
+    let count = search_on_enter(&tab, "question 5:");
+    assert!(count.starts_with("1 hit"), "one turn's prompt: {count}");
+    release_until(
+        &tab,
+        "(function(){ var m = document.querySelector('mark.search-mark.current'); if (!m) return false; var s = document.querySelector('.transcript').getBoundingClientRect(), r = m.getBoundingClientRect(); return r.top >= s.top && r.bottom <= s.bottom; })()",
+        "the step to land on the hit's mark once its turn is here",
+    );
+    let mark = harness::eval(
+        &tab,
+        "(document.querySelector('mark.search-mark.current') || {}).textContent || ''",
+    );
+    assert_eq!(
+        mark.as_str().map(str::to_lowercase).as_deref(),
+        Some("question 5:")
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
+}
+
+/// #s278: the filter's matches (`o(B):`, Bash calls) count the records still on their way, as the
+/// server finds them, and equal the count once every record is here.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_filter_counts_records_still_on_their_way() {
+    let _serial = serial();
+    let (_m, _b, tab, _) = open(2782, "by-turn-filter", &session(60), false, false, "");
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
+    let held = search_on_enter(&tab, "o(B):");
+    release_until(&tab, WHOLE, "the whole head to arrive");
+    std::thread::sleep(Duration::from_millis(600));
+    let whole = count_text(&tab);
+    let n = |t: &str| t.split_whitespace().next().unwrap_or("").to_string();
+    assert_eq!(
+        n(&held),
+        n(&whole),
+        "the filter's count with the head out is the whole session's: {held} vs {whole}"
+    );
+    assert!(n(&held).parse::<u32>().unwrap_or(0) > 0, "{held}");
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
+}
