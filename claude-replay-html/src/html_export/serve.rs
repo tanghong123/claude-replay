@@ -1166,7 +1166,7 @@ impl SessionService {
     /// `design/slow-links.md` §7): the records with hits and the counts, quoting no text. The log is
     /// read OUTSIDE the session lock — a search of a long log must not hold the page's polls — and
     /// the epoch is asked again after the read: a log that left it is refused (**409**) as
-    /// `/records` is.
+    /// `/records` is, and one that could not be read is a **503** (the page asks again).
     pub(crate) fn search_json(
         &self,
         id: &str,
@@ -1174,19 +1174,22 @@ impl SessionService {
         upto: usize,
         q: &super::search_match::Query,
         masked: bool,
-    ) -> Result<Vec<u8>, StaleEpoch> {
-        let ss = self.cache.shared_peek(id).ok_or(StaleEpoch)?;
+    ) -> Result<Vec<u8>, SearchRefusal> {
+        let ss = self
+            .cache
+            .shared_peek(id)
+            .ok_or(SearchRefusal::Stale(StaleEpoch))?;
         let (path, len) = ss.store_read(|cur_epoch, store| {
             if cur_epoch != epoch {
-                return Err(StaleEpoch);
+                return Err(SearchRefusal::Stale(StaleEpoch));
             }
             Ok((store.log_path().to_path_buf(), store.log_len()))
         })?;
-        let found =
-            super::search_match::search_log(&path, len, upto, q, masked).map_err(|_| StaleEpoch)?;
+        let found = super::search_match::search_log(&path, len, upto, q, masked)
+            .map_err(|_| SearchRefusal::Unreadable)?;
         ss.store_read(|cur_epoch, store| {
             if cur_epoch != epoch || store.log_len() < len {
-                return Err(StaleEpoch);
+                return Err(SearchRefusal::Stale(StaleEpoch));
             }
             Ok(found.reply(epoch, upto).to_string().into_bytes())
         })
@@ -1403,6 +1406,15 @@ fn spawn_http_server(
 /// the reply whole and re-pulls (the 409 path).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StaleEpoch;
+
+/// Why `/search` answered no records (#s278).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchRefusal {
+    /// The log has left that epoch, or its resident was let go (409).
+    Stale(StaleEpoch),
+    /// The log could not be read (503).
+    Unreadable,
+}
 
 /// Why a `/records` range read was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3105,10 +3117,17 @@ pub fn service_routes(
         };
         return match live.search_json(id, num("epoch"), num("upto") as usize, &q, req.masked) {
             Ok(bytes) => HttpResponse::ok("application/json; charset=utf-8", bytes),
-            Err(StaleEpoch) => HttpResponse {
+            Err(SearchRefusal::Stale(_)) => HttpResponse {
                 code: "409 Conflict",
                 content_type: TEXT_PLAIN,
                 body: b"stale epoch".to_vec(),
+                headers: Vec::new(),
+                stream: None,
+            },
+            Err(SearchRefusal::Unreadable) => HttpResponse {
+                code: "503 Service Unavailable",
+                content_type: TEXT_PLAIN,
+                body: b"the record log could not be read".to_vec(),
                 headers: Vec::new(),
                 stream: None,
             },
@@ -5449,7 +5468,7 @@ mod tests {
         // A stale epoch is refused, as `/records` refuses it.
         assert_eq!(
             live.search_json("sid", epoch + 1, upto, &query("petrel", 0, &[]), false),
-            Err(StaleEpoch)
+            Err(SearchRefusal::Stale(StaleEpoch))
         );
         let _ = std::fs::remove_dir_all(&base);
     }

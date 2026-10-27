@@ -486,18 +486,25 @@ server keeps no lowercased text.
 
 ### 7.6 As built (#s278)
 
-- **An Enter while the server's answer is out steps once it lands** (`stepWhenFound`), unless the reader
-  has moved or changed the query since: a step taken before it would have stepped through the tail's
-  hits alone.
+- **A step while the server's answer is out waits for it** (`stepWhenFound`, tied to that answer), the
+  search's or the filter's, unless the reader moves, types or starts another search first: a step
+  taken before it would have stepped through the tail's hits alone. The hits an answer brings can come
+  in front of the one landed on, so the current hit is found again by its record.
 - **The page's filter is the shell's own chain** (`filterChain`: a tool-call kind whose `tool`, else its
   head's `name`, answers the tools), not `recordHasTool`, which only the classic page uses; the server
   ports the shell's.
 - **Measured** on the 117 MB log: 0.21 to 0.27 s a text query, 0.09 s the filter, read outside the
   session lock; no text cache.
-- **Text and the filter keep an answer each**, and the filter asks only while no text is in the box: one
-  slot for both lost an answer whenever the two crossed. A query whose answer is still out keeps the
-  count at "Searching…", never the tail's part of it; a failed read is tried again every 3 s, and after
-  five, or on a stale epoch, the count says "earlier turns not searched".
+- **Text and the filter keep an answer each** (one slot for both lost an answer whenever the two
+  crossed), and the filter is asked with text up too, so it is whole the moment the text goes. A
+  query whose answer is still out keeps the count at "Searching…", never the tail's part of it. A
+  failed ask is tried again every 3 s — a 409 too, since a session the server's cache let go answers
+  it until the next pull brings it back, and a log that really moved starts the session over — and
+  after five the count says "earlier turns not searched"; the next search started asks again. The
+  server answers 503 for a log it cannot read.
+- **Any search a control starts submits the box as it stands** (Enter, a scope row, whole words, a
+  chip's ✕), so its answer is counted when it lands; only a fill or an answer arriving leaves text that
+  was typed and not entered alone.
 - **A masked client is searched as masked** (the review's finding): the counts over unmasked text would
   have differed from the page's own and answered, a query at a time, what the mask hides.
 - **The parity test** runs 4,165 queries; a word class from `char::is_alphanumeric` and the entities

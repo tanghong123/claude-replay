@@ -11,7 +11,7 @@
 //! The page takes stage 2 for a reader across a network; a case opens a local monitor with
 //! `?windowed=1`, which picks that path, and queues every read of the head (`queue_the_head`) so it
 //! decides when each piece arrives. Searching the earlier turns on the server while the head is out
-//! (#s278, stage 3) is here too. Ports 2770–2782.
+//! (#s278, stage 3) is here too. Ports 2770–2783.
 
 mod harness;
 
@@ -973,6 +973,11 @@ fn the_filter_counts_records_still_on_their_way() {
         "Searching…",
         "no partial count while the answer is out"
     );
+    assert_eq!(
+        harness::eval(&tab, "window.__heldSearch.length").as_i64(),
+        Some(1),
+        "one ask for one filter"
+    );
     harness::eval(&tab, "window.__releaseSearch()");
     harness::until(
         &tab,
@@ -997,4 +1002,55 @@ fn the_filter_counts_records_still_on_their_way() {
         Some("[]"),
         "no invariant broken"
     );
+}
+
+/// A search a control starts submits the box as it stands (#s278): text typed but not entered, then
+/// whole words pressed, is searched — and its count lands with the server's answer, never left at
+/// "Searching…" by the typed text it submitted.
+#[test]
+#[ignore]
+fn a_search_a_control_starts_counts_once_its_answer_lands() {
+    let _serial = serial();
+    let (_m, _b, tab, _) = open(2783, "by-turn-control", &session(60), false, false, "");
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
+    harness::eval(&tab, "(function(){ var i = document.getElementById('transcriptSearchInput'); i.focus(); i.value = 'lorem'; i.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()");
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(count_text(&tab).contains('⏎'), "{}", count_text(&tab));
+    harness::eval(&tab, "window.__holdSearch = true");
+    harness::eval(
+        &tab,
+        "document.getElementById('transcriptWholeWords').click()",
+    );
+    harness::until(
+        &tab,
+        "window.__heldSearch.length > 0",
+        "whole words to ask the server",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    assert_eq!(count_text(&tab), "Searching…");
+    harness::eval(&tab, "window.__releaseSearch()");
+    harness::until(
+        &tab,
+        "/^\\d+ (hit|match)/.test(document.getElementById('transcriptSearchCount').textContent)",
+        "the count to land with the answer",
+        Duration::from_secs(20),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    let held = count_text(&tab);
+    release_until(&tab, WHOLE, "the whole head to arrive");
+    std::thread::sleep(Duration::from_millis(600));
+    let n = |t: &str| t.split_whitespace().next().unwrap_or("").to_string();
+    assert_eq!(
+        n(&held),
+        n(&count_text(&tab)),
+        "the count the control's search landed is the whole session's"
+    );
+    assert!(n(&held).parse::<u32>().unwrap_or(0) >= 60, "{held}");
 }

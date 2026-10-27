@@ -838,8 +838,8 @@ let heldRecords = null;
 // landed on once they arrive, unless the reader has moved since (`at` against the engine's input).
 let heldTurnJump = null;
 // #s278: the server's answers while a records-by-turn head is out (`remoteFound`) — the text search's
-// and the filter's, apart, so neither throws the other's away — and a step an Enter asked for before
-// the text's answer landed (`{delta, at, lc}`).
+// and the filter's, apart, so neither throws the other's away — and a step asked for before the
+// answer it waits on landed (`{delta, at, slot}`: that answer's own slot).
 let remoteSearch = null;
 let remoteFilter = null;
 let stepWhenFound = null;
@@ -1832,8 +1832,14 @@ function markQuery() {
 }
 function updateSearch(reset) {
   // #s278: text typed but not submitted (search on Enter) is not searched by a fill, a pull or an
-  // answer arriving — only by the Enter that submits it.
-  if (recordState.pendingSearch && !reset) return;
+  // answer arriving. A search started any other way — Enter, a scope row, whole words, a chip's ✕ —
+  // submits the box as it stands, ends a step still waiting on the last query's answer, and asks
+  // again where that answer gave up.
+  if (reset) {
+    recordState.pendingSearch = false;
+    stepWhenFound = null;
+    if (remoteSearch?.found?.failed) remoteSearch = null;
+  } else if (recordState.pendingSearch) return;
   // The chips and the typed text together are the query (#303): a chip is a facet frozen out of
   // the text, so it is parsed exactly as the token it was.
   const raw = boxQuery();
@@ -1904,9 +1910,11 @@ function updateSearch(reset) {
  *  filter found (#133) — the filter is a search, and a search says how many. */
 function paintMatchCount(text) {
   const hits = !text && queryTools().length ? (recordState.filterMatches || []).length : 0;
-  // #s278: the filter's answer for the records still on their way is not in yet.
-  const waiting = !text && queryTools().length && remoteFilter && !remoteFilter.found && !!owedIndex();
-  byId("transcriptSearchCount").textContent = text || (waiting ? "Searching…" : hits ? `${hits} ${hits === 1 ? "match" : "matches"}` : "");
+  // #s278: the filter's answer for the records still on their way is not in yet — or gave up.
+  const filtering = !text && queryTools().length && remoteFilter && !!owedIndex();
+  const waiting = filtering && !remoteFilter.found, failed = filtering && !!remoteFilter.found?.failed;
+  const count = hits ? `${hits} ${hits === 1 ? "match" : "matches"}` : "";
+  byId("transcriptSearchCount").textContent = text || (waiting ? "Searching…" : failed ? `${count || "0 matches"} · earlier turns not searched` : count);
 }
 /** The scope rows rewrite the box's prefix (the classic page's applyScopeFromMenu). */
 function applyScopeFromMenu() {
@@ -1957,9 +1965,10 @@ function activeMatches() {
   return queryTools().length ? recordState.filterMatches || [] : [];
 }
 function stepSearch(delta) {
-  // #s278: while the server's answer for a text search is out, the hits here are only the tail's — a
-  // step now would skip every earlier one; it steps once the answer lands (`askRemote`).
-  if (recordState.search && owedIndex() && remoteSearch && !remoteSearch.found) { stepWhenFound = { delta, at: performance.now(), lc: recordState.search }; return; }
+  // #s278: while the server's answer for the search or the filter is out, the hits here are only the
+  // tail's — a step now would skip every earlier one; it steps once that answer lands (`askRemote`).
+  const waitingOn = recordState.search ? remoteSearch : queryTools().length ? remoteFilter : null;
+  if (waitingOn && !waitingOn.found && owedIndex()) { stepWhenFound = { delta, at: performance.now(), slot: waitingOn }; return; }
   stepWhenFound = null;
   const matches = activeMatches();
   if (!matches.length) return;
@@ -2178,28 +2187,34 @@ function remoteFound(q) {
   askRemote(mine, q, head, owed);
   return { ready: false, found: null };
 }
-/** One ask of `/search` for `mine`. A drop is asked again a few times; a stale epoch (the session is
- *  starting over) or an ask that keeps failing gives up, and the page counts what it holds, saying
- *  the earlier turns were not searched. */
+/** One ask of `/search` for `mine`. A failed ask is asked again every few seconds — a 409 too: a
+ *  session the server's cache let go answers it until the next pull brings it back, and one whose log
+ *  really moved starts over, which drops this ask — and after five the page counts what it holds,
+ *  saying the earlier turns were not searched. */
 function askRemote(mine, q, head, owed) {
   const current = () => (q.lc ? remoteSearch : remoteFilter) === mine;
   const settle = found => {
     mine.found = found;
-    if (!q.lc) { refreshFilterHits(); return; }
-    updateSearch(false);
+    if (q.lc) updateSearch(false);
+    else {
+      refreshFilterHits();
+      // The hits the answer brings can come in front of the one the reader landed on.
+      if (!recordState.search && recordState.landed != null) { const at = activeMatches().indexOf(recordState.landed); if (at >= 0) recordState.match = at; }
+    }
+    // The step asked for while this answer was out, unless something new is typed or the reader
+    // has moved since.
     const asked = stepWhenFound;
+    if (!asked || asked.slot !== mine) return;
     stepWhenFound = null;
-    // The step an Enter asked for, if it is still this query's, nothing new is typed and the reader
-    // has not moved since.
-    if (asked && asked.lc === recordState.search && !recordState.pendingSearch && viewport.lastUserInput <= asked.at) stepSearch(asked.delta);
+    if (!recordState.pendingSearch && viewport.lastUserInput <= asked.at) stepSearch(asked.delta);
   };
   mine.tries++;
   fetch(`/search?session=${encodeURIComponent(recordState.session)}&epoch=${head.epoch}&upto=${owed.upto}&q=${encodeURIComponent(JSON.stringify(q))}`, { cache: "no-store" })
     .then(response => (response.ok ? response.json() : Promise.reject(response.status)))
     .then(found => { if (current()) settle(found); })
-    .catch(status => {
+    .catch(() => {
       if (!current()) return;
-      if (status === 409 || mine.tries >= REMOTE_TRIES) settle({ records: [], counts: {}, total: 0, failed: true });
+      if (mine.tries >= REMOTE_TRIES) settle({ records: [], counts: {}, total: 0, failed: true });
       else setTimeout(() => { if (current()) askRemote(mine, q, head, owed); }, 3000);
     });
 }
@@ -2662,9 +2677,9 @@ function computeFilterHits() {
   // An EMPTY list means "every tool" to the shared matcher, so no tools must match nothing here.
   if (wanted.length) recordState.records.forEach((record, index) => { if (filterChain(record, wanted, hits, direct)) indices.push(index); });
   // #s278: a record still on its way answers the filter when the server says it holds such a call;
-  // its folds open when it arrives (design/slow-links.md §7.3).
-  // Text mode steps the search's hits, not these: no ask while a text query is up.
-  const remote = wanted.length && !recordState.search ? remoteFound({ lc: "", whole: false, wanted: 0, tools: wanted }) : null;
+  // its folds open when it arrives (design/slow-links.md §7.3). Asked with text up too, so the
+  // filter is whole the moment the text goes.
+  const remote = wanted.length ? remoteFound({ lc: "", whole: false, wanted: 0, tools: wanted }) : null;
   if (remote?.found) {
     for (const [r] of remote.found.records) if (recordState.records[r]?.kind === "pending") indices.push(r);
     indices.sort((x, y) => x - y);

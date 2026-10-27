@@ -1969,7 +1969,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /recordState\.landed = target != null && viewport\.jumpToRecord\(target, "filter"\) \? target : null;\n\s*recordState\.landedAt = performance\.now\(\);/, "…and the tool filter's landing is stamped the same way (#s259)");
   // #s259: the jump stamps intent itself, so its own scroll must not count as the reader moving off.
   assert.match(app, /if \(viewport\.lastUserInput > recordState\.landedAt && performance\.now\(\) - viewport\.lastUserInput < viewport\.userIntentMs\) recordState\.landed = null;/, "…and only input later than the landing clears it");
-  assert.match(app, /byId\("transcriptSearchCount"\)\.textContent = text \|\| \(waiting \? "Searching…" : hits \? `\$\{hits\} \$\{hits === 1 \? "match" : "matches"\}` : ""\);/, "the box counts what the filter found, the way it counts a search — and says it is searching while the server's part is out (#s278), never the tail's part alone");
+  assert.match(app, /const count = hits \? `\$\{hits\} \$\{hits === 1 \? "match" : "matches"\}` : "";\n\s*byId\("transcriptSearchCount"\)\.textContent = text \|\| \(waiting \? "Searching…" : failed \? `\$\{count \|\| "0 matches"\} · earlier turns not searched` : count\);/, "the box counts what the filter found, the way it counts a search — and says it is searching while the server's part is out (#s278), never the tail's part alone, and when it gave up");
   console.log("#110 / #133 tool filter cases passed");
 }
 
