@@ -987,6 +987,51 @@ fn a_reader_across_a_network_keeps_about_its_budget_of_a_long_session() {
         "letting turns go moves nothing: {key} {top} → {now}"
     );
 
+    // A reader who passes through turn 80 and goes on to turn 35 before its neighbours arrive has
+    // them read for nobody: what the window asked for there lapses. Only turn 80, already in flight
+    // when they moved on, is read. (A window of placeholders reaches about 20 turns either way, so
+    // turn 35's own asks stop short of 62.)
+    let tap = |n: i64| {
+        tab.find_element(&format!(
+            "#navigatorTurns .outline-turn-pending[data-turn-number=\"{n}\"]"
+        ))
+        .unwrap_or_else(|_| panic!("turn {n} is listed while still coming"))
+        .click()
+        .expect("click it");
+    };
+    tap(80);
+    harness::until(
+        &tab,
+        "window.__heldReads.length >= 1",
+        "turn 80's read asked for",
+        Duration::from_secs(10),
+        STATE,
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    tap(35);
+    std::thread::sleep(Duration::from_millis(300));
+    release_until_quiet(&tab, "turn 35 and its neighbours to be read");
+    let (_, _, turns) = head_held(&tab);
+    let near80: Vec<i64> = turns["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| (t[0].as_i64().unwrap(), t[2].as_bool() == Some(true)))
+        .filter(|&(n, held)| (62..=98).contains(&n) && n != 80 && held)
+        .map(|(n, _)| n)
+        .collect();
+    assert!(
+        near80.is_empty(),
+        "no turn near 80 is read for a reader who moved on, but {near80:?}: {turns}"
+    );
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window > [data-unit-key=\"user:t35\"]:not(.unit-placeholder)')",
+        "turn 35 filled",
+        Duration::from_secs(10),
+        STATE,
+    );
+
     // A visit to a turn let go reads it again.
     let offset = turn_offset(&tab, dropped);
     tab.find_element(&format!(
