@@ -77,7 +77,12 @@ back with `scrollTo` fights iOS and jitters, so the app is moved back over the s
 (`translateY(visualViewport.pageTop)`) and `--phone-top`/`--phone-bottom` are measured against the
 app's box — iOS reports an `innerHeight` that shrinks as it scrolls, and a `visualViewport.offsetTop`
 equal to the page offset. Held by `a_phone_find_pill_rides_the_keyboard`, which shadows
-`visualViewport.height` and `pageTop`. The transcript's foot is padded by the dock's static height
+`visualViewport.height` and `pageTop`. Held sideways in Safari with its tab bar the keyboard leaves
+about 16px of the page (#s287, measured on iOS 26.4: Safari's bars 110pt of 402, the keyboard with
+its candidate and accessory bars 276), less than the pill, which sits under Safari's bars: there
+Return also puts the keyboard down (`findPillCovered`), so the hit, the count and the steps show;
+wherever the pill fits the keyboard stays (`a_phone_held_sideways_puts_the_keyboard_down_on_return_…`).
+The transcript's foot is padded by the dock's static height
 (`--phone-dock-h`, never a measured value a keyboard would move under a glide), and the search's
 landing treats the dock as an obstacle. **The compose box is the dock's third mode** (#s39,
 `design/phone-landscape.md` §3.5c, the owner approved the mockup): with write mode on and a writable

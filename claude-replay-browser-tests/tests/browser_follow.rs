@@ -14243,6 +14243,73 @@ fn a_phone_find_pill_rides_the_keyboard() {
     );
 }
 
+/// #s287: a phone held sideways in Safari with its tab bar keeps about 16px of the page above the
+/// keyboard (measured on the iOS 26.4 Simulator: Safari's two bars 110pt of 402, the keyboard with
+/// its candidate and accessory bars 276), so the find pill, at that strip's foot, sits under Safari's
+/// bars. Return there runs the search, lands on a hit and puts the keyboard down, so the hit, the
+/// count and the steps can be seen; where the pill fits above the keyboard, Return keeps it up.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_held_sideways_puts_the_keyboard_down_on_return_where_the_find_pill_cannot_fit() {
+    let _serial = serial();
+    let (_m, _b, tab, _path) = phone_world_at(3254, "phone-search-no-room", 874, 292, "");
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
+        "a tap on the search to open the find pill with the field focused",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className + ' ' + (document.activeElement && document.activeElement.id)",
+    );
+    let keyboard = |visible: i64| {
+        harness::eval(&tab, &format!("(function(){{ Object.defineProperty(visualViewport, 'height', {{ configurable: true, get: function () {{ return {visible}; }} }}); visualViewport.dispatchEvent(new Event('resize')); return 'ok'; }})()"));
+        harness::until(
+            &tab,
+            &format!("(function(){{ var d = document.getElementById('phoneDock').getBoundingClientRect(); return Math.abs(d.bottom - ({visible} - 8)) <= 1; }})()"),
+            "the find pill at the foot of what the keyboard leaves",
+            Duration::from_secs(5),
+            "JSON.stringify(document.getElementById('phoneDock').getBoundingClientRect())",
+        );
+    };
+    let enter = "(function(){ var b = document.getElementById('transcriptSearchInput'); b.focus(); b.value = 'question'; b.dispatchEvent(new Event('input', { bubbles: true })); b.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return 'ok'; })()";
+    let after = "(function(){ return JSON.stringify({ focused: document.activeElement === document.getElementById('transcriptSearchInput'), mark: !!document.querySelector('.virtual-window mark.search-mark.current'), count: document.getElementById('transcriptSearchCount').textContent, open: document.querySelector('.header-searchbox').classList.contains('phone-open') }); })()";
+    // The keyboard leaves 16px: the pill (56px) is out of sight, and Return puts the keyboard down.
+    keyboard(16);
+    harness::eval(&tab, enter);
+    harness::until(
+        &tab,
+        "document.activeElement !== document.getElementById('transcriptSearchInput') && !!document.querySelector('.virtual-window mark.search-mark.current')",
+        "Return to land on a hit and put the keyboard down",
+        Duration::from_secs(5),
+        after,
+    );
+    let gone: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, after).as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    assert!(
+        gone["count"].as_str().unwrap_or("").contains("hit"),
+        "the count says how many hits the search found: {gone}"
+    );
+    assert_eq!(
+        gone["open"],
+        serde_json::Value::Bool(true),
+        "the find pill stays, with its steps: {gone}"
+    );
+    // The keyboard leaves 130px: the pill fits above it, and Return keeps the keyboard up.
+    keyboard(130);
+    harness::eval(&tab, enter);
+    harness::pause("Return to run", Duration::from_millis(400));
+    let kept: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, after).as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    assert_eq!(
+        kept["focused"],
+        serde_json::Value::Bool(true),
+        "where the pill fits, Return keeps the keyboard up: {kept}"
+    );
+}
+
 /// #s53: a coordinator and the two headless workers it started, the edge as the monitor keeps it
 /// (`started-by.json` in its cache root — what a restart finds). Served on `port`, the coordinator
 /// open. Returns the monitor, the browser, the tab and the three ids.
