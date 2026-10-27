@@ -320,7 +320,8 @@ turns are dropped, whose offsets the index knows; never the live tail.
   loading" for good, and one whose latest record was dropped pointed at an older one.
 - **The bound** is the budget, plus whatever the window and its reach hold that cannot be let go. A
   single turn larger than the budget, read because the reader is in it, is held whole.
-- **The cases** are `a_reader_across_a_network_keeps_about_its_budget_of_a_long_session` and
+- **The cases** are `a_reader_across_a_network_keeps_about_its_budget_of_a_long_session`,
+  `the_turn_the_tail_goes_on_with_is_never_let_go` and
   `a_task_recorded_in_a_turn_never_read_is_found_on_the_server`.
 
 ### 6.7 Who gets it

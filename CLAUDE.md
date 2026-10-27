@@ -1367,7 +1367,7 @@ filter answer for those records from the index and the server, so a drop changes
 filter remembers what it opened (`filterSeen`). A task's "Go to the turn" trusts a held record only in
 the tail and otherwise asks the server's search for the latest record naming it (`findTaskRecord`). A
 head under the budget is read whole, as before. The cases are `tests/records_by_turn.rs` (ports
-2770–2779, 2782–2783 and 2785–2789, with a shim that queues the head's reads). **Search on
+2770–2779, 2782–2784 and 2785–2789, with a shim that queues the head's reads). **Search on
 the server** (#s278, `design/slow-links.md` §7, stage 3): while a records-by-turn head is out, search
 runs on Enter and the server answers for the records below `upto` (`/search?session&epoch&upto&q`,
 the page's structured query — needle, whole words, class mask, resolved tools — never the box's

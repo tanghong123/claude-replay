@@ -12,7 +12,7 @@
 //! `?windowed=1`, which picks that path, and queues every read of the head (`queue_the_head`) so it
 //! decides when each piece arrives. Searching the earlier turns on the server while the head is out
 //! (#s278, stage 3) is here too, and so is what a reader keeps of a long session (#s285). Ports
-//! 2770–2779, 2782–2783 for what a reader keeps, and 2785–2789 for stage 3 (the sandbox holds
+//! 2770–2779, 2782–2784 for what a reader keeps, and 2785–2789 for stage 3 (the sandbox holds
 //! 2780–2781).
 
 mod harness;
@@ -907,22 +907,10 @@ fn a_reader_across_a_network_keeps_about_its_budget_of_a_long_session() {
     // that the page could not let go of.
     const SLACK: i64 = 4096 + 4096;
     let _serial = serial();
-    // The last turn is a long run of steps the tail starts in the middle of: the head's part of it is
-    // the live turn's, never let go.
-    let mut jsonl = session(120);
-    jsonl += &harness::user_at("the long one", &harness::at("50:00"));
-    for k in 0..30 {
-        jsonl += &harness::edit_tool_at(
-            &format!("e{k}"),
-            &format!("/r/skua/src/module_{k:03}.rs"),
-            &harness::at("50:01"),
-        );
-        jsonl += &harness::tool_result_at(&format!("e{k}"), &harness::at("50:01"));
-    }
     let (_m, _b, tab, _) = open(
         2782,
         "by-turn-keep",
-        &jsonl,
+        &session(120),
         false,
         false,
         &format!("&keepBytes={KEEP}"),
@@ -996,15 +984,6 @@ fn a_reader_across_a_network_keeps_about_its_budget_of_a_long_session() {
         harness::eval(&tab, &gone).as_bool(),
         Some(true),
         "turn {dropped}, read first and now the farthest, is let go: {turns}"
-    );
-    assert_eq!(
-        harness::eval(
-            &tab,
-            &format!("(function(){{ var row = document.querySelector('#navigatorTurns .outline-turn-row[data-turn-number=\"{last}\"]'); return !!row && !row.classList.contains('outline-turn-pending'); }})()")
-        )
-        .as_bool(),
-        Some(true),
-        "…but never the head's last turn, which the tail goes on with"
     );
     // Nothing reads them back while the reader stays.
     std::thread::sleep(Duration::from_millis(1500));
@@ -1122,6 +1101,77 @@ fn a_reader_across_a_network_keeps_about_its_budget_of_a_long_session() {
     assert!(
         held <= KEEP + SLACK,
         "and the page still holds about its budget: {held} of {KEEP}, {turns}"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
+}
+
+/// #s285: the head's last turn is the live one when the tail starts in the middle of it (a long run of
+/// steps, as an unattended run writes), and it is never let go, however far the reader goes from it:
+/// letting go of it would put back "earlier still loading" on the turn being written.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_turn_the_tail_goes_on_with_is_never_let_go() {
+    let _serial = serial();
+    let mut jsonl = session(60);
+    jsonl += &harness::user_at("the long one", &harness::at("50:00"));
+    for k in 0..320 {
+        jsonl += &harness::edit_tool_at(
+            &format!("e{k}"),
+            &format!("/r/skua/src/module_{k:03}.rs"),
+            &harness::at("50:01"),
+        );
+        jsonl += &harness::tool_result_at(&format!("e{k}"), &harness::at("50:01"));
+    }
+    // A turn after it, so the long one is in the committed log the tail is cut from.
+    jsonl += &harness::assistant_at("done with the long one", &harness::at("50:02"));
+    jsonl += &harness::user_at("and the last one", &harness::at("51:00"));
+    jsonl += &harness::assistant_at("noted", &harness::at("51:01"));
+    let (_m, _b, tab, _) = open(
+        2784,
+        "by-turn-live-kept",
+        &jsonl,
+        false,
+        false,
+        "&tailBudget=16384&keepBytes=8192",
+    );
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
+    release_until_quiet(&tab, "the live turn's earlier steps to be read");
+    let (_, last, turns) = head_held(&tab);
+    assert_eq!(last, 61, "the tail starts inside the long turn: {turns}");
+    const LIVE_HELD: &str = "(function(){ var row = document.querySelector('#navigatorTurns .outline-turn-row[data-turn-number=\"61\"]'); return !!row && !row.classList.contains('outline-turn-pending'); })()";
+    assert_eq!(
+        harness::eval(&tab, LIVE_HELD).as_bool(),
+        Some(true),
+        "the live turn's part in the head is read: {turns}"
+    );
+    tab.find_element("#navigatorTurns .outline-turn-pending[data-turn-number=\"1\"]")
+        .expect("turn 1 is listed while still coming")
+        .click()
+        .expect("click it");
+    release_until_quiet(&tab, "turn 1 and its neighbours to be read");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window > [data-unit-key=\"user:t1\"]:not(.unit-placeholder)')",
+        "turn 1 filled",
+        Duration::from_secs(10),
+        STATE,
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    let (_, _, turns) = head_held(&tab);
+    assert_eq!(
+        harness::eval(&tab, LIVE_HELD).as_bool(),
+        Some(true),
+        "the live turn is kept while the reader is far from it, over the budget: {turns}"
     );
     assert_eq!(
         harness::eval(&tab, VIOLATIONS).as_str(),
