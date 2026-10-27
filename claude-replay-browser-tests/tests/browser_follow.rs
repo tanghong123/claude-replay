@@ -14246,67 +14246,86 @@ fn a_phone_find_pill_rides_the_keyboard() {
 /// #s287: a phone held sideways in Safari with its tab bar keeps about 16px of the page above the
 /// keyboard (measured on the iOS 26.4 Simulator: Safari's two bars 110pt of 402, the keyboard with
 /// its candidate and accessory bars 276), so the find pill, at that strip's foot, sits under Safari's
-/// bars. Return there runs the search, lands on a hit and puts the keyboard down, so the hit, the
-/// count and the steps can be seen; where the pill fits above the keyboard, Return keeps it up.
+/// bars; the Home Screen app held sideways keeps 126px, where the pill fits and no line of the
+/// transcript does above it. In both, Return runs the search, lands on a hit and puts the keyboard
+/// down, and once it is down the hit, the count and the steps are on screen. Where a line shows above
+/// the pill, Return keeps the keyboard up.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_held_sideways_puts_the_keyboard_down_on_return_where_the_find_pill_cannot_fit() {
     let _serial = serial();
     let (_m, _b, tab, _path) = phone_world_at(3254, "phone-search-no-room", 874, 292, "");
-    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
-    phone_tap_at(&tab, gx, gy);
-    harness::until(
-        &tab,
-        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
-        "a tap on the search to open the find pill with the field focused",
-        Duration::from_secs(5),
-        "document.querySelector('.header-searchbox').className + ' ' + (document.activeElement && document.activeElement.id)",
-    );
-    let keyboard = |visible: i64| {
-        harness::eval(&tab, &format!("(function(){{ Object.defineProperty(visualViewport, 'height', {{ configurable: true, get: function () {{ return {visible}; }} }}); visualViewport.dispatchEvent(new Event('resize')); return 'ok'; }})()"));
+    let open = || {
+        let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+        phone_tap_at(&tab, gx, gy);
         harness::until(
             &tab,
-            &format!("(function(){{ var d = document.getElementById('phoneDock').getBoundingClientRect(); return Math.abs(d.bottom - ({visible} - 8)) <= 1; }})()"),
+            "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
+            "a tap on the search to open the find pill with the field focused",
+            Duration::from_secs(5),
+            "document.querySelector('.header-searchbox').className + ' ' + (document.activeElement && document.activeElement.id)",
+        );
+    };
+    // The keyboard comes up leaving `visible` px (None: it goes down), the find pill at its foot.
+    let keyboard = |visible: Option<i64>| {
+        let (set, foot) = match visible {
+            Some(v) => (
+                format!("Object.defineProperty(visualViewport, 'height', {{ configurable: true, get: function () {{ return {v}; }} }});"),
+                format!("{v} - 8"),
+            ),
+            None => ("delete visualViewport.height;".to_string(), "innerHeight - 8".to_string()),
+        };
+        harness::eval(&tab, &format!("(function(){{ {set} visualViewport.dispatchEvent(new Event('resize')); return 'ok'; }})()"));
+        harness::until(
+            &tab,
+            &format!("(function(){{ var d = document.getElementById('phoneDock').getBoundingClientRect(); return Math.abs(d.bottom - ({foot})) <= 1 || {}; }})()", visible.is_none()),
             "the find pill at the foot of what the keyboard leaves",
             Duration::from_secs(5),
             "JSON.stringify(document.getElementById('phoneDock').getBoundingClientRect())",
         );
     };
     let enter = "(function(){ var b = document.getElementById('transcriptSearchInput'); b.focus(); b.value = 'question'; b.dispatchEvent(new Event('input', { bubbles: true })); b.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return 'ok'; })()";
-    let after = "(function(){ return JSON.stringify({ focused: document.activeElement === document.getElementById('transcriptSearchInput'), mark: !!document.querySelector('.virtual-window mark.search-mark.current'), count: document.getElementById('transcriptSearchCount').textContent, open: document.querySelector('.header-searchbox').classList.contains('phone-open') }); })()";
-    // The keyboard leaves 16px: the pill (56px) is out of sight, and Return puts the keyboard down.
-    keyboard(16);
-    harness::eval(&tab, enter);
-    harness::until(
-        &tab,
-        "document.activeElement !== document.getElementById('transcriptSearchInput') && !!document.querySelector('.virtual-window mark.search-mark.current')",
-        "Return to land on a hit and put the keyboard down",
-        Duration::from_secs(5),
-        after,
-    );
-    let gone: serde_json::Value =
+    let after = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), r = m && m.getBoundingClientRect(), t = document.querySelector('.transcript').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(); return JSON.stringify({ focused: document.activeElement === document.getElementById('transcriptSearchInput'), mark: r ? [Math.round(r.top), Math.round(r.bottom)] : null, seen: !!r && r.top >= t.top && r.bottom <= d.top, column: Math.round(t.top), pill: [Math.round(d.top), Math.round(d.bottom)], count: document.getElementById('transcriptSearchCount').textContent, open: document.querySelector('.header-searchbox').classList.contains('phone-open') }); })()";
+    let read = || -> serde_json::Value {
         serde_json::from_str(harness::eval(&tab, after).as_str().unwrap_or("{}"))
-            .unwrap_or_default();
-    assert!(
-        gone["count"].as_str().unwrap_or("").contains("hit"),
-        "the count says how many hits the search found: {gone}"
-    );
-    assert_eq!(
-        gone["open"],
-        serde_json::Value::Bool(true),
-        "the find pill stays, with its steps: {gone}"
-    );
-    // The keyboard leaves 130px: the pill fits above it, and Return keeps the keyboard up.
-    keyboard(130);
+            .unwrap_or_default()
+    };
+    for visible in [16, 126] {
+        open();
+        keyboard(Some(visible));
+        harness::eval(&tab, enter);
+        harness::until(
+            &tab,
+            "document.activeElement !== document.getElementById('transcriptSearchInput') && !!document.querySelector('.virtual-window mark.search-mark.current')",
+            &format!("Return to land on a hit and put the keyboard down, {visible}px left above it"),
+            Duration::from_secs(5),
+            after,
+        );
+        // iOS takes the keyboard down once the field has lost focus.
+        keyboard(None);
+        harness::pause("the keyboard to go", Duration::from_millis(400));
+        let gone = read();
+        assert_eq!(
+            gone["seen"],
+            serde_json::Value::Bool(true),
+            "with the keyboard down the hit is between the column's top and the pill ({visible}px): {gone}"
+        );
+        assert!(
+            gone["count"].as_str().unwrap_or("").contains("hit") && gone["open"] == true,
+            "the find pill stays with its count and steps ({visible}px): {gone}"
+        );
+    }
+    // The keyboard leaves 200px: a line of the transcript shows above the pill, and Return keeps the
+    // keyboard up.
+    open();
+    keyboard(Some(200));
     harness::eval(&tab, enter);
     harness::pause("Return to run", Duration::from_millis(400));
-    let kept: serde_json::Value =
-        serde_json::from_str(harness::eval(&tab, after).as_str().unwrap_or("{}"))
-            .unwrap_or_default();
+    let kept = read();
     assert_eq!(
         kept["focused"],
         serde_json::Value::Bool(true),
-        "where the pill fits, Return keeps the keyboard up: {kept}"
+        "where a line shows above the pill, Return keeps the keyboard up: {kept}"
     );
 }
 

@@ -2234,7 +2234,8 @@ byId("transcriptSearchInput").onkeydown = event => {
   // the query, its count and its marks stay, and the next key is the page's keymap's again. An open
   // filter popover closes with it, as the page-wide Escape closes it.
   if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); event.currentTarget.blur(); setPhoneSearch(false); return; }
-  if (event.key !== "Enter") return;
+  // An Enter that commits an input method's composition (pinyin, kana) is the input method's.
+  if (event.key !== "Enter" || event.isComposing) return;
   event.preventDefault(); event.stopPropagation();
   // A large session searches on Enter (#104): that Enter also MOVES — to the nearest hit below the
   // reader (above, with Shift), wrapping — rather than only counting (#308, the owner).
@@ -2243,16 +2244,20 @@ byId("transcriptSearchInput").onkeydown = event => {
   // #s287: a phone held sideways in Safari with its tab bar keeps about 16px of the page above the
   // keyboard (iOS 26.4: Safari's two bars take 110pt of 402, the keyboard with its candidate and
   // accessory bars 276), so the find pill, lifted to that strip's foot, sits under Safari's bars and
-  // the hit just landed is out of sight. No layout fits there: Return also puts the keyboard down, and
-  // the reader sees the hit, the count and the steps; a tap on the field brings it back. Wherever the
-  // pill fits above the keyboard, the keyboard stays.
-  if (phoneSearch.matches && findPillCovered()) event.currentTarget.blur();
+  // the hit just landed is out of sight; the Home Screen app held sideways keeps 126px, where the pill
+  // fits and no line of the transcript does above it. There Return also puts the keyboard down, and
+  // the reader sees the hit, the count and the steps; a tap on the field brings it back. Wherever a
+  // line shows above the pill, the keyboard stays.
+  if (phoneSearch.matches && noLineAboveFindPill()) event.currentTarget.blur();
 };
-/** Whether the keyboard leaves the page too little height to show the find pill above it. */
-function findPillCovered() {
+/** Whether the keyboard leaves no room for a line of the transcript between the column's top and the
+ *  find pill: a hit landed there cannot be seen. Both are inside the app, which is moved back over
+ *  iOS's keyboard scroll, so their difference is what the reader has. */
+function noLineAboveFindPill() {
   const visible = window.visualViewport;
   if (!visible || !phoneDock || Math.abs(visible.scale - 1) >= 0.01) return false;
-  return visible.height < document.documentElement.clientHeight && visible.height < phoneDock.getBoundingClientRect().height + 8;
+  if (visible.height >= document.documentElement.clientHeight) return false;
+  return phoneDock.getBoundingClientRect().top - viewport.scroller.getBoundingClientRect().top < 32;
 }
 // Whole words: production-only chrome, layered beside the box at runtime so the extracted demo
 // shell stays exact (#293 — the same way the shell switch is added). `w:` keeps working typed.
