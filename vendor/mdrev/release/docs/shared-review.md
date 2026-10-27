@@ -781,12 +781,24 @@ and worktree of the project shares it:
 - **Pushing**, under the lock and within one minute overall: fetch; build one
   commit on the fetched tip that adds every confirmed outbox record not
   already in the store, through a temporary index; push it. If someone pushed
-  first, fetch and try again. On success the pushed files move to
-  `outbox/sent/`, and `cache.json` is rewritten. A record already in the store
-  is not sent again: unchanged, it moves to `outbox/sent/`; changed since, it
-  moves to `outbox/deleted/` as `<id>.<time>.diverged.json` and the push says
-  so. A retry after an uncertain push is safe for records that did not change
-  in between, and says so for those that did (D3).
+  first, fetch and try again, after a short pause so that two machines which
+  beat each other do not meet again in step. A ref that cannot be taken is
+  said within seconds rather than tried for the minute: a name that collides
+  with another ref's at once; a ref the server may not write — its refs there,
+  or their logs, not writable for the server's git, such as a folder another
+  account owns — at once, for whoever keeps the store to make them writable; a
+  lock on the server once it has stayed five seconds with the ref standing
+  still — one a push that died left behind, which whoever keeps the store
+  removes. A push whose objects the server cannot store — its repository not
+  writable there, a read-only or full disk — is said at once too: it is not
+  the network, and no try helps until whoever keeps the store fixes it; so is
+  a push the server refuses at unpack, for its size limit or its object
+  checks. On success the pushed files move to `outbox/sent/`, and `cache.json`
+  is rewritten. A record already in the store is not sent again: unchanged, it
+  moves to `outbox/sent/`; changed since, it moves to `outbox/deleted/` as
+  `<id>.<time>.diverged.json` and the push says so. A retry after an uncertain
+  push is safe for records that did not change in between, and says so for
+  those that did (D3).
 - **git** runs with the person's own configuration and credentials, so
   whatever reaches the code server reaches the store. mdrev adds only: no
   prompts, a time limit on every network call, and the paired identity as the
@@ -811,7 +823,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.63",
+  "mdrev": "1.1.65",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }

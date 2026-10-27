@@ -450,7 +450,7 @@ restores a session as `claude --resume <id>`, dropping its start flags, so one s
 static version of mdrev, similar to how agent-monitor depends on crates in claude-replay. Future
 upgrades will be triggered explicitly and manually"). `vendor/mdrev` is a crate holding ONE public
 mdrev release's embedding kit, unmodified (`release/`: `bundle/`, `mdrev-cli.js` + `package.json`,
-`docs/*.md`); its version IS the release's (1.1.63, #s265), `release.sha256` is checked by its tests (never
+`docs/*.md`); its version IS the release's (1.1.65, #s289), `release.sha256` is checked by its tests (never
 hand-edit a vendored file), and its build script embeds `bundle/` as a table. Only `claude-monitor`
 depends on it, and `routes::handler` — the one constructor the monitor goes through — installs it
 into the html crate (`install_mdrev`), so `agent-replay` carries none of it. Nothing installed on

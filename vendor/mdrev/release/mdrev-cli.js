@@ -34049,19 +34049,102 @@ async function gitOk(args, o = {}) {
     throw new StoreError(`git ${args[0]}: ${(r.err || r.out).trim() || `exit ${r.code}`}`, "other");
   return r.out;
 }
+function lostRace(r) {
+  return !r.timedOut && /\[rejected\]|non-fast-forward|fetch first|stale info|failed to update ref|cannot lock ref|incorrect old value provided|reference already exists/i.test(r.err);
+}
+function gitSaid(r) {
+  return r.err.trim().split("\n").filter((l) => l.trim()).slice(-3).join(" | ") || `exit ${r.code}`;
+}
+function serverSaid(r) {
+  const lines = r.err.split("\n").filter((l) => /^remote:/.test(l.trim())).map((l) => l.trim().replace(/^remote:\s*/, "")).filter(Boolean);
+  const first = lines.findIndex((l) => /^(error|fatal):/i.test(l));
+  return (first >= 0 && first < lines.length - 4 ? [lines[first], ...lines.slice(-3)] : lines.slice(-4)).join(" | ");
+}
+var NAME_CLASH = /exists; cannot create|\(refname conflict\)/i;
+var LOCK_HELD = /\.lock'?:? File exists|lock file may be stale|cannot lock references/i;
+var CANNOT_WRITE = /Unable to create '.*\.lock': (?!File exists)|unable to create directory for|unable to append to|reftable: .*I\/O error/i;
+var CANNOT_STORE = /unable to create temporary object directory|unable to migrate objects to permanent storage/i;
+function unpackOutOfRoom(err) {
+  return /\(unpacker error\)/i.test(err) && /No space left on device|Dis[ck] quota exceeded/i.test(err);
+}
+var STUCK_AFTER_MS = 5e3;
+function afterPushFailed(url, ref, deadline) {
+  let held = null;
+  return async (r, tip) => {
+    if (!r.timedOut && /hook declined/i.test(r.err))
+      return classify(r, "push to", url);
+    if (!r.timedOut && NAME_CLASH.test(r.err))
+      return clashed(r, url, ref);
+    if (!r.timedOut && CANNOT_WRITE.test(r.err))
+      return unwritable(r, url, ref);
+    if (!r.timedOut && (CANNOT_STORE.test(r.err) || unpackOutOfRoom(r.err)))
+      return unstorable(r, url);
+    if (!lostRace(r))
+      return classify(r, "push to", url);
+    if (LOCK_HELD.test(r.err)) {
+      if (!held || held.tip !== tip)
+        held = { since: Date.now(), tip };
+      else if (Date.now() - held.since >= STUCK_AFTER_MS)
+        return stuck(r, url, ref, Date.now() - held.since);
+    } else
+      held = null;
+    if (Date.now() >= deadline - 2e3)
+      return outraced(r, url);
+    await new Promise((done) => setTimeout(done, 250 + Math.random() * 500));
+    return null;
+  };
+}
+function outraced(r, url) {
+  const remote = serverSaid(r);
+  return new StoreError(`push to ${url}: others kept pushing first for as long as it tried \u2014 nothing was lost; push again (git: ${gitSaid(r)}${remote ? `; the server said: ${remote}` : ""})`, "offline");
+}
+function stuck(r, url, ref, ms2) {
+  return new StoreError(`push to ${url}: the store's ${ref} has stayed locked for ${Math.round(ms2 / 1e3)} seconds with nothing landing \u2014 most likely a lock file that a push which died left on the server. Nothing was lost; whoever looks after the store's repository removes the lock file, and the next push goes (the server said: ${serverSaid(r) || gitSaid(r)})`, "busy");
+}
+function clashed(r, url, ref) {
+  return new StoreError(`push to ${url}: the store's ${ref} cannot be made there, because another ref's name collides with it \u2014 commit .mdrev.json with another "branch" for "review", or ask whoever looks after the store to remove the other (the server said: ${serverSaid(r) || gitSaid(r)})`, "denied");
+}
+function unwritable(r, url, ref) {
+  return new StoreError(`push to ${url}: the server could not write the store's ${ref} \u2014 most likely its refs there, or their logs, are not writable for the server's git, such as a folder another account owns, or its disk is full (the server said: ${serverSaid(r) || gitSaid(r)}). Nothing was lost; once whoever looks after the store's repository makes them writable, push again`, "denied");
+}
+function unstorable(r, url) {
+  return new StoreError(`push to ${url}: the server could not store what this push sent \u2014 most likely the store's repository there cannot be written: no permission, or a read-only or full disk (git: ${whyRejected(r)}). Nothing was lost; once whoever looks after the store's repository makes it writable, push again`, "denied");
+}
+function whyRejected(r) {
+  const first = r.err.split("\n").map((l) => l.trim().replace(/^remote:\s*/, "")).find((l) => /^(error|fatal):/i.test(l) && !/failed to push some refs/i.test(l));
+  const reason2 = /\[remote rejected\][^(\n]*\(([^)\n]*)\)/.exec(r.err)?.[1];
+  return [first, reason2].filter(Boolean).join(" | ") || gitSaid(r);
+}
 function classify(r, what, url) {
-  const said = r.err.trim().split("\n").filter((l) => l.trim()).slice(-3).join(" | ") || `exit ${r.code}`;
-  const remote = r.err.split("\n").filter((l) => /^remote:/.test(l.trim())).map((l) => l.trim().replace(/^remote:\s*/, "")).filter(Boolean).slice(-4).join(" | ");
+  const said = gitSaid(r);
+  const remote = serverSaid(r);
   if (r.timedOut)
     return new StoreError(`${what} ${url}: no answer in time \u2014 nothing was lost; try again later`, "offline");
+  if (/hook declined/i.test(r.err) && !/protected branch hook declined/i.test(r.err)) {
+    return new StoreError(`${what} ${url}: the server's own check refused it${remote ? `, saying: ${remote}` : ""} \u2014 if that is about the ref's name, keep the review on a branch: commit .mdrev.json with {"review": {"branch": "mdrev-review"}} (git: ${said})`, "denied");
+  }
+  if (/push protection|cannot contain secrets/i.test(r.err)) {
+    const kind = [...r.err.matchAll(/——\s*([^—\n]+?)\s*—/g)].at(-1)?.[1];
+    const where = [...r.err.matchAll(/path:\s*(\S+)/g)].at(-1)?.[1];
+    return new StoreError(`${what} ${url}: GitHub found what looks like a secret${kind ? ` (${kind})` : ""} in what this push sends${where ? `, in ${where}` : ""} \u2014 most likely a note that quotes it. Another branch will not help: if it is in what the note says, edit it out; if it is in the text the note is anchored on, which an edit does not change, take the note back. Then push again; revoke the secret if it is real, or allow it at GitHub's link (the server said: ${remote || said})`, "denied");
+  }
+  if (/repository rule violations/i.test(r.err)) {
+    return new StoreError(`${what} ${url}: the repository's rules on the server refused it${remote ? `, saying: ${remote}` : ""} \u2014 keep the review on a branch those rules let you push to (commit .mdrev.json with another "branch" for "review"), or ask whoever looks after the store to exempt it (git: ${said})`, "denied");
+  }
   if (/repository .*not found|does not appear to be a git repository|not found|no such repository/i.test(r.err) && !/couldn't find remote ref/i.test(r.err)) {
     return new StoreError(`${what} ${url}: no such store, or you cannot see it \u2014 check "review" in .mdrev.json (git: ${said})`, "missing");
   }
   if (/funny refname|hidden ref|refusing to (create|update)|not a valid ref|invalid ref|\bis illegal\b/i.test(r.err)) {
     return new StoreError(`${what} ${url}: the server will not take a ref outside refs/heads \u2014 keep the review on a branch instead: commit .mdrev.json with {"review": {"branch": "mdrev-review"}} (git: ${said})`, "denied");
   }
-  if (/pre-receive hook declined/i.test(r.err)) {
-    return new StoreError(`${what} ${url}: the server's own check refused it${remote ? `, saying: ${remote}` : ""} \u2014 if that is about the ref's name, keep the review on a branch: commit .mdrev.json with {"review": {"branch": "mdrev-review"}} (git: ${said})`, "denied");
+  if (/pack exceeds maximum allowed size/i.test(r.err)) {
+    return new StoreError(`${what} ${url}: the server takes nothing this large \u2014 its size limit refused what this push sent (git: ${whyRejected(r)}). Nothing was lost; whoever looks after the store can raise the limit, and the next push goes`, "denied");
+  }
+  if (/fsck error/i.test(r.err) && what.startsWith("push")) {
+    return new StoreError(`${what} ${url}: the server's object checks refused something this push made (git: ${whyRejected(r)}). Nothing was lost; tell whoever looks after the store, quoting this`, "denied");
+  }
+  if (/fsck error/i.test(r.err)) {
+    return new StoreError(`${what} ${url}: this machine's own object checks (fetch.fsckObjects or transfer.fsckObjects in git's settings) refused something the store holds (git: ${whyRejected(r)}). Nothing was lost; tell whoever looks after the store, quoting this`, "denied");
   }
   if (/authentication failed|could not read (username|password)|\b401\b|unauthori[sz]ed|invalid credentials/i.test(r.err)) {
     return new StoreError(`${what} ${url}: the server did not accept this machine's credentials \u2014 sign in to it again as you would for the code (git: ${said})`, "denied");
@@ -34391,42 +34474,43 @@ var SharedStore = class {
     await this.ensureRepo();
     return withLock2(this.dir, async () => {
       const deadline = Date.now() + 3e4;
+      const failed = afterPushFailed(this.pointer.remote, refOf(this.pointer.branch), deadline);
       for (let attempt = 1; ; attempt++) {
         let cache;
         try {
           cache = await this.fetchLocked(deadline);
-        } catch (e) {
-          this.quietFailed(e);
+        } catch (e2) {
+          this.quietFailed(e2);
           return null;
         }
         const entries = this.quietOutbox();
         const known = new Set((cache.quiet ?? []).map((q) => q.id));
-        for (const e of entries)
-          if (known.has(e.record.id))
-            this.keepQuietSent(e.record.id);
-        const send = entries.filter((e) => !known.has(e.record.id));
+        for (const e2 of entries)
+          if (known.has(e2.record.id))
+            this.keepQuietSent(e2.record.id);
+        const send = entries.filter((e2) => !known.has(e2.record.id));
         if (send.length === 0)
           return { sent: 0 };
-        const commit = await this.commitOn(cache.tip, send.map((e) => e.record));
-        const r = await git(["push", "--quiet", "origin", `${commit}:${refOf(this.pointer.branch)}`], {
+        const commit = await this.commitOn(cache.tip, send.map((e2) => e2.record));
+        const r = await git(["-c", "advice.pushUpdateRejected=false", "push", "--quiet", "origin", `${commit}:${refOf(this.pointer.branch)}`], {
           gitDir: this.gitDir,
           timeoutMs: Math.max(1e3, Math.min(2e4, deadline - Date.now()))
         });
         if (r.code === 0) {
           await gitOk(["update-ref", TIP, commit], { gitDir: this.gitDir });
-          const quiet = [...cache.quiet ?? [], ...send.map((e) => e.local.covers ? { ...e.record, covers: e.local.covers } : e.record)];
+          const quiet = [...cache.quiet ?? [], ...send.map((e2) => e2.local.covers ? { ...e2.record, covers: e2.local.covers } : e2.record)];
           writeAtomic(this.cacheFile, JSON.stringify({ ...cache, tip: commit, fetchedAt: (/* @__PURE__ */ new Date()).toISOString(), quiet }, null, 2));
-          for (const e of send)
-            this.keepQuietSent(e.record.id);
+          for (const e2 of send)
+            this.keepQuietSent(e2.record.id);
           rmSync3(join8(this.quietDir, "failed.json"), { force: true });
-          const kinds = [...new Set(send.map((e) => e.record.kind))].join(" ");
+          const kinds = [...new Set(send.map((e2) => e2.record.kind))].join(" ");
           logEvent("review.quiet-sent", { store: this.pointer.remote, commit, records: send.length, kinds, entry: who.via });
           return { sent: send.length };
         }
-        const raced = !r.timedOut && /\[rejected\]|non-fast-forward|fetch first|stale info|failed to update ref|cannot lock ref/i.test(r.err);
-        if (raced && Date.now() < deadline - 2e3)
+        const e = await failed(r, cache.tip);
+        if (!e)
           continue;
-        this.quietFailed(classify(r, "push to", this.pointer.remote));
+        this.quietFailed(e);
         return null;
       }
     });
@@ -34858,6 +34942,7 @@ var SharedStore = class {
       const result = { destination, sent: [], already: [], diverged: [], warnings: stranded };
       if (entries.length === 0)
         return result;
+      const failed = afterPushFailed(destination, refOf(this.pointer.branch), deadline);
       for (let attempt = 1; ; attempt++) {
         let cache;
         try {
@@ -34898,7 +34983,7 @@ var SharedStore = class {
         if (send.length === 0)
           return result;
         const commit = await this.commitOn(cache.tip, send.map((e2) => e2.record));
-        const r = await git(["push", "--quiet", "origin", `${commit}:${refOf(this.pointer.branch)}`], {
+        const r = await git(["-c", "advice.pushUpdateRejected=false", "push", "--quiet", "origin", `${commit}:${refOf(this.pointer.branch)}`], {
           gitDir: this.gitDir,
           timeoutMs: Math.max(1e3, Math.min(3e4, deadline - Date.now()))
         });
@@ -34913,10 +34998,9 @@ var SharedStore = class {
           logEvent("review.push", { store: this.pointer.remote, commit, ids: result.sent.join(" "), attempt, entry });
           return result;
         }
-        const raced = !r.timedOut && /\[rejected\]|non-fast-forward|fetch first|stale info|failed to update ref|cannot lock ref/i.test(r.err);
-        if (raced && Date.now() < deadline - 2e3)
+        const e = await failed(r, cache.tip);
+        if (!e)
           continue;
-        const e = raced ? new StoreError(`push to ${destination}: others kept pushing first for a minute \u2014 nothing was lost; push again`, "offline") : classify(r, "push to", destination);
         logEvent("review.push-failed", { store: this.pointer.remote, failure: e.kind, message: e.message, attempt, entry });
         throw e;
       }
