@@ -364,39 +364,67 @@ export class RecordStore {
     });
   }
 
-  /** One range of `read`'s turn: its whole records wait in `fills`. A drop is read again for as long
-   *  as it lasts; a 409, a range that does not parse, a turn whose records do not come out at its
-   *  count, or a server that keeps refusing (`HEAD_REFUSALS`) starts the session over. */
+  /** One range of `read`'s turn: its whole records wait in `fills`, as each completes (#s274's
+   *  resuming reader: a drop keeps every record the read finished, and the next read starts at the
+   *  first it did not). A drop is read again for as long as it lasts; a 409, a range that does not
+   *  parse, a record that is not the one the index's facts describe there, a turn whose records do
+   *  not come out at its count, or a server that keeps refusing (`HEAD_REFUSALS`) starts the session
+   *  over. */
   async readPiece(generation, head, read) {
     const current = () => generation === this.generation && this.head === head;
+    const before = read.at;
+    // Take the whole records `bytes` completes into `fills`; false when they are not this turn's.
+    let pending = [], pendingLength = 0;
+    const take = bytes => {
+      const cut = bytes.lastIndexOf(10);
+      if (cut < 0) { pending.push(bytes); pendingLength += bytes.length; return true; }
+      const whole = new Uint8Array(pendingLength + cut + 1);
+      let at = 0;
+      for (const chunk of pending) { whole.set(chunk, at); at += chunk.length; }
+      whole.set(bytes.subarray(0, cut + 1), at);
+      pending = [bytes.slice(cut + 1)]; pendingLength = bytes.length - cut - 1;
+      const records = parseRecords(new TextDecoder().decode(whole));
+      if (!records.length || read.next + records.length > read.last + 1) return false;
+      // Each record is the one the index described there — its kind and id — or the log was
+      // rewritten under the same epoch, and nothing is filled from it (framework I12).
+      const facts = this.index?.facts;
+      if (facts && records.some((record, k) => { const fact = facts[read.next + k]; return !fact || fact[0] !== record.kind || (fact[1] || "") !== (record.id || ""); })) return false;
+      this.fills.push({ from: read.next, records });
+      read.next += records.length;
+      read.at += whole.length;
+      this.handlers.filled?.();
+      return true;
+    };
     try {
       const len = Math.min(this.headPieceBytes, read.end - read.at);
       const response = await fetch(`/records?${recordsQuery(this.session, { offset: read.at, len }, head.epoch)}`, { cache: "no-store" });
       if (!current()) return;
       if (response.status === 409) { this.recover(); return; }
       if (!response.ok) throw new Error(`records HTTP ${response.status}`);
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (!current()) return;
-      const cut = bytes.lastIndexOf(10);
-      if (cut < 0) throw new Error("records: a range brought no whole record");
-      const records = parseRecords(new TextDecoder().decode(bytes.subarray(0, cut + 1)));
-      if (!records.length || read.next + records.length > read.last + 1) { this.recover(); return; }
-      // Each record is the one the index described there — its kind and id — or the log was
-      // rewritten under the same epoch, and nothing is filled from it (framework I12).
-      const facts = this.index?.facts;
-      if (facts && records.some((record, k) => { const fact = facts[read.next + k]; return !fact || fact[0] !== record.kind || (fact[1] || "") !== (record.id || ""); })) { this.recover(); return; }
-      this.fills.push({ from: read.next, records });
-      read.next += records.length;
-      read.at += cut + 1;
+      if (!response.body) {
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (!current()) return;
+        if (!take(bytes)) { this.recover(); return; }
+      } else {
+        const reader = response.body.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (!current()) { reader.cancel().catch(() => {}); return; }
+          if (done) break;
+          if (!take(value)) { reader.cancel().catch(() => {}); this.recover(); return; }
+        }
+      }
+      if (read.at === before) throw new Error("records: a range brought no whole record");
       if (read.at >= read.end) {
         read.done = true;
         if (read.next !== read.last + 1) { this.recover(); return; }
       }
       head.refusals = 0; head.drops = 0;
-      this.handlers.filled?.();
     } catch (error) {
       if (!current()) return;
       if (error instanceof SyntaxError) { this.recover(); return; }
+      // What the read finished is kept; a record it was part way through is read again.
+      if (read.at > before) { head.refusals = 0; head.drops = 0; }
       if (error instanceof TypeError) head.drops = (head.drops || 0) + 1;
       else head.refusals = (head.refusals || 0) + 1;
       if (head.refusals > HEAD_REFUSALS) { this.recover(); return; }

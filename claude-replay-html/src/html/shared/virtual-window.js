@@ -1025,25 +1025,25 @@ class VirtualWindow {
    *  pending card used to teach the process mean, #s277). None by default. */
   placeholderAt() { return false; }
 
-  /** Draw a mounted placeholder at its height in the sums, margins included (`itemHeight` counts
-   *  them, and the neighbour stamps add some): set its border box, read what the margins add, and
-   *  take that back. Two reads per placeholder, inside the transaction that mounted it or moved the
-   *  estimate it is drawn at. */
-  fitPlaceholder(element, index) {
-    const want = this.heightOf(index);
-    element.style.boxSizing = "border-box";
-    element.style.height = `${want}px`;
-    const margins = itemHeight(element) - want;
-    if (Math.abs(margins) > 0.25) element.style.height = `${Math.max(0, want - margins)}px`;
-  }
-
-  /** Every mounted placeholder at its height in the sums: after a mount, and wherever the applied
-   *  estimate moves (both inside a transaction, before the placement). */
+  /** Every mounted placeholder at its height in the sums, margins included (`itemHeight` counts
+   *  them, and the neighbour stamps add some): its border box set, what the margins add read, and
+   *  that taken back — after a mount, and wherever the applied estimate moves (both inside a
+   *  transaction, before the placement). */
   fitPlaceholders(only = null) {
+    // All the writes, then all the reads, then the corrections: interleaved, each placeholder forced
+    // a layout of its own (a fling into the head mounts dozens). A margin depends on the neighbour
+    // stamps, never on the height, so it is read once against the new heights.
+    const fits = [];
     for (const child of only || this.mount.children) {
       const index = Number(child.dataset.unitIndex);
-      if (index >= 0 && index < this.count && this.placeholderAt(index)) this.fitPlaceholder(child, index);
+      if (!(index >= 0 && index < this.count && this.placeholderAt(index))) continue;
+      const want = this.heightOf(index);
+      child.style.boxSizing = "border-box";
+      child.style.height = `${want}px`;
+      fits.push([child, want]);
     }
+    const margins = fits.map(([child, want]) => itemHeight(child) - want);
+    fits.forEach(([child, want], k) => { if (Math.abs(margins[k]) > 0.25) child.style.height = `${Math.max(0, want - margins[k])}px`; });
   }
 
   /** Record `index` in the PAGE's vocabulary, for the history (design/viewport-history.md §3): its
@@ -1188,7 +1188,7 @@ class VirtualWindow {
    *  change only appended). One transaction: `P0` is read before the sums move (I1); the window
    *  is the one `P0` asks for (I11) — the last record's while following, so the tail is placed
    *  here by `placeAfter`'s own rule and no second converge follows; a count of zero empties the
-   *  window. A page never names a range, and never changes its records from inside an engine
+   *  window. A page never names the WINDOW (it may name the run it rewrote), and never changes its records from inside an engine
    *  callback: the transaction would be queued and the page would read a model that has not
    *  changed yet. */
   recordsChanged(mutate) {
@@ -1214,14 +1214,14 @@ class VirtualWindow {
         const shaped = result != null && typeof result === "object";
         const from = shaped ? result.from : result;
         const first = from == null ? Infinity : from;
-        if (shaped && result.shift) moved = { from: first, shift: result.shift };
+        if (shaped && result.shift) moved = { from: first, shift: result.shift, renamed: result.renamed || null };
         if (shaped && result.to != null && !result.shift) bounded = { from: first, to: Math.max(first, result.to) };
         this.pendingDelta = { count0, count1: this.count, from: Math.min(first, count0), tail0 };
         if (moved) this.pendingDelta.shift = moved.shift;
         if (bounded) this.pendingDelta.to = bounded.to;
         return first;
       },
-      translate: p0 => (moved ? this.shiftPosition(p0, moved.from, moved.shift) : p0),
+      translate: p0 => (moved ? this.shiftPosition(p0, moved.from, moved.shift, moved.renamed) : p0),
       dirtyFrom: from => bounded || from,
       range: p0 => this.count ? this.rangeFor(p0) : { lo: 0, hi: 0 },
     });
@@ -1233,12 +1233,19 @@ class VirtualWindow {
    *  pending head's card, which the reader can scroll to) re-anchors on the item that followed
    *  it, read from the DOM the mount has not replaced yet: the content they could see below the
    *  card stays where it was, and what arrived goes above it. */
-  shiftPosition(p, from, shift) {
+  shiftPosition(p, from, shift, renamed = null) {
     if (!p || p.source === "tail" || p.source === "offset") return p;
     const index = p.index;
     if (index == null) return p;
-    if (index <= from) return this.anchorAfter(from, shift) || p;
-    const translated = { ...p, index: index + shift };
+    // The page names the units whose key the landing changed (#s277: the head's records joined the
+    // tail's first group of steps, which is now keyed by its first record, in the head): the same
+    // content under its new key, so the anchor resolves rather than falling back.
+    const rename = key => (renamed && key && renamed[key]) || key;
+    if (index <= from) {
+      const after = this.anchorAfter(from, shift);
+      return after ? { ...after, key: rename(after.key) } : p;
+    }
+    const translated = { ...p, index: index + shift, key: rename(p.key) };
     if (p.fallback) translated.fallback = { ...p.fallback, index: p.fallback.index > from ? p.fallback.index + shift : p.fallback.index };
     return translated;
   }
@@ -1457,6 +1464,9 @@ class VirtualWindow {
       if (options.measure && !options.range && placed === "placed" && p0 && p0.source !== "tail" && !this.viewportMounted()) {
         const again = this.rangeForScroll();
         mounted = this.mountRange(again.lo, again.hi, Infinity, null) || mounted;
+        // What the remount measured above content still on screen moves it: placed again from `P`
+        // (a no-op when its anchor is not mounted), as the #191 branch above does.
+        placed = this.placeAfter(p0, options, drift, smooth);
       }
       // A position the reader asked for (§4.10) is `P` from here on; `syncPosition` keeps it.
       if (p0 && p0.commanded) this.position = p0;

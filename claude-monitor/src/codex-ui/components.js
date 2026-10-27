@@ -3,7 +3,7 @@
 import { attachmentCapability, besideAction, groupPointerRuns, isPointerAttachment, referenceAction, revealHere, revealQuery } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
 import { fleetGroups } from "./shared/fleet.js";
-import { escapeText, literalText, partsHtml, peerHue } from "./view-model.js";
+import { escapeText, literalText, partsHtml, peerHue, placeholderUnit } from "./view-model.js";
 import { rememberCap, resultBodyHtml } from "./shared/parts.js";
 import { interactionHtml } from "./shared/interaction.js";
 import { headStepOf, headStepState, nextHeadStep } from "./shared/tool-head.js";
@@ -298,7 +298,7 @@ function renderProcess(unit, state) {
   // Counted over GROUPS, not raw views (#254): a collapsed run is one event on screen, so
   // "Show N more" must agree with what the reader would actually reveal.
   const hidden = Math.max(0, groups.length - visibleLimit);
-  return `<section class="process-surface process-${tone} ${closed ? "closed" : ""}" data-process-surface data-process-key="${escapeText(key)}" data-process-state="${tone}" data-turn="${escapeText(unit.turn)}" data-turn-label="${escapeText(String(unit.turn).padStart(2, "0"))}" aria-label="Agent process"><div class="process-surface-headbar"><div class="process-surface-summary"><button class="process-section-toggle" type="button" data-process-toggle aria-expanded="${!closed}" title="${closed ? "Expand" : "Collapse"} this section">${svg("chev")}</button><span class="process-surface-label" data-turn-label="${escapeText(String(unit.turn).padStart(2, "0"))}">Agent process</span><span class="process-surface-preview">${escapeText(preview)}</span><span class="process-surface-count">${unit.views.length} events${updates ? ` · ${updates} updates` : ""}</span><button class="process-bulk-toggle" type="button" data-process-bulk aria-pressed="false" title="Expand every detail in this section">${svg("expandStack")}</button></div></div><div class="process-surface-body">${events}${hidden ? `<button class="process-more" type="button" data-process-more aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span>${svg("chev")}</button>` : ""}</div></section>`;
+  return `<section class="process-surface process-${tone} ${closed ? "closed" : ""}" data-process-surface data-process-key="${escapeText(key)}" data-process-state="${tone}" data-turn="${escapeText(unit.turn)}" data-turn-label="${escapeText(String(unit.turn).padStart(2, "0"))}" aria-label="Agent process"><div class="process-surface-headbar"><div class="process-surface-summary"><button class="process-section-toggle" type="button" data-process-toggle aria-expanded="${!closed}" title="${closed ? "Expand" : "Collapse"} this section">${svg("chev")}</button><span class="process-surface-label" data-turn-label="${escapeText(String(unit.turn).padStart(2, "0"))}">Agent process</span><span class="process-surface-preview">${escapeText(preview)}</span><span class="process-surface-count">${unit.views.length} events${updates ? ` · ${updates} updates` : ""}${unit.owed ? ` · ${unit.owed} earlier still loading` : ""}</span><button class="process-bulk-toggle" type="button" data-process-bulk aria-pressed="false" title="Expand every detail in this section">${svg("expandStack")}</button></div></div><div class="process-surface-body">${events}${hidden ? `<button class="process-more" type="button" data-process-more aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span>${svg("chev")}</button>` : ""}</div></section>`;
 }
 
 /** A turn shown as the record the wire carried (parity #8) — the classic `{}` toggle. What the
@@ -369,7 +369,7 @@ export function renderUnit(unit, state) {
     root.dataset.unitFrom = unit.from;
     return root;
   }
-  if (unit.owed > 0) return renderPlaceholder(unit);
+  if (placeholderUnit(unit)) return renderPlaceholder(unit);
   const spot = unit.view?.id
     ? `<button class="spot-link" type="button" data-spot-link="${escapeText(unit.view.id)}" aria-label="Copy a link to here" title="Copy a link to here"><span aria-hidden="true">#</span></button>`
     : "";

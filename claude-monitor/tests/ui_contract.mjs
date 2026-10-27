@@ -524,6 +524,25 @@ assert.deepEqual(store.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 });
   partly[0] = { ...R[0], id: "t9" };
   assert.equal(half.fill(partly, 0, 1), null, "a record whose unit does not come out as its placeholder was is never renamed");
 
+  // A tail that starts in the middle of a long turn (no prompt in it): its first group of steps joins
+  // the head's, keyed by the head's record. That group is the LIVE turn's: drawn with what has arrived,
+  // never as a placeholder, while its earlier steps are on their way.
+  const { placeholderUnit } = await import("../../claude-monitor/src/codex-ui/view-model.js");
+  const longTurn = [{ kind: "user", id: "t1", turn: 1, label: "go", body: [] }, ...Array.from({ length: 6 }, (_, k) => ({ kind: "edit", id: `b${k + 1}`, body: [] }))];
+  const cutAt = 4;
+  const liveFacts = longTurn.slice(0, cutAt).map(r => [r.kind, r.id]);
+  const liveRows = new Map([[0, { r: 0, kind: "user", id: "t1", turn: 1, label: "go" }]]);
+  const live = new Projection();
+  live.stub = i => { const f = liveFacts[i]; if (!f) return null; const row = liveRows.get(i); return { kind: f[0], id: f[1], ...(row ? { turn: row.turn, label: row.label } : {}) }; };
+  live.upto = cutAt;
+  live.rebuild(longTurn.map((r, i) => (i < cutAt ? PENDING : r)), 0);
+  const group = live.units.find(u => u.type === "process");
+  assert.equal(group.key, "process:b1", "the group is keyed by its first record, in the head");
+  assert.ok(group.owed > 0 && group.live, "it owes the head's steps and reaches the tail");
+  assert.equal(placeholderUnit(group), false, "…so it is drawn with what has arrived, not as a placeholder");
+  assert.deepEqual(group.views.map(v => v.index), [4, 5, 6], "…the tail's steps");
+  assert.equal(placeholderUnit(live.units[0]), true, "the prompt still on its way is a placeholder");
+
   // The read queue: turns from the index's map, a jump's turn first, then the window's (the latest
   // asked first), then the rest from the tail backwards; each piece waits for the page.
   const realFetch = globalThis.fetch;
@@ -2113,7 +2132,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   assert.match(app, /const index = recordState\.records\.findIndex\(record => recordChain\(record, id, chain\)\);/, "a hash resolves through nested records");
   assert.match(app, /for \(const rid of chain\) recordState\.folds\.set\(rid, false\);/, "…opening the chain to it");
-  assert.match(app, /if \(!viewport\.jumpToRecord\(index, "hash"\)\) \{ recordStore\.want\(index, index \+ 1, 0\); return false; \}/, "…and lands there");
+  assert.match(app, /if \(!viewport\.jumpToRecord\(index, "hash"\)\) \{\n[\s\S]*?return false;\n  \}\n  hashWait = null;/, "…and lands there (#s277: or, its unit still on its way, waits for it unless the reader moves)");
   console.log("#116 deep link cases passed");
 }
 
@@ -3157,7 +3176,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   const pages = classic + shell + app;
   assert.doesNotMatch(pages, /\b(reconcile|rangeAround|rangeForScroll|mountRange|clearWindow|applyWindow|replaceMounted|setWindow)\(/, "no page names a window: the range is the engine's, from P0 (framework I11)");
-  assert.match(engine, /recordsChanged\(mutate\) \{\n(?:\s*\/\/.*\n)*\s*let moved = null;\n\s*let bounded = null;\n\s*return this\.transact\("records", \{\n\s*mutate: \(\) => \{\n(?:\s*\/\/.*\n)*\s*const count0 = this\.count;\n\s*const tail0 = this\.tailSnapshot\(\);\n\s*const result = mutate \? mutate\(\) : undefined;\n(?:.*\n){0,3}?\s*const first = from == null \? Infinity : from;\n(?:.*\n){0,2}?\s*this\.pendingDelta = \{ count0, count1: this\.count, from: Math\.min\(first, count0\), tail0 \};\n(?:.*\n){0,2}?\s*return first;\n\s*\},\n\s*translate: p0 => \(moved \? this\.shiftPosition\(p0, moved\.from, moved\.shift\) : p0\),\n\s*dirtyFrom: from => bounded \|\| from,\n\s*range: p0 => this\.count \? this\.rangeFor\(p0\) : \{ lo: 0, hi: 0 \},/, "the records transaction: the page's mutation, its return as dirtyFrom, the window from P0, an empty count empties the window — and the delta's shape taken around the mutation (#197), a prepend's shift in it (#314), and a bounded rewrite redraws only its run (#s277)");
+  assert.match(engine, /recordsChanged\(mutate\) \{\n(?:\s*\/\/.*\n)*\s*let moved = null;\n\s*let bounded = null;\n\s*return this\.transact\("records", \{\n\s*mutate: \(\) => \{\n(?:\s*\/\/.*\n)*\s*const count0 = this\.count;\n\s*const tail0 = this\.tailSnapshot\(\);\n\s*const result = mutate \? mutate\(\) : undefined;\n(?:.*\n){0,3}?\s*const first = from == null \? Infinity : from;\n(?:.*\n){0,2}?\s*this\.pendingDelta = \{ count0, count1: this\.count, from: Math\.min\(first, count0\), tail0 \};\n(?:.*\n){0,2}?\s*return first;\n\s*\},\n\s*translate: p0 => \(moved \? this\.shiftPosition\(p0, moved\.from, moved\.shift, moved\.renamed\) : p0\),\n\s*dirtyFrom: from => bounded \|\| from,\n\s*range: p0 => this\.count \? this\.rangeFor\(p0\) : \{ lo: 0, hi: 0 \},/, "the records transaction: the page's mutation, its return as dirtyFrom, the window from P0, an empty count empties the window — and the delta's shape taken around the mutation (#197), a prepend's shift in it (#314), and a bounded rewrite redraws only its run (#s277)");
   // #s277 (design/slow-links.md §6.2–6.3): a placeholder is SIZED — never measured, never learned —
   // and follows the applied estimate wherever it moves; a bounded rewrite redraws its run alone.
   assert.match(engine, /measureMounted\(\) \{[\s\S]*?if \(this\.placeholderAt\(index\)\) continue;[\s\S]*?this\.learn\(index, height\);/, "a placeholder is skipped by the measure, so it never teaches the estimator (#s277)");
@@ -3168,7 +3187,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // #314: a prepend moves the index space, not the reader — P0 is translated after the mutation and
   // before the window is chosen from it or the placement is derived from it.
   assert.match(engine, /const changed = options\.mutate \? options\.mutate\(\) : undefined;\n(?:\s*\/\/.*\n)*\s*if \(options\.translate\) p0 = options\.translate\(p0\);\n(?:.*\n)*?\s*const range = typeof options\.range === "function" \? options\.range\(p0\) : options\.range;/, "a prepend translates P0 before the range and the placement (#314)");
-  assert.match(engine, /shiftPosition\(p, from, shift\) \{\n\s*if \(!p \|\| p\.source === "tail" \|\| p\.source === "offset"\) return p;/, "…the tail stays the tail (#314)");
+  assert.match(engine, /shiftPosition\(p, from, shift, renamed = null\) \{\n\s*if \(!p \|\| p\.source === "tail" \|\| p\.source === "offset"\) return p;/, "…the tail stays the tail (#314)");
   assert.match(engine, /if \(options\.place === false \|\| options\.position === null\) return null;\n(?:.*\n){0,3}?\s*if \(this\.following\) return options\.tail === false \? null : TAIL;\n\s*if \(!this\.count \|\| this\.dragging\) return null;/, "the tail is P0 before the count is asked: a records change that fills an empty page while following starts from the tail");
   assert.doesNotMatch(engine, /options\.refresh|refresh: |, refresh[,)]|forceIndex|reconcile\(lo, hi|\bclearWindow\(/, "the `refresh` option, `forceIndex`, the page-facing reconcile and clearWindow are gone");
   assert.match(engine, /mountRange\(lo, hi, dirtyFrom = Infinity, p0 = null\) \{/, "mountRange takes the dirty index and P0 only");
@@ -3232,7 +3251,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(classic, /vw\.jumpTo\(\{ index: ti, top: GOTO_Y \}, \{ decide: false \}\);/, "the search walk materializes a record as an undecided landing");
   assert.match(classic, /function refreshWindow\(\) \{ vw\.rerender\(\); \}/, "the classic re-render is the engine's");
   // The shell: the swap is the mutation; the restore stays a command with the swap before it.
-  assert.match(shell, /const swap = \(\) => \{\n(?:.*\n){0,12}?\s*this\.units = units;\n(?:\s*\/\/.*\n)*\s*for \(const child of this\.window\.children\) this\.stampNeighbours\(child, Number\(child\.dataset\.unitIndex\)\);\n(?:\s*\/\/.*\n)*\s*return shift \? \{ from: changedUnit, shift \} : changedUnit;\n\s*\};/, "the units swap re-stamps the kept elements' neighbours (#201) and returns the first rebuilt unit — with the shift when a tail-first head landed (#314)");
+  assert.match(shell, /const swap = \(\) => \{\n(?:.*\n){0,12}?\s*this\.units = units;\n(?:\s*\/\/.*\n)*\s*for \(const child of this\.window\.children\) this\.stampNeighbours\(child, Number\(child\.dataset\.unitIndex\)\);\n(?:\s*\/\/.*\n)*\s*return shift \? \{ from: changedUnit, shift, renamed \} : changedUnit;\n\s*\};/, "the units swap re-stamps the kept elements' neighbours (#201) and returns the first rebuilt unit — with the shift when a tail-first head landed (#314)");
   assert.match(shell, /swap\(\);\n\s*this\.rebuildPrefix\(\);\n(?:.*\n){0,3}?\s*this\.jumpTo\(\{ key: memory\.key, index, top: memory\.top \}, \{ dirtyFrom: changedUnit \}\);/, "a restore swaps first and jumps, with no mount before it");
   assert.equal((shell.match(/this\.recordsChanged\(swap\);/g) || []).length, 2, "an empty list and a plain delta are the one transaction");
   assert.doesNotMatch(shell + app, /\.render\(\)/, "the shell re-renders through rerender()");

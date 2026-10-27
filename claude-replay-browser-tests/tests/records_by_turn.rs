@@ -84,9 +84,20 @@ fn open(
     }
     m.pair(&tab);
     queue_the_head(&tab, hold_index);
+    // A case's own `tailBudget` or `headPiece` stands (the page reads the first of a name).
+    let budget = if extra.contains("tailBudget=") {
+        ""
+    } else {
+        "&tailBudget=8192"
+    };
+    let piece = if extra.contains("headPiece=") {
+        ""
+    } else {
+        "&headPiece=4096"
+    };
     m.open(
         &tab,
-        &format!("?ui=app&session={SID}&tailBudget=8192&headPiece=4096&windowed=1{extra}"),
+        &format!("?ui=app&session={SID}&windowed=1{budget}{piece}{extra}"),
     );
     harness::until(
         &tab,
@@ -752,6 +763,107 @@ fn placeholders_teach_the_estimator_nothing() {
         "the history records the estimates"
     );
     assert_eq!(before, after, "mounting placeholders moved no mean");
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
+}
+
+/// A tail that starts in the middle of a long turn holds no prompt: its steps join the head's group
+/// of steps, which is then keyed by its first record, in the head. That group is the live turn's —
+/// drawn with what has arrived, never as a placeholder, saying its earlier steps are on their way —
+/// and a reader scrolled up inside it keeps the step they were reading when the index lands and the
+/// group takes its new key; once the head is here the group is whole.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_tail_without_a_prompt_stays_drawn_while_its_turn_fills() {
+    let _serial = serial();
+    let mut jsonl = session(20);
+    jsonl += &harness::user_at("the long one", &harness::at("50:00"));
+    for k in 0..140 {
+        jsonl += &harness::edit_tool_at(
+            &format!("e{k}"),
+            &format!("/r/skua/src/module_{k:03}.rs"),
+            &harness::at("50:01"),
+        );
+        jsonl += &harness::tool_result_at(&format!("e{k}"), &harness::at("50:01"));
+    }
+    let (_m, _b, tab, _) = open(
+        2779,
+        "by-turn-live",
+        &jsonl,
+        true,
+        true,
+        "&tailBudget=32768",
+    );
+    harness::until(
+        &tab,
+        "document.querySelector('.turn.pending-head') && window.__heldIndex.length === 1 && !!document.querySelector('[data-process-surface]')",
+        "the tail's steps drawn under the short card while the index is held",
+        Duration::from_secs(10),
+        STATE,
+    );
+    // Every step shown, then up into them: the reader reads a step in the middle of the live turn.
+    harness::eval(&tab, "(function(){ var b = document.querySelector('[data-process-more]'); if (b && b.getAttribute('aria-expanded') !== 'true') b.click(); return 1; })()");
+    std::thread::sleep(Duration::from_millis(500));
+    harness::scroll_by(&tab, Surface::AppShell, -300);
+    std::thread::sleep(Duration::from_millis(600));
+    const ROW: &str = r#"(function(){
+      var s = document.querySelector('.transcript'), top = s.getBoundingClientRect().top;
+      var rows = [].slice.call(document.querySelectorAll('[data-process-surface] [data-block-index]'));
+      var r = rows.filter(function (e) { var b = e.getBoundingClientRect(); return b.height > 0 && b.top >= top + 60 && b.top < top + s.clientHeight / 2; })[0];
+      return r ? JSON.stringify({ at: r.dataset.blockIndex, top: r.getBoundingClientRect().top - top }) : null;
+    })()"#;
+    let row: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, ROW).as_str().expect("a step in view")).unwrap();
+    let at = row["at"].as_str().unwrap().to_string();
+    let top = row["top"].as_f64().unwrap();
+    harness::eval(&tab, "window.__releaseIndex(); 1");
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let group = harness::eval(&tab, "(function(){ var g = document.querySelector('[data-process-surface]'); var u = g && g.closest('[data-unit-key]'); return JSON.stringify({ placeholder: !!(u && u.classList.contains('unit-placeholder')), note: (g ? g.textContent.match(/[0-9]+ earlier still loading/) || [''] : [''])[0] }); })()");
+    let group: serde_json::Value = serde_json::from_str(group.as_str().unwrap()).unwrap();
+    assert_eq!(
+        group["placeholder"], false,
+        "the live turn's group is drawn, not a placeholder: {group}"
+    );
+    assert!(
+        group["note"]
+            .as_str()
+            .unwrap_or("")
+            .ends_with("earlier still loading"),
+        "…and says its earlier steps are on their way: {group}"
+    );
+    let now = harness::eval(
+        &tab,
+        &format!("(function(){{ var s = document.querySelector('.transcript'); var r = document.querySelector('[data-process-surface] [data-block-index=\"{at}\"]'); return r ? r.getBoundingClientRect().top - s.getBoundingClientRect().top : null; }})()"),
+    )
+    .as_f64()
+    .expect("the step is still drawn");
+    assert!(
+        (now - top).abs() <= 1.0,
+        "the step the reader was reading stays where it was as its group takes its new key: {top} → {now}"
+    );
+    release_until(&tab, WHOLE, "the whole head to arrive");
+    std::thread::sleep(Duration::from_millis(400));
+    let note = harness::eval(
+        &tab,
+        "(document.querySelector('[data-process-surface]') || {}).textContent || ''",
+    );
+    assert!(
+        !note
+            .as_str()
+            .unwrap_or("")
+            .contains("earlier still loading"),
+        "whole, the group says nothing is loading"
+    );
     assert_eq!(
         harness::eval(&tab, VIOLATIONS).as_str(),
         Some("[]"),

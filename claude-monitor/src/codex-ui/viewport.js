@@ -4,6 +4,7 @@ import { clampPrompts, renderUnit } from "./components.js";
 // scroll rules for both pages. What reads layout and what writes the DOM stays here.
 import { VirtualWindow, elementFrame, mountEverythingRequested } from "./shared/virtual-window.js";
 import { renderMermaid } from "./shared/mermaid.js";
+import { placeholderUnit } from "./view-model.js";
 
 export function revealNavigationContext(units, index, state, recordIndex, reveal = "record") {
   const unit = units[index];
@@ -235,7 +236,7 @@ export class Viewport extends VirtualWindow {
   kindOf(index) { return this.units[index]?.type; }
   /** Stage 2 (#s277, design/slow-links.md §6.2): a unit some of whose records have not arrived is a
    *  placeholder — drawn at its height in the sums, never measured, never learned from. */
-  placeholderAt(index) { return (this.units[index]?.owed || 0) > 0; }
+  placeholderAt(index) { return placeholderUnit(this.units[index]); }
   /** A unit in this shell's vocabulary, for the history (#197, design/viewport-history.md §3): its
    *  type, its turn, the records it spans and their kinds (an assistant's commentary phase folded
    *  into its kind — it is what puts the text among the process rows) — a process group is one
@@ -317,7 +318,7 @@ export class Viewport extends VirtualWindow {
    *  heights are this shell's, so it says). A remembered position, once its unit has streamed in,
    *  is the command it already was: the swap first — `jumpTo` checks the index against the count
    *  — and no mount before it, so the estimator learns nothing a restore never taught it. */
-  setUnits(units, changedUnit = 0, shift = 0) {
+  setUnits(units, changedUnit = 0, shift = 0, renamed = null) {
     this.empty.hidden = true;
     if (this.pendingView) { applyViewChoices(this.state, this.pendingView); this.pendingView = null; }
     const swap = () => {
@@ -336,7 +337,7 @@ export class Viewport extends VirtualWindow {
       for (const child of this.window.children) this.stampNeighbours(child, Number(child.dataset.unitIndex));
       // #314: a tail-first open's head landed — `shift` more units stand where its pending card
       // stood, and the engine moves the reader's position with the index space, not the reader.
-      return shift ? { from: changedUnit, shift } : changedUnit;
+      return shift ? { from: changedUnit, shift, renamed } : changedUnit;
     };
     if (!units.length) {
       this.recordsChanged(swap);

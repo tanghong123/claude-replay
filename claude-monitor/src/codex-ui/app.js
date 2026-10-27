@@ -274,7 +274,7 @@ const sessionIndex = new SessionIndexStore({
 // whole (stage 1). `?windowed=1|0` picks either path for a case.
 const WINDOWED = (() => { const q = new URLSearchParams(location.search).get("windowed"); return q === "1" ? true : q === "0" ? false : !revealHere(); })();
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = -1; heldRecords = null; heldTurnJump = null; fillWaiting = false; recordState.headIndex = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; projection.stub = null; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; heldRecords = null; heldTurnJump = null; fillWaiting = false; recordState.headIndex = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; projection.stub = null; projection.upto = Infinity; hashWait = null; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
   // #s276: the map of the records the head still owes — the panes it fills are whole from now on.
   indexed: index => {
@@ -282,7 +282,7 @@ const recordStore = new RecordStore({
     // #s277 (design/slow-links.md §6.2): the units the head's records will make, from what the index
     // says of each record, take the short card's place — a prepend, held for a still view (#340)
     // like the head's landing; from then on every fill is a rewrite in place.
-    if (recordStore.windowed) { projection.stub = stubFor(index); updateRecords({ records: recordStore.records, meta: recordStore.meta, changedFrom: 0, prepended: index.upto }); }
+    if (recordStore.windowed) { projection.stub = stubFor(index); projection.upto = index.upto; updateRecords({ records: recordStore.records, meta: recordStore.meta, changedFrom: 0, prepended: index.upto }); }
     renderNavigator(); renderArtifacts(); renderChips(); if (byId("navigatorOptions").classList.contains("open")) renderFilterMenu();
   },
   // #s277: a piece of the head was read; it goes in when the view lets it (`takeFills`).
@@ -854,15 +854,20 @@ function applyRecords({ records, meta, changedFrom, prepended }) {
   for (let i = sizes.length; i < records.length; i++) sizes[i] = recordTextSize(records[i]);
   if (metaArrived) { renderHeader(); refreshFleets(); }
   recordState.taskTargets = taskRecordTargets(meta?.tasks || [], records);
-  recordState.agentTargets = agentRecordTargets(directAgents(meta), records);
+  recordState.agentTargets = agentTargetsNow(records, meta);
   // #314: a tail-first open's head landed in front of the tail. The first unit after the pending
   // card keeps its key; how far it moved is how many units now stand where the card stood.
-  const after = prepended ? projection.units.find(unit => unit.type !== "pending")?.key : null;
-  const was = after ? projection.units.findIndex(unit => unit.key === after) : -1;
+  // Found by its first record, not its key (#s277): when the head's records join the tail's first
+  // group of steps, that group is keyed by its first record, in the head — the same content, renamed,
+  // which the engine is told so the reader's anchor resolves.
+  const after = prepended ? projection.units.find(unit => unit.type !== "pending") : null;
+  const was = after ? projection.units.indexOf(after) : -1;
   const changedUnit = projection.rebuild(records, changedFrom);
   recordState.units = projection.units;
-  const shift = after ? Math.max(0, projection.units.findIndex(unit => unit.key === after) - was) : 0;
-  viewport.setUnits(recordState.units, changedUnit, shift);
+  const now = after ? unitAt(after.from) : -1;
+  const shift = now >= 0 ? Math.max(0, now - was) : 0;
+  const renamed = now >= 0 && recordState.units[now].key !== after.key ? { [after.key]: recordState.units[now].key } : null;
+  viewport.setUnits(recordState.units, changedUnit, shift, renamed);
   // The head landed whole (stage 1), or a pull replaced it: the index answers for nothing now. A
   // stage-2 prepend (the placeholders laid out) leaves the head out and the index with it.
   if (prepended && !recordStore.head) recordState.headIndex = null;
@@ -919,6 +924,14 @@ function stubFor(index) {
   };
 }
 
+/** The sub-agents' records: those here, and (#s277) the index's for the ones still on their way, so
+ *  an agent's jump reads its turn and lands. */
+function agentTargetsNow(records, meta = recordState.meta) {
+  const targets = agentRecordTargets(directAgents(meta), records);
+  for (const agent of owedIndex()?.agents || []) if (!targets.has(agent.id) && records[agent.r]?.kind === "pending") targets.set(agent.id, agent.r);
+  return targets;
+}
+
 /** The unit that holds record `r`, by its index, or -1. */
 function unitAt(r) {
   const units = recordState.units;
@@ -953,9 +966,9 @@ function fillMustWait({ from, to }) {
   const a = unitAt(from), b = unitAt(to - 1);
   if (a < 0 || b < 0) return true;
   if (b < viewport.lo || a >= viewport.hi) return false;
-  const p = viewport.position;
-  const at = !p ? Infinity : p.source === "tail" ? recordState.units.length - 1 : p.index ?? Infinity;
-  return a <= at && (viewport.dragging || viewport.touchGlide || viewport.readerMoving());
+  // Any fill that would redraw a mounted unit waits while the view moves: the engine's position can
+  // be a scroll batch old there, so "below the reader" is not known well enough to let one in.
+  return viewport.dragging || viewport.touchGlide || viewport.readerMoving();
 }
 function applyFill({ from, to }) {
   const records = recordStore.records;
@@ -966,7 +979,7 @@ function applyFill({ from, to }) {
   if (!run) { recordStore.recover(); return; }
   recordState.units = projection.units;
   recordState.taskTargets = taskRecordTargets(recordState.meta?.tasks || [], records);
-  recordState.agentTargets = agentRecordTargets(directAgents(recordState.meta), records);
+  recordState.agentTargets = agentTargetsNow(records);
   viewport.setUnits(recordState.units, run);
   landOnHash();
   if (heldTurnJump && viewport.lastUserInput > heldTurnJump.at) heldTurnJump = null;
@@ -993,8 +1006,11 @@ function wantWindow() {
 function jumpOrFetch(r, reveal) {
   heldTurnJump = null;
   const landed = viewport.jumpToRecord(r, reveal);
-  const owed = recordStore.want(r, r + 1, 0);
-  if (!landed && owed) { heldTurnJump = { record: r, reveal, at: performance.now() }; toast("Still loading — the page goes there when it arrives"); }
+  // Whether it must wait is the unit's to say — owed records, read or not yet taken — never the
+  // store's alone, which knows nothing of a piece waiting to go in.
+  const unit = recordState.units[unitAt(r)];
+  if (unit?.owed > 0) recordStore.want(unit.from, unit.to + 1, 0);
+  if (!landed && (unit?.owed > 0 || recordState.records[r]?.kind === "pending")) { heldTurnJump = { record: r, reveal, at: performance.now() }; toast("Still loading — the page goes there when it arrives"); }
   return landed;
 }
 
@@ -1002,7 +1018,7 @@ function jumpOrFetch(r, reveal) {
  *  index's facts — a turn's opener by its own id, a block by the nearest record id at or below it
  *  (ids number blocks in document order, nested ones after their record's) — or -1. */
 function owedRecordFor(id) {
-  const facts = recordState.headIndex?.facts;
+  const facts = recordStore.windowed ? recordState.headIndex?.facts : null;
   if (!facts) return -1;
   const block = /^b(\d+)$/.exec(id);
   let best = -1, bestN = -1;
@@ -1037,7 +1053,15 @@ function landOnHash() {
     return false;
   }
   for (const rid of chain) recordState.folds.set(rid, false);
-  if (!viewport.jumpToRecord(index, "hash")) { recordStore.want(index, index + 1, 0); return false; }
+  if (!viewport.jumpToRecord(index, "hash")) {
+    // Here, but its unit still owes records (#s277): the same wait, which a reader who moves ends.
+    if (hashWait?.identity !== identity) hashWait = { identity, at: performance.now() };
+    else if (viewport.lastUserInput > hashWait.at) { landedHash = identity; hashWait = null; return false; }
+    const unit = recordState.units[unitAt(index)];
+    if (unit?.owed > 0) recordStore.want(unit.from, unit.to + 1, 0);
+    return false;
+  }
+  hashWait = null;
   landedHash = identity;
   const nested = chain.length > 1 ? viewport.window.querySelector(`[data-record-id="${CSS.escape(id)}"]`) : null;
   if (nested) {
@@ -3329,7 +3353,9 @@ function openTaskPopover(index, opener) {
   if (!task) return;
   const key = String(task.id ?? index);
   const d = taskDetails(task, recordState.taskTargets.get(key) ?? null);
-  const jump = d.target == null
+  const jump = d.target == null && recordStore.head
+    ? `<button type="button" class="task-popover-jump" disabled title="The session's earlier turns are still loading">Go to the turn — still loading</button>`
+    : d.target == null
     ? `<button type="button" class="task-popover-jump" disabled title="This record stream did not keep where the task's status was set">Go to the turn — not kept in this stream</button>`
     : `<button type="button" class="task-popover-jump" data-task-record="${d.target}">Go to the turn where this task's status was recorded</button>`;
   // The card's anatomy is the shared module's (#125): the glyph, the chips, the

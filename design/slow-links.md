@@ -185,7 +185,9 @@ the search's per-record sizes.
 **A fill at or above the reader waits for a still view** (D5). A fill that would redraw a mounted
 unit at or above `P` waits until #340's `whenStill` (no finger down, no recent input, no scroll
 event for 200 ms, two reads of the offset agreeing) and no scrollbar thumb is held. Then it lands
-in one transaction, placed before paint. A fill below `P`, or outside the window, lands at once.
+in one transaction, placed before paint. A fill outside the window lands at once. (As built, any fill
+that would redraw a mounted unit waits while the view moves, below `P` too: the engine's position
+can be a scroll batch old while the reader moves, so "below the reader" is not known well enough.)
 
 **How each invariant holds** (I-numbers as in the framework's §2):
 
@@ -382,9 +384,28 @@ What changed between this design and the code, each decided in the build:
   placement, as a yielded correction does (#372).
 - **A process group's placeholder says how much of it has arrived** ("Loading — 12 of 40 steps"); a
   prompt's shows its turn number and label.
+- **A group of steps that reaches into the tail is the live turn's.** A tail that starts in the middle
+  of a long turn holds no prompt, and its steps join the head's group, keyed by its first record, in
+  the head. That group is drawn with what has arrived (its count says how many earlier steps are still
+  loading), measured as any unit is, never as a placeholder: drawn as one, it hid the live tail until
+  the head's part of the turn arrived. When the index lands, the page tells the engine the group's new
+  key (`renamed` beside the prepend's `shift`), so a reader inside it keeps the step they were reading;
+  the shift is found by the unit's first record, not its old key. A prompt still on its way stays a
+  placeholder.
+- **Every piece is read as a stream**, keeping each record it finishes, as #s274's head reader does.
+- **A jump decides whether it must wait from its unit** (it owes records, read or not yet taken), and
+  a link waiting on a unit gives way to a reader who moves, whether or not its record has arrived. The
+  desktop's links keep stage 1's rule, waiting for the head.
+- **Agents still on their way get their targets from the index**, so an agent's jump reads its turn
+  and lands; a task's says "still loading" while the head is out.
+- **The task and agent targets are recomputed on each fill** (a scan of the records, cheap beside a
+  render); the projection and the redraw go by the run, as §6.3 says.
+- **The sandbox's fill builder and a saved history of a walk with many fills (§6.9) are not built:**
+  #s281. The history records each fill's run, and the browser cases drive real fills.
 - **The cases** are `tests/records_by_turn.rs`: the index lands and nothing moves the reader (a far fill
   redraws no mounted element), the tail stays followed through every fill, a fill at or above the
   reader waits through a glide and under a finger, a turn tap lands at once and is read first, a link
   lands on its row unless the reader moves, the tail grows and a queued prompt is picked up while the
   head fills, a stale epoch starts over, a turn of many records shows its prompt from its first piece,
-  and a placeholder is never measured and moves no mean. Removing the fill hold fails the third.
+  a placeholder is never measured and moves no mean, and a tail with no prompt stays drawn while its
+  turn fills, its reader on their step. Removing the fill hold fails the third.

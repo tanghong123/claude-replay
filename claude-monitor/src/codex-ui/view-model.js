@@ -467,6 +467,9 @@ export class Projection {
     // kind, id and, for a turn's opener, number and label, from the turn index — so the units over
     // it are the ones the records will make, keyed as they will be. Null: one card for the head.
     this.stub = null;
+    // Where the tail begins (the index's `upto`): a group of steps that reaches past it is the live
+    // turn's, and is drawn with what has arrived, never as a placeholder (`placeholderUnit`).
+    this.upto = Infinity;
   }
   rebuild(records, changedFrom = 0) {
     // Desktop attachments are separate canonical records immediately after their prompt. When
@@ -495,7 +498,7 @@ export class Projection {
       }
     }
     const prefix = this.units.slice(0, keep);
-    const units = buildUnits(records, changedFrom, prefix.at(-1)?.turn || 0, records.length, this.stub);
+    const units = buildUnits(records, changedFrom, prefix.at(-1)?.turn || 0, records.length, this.stub, this.upto);
     this.units = prefix.concat(units);
     return keep;
   }
@@ -511,14 +514,22 @@ export class Projection {
     while (a < units.length && units[a].to < from) a++;
     while (b >= 0 && units[b].from >= to) b--;
     if (a > b) return null;
-    const rebuilt = buildUnits(records, units[a].from, units[a - 1]?.turn || 0, units[b].to + 1, this.stub);
+    const rebuilt = buildUnits(records, units[a].from, units[a - 1]?.turn || 0, units[b].to + 1, this.stub, this.upto);
     if (rebuilt.length !== b - a + 1 || rebuilt.some((unit, k) => unit.key !== units[a + k].key || unit.to !== units[a + k].to)) return null;
     this.units = units.slice(0, a).concat(rebuilt, units.slice(b + 1));
     return { from: a, to: b + 1 };
   }
 }
 
-function buildUnits(records, from, turn, end = records.length, stub = null) {
+/** #s277 (design/slow-links.md §6.2): is this unit drawn as a placeholder? One that still owes
+ *  records is — except a group of steps that reaches into the tail: that is the live turn's (a tail
+ *  that starts in the middle of a long turn holds nothing else), and it is drawn with what has
+ *  arrived, measured as any unit is, while its earlier steps are on their way. */
+export function placeholderUnit(unit) {
+  return (unit?.owed || 0) > 0 && !(unit.type === "process" && unit.live);
+}
+
+function buildUnits(records, from, turn, end = records.length, stub = null, upto = Infinity) {
   const units = [];
   let process = null;
   const flush = () => { if (process) units.push(process); process = null; };
@@ -563,6 +574,7 @@ function buildUnits(records, from, turn, end = records.length, stub = null) {
     } else {
       if (!process) process = { type: "process", key: `process:${record.id || i}`, from: i, to: i, turn, views: [], owed: 0 };
       process.to = i; process.owed += unpaid;
+      if (i >= upto) process.live = true;
       if (view) process.views.push({ index: i, view });
     }
   }

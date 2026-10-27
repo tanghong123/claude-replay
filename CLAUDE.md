@@ -1325,9 +1325,11 @@ reader across a network's path (`WINDOWED`: not `revealHere()`; `?windowed=1|0` 
 desktop keeps stage 1). When the index lands, the card gives way to the units every earlier turn will
 make, keyed as they will be: the index reply carries each record's kind, commentary bit and id
 (`facts`), and the page's own `buildUnits` groups them (`Projection.stub`); a unit owes (`owed`)
-until its last record is here, and is a PLACEHOLDER (`placeholderAt`), which the engine draws at its
-height in the sums (margins included), never measures and never learns from, refitting the mounted
-ones wherever the applied estimate moves. The store reads the head turn by turn from the index's map
+until its last record is here, and is a PLACEHOLDER (`placeholderUnit`, `placeholderAt`), which the
+engine draws at its height in the sums (margins included), never measures and never learns from,
+refitting the mounted ones wherever the applied estimate moves — except a group of steps that reaches
+into the tail (`live`: a tail that starts mid-turn holds no prompt), the live turn's, drawn with what
+has arrived; the landing tells the engine its new key (`renamed`), found by its first record. The store reads the head turn by turn from the index's map
 (`startReads`): a jump's turn first, then what the window shows (`wantWindow`, after every
 transaction), then the rest from the tail backwards, in pieces of `headPiece` whose records must be the
 ones the facts describe (else the session starts over), each waiting until the page takes it
@@ -1339,7 +1341,7 @@ unless the reader moves first (`jumpOrFetch`, `owedRecordFor`). While the head i
 for the records below `upto` and the scans only for those above it (`scanFrom`). The pending card is
 an estimator kind of its own (it used to teach the process mean). A measure the observer delivers late,
 after the reader scrolled into a pad, mounts the window where they are. The cases are
-`tests/records_by_turn.rs` (ports 2770–2778, with a shim that queues the head's reads). The rest of
+`tests/records_by_turn.rs` (ports 2770–2779, with a shim that queues the head's reads). The rest of
 the slow-link work is `design/slow-links.md`.
 
 **`claude-replay`** (root) — the thin assembly crate: clap CLI (`run_viewer`), `jdi/` the
