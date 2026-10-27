@@ -135,8 +135,7 @@ const ANCHOR: &str = r#"(function(){
 
 fn anchor(tab: &headless_chrome::Tab) -> (String, f64) {
     let v: serde_json::Value =
-        serde_json::from_str(harness::eval(tab, ANCHOR).as_str().expect("a unit in view"))
-            .unwrap();
+        serde_json::from_str(harness::eval(tab, ANCHOR).as_str().expect("a unit in view")).unwrap();
     (
         v["key"].as_str().unwrap().to_string(),
         v["top"].as_f64().unwrap(),
@@ -206,12 +205,21 @@ fn the_index_lays_the_session_out_and_no_fill_moves_the_reader() {
     std::thread::sleep(Duration::from_millis(500));
     let (key, top) = anchor(&tab);
     harness::eval(&tab, "window.__releaseIndex(); 1");
-    harness::until(&tab, LAID_OUT, "the placeholders laid out", Duration::from_secs(10), STATE);
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
     std::thread::sleep(Duration::from_millis(400));
     let laid = state(&tab);
     assert_eq!(laid["rows"], 60, "every turn is in the Turns pane: {laid}");
     assert_eq!(laid["count"], "60", "…and counted: {laid}");
-    assert!(laid["pending"].as_i64().unwrap() > 40, "most still coming: {laid}");
+    assert!(
+        laid["pending"].as_i64().unwrap() > 40,
+        "most still coming: {laid}"
+    );
     let after = top_of(&tab, &key).expect("the reader's turn is still mounted");
     assert!(
         (after - top).abs() <= 1.0,
@@ -238,9 +246,16 @@ fn the_index_lays_the_session_out_and_no_fill_moves_the_reader() {
     );
     std::thread::sleep(Duration::from_millis(300));
     let kept = harness::eval(&tab, "window.__marked.filter(function (e) { return e.isConnected; }).length === window.__marked.length");
-    assert_eq!(kept.as_bool(), Some(true), "a fill outside the window redraws no mounted element");
+    assert_eq!(
+        kept.as_bool(),
+        Some(true),
+        "a fill outside the window redraws no mounted element"
+    );
     let after = top_of(&tab, &key).expect("still mounted");
-    assert!((after - top).abs() <= 0.5, "…and moves nothing: {top} → {after}");
+    assert!(
+        (after - top).abs() <= 0.5,
+        "…and moves nothing: {top} → {after}"
+    );
 
     release_until(&tab, WHOLE, "the whole head to arrive");
     std::thread::sleep(Duration::from_millis(400));
@@ -248,7 +263,11 @@ fn the_index_lays_the_session_out_and_no_fill_moves_the_reader() {
     assert_eq!(whole["rows"], 60, "{whole}");
     assert_eq!(whole["pending"], 0, "{whole}");
     assert_eq!(whole["count"], "60", "{whole}");
-    assert_eq!(harness::eval(&tab, VIOLATIONS).as_str(), Some("[]"), "no invariant broken");
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
 }
 
 /// A reader at the tail stays at the tail, still following, while the whole head is filled in above
@@ -258,11 +277,24 @@ fn the_index_lays_the_session_out_and_no_fill_moves_the_reader() {
 fn a_reader_at_the_tail_stays_there_and_following_through_every_fill() {
     let _serial = serial();
     let (_m, _b, tab, _) = open(2771, "by-turn-tail", &session(60), true, false, "");
-    harness::until(&tab, LAID_OUT, "the placeholders laid out", Duration::from_secs(10), STATE);
-    assert!(harness::at_tail(&tab, Surface::AppShell), "the open lands at the tail");
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
+    assert!(
+        harness::at_tail(&tab, Surface::AppShell),
+        "the open lands at the tail"
+    );
     let started = std::time::Instant::now();
     while harness::eval(&tab, WHOLE).as_bool() != Some(true) {
-        assert!(started.elapsed() < Duration::from_secs(60), "the head to arrive: {}", harness::eval(&tab, STATE));
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the head to arrive: {}",
+            harness::eval(&tab, STATE)
+        );
         harness::eval(&tab, "window.__release(1)");
         std::thread::sleep(Duration::from_millis(150));
         assert!(
@@ -271,7 +303,11 @@ fn a_reader_at_the_tail_stays_there_and_following_through_every_fill() {
             harness::eval(&tab, STATE)
         );
     }
-    assert_eq!(harness::eval(&tab, VIOLATIONS).as_str(), Some("[]"), "no invariant broken");
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
 }
 
 /// D5 (Hong, #s279): a fill that would redraw a mounted unit at or above the reader waits for a
@@ -284,9 +320,16 @@ fn a_reader_at_the_tail_stays_there_and_following_through_every_fill() {
 fn a_fill_at_or_above_the_reader_waits_for_a_still_view() {
     let _serial = serial();
     let (_m, _b, tab, _) = open(2772, "by-turn-still", &session(60), true, false, "");
-    harness::until(&tab, LAID_OUT, "the placeholders laid out", Duration::from_secs(10), STATE);
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
     // A fill is a records change naming the run it rewrote: the history keeps each, with its time.
-    const FILLS: &str = "(window.__viewportHistory.deltas || []).filter(function (d) { return d.to != null; })";
+    const FILLS: &str =
+        "(window.__viewportHistory.deltas || []).filter(function (d) { return d.to != null; })";
     // Up to the head's edge: the last placeholders mounted above the reader.
     for _ in 0..40 {
         let up = harness::eval(&tab, "(function(){ var s = document.querySelector('.transcript'), top = s.getBoundingClientRect().top; return [].slice.call(document.querySelectorAll('.virtual-window > .unit-placeholder')).some(function (e) { return e.getBoundingClientRect().bottom > top - 600; }); })()");
@@ -303,12 +346,22 @@ fn a_fill_at_or_above_the_reader_waits_for_a_still_view() {
         Duration::from_secs(10),
         STATE,
     );
-    let before = harness::eval(&tab, &format!("{FILLS}.length")).as_i64().unwrap();
-    harness::eval(&tab, "setTimeout(function () { window.__release(1); }, 40); 1");
+    let before = harness::eval(&tab, &format!("{FILLS}.length"))
+        .as_i64()
+        .unwrap();
+    harness::eval(
+        &tab,
+        "setTimeout(function () { window.__release(1); }, 40); 1",
+    );
     let (_, writes) = harness::touch_glide(&tab, -240);
     assert_eq!(writes, 0, "nothing is written into the glide");
     let during = harness::eval(&tab, &format!("{FILLS}.filter(function (d) {{ return d.t >= window.__glideT0 && d.t <= window.__glideT1; }}).length")).as_i64().unwrap();
-    assert_eq!(during, 0, "no fill above the reader lands during the glide: {}", harness::eval(&tab, STATE));
+    assert_eq!(
+        during,
+        0,
+        "no fill above the reader lands during the glide: {}",
+        harness::eval(&tab, STATE)
+    );
     let (key, top) = anchor(&tab);
     harness::until(
         &tab,
@@ -319,18 +372,44 @@ fn a_fill_at_or_above_the_reader_waits_for_a_still_view() {
     );
     std::thread::sleep(Duration::from_millis(300));
     let after = top_of(&tab, &key).expect("the reader's turn is mounted");
-    assert!((after - top).abs() <= 1.0, "the reader's turn holds through the fill: {top} → {after}");
+    assert!(
+        (after - top).abs() <= 1.0,
+        "the reader's turn holds through the fill: {top} → {after}"
+    );
 
     // A finger at rest on the glass holds the next one too, until it lifts.
-    harness::until(&tab, "window.__heldReads.length >= 1", "another read waiting", Duration::from_secs(10), STATE);
-    let before = harness::eval(&tab, &format!("{FILLS}.length")).as_i64().unwrap();
+    harness::until(
+        &tab,
+        "window.__heldReads.length >= 1",
+        "another read waiting",
+        Duration::from_secs(10),
+        STATE,
+    );
+    let before = harness::eval(&tab, &format!("{FILLS}.length"))
+        .as_i64()
+        .unwrap();
     harness::eval(&tab, "(function(){ var s = document.querySelector('.transcript'); var t = new Touch({ identifier: 2, target: s, clientX: 200, clientY: 400 }); s.dispatchEvent(new TouchEvent('touchstart', { touches: [t], targetTouches: [t], changedTouches: [t], bubbles: true })); window.__finger = t; window.__release(1); return 1; })()");
     std::thread::sleep(Duration::from_millis(1500));
-    let held = harness::eval(&tab, &format!("{FILLS}.length")).as_i64().unwrap();
+    let held = harness::eval(&tab, &format!("{FILLS}.length"))
+        .as_i64()
+        .unwrap();
     harness::eval(&tab, "(function(){ var s = document.querySelector('.transcript'), t = window.__finger; s.dispatchEvent(new TouchEvent('touchend', { touches: [], targetTouches: [], changedTouches: [t], bubbles: true })); return 1; })()");
-    harness::until(&tab, &format!("{FILLS}.length > {before}"), "the fill once the finger lifts", Duration::from_secs(10), STATE);
-    assert_eq!(held, before, "nothing above the reader is filled while a finger is down");
-    assert_eq!(harness::eval(&tab, VIOLATIONS).as_str(), Some("[]"), "no invariant broken");
+    harness::until(
+        &tab,
+        &format!("{FILLS}.length > {before}"),
+        "the fill once the finger lifts",
+        Duration::from_secs(10),
+        STATE,
+    );
+    assert_eq!(
+        held, before,
+        "nothing above the reader is filled while a finger is down"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
 }
 
 /// A turn tapped in the Turns pane while it is on its way is landed on at once — its placeholder
@@ -341,10 +420,18 @@ fn a_fill_at_or_above_the_reader_waits_for_a_still_view() {
 fn a_turn_tapped_on_its_way_lands_at_once_and_is_read_first() {
     let _serial = serial();
     let (_m, _b, tab, _) = open(2773, "by-turn-tap", &session(60), false, false, "");
-    harness::until(&tab, LAID_OUT, "the placeholders laid out", Duration::from_secs(10), STATE);
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
     std::thread::sleep(Duration::from_millis(400));
     let o5 = turn_offset(&tab, 5);
-    let held = harness::eval(&tab, "window.__heldReads.length").as_i64().unwrap();
+    let held = harness::eval(&tab, "window.__heldReads.length")
+        .as_i64()
+        .unwrap();
     tab.find_element("#navigatorTurns .outline-turn-pending[data-turn-number=\"5\"]")
         .expect("turn 5 is listed while still coming")
         .click()
@@ -356,12 +443,21 @@ fn a_turn_tapped_on_its_way_lands_at_once_and_is_read_first() {
     );
     assert!(top < 120.0, "turn 5 is at the top of the view: {top}");
     let label = harness::eval(&tab, "(document.querySelector('.virtual-window > [data-unit-key=\"user:t5\"]') || {}).textContent || ''");
-    assert!(label.as_str().unwrap_or("").contains("Turn 5"), "its placeholder names the turn: {label}");
+    assert!(
+        label.as_str().unwrap_or("").contains("Turn 5"),
+        "its placeholder names the turn: {label}"
+    );
     // The read asked for before the tap goes; the next is turn 5's.
     if held > 0 {
         harness::eval(&tab, "window.__release(1)");
     }
-    harness::until(&tab, "window.__heldReads.length >= 1", "a read waiting", Duration::from_secs(10), STATE);
+    harness::until(
+        &tab,
+        "window.__heldReads.length >= 1",
+        "a read waiting",
+        Duration::from_secs(10),
+        STATE,
+    );
     assert_eq!(
         harness::eval(&tab, "window.__heldReads[0].from").as_i64(),
         Some(o5),
@@ -375,10 +471,21 @@ fn a_turn_tapped_on_its_way_lands_at_once_and_is_read_first() {
     );
     std::thread::sleep(Duration::from_millis(400));
     let now = top_of(&tab, &key).expect("turn 5 mounted");
-    assert!((now - top).abs() <= 1.0, "turn 5 keeps its top while it fills: {top} → {now}");
+    assert!(
+        (now - top).abs() <= 1.0,
+        "turn 5 keeps its top while it fills: {top} → {now}"
+    );
     let named = harness::eval(&tab, "JSON.stringify([document.getElementById('turnSubtitle').textContent.slice(0, 7), ((document.querySelector('#navigatorTurns .outline-turn-row.current') || {}).dataset || {}).turnNumber])");
-    assert_eq!(named.as_str(), Some("[\"Turn 5 \",\"5\"]"), "the subtitle and the Turns pane name it");
-    assert_eq!(harness::eval(&tab, VIOLATIONS).as_str(), Some("[]"), "no invariant broken");
+    assert_eq!(
+        named.as_str(),
+        Some("[\"Turn 5 \",\"5\"]"),
+        "the subtitle and the Turns pane name it"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
 }
 
 /// A link to a record nested in a turn still on its way lands on its row, its folds open, once that
@@ -389,12 +496,25 @@ fn a_turn_tapped_on_its_way_lands_at_once_and_is_read_first() {
 fn a_link_into_a_turn_on_its_way_lands_on_its_row_unless_the_reader_moves() {
     let _serial = serial();
     let (_m, _b, tab, _) = open(2774, "by-turn-link", &session(60), false, false, "");
-    harness::until(&tab, LAID_OUT, "the placeholders laid out", Duration::from_secs(10), STATE);
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
     // The record a link names: the first call nested in turn 7's first group of steps.
     let facts = harness::eval(&tab, "(async function(){ var r = await fetch('/turn-index?session=SID&epoch=1&upto=1000000'); var j = await r.json(); return JSON.stringify(j.facts || []); })()".replace("SID", SID).as_str());
-    let facts: Vec<serde_json::Value> = serde_json::from_str(facts.as_str().unwrap_or("[]")).unwrap_or_default();
-    let t7 = facts.iter().position(|f| f[1] == "t7").expect("turn 7 in the facts");
-    let act = facts[t7..].iter().find(|f| f[0] == "act").expect("a group of steps in turn 7");
+    let facts: Vec<serde_json::Value> =
+        serde_json::from_str(facts.as_str().unwrap_or("[]")).unwrap_or_default();
+    let t7 = facts
+        .iter()
+        .position(|f| f[1] == "t7")
+        .expect("turn 7 in the facts");
+    let act = facts[t7..]
+        .iter()
+        .find(|f| f[0] == "act")
+        .expect("a group of steps in turn 7");
     let id: u64 = act[1].as_str().unwrap()[1..].parse().unwrap();
     let nested = format!("b{}", id + 1);
     harness::eval(&tab, &format!("location.hash = '{nested}'; 1"));
@@ -414,7 +534,10 @@ fn a_link_into_a_turn_on_its_way_lands_on_its_row_unless_the_reader_moves() {
 
     // Another link, and the reader moves before its turn arrives: it stays where they moved.
     let t3 = facts.iter().position(|f| f[1] == "t3").expect("turn 3");
-    let act3 = facts[t3..].iter().find(|f| f[0] == "act").unwrap()[1].as_str().unwrap().to_string();
+    let act3 = facts[t3..].iter().find(|f| f[0] == "act").unwrap()[1]
+        .as_str()
+        .unwrap()
+        .to_string();
     harness::eval(&tab, &format!("location.hash = '{act3}'; 1"));
     std::thread::sleep(Duration::from_millis(300));
     harness::scroll_by(&tab, Surface::AppShell, 400);
@@ -423,8 +546,15 @@ fn a_link_into_a_turn_on_its_way_lands_on_its_row_unless_the_reader_moves() {
     release_until(&tab, WHOLE, "the whole head to arrive");
     std::thread::sleep(Duration::from_millis(500));
     let now = top_of(&tab, &key).expect("the reader's turn is still mounted");
-    assert!((now - top).abs() <= 2.0, "a link the reader moved away from does not pull them back: {top} → {now}");
-    assert_eq!(harness::eval(&tab, VIOLATIONS).as_str(), Some("[]"), "no invariant broken");
+    assert!(
+        (now - top).abs() <= 2.0,
+        "a link the reader moved away from does not pull them back: {top} → {now}"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
 }
 
 /// The tail grows and a queued prompt is picked up (#165) while the head is filled in: both apply,
@@ -434,7 +564,13 @@ fn a_link_into_a_turn_on_its_way_lands_on_its_row_unless_the_reader_moves() {
 fn the_tail_grows_while_the_head_fills() {
     let _serial = serial();
     let (_m, _b, tab, path) = open(2775, "by-turn-growth", &session(60), false, false, "");
-    harness::until(&tab, LAID_OUT, "the placeholders laid out", Duration::from_secs(10), STATE);
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
     for i in 0..6 {
         harness::eval(&tab, "window.__release(1)");
         let now = harness::now_minus(0);
@@ -446,12 +582,29 @@ fn the_tail_grows_while_the_head_fills() {
             harness::append(&path, &harness::assistant_at("picked up", &now));
         }
         std::thread::sleep(Duration::from_millis(700));
-        assert!(harness::at_tail(&tab, Surface::AppShell), "at the tail after step {i}: {}", harness::eval(&tab, STATE));
+        assert!(
+            harness::at_tail(&tab, Surface::AppShell),
+            "at the tail after step {i}: {}",
+            harness::eval(&tab, STATE)
+        );
     }
     release_until(&tab, WHOLE, "the whole head to arrive");
-    harness::until(&tab, "document.querySelectorAll('#navigatorTurns .outline-turn-row').length === 61", "the new turn in the Turns pane", Duration::from_secs(10), STATE);
-    assert!(harness::at_tail(&tab, Surface::AppShell), "still at the tail");
-    assert_eq!(harness::eval(&tab, VIOLATIONS).as_str(), Some("[]"), "no invariant broken");
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length === 61",
+        "the new turn in the Turns pane",
+        Duration::from_secs(10),
+        STATE,
+    );
+    assert!(
+        harness::at_tail(&tab, Surface::AppShell),
+        "still at the tail"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
 }
 
 /// The head's read is refused with a stale epoch part way through: the session starts over, and
@@ -461,9 +614,21 @@ fn the_tail_grows_while_the_head_fills() {
 fn a_stale_epoch_while_the_head_fills_starts_over() {
     let _serial = serial();
     let (_m, _b, tab, _) = open(2776, "by-turn-409", &session(60), false, false, "");
-    harness::until(&tab, LAID_OUT, "the placeholders laid out", Duration::from_secs(10), STATE);
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
     harness::eval(&tab, "window.__release(2)");
-    harness::until(&tab, "window.__heldReads.length >= 1", "a read waiting", Duration::from_secs(10), STATE);
+    harness::until(
+        &tab,
+        "window.__heldReads.length >= 1",
+        "a read waiting",
+        Duration::from_secs(10),
+        STATE,
+    );
     harness::eval(&tab, "window.__answer409 = 1; window.__release(1); 1");
     harness::until(
         &tab,
@@ -472,10 +637,18 @@ fn a_stale_epoch_while_the_head_fills_starts_over() {
         Duration::from_secs(15),
         STATE,
     );
-    release_until(&tab, WHOLE, "the head to be read whole after the start over");
+    release_until(
+        &tab,
+        WHOLE,
+        "the head to be read whole after the start over",
+    );
     let whole = state(&tab);
     assert_eq!(whole["rows"], 60, "{whole}");
-    assert_eq!(harness::eval(&tab, VIOLATIONS).as_str(), Some("[]"), "no invariant broken");
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
 }
 
 /// A turn of many records shows its prompt from its first piece: the prompt is whole, and the
@@ -488,13 +661,23 @@ fn a_large_turn_shows_its_prompt_from_its_first_piece() {
     // Forty edits, each a record of its own (Bash and Read would fold into one), so the group of
     // steps behind the prompt spans many pieces.
     for k in 0..40 {
-        jsonl += &harness::edit_tool_at(&format!("x{k}"), &format!("/r/petrel-{k}.rs"), &harness::at("00:02"));
+        jsonl += &harness::edit_tool_at(
+            &format!("x{k}"),
+            &format!("/r/petrel-{k}.rs"),
+            &harness::at("00:02"),
+        );
         jsonl += &harness::tool_result_at(&format!("x{k}"), &harness::at("00:02"));
     }
     jsonl += &harness::assistant_at("done with the big one", &harness::at("00:03"));
     jsonl += &session(40);
     let (_m, _b, tab, _) = open(2777, "by-turn-large", &jsonl, false, false, "");
-    harness::until(&tab, LAID_OUT, "the placeholders laid out", Duration::from_secs(10), STATE);
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
     tab.find_element("#navigatorTurns .outline-turn-row[data-turn-number=\"1\"]")
         .expect("turn 1 listed")
         .click()
@@ -510,7 +693,11 @@ fn a_large_turn_shows_its_prompt_from_its_first_piece() {
         "the group of steps behind it is still coming, and says how much of it has arrived: {process}"
     );
     release_until(&tab, WHOLE, "the whole head to arrive");
-    assert_eq!(harness::eval(&tab, VIOLATIONS).as_str(), Some("[]"), "no invariant broken");
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
 }
 
 /// A placeholder teaches the estimator nothing: the means the engine applied before the index
@@ -521,14 +708,26 @@ fn a_large_turn_shows_its_prompt_from_its_first_piece() {
 fn placeholders_teach_the_estimator_nothing() {
     let _serial = serial();
     let (_m, _b, tab, _) = open(2778, "by-turn-estimates", &session(60), false, true, "");
-    harness::until(&tab, "document.querySelector('.turn.pending-head') && window.__heldIndex.length === 1", "the short card while the index is held", Duration::from_secs(10), STATE);
+    harness::until(
+        &tab,
+        "document.querySelector('.turn.pending-head') && window.__heldIndex.length === 1",
+        "the short card while the index is held",
+        Duration::from_secs(10),
+        STATE,
+    );
     std::thread::sleep(Duration::from_millis(600));
     // The history keeps the default kind's means (a group of steps, the kind most placeholders are):
     // the applied estimate and the live mean behind it.
     const MEANS: &str = "JSON.stringify((function(){ var s = window.__viewportHistory.states; var last = s[s.length - 1] || {}; return last.live == null ? null : [last.estimate, last.live]; })())";
     let before = harness::eval(&tab, MEANS);
     harness::eval(&tab, "window.__releaseIndex(); 1");
-    harness::until(&tab, LAID_OUT, "the placeholders laid out", Duration::from_secs(10), STATE);
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
     // Walk up through the placeholders, mounting dozens of them, and note each one mounted.
     const SEEN: &str = "(function(){ window.__seen = window.__seen || {}; [].forEach.call(document.querySelectorAll('.virtual-window > .unit-placeholder'), function (e) { window.__seen[e.dataset.unitIndex] = 1; }); return Object.keys(window.__seen).length; })()";
     for _ in 0..6 {
@@ -541,9 +740,21 @@ fn placeholders_teach_the_estimator_nothing() {
     assert!(seen > 20, "the walk mounted dozens of placeholders: {seen}");
     // None of them was ever measured: the export keeps a measured height per item, null for none.
     let measured = harness::eval(&tab, "(function(){ var items = window.__viewportHistory.export().session.items; return Object.keys(window.__seen).filter(function (i) { return items[i] && items[i][1] != null; }).length; })()");
-    assert_eq!(measured.as_i64(), Some(0), "a placeholder is never measured");
+    assert_eq!(
+        measured.as_i64(),
+        Some(0),
+        "a placeholder is never measured"
+    );
     let after = harness::eval(&tab, MEANS);
-    assert_ne!(before.as_str(), Some("null"), "the history records the estimates");
+    assert_ne!(
+        before.as_str(),
+        Some("null"),
+        "the history records the estimates"
+    );
     assert_eq!(before, after, "mounting placeholders moved no mean");
-    assert_eq!(harness::eval(&tab, VIOLATIONS).as_str(), Some("[]"), "no invariant broken");
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
 }
