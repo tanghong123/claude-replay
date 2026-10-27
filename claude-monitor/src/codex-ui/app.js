@@ -1834,11 +1834,13 @@ function updateSearch(reset) {
   // #s278: text typed but not submitted (search on Enter) is not searched by a fill, a pull or an
   // answer arriving. A search started any other way — Enter, a scope row, whole words, a chip's ✕ —
   // submits the box as it stands, ends a step still waiting on the last query's answer, and asks
-  // again where that answer gave up.
+  // again where an answer gave up, the search's or the filter's.
+  let refilter = false;
   if (reset) {
     recordState.pendingSearch = false;
     stepWhenFound = null;
     if (remoteSearch?.found?.failed) remoteSearch = null;
+    if (remoteFilter?.found?.failed) { remoteFilter = null; refilter = true; }
   } else if (recordState.pendingSearch) return;
   // The chips and the typed text together are the query (#303): a chip is a facet frozen out of
   // the text, so it is parsed exactly as the token it was.
@@ -1894,6 +1896,7 @@ function updateSearch(reset) {
     if (inScope) { recordState.matches.push(index); total += inScope; }
   });
   if (toolsChanged) applyToolFilter();
+  else if (refilter) refreshFilterHits();
   for (const k of CLASS_ORDER) { const cell = byId("scopeRow").querySelector(`[data-scope-count="${k}"]`); if (cell) cell.textContent = query ? String(classCounts[k]) : ""; }
   if (reset) { recordState.match = recordState.matches.length ? 0 : -1; recordState.landed = null; }
   else {
@@ -2183,6 +2186,9 @@ function remoteFound(q) {
   const held = q.lc ? remoteSearch : remoteFilter;
   if (held?.key === key) return { ready: !!held.found, found: held.found };
   const mine = { key, found: null, tries: 0 };
+  // A step waiting on the answer this one replaces (the same query read anew: a session letter that
+  // moved to another tool) waits on this one instead.
+  if (held && stepWhenFound?.slot === held) stepWhenFound.slot = mine;
   if (q.lc) remoteSearch = mine; else remoteFilter = mine;
   askRemote(mine, q, head, owed);
   return { ready: false, found: null };
@@ -2524,7 +2530,14 @@ byId("transcriptSearchInput").addEventListener("keydown", event => {
   }
 }, true);
 wholeWords.onclick = () => { uiState.searchWhole = !uiState.searchWhole; applyScopeFromMenu(); renderFilterMenu(); };
-byId("findNext").onclick = () => stepSearch(1); byId("findPrev").onclick = () => stepSearch(-1);
+byId("findNext").onclick = () => stepFromBox(1); byId("findPrev").onclick = () => stepFromBox(-1);
+/** A step from the box's arrows or keys: text typed and not yet entered is entered first, as Enter
+ *  enters it (#s278) — stepping the last query's hits under new text read as stepping the new one,
+ *  and over a slow link those hits were the tail's alone. */
+function stepFromBox(delta) {
+  if (recordState.pendingSearch) updateSearch(true);
+  stepSearch(delta);
+}
 
 function toolNames(records, into = []) {
   for (const record of records || []) {
@@ -3776,7 +3789,7 @@ const keyActions = {
   "search": () => { if (indexState.selected) { setPhoneSearch(true); byId("transcriptSearchInput").focus(); } else openGlobalSearch(); },
   "turn-next": () => stepTurn(1), "turn-prev": () => stepTurn(-1),
   "head-next": () => stepHead(1), "head-prev": () => stepHead(-1),
-  "hit-next": () => stepSearch(1), "hit-prev": () => stepSearch(-1),
+  "hit-next": () => stepFromBox(1), "hit-prev": () => stepFromBox(-1),
   "wrap": () => setReading({ wrap: !uiState.reading.wrap }),
   "size-down": () => setReading({ size: uiState.reading.size - SIZE_STEP }), "size-up": () => setReading({ size: uiState.reading.size + SIZE_STEP }),
   "page-down": () => pageTranscript(1), "page-up": () => pageTranscript(-1),

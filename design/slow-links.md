@@ -504,7 +504,9 @@ server keeps no lowercased text.
   server answers 503 for a log it cannot read.
 - **Any search a control starts submits the box as it stands** (Enter, a scope row, whole words, a
   chip's ✕), so its answer is counted when it lands; only a fill or an answer arriving leaves text that
-  was typed and not entered alone.
+  was typed and not entered alone. The step arrows and their keys enter typed text first, as Enter
+  does: stepping the last query's hits under new text read as stepping the new one, and over a slow
+  link those hits were the tail's alone.
 - **A masked client is searched as masked** (the review's finding): the counts over unmasked text would
   have differed from the page's own and answered, a query at a time, what the mask hides.
 - **The parity test** runs 4,165 queries; a word class from `char::is_alphanumeric` and the entities

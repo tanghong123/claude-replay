@@ -1342,7 +1342,7 @@ unless the reader moves first (`jumpOrFetch`, `owedRecordFor`). While the head i
 for the records below `upto` and the scans only for those above it (`scanFrom`). The pending card is
 an estimator kind of its own (it used to teach the process mean). A measure the observer delivers late,
 after the reader scrolled into a pad, mounts the window where they are. The cases are
-`tests/records_by_turn.rs` (ports 2770–2782, with a shim that queues the head's reads). **Search on
+`tests/records_by_turn.rs` (ports 2770–2779 and 2785–2789, with a shim that queues the head's reads). **Search on
 the server** (#s278, `design/slow-links.md` §7, stage 3): while a records-by-turn head is out, search
 runs on Enter and the server answers for the records below `upto` (`/search?session&epoch&upto&q`,
 the page's structured query — needle, whole words, class mask, resolved tools — never the box's

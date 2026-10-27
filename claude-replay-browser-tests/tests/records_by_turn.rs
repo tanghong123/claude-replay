@@ -11,7 +11,7 @@
 //! The page takes stage 2 for a reader across a network; a case opens a local monitor with
 //! `?windowed=1`, which picks that path, and queues every read of the head (`queue_the_head`) so it
 //! decides when each piece arrives. Searching the earlier turns on the server while the head is out
-//! (#s278, stage 3) is here too. Ports 2770–2783.
+//! (#s278, stage 3) is here too. Ports 2770–2779, and 2785–2789 for stage 3 (the sandbox holds 2780–2781).
 
 mod harness;
 
@@ -861,7 +861,7 @@ fn count_text(tab: &headless_chrome::Tab) -> String {
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_search_while_the_head_is_out_counts_the_whole_session() {
     let _serial = serial();
-    let (_m, _b, tab, _) = open(2780, "by-turn-search", &session(60), false, false, "");
+    let (_m, _b, tab, _) = open(2785, "by-turn-search", &session(60), false, false, "");
     harness::until(
         &tab,
         LAID_OUT,
@@ -913,7 +913,7 @@ fn a_search_while_the_head_is_out_counts_the_whole_session() {
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_step_to_a_hit_still_on_its_way_lands_on_its_mark() {
     let _serial = serial();
-    let (_m, _b, tab, _) = open(2781, "by-turn-step", &session(60), false, false, "");
+    let (_m, _b, tab, _) = open(2786, "by-turn-step", &session(60), false, false, "");
     harness::until(
         &tab,
         LAID_OUT,
@@ -949,7 +949,7 @@ fn a_step_to_a_hit_still_on_its_way_lands_on_its_mark() {
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_filter_counts_records_still_on_their_way() {
     let _serial = serial();
-    let (_m, _b, tab, _) = open(2782, "by-turn-filter", &session(60), false, false, "");
+    let (_m, _b, tab, _) = open(2787, "by-turn-filter", &session(60), false, false, "");
     harness::until(
         &tab,
         LAID_OUT,
@@ -1011,7 +1011,7 @@ fn the_filter_counts_records_still_on_their_way() {
 #[ignore]
 fn a_search_a_control_starts_counts_once_its_answer_lands() {
     let _serial = serial();
-    let (_m, _b, tab, _) = open(2783, "by-turn-control", &session(60), false, false, "");
+    let (_m, _b, tab, _) = open(2788, "by-turn-control", &session(60), false, false, "");
     harness::until(
         &tab,
         LAID_OUT,
@@ -1053,4 +1053,38 @@ fn a_search_a_control_starts_counts_once_its_answer_lands() {
         "the count the control's search landed is the whole session's"
     );
     assert!(n(&held).parse::<u32>().unwrap_or(0) >= 60, "{held}");
+}
+
+/// The step arrows enter text typed and not yet entered, as Enter does (#s278): ↓ over typed text
+/// counts the whole session and lands on a hit, rather than stepping the last query's hits.
+#[test]
+#[ignore]
+fn an_arrow_over_typed_text_enters_it_first() {
+    let _serial = serial();
+    let (_m, _b, tab, _) = open(2789, "by-turn-arrow", &session(60), false, false, "");
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
+    harness::eval(&tab, "(function(){ var i = document.getElementById('transcriptSearchInput'); i.focus(); i.value = 'lorem'; i.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()");
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(count_text(&tab).contains('⏎'), "{}", count_text(&tab));
+    harness::eval(&tab, "document.getElementById('findNext').click()");
+    harness::until(
+        &tab,
+        "/^\\d+ (hit|match)/.test(document.getElementById('transcriptSearchCount').textContent) && !!document.querySelector('mark.search-mark.current')",
+        "the arrow to enter the text, count it and land on a hit",
+        Duration::from_secs(20),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    let n = count_text(&tab)
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .parse::<u32>()
+        .unwrap_or(0);
+    assert!(n >= 60, "the whole session's hits: {}", count_text(&tab));
 }
