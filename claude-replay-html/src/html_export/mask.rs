@@ -216,6 +216,10 @@ pub fn mask_text_bytes(bytes: &mut [u8]) -> usize {
     masked += mask_private_keys(bytes);
     let mut i = 0;
     while i < bytes.len() {
+        if !may_start(bytes[i]) {
+            i += 1;
+            continue;
+        }
         if let Some(end) = token_at(bytes, i).or_else(|| jwt_at(bytes, i)) {
             star(bytes, i, end);
             masked += 1;
@@ -231,6 +235,23 @@ pub fn mask_text_bytes(bytes: &mut [u8]) -> usize {
         i += 1;
     }
     masked
+}
+
+/// Whether a secret's shape can start with `b`: a token's prefix, a JWT's `e`, a bearer's `b`, a URL's
+/// `:`. Every other byte is passed over at once (ordinary text masked 1.5 to 2 times slower when each
+/// byte tried every prefix, #s288).
+fn may_start(b: u8) -> bool {
+    static STARTS: std::sync::OnceLock<[bool; 256]> = std::sync::OnceLock::new();
+    STARTS.get_or_init(|| {
+        let mut t = [false; 256];
+        for tok in TOKENS {
+            t[usize::from(tok.prefix[0])] = true;
+        }
+        for &b in b"ebB:" {
+            t[usize::from(b)] = true;
+        }
+        t
+    })[usize::from(b)]
 }
 
 /// Mask the secrets inside every JSON string of `body` (a JSON document or JSON lines), leaving
@@ -287,23 +308,90 @@ fn star(bytes: &mut [u8], from: usize, to: usize) {
 
 /// A JSON `\uXXXX` escape starts at `k`: a backslash, a `u` and four hex digits.
 fn unicode_escape_at(bytes: &[u8], k: usize) -> bool {
-    bytes.get(k + 1) == Some(&b'u')
+    bytes.get(k) == Some(&b'\\')
+        && bytes.get(k + 1) == Some(&b'u')
         && bytes
             .get(k + 2..k + 6)
             .is_some_and(|h| h.iter().all(u8::is_ascii_hexdigit))
 }
 
 /// A word boundary before `i`: a token never starts inside another word (`risk-` is not `sk-`).
+/// The masker reads a JSON string's RAW bytes, so the end of an escape is a boundary too: a key alone
+/// on a line follows the `n` of `\n`, and a coloured one the `m` of `\u001b[32m`; both read as inside
+/// a word and went out unmasked (#s288). The backslash is not counted: JSON a tool printed carries
+/// its line breaks as `\\n`, and a key after one is as much a key. Dashes that themselves start a
+/// word are a boundary as well: a diff's removed line (`\n-ghp_…`), a flag (`--`). The matchers ask
+/// only where their prefix stands, and no prefix starts with a dash, so each walk back covers its own
+/// run alone and the whole pass stays linear (it once recursed at every byte: a tool's 100,000-dash
+/// rule cost 21 s, and a debug build's stack).
 fn starts_word(bytes: &[u8], i: usize) -> bool {
-    i == 0 || !WORD(bytes[i - 1])
+    if boundary(bytes, i) {
+        return true;
+    }
+    let mut at = i;
+    while at > 0 && bytes[at - 1] == b'-' {
+        at -= 1;
+    }
+    at < i && boundary(bytes, at)
+}
+
+/// The byte before `at` ends a word: none, a non-word byte, an escape, a terminal code.
+fn boundary(bytes: &[u8], at: usize) -> bool {
+    at == 0 || !WORD(bytes[at - 1]) || after_escape(bytes, at) || after_terminal_code(bytes, at)
+}
+
+/// An escape ends right before `i`: `\n`, `\t`, `\r`, `\b`, `\f`, or a whole `\uXXXX`.
+fn after_escape(bytes: &[u8], i: usize) -> bool {
+    (i >= 2 && bytes[i - 2] == b'\\' && b"ntrbf".contains(&bytes[i - 1]))
+        || (i >= 6 && unicode_escape_at(bytes, i - 6))
+}
+
+/// A terminal control sequence ends right before `i`. Either a CSI — ESC `[`, its parameter and
+/// intermediate bytes (space to `?`: digits, `;`, `:`, `?`), a final byte (`@` to `~`): a colour
+/// (`m`), an erased line (`K`, a progress bar's `\r\u001b[K`), a cursor shown or hidden — or a short
+/// escape: ESC, intermediate bytes (space to `/`), a final byte (`0` to `~`), as `ESC ( B` and
+/// `ESC 7`. The ESC is any of its spellings (`esc_ends_at`).
+fn after_terminal_code(bytes: &[u8], i: usize) -> bool {
+    if i < 3 || bytes[i - 1] == b'\\' {
+        return false;
+    }
+    let last = bytes[i - 1];
+    if (0x40..=0x7e).contains(&last) {
+        let mut k = i - 1;
+        while k > 0 && (0x20..=0x3f).contains(&bytes[k - 1]) {
+            k -= 1;
+        }
+        if k > 0 && bytes[k - 1] == b'[' && esc_ends_at(bytes, k - 1) {
+            return true;
+        }
+    }
+    if (0x30..=0x7e).contains(&last) && last != b'[' {
+        let mut k = i - 1;
+        while k > 0 && (0x20..=0x2f).contains(&bytes[k - 1]) {
+            k -= 1;
+        }
+        return esc_ends_at(bytes, k);
+    }
+    false
+}
+
+/// An ESC ends right before `e`: the byte itself (plain text), JSON's `\u001b`, or one a script
+/// printed as text (`\x1b`, `\033`, `\0033`, `\e`).
+fn esc_ends_at(bytes: &[u8], e: usize) -> bool {
+    (e >= 1 && bytes[e - 1] == 0x1b)
+        || (e >= 6
+            && unicode_escape_at(bytes, e - 6)
+            && bytes[e - 4..e].eq_ignore_ascii_case(b"001b"))
+        || (e >= 4
+            && bytes[e - 4] == b'\\'
+            && (bytes[e - 3..e].eq_ignore_ascii_case(b"x1b") || &bytes[e - 3..e] == b"033"))
+        || (e >= 5 && bytes[e - 5] == b'\\' && &bytes[e - 4..e] == b"0033")
+        || (e >= 2 && bytes[e - 2] == b'\\' && matches!(bytes[e - 1], b'e' | b'E'))
 }
 
 fn token_at(bytes: &[u8], i: usize) -> Option<usize> {
-    if !starts_word(bytes, i) {
-        return None;
-    }
     for t in TOKENS {
-        if !bytes[i..].starts_with(t.prefix) {
+        if !bytes[i..].starts_with(t.prefix) || !starts_word(bytes, i) {
             continue;
         }
         let from = i + t.prefix.len();
@@ -323,7 +411,7 @@ fn token_at(bytes: &[u8], i: usize) -> Option<usize> {
 
 /// `eyJ…`.`eyJ…`.`…`: a JSON web token, three base64url segments of some length.
 fn jwt_at(bytes: &[u8], i: usize) -> Option<usize> {
-    if !starts_word(bytes, i) || !bytes[i..].starts_with(b"eyJ") {
+    if !bytes[i..].starts_with(b"eyJ") || !starts_word(bytes, i) {
         return None;
     }
     let seg = |from: usize| {
@@ -348,10 +436,10 @@ fn jwt_at(bytes: &[u8], i: usize) -> Option<usize> {
 /// `Bearer <token>`, any case: the token, not the word.
 fn bearer_at(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
     const WORD_B: &[u8] = b"bearer ";
-    if i + WORD_B.len() > bytes.len() || !starts_word(bytes, i) {
-        return None;
-    }
-    if !bytes[i..i + WORD_B.len()].eq_ignore_ascii_case(WORD_B) {
+    if i + WORD_B.len() > bytes.len()
+        || !bytes[i..i + WORD_B.len()].eq_ignore_ascii_case(WORD_B)
+        || !starts_word(bytes, i)
+    {
         return None;
     }
     let from = i + WORD_B.len();
@@ -408,9 +496,15 @@ fn mask_private_keys(bytes: &mut [u8]) -> usize {
     let mut masked = 0;
     let mut i = 0;
     while let Some(b) = find(bytes, BEGIN, i) {
-        let Some(k) = find(bytes, KEY, b) else { break };
-        // The header is one line: `PRIVATE KEY-----` must close it.
-        if bytes[b..k].contains(&b'\n') || k - b > 64 {
+        // The header is one short line: `PRIVATE KEY-----` closes it within 64 bytes, so it is looked
+        // for there alone (looked for to the end, a flood of headers with one key far after them
+        // scanned the rest of the text once per header: a megabyte took 24 s, #s288).
+        let window = &bytes[b..bytes.len().min(b + 64 + KEY.len())];
+        let Some(k) = find(window, KEY, 0).map(|p| p + b) else {
+            i = b + BEGIN.len();
+            continue;
+        };
+        if bytes[b..k].contains(&b'\n') {
             i = b + BEGIN.len();
             continue;
         }
@@ -591,6 +685,99 @@ mod tests {
         let mut b = br#"{"t":"\uZZ ok"}"#.to_vec();
         star(&mut b, 6, 10);
         assert_eq!(&b, br#"{"t":"\u** ok"}"#);
+    }
+
+    /// #s288: a key after an escape (a line break, a tab) or a colour code starts a word. The
+    /// masker reads raw JSON bytes, where such a key follows a letter, and every one of these went
+    /// out whole.
+    #[test]
+    fn a_key_after_an_escape_or_a_colour_code_is_masked() {
+        let key = fake("sk-ant-api03-", 40, 'A');
+        let ghp = fake("ghp_", 36, 'e');
+        let jwt = format!(
+            "{}.{}.{}",
+            fake("eyJ", 20, 'h'),
+            fake("eyJ", 20, 'i'),
+            fake("", 20, 'j')
+        );
+        let bearer = format!("Bearer {}", fake("", 32, 'k'));
+        let texts = [
+            format!("export it:\n{key}\n"),
+            format!("a\t{key}"),
+            format!("a\r\n{jwt}"),
+            format!("headers:\n{bearer}"),
+            format!("\u{1b}[32m{ghp}\u{1b}[0m"),
+            format!("\u{1b}[1;31m{key}"),
+            // A progress bar redraws its line: CR, erase the line, then the text.
+            format!("50%\r\u{1b}[K{ghp}"),
+            format!("x\u{1b}[2K{key}"),
+            format!("x\u{1b}[?25h{ghp}"),
+            format!("x\u{1b}[38:5:214m{ghp}"),
+            // A diff's removed line, and a colour code a script printed as text.
+            format!("@@ -1 +1 @@\n-{ghp}\n+REDACTED"),
+            format!("echo '\\x1b[32m{ghp}'"),
+            format!("echo -e '\\033[32m{ghp}'"),
+            format!("echo -e '\\0033[32m{ghp}'"),
+            format!("(---{key}"),
+            format!("printf '\\e[1m{key}'"),
+            format!("x\u{1b}(B{ghp}"),
+            format!("x\u{1b}7{ghp}"),
+            // JSON a tool printed: its own escapes arrive as literal `\n` and `\u001b` text.
+            format!("{{\"k\":\"line\\n{key}\"}}"),
+            format!("{{\"k\":\"\\u001b[33m{ghp}\"}}"),
+        ];
+        for text in texts {
+            let doc = serde_json::json!({ "out": text }).to_string();
+            let mut b = doc.clone().into_bytes();
+            assert!(mask_json_bytes(&mut b) >= 1, "nothing masked in {doc}");
+            let out = String::from_utf8(b).unwrap();
+            assert_eq!(out.len(), doc.len(), "same length: {out}");
+            let v: serde_json::Value =
+                serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
+            let got = v["out"].as_str().unwrap();
+            for secret in ["AAAA", "eeee", "hhhh", "kkkk"] {
+                assert!(!got.contains(secret), "{secret} left in {got:?}");
+            }
+        }
+        // Plain text with the colour code's own ESC byte.
+        assert!(!masked(&format!("\u{1b}[32m{ghp}")).contains("eeee"));
+        // Still a word, with bodies long enough to be keys: a prefix inside a longer word after an
+        // escape, a `u` and four hex digits that are no escape, a word ending in a dash.
+        for s in [
+            "\\nrisk-assessment-for-the-quarter-review".to_string(),
+            format!("a\\nx{} end", fake("AKIA", 16, 'B')),
+            "menu1234sk-abcdefghijklmnopqrstuvwxyz".to_string(),
+            "pre-sk-abcdefghijklmnopqrstuvwxyz0123".to_string(),
+        ] {
+            assert_eq!(masked(&s), s, "{s}");
+        }
+    }
+
+    /// A long run of dashes (a tool's horizontal rule) costs a linear pass: the word-start test walks
+    /// back over dashes only where a prefix stands, each walk over its own run. It used to recurse once per dash
+    /// at every byte: 100,000 dashes took 21 s, and overflowed a debug build's stack.
+    #[test]
+    fn a_long_rule_of_dashes_masks_in_linear_time() {
+        let rule = "-".repeat(200_000);
+        let started = std::time::Instant::now();
+        assert_eq!(masked(&rule), rule);
+        // A flood of private-key headers with one key far after them.
+        let (begin, end) = pem_lines("RSA");
+        let flood = format!(
+            "{}{begin}\n{}\n{end}",
+            "-----BEGIN x\n".repeat(80_000),
+            fake("", 48, 'p')
+        );
+        assert!(!masked(&flood).contains("pppp"), "the key after the flood");
+        let doc =
+            serde_json::json!({ "out": format!("{rule}\n{}", fake("ghp_", 36, 'e')) }).to_string();
+        let mut b = doc.into_bytes();
+        assert_eq!(mask_json_bytes(&mut b), 1);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

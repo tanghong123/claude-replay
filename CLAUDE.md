@@ -663,7 +663,10 @@ plain-text response to a client whose `Host` is not the loopback (the phone over
 same test as gzip), `always` masks the desktop too, `off` is the default — and `--mask-secrets`
 masks a `--dump-html`/`--dump-all-html` file. Applied to what is SERVED, never to the transcript
 or the cache, so the desktop and the phone read one cache. The rules are prefix scans (provider
-keys, JWTs, bearer tokens, a private key's body, a URL's password) replacing the secret with `*` of
+keys, JWTs, bearer tokens, a private key's body, a URL's password), each at a word's start — which in
+JSON's raw bytes includes the end of an escape (`\n`, `\\n` in JSON a tool printed, `\uXXXX`), of a
+terminal code (`\u001b[32m`, a progress bar's `\r\u001b[K`, `ESC ( B`, ESC printed as `\033` or `\e`) and
+a diff's `-`, or a key alone on a line went out whole (#s288) — replacing the secret with `*` of
 the SAME length — `/records` range-reads by byte offset, and a JSON string stays one — never
 touching an escape (a backslash and the byte after it, or a whole `\uXXXX`: a colour code inside a
 private key's span once read `\u****`, which is not JSON, #s286), nor a `data:` URI or a long base64

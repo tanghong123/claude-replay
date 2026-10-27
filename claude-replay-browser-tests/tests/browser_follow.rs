@@ -8108,9 +8108,12 @@ fn a_phone_over_the_tailnet_sees_secrets_masked_and_the_desktop_does_not() {
     let stores = harness::Stores::new(&base);
     // Assembled here, so no line of this source is a whole key (CI runs gitleaks over it).
     let key = format!("sk-ant-api03-{}", "Z".repeat(40));
+    // #s288: a key alone on its line follows the `n` of the record's `\n`, which the masker once
+    // read as inside a word.
+    let alone = format!("ghp_{}", "Y".repeat(36));
     let transcript = harness::long_session(4, harness::Shape::default())
         + &harness::user_at(
-            &format!("the deploy key is {key} for now"),
+            &format!("the deploy key is {key} for now\\n\\nand the backup:\\n{alone}"),
             &harness::rfc3339_secs_ago(60),
         );
     stores.claude_session(PHONE_SID, &transcript);
@@ -8158,6 +8161,11 @@ fn a_phone_over_the_tailnet_sees_secrets_masked_and_the_desktop_does_not() {
         on_phone.contains("the deploy key is") && on_phone.contains("for now"),
         "…and only the key: {on_phone:?}"
     );
+    let backup = on_phone.split("and the backup:").nth(1).unwrap_or("");
+    assert!(
+        !on_phone.contains(&alone) && backup.contains(&"*".repeat(alone.len())),
+        "…and the key alone on its line too (#s288): {on_phone:?}"
+    );
     // The desktop, on this machine: untouched.
     let (_desk_browser, desk) = harness::chrome_tab();
     m.pair(&desk);
@@ -8166,7 +8174,7 @@ fn a_phone_over_the_tailnet_sees_secrets_masked_and_the_desktop_does_not() {
     desk.wait_until_navigated().unwrap();
     let on_desk = read(&desk, "the prompt on the desktop");
     assert!(
-        on_desk.contains(&key),
+        on_desk.contains(&key) && on_desk.contains(&alone),
         "the desktop reads the transcript as it is: {on_desk:?}"
     );
 }
