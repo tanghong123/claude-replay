@@ -341,6 +341,24 @@ export function pendingHeadText(progress) {
   return progress.retrying ? `Loading earlier turns — ${share}, the connection dropped, trying again` : `Loading earlier turns — ${share}`;
 }
 
+/** Stage 2 (#s277, design/slow-links.md §6.2): a unit some of whose records have not arrived. The
+ *  engine draws it at its height in the sums (`placeholderAt`), so what is inside only says what is
+ *  coming: a turn's prompt by its number and label from the turn index — a reader who lands here
+ *  knows where they are — and an answer or a group of steps by how much of it has arrived. */
+function renderPlaceholder(unit) {
+  const records = unit.to - unit.from + 1;
+  const words = unit.type === "user"
+    ? `<span class="placeholder-turn">Turn ${escapeText(String(unit.turn))}</span><span class="placeholder-label">${escapeText(unit.label || "")}</span>`
+    : unit.type === "process" && records > 1
+      ? `<span class="placeholder-label">Loading — ${records - unit.owed} of ${records} steps</span>`
+      : `<span class="placeholder-label">Loading…</span>`;
+  const root = element(`<div class="turn unit-placeholder placeholder-${unit.type}" data-kind="placeholder" role="status" aria-busy="true">${words}</div>`);
+  root.dataset.unitKey = unit.key;
+  root.dataset.unitFrom = unit.from;
+  if (unit.type === "user") root.dataset.blockIndex = unit.from;
+  return root;
+}
+
 export function renderUnit(unit, state) {
   if (unit.type === "pending") {
     // #314: the head of a tail-first open that has not arrived yet — a short card at the top of
@@ -351,6 +369,7 @@ export function renderUnit(unit, state) {
     root.dataset.unitFrom = unit.from;
     return root;
   }
+  if (unit.owed > 0) return renderPlaceholder(unit);
   const spot = unit.view?.id
     ? `<button class="spot-link" type="button" data-spot-link="${escapeText(unit.view.id)}" aria-label="Copy a link to here" title="Copy a link to here"><span aria-hidden="true">#</span></button>`
     : "";

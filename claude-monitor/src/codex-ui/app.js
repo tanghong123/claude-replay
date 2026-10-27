@@ -145,7 +145,7 @@ const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, 
   // can name a window the place has since moved — measured at three turns behind, until a
   // one-pixel nudge put it right. The key costs no layout read; reading the DOM here does, and
   // that forced flush moved the reader (the smooth-step case's record went 190px).
-  afterTransaction: () => { const p = viewport.position; if (p && p.key) updateTurnBar(p.key); },
+  afterTransaction: () => { const p = viewport.position; if (p && p.key) updateTurnBar(p.key); wantWindow(); },
   afterScroll: () => {
     updateStickyHeaders(); updateOutlineFocus(); updateTurnBar();
     // The reader moved themselves: wherever a jump last landed them is no longer where they
@@ -240,7 +240,7 @@ const paneLayoutChanged = () => {
   paneLaidOutWidth = width;
   viewport.remeasure();
 };
-const preview = new Preview({ layoutChanged: paneLayoutChanged, toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => viewport.jumpToRecord(at, "artifact") });
+const preview = new Preview({ layoutChanged: paneLayoutChanged, toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") });
 const attachmentViewer = new AttachmentViewer({ toast });
 const controlActions = { renderTree, recordSnapshot: () => ({ session: recordState.session, records: recordState.records }), toast, refreshIndex: loadSessions, pauseIndex: () => sessionIndex.stop(), resumeIndex: () => sessionIndex.start(), selectSession, refreshEmpty: () => recordStore.refreshEmpty() };
 const ordinaryControls = new ControlStore(controlActions);
@@ -267,11 +267,26 @@ const sessionIndex = new SessionIndexStore({
   },
   error: error => { console.warn("Session index refresh failed", error); toast("Session scan failed — retrying"); }
 });
+// #s277 (design/slow-links.md §6.7, D3): a reader across a network — the test gzip and masking use —
+// reads a tail-first open's head turn by turn, in the order the view needs it; the desktop reads it
+// whole (stage 1). `?windowed=1|0` picks either path for a case.
+const WINDOWED = (() => { const q = new URLSearchParams(location.search).get("windowed"); return q === "1" ? true : q === "0" ? false : !revealHere(); })();
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = -1; heldRecords = null; heldTurnJump = null; recordState.headIndex = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; heldRecords = null; heldTurnJump = null; fillWaiting = false; recordState.headIndex = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; projection.stub = null; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
   // #s276: the map of the records the head still owes — the panes it fills are whole from now on.
-  indexed: index => { recordState.headIndex = index; renderNavigator(); renderArtifacts(); renderChips(); if (byId("navigatorOptions").classList.contains("open")) renderFilterMenu(); },
+  indexed: index => {
+    recordState.headIndex = index;
+    // #s277 (design/slow-links.md §6.2): the units the head's records will make, from what the index
+    // says of each record, take the short card's place — a prepend, held for a still view (#340)
+    // like the head's landing; from then on every fill is a rewrite in place.
+    if (recordStore.windowed) { projection.stub = stubFor(index); updateRecords({ records: recordStore.records, meta: recordStore.meta, changedFrom: 0, prepended: index.upto }); }
+    renderNavigator(); renderArtifacts(); renderChips(); if (byId("navigatorOptions").classList.contains("open")) renderFilterMenu();
+  },
+  // #s277: a piece of the head was read; it goes in when the view lets it (`takeFills`).
+  filled: () => takeFills(),
+  // #s277: the last piece is in — every record is here, and the index answers for none of them.
+  headRead: () => { recordState.headIndex = null; renderNavigator(); renderArtifacts(); renderChips(); },
   empty: () => viewport.showEmpty("Start this session", "Send the first message below. Codex runs in the selected directory."),
   materializing: () => viewport.showEmpty("Loading session history…", "Waiting for the latest messages to become available."),
   // #221: a first open with no cache waits on the server folding the whole transcript. Say so,
@@ -306,7 +321,7 @@ const recordStore = new RecordStore({
 // #314 (design/tail-first-open.md): a first open asks for the last 512 KB of the committed log and
 // draws it, then reads the head behind it; the server sends a log under twice that whole. A case
 // sets `?tailBudget=` so a small fixture exercises it, as `?trace=` and `?historyMs=` serve cases.
-}, { tailBudget: Number(new URLSearchParams(location.search).get("tailBudget")) || 512 * 1024, headPieceBytes: Number(new URLSearchParams(location.search).get("headPiece")) || 0, emptySession: null, sessionFailure: null });
+}, { tailBudget: Number(new URLSearchParams(location.search).get("tailBudget")) || 512 * 1024, headPieceBytes: Number(new URLSearchParams(location.search).get("headPiece")) || 0, windowed: WINDOWED, emptySession: null, sessionFailure: null });
 
 function toast(message) {
   const element = byId("toast"); element.textContent = message; element.classList.add("show");
@@ -846,12 +861,14 @@ function applyRecords({ records, meta, changedFrom, prepended }) {
   recordState.units = projection.units;
   const shift = after ? Math.max(0, projection.units.findIndex(unit => unit.key === after) - was) : 0;
   viewport.setUnits(recordState.units, changedUnit, shift);
-  if (prepended) recordState.headIndex = null;
+  // The head landed whole (stage 1), or a pull replaced it: the index answers for nothing now. A
+  // stage-2 prepend (the placeholders laid out) leaves the head out and the index with it.
+  if (prepended && !recordStore.head) recordState.headIndex = null;
   landOnHash();
   // A held turn goes when the records under it are rewritten (a resync) or the reader moved;
   // otherwise it is landed on as soon as `jumpToRecord` takes it, which it refuses while pending.
   if (heldTurnJump && ((!prepended && changedFrom <= heldTurnJump.record) || viewport.lastUserInput > heldTurnJump.at)) heldTurnJump = null;
-  if (heldTurnJump && viewport.jumpToRecord(heldTurnJump.record, "turn")) heldTurnJump = null;
+  if (heldTurnJump && viewport.jumpToRecord(heldTurnJump.record, heldTurnJump.reveal || "turn")) heldTurnJump = null;
   // What arrived since the last apply is "new" only once the session is OPEN (#84): the first
   // apply after a reset is the session's own content — a re-open restored to a remembered
   // position is not following, and counting that batch said "11696 new messages" on a session
@@ -883,6 +900,117 @@ function applyRecords({ records, meta, changedFrom, prepended }) {
   }
   if (!wasFollowing && delta && !opening) recordState.newRecords += delta;
   paintJump(); renderHeader(); renderNavigator(); refreshFilterHits(); updateSearch(false);
+  // #s277: pieces of the head that waited on a held prepend go in now, if the view lets them.
+  takeFills();
+}
+
+/** #s277 (design/slow-links.md §6.2): what a record not fetched yet stands as — its kind, id and
+ *  commentary bit from the index's facts, and for a turn's opener its number, label, sender and
+ *  quoted reply from the index's rows — so `buildUnits` makes the units the records will make. */
+function stubFor(index) {
+  const rows = new Map((index.turns || []).map(row => [row.r, row]));
+  return i => {
+    const fact = index.facts?.[i];
+    if (!fact) return null;
+    const row = rows.get(i);
+    return { kind: fact[0], id: fact[1] || undefined, ...(fact[2] ? { phase: "commentary" } : {}), ...(row ? { turn: row.turn, label: row.label, head: row.head, reply_context: row.reply_context } : {}) };
+  };
+}
+
+/** The unit that holds record `r`, by its index, or -1. */
+function unitAt(r) {
+  const units = recordState.units;
+  let lo = 0, hi = units.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (units[mid].to < r) lo = mid + 1;
+    else if (units[mid].from > r) hi = mid - 1;
+    else return mid;
+  }
+  return -1;
+}
+
+// #s277 (design/slow-links.md §6.3): pieces of the head the store has read wait there until the view
+// lets them in. A fill that would redraw a mounted unit at or above the reader waits for a still view
+// and no thumb held (D5: a write into an iOS glide does not stick, and absorbing it would pile up in a
+// top pad that runs out near the session's top); one below the reader, or outside the window, goes in
+// at once — it moves nothing. A held prepend goes first: the fills are written against its units.
+let fillWaiting = false;
+function takeFills() {
+  if (fillWaiting) return;
+  for (let next = recordStore.peekFill(); next; next = recordStore.peekFill()) {
+    if (heldRecords || fillMustWait(next)) {
+      fillWaiting = true;
+      viewport.whenStill(() => { fillWaiting = false; takeFills(); });
+      return;
+    }
+    applyFill(recordStore.takeFill());
+  }
+}
+function fillMustWait({ from, to }) {
+  const a = unitAt(from), b = unitAt(to - 1);
+  if (a < 0 || b < 0) return true;
+  if (b < viewport.lo || a >= viewport.hi) return false;
+  const p = viewport.position;
+  const at = !p ? Infinity : p.source === "tail" ? recordState.units.length - 1 : p.index ?? Infinity;
+  return a <= at && (viewport.dragging || viewport.touchGlide || viewport.readerMoving());
+}
+function applyFill({ from, to }) {
+  const records = recordStore.records;
+  for (let i = from; i < to; i++) recordState.recSizes[i] = recordTextSize(records[i]);
+  const run = projection.fill(records, from, to);
+  // Units that did not come out as their placeholders were: the index and the log disagree, and
+  // nothing may be renamed (framework I12) — the session starts over.
+  if (!run) { recordStore.recover(); return; }
+  recordState.units = projection.units;
+  recordState.taskTargets = taskRecordTargets(recordState.meta?.tasks || [], records);
+  recordState.agentTargets = agentRecordTargets(directAgents(recordState.meta), records);
+  viewport.setUnits(recordState.units, run);
+  landOnHash();
+  if (heldTurnJump && viewport.lastUserInput > heldTurnJump.at) heldTurnJump = null;
+  if (heldTurnJump && viewport.jumpToRecord(heldTurnJump.record, heldTurnJump.reveal || "turn")) heldTurnJump = null;
+  renderNavigator(); refreshFilterHits(); updateSearch(false);
+}
+/** #s277: ask the store for what the window shows — a screen's worth of units beyond it either way,
+ *  the nearest to the reader asked last, which the store reads first. */
+function wantWindow() {
+  if (!recordStore.head?.reads) return;
+  const units = recordState.units;
+  const p = viewport.position;
+  const at = !p ? viewport.lo : p.source === "tail" ? units.length - 1 : p.index ?? viewport.lo;
+  const span = Math.max(8, viewport.hi - viewport.lo);
+  const lo = Math.max(0, viewport.lo - span), hi = Math.min(units.length, viewport.hi + span);
+  const owed = [];
+  for (let i = lo; i < hi; i++) if (units[i].owed > 0) owed.push(i);
+  owed.sort((x, y) => Math.abs(y - at) - Math.abs(x - at));
+  for (const i of owed) recordStore.want(units[i].from, units[i].to + 1, 1);
+}
+/** A jump to record `r`, or, while its turn is on its way, the turn fetched first (#s277): a TURN
+ *  lands at once on its placeholder; a record inside one waits for its unit, unless the reader
+ *  moves first. */
+function jumpOrFetch(r, reveal) {
+  heldTurnJump = null;
+  const landed = viewport.jumpToRecord(r, reveal);
+  const owed = recordStore.want(r, r + 1, 0);
+  if (!landed && owed) { heldTurnJump = { record: r, reveal, at: performance.now() }; toast("Still loading — the page goes there when it arrives"); }
+  return landed;
+}
+
+/** #s277 (design/slow-links.md §6.5): the record a link names while its turn is on its way, from the
+ *  index's facts — a turn's opener by its own id, a block by the nearest record id at or below it
+ *  (ids number blocks in document order, nested ones after their record's) — or -1. */
+function owedRecordFor(id) {
+  const facts = recordState.headIndex?.facts;
+  if (!facts) return -1;
+  const block = /^b(\d+)$/.exec(id);
+  let best = -1, bestN = -1;
+  for (let r = 0; r < facts.length; r++) {
+    const own = facts[r][1];
+    if (own === id) return r;
+    const n = block && /^b(\d+)$/.exec(own || "");
+    if (n && Number(n[1]) <= Number(block[1]) && Number(n[1]) > bestN) { best = r; bestN = Number(n[1]); }
+  }
+  return best;
 }
 
 function landOnHash() {
@@ -896,7 +1024,8 @@ function landOnHash() {
   // brought to the top and flashed.
   const chain = [];
   const index = recordState.records.findIndex(record => recordChain(record, id, chain));
-  if (index < 0) return false;
+  // #s277: a link into a turn still on its way reads that turn first, and lands once it is here.
+  if (index < 0) { const owed = owedRecordFor(id); if (owed >= 0) recordStore.want(owed, owed + 1, 0); return false; }
   for (const rid of chain) recordState.folds.set(rid, false);
   if (!viewport.jumpToRecord(index, "hash")) return false;
   landedHash = identity;
@@ -1358,9 +1487,12 @@ function renderNavigator() {
   // for how it happened and the context size from → to, in the rows' own type, no prose — so a
   // session that compacted fifteen times reads as fifteen chapters. The tick jumps to the
   // compaction record like a turn row jumps to its turn.
-  const epochs = (owedIndex()?.compactions || []).map(c => ({ at: c.r, tick: compactionTick(c.head || {}), pending: true }));
+  const epochs = (owedIndex()?.compactions || []).filter(c => recordState.records[c.r]?.kind === "pending").map(c => ({ at: c.r, tick: compactionTick(c.head || {}), pending: true }));
   recordState.records.forEach((record, i) => { if (record.kind === "compaction") epochs.push({ at: i, tick: compactionTick(record.head || {}) }); });
-  const rows = [...owed, ...turns.map(unit => ({ at: unit.from, unit })), ...epochs].sort((a, b) => a.at - b.at);
+  // #s277: a turn whose records are still on their way is a placeholder unit; its row reads what the
+  // index said of its opener, and is marked as the index's own rows were.
+  const rowUnit = unit => !unit.owed ? unit : unit.stub ? { ...indexedTurn({ ...unit.stub, r: unit.from }), turn: unit.turn, label: unit.label } : { ...unit, pending: true };
+  const rows = [...owed, ...turns.map(unit => ({ at: unit.from, unit: rowUnit(unit) })), ...epochs].sort((a, b) => a.at - b.at);
   // #s138, Hong: a turn another session opened is told from the person's own, and one sender from
   // another — its row carries the sender as a chip in the sender's own hue (the card's too).
   const peerRow = unit => {
@@ -1575,7 +1707,9 @@ const navigatorClick = event => {
     const record = Number(turn.dataset.turnRecord);
     heldTurnJump = null;
     // #s276: a turn the index listed whose records have not arrived is not a place to land yet
-    // (`jumpToRecord` refuses the loading card): the page goes there when they do.
+    // (`jumpToRecord` refuses the loading card): the page goes there when they do. Stage 2 (#s277)
+    // lands at once on the turn's placeholder and reads that turn first (`jumpOrFetch`).
+    if (recordStore.windowed) { jumpOrFetch(record, "turn"); return; }
     if (!viewport.jumpToRecord(record, "turn") && turn.classList.contains("outline-turn-pending")) {
       heldTurnJump = { record, at: performance.now() };
       toast("Still loading — the page goes there when it arrives");
@@ -1592,8 +1726,8 @@ const navigatorClick = event => {
     return;
   }
   const open = event.target.closest("[data-task-open]"); if (open) { openTaskPopover(Number(open.dataset.taskOpen), open); return; }
-  const task = event.target.closest("[data-task-record]"); if (task) { closeTaskPopover(); viewport.jumpToRecord(Number(task.dataset.taskRecord), "task"); return; }
-  const agent = event.target.closest("[data-agent-record]"); if (agent) { viewport.jumpToRecord(Number(agent.dataset.agentRecord), "agent"); return; }
+  const task = event.target.closest("[data-task-record]"); if (task) { closeTaskPopover(); jumpOrFetch(Number(task.dataset.taskRecord), "task"); return; }
+  const agent = event.target.closest("[data-agent-record]"); if (agent) { jumpOrFetch(Number(agent.dataset.agentRecord), "agent"); return; }
   const child = event.target.closest("[data-child-outline]"); if (child) { descendTo(child.dataset.childOutline); return; }
   const worker = event.target.closest("[data-worker-session]"); if (worker) { descendTo(worker.dataset.workerSession); return; }
   // A card's head opens and shuts ITS drawer (#74, #139) — the whole head, and nothing else
@@ -2097,12 +2231,22 @@ function toolLetters() {
  *  (#340) the store has already written the head into that array and the units still show it
  *  pending. */
 function owedIndex() {
+  // Stage 2 (#s277) fills the head in any order, so the index stands while the head is out, and the
+  // scans beside it read only the records at or above its boundary (`scanFrom`).
+  if (recordStore.windowed) return recordStore.head ? recordState.headIndex : null;
   return recordState.records[0]?.kind === "pending" ? recordState.headIndex : null;
+}
+/** Where the scans beside the index start: its boundary while it answers for a head filled in any
+ *  order (#s277, design/slow-links.md §6.5), else 0 — never both for one record. */
+function scanFrom() {
+  const owed = owedIndex();
+  return owed && recordStore.windowed ? owed.upto : 0;
 }
 /** How many calls of each tool the session holds: the records here, and the index's count of the
  *  ones still coming (#s276), so the letters and counts are the whole session's before it lands. */
 function sessionToolCounts() {
-  const counts = toolCounts(recordState.records);
+  const from = scanFrom();
+  const counts = toolCounts(from ? recordState.records.slice(from) : recordState.records);
   for (const [name, n] of Object.entries(owedIndex()?.tools || {})) counts[name] = (counts[name] || 0) + n;
   return counts;
 }
@@ -3141,7 +3285,7 @@ byId("navigatorToggle")?.remove();
 // as the pane's pinned first tab, and the count on the pane's own button so a closed pane
 // still says there is something to see.
 function renderArtifacts() {
-  preview.setRoster(recordState.session === indexState.selected ? artifactRoster(recordState.records, owedIndex()?.artifacts) : []);
+  preview.setRoster(recordState.session === indexState.selected ? artifactRoster(recordState.records, owedIndex()?.artifacts, scanFrom()) : []);
 }
 // The task details popover (#60): one element, filled per task, anchored beside the row;
 // Escape and its close control dismiss it and focus returns to the row it came from.
@@ -3197,7 +3341,7 @@ function openTaskPopover(index, opener) {
 taskPopover.addEventListener("click", event => {
   if (event.target.closest(".task-popover-close")) { closeTaskPopover(); return; }
   const jump = event.target.closest("[data-task-record]");
-  if (jump) { const at = Number(jump.dataset.taskRecord); closeTaskPopover(false); viewport.jumpToRecord(at, "task"); }
+  if (jump) { const at = Number(jump.dataset.taskRecord); closeTaskPopover(false); jumpOrFetch(at, "task"); }
 });
 document.addEventListener("keydown", event => { if (event.key === "Escape" && !taskPopover.hidden) { event.stopPropagation(); closeTaskPopover(); } }, true);
 document.addEventListener("pointerdown", event => { if (!taskPopover.hidden && !taskPopover.contains(event.target) && !event.target.closest("[data-task-open]")) closeTaskPopover(false); });

@@ -41,8 +41,13 @@ export class RecordStore {
     this.headPieceBytes = options.headPieceBytes || HEAD_PIECE_BYTES;
     this.emptySession = options.emptySession;
     this.sessionFailure = options.sessionFailure;
+    // Stage 2 (#s277, design/slow-links.md §6): read the head turn by turn, in the order the reader
+    // needs it, from the turn index's map, instead of whole from the top (stage 1, the desktop's).
+    this.windowed = !!options.windowed;
     // The head still to come after a tail-first open: `{ count, len, epoch }`, or null.
     this.head = null;
+    // Stage 2: pieces of the head read and not yet taken by the page (`takeFill`), in read order.
+    this.fills = [];
     // The turn index for that head (#s276): what the records still to come hold — their turns,
     // compactions, tool counts, artifacts and offered files — or null. Only while the head is out.
     this.index = null;
@@ -63,7 +68,7 @@ export class RecordStore {
     this.meta = null;
     this.cursor = freshCursor();
     this.shown = false; this.confirmedEmpty = false; this.missingSince = null;
-    this.head = null; this.index = null;
+    this.head = null; this.index = null; this.fills = [];
     const generation = ++this.generation;
     this.handlers.reset?.();
     this.poll(generation);
@@ -75,7 +80,7 @@ export class RecordStore {
     this.records = [];
     this.meta = null;
     this.cursor = freshCursor();
-    this.head = null; this.index = null;
+    this.head = null; this.index = null; this.fills = [];
     this.handlers.reset?.();
   }
 
@@ -147,7 +152,9 @@ export class RecordStore {
         if (headCount) {
           this.head = { count: headCount, len: reply.committed_ext.offset, epoch: reply.epoch };
           this.loadIndex(generation, this.head);
-          this.loadHead(generation, this.head);
+          // Stage 2 reads the head from the index's map, so its reads start when the index lands
+          // (`loadIndex`), and without an index the head is read whole after all.
+          if (!this.windowed) this.loadHead(generation, this.head);
         }
         if (!this.shown) { this.shown = true; this.handlers.opened?.(); }
       }
@@ -271,17 +278,148 @@ export class RecordStore {
    *  records below `head.count` exactly, under the head's epoch; a 409 is the head's to handle. */
   async loadIndex(generation, head, tries = 1) {
     const current = () => generation === this.generation && this.head === head;
+    // Stage 2 reads the head only through the index: when there is none to be had, the head is
+    // read whole after all (stage 1's path), and a stale epoch starts the session over.
+    const without = () => { if (current() && this.windowed) this.loadHead(generation, head); };
     try {
       const response = await fetch(`/turn-index?session=${encodeURIComponent(this.session)}&epoch=${head.epoch}&upto=${head.count}`, { cache: "no-store" });
-      if (!current() || response.status === 409) return;
+      if (!current()) return;
+      if (response.status === 409) { if (this.windowed) this.recover(); return; }
       if (!response.ok) throw new Error(`turn-index HTTP ${response.status}`);
       const index = await response.json();
-      if (!current() || index.epoch !== head.epoch || index.upto !== head.count) return;
+      if (!current()) return;
+      if (index.epoch !== head.epoch || index.upto !== head.count) { without(); return; }
+      if (this.windowed && !(Array.isArray(index.facts) && index.facts.length === head.count)) { without(); return; }
       this.index = index;
       this.handlers.indexed?.(index);
+      if (this.windowed) this.startReads(generation, head, index);
     } catch (error) {
-      if (current() && tries < INDEX_TRIES) setTimeout(() => this.loadIndex(generation, head, tries + 1), 1000 * tries);
+      if (!current()) return;
+      if (tries < INDEX_TRIES) setTimeout(() => this.loadIndex(generation, head, tries + 1), 1000 * tries);
+      else without();
     }
+  }
+
+  /** Stage 2 (#s277, design/slow-links.md §6.4): the head read turn by turn, in the order the reader
+   *  needs it — the turn a jump names, then the turns the window shows, then the rest from the tail
+   *  backwards (D4) — instead of whole from the top. Each turn is read from its first record, in
+   *  ranges of at most `headPieceBytes` from where its last read ended, which the server answers in
+   *  whole records; one read at a time. What a read brings waits in `fills` until the page takes it
+   *  (`takeFill`), which it does when the view allows (§6.3). The units of the reads are the index's
+   *  turns, clamped to the head, plus whatever comes before the first turn. */
+  startReads(generation, head, index) {
+    const reads = [];
+    const rows = (index.turns || []).filter(row => row.r < head.count);
+    const first = rows.length ? rows[0].r : head.count;
+    if (first > 0) reads.push({ r: 0, last: first - 1, o: 0, end: rows.length ? rows[0].o : head.len });
+    for (const row of rows) reads.push({ r: row.r, last: Math.min(row.last, head.count - 1), o: row.o, end: Math.min(row.end, head.len) });
+    for (const read of reads) Object.assign(read, { next: read.r, at: read.o, done: read.o >= read.end, want: Infinity, asked: 0 });
+    head.reads = reads;
+    head.asked = 0;
+    this.readNext(generation, head);
+  }
+
+  /** The read that holds record `r`, or null. */
+  readFor(r) {
+    const reads = this.head?.reads;
+    if (!reads) return null;
+    let lo = 0, hi = reads.length - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (reads[mid].r <= r) lo = mid; else hi = mid - 1; }
+    const read = reads[lo];
+    return read && read.r <= r && r <= read.last ? read : null;
+  }
+
+  /** The page needs records `[from, to)`: `priority` 0 for a jump, 1 for what the window shows. The
+   *  latest asked goes first within a priority. False when none of them is owed. */
+  want(from, to, priority) {
+    const head = this.head;
+    if (!head?.reads) return false;
+    let owed = false;
+    for (let r = from; r < to;) {
+      const read = this.readFor(r);
+      if (!read) { r++; continue; }
+      if (!read.done) {
+        owed = true;
+        if (priority < read.want || priority === read.want) { read.want = priority; read.asked = ++head.asked; }
+      }
+      r = read.last + 1;
+    }
+    if (owed && !head.reading) this.readNext(this.generation, head);
+    return owed;
+  }
+
+  readNext(generation, head) {
+    const current = () => generation === this.generation && this.head === head;
+    if (!current() || head.reading || !head.reads) return;
+    let pick = null;
+    for (const read of head.reads) {
+      if (read.done) continue;
+      if (!pick || read.want < pick.want || (read.want === pick.want && (read.want < Infinity ? read.asked > pick.asked : read.r > pick.r))) pick = read;
+    }
+    if (!pick) return;
+    head.reading = true;
+    this.readPiece(generation, head, pick).finally(() => {
+      head.reading = false;
+      this.readNext(generation, head);
+    });
+  }
+
+  /** One range of `read`'s turn: its whole records wait in `fills`. A drop is read again for as long
+   *  as it lasts; a 409, a range that does not parse, a turn whose records do not come out at its
+   *  count, or a server that keeps refusing (`HEAD_REFUSALS`) starts the session over. */
+  async readPiece(generation, head, read) {
+    const current = () => generation === this.generation && this.head === head;
+    try {
+      const len = Math.min(this.headPieceBytes, read.end - read.at);
+      const response = await fetch(`/records?${recordsQuery(this.session, { offset: read.at, len }, head.epoch)}`, { cache: "no-store" });
+      if (!current()) return;
+      if (response.status === 409) { this.recover(); return; }
+      if (!response.ok) throw new Error(`records HTTP ${response.status}`);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (!current()) return;
+      const cut = bytes.lastIndexOf(10);
+      if (cut < 0) throw new Error("records: a range brought no whole record");
+      const records = parseRecords(new TextDecoder().decode(bytes.subarray(0, cut + 1)));
+      if (!records.length || read.next + records.length > read.last + 1) { this.recover(); return; }
+      this.fills.push({ from: read.next, records });
+      read.next += records.length;
+      read.at += cut + 1;
+      if (read.at >= read.end) {
+        read.done = true;
+        if (read.next !== read.last + 1) { this.recover(); return; }
+      }
+      head.refusals = 0; head.drops = 0;
+      this.handlers.filled?.();
+    } catch (error) {
+      if (!current()) return;
+      if (error instanceof SyntaxError) { this.recover(); return; }
+      if (error instanceof TypeError) head.drops = (head.drops || 0) + 1;
+      else head.refusals = (head.refusals || 0) + 1;
+      if (head.refusals > HEAD_REFUSALS) { this.recover(); return; }
+      const tries = (head.drops || 0) + (head.refusals || 0);
+      this.handlers.headFailed?.(error, tries);
+      await new Promise(resolve => setTimeout(resolve, Math.min(8000, 1000 * tries)));
+    }
+  }
+
+  /** The next piece read and not yet taken: its record range `[from, to)`, or null. */
+  peekFill() {
+    const fill = this.fills[0];
+    return fill ? { from: fill.from, to: fill.from + fill.records.length } : null;
+  }
+
+  /** Take the next piece into the records, in place (record indices never move, #314), and say which
+   *  records it filled. Once the last piece of a head read whole is taken, the head and its index go:
+   *  every record is here. */
+  takeFill() {
+    const fill = this.fills.shift();
+    if (!fill) return null;
+    for (let i = 0; i < fill.records.length; i++) this.records[fill.from + i] = fill.records[i];
+    if (!this.fills.length && this.head?.reads?.every(read => read.done)) {
+      this.head = null; this.index = null;
+      this.handlers.headRead?.();
+    }
+    return { from: fill.from, to: fill.from + fill.records.length };
   }
 
   apply(reply, headCount = 0) {
@@ -293,7 +431,7 @@ export class RecordStore {
     // on reading would write the old log's records over the new ones when it finished.
     const owed = this.head;
     const cut = !!owed && !headCount && plan.changedFrom < owed.count;
-    if ((plan.resync && !headCount) || cut) { this.head = null; this.index = null; }
+    if ((plan.resync && !headCount) || cut) { this.head = null; this.index = null; this.fills = []; }
     for (const step of plan.steps) {
       if (step.op === "truncate") this.records.length = step.to;
       else this.records.push(...step.records);

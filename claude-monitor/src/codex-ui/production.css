@@ -1637,6 +1637,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .turn.pending-head{display:flex;align-items:center;justify-content:center;gap:10px;min-height:64px;margin:6px 0 14px;padding:14px;border-radius:12px;background:var(--panel);box-shadow:0 0 0 1px var(--line);color:var(--sub);font:13px/1.35 var(--sans);font-variant-numeric:tabular-nums}
 .pending-head-spinner{flex:none;width:18px;height:18px;border-radius:50%;border:2px solid color-mix(in srgb,var(--primary) 22%,transparent);border-top-color:var(--primary);animation:session-loading-spin .8s linear infinite}
 @media(prefers-reduced-motion:reduce){.pending-head-spinner{animation:none}}
+/* #s277 (design/slow-links.md §6.2): a unit still on its way. The engine sets its height (its height in the sums); nothing inside may change it. */
+#app .turn.unit-placeholder{box-sizing:border-box;overflow:hidden;display:flex;align-items:flex-start;gap:8px;padding:10px 0;color:var(--faint);font:13px/1.35 var(--sans);font-variant-numeric:tabular-nums}
+#app .turn.unit-placeholder.placeholder-user{justify-content:flex-end}
+#app .unit-placeholder .placeholder-turn{flex:none;color:var(--faint)}
+#app .unit-placeholder.placeholder-user .placeholder-label{min-width:0;max-width:80%;padding:8px 12px;border-radius:14px;background:var(--panel);box-shadow:0 0 0 1px var(--line);color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* #s12: the phone's REVIEW SHEET — the pane's Markdown full-screen over the whole app, on the review
    prefix (shared review), above the drawer and the bars, below the toasts; a close control back to
    exactly where the reader was. The pane's own Review control is a phone's alone. */

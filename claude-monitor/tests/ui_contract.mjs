@@ -465,6 +465,113 @@ assert.deepEqual(store.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 });
   console.log("#s276 turn index cases passed");
 }
 
+// #s277 (design/slow-links.md §6): records by turn. The placeholders are the units the records will
+// make — the same keys, types, ranges and turn numbers, built from the index's facts — and a fill
+// rebuilds only the units over the records it brought; a unit owes until its last record is here.
+// The store reads the head turn by turn: a jump's turn first, then what the window shows (the latest
+// asked first), then the rest from the tail backwards; the page takes each piece when it may, and
+// once the last is taken the head and its index go.
+{
+  const { PENDING } = await import("../../claude-monitor/src/codex-ui/record-store.js");
+  const R = [
+    { kind: "user", id: "t1", turn: 1, label: "one", body: [] },
+    { kind: "attachment", id: "b1", head: { att_path: "/a.png" }, body: [] },
+    { kind: "assistant", id: "b2", phase: "commentary", body: [] },
+    { kind: "act", id: "b3", body: [] },
+    { kind: "tool", id: "b6", tool: "Agent", body: [] },
+    { kind: "assistant", id: "b7", phase: "final", body: [] },
+    { kind: "peer", id: "t2", turn: 2, label: "tern: hi", head: { from: "tern", mode: "bypass" }, body: [] },
+    { kind: "compaction", id: "b8", head: {}, body: [] },
+    { kind: "command", id: "t3", turn: 3, label: "/clear", body: [] },
+    { kind: "assistant", id: "b9", phase: "final", body: [] },
+    { kind: "user", id: "t4", turn: 4, label: "tail", body: [] },
+    { kind: "assistant", id: "b10", phase: "final", body: [] },
+  ];
+  const upto = 10;
+  const facts = R.slice(0, upto).map(r => (r.kind === "assistant" && r.phase === "commentary" ? [r.kind, r.id, 1] : [r.kind, r.id]));
+  const turns = R.slice(0, upto).map((r, i) => [r, i]).filter(([r]) => ["user", "peer", "command"].includes(r.kind)).map(([r, i]) => ({ r: i, kind: r.kind, id: r.id, turn: r.turn, label: r.label, head: r.kind === "peer" ? r.head : undefined }));
+  const rows = new Map(turns.map(t => [t.r, t]));
+  const stub = i => { const f = facts[i]; if (!f) return null; const row = rows.get(i); return { kind: f[0], id: f[1], ...(f[2] ? { phase: "commentary" } : {}), ...(row ? { turn: row.turn, label: row.label, head: row.head } : {}) }; };
+  const shape = units => units.map(u => [u.type, u.key, u.from, u.to, u.turn]);
+
+  const whole = new Projection();
+  whole.rebuild(R, 0);
+  const records = R.map((r, i) => (i < upto ? PENDING : r));
+  const laid = new Projection();
+  laid.stub = stub;
+  laid.rebuild(records, 0);
+  assert.deepEqual(shape(laid.units), shape(whole.units), "the placeholders are the units the records will make: keys, types, ranges, turn numbers");
+  assert.ok(laid.units.filter(u => u.from < upto).every(u => u.owed > 0), "every unit over the head owes until its records are here");
+  assert.equal(laid.units.find(u => u.key === "user:t2").label, "tern: hi", "a turn's placeholder carries its label from the index");
+
+  // Fills in any order, in pieces: each rebuilds only its units, and the end is the whole build.
+  for (const [from, to] of [[6, 8], [3, 5], [0, 2], [2, 3], [5, 6], [8, 10]]) {
+    for (let i = from; i < to; i++) records[i] = R[i];
+    const before = laid.units.slice();
+    const run = laid.fill(records, from, to);
+    assert.ok(run, `a fill of [${from}, ${to}) keeps its units' keys`);
+    before.forEach((u, k) => { if (k < run.from || k >= run.to) assert.equal(laid.units[k], u, "a unit outside the fill is not rebuilt"); });
+  }
+  assert.deepEqual(shape(laid.units), shape(whole.units), "filled whole, the units are the whole build's");
+  assert.ok(laid.units.every(u => !u.owed), "…and owe nothing");
+  const half = new Projection();
+  half.stub = stub;
+  const partly = R.map((r, i) => (i < upto ? PENDING : r));
+  half.rebuild(partly, 0);
+  partly[3] = R[3];
+  half.fill(partly, 3, 4);
+  assert.equal(half.units.find(u => u.key === "process:b2").owed, 2, "a group of steps owes until its last record is here");
+  partly[0] = { ...R[0], id: "t9" };
+  assert.equal(half.fill(partly, 0, 1), null, "a record whose unit does not come out as its placeholder was is never renamed");
+
+  // The read queue: turns from the index's map, a jump's turn first, then the window's (the latest
+  // asked first), then the rest from the tail backwards; each piece waits for the page.
+  const realFetch = globalThis.fetch;
+  const log = R.slice(0, upto).map(r => JSON.stringify(r) + "\n");
+  const offsets = []; let at = 0; for (const line of log) { offsets.push(at); at += new TextEncoder().encode(line).length; }
+  const bytes = new TextEncoder().encode(log.join(""));
+  const reads = [];
+  try {
+    globalThis.fetch = async url => { const q = new URL(url, "http://x").searchParams; const from = Number(q.get("from")); reads.push(from); return new Response(bytes.slice(from, from + Number(q.get("len"))), { status: 200 }); };
+    const done = [];
+    const store = new RecordStore({ update: () => {}, filled: () => {}, headRead: () => done.push(true) }, { tailBudget: 1024, windowed: true });
+    store.session = "s";
+    store.records = R.map((r, i) => (i < upto ? PENDING : r));
+    const head = { count: upto, len: bytes.length, epoch: 1 };
+    store.head = head;
+    const rowsWithBytes = turns.map((t, k) => ({ ...t, last: (turns[k + 1]?.r ?? upto) - 1, o: offsets[t.r], end: turns[k + 1] ? offsets[turns[k + 1].r] : bytes.length }));
+    head.reading = true; // hold the queue while the wants are placed
+    store.startReads(store.generation, head, { turns: rowsWithBytes });
+    assert.equal(head.reads.length, 3, "one read per turn of the index");
+    store.want(8, 9, 0);
+    store.want(0, 1, 1);
+    head.reading = false;
+    store.readNext(store.generation, head);
+    for (let i = 0; i < 40 && head.reads.some(r => !r.done); i++) await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(reads, [offsets[8], offsets[0], offsets[6]], "the jump's turn, then the window's, then the rest from the tail backwards");
+    assert.deepEqual(store.fills.map(f => f.from), [8, 0, 6], "each piece waits for the page, in read order");
+    assert.equal(store.records[8], PENDING, "…and fills nothing until it is taken");
+    assert.deepEqual(store.peekFill(), { from: 8, to: 10 });
+    while (store.peekFill()) store.takeFill();
+    assert.deepEqual(store.records.map(r => r.id), R.map(r => r.id), "taken, the records stand where they belong");
+    assert.equal(store.head, null, "the last piece taken, the head goes");
+    assert.equal(done.length, 1, "…and the page hears it");
+
+    // A turn whose records do not come out at its count starts the session over.
+    let resets = 0;
+    const short = new RecordStore({ update: () => {}, reset: () => resets++ }, { tailBudget: 1024, windowed: true });
+    short.session = "s"; short.records = R.map((r, i) => (i < upto ? PENDING : r));
+    const owed = { count: upto, len: bytes.length, epoch: 1 };
+    short.head = owed;
+    short.startReads(short.generation, owed, { turns: [{ ...rowsWithBytes[0], last: 6 }] });
+    for (let i = 0; i < 20 && resets === 0; i++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(resets, 1, "a turn that brings more records than the index said starts over");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log("#s277 records by turn cases passed");
+}
+
 const fixtures = [
   "user", "assistant", "think", "act", "bash", "read", "write", "edit", "skill", "tool",
   "agent", "task", "queue", "command", "compaction", "attachment", "unknown-kind"
@@ -1491,7 +1598,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(engineSource209, /if \(!this\.queued\.length && !this\.inFlight\(\)\) this\.afterTransaction\(\);/, "…called once the transaction is complete, not between queued ones, and never while a smooth write travels");
   assert.match(engineSource209, /this\.trace\("arrived"[\s\S]{0,400}?this\.afterTransaction\(\);/, "…and the arrival of that write calls it instead");
   assert.match(viewportSource, /afterTransaction\(\) \{ this\.actions\.afterTransaction\?\.\(\); \}/, "the shell's viewport forwards it");
-  assert.match(appSource, /afterTransaction: \(\) => \{ const p = viewport\.position; if \(p && p\.key\) updateTurnBar\(p\.key\); \}/, "…and the shell repaints the bar from the ENGINE's belief");
+  assert.match(appSource, /afterTransaction: \(\) => \{ const p = viewport\.position; if \(p && p\.key\) updateTurnBar\(p\.key\); wantWindow\(\); \}/, "…and the shell repaints the bar from the ENGINE's belief (and, #s277, asks the store for what the window shows)");
   assert.match(appSource, /return currentTurnIndex\(units, atKey === undefined \? unitAtTop\(\) : atKey\);/, "…which is what the key argument is for: no layout read at the boundary");
   assert.doesNotMatch(classicExportSource, /afterTransaction\(\) \{/, "the classic page does NOT spy at the boundary — its spy measures rects, and forcing that flush there moved the reader");
   assert.match(css, /\.session-navigator\{overflow-anchor:none\}/, "scroll anchoring would fight a body that is changing height");
@@ -1678,7 +1785,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(artifactRoster([]), []);
   // #95: the roster is the right pane's pinned first tab, not a header menu.
   assert.ok(!/artifactsBtn|artifactsMenu/.test(appSource) && !/artifacts-btn|artifacts-menu/.test(productionCss), "the header control is gone");
-  assert.match(appSource, /preview\.setRoster\(recordState\.session === indexState\.selected \? artifactRoster\(recordState\.records, owedIndex\(\)\?\.artifacts\) : \[\]\)/, "the header render hands the roster to the pane");
+  assert.match(appSource, /preview\.setRoster\(recordState\.session === indexState\.selected \? artifactRoster\(recordState\.records, owedIndex\(\)\?\.artifacts, scanFrom\(\)\) : \[\]\)/, "the header render hands the roster to the pane (scanning above the index's boundary while it answers for the head, #s277)");
   assert.match(previewSource, /class="preview-tab pinned \$\{roster \? "on" : ""\}" data-preview-tab="\$\{ROSTER_ID\}"/, "…which pins it as a tab");
   assert.match(previewSource, /<span class="preview-tab-label">Artifacts \(\$\{this\.roster\.length\}\)<\/span>/, "…labelled with the count");
   assert.match(previewSource, /const roster = !item && this\.roster\.length > 0;/, "…and shown when no file tab is selected, so an opened pane lands on it");
@@ -1689,7 +1796,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(previewSource, /if \(key === this\.rosterKey\) return;/, "an unchanged roster re-renders nothing — an open file tab is not re-fetched underneath the reader");
   assert.match(previewSource, /<a href="\$\{escapeText\(r\.url\)\}" target="_blank" rel="noopener"/, "a row is a link in a new tab");
   assert.match(previewSource, /this\.actions\.jumpToRecord\?\.\(Number\(jump\.dataset\.artifactRecord\)\)/, "…with a jump to the publishing record");
-  assert.match(appSource, /jumpToRecord: at => viewport\.jumpToRecord\(at, "artifact"\)/, "…which the app wires to the viewport");
+  assert.match(appSource, /jumpToRecord: at => jumpOrFetch\(at, "artifact"\)/, "…which the app wires to the viewport (reading its turn first while it is on its way, #s277)");
   console.log("#78 / #95 artifact roster cases passed");
 }
 
@@ -2454,7 +2561,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // Step 3: the estimate is a floor per unit type — and since #184 the floor is the SEED of a
   // running mean rather than the answer, because a constant floor is the guess furthest from the
   // truth and that distance is what displaces a reader when a run above them is measured (#180).
-  assert.match(vp, /const ESTIMATES = \{ user: 44, assistant: 40, process: 34 \};/);
+  assert.match(vp, /const ESTIMATES = \{ user: 44, assistant: 40, process: 34, pending: 84 \};/);
   // Both facts, not their adjacency: #232 put the `renderAll` test knob between them, and a
   // contract that pins where a line SITS breaks on an unrelated insertion while saying nothing
   // about what it was protecting.

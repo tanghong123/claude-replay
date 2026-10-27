@@ -246,7 +246,7 @@ export function taskDetails(task = {}, target = null) {
  *  of the record that published it last. Walks nested blocks the way the classic page does.
  *  `owed` is the turn index's list of what the records still coming published (#s276), each with
  *  its record (`at`), in order: they come first in the session. */
-export function artifactRoster(records = [], owed = []) {
+export function artifactRoster(records = [], owed = [], start = 0) {
   const by = new Map();
   const add = (a, at) => {
     const e = by.get(a.url) || { url: a.url, count: 0, name: "", icon: "", desc: "", at };
@@ -263,7 +263,9 @@ export function artifactRoster(records = [], owed = []) {
     if (a && a.url) add(a, at);
     for (const part of block?.body || []) if (part.p === "blocks") for (const item of part.items || []) scan(item, at);
   };
-  records.forEach((record, i) => scan(record, i));
+  // `start`: while the index answers for the records below it (#s277, a head filled in any order),
+  // only those at or above it are scanned — never both for one record.
+  records.forEach((record, i) => { if (i >= start) scan(record, i); });
   return [...by.values()];
 }
 
@@ -459,7 +461,13 @@ function codeRows(part, capped, recordId = "", state = null) {
 }
 
 export class Projection {
-  constructor() { this.units = []; }
+  constructor() {
+    this.units = [];
+    // Stage 2 (#s277, design/slow-links.md §6.2): what a record not fetched yet stands as — its
+    // kind, id and, for a turn's opener, number and label, from the turn index — so the units over
+    // it are the ones the records will make, keyed as they will be. Null: one card for the head.
+    this.stub = null;
+  }
   rebuild(records, changedFrom = 0) {
     // Desktop attachments are separate canonical records immediately after their prompt. When
     // one arrives in a later pull, rewind only that owning prompt unit; otherwise an incremental
@@ -487,18 +495,40 @@ export class Projection {
       }
     }
     const prefix = this.units.slice(0, keep);
-    const units = buildUnits(records, changedFrom, prefix.at(-1)?.turn || 0);
+    const units = buildUnits(records, changedFrom, prefix.at(-1)?.turn || 0, records.length, this.stub);
     this.units = prefix.concat(units);
     return keep;
   }
+
+  /** Stage 2 (#s277, design/slow-links.md §6.3): records `[from, to)` were filled in where they
+   *  stand. The units over them are rebuilt alone: their boundaries and keys are the placeholders'
+   *  own, since the facts the placeholders were built from are what `buildUnits` groups by. Returns
+   *  the run of unit indices rewritten, `{from, to}`, or null when the units did not come out as the
+   *  placeholders were — the index and the log disagree, and nothing may be renamed. */
+  fill(records, from, to) {
+    const units = this.units;
+    let a = 0, b = units.length - 1;
+    while (a < units.length && units[a].to < from) a++;
+    while (b >= 0 && units[b].from >= to) b--;
+    if (a > b) return null;
+    const rebuilt = buildUnits(records, units[a].from, units[a - 1]?.turn || 0, units[b].to + 1, this.stub);
+    if (rebuilt.length !== b - a + 1 || rebuilt.some((unit, k) => unit.key !== units[a + k].key || unit.to !== units[a + k].to)) return null;
+    this.units = units.slice(0, a).concat(rebuilt, units.slice(b + 1));
+    return { from: a, to: b + 1 };
+  }
 }
 
-function buildUnits(records, from, turn) {
+function buildUnits(records, from, turn, end = records.length, stub = null) {
   const units = [];
   let process = null;
   const flush = () => { if (process) units.push(process); process = null; };
-  for (let i = from; i < records.length; i++) {
-    const record = records[i];
+  for (let i = from; i < end; i++) {
+    let record = records[i];
+    // Stage 2 (#s277): a record not fetched yet stands as what the turn index says of it, and the
+    // unit it joins is a placeholder (`owed` counts its records still to come) until every record
+    // it spans has arrived.
+    const owed = record?.kind === "pending" && stub ? stub(i) : null;
+    if (owed) record = owed;
     if (record?.kind === "pending") {
       // #314: the head of a tail-first open, not arrived yet — ONE unit for the whole run, the
       // "loading earlier turns" card. It takes in the tail's leading records up to its first user
@@ -515,21 +545,25 @@ function buildUnits(records, from, turn) {
       i = end;
       continue;
     }
-    const view = viewRecord(record);
+    const view = owed ? null : viewRecord(record);
+    const unpaid = owed ? 1 : 0;
     if (record.kind === "user" || record.kind === "command" || record.kind === "peer") {
       flush(); turn = Number(record.turn || turn + 1);
-      units.push({ type: "user", key: `user:${record.id || i}`, from: i, to: i, turn, view, attachments: [], label: record.label || plainText(record).slice(0, 80) });
+      units.push({ type: "user", key: `user:${record.id || i}`, from: i, to: i, turn, view, attachments: [], label: record.label || (owed ? "" : plainText(record).slice(0, 80)), owed: unpaid, ...(owed ? { stub: owed } : {}) });
     } else if (record.kind === "attachment" && !process && units.at(-1)?.type === "user") {
       const unit = units.at(-1);
-      const path = view.attachment?.att_path || "";
-      const duplicate = unit.attachments.some(item => path && item.attachment?.att_path === path);
-      if (!duplicate) unit.attachments.push(view);
-      unit.to = i;
+      if (view) {
+        const path = view.attachment?.att_path || "";
+        const duplicate = unit.attachments.some(item => path && item.attachment?.att_path === path);
+        if (!duplicate) unit.attachments.push(view);
+      }
+      unit.to = i; unit.owed += unpaid;
     } else if (record.kind === "assistant" && record.phase !== "commentary") {
-      flush(); units.push({ type: "assistant", key: `assistant:${record.id || i}`, from: i, to: i, turn, view });
+      flush(); units.push({ type: "assistant", key: `assistant:${record.id || i}`, from: i, to: i, turn, view, owed: unpaid });
     } else {
-      if (!process) process = { type: "process", key: `process:${record.id || i}`, from: i, to: i, turn, views: [] };
-      process.to = i; process.views.push({ index: i, view });
+      if (!process) process = { type: "process", key: `process:${record.id || i}`, from: i, to: i, turn, views: [], owed: 0 };
+      process.to = i; process.owed += unpaid;
+      if (view) process.views.push({ index: i, view });
     }
   }
   flush();
