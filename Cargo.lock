@@ -375,6 +375,7 @@ dependencies = [
  "claude-replay-present",
  "flate2",
  "pulldown-cmark",
+ "regex-syntax",
  "rusqlite",
  "serde",
  "serde_json",

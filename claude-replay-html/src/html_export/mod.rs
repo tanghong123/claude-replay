@@ -46,6 +46,7 @@ pub fn mermaid_runtime_path() -> &'static str {
 }
 pub mod pairing;
 mod record_store;
+mod search_match; // search and the filter answered by the server, the page's matcher ported (#s278)
 mod serve;
 pub mod shared;
 pub(crate) mod sig; // capability signatures for the local-file routes
