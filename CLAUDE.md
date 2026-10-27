@@ -832,7 +832,8 @@ delivered is offered (`ToolUse::delivered` → `head.files`), not only the first
   from the page, put the JSON under `tests/fixtures/history/` (kinds, heights, indices, turns and
   timings — `history_fixtures_carry_no_content` refuses a uuid, a path or prose), and write a case
   like `sandbox_walk_classic_replays` (or `sandbox_runaway_classic_live_replays` for a tail that
-  grew while the reader moved: the deltas replay as timed appends).
+  grew while the reader moved: the deltas replay as timed appends; a records-by-turn open, #s277, opens
+  records by turn and lets in a piece of the head per recorded fill: `sandbox_fill_walk_app_replays`).
   **The engine's design as a framework** — the model, its fourteen numbered invariants with what
   holds each today (construction, a timer, or only a case), the seams a page implements, and the
   #196 refactors — is `design/virtual-window-framework.md` (#195); the history that led to it is

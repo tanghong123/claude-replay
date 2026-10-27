@@ -400,8 +400,12 @@ What changed between this design and the code, each decided in the build:
   and lands; a task's says "still loading" while the head is out.
 - **The task and agent targets are recomputed on each fill** (a scan of the records, cheap beside a
   render); the projection and the redraw go by the run, as §6.3 says.
-- **The sandbox's fill builder and a saved history of a walk with many fills (§6.9) are not built:**
-  #s281. The history records each fill's run, and the browser cases drive real fills.
+- **The sandbox replays a records-by-turn walk** (#s281): an export names where its tail began and
+  when it filled (`Export::tail_start`, `Export::fills`); the replay opens the synthetic session records
+  by turn with its tail there and lets in one queued piece of the head per recorded fill, on the
+  recorded timeline. `fill-walk-app.json` (a walk up through 33 fills, then a jump) replays within 2
+  turns, with no violation (`sandbox_fill_walk_app_replays`; `sandbox_record_a_fill_walk` records
+  another with `CR_RECORD_FILL_WALK=<file>`).
 - **The cases** are `tests/records_by_turn.rs`: the index lands and nothing moves the reader (a far fill
   redraws no mounted element), the tail stays followed through every fill, a fill at or above the
   reader waits through a glide and under a finger, a turn tap lands at once and is read first, a link

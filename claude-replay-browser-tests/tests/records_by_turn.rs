@@ -19,46 +19,6 @@ use std::time::Duration;
 
 const SID: &str = "5a5a5a5a-0000-4000-8000-000000002770";
 
-/// Queue the head's reads: every `/records` read below the tail's own offset (the first one the page
-/// makes) waits until `window.__release(n)`; `window.__answer409 = n` answers the next `n` released
-/// reads with a stale epoch. With `hold_index`, the turn index waits too, until
-/// `window.__releaseIndex()`. `window.__readLog` lists every head read's offset, in order.
-fn queue_the_head(tab: &headless_chrome::Tab, hold_index: bool) {
-    use headless_chrome::protocol::cdp::Page;
-    let source = r#"(function(){
-      var real = window.fetch;
-      window.__tailFrom = null; window.__heldReads = []; window.__readLog = []; window.__answer409 = 0;
-      window.__holdIndex = HOLD; window.__heldIndex = []; window.__tailPulls = 0;
-      window.__release = function (n) { var k = n == null ? Infinity : n; while (k-- > 0 && window.__heldReads.length) window.__heldReads.shift().go(); return window.__heldReads.length; };
-      window.__releaseIndex = function () { window.__holdIndex = false; while (window.__heldIndex.length) window.__heldIndex.shift()(); };
-      window.fetch = function (input, init) {
-        var url = String(input && input.url || input), self = this;
-        if (/\/pull\?/.test(url) && /[?&]tail=/.test(url)) window.__tailPulls++;
-        if (/\/turn-index\?/.test(url) && window.__holdIndex) return new Promise(function (res) { window.__heldIndex.push(function () { res(real.call(self, input, init)); }); });
-        if (/\/records\?/.test(url)) {
-          var from = Number(new URL(url, location.href).searchParams.get('from'));
-          if (window.__tailFrom == null) { window.__tailFrom = from; return real.call(self, input, init); }
-          if (from < window.__tailFrom) {
-            window.__readLog.push(from);
-            return new Promise(function (res) { window.__heldReads.push({ from: from, go: function () {
-              if (window.__answer409 > 0) { window.__answer409--; res(new Response('stale epoch', { status: 409 })); }
-              else res(real.call(self, input, init));
-            } }); });
-          }
-        }
-        return real.call(this, input, init);
-      };
-    })();"#
-        .replace("HOLD", if hold_index { "true" } else { "false" });
-    tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
-        source,
-        world_name: None,
-        include_command_line_api: None,
-        run_immediately: None,
-    })
-    .expect("the head's reads are queued");
-}
-
 /// A phone (or a desktop window) on a session written as `jsonl`, opened tail-first on the stage-2
 /// path with the head's reads queued; returns once the tail is drawn.
 fn open(
@@ -83,7 +43,7 @@ fn open(
         harness::phone(&tab, 390, 844);
     }
     m.pair(&tab);
-    queue_the_head(&tab, hold_index);
+    harness::queue_the_head(&tab, hold_index);
     // A case's own `tailBudget` or `headPiece` stands (the page reads the first of a name).
     let budget = if extra.contains("tailBudget=") {
         ""
