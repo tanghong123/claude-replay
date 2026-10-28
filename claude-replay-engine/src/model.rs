@@ -352,7 +352,10 @@ pub enum Block {
     /// every respect — the same kind, search class and `--json` line (the stream is public, and
     /// says nothing new) — and differs only where it is DRAWN: the pages and the TUI end it with
     /// a quiet "cut off" line, so a filtered or jumped-to view, where the marker is not beside
-    /// it, still says the reply stopped there. The recorded text is kept as it is.
+    /// it, still says the reply stopped there. The recorded text is kept as it is. On the pages the
+    /// line is a `note` part, which their search reads as it reads every note, so "cut off" finds
+    /// the reply there (both pages and the server's matcher alike); the TUI's search counts the
+    /// prose alone.
     AssistantCutOff(String),
     /// Assistant prose whose turn phase is known. This stays distinct from `AssistantText` so
     /// older/other agent formats do not invent phase information.

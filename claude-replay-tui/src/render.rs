@@ -2502,6 +2502,34 @@ mod tests {
         }
     }
 
+    /// #s305: a reply the person cut off mid-stream draws as the prose it is, then one dim `⎿`
+    /// line saying it stopped there; its collapsed header is the prose's, as `AssistantText`'s.
+    #[test]
+    fn a_reply_cut_off_mid_stream_ends_with_a_dim_cut_off_line() {
+        let cut = Block::AssistantCutOff("the skuas moved to the".into());
+        let plain = Block::AssistantText("the skuas moved to the".into());
+        let lines = render_one(&cut, 80, Hl::Styled);
+        let (prose, last) = lines.split_at(lines.len() - 1);
+        assert_eq!(
+            texts(prose),
+            texts(&render_one(&plain, 80, Hl::Styled)),
+            "the prose draws exactly as plain assistant text"
+        );
+        let last = &last[0];
+        assert_eq!(
+            texts(std::slice::from_ref(last)),
+            [format!("  ⎿ \u{a0}{}", crate::model::CUT_OFF_NOTE)]
+        );
+        assert!(
+            last.spans.iter().all(|s| s.style == theme::dim()),
+            "the line is dim: {last:?}"
+        );
+        assert_eq!(
+            texts(&[render_header(&cut)]),
+            texts(&[render_header(&plain)])
+        );
+    }
+
     /// A Command block renders `❯ /compact` + a dim `⎿`-prefixed stdout line.
     #[test]
     fn command_block_renders_caret_header_and_elbow_output() {

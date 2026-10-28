@@ -1008,8 +1008,9 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // with Esc while it streamed. An ordinary API answer (its own requestId, a real model,
             // no `isApiErrorMessage`), `stop_reason` null, one text block, and the very next record
             // is the user's "[Request interrupted by user]" naming it as parent. Met on ONE record
-            // on hong-devserver, measured 2026-10-28; before 2.1.311 the client kept no partial
-            // reply at all. Read (`cut_off_text`): the reply is an `AssistantCutOff` block, prose
+            // on hong-devserver, measured 2026-10-28; a search of every Claude transcript there
+            // found no unflagged partial reply before an interrupt marker, so older clients seem to
+            // have kept none. Read (`cut_off_text`): the reply is an `AssistantCutOff` block, prose
             // everywhere but where it is drawn, which ends it with a "cut off" line. Its usage is
             // the stream's opening figure (8 output tokens against about 166 characters), since no
             // final usage arrives on an abort, so the cost counts a little too little output;
@@ -8004,7 +8005,7 @@ mod tests {
 {"type":"assistant","version":"2.1.311","sessionId":"s-s305","uuid":"a1","parentUuid":"u1","requestId":"req_s305","apiBlockIndex":0,"isAbortedMidStream":true,"timestamp":"2026-10-28T01:00:02.000Z","message":{"role":"assistant","model":"claude-opus-5","stop_reason":null,"usage":{"input_tokens":12,"output_tokens":8},"content":[{"type":"text","text":"The skuas moved to the north cliff, above the tern colony, and the"}]}}
 {"type":"user","version":"2.1.311","sessionId":"s-s305","uuid":"u2","parentUuid":"a1","timestamp":"2026-10-28T01:00:03.000Z","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}
 {"type":"user","version":"2.1.311","sessionId":"s-s305","uuid":"u3","timestamp":"2026-10-28T01:00:09.000Z","message":{"role":"user","content":"Just the cliff, thanks."}}
-{"type":"assistant","version":"2.1.311","sessionId":"s-s305","uuid":"a2","isAbortedMidStream":true,"timestamp":"2026-10-28T01:00:10.000Z","message":{"role":"assistant","stop_reason":null,"content":[{"type":"text","text":"North cliff."},{"type":"text","text":"Above the petrels"}]}}
+{"type":"assistant","version":"2.1.311","sessionId":"s-s305","uuid":"a2","isAbortedMidStream":true,"timestamp":"2026-10-28T01:00:10.000Z","message":{"role":"assistant","stop_reason":null,"content":[{"type":"thinking","thinking":"the cliff, then the colony"},{"type":"text","text":"North cliff."},{"type":"text","text":"Above the petrels"},{"type":"text","text":"  "}]}}
 {"type":"assistant","version":"2.1.311","sessionId":"s-s305","uuid":"a3","isAbortedMidStream":true,"timestamp":"2026-10-28T01:00:11.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}
 "##;
         let messages = tokenize(flagged.lines());
@@ -8050,7 +8051,7 @@ mod tests {
                 "The skuas moved to the north cliff, above the tern colony, and the",
                 "Above the petrels",
             ],
-            "the last text block of each unphased cut record, and no other"
+            "the last non-blank text block of each unphased cut record, and no other"
         );
         assert!(
             via_main.iter().any(|b| matches!(b,
