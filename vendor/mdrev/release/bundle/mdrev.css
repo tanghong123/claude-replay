@@ -155,6 +155,7 @@
 .mdrev-host .app.is-phone .topbar .build {display:none}
 .mdrev-host .app.is-phone .topbar .display-build {display:flex}
 .mdrev-host .app.is-phone .topbar-row>.toolbar-hide {margin-left:auto}
+.mdrev-host .app.is-phone .topbar:not(.counters-out) .topbar-row:has(>.bar-counter)>.doc-time {display:none}
 .mdrev-host .app.is-phone .topbar:not(.tier-1) .topbar-row {gap:8px;padding:0 10px}
 .mdrev-host .app.is-phone .topbar .controls {gap:6px}
 .mdrev-host .app.is-phone .topbar .ctl {padding:0 8px}
@@ -174,6 +175,12 @@
 .mdrev-host .controls {flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:8px;margin-left:auto;display:flex}
 .mdrev-host .topbar-tools {align-items:center;position:relative}
 .mdrev-host .topbar-tools .picker {padding:0}
+.mdrev-host .topbar-row>.bar-counter {flex-shrink:0;margin-left:auto}
+.mdrev-host .topbar-row>.bar-counter~.bar-counter, .mdrev-host .topbar:not(.counters-out) .topbar-row>.bar-counter~.build, .mdrev-host .topbar:not(.counters-out) .topbar-row>.bar-counter~.toolbar-hide {margin-left:0}
+.mdrev-host .topbar.tier-1 .bar-counter {order:1;margin-left:0}
+.mdrev-host .topbar.tier-1 .bar-counter:not(:has(~.bar-counter)) {margin-right:14px}
+.mdrev-host .topbar.tier-1 .bar-counter:not(:has(~.bar-counter))~.build {margin-left:0}
+.mdrev-host .topbar.counters-out .bar-counter, .mdrev-host .topbar.counters-squeezed .doc-time, .mdrev-host .topbar.counters-squeezed .build, .mdrev-host .topbar.counters-crowded .bar-counter, .mdrev-host .topbar.counters-one .blame-counter {display:none}
 .mdrev-host .build {letter-spacing:.02em;color:var(--ink-faint);-webkit-user-select:all;user-select:all;margin-left:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px}
 .mdrev-host .seg {border:1px solid var(--rule);border-radius:7px;height:26px;display:inline-flex;overflow:hidden}
 .mdrev-host .seg button {color:var(--ink-soft);border:none;border-right:1px solid var(--rule);background:0 0;padding:0 11px;font-size:12.5px}

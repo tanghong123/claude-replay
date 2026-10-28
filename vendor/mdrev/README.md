@@ -9,10 +9,10 @@ the monitor does with it.
 
 | | |
 | --- | --- |
-| release | mdrev 1.1.65 |
-| source | <https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.65/mdrev-embed-1.1.65.tar.gz> |
-| sha256 | `710c7756c818a9f76ceb099ae8b1ea1110d8fdc60db7999d63b9e743c0e56fb3` (the release's published digest) |
-| vendored | 2026-10-28 |
+| release | mdrev 1.1.66 |
+| source | <https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.66/mdrev-embed-1.1.66.tar.gz> |
+| sha256 | `b1a08acf58bd333fff40b0b0072298b6c24b12ec5fe6399083d3ad72d4d9fa8b` (the release's published digest) |
+| vendored | 2026-10-29 |
 
 The source is the release's `mdrev-embed-<version>.tar.gz`, which mdrev's release notes call "the
 kit alone", checked against the sha256 digest the release publishes for it. The application

@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.65/
+mdrev-embed-1.1.66/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -180,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.65`, with two tarballs: `mdrev-1.1.65-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.65.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.66`, with two tarballs: `mdrev-1.1.66-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.66.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.65/mdrev-embed-1.1.65.tar.gz
-tar xzf mdrev-embed-1.1.65.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.65
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.66/mdrev-embed-1.1.66.tar.gz
+tar xzf mdrev-embed-1.1.66.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.66
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.65/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.66/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -196,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.65/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.65.tar.gz
-cd mdrev-embed-1.1.65
+tar xzf mdrev-embed-1.1.66.tar.gz
+cd mdrev-embed-1.1.66
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -559,7 +559,7 @@ Your documents are other people's. Three lines of defence, in the order they mat
    mountMdrev(el, {contract: '/docs/api/mdrev', path, cap: capabilityFor(user, path)});
    ```
 
-   The viewer then sends `&cap=…` on every route about that document, and asks `POST {contract}/resolve` for anything the document points at — one round trip per render, with the referring document named, so your answer can depend on where the reference came from. A path you will not mint for comes back `null`, and the viewer draws that image or link as refused instead of requesting it. [contract.md](contract.md) has the shapes.
+   The viewer then sends `&cap=…` on every route about that document, and asks `POST {contract}/resolve` for anything the document points at — one round trip per render, or one more call per 500 distinct references past that, with the referring document named, so your answer can depend on where the reference came from. A path you will not mint for comes back `null`, and the viewer draws that image or link as refused instead of requesting it. [contract.md](contract.md) has the shapes.
 
    Said plainly, because it is easy to oversell: this does not stop a reader from asking your page for a document. It stops the VIEWER — and anything running alongside it in that page — from naming a file you did not offer. What makes that worth having is where the check lands: one place, per reference, where your own permissions already live.
 
