@@ -7687,9 +7687,10 @@ fn a_three_digit_turn_number_keeps_its_row_to_one_line() {
         &harness::long_session(120, harness::Shape::default()),
     );
     let m = harness::Monitor::spawn(harness::Kind::V1, 2841, &base, Some(&stores), true);
-    // Each row's number height and label left edge, for turns either side of 100.
+    // Each row's number height, its label's left edge, and the room between the number's TEXT and the
+    // label beyond the grid's gap (the text, not its box: a box held at 24px lets its text run on).
     let rows = |tab: &headless_chrome::Tab, root: &str| -> serde_json::Value {
-        let js = format!("(function(){{ var at = function (n) {{ var r = document.querySelector('{root} .outline-turn-row[data-turn-number=\"' + n + '\"]'); if (!r) return null; var num = r.querySelector('.outline-number').getBoundingClientRect(), label = r.querySelector('.outline-label').getBoundingClientRect(); return [Math.round(num.height * 10) / 10, Math.round(label.left * 10) / 10]; }}; return JSON.stringify({{ r5: at(5), r99: at(99), r100: at(100), r120: at(120) }}); }})()");
+        let js = format!("(function(){{ var at = function (n) {{ var r = document.querySelector('{root} .outline-turn-row[data-turn-number=\"' + n + '\"]'); if (!r) return null; var n = r.querySelector('.outline-number'), num = n.getBoundingClientRect(), label = r.querySelector('.outline-label').getBoundingClientRect(), text = document.createRange(); text.selectNodeContents(n); return [Math.round(num.height * 10) / 10, Math.round(label.left * 10) / 10, Math.round((label.left - text.getBoundingClientRect().right - parseFloat(getComputedStyle(r).columnGap)) * 10) / 10]; }}; return JSON.stringify({{ r5: at(5), r99: at(99), r100: at(100), r120: at(120) }}); }})()");
         serde_json::from_str(harness::eval(tab, &js).as_str().unwrap()).unwrap()
     };
     let one_line = |seen: &serde_json::Value, wher: &str| {
@@ -7706,6 +7707,10 @@ fn a_three_digit_turn_number_keeps_its_row_to_one_line() {
             assert_eq!(
                 seen[n][1], r5[1],
                 "{wher}: {n}'s label starts where turn 5's does: {seen}"
+            );
+            assert!(
+                seen[n][2].as_f64().unwrap_or(-99.0) >= -1.0,
+                "{wher}: {n}'s number ends a column gap before its label: {seen}"
             );
         }
     };
