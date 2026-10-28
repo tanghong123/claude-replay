@@ -499,6 +499,11 @@ struct Proc {
     /// running worker whose parent pid was 1, so the process tree alone would not have said. Set
     /// only when both are present.
     parent_session: Option<String>,
+    /// `CLAUDE_CONFIG_DIR` from the environment: where this Claude process keeps its files (#s301).
+    claude_home: Option<String>,
+    /// The process's own record, `<claude home>/sessions/<pid>.json`, says it is an interactive
+    /// launch (`entrypoint: cli`), whatever its argv reads like (#s301, `apply_session_files`).
+    cli_launch: bool,
 }
 
 /// A terminal multiplexer that hosts panes (#s226).
@@ -1140,14 +1145,14 @@ impl Index {
                 .filter(|(_, r)| r.one_shot)
                 .filter_map(|(sid, r)| Some((sid.as_str(), r.cwd.as_deref()?, r.first_event?))),
         );
-        let named = st
-            .procs
-            .iter()
-            .filter(|p| is_one_shot(&p.argv))
-            .filter_map(|p| match session_ref(&p.argv) {
-                Some(SessionRef::Exact(sid)) => Some((sid, p.pid)),
-                _ => None,
-            });
+        let named =
+            st.procs
+                .iter()
+                .filter(|p| one_shot(p))
+                .filter_map(|p| match session_ref(&p.argv) {
+                    Some(SessionRef::Exact(sid)) => Some((sid, p.pid)),
+                    _ => None,
+                });
         let found: Vec<(String, u32)> = paired
             .into_iter()
             .map(|(sid, (pid, _))| (sid, pid))
@@ -1209,7 +1214,7 @@ impl Index {
                 is_agent_exe(&p.exe_base, &p.argv)
                     && serves(p, agent)
                     && !is_helper(&p.argv)
-                    && !is_one_shot(&p.argv)
+                    && !one_shot(p)
                     && p.cwd.as_deref() == Some(cwd.as_str())
             });
             let (Some(p), None) = (cands.next(), cands.next()) else {
@@ -2107,7 +2112,7 @@ fn pair_one_shots<'a>(
     for p in procs {
         let headless_new = is_agent_exe(&p.exe_base, &p.argv)
             && serves(p, Agent::CLAUDE)
-            && is_one_shot(&p.argv)
+            && one_shot(p)
             && !is_helper(&p.argv)
             && session_ref(&p.argv).is_none();
         if let (true, Some(cwd), Some(start)) = (headless_new, p.cwd.as_deref(), p.started) {
@@ -2266,7 +2271,7 @@ fn link(
         named: names_exactly(&p.argv, sid),
         // A helper's pane is the one it INHERITED from the client that spawned it, never
         // where a session's UI is — see `is_helper`.
-        terminal: if is_helper(&p.argv) || is_one_shot(&p.argv) {
+        terminal: if is_helper(&p.argv) || one_shot(p) {
             Terminal::Detached
         } else {
             Terminal::of(p)
@@ -2284,7 +2289,7 @@ fn link(
             Terminal::Detached => 0,
         };
         (
-            if is_helper(&p.argv) || is_one_shot(&p.argv) {
+            if is_helper(&p.argv) || one_shot(p) {
                 0
             } else {
                 rank
@@ -2317,7 +2322,7 @@ fn link(
                 is_agent_exe(&p.exe_base, &p.argv)
                     && serves(p, agent)
                     && !is_helper(&p.argv)
-                    && !is_one_shot(&p.argv)
+                    && !one_shot(p)
                     && p.cwd.as_deref() == Some(cwd)
                     && session_ref(&p.argv).is_none()
             })
@@ -2421,6 +2426,47 @@ fn is_helper(argv: &str) -> bool {
 /// one, which is what pairs it (`pair_one_shots`).
 fn is_one_shot(argv: &str) -> bool {
     argv.split_whitespace().any(|t| t == "-p" || t == "--print")
+}
+
+/// A one-shot PROCESS (#s301): `-p`/`--print` in its argv, unless its own record says it is an
+/// interactive launch. `ps` joins argv with spaces, so a start prompt such as "… mkdir -p counts …"
+/// put `-p` in an interactive session's argv, and that session was never linked to its process: no
+/// liveness, no send, no dialog. Without the record (a one-shot writes it only once it is under
+/// way) the argv decides, the safe way: a one-shot read as interactive could be sent to through the
+/// pane it inherited, its starter's.
+fn one_shot(p: &Proc) -> bool {
+    !p.cli_launch && is_one_shot(&p.argv)
+}
+
+/// Read the record Claude Code keeps for each of its processes, `<claude home>/sessions/<pid>.json`
+/// (the home is `CLAUDE_CONFIG_DIR` from the process's environment, else `~/.claude`), for the
+/// processes whose argv reads as a one-shot (#s301). Measured on Claude Code 2.1.312: an interactive
+/// launch writes `"entrypoint": "cli"`, a `claude -p` writes `"sdk-cli"` (both say `kind:
+/// interactive`). A record is believed only when it names this pid and began no earlier than the
+/// process did: a file left by an earlier process with the same pid does not.
+fn apply_session_files(procs: &mut [Proc], default_home: Option<&Path>) {
+    for p in procs.iter_mut() {
+        if proc_agent(p) != Some(Agent::CLAUDE) || !is_one_shot(&p.argv) {
+            continue;
+        }
+        let home = match (&p.claude_home, default_home) {
+            (Some(h), _) => PathBuf::from(h),
+            (None, Some(h)) => h.to_path_buf(),
+            (None, None) => continue,
+        };
+        let Some(v) = std::fs::read(home.join("sessions").join(format!("{}.json", p.pid)))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        else {
+            continue;
+        };
+        let own = v.get("pid").and_then(Value::as_u64) == Some(u64::from(p.pid));
+        let fresh = match (v.get("startedAt").and_then(Value::as_u64), p.started) {
+            (Some(ms), Some(started)) => ms / 1000 + 5 >= started,
+            _ => false,
+        };
+        p.cli_launch = own && fresh && v.get("entrypoint").and_then(Value::as_str) == Some("cli");
+    }
 }
 
 /// The agent a process IS, by its executable — or `None` for one the monitor cannot place (a
@@ -2598,6 +2644,8 @@ fn scan_procs() -> Vec<Proc> {
         apply_nesting(&mut procs, &run(&["ps", "-axo", "pid=,ppid=,ucomm="]));
     }
     apply_lsof(&mut procs, &run(&lsof_argv(&pids)));
+    let home = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude"));
+    apply_session_files(&mut procs, home.as_deref());
     procs
 }
 
@@ -2774,6 +2822,8 @@ fn parse_ps_with(out: &str, is_file: &dyn Fn(&str) -> bool) -> Vec<Proc> {
             tmux_server_pid: None,
             started: None,
             parent_session: None,
+            claude_home: None,
+            cli_launch: false,
         });
     }
     procs
@@ -2834,6 +2884,8 @@ fn apply_env(procs: &mut [Proc], out: &str) {
                 session = is_uuid(v).then(|| v.to_string());
             } else if tok == "CLAUDE_CODE_CHILD_SESSION=1" {
                 child = true;
+            } else if let Some(v) = tok.strip_prefix("CLAUDE_CONFIG_DIR=") {
+                p.claude_home = Some(v.to_string()).filter(|v| v.starts_with('/'));
             }
         }
         p.parent_session = session.filter(|_| child);
@@ -5667,6 +5719,70 @@ n/Users/x/proj
         .expect("link");
         assert!(l.confirmed);
         assert_eq!(l.terminal.kind(), "detached");
+    }
+
+    /// #s301: an interactive launch whose start prompt holds `-p` ("mkdir -p counts") is an
+    /// interactive process once its own record says `entrypoint: cli`, and its session is linked
+    /// in its pane by the directory rule; a `claude -p`'s record (`sdk-cli`), a record left by an
+    /// earlier process with the same pid, or none at all leave the argv's one-shot reading.
+    #[test]
+    fn an_interactive_prompt_holding_dash_p_is_no_one_shot_by_its_own_record() {
+        let home = std::env::temp_dir().join(format!("cm-cli-launch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        let record = |pid: u32, entrypoint: &str, started_ms: u64| {
+            std::fs::write(
+                home.join("sessions").join(format!("{pid}.json")),
+                format!(r#"{{"pid":{pid},"sessionId":"x","entrypoint":"{entrypoint}","kind":"interactive","startedAt":{started_ms}}}"#),
+            )
+            .unwrap();
+        };
+        let launch = "claude --model haiku Count the nests, then run mkdir -p counts";
+        let mut procs = parse_ps(&format!(
+            "  601 {launch}\n  602 {launch}\n  603 claude -p Count the nests\n  604 {launch}\n"
+        ));
+        // Each started 10 s before `now`.
+        apply_tty(
+            &mut procs,
+            "  601 ttys001 00:10\n  602 ttys002 00:10\n  603 ?? 00:10\n  604 ttys004 00:10\n",
+            10_000,
+        );
+        apply_env(
+            &mut procs,
+            &format!(
+                "  601 claude HERDR_PANE_ID=w1:p1 CLAUDE_CONFIG_DIR={home}\n  602 claude CLAUDE_CONFIG_DIR={home}\n  603 claude CLAUDE_CONFIG_DIR={home}\n",
+                home = home.display()
+            ),
+        );
+        record(601, "cli", 9_992_000);
+        record(602, "cli", 5_000_000); // an earlier process with this pid
+        record(603, "sdk-cli", 9_992_000);
+        apply_session_files(&mut procs, None);
+        let shot: Vec<bool> = procs.iter().map(one_shot).collect();
+        assert_eq!(
+            shot,
+            [false, true, true, true],
+            "{:?}",
+            procs.iter().map(|p| p.cli_launch).collect::<Vec<_>>()
+        );
+        // 604 has no CLAUDE_CONFIG_DIR: the default home is read, and holds no record of it.
+        apply_session_files(&mut procs, Some(&home));
+        assert!(one_shot(&procs[3]));
+        // Linked by the directory rule, alone in its cwd.
+        apply_lsof(&mut procs, "p601\nfcwd\nn/w/petrel\n");
+        let l = link(
+            &procs[..1],
+            "5a5a5a5a-0000-4000-8000-000000000601",
+            Agent::CLAUDE,
+            Path::new("/n.jsonl"),
+            Some("/w/petrel"),
+            true,
+            &|_| true,
+        )
+        .expect("linked");
+        assert_eq!(l.pid, 601);
+        assert!(l.confirmed);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// #s50: two one-shots started inside each other's window each take a session — both are

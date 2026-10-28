@@ -361,7 +361,14 @@ unclaimed one-shot session of its cwd that began in its window (3 s before, 60 s
 unless another one-shot could have taken it instead; a paired session is neither the directory's
 newest nor a sibling, so the coordinator keeps its own pane. A one-shot's prompt is in its argv, so
 only `--session-id`/`--resume` name it; and whatever linked it, its terminal is Detached — a send
-into the pane it inherited would type into the coordinator.
+into the pane it inherited would type into the coordinator. **A `-p` in an interactive launch's
+prompt makes no one-shot** (#s301): `ps` joins argv with spaces, so `claude … "… mkdir -p counts …"`
+read as one, and its session was never linked (no liveness, no send, no dialog). The process's own
+record decides where it exists (`apply_session_files`): Claude Code writes `<claude home>/sessions/
+<pid>.json` (the home from the process's `CLAUDE_CONFIG_DIR`, else `~/.claude`) with `entrypoint`
+`cli` for an interactive launch and `sdk-cli` for `claude -p` (measured, 2.1.312; both say `kind:
+interactive`), believed only when it names the pid and began no earlier than the process. A one-shot
+writes it only once under way, so until then the argv decides, the safe way.
 **A headless worker lives in its starter's Agents pane, not in the session list** (#s53, the owner:
 "keep them under agents outline pane, and don't put them on main session list"). Claude Code exports
 its own session id into every Bash command (`CLAUDE_CODE_SESSION_ID`, with
