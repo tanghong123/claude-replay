@@ -297,9 +297,10 @@ turns are dropped, whose offsets the index knows; never the live tail.
   background read too, so nothing let go for it is read again behind the reader. After that, only
   what the window shows or a jump names is read. A head under the budget is read whole, as before, and the head and its index then go.
 - **Asks lapse.** After every transaction the page asks again for what the window shows and for the
-  jump it still waits on (a held turn, record or search hit, a link on its way, unless the reader has
-  moved since). Every earlier ask goes back to the background order first (`unwant`). So a turn the
-  reader scrolled past, or a jump they gave up, is not read once the background read is over.
+  jump it still waits on (a held turn, record or search hit, a link on its way). Every earlier ask
+  goes back to the background order first (`unwant`). So a turn the reader scrolled past is not read
+  once the background read is over, and a jump they gave up costs at most the read already asked:
+  the next fill lets go of a held jump the reader moved away from before its own transaction asks.
 - **A read starts once every ask made with it is in** (a microtask): the store is idle when the
   reader asks, and a read started on the first ask read the window's farthest turn first.
 - **The farthest go after each fill** (`dropFar`): while the reads hold more than the budget, the read

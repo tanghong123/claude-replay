@@ -993,13 +993,15 @@ function fillMustWait({ from, to }) {
   return viewport.dragging || viewport.touchGlide || viewport.readerMoving();
 }
 function applyFill(fill) {
+  // A held jump the reader has moved away from goes first, or the fill's own transaction would ask
+  // for its turn again (#s285: once the background read is over nothing else reads it).
+  if (heldTurnJump && viewport.lastUserInput > heldTurnJump.at) heldTurnJump = null;
   // Units that did not come out as their placeholders were: the index and the log disagree, and
   // nothing may be renamed (framework I12) — the session starts over.
   if (!rewriteInPlace(fill)) { recordStore.recover(); return; }
   recordState.taskTargets = taskRecordTargets(recordState.meta?.tasks || [], recordStore.records);
   recordState.agentTargets = agentTargetsNow(recordStore.records);
   landOnHash();
-  if (heldTurnJump && viewport.lastUserInput > heldTurnJump.at) heldTurnJump = null;
   landHeldJump();
   renderNavigator(); refreshFilterHits(); updateSearch(false);
 }
@@ -1035,10 +1037,8 @@ function wantWindow() {
   owed.sort((x, y) => Math.abs(y - at) - Math.abs(x - at));
   recordStore.unwant();
   for (const i of owed) recordStore.want(units[i].from, units[i].to + 1, 1);
-  // A held turn, record or search hit, and a link on its way, keep their asks while they wait —
-  // not once the reader has moved since, which gives them up.
-  const waiting = [heldTurnJump, hashWait].filter(jump => jump && viewport.lastUserInput <= jump.at);
-  for (const r of waiting.map(jump => jump.record)) {
+  // A held turn, record or search hit, and a link on its way, keep their asks while they wait.
+  for (const r of [heldTurnJump?.record, hashWait?.record]) {
     const unit = r == null ? null : units[unitAt(r)];
     if (unit?.owed > 0) recordStore.want(unit.from, unit.to + 1, 0);
   }
