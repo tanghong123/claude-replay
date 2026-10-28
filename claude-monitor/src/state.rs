@@ -133,6 +133,19 @@ impl StateTracker {
         self.staged.get(sid).is_some_and(|s| s.by_herdr)
     }
 
+    /// A published verdict, for a test of what a row says about it.
+    #[cfg(test)]
+    pub(crate) fn publish(&mut self, sid: &str, verdict: Verdict, by_herdr: bool) {
+        self.staged.insert(
+            sid.into(),
+            Staged {
+                published: Some((verdict, "2026-10-28T10:00:00Z".into())),
+                candidate: None,
+                by_herdr,
+            },
+        );
+    }
+
     /// One tick: derive every interesting session's state, publish transitions, and
     /// rewrite the snapshot. `facts` is what the scan's assemble pass observed.
     pub(crate) fn tick(&mut self, cache_root: &Path, facts: &[RowFacts]) {

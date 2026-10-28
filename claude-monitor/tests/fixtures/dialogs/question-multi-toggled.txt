@@ -1,0 +1,23 @@
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   ~/code/petrel
+
+❯ Ask which plots to count and which tally sheet to use.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Plots  ☐ Sheet  ✔ Submit  →
+
+Which plots should be counted today?
+
+❯ 1. [✔] Plot A
+         By the hut.
+  2. [ ] Plot B
+         Below the skua colony.
+  3. [✔] Plot C
+         On the east scree.
+  4. [ ] Type something
+     Next
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+

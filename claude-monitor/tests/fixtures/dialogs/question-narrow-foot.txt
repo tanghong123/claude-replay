@@ -1,0 +1,24 @@
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   ~/code/petrel
+
+❯ Ask me which ridge to survey first.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Ridge
+
+Which ridge should the survey start on?
+
+❯ 1. North ridge
+     The skua colony is there; start before it wakes.
+  2. South ridge
+     The petrel burrows, quieter in the morning.
+  3. East ridge
+     The tern scrape, furthest from the hut.
+  4. Type something.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · ctrl+g to edit in Vim · Esc to
+cancel
+
+

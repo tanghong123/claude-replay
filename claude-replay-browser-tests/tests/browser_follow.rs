@@ -169,11 +169,11 @@ fn live_viewport_follows_pinned_and_holds_unpinned() {
                 .headless(true)
                 // Never let tab-backgrounding heuristics starve timers or rendering — the
                 // page's poll loop and the renderer's scroll events are the test subject.
-                .args(vec![
-                    std::ffi::OsStr::new("--disable-background-timer-throttling"),
-                    std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
-                    std::ffi::OsStr::new("--disable-renderer-backgrounding"),
-                ])
+                .args(harness::chrome_args(&[
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                ]))
                 .build()
                 .unwrap(),
         )
@@ -445,11 +445,11 @@ fn jump_to_bottom_lands_after_a_viewport_resize() {
                 .path(harness::browser_path())
                 .headless(true)
                 .window_size(Some((1400, 900)))
-                .args(vec![
-                    std::ffi::OsStr::new("--disable-background-timer-throttling"),
-                    std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
-                    std::ffi::OsStr::new("--disable-renderer-backgrounding"),
-                ])
+                .args(harness::chrome_args(&[
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                ]))
                 .build()
                 .unwrap(),
         )
@@ -568,11 +568,11 @@ fn a_turn_landing_holds_through_late_reflow() {
             headless_chrome::LaunchOptions::default_builder()
                 .path(harness::browser_path())
                 .headless(true)
-                .args(vec![
-                    std::ffi::OsStr::new("--disable-background-timer-throttling"),
-                    std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
-                    std::ffi::OsStr::new("--disable-renderer-backgrounding"),
-                ])
+                .args(harness::chrome_args(&[
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                ]))
                 .build()
                 .unwrap(),
         )
@@ -676,11 +676,11 @@ fn stepping_search_hits_keeps_the_viewport_when_the_match_is_visible() {
                 // the top chrome, where scrolling to it is the CORRECT behaviour and the test
                 // would be measuring the wrong thing.
                 .window_size(Some((1200, 900)))
-                .args(vec![
-                    std::ffi::OsStr::new("--disable-background-timer-throttling"),
-                    std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
-                    std::ffi::OsStr::new("--disable-renderer-backgrounding"),
-                ])
+                .args(harness::chrome_args(&[
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                ]))
                 .build()
                 .unwrap(),
         )
@@ -838,6 +838,7 @@ fn a_workflow_fleet_renders_under_its_launching_block() {
             headless_chrome::LaunchOptions::default_builder()
                 .path(harness::browser_path())
                 .headless(true)
+                .args(harness::chrome_args(&[]))
                 .build()
                 .unwrap(),
         )
@@ -1445,6 +1446,7 @@ fn the_artifact_roster_groups_republishes_by_url() {
             headless_chrome::LaunchOptions::default_builder()
                 .path(harness::browser_path())
                 .headless(true)
+                .args(harness::chrome_args(&[]))
                 .build()
                 .unwrap(),
         )
@@ -1624,6 +1626,7 @@ fn the_classic_page_keys_resolve_through_the_shared_table() {
                 .path(harness::browser_path())
                 .headless(true)
                 .window_size(Some((1200, 800)))
+                .args(harness::chrome_args(&[]))
                 .build()
                 .unwrap(),
         )
@@ -13976,6 +13979,191 @@ fn a_herdr_session_takes_images_from_the_compose_box() {
         "a desktop send with both images to empty the strip and keep the box open",
         Duration::from_secs(5),
         "JSON.stringify(window.__sent).slice(0, 120)",
+    );
+}
+
+/// The page's side of a dialog in a herdr pane (#s298): the row says `dialog`, `/api/dialog` gives
+/// what it asks, `/api/answer` takes the answer. `window.__dialog` is what the next read returns and
+/// `window.__answers` what was answered; `window.__since` stands for a new wait.
+const STUB_DIALOG: &str = "(function(){ window.__answers = []; window.__since = '1'; var real = window.fetch; var reply = function (v) { return Promise.resolve(new Response(JSON.stringify(v), { status: 200, headers: { 'Content-Type': 'application/json' } })); }; window.fetch = function (url, init) { var u = String(url); if (u.indexOf('/api/dialog') === 0) return reply(window.__dialogReply || (window.__dialog ? { ok: true, open: true, dialog: window.__dialog } : { ok: true, open: false, dialog: null })); if (u.indexOf('/api/answer') === 0) { window.__answers.push(JSON.parse(String(init && init.body || '{}'))); return reply({ ok: true }); } if (u.indexOf('/api/sessions') === 0) { return real.apply(this, arguments).then(function (r) { return r.json().then(function (d) { (function walk(v) { if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === 'object') { if (v.id === '__SID__') { v.state = 'growing'; v.injectable = true; v.consented = true; v.term = 'herdr'; v.target = 'w1:p2'; v.sendsImages = true; v.stateSince = window.__since; if (window.__asking !== false) v.dialog = 'question'; window.__herdrRow = true; } Object.keys(v).forEach(function (k) { walk(v[k]); }); } })(d); return reply(d); }); }); } return real.apply(this, arguments); }; return 'ok'; })()";
+
+/// The dialogs the stub hands out, as `/api/dialog` gives them (the server offers a permission's
+/// Yes and No only, and no written answer to a question that takes several choices).
+const DIALOG_ONE: &str = r#"{"kind":"question","fingerprint":"q1","title":"Ridge","text":"Which ridge should the survey start on?","detail":"","note":"","multi":false,"choices":[{"n":1,"label":"North ridge","description":"The skua colony is there."},{"n":2,"label":"South ridge","description":"The petrel burrows."},{"n":3,"label":"East ridge","description":"The tern scrape."},{"n":4,"label":"Type something.","description":"","freeText":true}]}"#;
+const DIALOG_TICKS: &str = r#"{"kind":"question","fingerprint":"m1","title":"","text":"Which plots should be counted today?","detail":"","note":"","multi":true,"tabs":[{"label":"Plots","done":false},{"label":"Sheet","done":false}],"choices":[{"n":1,"label":"Plot A","description":"By the hut.","checked":false},{"n":2,"label":"Plot B","description":"Below the colony.","checked":true},{"n":3,"label":"Plot C","description":"On the scree.","checked":false}]}"#;
+const DIALOG_PERMISSION: &str = r#"{"kind":"permission","fingerprint":"p1","title":"Bash command","text":"Do you want to proceed?","detail":"mkdir -p counts && wc -l < survey.csv > counts/today.txt","note":"Count the survey's lines","multi":false,"choices":[{"n":1,"label":"Yes","description":""},{"n":4,"label":"No","description":""}]}"#;
+
+/// #s298 (Hong chose Way 1 on #s299): a question, a permission prompt or a plan in a Claude
+/// session's herdr pane is answered from the compose box. ✎ says Claude is asking; the box shows the
+/// dialog above its field with its choices as 44px rows on a phone, the keyboard down until the
+/// field is tapped; a tap answers, ticks go as a set on Next, the field writes the written answer,
+/// a permission's "No, and tell Claude what to do instead" answers No and puts the field in hand,
+/// and a pane with no grant asks for one before anything is read. The desktop's box shows it too,
+/// above its field and inside the session's column.
+#[test]
+#[ignore]
+fn a_herdr_dialog_is_answered_from_the_compose_box() {
+    let _serial = serial();
+    let (m, _b, tab, _path) = phone_world_at(3255, "herdr-dialog", 390, 844, "");
+    harness::eval(&tab, &format!("window.__dialog = {DIALOG_ONE}; 'ok'"));
+    harness::eval(&tab, &STUB_DIALOG.replace("__SID__", PHONE_SID));
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    let asking = format!("(function(){{ var b = document.getElementById('dockCompose'), d = b.querySelector('.dock-compose-dot'); return !b.hidden && ({PHONE_HITTABLE})(b) && b.classList.contains('asks') && getComputedStyle(d).display === 'block' && b.getAttribute('aria-label'); }})()");
+    harness::until(
+        &tab,
+        &format!("{asking} === 'Claude is asking: answer it'"),
+        "✎ to say Claude is asking",
+        Duration::from_secs(15),
+        &asking,
+    );
+    phone_tap(&tab, "#dockCompose");
+    let card = format!("(function(){{ var c = document.getElementById('composeDialog'), f = document.getElementById('composeInput').getBoundingClientRect(), r = c.getBoundingClientRect(), b = [...c.querySelectorAll('.dialog-choice')]; return !c.hidden && c.querySelector('.dialog-text').textContent + '|' + b.map(function (x) {{ return x.querySelector('b').textContent; }}).join(',') + '|' + b.every(function (x) {{ return ({PHONE_HITTABLE})(x) && x.getBoundingClientRect().height >= 44; }}) + '|' + (r.bottom <= f.top + 1) + '|' + (r.top >= 0) + '|' + !!c.querySelector('.dialog-hint') + '|' + (document.activeElement !== document.getElementById('composeInput')); }})()");
+    harness::until(
+        &tab,
+        &format!("{card} === 'Which ridge should the survey start on?|North ridge,South ridge,East ridge|true|true|true|true|true'"),
+        "the question above the field, its three choices as rows a finger hits, the written answer offered below, and no keyboard yet",
+        Duration::from_secs(10),
+        &card,
+    );
+    // A tap answers; the next read is the question's next part.
+    harness::eval(&tab, &format!("window.__dialog = {DIALOG_TICKS}; 'ok'"));
+    phone_tap(&tab, "#composeDialog .dialog-choice[data-choice='2']");
+    harness::until(
+        &tab,
+        "window.__answers.length === 1 && window.__answers[0].fingerprint === 'q1' && window.__answers[0].choice === 2",
+        "the tap to answer choice 2 of the dialog shown",
+        Duration::from_secs(5),
+        "JSON.stringify(window.__answers)",
+    );
+    let ticks = "(function(){ var c = document.getElementById('composeDialog'); return [...c.querySelectorAll('input[data-choice]')].map(function (i) { return i.dataset.choice + (i.checked ? '+' : '-'); }).join(',') + '|' + [...c.querySelectorAll('.dialog-tab')].map(function (t) { return t.textContent; }).join(','); })()";
+    harness::until(
+        &tab,
+        &format!("{ticks} === '1-,2+,3-|Plots,Sheet'"),
+        "the next part, its ticks as they stand and its tabs",
+        Duration::from_secs(5),
+        ticks,
+    );
+    // Ticks go as the set wanted, on Next.
+    harness::eval(
+        &tab,
+        &format!(
+            "window.__dialog = {}; 'ok'",
+            DIALOG_ONE.replace("\"q1\"", "\"f1\"")
+        ),
+    );
+    phone_tap(&tab, "#composeDialog .dialog-tick:nth-child(1)");
+    phone_tap(&tab, "#composeDialog .dialog-tick:nth-child(2)");
+    phone_tap(&tab, "#composeDialog .dialog-tick:nth-child(3)");
+    phone_tap(&tab, "#composeDialog .dialog-next");
+    harness::until(
+        &tab,
+        "window.__answers.length === 2 && window.__answers[1].fingerprint === 'm1' && JSON.stringify(window.__answers[1].choices) === '[1,3]'",
+        "Next to send Plot A and Plot C, Plot B unticked",
+        Duration::from_secs(5),
+        "JSON.stringify(window.__answers)",
+    );
+    // A written answer: the field, sent by the box's own control.
+    harness::until(
+        &tab,
+        "!!document.querySelector('#composeDialog .dialog-hint')",
+        "the question that takes a written answer",
+        Duration::from_secs(5),
+        "document.getElementById('composeDialog').textContent",
+    );
+    harness::eval(
+        &tab,
+        &format!("window.__dialog = {DIALOG_PERMISSION}; 'ok'"),
+    );
+    harness::eval(&tab, "(function(){ var i = document.getElementById('composeInput'); i.value = 'West ridge, by the cairn'; i.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    phone_tap(&tab, "#sendBtn");
+    harness::until(
+        &tab,
+        "window.__answers.length === 3 && window.__answers[2].fingerprint === 'f1' && window.__answers[2].text === 'West ridge, by the cairn' && document.getElementById('composeInput').value === ''",
+        "the field's text to go as the written answer and leave the field empty",
+        Duration::from_secs(5),
+        "JSON.stringify(window.__answers) + '|' + document.getElementById('composeInput').value",
+    );
+    // A permission: its command, Yes and No, and No with the field in hand.
+    let permission = "(function(){ var c = document.getElementById('composeDialog'); return c.querySelector('.dialog-kind').textContent + '|' + c.querySelector('.dialog-title').textContent + '|' + c.querySelector('.dialog-detail').textContent + '|' + [...c.querySelectorAll('.dialog-choice b')].map(function (b) { return b.textContent; }).join(','); })()";
+    harness::until(
+        &tab,
+        &format!("{permission} === 'Claude wants to run|Bash command|mkdir -p counts && wc -l < survey.csv > counts/today.txt|Yes,No,No, and tell Claude what to do instead'"),
+        "the held command with Yes, No, and No with something to say",
+        Duration::from_secs(5),
+        permission,
+    );
+    harness::eval(
+        &tab,
+        "window.__dialog = null; window.__asking = false; 'ok'",
+    );
+    phone_tap(&tab, "#composeDialog .dialog-instead");
+    harness::until(
+        &tab,
+        "window.__answers.length === 4 && window.__answers[3].fingerprint === 'p1' && window.__answers[3].choice === 4 && document.activeElement === document.getElementById('composeInput')",
+        "No to go, and the field to take the next message",
+        Duration::from_secs(5),
+        "JSON.stringify(window.__answers) + '|' + (document.activeElement && document.activeElement.id)",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('composeDialog').hidden && !document.getElementById('dockCompose').classList.contains('asks')",
+        "the card to go once nothing holds the session",
+        Duration::from_secs(10),
+        "document.getElementById('composeDialog').textContent",
+    );
+    // A pane with no grant: nothing is read until it is given.
+    harness::eval(&tab, &format!("document.activeElement.blur(); window.__dialogReply = {{ ok: false, code: 'no-consent' }}; window.__dialog = {DIALOG_ONE}; window.__asking = true; window.__since = '2'; 'ok'"));
+    harness::until(
+        &tab,
+        "(function(){ var b = document.querySelector('#composeDialog .dialog-choice.primary'); return !!b && b.textContent === 'Allow'; })()",
+        "the card to ask for the pane's grant",
+        Duration::from_secs(15),
+        "document.getElementById('composeDialog').textContent",
+    );
+    phone_tap(&tab, "#composeDialog .dialog-choice.primary");
+    harness::until(
+        &tab,
+        "document.getElementById('confirmLayer').classList.contains('production-open') && /reads the dialog in herdr pane w1:p2/.test(document.getElementById('confirmText').textContent)",
+        "Allow to state what the grant lets the monitor do",
+        Duration::from_secs(5),
+        "document.getElementById('confirmText').textContent",
+    );
+    phone_tap(&tab, "#cancelSend");
+
+    // The desktop's box: the dialog above its field, inside the session's column.
+    let (_db, desk) = desktop_tab(&m);
+    harness::eval(&desk, &format!("window.__dialog = {DIALOG_ONE}; 'ok'"));
+    harness::eval(&desk, &STUB_DIALOG.replace("__SID__", PHONE_SID));
+    harness::eval(
+        &desk,
+        "document.getElementById('writeSwitch').click(); 'ok'",
+    );
+    harness::until(
+        &desk,
+        "(function(){ var f = document.getElementById('composeFab'); return f.classList.contains('show') && f.classList.contains('asks') && f.title; })() === 'Claude is asking: answer it'",
+        "the compose button to say Claude is asking",
+        Duration::from_secs(15),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&desk, "document.getElementById('composeFab').click(); 'ok'");
+    let desktop = "(function(){ var c = document.getElementById('composeDialog'), box = document.getElementById('composer').getBoundingClientRect(), col = document.querySelector('.transcript').getBoundingClientRect(), f = document.getElementById('composeInput').getBoundingClientRect(), r = c.getBoundingClientRect(), b = c.querySelector(\".dialog-choice[data-choice='3']\"), q = b.getBoundingClientRect(), at = document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2); return !c.hidden + '|' + (r.bottom <= f.top + 1) + '|' + (box.left >= col.left - 1 && box.right <= col.right + 1) + '|' + (!!at && b.contains(at)); })()";
+    harness::until(
+        &desk,
+        &format!("{desktop} === 'true|true|true|true'"),
+        "the dialog above the desktop's field, the box in the column, its choices reachable",
+        Duration::from_secs(10),
+        desktop,
+    );
+    harness::eval(
+        &desk,
+        "document.querySelector(\"#composeDialog .dialog-choice[data-choice='3']\").click(); 'ok'",
+    );
+    harness::until(
+        &desk,
+        "window.__answers.length === 1 && window.__answers[0].choice === 3",
+        "a desktop click to answer",
+        Duration::from_secs(5),
+        "JSON.stringify(window.__answers)",
     );
 }
 

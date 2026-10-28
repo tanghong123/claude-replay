@@ -130,6 +130,10 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
         // stock unpaired binary cannot reach them.
         "api/send" => control::send_route(&backend.idx, req),
         "api/consent" => control::consent_route(&backend.idx, req, &backend.attempts),
+        // #s298: a dialog in a live session's herdr pane — a question, a permission prompt, a
+        // plan's approval — read off the pane, and answered there, behind the send's own gates.
+        "api/dialog" => control::dialog_route(&backend.idx, req),
+        "api/answer" => control::answer_route(&backend.idx, req),
         // The route that remembered the classic view (#s98): a page from before the release
         // that still asks gets a plain 404, not the static fallback's 403.
         "api/ui" => HttpResponse::not_found("the classic view is retired"),
@@ -334,6 +338,36 @@ mod tests {
                 .code
                 .starts_with("200")
         );
+        // #s298: a dialog is read and answered only for a paired client, the answer only by POST.
+        for name in ["api/dialog", "api/answer"] {
+            let r = dispatch(&backend, &front, &get(name, "target=s1"));
+            assert!(!r.code.starts_with("200"), "{name}: {}", r.code);
+        }
+        let paired = Request {
+            authenticated: true,
+            ..get("api/answer", "target=s1")
+        };
+        assert_eq!(
+            dispatch(&backend, &front, &paired).code,
+            "405 Method Not Allowed",
+            "an answer is a POST"
+        );
+        // Paired, a session the index cannot resolve to a proven pane is refused before any pane
+        // is read or typed into.
+        let read = Request {
+            authenticated: true,
+            ..get("api/dialog", "target=s1")
+        };
+        let answer = Request {
+            method: "POST",
+            body: br#"{"fingerprint":"ab","choice":1}"#,
+            authenticated: true,
+            ..get("api/answer", "target=s1")
+        };
+        for r in [read, answer] {
+            let reply = body(&dispatch(&backend, &front, &r));
+            assert!(reply.contains("\"ok\":false"), "{}: {reply}", r.name);
+        }
         // `/session` is retired (#s99), under either name the page used for the session.
         for query in ["session=s1", "id=s1&chrome=embed"] {
             let r = dispatch(&backend, &front, &get("session", query));

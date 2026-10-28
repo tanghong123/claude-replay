@@ -1,0 +1,22 @@
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   ~/code/petrel
+
+❯ Ask which plots to count and which tally sheet to use.
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Plots  ☒ Sheet  ✔ Submit  →
+
+Review your answers
+
+ ● Which plots should be counted today?
+   → Plot A, Plot C
+ ● Which tally sheet should the counts go on?
+   → Tablet
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel
+
+
