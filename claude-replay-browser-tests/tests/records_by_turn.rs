@@ -12,7 +12,7 @@
 //! `?windowed=1`, which picks that path, and queues every read of the head (`queue_the_head`) so it
 //! decides when each piece arrives. Searching the earlier turns on the server while the head is out
 //! (#s278, stage 3) is here too, and so is what a reader keeps of a long session (#s285). Ports
-//! 2770–2779, 2782–2784 for what a reader keeps, and 2785–2789 for stage 3 (the sandbox holds
+//! 2770–2779, 2782–2784 for what a reader keeps, 2785–2789 for stage 3 and 2790 (the sandbox holds
 //! 2780–2781).
 
 mod harness;
@@ -544,6 +544,83 @@ fn a_link_into_a_turn_on_its_way_lands_on_its_row_unless_the_reader_moves() {
     assert!(
         (now - top).abs() <= 2.0,
         "a link the reader moved away from does not pull them back: {top} → {now}"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
+}
+
+/// #s291: a reader who scrolled away from a landed link and then waits while the head fills in its
+/// background order is not moved by the fills. The first piece fills the prompt placeholder that
+/// straddles the top of the view and the answer under it, the unit the reader sees first; the later
+/// ones fill what is below and move the estimates above. That unit keeps its top within half a pixel
+/// at every release: it used to rise 3.5px with the straddling prompt as the anchor, which the fill
+/// shrank, and then walk by the sub-pixel remainders each placement left.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_fills_around_a_scrolled_reader_leave_what_they_see_where_it_is() {
+    let _serial = serial();
+    let (_m, _b, tab, _) = open(2790, "by-turn-below", &session(60), false, false, "");
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
+    let facts = harness::eval(&tab, "(async function(){ var r = await fetch('/turn-index?session=SID&epoch=1&upto=1000000'); var j = await r.json(); return JSON.stringify(j.facts || []); })()".replace("SID", SID).as_str());
+    let facts: Vec<serde_json::Value> =
+        serde_json::from_str(facts.as_str().unwrap_or("[]")).unwrap_or_default();
+    let t7 = facts
+        .iter()
+        .position(|f| f[1] == "t7")
+        .expect("turn 7 in the facts");
+    let act = facts[t7..]
+        .iter()
+        .find(|f| f[0] == "act")
+        .expect("a group of steps in turn 7");
+    let id: u64 = act[1].as_str().unwrap()[1..].parse().unwrap();
+    let nested = format!("b{}", id + 1);
+    harness::eval(&tab, &format!("location.hash = '{nested}'; 1"));
+    harness::until(&tab, "document.getElementById('toast').textContent.indexOf('Still loading') >= 0 || window.__heldReads.length >= 1", "the link's turn asked for", Duration::from_secs(10), STATE);
+    release_until(
+        &tab,
+        &format!("!!document.querySelector('[data-record-id=\"{nested}\"]')"),
+        "the link's turn filled",
+    );
+    harness::until(
+        &tab,
+        &format!("(function(){{ var e = document.querySelector('[data-record-id=\"{nested}\"]'); if (!e) return false; var s = document.querySelector('.transcript').getBoundingClientRect(), r = e.getBoundingClientRect(); return r.top >= s.top && r.top < s.bottom && r.height > 0; }})()"),
+        "the linked row in view",
+        Duration::from_secs(10),
+        STATE,
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    harness::scroll_by(&tab, Surface::AppShell, 400);
+    std::thread::sleep(Duration::from_millis(500));
+    let (key, top) = anchor(&tab);
+    let mut tops = vec![top];
+    let started = std::time::Instant::now();
+    while harness::eval(&tab, WHOLE).as_bool() != Some(true) {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the whole head to arrive: {}",
+            harness::eval(&tab, STATE)
+        );
+        harness::eval(&tab, "window.__release(1)");
+        std::thread::sleep(Duration::from_millis(250));
+        if let Some(now) = top_of(&tab, &key) {
+            tops.push(now);
+        }
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    tops.push(top_of(&tab, &key).expect("the reader's unit is still mounted"));
+    let worst = tops.iter().map(|t| (t - top).abs()).fold(0.0, f64::max);
+    assert!(
+        worst <= 0.5,
+        "the fills leave {key} where the reader saw it: {top} → {tops:?}"
     );
     assert_eq!(
         harness::eval(&tab, VIOLATIONS).as_str(),

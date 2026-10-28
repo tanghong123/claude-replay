@@ -213,6 +213,12 @@ function historyWanted(search) {
   return m ? Number(m[2]) : null;
 }
 
+/** The smallest correction `place` writes (#s291). A browser keeps the offset in whole pixels and a
+ *  write rounds to the nearest, so a correction of half a pixel or less cannot be made, and anything
+ *  more can: at a full pixel, the remainders a reader under a run of fills was left with reached
+ *  0.9px. */
+const PLACE_EPSILON = 0.5;
+
 /** The scroll correction that puts an anchored element back where it was: the page measures
  *  `currentTop` and remembers `wantTop`, both relative to the viewport. Below `epsilon` the
  *  correction is noise and scrolling by it would fight the reader. */
@@ -541,8 +547,18 @@ class VirtualWindow {
       const rect = element.getBoundingClientRect();
       return { element, top: rect.top, bottom: rect.bottom, height: rect.height };
     };
-    const child = firstVisible([...this.mount.children].map(rects), viewportTop, viewportBottom, 1, false);
+    const items = [...this.mount.children].map(rects);
+    let child = firstVisible(items, viewportTop, viewportBottom, 1, false);
     if (!child) return null;
+    // A PLACEHOLDER straddling the top (design/slow-links.md §6.2) is no anchor while the item after
+    // it begins on screen (#s291). Its top is out of sight and it has no rows to refine into (below),
+    // and its height is a guess the fill replaces: held by that top, the fill or a moved estimate
+    // resizes it and carries everything the reader can see by the difference (measured: 3.5px when
+    // a piece filled the prompt above the reader's answer). The content below it is what they see.
+    if (child.top < viewportTop - 1 && this.placeholderAt(Number(child.element.dataset.unitIndex))) {
+      const next = items[items.indexOf(child) + 1];
+      if (next && next.top < viewportBottom) child = next;
+    }
     // Alongside the anchor, the model form of the same position (#191), read from the same sums,
     // now — before any rewrite moves them. It is the fallback if the anchor's identity is gone or
     // names another record by the time it is placed (framework I12; #165).
@@ -646,7 +662,7 @@ class VirtualWindow {
     // Against where the offset IS — or, while a smooth write travels, where it is GOING: mid-flight
     // every offset differs from the destination, and comparing against it re-issued the animation
     // on every observer notification of the records the jump had just mounted.
-    const delta = correction(this.inFlight() ? this.wrote.to : this.frame.scrollTop(), want, 1);
+    const delta = correction(this.inFlight() ? this.wrote.to : this.frame.scrollTop(), want, PLACE_EPSILON);
     if (!delta) return true;
     // #372: during a TOUCH glide a write does not stick — iOS carries the glide on from its own
     // offset (#340), the next transaction reads that as the reader somewhere else (I11, I10) and
@@ -766,12 +782,28 @@ class VirtualWindow {
    *  at its index — never through the fallback (a held model form across measures is #191 again)
    *  — so every later transaction places the TARGET where the reader put it, until they move
    *  (`releaseHold`). Its offset is where the write went: the destination of a smooth write still
-   *  in flight. */
-  syncPosition() {
+   *  in flight.
+   *
+   *  `placed` is the anchor the transaction just placed, with no drift of the reader's. A whole-pixel
+   *  offset can leave it up to half a pixel from where `P` said, and `place` writes nothing under
+   *  `PLACE_EPSILON`: that remainder is the engine's, not the reader's, so `P` is read again as if
+   *  the placement had been exact — on whatever anchor the reader now sees first (#s291). Taken as
+   *  read, each remainder became the new `P` and the next was measured from there: a reader under a
+   *  run of fills, each moving the estimates above them by under a pixel, walked 1.3px over ten
+   *  (I1: the engine's own noise never redefines `P`). */
+  syncPosition(placed = null) {
     if (this.following || this.dragging || !this.count) { this.position = null; return; }
     const held = this.position && this.position.commanded ? this.position : null;
     if (held && this.anchorResolves(held)) { held.at = this.inFlight() ? this.wrote.to : this.frame.scrollTop(); return; }
-    this.position = this.captureDomAnchor() || this.modelAnchor();
+    const read = this.captureDomAnchor() || this.modelAnchor();
+    const exact = placed && placed.source === "anchor" && this.anchorResolves(placed) ? this.offsetOf(placed) : null;
+    // How much further down the view is than the placement asked; more than a pixel is a clamp, not
+    // a remainder, and the view as read is the reader's.
+    const left = exact == null ? 0 : this.frame.scrollTop() - exact;
+    if (left && Math.abs(left) <= 1) {
+      if (read.source === "anchor") { read.top += left; read.blockTop += left; } else read.offset -= left;
+    }
+    this.position = read;
   }
 
   /** Does this anchor name a mounted item at its own index? */
@@ -1470,7 +1502,7 @@ class VirtualWindow {
       }
       // A position the reader asked for (§4.10) is `P` from here on; `syncPosition` keeps it.
       if (p0 && p0.commanded) this.position = p0;
-      this.syncPosition();
+      this.syncPosition(placed === "placed" && !drift && !smooth ? p0 : null);
       this.check(cause, p0, placed, mounted, drift, following0);
       summary = Object.assign({ p0: p0 ? p0.source : null, anchor: p0 && p0.key ? p0.key : null, placed }, mounted ? { range: [mounted.lo, mounted.hi], fresh: mounted.fresh } : {}, options.fields || {});
       // Trace only: is the viewport inside the window it left, and how the window was chosen.
