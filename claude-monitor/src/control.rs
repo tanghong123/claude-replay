@@ -1263,24 +1263,36 @@ fn herdr_screen(
     .map_err(HerdrSendError::Failed)
 }
 
+/// What a Claude session's herdr pane holds (#s298).
+pub enum Shown {
+    /// Nothing holds the session: no dialog is open.
+    Nothing,
+    /// Something holds it that this monitor cannot read (a layout it does not know).
+    Unknown,
+    Dialog(dialog::Dialog),
+}
+
 /// The dialog open in a Claude session's herdr pane (#s298), read off its screen once herdr's hook
 /// says the pane runs this session and something holds it there: herdr's `blocked`, or the
-/// client's own wait (#s76). `None`: nothing is open, or not a dialog this monitor can read.
+/// client's own wait (#s76).
 fn herdr_dialog(
     program: &std::ffi::OsStr,
     socket: &std::path::Path,
     pane: &str,
     sid: &str,
     client_wait: bool,
-) -> Result<Option<dialog::Dialog>, HerdrSendError> {
+) -> Result<Shown, HerdrSendError> {
     let agent = parse_herdr_agent(
         &herdr_cli(program, socket, &["agent", "get", pane]).map_err(HerdrSendError::Failed)?,
     );
     herdr_names(sid, pane, &agent).map_err(HerdrSendError::Held)?;
     if agent.status.as_deref() != Some("blocked") && !client_wait {
-        return Ok(None);
+        return Ok(Shown::Nothing);
     }
-    Ok(dialog::parse(&herdr_screen(program, socket, pane)?))
+    Ok(match dialog::parse(&herdr_screen(program, socket, pane)?) {
+        Some(d) => Shown::Dialog(d),
+        None => Shown::Unknown,
+    })
 }
 
 /// Read the pane, for about a second, until its dialog is still THIS one and `took` says the step
@@ -1338,7 +1350,7 @@ fn herdr_answer_with(
     answer: &dialog::Answer,
 ) -> Result<(), HerdrSendError> {
     let socket = herdr_pane_socket(socket, pane)?;
-    let Some(shown) = herdr_dialog(program, &socket, pane, sid, client_wait)? else {
+    let Shown::Dialog(shown) = herdr_dialog(program, &socket, pane, sid, client_wait)? else {
         return Err(HerdrSendError::Held(
             "no dialog the monitor can read is open in the session now: nothing was typed".into(),
         ));
@@ -1427,12 +1439,10 @@ pub fn plan_text(transcript: &std::path::Path, shown: &str) -> Option<String> {
     if plans.file_name()? != "plans" || path.extension()? != "md" {
         return None;
     }
-    let home = plans.parent()?;
-    if !transcript
-        .canonicalize()
-        .ok()?
-        .starts_with(home.join("projects"))
-    {
+    // Both resolved: a client home's `projects/` may be a link into another (an account's own
+    // home sharing `~/.claude/projects`, measured on hong-devserver).
+    let projects = plans.parent()?.join("projects").canonicalize().ok()?;
+    if !transcript.canonicalize().ok()?.starts_with(projects) {
         return None;
     }
     let mut bytes = Vec::new();
@@ -1631,7 +1641,8 @@ fn held_body(e: HerdrSendError) -> serde_json::Value {
 }
 
 /// `GET /api/dialog?target=<sid>` (#s298): the dialog a live Claude session's herdr pane shows,
-/// as `{"ok": true, "dialog": {…}}`, or `"dialog": null` with `why`. It reads the reader's pane,
+/// as `{"ok": true, "open": true, "dialog": {…}}`; `"dialog": null` with `open` false when nothing
+/// is open, or true (and `why`) when what is open cannot be read. It reads the reader's pane,
 /// so it asks what a send asks: a paired, same-origin request, a proven link, a quiet project and
 /// the reader's grant for that pane. A plan's text comes from its file (`plan_text`).
 pub fn dialog_route(idx: &index::Index, req: &claude_replay_html::Request) -> HttpResponse {
@@ -1648,18 +1659,20 @@ pub fn dialog_route(idx: &index::Index, req: &claude_replay_html::Request) -> Ht
     let read = herdr_pane_socket(socket.as_deref(), pane)
         .and_then(|socket| herdr_dialog(&herdr_program(), &socket, pane, &sid, target.client_wait));
     let resp = match read {
-        Ok(Some(d)) => {
+        Ok(Shown::Dialog(d)) => {
             let plan = d
                 .plan_file
                 .as_deref()
                 .and_then(|f| plan_text(&target.transcript, f));
-            json!({"ok": true, "sid": sid, "dialog": d.to_json(plan.as_deref())})
+            json!({"ok": true, "sid": sid, "open": true, "dialog": d.to_json(plan.as_deref())})
         }
-        Ok(None) => json!({
+        Ok(Shown::Nothing) => json!({"ok": true, "sid": sid, "open": false, "dialog": null}),
+        Ok(Shown::Unknown) => json!({
             "ok": true,
             "sid": sid,
+            "open": true,
             "dialog": null,
-            "why": "no dialog the monitor can read is open in the session",
+            "why": "something holds the session that the monitor cannot read: answer it there",
         }),
         Err(e) => held_body(e),
     };
@@ -2787,8 +2800,11 @@ mod tests {
             )
         }
         fn shown(&self) -> Option<dialog::Dialog> {
-            herdr_dialog(self.fake.as_os_str(), &self.socket, "w1:p2", SID, false)
-                .unwrap_or_else(|_| panic!("the pane could not be read"))
+            match herdr_dialog(self.fake.as_os_str(), &self.socket, "w1:p2", SID, false) {
+                Ok(Shown::Dialog(d)) => Some(d),
+                Ok(_) => None,
+                Err(_) => panic!("the pane could not be read"),
+            }
         }
     }
 
@@ -2935,6 +2951,11 @@ mod tests {
         let home = root.join("claude");
         std::fs::create_dir_all(home.join("projects/-p")).unwrap();
         std::fs::create_dir_all(home.join("plans")).unwrap();
+        // An account's home whose `projects/` is a link into the shared one.
+        let account = root.join("account");
+        std::fs::create_dir_all(account.join("plans")).unwrap();
+        std::os::unix::fs::symlink(home.join("projects"), account.join("projects")).unwrap();
+        std::fs::write(account.join("plans/mine.md"), "# Mine\n").unwrap();
         std::fs::create_dir_all(root.join("elsewhere/plans")).unwrap();
         let transcript = home.join("projects/-p/s.jsonl");
         std::fs::write(&transcript, "").unwrap();
@@ -2949,6 +2970,16 @@ mod tests {
         assert_eq!(at(home.join("plans/tally.txt")), None);
         assert_eq!(at(root.join("elsewhere/plans/x.md")), None);
         assert_eq!(at(home.join("plans/../plans/missing.md")), None);
+        let linked = account.join("projects/-p/s.jsonl");
+        assert_eq!(
+            plan_text(
+                &linked,
+                &account.join("plans/mine.md").display().to_string()
+            )
+            .as_deref(),
+            Some("# Mine\n"),
+            "a home whose projects/ is a link"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -182,6 +182,10 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/control-store.js").as_slice(),
         ),
+        "monitor-ui/dialog-card.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/dialog-card.js").as_slice(),
+        ),
         "monitor-ui/mdrev-pane.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/mdrev-pane.js").as_slice(),
@@ -342,6 +346,7 @@ mod tests {
                 "control-store.js",
                 include_str!("codex-ui/control-store.js"),
             ),
+            ("dialog-card.js", include_str!("codex-ui/dialog-card.js")),
             ("icons.js", include_str!("codex-ui/icons.js")),
             ("preview.js", include_str!("codex-ui/preview.js")),
             ("jump-query.js", include_str!("codex-ui/jump-query.js")),

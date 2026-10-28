@@ -4164,8 +4164,11 @@ var phoneDock;
   const paintCompose = () => {
     dockCompose.hidden = !composeFab.classList.contains("show");
     const draft = !!composeInput.value.trim() || !!composer.dataset.imageDraft;
-    dockCompose.classList.toggle("has-draft", draft);
-    dockCompose.setAttribute("aria-label", draft ? "Write to this session — a draft is waiting" : "Write to this session");
+    // #s298: the session waits on an answer the box can give (the desktop's button says so too).
+    const asks = composeFab.classList.contains("asks");
+    dockCompose.classList.toggle("has-draft", draft && !asks);
+    dockCompose.classList.toggle("asks", asks);
+    dockCompose.setAttribute("aria-label", asks ? "Claude is asking: answer it" : draft ? "Write to this session — a draft is waiting" : "Write to this session");
     const keyboardOpen = innerHeight - (window.visualViewport?.height || innerHeight) > 80;
     // Moving a pending button on focus would move it between pointerdown and click.
     const sharedFocus = !!controls.nativeActive && (document.activeElement === composeInput || keyboardOpen && (composer.contains(document.activeElement) || controls.runtimePanel?.contains(document.activeElement)));
@@ -4180,6 +4183,7 @@ var phoneDock;
   new MutationObserver(paintCompose).observe(composer, { attributes: true, attributeFilter: ["class"] });
   composeInput.addEventListener("input", paintCompose);
   composer.addEventListener("compose-images", paintCompose);
+  composer.addEventListener("compose-dialog", paintCompose);
   // Native request cards are installed lazily; delegate focus from their stable workspace.
   composer.closest(".workspace").addEventListener("focusin", paintCompose);
   composer.closest(".workspace").addEventListener("focusout", () => requestAnimationFrame(paintCompose));

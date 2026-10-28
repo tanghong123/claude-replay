@@ -22,6 +22,32 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 #app .composer .compose-attach[hidden]{display:none}
 #app .composer .compose-attach .icon{width:18px;height:18px}
 #app .compose-images:empty{display:none}
+/* #s298 (Hong's Way 1 on #s299): a dialog the session holds in its herdr pane — a question, a
+   permission prompt, a plan — shown in the compose box above its field, its choices as buttons
+   (dialog-card.js). The box keeps its place on a desktop and is the dock's reply box on a phone. */
+#app .compose-dialog[hidden]{display:none}
+#app .compose-dialog{display:grid;gap:6px;min-width:0;padding:6px 0 8px;color:var(--ink);font-size:13px;line-height:1.4}
+#app .compose-dialog.answering{opacity:.6;pointer-events:none}
+#app .compose-dialog p{margin:0}
+#app .compose-dialog .dialog-head{display:flex;align-items:baseline;gap:8px;min-width:0}
+#app .compose-dialog .dialog-kind{flex:none;color:var(--amber);font-size:11px;font-weight:650}
+#app .compose-dialog .dialog-title{min-width:0;color:var(--sub);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#app .compose-dialog .dialog-text{font-weight:600;overflow-wrap:anywhere}
+#app .compose-dialog :is(.dialog-note,.dialog-hint,.dialog-wait){color:var(--sub);font-size:12px}
+#app .compose-dialog .dialog-detail{margin:0;max-height:min(200px,28vh);overflow:auto;padding:6px 8px;border-radius:8px;background:color-mix(in srgb,var(--line) 40%,transparent);font:12px/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+#app .compose-dialog .dialog-tabs{display:flex;flex-wrap:wrap;gap:4px}
+#app .compose-dialog .dialog-tab{padding:1px 7px;border-radius:9px;background:color-mix(in srgb,var(--line) 50%,transparent);color:var(--sub);font-size:11px}
+#app .compose-dialog .dialog-tab.done{color:var(--ink)}
+#app .compose-dialog .dialog-choices{display:flex;flex-wrap:wrap;gap:6px}
+#app .compose-dialog .dialog-choice{display:grid;gap:1px;min-height:30px;max-width:100%;box-sizing:border-box;padding:5px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+#app .compose-dialog .dialog-choice b{font-weight:600;overflow-wrap:anywhere}
+#app .compose-dialog .dialog-desc{color:var(--sub);font-size:11.5px}
+#app .compose-dialog .dialog-choice.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+#app .compose-dialog .dialog-tick{grid-template-columns:auto minmax(0,1fr);align-items:start;column-gap:8px}
+#app .compose-dialog .dialog-tick input{margin:3px 0 0}
+#app .compose-dialog .dialog-words{display:grid;gap:1px}
+@media(hover:hover){#app .compose-dialog .dialog-choice:not(.primary):hover{background:var(--hover)}}
+#app .compose-fab.asks .fab-dot{background:var(--amber)}
 body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!important}
 #app .compose-images{display:flex;gap:8px;overflow-x:auto;padding:4px 2px 6px}
 #app .compose-image{position:relative;flex:none;width:76px;height:64px;border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden}
@@ -45,6 +71,8 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
   body:not([data-shared-codex]) #app .composer.production-show .production-revoke{grid-area:revoke}
   body:not([data-shared-codex]) #app .composer.production-show #closeComposer{grid-area:close;width:24px;height:24px}
   body:not([data-shared-codex]) #app .composer.production-show .compose-images{grid-area:images}
+  body:not([data-shared-codex]) #app .composer.production-show .compose-dialog{grid-area:dialog}
+  body:not([data-shared-codex]) #app .composer.production-show:has(.compose-dialog:not([hidden])){grid-template-areas:"title target revoke close" "dialog dialog dialog dialog" "images images images images" "field field field field"}
   body:not([data-shared-codex]) #app .composer.production-show textarea{grid-area:field;box-sizing:border-box;width:auto;min-height:0;max-height:var(--compose-cap,min(264px,32vh));margin-right:38px;padding:6px 4px 6px 0;font-size:14px;line-height:21px;overflow-y:auto}
   body:not([data-shared-codex]) #app .composer.production-show.attachable textarea{padding-left:32px}
   body:not([data-shared-codex]) #app .composer.production-show #sendBtn{grid-area:field;justify-self:end;align-self:end;width:30px;height:30px;margin:0 0 1px}
@@ -1441,6 +1469,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .dock-compose.has-draft .dock-compose-dot{display:block;position:absolute;top:11px;right:12px;width:9px;height:9px;border-radius:50%;background:var(--primary);box-shadow:0 0 0 2px var(--bg)}
   .dock-compose-dot{display:none}
   #app .phone-dock:has(.header-searchbox:is(.phone-open,.has-query))>.dock-compose{display:none}
+  /* #s298: the session waits on an answer the reply box can give. */
+  #app .dock-compose.asks .dock-compose-dot{display:block;position:absolute;top:11px;right:12px;width:9px;height:9px;border-radius:50%;background:var(--amber);box-shadow:0 0 0 2px var(--bg)}
   #app.composing .phone-dock,#app.composing .jump-to-bottom{display:none!important}
   #app.composing .session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 110px)}
   #app .workspace .composer.production-show{position:fixed;z-index:14;left:calc(12px + env(safe-area-inset-left,0px));right:calc(12px + env(safe-area-inset-right,0px));top:auto;bottom:max(calc(8px + env(safe-area-inset-bottom,0px)),calc(var(--phone-kb,0px) + 8px));width:auto;max-width:none;min-height:0;transform:none;display:grid;grid-template-columns:48px minmax(0,1fr);grid-template-areas:"note note" "close field";align-items:end;column-gap:8px;row-gap:6px;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
@@ -1459,6 +1489,15 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .composer.production-show:has(.compose-images:not(:empty)){grid-template-areas:"note note" "images images" "close field"}
   #app .composer.production-show .compose-images{grid-area:images;padding:0 2px}
   #app .composer.production-show .compose-image-remove{width:32px;height:32px;font-size:22px}
+  /* #s298: the dialog rises above the field as a glass card; its choices are rows a finger hits. */
+  #app .composer.production-show .compose-dialog{grid-area:dialog;max-height:calc(100dvh - var(--phone-kb,0px) - 230px);overflow:auto;box-sizing:border-box;padding:12px 14px;border-radius:20px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px color-mix(in srgb,var(--line) 70%,transparent),0 8px 28px rgba(0,0,0,.14);font-size:15px}
+  #app .composer.production-show:has(.compose-dialog:not([hidden])){grid-template-areas:"note note" "dialog dialog" "close field"}
+  #app .composer.production-show:has(.compose-dialog:not([hidden])):has(.compose-images:not(:empty)){grid-template-areas:"note note" "dialog dialog" "images images" "close field"}
+  #app .compose-dialog .dialog-choices{flex-direction:column}
+  #app .compose-dialog .dialog-choice{width:100%;min-height:44px;padding:8px 14px;border-radius:12px}
+  #app .compose-dialog .dialog-tick input{width:20px;height:20px}
+  #app .compose-dialog :is(.dialog-kind,.dialog-title){font-size:12.5px}
+  #app .compose-dialog :is(.dialog-note,.dialog-hint,.dialog-wait,.dialog-desc){font-size:13px}
   #app .composer.production-show .compose-attach{grid-area:field;justify-self:start;align-self:end;margin:0 0 11px 9px;width:34px;height:34px;border-radius:17px;color:var(--sub)}
   #app .composer.production-show .compose-attach .icon{width:20px;height:20px}
   #app .composer.production-show.attachable textarea{padding-left:50px}

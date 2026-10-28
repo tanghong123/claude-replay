@@ -452,6 +452,23 @@ page). Unlike tmux's status line, nothing announces the send in the pane: no her
 was measured, and the typed text sits in the box before it is submitted. Caveat from the trial: herdr
 restores a session as `claude --resume <id>`, dropping its start flags, so one started with
 `--dangerously-skip-permissions` comes back in `settings.json`'s mode.
+**A dialog in a herdr pane is answered from the compose box** (#s298, Hong chose Way 1 on #s299, so
+Remote Control is not needed for it): a question (`AskUserQuestion`), a permission prompt or a plan's
+approval is drawn in the pane and answered by keys, and the transcript does not carry a question or
+a plan while it waits (measured, Claude Code 2.1.312), so the monitor reads the dialog off the screen
+(`dialog.rs`, the screens as fixtures in `tests/fixtures/dialogs/`). A row says `dialog`
+(`question`, `permission`, `plan`) for a session the page can answer (`sendsImages`) while herdr or
+the client saw the wait; `GET /api/dialog` reads it and `POST /api/answer` answers it, both behind
+the send's gates and the pane grant (a grant to send now also answers dialogs). An answer names the
+dialog's fingerprint and is refused if the pane shows another; a digit picks at once and is never
+followed by Enter (a stray one is a draft in the input box), ticks are toggled where they differ,
+seen, then Tab, and a written answer is its choice's digit, the text, and the only Enter once the
+pane shows it. A permission offers Yes and No only: "don't ask again" and "switch to auto mode"
+change settings. A layout the parser does not know is no dialog, and the card says to answer it in
+the session. The card sits in the compose box above its field (`dialog-card.js`); ✎ and the compose
+button wear an amber dot while Claude asks
+(`a_herdr_dialog_is_answered_from_the_compose_box`). Hooks were measured and not used: a question's
+PreToolUse hook holds the terminal while it waits.
 
 **Text in the preview pane is mdrev's viewer, as a guest** (#270,
 `design/mdrev-in-the-preview-pane.md`; every text file since #s13), and **mdrev is PINNED** (#274, the owner: "only depend on
