@@ -501,6 +501,8 @@ struct Proc {
     parent_session: Option<String>,
     /// `CLAUDE_CONFIG_DIR` from the environment: where this Claude process keeps its files (#s301).
     claude_home: Option<String>,
+    /// `CLAUDE_CONFIG_DIR` was set, but not to an absolute path: where its files are is not known.
+    claude_home_unknown: bool,
     /// The process's own record, `<claude home>/sessions/<pid>.json`, says it is an interactive
     /// launch (`entrypoint: cli`), whatever its argv reads like (#s301, `apply_session_files`).
     cli_launch: bool,
@@ -530,12 +532,13 @@ struct AgentLink {
 /// outside a fork — as a whole token? What lets a consent grant follow a herdr restore, which runs
 /// `claude --resume <id>` (#s234). Stricter than `session_ref` on purpose (the #s234 review): no
 /// bare uuid anywhere in the argv (an interactive prompt may quote another session's id), no
-/// `attach` client, no path form, and no one-shot, whose prompt rides in its argv. Known gap: the
+/// `attach` client, no path form, and no argv with `-p` in it anywhere (`argv_says_one_shot`, never
+/// `one_shot`): a one-shot's prompt rides in its argv, and so does an interactive start prompt. Known gap: the
 /// argv is `ps -o command`'s space-joined line, so a prompt that quotes `--resume <id>` word for word
 /// reads as the flag; that can only mislead the row's badge, since `herdr agent get` must still name
 /// this session before anything is typed (`control::herdr_send_verdict`).
 fn names_exactly(argv: &str, sid: &str) -> bool {
-    if is_one_shot(argv) {
+    if argv_says_one_shot(argv) {
         return false;
     }
     let toks: Vec<&str> = argv.split_whitespace().collect();
@@ -2381,7 +2384,7 @@ fn session_ref(argv: &str) -> Option<SessionRef> {
     }
     // A one-shot's argv carries its PROMPT (#s50): a session id the prompt merely mentions
     // must not name the process. Only the flags above can.
-    if is_one_shot(argv) {
+    if argv_says_one_shot(argv) {
         return None;
     }
     if toks.get(1) == Some(&"attach") {
@@ -2418,13 +2421,16 @@ fn is_helper(argv: &str) -> bool {
             .any(|t| t == "--bg-pty-host" || t == "--bg-spare")
 }
 
-/// A one-shot run, `claude -p` / `--print` (#s50): it answers one prompt and exits. It reads no
-/// pane — a worker a session started from its Bash INHERITS that session's `TMUX_PANE` (measured
-/// on aries-black: knack's workers read as pane %0, their coordinator's) — so, like a helper, it
-/// is never a directory candidate and its terminal is Detached whatever it inherited; a send into
-/// that pane would type into the coordinator. Unless its flags resume a session it starts a NEW
-/// one, which is what pairs it (`pair_one_shots`).
-fn is_one_shot(argv: &str) -> bool {
+/// Whether the ARGV reads as a one-shot run, `claude -p` / `--print` (#s50): a `-p` anywhere in it,
+/// a start prompt's words included, since `ps` joins argv with spaces. Use it where only the argv
+/// matters (what may name a session); for a PROCESS ask `one_shot`, which its own record can
+/// overrule (#s301). A one-shot answers one prompt and exits. It reads no pane — a worker a session
+/// started from its Bash INHERITS that session's `TMUX_PANE` (measured on aries-black: knack's
+/// workers read as pane %0, their coordinator's) — so, like a helper, it is never a directory
+/// candidate and its terminal is Detached whatever it inherited; a send into that pane would type
+/// into the coordinator. Unless its flags resume a session it starts a NEW one, which is what pairs
+/// it (`pair_one_shots`).
+fn argv_says_one_shot(argv: &str) -> bool {
     argv.split_whitespace().any(|t| t == "-p" || t == "--print")
 }
 
@@ -2435,7 +2441,7 @@ fn is_one_shot(argv: &str) -> bool {
 /// way) the argv decides, the safe way: a one-shot read as interactive could be sent to through the
 /// pane it inherited, its starter's.
 fn one_shot(p: &Proc) -> bool {
-    !p.cli_launch && is_one_shot(&p.argv)
+    !p.cli_launch && argv_says_one_shot(&p.argv)
 }
 
 /// Read the record Claude Code keeps for each of its processes, `<claude home>/sessions/<pid>.json`
@@ -2446,7 +2452,15 @@ fn one_shot(p: &Proc) -> bool {
 /// process did: a file left by an earlier process with the same pid does not.
 fn apply_session_files(procs: &mut [Proc], default_home: Option<&Path>) {
     for p in procs.iter_mut() {
-        if proc_agent(p) != Some(Agent::CLAUDE) || !is_one_shot(&p.argv) {
+        p.cli_launch = false;
+        // A process with no terminal is never taken for an interactive launch, whatever its record
+        // says (the review of #s301): a worker started from an agent's Bash has none, and one that
+        // inherited "cli" would otherwise depend on the client rewriting it.
+        if proc_agent(p) != Some(Agent::CLAUDE)
+            || !argv_says_one_shot(&p.argv)
+            || p.tty.is_none()
+            || p.claude_home_unknown
+        {
             continue;
         }
         let home = match (&p.claude_home, default_home) {
@@ -2454,18 +2468,25 @@ fn apply_session_files(procs: &mut [Proc], default_home: Option<&Path>) {
             (None, Some(h)) => h.to_path_buf(),
             (None, None) => continue,
         };
-        let Some(v) = std::fs::read(home.join("sessions").join(format!("{}.json", p.pid)))
-            .ok()
+        let path = home.join("sessions").join(format!("{}.json", p.pid));
+        // A plain file of a record's size only: the scan holds the index's lock, and a FIFO there
+        // would block the read for ever (#s266 bounded the scan's probes for the same reason).
+        let small_file =
+            std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= 64 * 1024);
+        let Some(v) = small_file
+            .then(|| std::fs::read(&path).ok())
+            .flatten()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
         else {
             continue;
         };
         let own = v.get("pid").and_then(Value::as_u64) == Some(u64::from(p.pid));
-        let fresh = match (v.get("startedAt").and_then(Value::as_u64), p.started) {
-            (Some(ms), Some(started)) => ms / 1000 + 5 >= started,
+        // Begun with THIS process (measured: about 2 s after it), not before it nor long after.
+        let with_it = match (v.get("startedAt").and_then(Value::as_u64), p.started) {
+            (Some(ms), Some(started)) => ms / 1000 + 5 >= started && ms / 1000 <= started + 60,
             _ => false,
         };
-        p.cli_launch = own && fresh && v.get("entrypoint").and_then(Value::as_str) == Some("cli");
+        p.cli_launch = own && with_it && v.get("entrypoint").and_then(Value::as_str) == Some("cli");
     }
 }
 
@@ -2823,6 +2844,7 @@ fn parse_ps_with(out: &str, is_file: &dyn Fn(&str) -> bool) -> Vec<Proc> {
             started: None,
             parent_session: None,
             claude_home: None,
+            claude_home_unknown: false,
             cli_launch: false,
         });
     }
@@ -2884,11 +2906,23 @@ fn apply_env(procs: &mut [Proc], out: &str) {
                 session = is_uuid(v).then(|| v.to_string());
             } else if tok == "CLAUDE_CODE_CHILD_SESSION=1" {
                 child = true;
-            } else if let Some(v) = tok.strip_prefix("CLAUDE_CONFIG_DIR=") {
-                p.claude_home = Some(v.to_string()).filter(|v| v.starts_with('/'));
             }
         }
         p.parent_session = session.filter(|_| child);
+        // #s301: the client's home, read from the ENVIRONMENT alone (`ps eww` prints the command
+        // first, and a prompt may hold "CLAUDE_CONFIG_DIR=…"); a relative one is no answer at all.
+        let env = rest
+            .trim_start()
+            .strip_prefix(p.argv.as_str())
+            .unwrap_or(rest);
+        p.claude_home = None;
+        p.claude_home_unknown = false;
+        for tok in env.split_whitespace() {
+            if let Some(v) = tok.strip_prefix("CLAUDE_CONFIG_DIR=") {
+                p.claude_home_unknown = !v.starts_with('/');
+                p.claude_home = Some(v.to_string()).filter(|v| v.starts_with('/'));
+            }
+        }
     }
 }
 
@@ -5694,11 +5728,11 @@ n/Users/x/proj
         let sid = "19fe604e-d16f-4bbe-adfc-c6ff07463983";
         let brief =
             format!("claude -p Review the run of {sid} and report --output-format stream-json");
-        assert!(is_one_shot(&brief));
+        assert!(argv_says_one_shot(&brief));
         assert_eq!(session_ref(&brief), None);
         let resumed = format!("claude -p next --resume {sid} --output-format stream-json");
         assert_eq!(session_ref(&resumed), Some(SessionRef::Exact(sid.into())));
-        assert!(!is_one_shot(
+        assert!(!argv_says_one_shot(
             "claude --dangerously-skip-permissions --resume"
         ));
         // Linked by its flag, a resumed one-shot is still headless: never the pane it inherited.
@@ -5782,6 +5816,46 @@ n/Users/x/proj
         .expect("linked");
         assert_eq!(l.pid, 601);
         assert!(l.confirmed);
+
+        // The review of #s301: what a `cli` record cannot overrule. Each process below has a
+        // record saying `cli`, begun with it, yet stays a one-shot.
+        let mut more = parse_ps(&format!(
+            "  611 {launch}\n  612 {launch}\n  613 {launch}\n  614 {launch}\n  615 {launch} CLAUDE_CONFIG_DIR={h}\n  616 {launch}\n  617 {launch}\n",
+            h = home.display()
+        ));
+        apply_tty(
+            &mut more,
+            // 611 has no terminal (a worker started from an agent's Bash); 612 no known start.
+            "  611 ?? 00:10\n  613 ttys013 00:10\n  614 ttys014 00:10\n  615 ttys015 00:10\n  616 ttys016 00:10\n  617 ttys017 00:10\n",
+            10_000,
+        );
+        let env = |pid: u32, extra: &str| format!("  {pid} {launch} {extra}\n");
+        let mut env_out = String::new();
+        for pid in [611, 612, 614, 617] {
+            env_out += &env(pid, &format!("CLAUDE_CONFIG_DIR={}", home.display()));
+        }
+        // 613: a relative home is no answer; 615: the home named in its PROMPT, not its environment.
+        env_out += &env(613, "CLAUDE_CONFIG_DIR=relative/home");
+        // Its argv ends "… CLAUDE_CONFIG_DIR=<home>", and its environment holds none.
+        env_out += &format!(
+            "  615 {launch} CLAUDE_CONFIG_DIR={} TERM=xterm\n",
+            home.display()
+        );
+        apply_env(&mut more, &env_out);
+        for pid in 611..=617 {
+            record(pid, "cli", 9_992_000);
+        }
+        // 614: the record names another pid; 616: not JSON; 617: begun long after this process.
+        std::fs::write(
+            home.join("sessions/614.json"),
+            r#"{"pid":999,"entrypoint":"cli","startedAt":9992000}"#,
+        )
+        .unwrap();
+        std::fs::write(home.join("sessions/616.json"), "{not json").unwrap();
+        record(617, "cli", 9_995_000_000);
+        apply_session_files(&mut more, None);
+        let held: Vec<(u32, bool)> = more.iter().map(|p| (p.pid, one_shot(p))).collect();
+        assert!(held.iter().all(|(_, shot)| *shot), "{held:?}");
         let _ = std::fs::remove_dir_all(&home);
     }
 
