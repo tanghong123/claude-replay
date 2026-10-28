@@ -351,6 +351,16 @@ process is a candidate only for sessions of its OWN agent (#s59, `serves`): a Cl
 pane in one repo had the Codex process (the lower pid) linked to the Claude session, unconfirmed and
 unwritable; an exe the monitor cannot place (an extra pattern) stays a candidate for any agent. The send
 gate's "another live session in this project" counts the same agent only, for the same reason.
+**A conversation MOVED to a new session keeps its pane** (#s294): Claude Code 2.1.312 moves an idle
+interactive session into a daemon background job under a new id with nothing typed, and ends the old
+transcript with `continued-in` (`continuedInSessionId`, read by the adapter's `continued_in` when it is
+the tail's last conversation record). The pane's process keeps `--resume <old>` in its argv and is
+where the reader types the new session's prompts, while the job's engine is a `bg-spare` naming
+nothing — so `Moves` gives a process naming the old id to the new session when it started no later
+than the move (one started after chose the old id itself), confirmed but not `named`; the old session
+is finished, out of the directory rule, and its row says `continuedIn`. herdr's Claude hook reports a
+session only when one STARTS, so it keeps the old id for that pane, and `herdr_send_verdict` accepts
+exactly the sessions moved into the target (`PaneTarget::continues`).
 **A one-shot (`claude -p`/`--print`) is headless and pairs by TIME** (#s50): knack's coordinator
 starts workers from its Bash, all in one repo, each inheriting the coordinator's `TMUX_PANE`, and the
 directory rule gave a process to the newest session only — so a worker deep in a long command lost

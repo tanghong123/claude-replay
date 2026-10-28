@@ -111,6 +111,9 @@ pub struct PaneTarget {
     /// The process names the session exactly in its own argv (#s234): with a herdr pane, a
     /// grant for the same session, pane and server may follow it across a restore.
     pub named: bool,
+    /// The sessions whose conversation was moved into this one (#s294): herdr may still name one
+    /// of them for the pane, and that pane runs this session.
+    pub continues: Vec<String>,
 }
 
 /// Why a send-prompt was refused — each a distinct, reportable fact (mirrors the §3.1/§4
@@ -321,6 +324,31 @@ impl State {
             .or_else(|| row.one_shot.then_some(row.spawned_by.as_deref()).flatten())?;
         (parent != sid && self.rows.contains_key(parent)).then_some(parent)
     }
+
+    /// The sessions whose conversation was moved into `sid` (#s294), directly or along a chain
+    /// of moves — what herdr may still say a pane runs, since its Claude hook reports a session
+    /// only when one STARTS and a move starts none.
+    fn moved_into(&self, sid: &str) -> Vec<String> {
+        let moves = Moves::of(&self.rows);
+        let mut out: Vec<String> = moves
+            .0
+            .keys()
+            .filter(|from| {
+                let mut cur: &str = from;
+                for _ in 0..8 {
+                    match moves.0.get(cur) {
+                        Some(&(next, _)) if next == sid => return true,
+                        Some(&(next, _)) => cur = next,
+                        None => return false,
+                    }
+                }
+                false
+            })
+            .map(|from| from.to_string())
+            .collect();
+        out.sort();
+        out
+    }
 }
 
 /// One session's attributed link, banked from the scan for the send routes (#133).
@@ -391,6 +419,10 @@ struct Row {
     /// only grower in its directory the pairing is banked and outlives the growth that
     /// proved it. Dropped as soon as the pid is gone or has moved.
     proved_pid: Option<(u32, String)>,
+    /// The session this conversation was MOVED to (#s294), by the transcript's last record, and
+    /// when. Re-read whenever the transcript changes: a move is only the tail's word, and a
+    /// conversation record after it takes the session back.
+    continued_in: Option<claude_replay_core::Continuation>,
     /// When growth was last OBSERVED (scan clock) — drives the linger.
     grew_at: Option<Instant>,
     /// Counter fold of the visited entry's meta stream, keyed by the stream's mtime so a
@@ -835,6 +867,7 @@ impl Index {
             sid: sid.to_string(),
             pid,
             named: link.named,
+            continues: st.moved_into(sid),
             addr,
             client_wait: claude_replay_core::adapter(agent)
                 .client_wait(&path)
@@ -900,6 +933,7 @@ impl Index {
                     spawned_by: None,
                     spawn_probed: false,
                     proved_pid: None,
+                    continued_in: None,
                     grew_at: None,
                     counters: None,
                     title_mtime: None,
@@ -916,6 +950,7 @@ impl Index {
                 if row.tree_mtime != now_mtime || row.transcript_len != now_len {
                     let prev_event = row.last_event;
                     row.last_event = last_event_ts(&row.path).or(row.last_event);
+                    row.continued_in = discover::continued_in(row.agent, &row.path);
                     if !row.start_probed {
                         row.first_event = first_event_ts(&row.path);
                         row.brief = head_one_shot(&row.path);
@@ -1334,10 +1369,14 @@ impl Index {
                 .filter(|(_, r)| r.one_shot)
                 .filter_map(|(sid, r)| Some((sid.as_str(), r.cwd.as_deref()?, r.first_event?))),
         );
+        // #s294: a session whose conversation was moved is finished by its own transcript's word,
+        // so it is not the directory's to pick either — or the directory rule hands it some other
+        // agent in the same repo (measured: an unrelated `claude` in project_H, unconfirmed).
+        let moves = Moves::of(&st.rows);
         let mut newest_by_cwd: HashMap<&str, (&str, SystemTime)> = HashMap::new();
         let mut siblings: HashMap<&str, usize> = HashMap::new();
         for (sid, row) in &st.rows {
-            if paired.contains_key(sid.as_str()) {
+            if paired.contains_key(sid.as_str()) || moves.0.contains_key(sid.as_str()) {
                 continue;
             }
             if let Some(cwd) = row.cwd.as_deref() {
@@ -1447,7 +1486,7 @@ impl Index {
                     })
                 })
                 .or_else(|| {
-                    link(
+                    link_moved(
                         &st.procs,
                         sid,
                         row.agent,
@@ -1455,6 +1494,7 @@ impl Index {
                         row.cwd.as_deref(),
                         heuristic_ok,
                         &prefix_unique,
+                        &moves,
                     )
                 });
             let (state, conf) = if growing {
@@ -1537,6 +1577,10 @@ impl Index {
             });
             if let Some(start) = row.first_event {
                 j["startTs"] = json!(start);
+            }
+            // #s294: the conversation went on in another session; this one is finished.
+            if let Some((next, _)) = moves.0.get(sid.as_str()) {
+                j["continuedIn"] = json!(next);
             }
             if ambiguity > 1 {
                 j["ambig"] = json!(ambiguity);
@@ -2233,6 +2277,7 @@ fn head_one_shot(path: &Path) -> Option<String> {
 /// Step 3 is the COMMON path, not a fallback: `claude --resume` with no id (the picker) is how
 /// most of these sessions were launched (measured: 9 of 12 live agents here), and Claude never
 /// holds its transcript open, so steps 1–2 cannot fire for them.
+#[cfg(test)]
 fn link(
     procs: &[Proc],
     sid: &str,
@@ -2241,6 +2286,74 @@ fn link(
     cwd: Option<&str>,
     heuristic_ok: bool,
     prefix_unique: &dyn Fn(&str) -> bool,
+) -> Option<AgentLink> {
+    link_moved(
+        procs,
+        sid,
+        agent,
+        transcript,
+        cwd,
+        heuristic_ok,
+        prefix_unique,
+        &Moves::default(),
+    )
+}
+
+/// Where conversations were MOVED (#s294): a session's id → the session it continued in and when
+/// the client recorded the move, for each move whose target this index knows.
+///
+/// Claude Code 2.1.312 moves an interactive session into a daemon background job under a new id
+/// (measured: an idle `claude --resume A` in a herdr pane went on as B with nothing typed). The
+/// pane's process keeps `--resume A` in its argv and is where the reader types B's prompts, so a
+/// process named A drives B. A's transcript ends with the `continued-in` record that says so.
+#[derive(Default)]
+struct Moves<'a>(HashMap<&'a str, (&'a str, u64)>);
+
+impl<'a> Moves<'a> {
+    /// Every move in `rows` whose target is itself a row.
+    fn of(rows: &'a HashMap<String, Row>) -> Self {
+        Moves(
+            rows.iter()
+                .filter_map(|(sid, r)| {
+                    let c = r.continued_in.as_ref()?;
+                    let (next, _) = rows.get_key_value(c.session.as_str())?;
+                    (next != sid).then_some((sid.as_str(), (next.as_str(), c.at)))
+                })
+                .collect(),
+        )
+    }
+
+    /// The session a process naming `named` in its argv drives: each move it was ALIVE for is
+    /// followed — it started no later than the move — since the process that moves a
+    /// conversation keeps its argv. A process started after the move chose the old id itself,
+    /// and so did one whose start is unknown, as far as this can tell.
+    fn drives<'s>(&'s self, p: &Proc, named: &'s str) -> &'s str {
+        let mut cur = named;
+        for _ in 0..8 {
+            match self.0.get(cur) {
+                Some(&(next, at)) if next != cur && p.started.is_some_and(|s| s <= at) => {
+                    cur = next
+                }
+                _ => break,
+            }
+        }
+        cur
+    }
+}
+
+/// [`link`], with the conversations' [`Moves`] (#s294): a process whose argv names a session that
+/// moved while it ran is linked to the session it moved to — confirmed, since the argv and the
+/// transcript's own record say so together, but not `named` — and never to the one it left.
+#[allow(clippy::too_many_arguments)]
+fn link_moved(
+    procs: &[Proc],
+    sid: &str,
+    agent: Agent,
+    transcript: &Path,
+    cwd: Option<&str>,
+    heuristic_ok: bool,
+    prefix_unique: &dyn Fn(&str) -> bool,
+    moves: &Moves,
 ) -> Option<AgentLink> {
     let mk = |p: &Proc, confirmed: bool| AgentLink {
         pid: p.pid,
@@ -2275,8 +2388,10 @@ fn link(
         )
     };
     let names = |p: &Proc| match session_ref(&p.argv) {
-        Some(SessionRef::Exact(u)) => u == sid,
-        Some(SessionRef::Prefix(pf)) => sid.starts_with(pf.as_str()) && prefix_unique(&pf),
+        Some(SessionRef::Exact(u)) => moves.drives(p, &u) == sid,
+        Some(SessionRef::Prefix(pf)) => {
+            sid.starts_with(pf.as_str()) && prefix_unique(&pf) && moves.drives(p, sid) == sid
+        }
         None => false,
     };
     if let Some(p) = procs
@@ -5255,6 +5370,7 @@ mod tests {
             spawned_by: None,
             spawn_probed: true,
             proved_pid: None,
+            continued_in: None,
             grew_at: growing.then(Instant::now),
             counters: None,
             title_mtime: None,
@@ -5765,6 +5881,161 @@ n/Users/x/proj
         let snapshot = idx.assemble(&st, &mut Vec::new());
         assert_eq!(find(&snapshot, "h1").expect("the row")["consented"], true);
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// #s294, the synthetic repro: an idle `claude --resume A` in a herdr pane, and Claude Code moves
+    /// the conversation into a background job as B with nothing typed. A's transcript ends with
+    /// `continued-in` B, the job's engine is a `bg-spare` that names nothing, and the pane's process
+    /// still names A. B is the live row on that pane — sendable, herdr's stale A accepted for it —
+    /// and A is finished. A process started AFTER the move named A itself and keeps it.
+    #[test]
+    fn a_conversation_moved_into_a_background_job_keeps_its_pane() {
+        let scratch = std::env::temp_dir().join(format!("cm-moved-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let a = "aaaaaaaa-0000-4000-8000-000000000294";
+        let b = "bbbbbbbb-0000-4000-8000-000000000294";
+        let now = 1_791_400_000u64;
+        let moved_at = now - 3_600;
+        let world = |pane_etime: &str| {
+            let mut procs = parse_ps(&format!(
+                "  700 claude --resume {a}\n  701 claude bg-spare --bg-spare /tmp/cc-daemon-501/d/spare/s.claim.sock\n"
+            ));
+            apply_tty(
+                &mut procs,
+                &format!("  700 ttys003 {pane_etime}\n  701 ttys017 05:00:00\n"),
+                now,
+            );
+            let herdr = "HERDR_ENV=1 HERDR_PANE_ID=w1:pC HERDR_SOCKET_PATH=/Users/x/.config/herdr/herdr.sock";
+            apply_env(
+                &mut procs,
+                &format!("  700 claude {herdr}\n  701 claude {herdr}\n"),
+            );
+            apply_nesting(
+                &mut procs,
+                "  1 0 launchd\n  60 1 herdr\n  61 60 zsh\n  700 61 claude\n  701 1 claude\n",
+            );
+            apply_lsof(
+                &mut procs,
+                "p700\nfcwd\nn/w/harbor\np701\nfcwd\nn/w/harbor\n",
+            );
+            let mut st = State {
+                procs,
+                ..Default::default()
+            };
+            let mut old = growth_row("/w/harbor", false);
+            old.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(moved_at));
+            old.last_event = Some(moved_at);
+            old.continued_in = Some(claude_replay_core::Continuation {
+                session: b.into(),
+                at: moved_at,
+            });
+            st.rows.insert(a.into(), old);
+            let mut new = growth_row("/w/harbor", false);
+            new.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(now - 5));
+            new.last_event = Some(now - 5);
+            st.rows.insert(b.into(), new);
+            st
+        };
+        fn find<'a>(v: &'a Value, id: &str) -> Option<&'a Value> {
+            match v {
+                Value::Object(m) if m.get("id").and_then(|i| i.as_str()) == Some(id) => Some(v),
+                Value::Object(m) => m.values().find_map(|c| find(c, id)),
+                Value::Array(a) => a.iter().find_map(|c| find(c, id)),
+                _ => None,
+            }
+        }
+
+        // The pane's process has run for a day: it is the one that moved the conversation.
+        let st = world("1-00:00:00");
+        let mut facts = Vec::new();
+        let snapshot = idx.assemble(&st, &mut facts);
+        let row_b = find(&snapshot, b).expect("B's row");
+        assert_eq!(row_b["pid"], 700, "{row_b}");
+        assert_eq!(row_b["term"], "herdr");
+        assert_eq!(row_b["target"], "w1:pC");
+        assert_eq!(row_b["injectable"], true, "B is sent to through the pane");
+        let fact_b = facts.iter().find(|f| f.sid == b).unwrap();
+        assert!(fact_b.confirmed, "argv and transcript say so together");
+        assert!(
+            !fact_b.named,
+            "the argv names A, so no grant follows a restore onto B"
+        );
+        let row_a = find(&snapshot, a).expect("A's row");
+        assert!(
+            row_a.get("pid").is_none(),
+            "A no longer holds the process: {row_a}"
+        );
+        assert_eq!(row_a["state"], "finished");
+        assert_eq!(row_a["continuedIn"], b);
+        assert_eq!(st.moved_into(b), vec![a.to_string()]);
+        assert!(st.moved_into(a).is_empty());
+
+        // Without the move, the same machine reads as before the fix: A holds the pane and B
+        // has no process at all — the "Exited abnormally" row.
+        let mut before = world("1-00:00:00");
+        before.rows.get_mut(a).unwrap().continued_in = None;
+        let snapshot = idx.assemble(&before, &mut Vec::new());
+        assert_eq!(find(&snapshot, a).unwrap()["pid"], 700);
+        assert!(find(&snapshot, b).unwrap().get("pid").is_none());
+
+        // The moved session is not the directory's to pick: with its tree touched last and another
+        // agent with no session id in the directory, it still holds no process (measured live: an
+        // unrelated `claude` in the repo was handed to it, unconfirmed).
+        let mut st = world("1-00:00:00");
+        let mut other = parse_ps("  702 claude\n");
+        apply_tty(&mut other, "  702 ttys009 02:00:00\n", now);
+        apply_lsof(&mut other, "p702\nfcwd\nn/w/harbor\n");
+        st.procs.extend(other);
+        st.rows.get_mut(a).unwrap().tree_mtime =
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(now - 1));
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        let row_a = find(&snapshot, a).unwrap();
+        assert!(row_a.get("pid").is_none(), "{row_a}");
+        assert_eq!(find(&snapshot, b).unwrap()["pid"], 700);
+
+        // A process started after the move chose A itself: it is A's, and B is not on its pane.
+        let st = world("00:10:00");
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert_eq!(find(&snapshot, a).unwrap()["pid"], 700);
+        assert!(find(&snapshot, b).unwrap().get("pid").is_none());
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// #s294: moves chain — a conversation moved twice reaches its last session, and a session's
+    /// predecessors are every session along the chain. A move to a session this index does not
+    /// know is not followed.
+    #[test]
+    fn moves_chain_and_stop_at_an_unknown_session() {
+        let mut st = State::default();
+        let moved = |to: &str, at: u64| {
+            let mut r = growth_row("/w/h", false);
+            r.continued_in = Some(claude_replay_core::Continuation {
+                session: to.into(),
+                at,
+            });
+            r
+        };
+        st.rows.insert("a".into(), moved("b", 100));
+        st.rows.insert("b".into(), moved("c", 200));
+        st.rows.insert("c".into(), growth_row("/w/h", false));
+        st.rows.insert("x".into(), moved("gone", 100));
+        assert_eq!(st.moved_into("c"), vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(st.moved_into("b"), vec!["a".to_string()]);
+        assert!(st.moved_into("gone").is_empty());
+        let moves = Moves::of(&st.rows);
+        let mut p = parse_ps("  9 claude --resume a\n").remove(0);
+        p.started = Some(50);
+        assert_eq!(moves.drives(&p, "a"), "c", "alive for both moves");
+        p.started = Some(150);
+        assert_eq!(moves.drives(&p, "a"), "a", "started after the first move");
+        p.started = None;
+        assert_eq!(
+            moves.drives(&p, "a"),
+            "a",
+            "an unknown start follows nothing"
+        );
+        assert_eq!(moves.drives(&p, "x"), "x");
     }
 
     /// #s234's review: only the flags a launch passes name a session for a grant to follow — never

@@ -205,6 +205,10 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn client_wait(&self, path: &Path) -> Option<claude_replay_engine::seam::ClientWait> {
         agents::claude::discover::client_wait(path)
     }
+    // Claude Code 2.1.312 moves an interactive session into a background job (#s294).
+    fn continued_in(&self, path: &Path) -> Option<claude_replay_engine::seam::Continuation> {
+        agents::claude::discover::continued_in(path)
+    }
     fn subagent_source(&self, root: &Path, child_id: &str) -> Option<PathBuf> {
         agents::claude::model::subagent_file(root, child_id)
     }

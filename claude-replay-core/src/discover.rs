@@ -180,6 +180,12 @@ pub fn fork_origin(agent: Agent, path: &Path) -> Option<String> {
     crate::adapter::adapter(agent).fork_origin(path)
 }
 
+/// The session the conversation at `path` continued in (#s294), when its transcript ends by
+/// saying so — the agent-neutral facade over each adapter's `continued_in` hook.
+pub fn continued_in(agent: Agent, path: &Path) -> Option<crate::Continuation> {
+    crate::adapter::adapter(agent).continued_in(path)
+}
+
 /// The session whose scratch the working directory `cwd` lies in (#373), by the adapter of the
 /// agent that ran there — see [`TranscriptAdapter::scratch_owner`](crate::adapter::TranscriptAdapter::scratch_owner).
 /// A session started there belongs with the session that started it.

@@ -306,6 +306,18 @@ pub struct StatusLineHook {
     pub entry: fn(command: &str) -> Value,
 }
 
+/// A session the client CONTINUED in another one (#s294): the conversation goes on under the
+/// new id, and the old transcript is finished. Read from the old transcript's tail by
+/// [`TranscriptAdapter::continued_in`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Continuation {
+    /// The session the conversation continues in.
+    pub session: String,
+    /// When the client recorded the move, in epoch seconds. A process started after it cannot
+    /// be the one that moved, which is how a consumer tells the two apart.
+    pub at: u64,
+}
+
 pub trait TranscriptAdapter: Sync {
     /// Which agent this adapter handles.
     fn agent(&self) -> Agent;
@@ -345,6 +357,12 @@ pub trait TranscriptAdapter: Sync {
     /// OUTSIDE the transcript (#s76) — see [`crate::state::ClientWait`]. Asked only for a session
     /// with a live process. Default: nothing, no I/O.
     fn client_wait(&self, _path: &Path) -> Option<crate::state::ClientWait> {
+        None
+    }
+    /// The session the conversation at `path` was moved to, when the transcript ENDS by saying
+    /// so (#s294) — see [`Continuation`]. A conversation record after the move means the old
+    /// session was taken up again, and the answer is `None`. Default: nothing, no I/O.
+    fn continued_in(&self, _path: &Path) -> Option<Continuation> {
         None
     }
     /// Metrics only, from a reader. A provided method: fold every line through a fresh

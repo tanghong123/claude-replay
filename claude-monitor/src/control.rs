@@ -710,11 +710,21 @@ pub fn herdr_input_images(screen: &str) -> usize {
     joined.matches("[Image").count()
 }
 
+/// Does herdr's word for a pane — the session its Claude hook last reported there — mean `sid`?
+/// It does when it IS `sid`, or one of the sessions whose conversation was moved into `sid`
+/// (#s294, `continues`): the hook reports a session only when one starts, and a move starts none,
+/// so herdr keeps the id the move left. Nothing else counts.
+fn herdr_runs(reported: Option<&str>, sid: &str, continues: &[String]) -> bool {
+    reported.is_some_and(|r| r == sid || continues.iter().any(|c| c == r))
+}
+
 /// The herdr send's checks, PURE (#s226): the pane is PROVEN to run this session (herdr's own
-/// hook says so, on top of the scan's proven link), no dialog is open, and the input holds no
-/// draft. Each refusal says what to do, since the reader acts in the pane, not here.
+/// hook says so, on top of the scan's proven link — or names a session that was moved into this
+/// one, #s294), no dialog is open, and the input holds no draft. Each refusal says what to do,
+/// since the reader acts in the pane, not here.
 pub fn herdr_send_verdict(
     sid: &str,
+    continues: &[String],
     pane: &str,
     agent: &HerdrAgent,
     input: InputLine,
@@ -726,7 +736,7 @@ pub fn herdr_send_verdict(
                 "herdr does not say which session runs in pane {pane}: run `herdr integration install claude` on this machine, then send again"
             ))
         }
-        Some(other) if other != sid => {
+        Some(other) if !herdr_runs(Some(other), sid, continues) => {
             return Err(format!(
                 "pane {pane} runs another session ({other}), not this one: nothing was typed"
             ))
@@ -1099,6 +1109,7 @@ pub fn herdr_send(
     socket: Option<&str>,
     pane: &str,
     sid: &str,
+    continues: &[String],
     client_wait: bool,
     prompt: &str,
     images: &SentImages,
@@ -1108,17 +1119,20 @@ pub fn herdr_send(
         socket,
         pane,
         sid,
+        continues,
         client_wait,
         prompt,
         images,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn herdr_send_with(
     program: &std::ffi::OsStr,
     socket: Option<&str>,
     pane: &str,
     sid: &str,
+    continues: &[String],
     client_wait: bool,
     prompt: &str,
     images: &SentImages,
@@ -1146,13 +1160,15 @@ fn herdr_send_with(
         Ok((parse_herdr_agent(&agent), herdr_input_line(&screen)))
     };
     let (agent, input) = look()?;
-    herdr_send_verdict(sid, pane, &agent, input, client_wait).map_err(HerdrSendError::Held)?;
+    herdr_send_verdict(sid, continues, pane, &agent, input, client_wait)
+        .map_err(HerdrSendError::Held)?;
     // Once more right before typing: a dialog that opened since would take the text itself (a
     // leading digit picks a choice). A window remains, as it does for tmux with no check at all.
     let agent = parse_herdr_agent(
         &herdr_cli(program, &socket, &["agent", "get", pane]).map_err(HerdrSendError::Failed)?,
     );
-    herdr_send_verdict(sid, pane, &agent, InputLine::Empty, false).map_err(HerdrSendError::Held)?;
+    herdr_send_verdict(sid, continues, pane, &agent, InputLine::Empty, false)
+        .map_err(HerdrSendError::Held)?;
     // #s237: each image first, as Claude Code takes a pasted path (measured): saved, then its
     // path PASTED (bracketed, as a terminal pastes) becomes `[Image #N]` in the input, and on
     // Enter an image in the prompt itself. Saved only now, past every check, so a held send
@@ -1214,7 +1230,7 @@ fn herdr_send_with(
         seen = look()?;
     }
     let (agent, input) = seen;
-    if agent.session.as_deref() != Some(sid)
+    if !herdr_runs(agent.session.as_deref(), sid, continues)
         || agent.status.as_deref() == Some("blocked")
         || input != InputLine::Draft
     {
@@ -1285,6 +1301,7 @@ fn send_tmux_checked(
                 socket.as_deref(),
                 pane,
                 sid,
+                &target.continues,
                 target.client_wait,
                 prompt,
                 &images,
@@ -1582,11 +1599,11 @@ mod tests {
             session: Some(SID.into()),
         };
         assert_eq!(
-            herdr_send_verdict(SID, "w1:p2", &ok, InputLine::Empty, false),
+            herdr_send_verdict(SID, &[], "w1:p2", &ok, InputLine::Empty, false),
             Ok(())
         );
         let verdict = |agent: &HerdrAgent, input, wait| {
-            herdr_send_verdict(SID, "w1:p2", agent, input, wait).unwrap_err()
+            herdr_send_verdict(SID, &[], "w1:p2", agent, input, wait).unwrap_err()
         };
         let no_hook = HerdrAgent {
             status: Some("idle".into()),
@@ -1611,13 +1628,31 @@ mod tests {
         );
         assert!(verdict(&ok, InputLine::Missing, false).contains("not on screen"));
         assert!(verdict(&ok, InputLine::Draft, false).contains("draft"));
+        // #s294: herdr's hook names a session only when one starts, so after the conversation was
+        // moved into this one it still names the old id — accepted for that id alone.
+        let moved = HerdrAgent {
+            status: Some("idle".into()),
+            session: Some("old-session".into()),
+        };
+        let continues = ["old-session".to_string()];
+        assert_eq!(
+            herdr_send_verdict(SID, &continues, "w1:p2", &moved, InputLine::Empty, false),
+            Ok(())
+        );
+        assert!(verdict(&moved, InputLine::Empty, false).contains("another session"));
+        assert!(
+            herdr_send_verdict(SID, &continues, "w1:p2", &other, InputLine::Empty, false)
+                .unwrap_err()
+                .contains("another session"),
+            "a session that was not moved into this one is still refused"
+        );
         // A working agent takes the prompt as its next input, as a tmux send does.
         let working = HerdrAgent {
             status: Some("working".into()),
             session: Some(SID.into()),
         };
         assert_eq!(
-            herdr_send_verdict(SID, "w1:p2", &working, InputLine::Empty, false),
+            herdr_send_verdict(SID, &[], "w1:p2", &working, InputLine::Empty, false),
             Ok(())
         );
         // Pane ids come from another process's environment: only herdr's own shape passes.
@@ -1725,6 +1760,7 @@ mod tests {
                 self.socket.to_str(),
                 "w1:p2",
                 SID,
+                &[],
                 false,
                 prompt,
                 images,
@@ -2097,6 +2133,7 @@ mod tests {
             w.socket.to_str(),
             "--help",
             SID,
+            &[],
             false,
             "x",
             &no_images(),
@@ -2110,6 +2147,7 @@ mod tests {
             elsewhere.to_str(),
             "w1:p2",
             SID,
+            &[],
             false,
             "x",
             &no_images(),
@@ -2120,6 +2158,7 @@ mod tests {
             None,
             "w1:p2",
             SID,
+            &[],
             false,
             "x",
             &no_images(),

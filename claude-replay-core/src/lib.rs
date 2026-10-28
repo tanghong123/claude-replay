@@ -20,7 +20,7 @@ mod session_entry;
 pub mod transcript; // the canonical `Transcript` source handle (parse/follow/attachment)
 
 pub use adapter::{
-    adapter, adapters, expand_spawn_rosters, metrics_fold, CursorReject, FoldStart,
+    adapter, adapters, expand_spawn_rosters, metrics_fold, Continuation, CursorReject, FoldStart,
     LinePreprocessor, MetricsAccumulator, MetricsCursor, MetricsEvent, MetricsFold,
     PreprocessedLine, SniffClaim, SpawnRoster, StatusLineHook, TranscriptAdapter,
 };

@@ -302,6 +302,65 @@ fn in_plan_mode(transcript: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// The records that carry the CONVERSATION. One of them after a `continued-in` means the old
+/// session was taken up again; anything else (`cost-state`, `last-prompt`, `custom-title`, …) is
+/// the client's bookkeeping and may follow the move.
+const CONVERSATION_TYPES: &[&str] = &[
+    "user",
+    "assistant",
+    "system",
+    "attachment",
+    "progress",
+    "queue-operation",
+];
+
+/// The session a Claude conversation was MOVED to (#s294). Claude Code 2.1.312 moves an
+/// interactive session into a daemon background job under a new id ("parking" it, measured: an
+/// idle `claude --resume A` in a herdr pane started `claude daemon run` and went on as B with
+/// nothing typed), and ends A's transcript with
+/// `{"type":"continued-in","continuedInSessionId":B,"timestamp":…}`. The pane's process still
+/// names A in its argv, so this record is what says the pane now shows B.
+///
+/// Read from the last 64 KB: the record must be the transcript's last CONVERSATION-level line
+/// ([`CONVERSATION_TYPES`]), and must name a session id. A cut first line in the window, or a
+/// line still being written, is skipped.
+pub fn continued_in(transcript: &Path) -> Option<claude_replay_engine::seam::Continuation> {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL: u64 = 64 * 1024;
+    let mut f = std::fs::File::open(transcript).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(TAIL))).ok()?;
+    let mut tail = Vec::new();
+    f.read_to_end(&mut tail).ok()?;
+    for line in String::from_utf8_lossy(&tail).lines().rev() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(ty) = v.get("type").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if ty == "continued-in" {
+            let session = v.get("continuedInSessionId")?.as_str()?;
+            if session.is_empty() || !session.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
+                return None;
+            }
+            let at = v
+                .get("timestamp")
+                .and_then(serde_json::Value::as_str)
+                .and_then(claude_replay_engine::seam::parse_ts)
+                .filter(|s| *s > 0)?;
+            return Some(claude_replay_engine::seam::Continuation {
+                session: session.to_string(),
+                at: at as u64,
+            });
+        }
+        if CONVERSATION_TYPES.contains(&ty) {
+            return None;
+        }
+    }
+    None
+}
+
 /// All transcript files under a store root — shared with the QoderWork store, whose
 /// on-disk layout (`<root>/<slug>/<id>.jsonl`) is identical to Claude Code's.
 pub(crate) fn all_transcripts_in(root: &Path) -> Vec<PathBuf> {
@@ -747,6 +806,58 @@ pub(crate) fn load_tasks_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #s294: a transcript that ENDS by moving its conversation to another session names it and
+    /// when; bookkeeping after the move does not change that; a conversation record after it
+    /// means the old session was taken up again; and a record with no id or time names nothing.
+    #[test]
+    fn a_transcript_ending_in_continued_in_names_the_session_it_moved_to() {
+        let dir = std::env::temp_dir().join(format!("cr-continued-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = "aaaaaaaa-0000-4000-8000-000000000294";
+        let b = "bbbbbbbb-0000-4000-8000-000000000294";
+        let user = format!(
+            r#"{{"type":"user","timestamp":"2026-10-27T09:00:00.000Z","sessionId":"{a}","message":{{"role":"user","content":"hi"}}}}"#
+        );
+        let moved = format!(
+            r#"{{"type":"continued-in","timestamp":"2026-10-28T02:14:53.223Z","sessionId":"{a}","continuedInSessionId":"{b}"}}"#
+        );
+        let cost = format!(r#"{{"type":"cost-state","sessionId":"{a}"}}"#);
+        let write = |name: &str, lines: &[&str]| {
+            let p = dir.join(name);
+            std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+            p
+        };
+        let want = Some(claude_replay_engine::seam::Continuation {
+            session: b.to_string(),
+            at: 1_793_153_693,
+        });
+        assert_eq!(continued_in(&write("ends.jsonl", &[&user, &moved])), want);
+        assert_eq!(
+            continued_in(&write(
+                "book.jsonl",
+                &[&user, &moved, &cost, "{\"type\":\"cos"]
+            )),
+            want,
+            "bookkeeping and a line being written may follow the move"
+        );
+        assert_eq!(
+            continued_in(&write("again.jsonl", &[&moved, &user])),
+            None,
+            "a conversation record after the move: the old session was taken up again"
+        );
+        assert_eq!(continued_in(&write("plain.jsonl", &[&user, &cost])), None);
+        let no_id = format!(
+            r#"{{"type":"continued-in","timestamp":"2026-10-28T02:14:53.223Z","sessionId":"{a}"}}"#
+        );
+        assert_eq!(continued_in(&write("noid.jsonl", &[&user, &no_id])), None);
+        let no_ts =
+            format!(r#"{{"type":"continued-in","sessionId":"{a}","continuedInSessionId":"{b}"}}"#);
+        assert_eq!(continued_in(&write("nots.jsonl", &[&user, &no_ts])), None);
+        assert_eq!(continued_in(&dir.join("absent.jsonl")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// #283: a session's scratch is its PROJECT's directory under Claude Code's per-user root,
     /// `/tmp/claude-<uid>/<project slug>` — the uid being the transcript's owner, never a constant
