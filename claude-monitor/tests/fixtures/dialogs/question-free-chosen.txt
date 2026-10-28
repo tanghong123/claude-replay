@@ -1,0 +1,20 @@
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   ~/code/petrel
+
+❯ Ask me what to call the survey.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Name
+
+What should the survey be called?
+
+  1. Spring count
+     Call it the spring count.
+  2. Ridge census
+     Call it the ridge census.
+❯ 3. Type something.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · ctrl+g to edit in Vim · Esc to cancel
+

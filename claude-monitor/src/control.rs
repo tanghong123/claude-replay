@@ -5,7 +5,7 @@
 //! implementations has two behaviours, and `agent-monitor-v2` once ran these same decisions
 //! through it (retired, #s98). Every function takes what it needs, so the tests drive it directly.
 
-use crate::index;
+use crate::{dialog, index};
 use anyhow::{Context, Result};
 use claude_replay_html::HttpResponse;
 use serde_json::json;
@@ -720,19 +720,7 @@ pub fn herdr_send_verdict(
     input: InputLine,
     client_wait: bool,
 ) -> Result<(), String> {
-    match agent.session.as_deref() {
-        None => {
-            return Err(format!(
-                "herdr does not say which session runs in pane {pane}: run `herdr integration install claude` on this machine, then send again"
-            ))
-        }
-        Some(other) if other != sid => {
-            return Err(format!(
-                "pane {pane} runs another session ({other}), not this one: nothing was typed"
-            ))
-        }
-        Some(_) => {}
-    }
+    herdr_names(sid, pane, agent)?;
     if agent.status.as_deref() == Some("blocked") || client_wait {
         return Err(
             "a question or a permission prompt is open in the session: answer it there first"
@@ -748,6 +736,20 @@ pub fn herdr_send_verdict(
             "the session's input holds an unsent draft: send or clear it there first".into(),
         ),
         InputLine::Empty => Ok(()),
+    }
+}
+
+/// herdr's own hook says the pane runs THIS session (#s226): the first check of a send, and of
+/// reading or answering a dialog (#s298).
+fn herdr_names(sid: &str, pane: &str, agent: &HerdrAgent) -> Result<(), String> {
+    match agent.session.as_deref() {
+        None => Err(format!(
+            "herdr does not say which session runs in pane {pane}: run `herdr integration install claude` on this machine, then send again"
+        )),
+        Some(other) if other != sid => Err(format!(
+            "pane {pane} runs another session ({other}), not this one: nothing was typed"
+        )),
+        Some(_) => Ok(()),
     }
 }
 
@@ -1130,15 +1132,7 @@ fn herdr_send_with(
     prompt: &str,
     images: &SentImages,
 ) -> Result<(), HerdrSendError> {
-    if !herdr_pane_id_ok(pane) {
-        return Err(HerdrSendError::Held(format!(
-            "{pane} is not a herdr pane id: nothing was typed"
-        )));
-    }
-    let socket = socket
-        .context("the pane named no herdr server (HERDR_SOCKET_PATH)")
-        .and_then(herdr_socket_ok)
-        .map_err(HerdrSendError::Failed)?;
+    let socket = herdr_pane_socket(socket, pane)?;
     let look = || -> Result<(HerdrAgent, InputLine), HerdrSendError> {
         let agent =
             herdr_cli(program, &socket, &["agent", "get", pane]).map_err(HerdrSendError::Failed)?;
@@ -1237,6 +1231,219 @@ fn herdr_send_with(
     Ok(())
 }
 
+/// The pane's herdr server, checked as a send checks it (#s226): an id as herdr writes one, and a
+/// socket of this user.
+fn herdr_pane_socket(
+    socket: Option<&str>,
+    pane: &str,
+) -> Result<std::path::PathBuf, HerdrSendError> {
+    if !herdr_pane_id_ok(pane) {
+        return Err(HerdrSendError::Held(format!(
+            "{pane} is not a herdr pane id: nothing was typed"
+        )));
+    }
+    socket
+        .context("the pane named no herdr server (HERDR_SOCKET_PATH)")
+        .and_then(herdr_socket_ok)
+        .map_err(HerdrSendError::Failed)
+}
+
+/// The pane's screen as text, for its dialog (#s298). Plain: a dialog is read by its characters,
+/// not its colours.
+fn herdr_screen(
+    program: &std::ffi::OsStr,
+    socket: &std::path::Path,
+    pane: &str,
+) -> Result<String, HerdrSendError> {
+    herdr_cli(
+        program,
+        socket,
+        &["pane", "read", pane, "--source", "visible", "--lines", "80"],
+    )
+    .map_err(HerdrSendError::Failed)
+}
+
+/// The dialog open in a Claude session's herdr pane (#s298), read off its screen once herdr's hook
+/// says the pane runs this session and something holds it there: herdr's `blocked`, or the
+/// client's own wait (#s76). `None`: nothing is open, or not a dialog this monitor can read.
+fn herdr_dialog(
+    program: &std::ffi::OsStr,
+    socket: &std::path::Path,
+    pane: &str,
+    sid: &str,
+    client_wait: bool,
+) -> Result<Option<dialog::Dialog>, HerdrSendError> {
+    let agent = parse_herdr_agent(
+        &herdr_cli(program, socket, &["agent", "get", pane]).map_err(HerdrSendError::Failed)?,
+    );
+    herdr_names(sid, pane, &agent).map_err(HerdrSendError::Held)?;
+    if agent.status.as_deref() != Some("blocked") && !client_wait {
+        return Ok(None);
+    }
+    Ok(dialog::parse(&herdr_screen(program, socket, pane)?))
+}
+
+/// Read the pane, for about a second, until its dialog is still THIS one and `took` says the step
+/// before has taken.
+fn herdr_dialog_until(
+    program: &std::ffi::OsStr,
+    socket: &std::path::Path,
+    pane: &str,
+    fingerprint: &str,
+    took: impl Fn(&dialog::Dialog) -> bool,
+) -> Result<bool, HerdrSendError> {
+    for i in 0..7 {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+        let shown = dialog::parse(&herdr_screen(program, socket, pane)?);
+        if shown.is_some_and(|d| d.fingerprint() == fingerprint && took(&d)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Answer the dialog in a Claude session's herdr pane (#s298, Hong's Way 1 on #s299): read it
+/// again and refuse if it is not the one the reader saw (its fingerprint), then type the answer's
+/// steps (`dialog::steps`) through the socket, reading the pane wherever a step must be seen to
+/// have taken before the next. The only Enter submits a written answer the pane shows in its
+/// choice; a digit picks at once, and an Enter after one could reach the input box.
+pub fn herdr_answer(
+    socket: Option<&str>,
+    pane: &str,
+    sid: &str,
+    client_wait: bool,
+    fingerprint: &str,
+    answer: &dialog::Answer,
+) -> Result<(), HerdrSendError> {
+    herdr_answer_with(
+        &herdr_program(),
+        socket,
+        pane,
+        sid,
+        client_wait,
+        fingerprint,
+        answer,
+    )
+}
+
+fn herdr_answer_with(
+    program: &std::ffi::OsStr,
+    socket: Option<&str>,
+    pane: &str,
+    sid: &str,
+    client_wait: bool,
+    fingerprint: &str,
+    answer: &dialog::Answer,
+) -> Result<(), HerdrSendError> {
+    let socket = herdr_pane_socket(socket, pane)?;
+    let Some(shown) = herdr_dialog(program, &socket, pane, sid, client_wait)? else {
+        return Err(HerdrSendError::Held(
+            "no dialog the monitor can read is open in the session now: nothing was typed".into(),
+        ));
+    };
+    if shown.fingerprint() != fingerprint {
+        return Err(HerdrSendError::Held(
+            "the dialog changed since it was shown: nothing was typed, so look again".into(),
+        ));
+    }
+    let steps = dialog::steps(&shown, answer).map_err(HerdrSendError::Held)?;
+    // Once a key has gone out, a step that fails leaves the dialog part-answered: held, and the
+    // reader told to finish it there.
+    let part_way = |why: String| {
+        HerdrSendError::Held(format!(
+            "the answer stopped part-way ({why}): finish it in the session"
+        ))
+    };
+    let mut typed = false;
+    for step in steps {
+        match step {
+            dialog::Step::Type(text) => {
+                herdr_send_text(&socket, pane, &text).map_err(|e| {
+                    if typed {
+                        part_way(format!("{e:#}"))
+                    } else {
+                        HerdrSendError::Failed(e)
+                    }
+                })?;
+                typed = true;
+            }
+            dialog::Step::Key(key) => {
+                herdr_cli(program, &socket, &["pane", "send-keys", pane, key])
+                    .map_err(|e| part_way(format!("{e:#}")))?;
+            }
+            dialog::Step::Cursor(n) => {
+                let open = herdr_dialog_until(program, &socket, pane, fingerprint, |d| {
+                    d.choices.iter().any(|c| c.n == n && c.cursor)
+                })?;
+                if !open {
+                    return Err(part_way("the written answer's field did not open".into()));
+                }
+            }
+            dialog::Step::Label(n, start) => {
+                let shows = herdr_dialog_until(program, &socket, pane, fingerprint, |d| {
+                    d.choices
+                        .iter()
+                        .any(|c| c.n == n && c.label.starts_with(&start))
+                })?;
+                if !shows {
+                    return Err(part_way(
+                        "the answer is typed in the dialog but the pane does not show it, so it was not sent".into(),
+                    ));
+                }
+            }
+            dialog::Step::Ticks(want) => {
+                let ticked = herdr_dialog_until(program, &socket, pane, fingerprint, |d| {
+                    let now: Vec<u32> = d
+                        .choices
+                        .iter()
+                        .filter(|c| c.checked == Some(true))
+                        .map(|c| c.n)
+                        .collect();
+                    now == want
+                })?;
+                if !ticked {
+                    return Err(part_way("the ticks did not take".into()));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A plan's text from the file its dialog names (#s298), read only where that file is the
+/// session's own client's: `<claude home>/plans/<name>.md`, under the home whose `projects/`
+/// holds the session's transcript. At most 64 KiB.
+pub fn plan_text(transcript: &std::path::Path, shown: &str) -> Option<String> {
+    use std::io::Read;
+    let path = match shown.strip_prefix("~/") {
+        Some(rest) => std::path::Path::new(&std::env::var_os("HOME")?).join(rest),
+        None => std::path::PathBuf::from(shown),
+    }
+    .canonicalize()
+    .ok()?;
+    let plans = path.parent()?;
+    if plans.file_name()? != "plans" || path.extension()? != "md" {
+        return None;
+    }
+    let home = plans.parent()?;
+    if !transcript
+        .canonicalize()
+        .ok()?
+        .starts_with(home.join("projects"))
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(&path)
+        .ok()?
+        .take(64 * 1024)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// The live-session send (#133 tmux slice, #s226 herdr): resolve the target as a PROVEN live
 /// pane link, require standing consent for its exact pane/pid, then inject. Returns the
 /// `/api/send` JSON body. Consent is checked against the pid THIS scan just observed, so a
@@ -1264,19 +1471,8 @@ fn send_tmux_checked(
     if !images.is_empty() && !matches!(target.addr, index::PaneAddr::Herdr { .. }) {
         return Ok(json!({"ok": false, "error": IMAGES_HERDR_ONLY}));
     }
-    let store = crate::consent::ConsentStore::open();
-    if !store.consents(
-        target.addr.consent_sock().as_deref(),
-        target.addr.pane(),
-        &target.sid,
-        target.pid,
-        target.addr.grant_follows(target.named),
-    ) {
-        return Ok(json!({
-            "ok": false,
-            "error": crate::index::SendRefusal::NoConsent.as_str(),
-            "code": "no-consent",
-        }));
+    if !granted(&target) {
+        return Ok(no_consent_body());
     }
     Ok(match &target.addr {
         index::PaneAddr::Tmux { sock, pane } => match tmux_send(sock.as_deref(), pane, prompt) {
@@ -1305,6 +1501,26 @@ fn send_tmux_checked(
                 Err(HerdrSendError::Failed(e)) => json!({"ok": false, "error": format!("{e:#}")}),
             }
         }
+    })
+}
+
+/// The reader's standing grant covers this exact pane and process (#133; #s234: or a herdr
+/// restore of it). A send asks it, and so does reading or answering a dialog there (#s298).
+fn granted(target: &index::PaneTarget) -> bool {
+    crate::consent::ConsentStore::open().consents(
+        target.addr.consent_sock().as_deref(),
+        target.addr.pane(),
+        &target.sid,
+        target.pid,
+        target.addr.grant_follows(target.named),
+    )
+}
+
+fn no_consent_body() -> serde_json::Value {
+    json!({
+        "ok": false,
+        "error": crate::index::SendRefusal::NoConsent.as_str(),
+        "code": "no-consent",
     })
 }
 
@@ -1372,6 +1588,112 @@ pub fn send_route(idx: &index::Index, req: &claude_replay_html::Request) -> Http
             }
             Err(reason) => return checked_send_refusal(idx, &sid, reason),
         },
+    };
+    HttpResponse::json(resp.to_string())
+}
+
+/// Where a dialog may be read and answered (#s298): a Claude session in a herdr pane, for now.
+const DIALOGS_HERDR_ONLY: &str =
+    "answering a dialog works only for a Claude session in a herdr pane: answer it in the session";
+
+/// The pane a dialog route acts on: the session's own, resolved and granted as a send's is, and a
+/// herdr pane. `Err` is the route's answer.
+fn dialog_pane(
+    idx: &index::Index,
+    req: &claude_replay_html::Request,
+) -> Result<(String, index::PaneTarget), HttpResponse> {
+    let Some(sid) =
+        claude_replay_html::query_get(req.query, "target").map(crate::index::percent_decode)
+    else {
+        return Err(HttpResponse::json(
+            json!({"ok": false, "error": "no target session"}).to_string(),
+        ));
+    };
+    let target = idx
+        .resolve_pane_send(&sid)
+        .map_err(|reason| checked_send_refusal(idx, &sid, reason))?;
+    if !granted(&target) {
+        return Err(HttpResponse::json(no_consent_body().to_string()));
+    }
+    if !matches!(target.addr, index::PaneAddr::Herdr { .. }) {
+        return Err(HttpResponse::json(
+            json!({"ok": false, "error": DIALOGS_HERDR_ONLY}).to_string(),
+        ));
+    }
+    Ok((sid, target))
+}
+
+fn held_body(e: HerdrSendError) -> serde_json::Value {
+    match e {
+        HerdrSendError::Held(why) => json!({"ok": false, "code": "held", "error": why}),
+        HerdrSendError::Failed(e) => json!({"ok": false, "error": format!("{e:#}")}),
+    }
+}
+
+/// `GET /api/dialog?target=<sid>` (#s298): the dialog a live Claude session's herdr pane shows,
+/// as `{"ok": true, "dialog": {…}}`, or `"dialog": null` with `why`. It reads the reader's pane,
+/// so it asks what a send asks: a paired, same-origin request, a proven link, a quiet project and
+/// the reader's grant for that pane. A plan's text comes from its file (`plan_text`).
+pub fn dialog_route(idx: &index::Index, req: &claude_replay_html::Request) -> HttpResponse {
+    if let Some(deny) = req.deny_mutation("GET") {
+        return deny;
+    }
+    let (sid, target) = match dialog_pane(idx, req) {
+        Ok(found) => found,
+        Err(answer) => return answer,
+    };
+    let index::PaneAddr::Herdr { socket, pane } = &target.addr else {
+        unreachable!("dialog_pane answers a herdr pane only")
+    };
+    let read = herdr_pane_socket(socket.as_deref(), pane)
+        .and_then(|socket| herdr_dialog(&herdr_program(), &socket, pane, &sid, target.client_wait));
+    let resp = match read {
+        Ok(Some(d)) => {
+            let plan = d
+                .plan_file
+                .as_deref()
+                .and_then(|f| plan_text(&target.transcript, f));
+            json!({"ok": true, "sid": sid, "dialog": d.to_json(plan.as_deref())})
+        }
+        Ok(None) => json!({
+            "ok": true,
+            "sid": sid,
+            "dialog": null,
+            "why": "no dialog the monitor can read is open in the session",
+        }),
+        Err(e) => held_body(e),
+    };
+    HttpResponse::json(resp.to_string())
+}
+
+/// `POST /api/answer?target=<sid>` with `{"fingerprint", "choice" | "choices" | "text"}`
+/// (#s298): answer the dialog the reader was shown, through [`herdr_answer`], behind every gate a
+/// send passes. `{"ok": true}`, or held with what to do.
+pub fn answer_route(idx: &index::Index, req: &claude_replay_html::Request) -> HttpResponse {
+    if let Some(deny) = req.deny_write() {
+        return deny;
+    }
+    let (fingerprint, answer) = match dialog::parse_answer(req.body) {
+        Ok(parsed) => parsed,
+        Err(why) => return HttpResponse::json(json!({"ok": false, "error": why}).to_string()),
+    };
+    let (sid, target) = match dialog_pane(idx, req) {
+        Ok(found) => found,
+        Err(answer) => return answer,
+    };
+    let index::PaneAddr::Herdr { socket, pane } = &target.addr else {
+        unreachable!("dialog_pane answers a herdr pane only")
+    };
+    let resp = match herdr_answer(
+        socket.as_deref(),
+        pane,
+        &sid,
+        target.client_wait,
+        &fingerprint,
+        &answer,
+    ) {
+        Ok(()) => json!({"ok": true, "sid": sid, "via": "herdr"}),
+        Err(e) => held_body(e),
     };
     HttpResponse::json(resp.to_string())
 }
@@ -2116,8 +2438,9 @@ mod tests {
         }
 
         // Blocked between the first look and the typing: the ask just before typing holds it,
-        // and nothing reaches the socket.
-        let w = HerdrWorld::new("p");
+        // and nothing reaches the socket. Its own tag: two worlds of one name share a socket, and
+        // the second removed the first's while its server waited (#s298).
+        let w = HerdrWorld::new("pb");
         std::fs::write(w.agent.with_extension("json.later"), &blocked).unwrap();
         let held = w.send("rm the build");
         assert!(
@@ -2438,5 +2761,194 @@ mod tests {
             "{tail}"
         );
         assert!(tail.len() <= RESUME_ERROR_TAIL + '…'.len_utf8());
+    }
+
+    fn dialog_fixture(name: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/dialogs")
+            .join(name);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    fn blocked() -> String {
+        format!(r#"{{"agent_status":"blocked","agent_session":{{"value":"{SID}"}}}}"#)
+    }
+
+    impl HerdrWorld {
+        fn answer(&self, fingerprint: &str, answer: dialog::Answer) -> Result<(), HerdrSendError> {
+            herdr_answer_with(
+                self.fake.as_os_str(),
+                self.socket.to_str(),
+                "w1:p2",
+                SID,
+                false,
+                fingerprint,
+                &answer,
+            )
+        }
+        fn shown(&self) -> Option<dialog::Dialog> {
+            herdr_dialog(self.fake.as_os_str(), &self.socket, "w1:p2", SID, false)
+                .unwrap_or_else(|_| panic!("the pane could not be read"))
+        }
+    }
+
+    fn typed(lines: &[String]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| {
+                let v: serde_json::Value = serde_json::from_str(l.trim()).unwrap();
+                assert_eq!(v["method"], "pane.send_text");
+                assert_eq!(v["params"]["pane_id"], "w1:p2");
+                v["params"]["text"].as_str().unwrap().to_string()
+            })
+            .collect()
+    }
+
+    /// #s298: a permission prompt read off the pane once herdr names this session and says it is
+    /// blocked; Yes is its digit over the socket and nothing else — no Enter, ever, after a digit.
+    #[test]
+    fn a_permission_is_answered_by_its_digit_alone() {
+        let w = HerdrWorld::new("ap");
+        w.set(&blocked(), &dialog_fixture("permission-bash.txt"));
+        let d = w.shown().expect("the dialog");
+        assert_eq!(d.kind, dialog::Kind::Permission);
+        let server = w.serve((blocked(), screen("\u{276f}\u{a0}")));
+        assert!(w
+            .answer(&d.fingerprint(), dialog::Answer::Choice(1))
+            .is_ok());
+        assert_eq!(typed(&[server.join().unwrap()]), ["1"]);
+        let calls = w.calls();
+        assert!(
+            !calls.contains("send-keys"),
+            "no key but the digit: {calls}"
+        );
+        assert!(
+            calls
+                .lines()
+                .all(|l| l.starts_with(&format!("{} ", w.socket.display()))),
+            "{calls}"
+        );
+    }
+
+    /// #s298: an answer to a dialog that is not the one shown, a choice not offered, another
+    /// session in the pane, or no dialog open types nothing and says why.
+    #[test]
+    fn an_answer_that_does_not_fit_the_pane_types_nothing() {
+        let w = HerdrWorld::new("aq");
+        w.set(&blocked(), &dialog_fixture("permission-bash.txt"));
+        let fp = w.shown().unwrap().fingerprint();
+        let held = |r: Result<(), HerdrSendError>, says: &str| match r {
+            Err(HerdrSendError::Held(why)) => assert!(why.contains(says), "{why}"),
+            Err(HerdrSendError::Failed(e)) => panic!("failed, not held: {e:#}"),
+            Ok(()) => panic!("answered"),
+        };
+        held(
+            w.answer("0000000000000000", dialog::Answer::Choice(1)),
+            "changed",
+        );
+        held(w.answer(&fp, dialog::Answer::Choice(2)), "not offered");
+        held(
+            w.answer(&fp, dialog::Answer::Text("no".into())),
+            "no written answer",
+        );
+        w.set(
+            r#"{"agent_status":"blocked","agent_session":{"value":"another"}}"#,
+            &dialog_fixture("permission-bash.txt"),
+        );
+        held(w.answer(&fp, dialog::Answer::Choice(1)), "another session");
+        let idle = format!(r#"{{"agent_status":"idle","agent_session":{{"value":"{SID}"}}}}"#);
+        w.set(&idle, &dialog_fixture("permission-bash.txt"));
+        held(w.answer(&fp, dialog::Answer::Choice(1)), "no dialog");
+        w.set(&blocked(), &dialog_fixture("no-dialog.txt"));
+        held(w.answer(&fp, dialog::Answer::Choice(1)), "no dialog");
+        assert!(w.listener.borrow().is_some(), "nothing reached the socket");
+    }
+
+    /// #s298: a written answer picks its choice, waits for the field, types the text, waits to see
+    /// it in the choice, and only then presses Enter, once.
+    #[test]
+    fn a_written_answer_is_seen_in_its_choice_before_enter() {
+        let w = HerdrWorld::new("at");
+        w.set(
+            &blocked(),
+            &dialog_fixture("question-free-chosen.txt")
+                .replace("\u{276f} 3.", "  3.")
+                .replacen("  1. Spring", "\u{276f} 1. Spring", 1),
+        );
+        let fp = w.shown().expect("the dialog").fingerprint();
+        let server = w.serve_each(vec![
+            (blocked(), dialog_fixture("question-free-chosen.txt")),
+            (blocked(), dialog_fixture("question-free-typed.txt")),
+        ]);
+        assert!(w
+            .answer(&fp, dialog::Answer::Text("Petrel watch".into()))
+            .is_ok());
+        assert_eq!(typed(&server.join().unwrap()), ["3", "Petrel watch"]);
+        assert_eq!(w.calls().matches("pane send-keys w1:p2 enter").count(), 1);
+    }
+
+    /// #s298: a written answer the pane never shows is not submitted.
+    #[test]
+    fn a_written_answer_the_pane_does_not_show_is_not_sent() {
+        let w = HerdrWorld::new("au");
+        w.set(&blocked(), &dialog_fixture("question-free-chosen.txt"));
+        let fp = w.shown().unwrap().fingerprint();
+        let server = w.serve_each(vec![
+            (blocked(), dialog_fixture("question-free-chosen.txt")),
+            (blocked(), dialog_fixture("question-free-chosen.txt")),
+        ]);
+        let r = w.answer(&fp, dialog::Answer::Text("Petrel watch".into()));
+        assert!(matches!(r, Err(HerdrSendError::Held(ref why)) if why.contains("part-way")));
+        server.join().unwrap();
+        assert!(!w.calls().contains("send-keys"), "no Enter: {}", w.calls());
+    }
+
+    /// #s298: ticks: only what differs is toggled, the ticks are seen to have taken, then Tab.
+    #[test]
+    fn ticks_are_toggled_seen_and_then_tabbed_past() {
+        let w = HerdrWorld::new("am");
+        w.set(&blocked(), &dialog_fixture("question-multi.txt"));
+        let fp = w.shown().unwrap().fingerprint();
+        let one =
+            dialog_fixture("question-multi.txt").replacen("[ ] Plot A", "[\u{2714}] Plot A", 1);
+        let server = w.serve_each(vec![
+            (blocked(), one),
+            (blocked(), dialog_fixture("question-multi-toggled.txt")),
+        ]);
+        assert!(w.answer(&fp, dialog::Answer::Choices(vec![3, 1])).is_ok());
+        assert_eq!(typed(&server.join().unwrap()), ["1", "3"]);
+        let calls = w.calls();
+        assert_eq!(
+            calls.matches("pane send-keys w1:p2 tab").count(),
+            1,
+            "{calls}"
+        );
+        assert!(!calls.contains("enter"), "{calls}");
+    }
+
+    /// #s298: a plan's text is read only from `<claude home>/plans/*.md` beside the `projects/`
+    /// that holds the session's transcript.
+    #[test]
+    fn a_plan_is_read_only_from_the_sessions_own_client_home() {
+        let root = std::env::temp_dir().join(format!("cm-plan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join("claude");
+        std::fs::create_dir_all(home.join("projects/-p")).unwrap();
+        std::fs::create_dir_all(home.join("plans")).unwrap();
+        std::fs::create_dir_all(root.join("elsewhere/plans")).unwrap();
+        let transcript = home.join("projects/-p/s.jsonl");
+        std::fs::write(&transcript, "").unwrap();
+        std::fs::write(home.join("plans/tally.md"), "# Tally the nests\n").unwrap();
+        std::fs::write(home.join("plans/tally.txt"), "not a plan").unwrap();
+        std::fs::write(root.join("elsewhere/plans/x.md"), "someone else's").unwrap();
+        let at = |p: std::path::PathBuf| plan_text(&transcript, &p.display().to_string());
+        assert_eq!(
+            at(home.join("plans/tally.md")).as_deref(),
+            Some("# Tally the nests\n")
+        );
+        assert_eq!(at(home.join("plans/tally.txt")), None);
+        assert_eq!(at(root.join("elsewhere/plans/x.md")), None);
+        assert_eq!(at(home.join("plans/../plans/missing.md")), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

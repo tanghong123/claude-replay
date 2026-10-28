@@ -111,6 +111,8 @@ pub struct PaneTarget {
     /// The process names the session exactly in its own argv (#s234): with a herdr pane, a
     /// grant for the same session, pane and server may follow it across a restore.
     pub named: bool,
+    /// The session's transcript: where its client keeps its files, a plan's among them (#s298).
+    pub transcript: PathBuf,
 }
 
 /// Why a send-prompt was refused — each a distinct, reportable fact (mirrors the §3.1/§4
@@ -839,6 +841,7 @@ impl Index {
             client_wait: claude_replay_core::adapter(agent)
                 .client_wait(&path)
                 .is_some(),
+            transcript: path,
         })
     }
 
@@ -1800,6 +1803,24 @@ fn annotate_agent_state(root: &mut Value, tracker: &crate::state::StateTracker) 
             row["stateSince"] = json!(since);
             // #s238: herdr's own status decided it, or the monitor derived it.
             row["stateSource"] = json!(if by_herdr { "herdr" } else { "derived" });
+            // #s298: a dialog the reader can answer from the page — a Claude session in a herdr
+            // pane the monitor may type into (`sendsImages` says exactly that), waiting on a
+            // question, a permission or a plan that herdr or the client itself saw, never a guess.
+            use claude_replay_core::state::{AgentState, Confidence, StateReason};
+            let seen = by_herdr || verdict.confidence == Confidence::Observed;
+            let dialog = match verdict.reason {
+                StateReason::Question => Some("question"),
+                StateReason::Permission => Some("permission"),
+                StateReason::PlanApproval => Some("plan"),
+                _ => None,
+            };
+            if let (true, true, Some(dialog)) = (
+                row.get("sendsImages") == Some(&json!(true)),
+                verdict.state == AgentState::Wait && seen,
+                dialog,
+            ) {
+                row["dialog"] = json!(dialog);
+            }
         } else {
             // Non-immediate states pass through a one-tick stability gate. Keep the additive
             // wire shape deterministic during that first scan, while labeling the coarse
@@ -5765,6 +5786,101 @@ n/Users/x/proj
         let snapshot = idx.assemble(&st, &mut Vec::new());
         assert_eq!(find(&snapshot, "h1").expect("the row")["consented"], true);
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// #s298: a row says `dialog` — question, permission or plan — only for a session the page can
+    /// answer (`sendsImages`: a Claude session in a herdr pane it may type into) and only for a
+    /// wait herdr or the client itself saw; an inferred permission, a busy session or a row it
+    /// cannot type into says nothing.
+    #[test]
+    fn a_row_offers_a_dialog_only_where_one_was_seen_and_can_be_answered() {
+        use claude_replay_core::state::{AgentState, Confidence, StateReason, Verdict};
+        let v = |state, reason, confidence| Verdict {
+            state,
+            reason,
+            detail: String::new(),
+            confidence,
+        };
+        let mut tracker = crate::state::StateTracker::default();
+        let cases = [
+            (
+                "q",
+                true,
+                v(
+                    AgentState::Wait,
+                    StateReason::Question,
+                    Confidence::Observed,
+                ),
+                false,
+                Some("question"),
+            ),
+            (
+                "p",
+                true,
+                v(
+                    AgentState::Wait,
+                    StateReason::PlanApproval,
+                    Confidence::Observed,
+                ),
+                false,
+                Some("plan"),
+            ),
+            (
+                "h",
+                true,
+                v(
+                    AgentState::Wait,
+                    StateReason::Permission,
+                    Confidence::Inferred,
+                ),
+                true,
+                Some("permission"),
+            ),
+            (
+                "g",
+                true,
+                v(
+                    AgentState::Wait,
+                    StateReason::Permission,
+                    Confidence::Inferred,
+                ),
+                false,
+                None,
+            ),
+            (
+                "b",
+                true,
+                v(AgentState::Busy, StateReason::Tool, Confidence::Observed),
+                true,
+                None,
+            ),
+            (
+                "t",
+                false,
+                v(
+                    AgentState::Wait,
+                    StateReason::Question,
+                    Confidence::Observed,
+                ),
+                false,
+                None,
+            ),
+        ];
+        let mut rows = Vec::new();
+        for (sid, answerable, verdict, by_herdr, _) in &cases {
+            tracker.publish(sid, verdict.clone(), *by_herdr);
+            rows.push(if *answerable {
+                json!({"id": sid, "sendsImages": true})
+            } else {
+                json!({"id": sid})
+            });
+        }
+        let mut root = json!({"groups": [{"rows": rows}]});
+        annotate_agent_state(&mut root, &tracker);
+        for (i, (sid, _, _, _, want)) in cases.iter().enumerate() {
+            let row = &root["groups"][0]["rows"][i];
+            assert_eq!(row["dialog"].as_str(), *want, "{sid}: {row}");
+        }
     }
 
     /// #s234's review: only the flags a launch passes name a session for a grant to follow — never
