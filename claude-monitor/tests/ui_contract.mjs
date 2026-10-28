@@ -3761,7 +3761,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const store = readFileSync(new URL("../../claude-monitor/src/codex-ui/control-store.js", import.meta.url), "utf8");
   const src = store.slice(store.indexOf("function composeTargetLine("), store.indexOf("export class ControlStore"));
   const line = new Function(`${src}; return composeTargetLine;`)();
-  assert.equal(line({ term: "herdr", target: "w1:p2" }, "tmux"), "Types into herdr pane w1:p2", "a herdr pane by name");
+  assert.equal(line({ term: "herdr", target: "w1:p2" }, "tmux"), "Types into herdr", "herdr by name alone, no pane id (#s297, Hong: \"just show herdr is enough\")");
+  assert.equal(line({ term: "herdr" }, "tmux"), "Types into herdr", "…with or without one");
   assert.equal(line({ term: "tmux", target: "%3" }, "tmux"), "Types into tmux pane %3", "a tmux pane by name");
   assert.equal(line({ term: "tmux" }, "tmux"), "Types into its tmux pane", "a tmux pane with no id");
   assert.equal(line({ term: "herdr", target: "w1:p2" }, "resume"), "Resumes this session", "an idle session resumes");

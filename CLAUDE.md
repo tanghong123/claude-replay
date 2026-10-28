@@ -98,8 +98,8 @@ keyboard by `--phone-kb` like the find pill, the toolbar, search and the jump st
 sideways it spans the session's column (`a_phone_writes_from_the_dock_and_keeps_the_draft`).
 **The box says where a message goes in ONE line and stays open after a send** (#s236, Hong: "keep the
 entry dialog open", "too much info", and it said tmux for a herdr pane): `composeTargetLine`
-(`control-store.js`) gives "Types into herdr pane w1:p2", "Types into tmux pane %3" or "Resumes this
-session", the desktop's caption (amber for a live pane, beside the session's name alone) and the
+(`control-store.js`) gives "Types into herdr" (no pane id, #s297, Hong: "just show herdr is enough"),
+"Types into tmux pane %3" or "Resumes this session", the desktop's caption (amber for a live pane, beside the session's name alone) and the
 phone's note alike, and the reference shell's "Write to this session ·", static "· writes to live
 tmux" and inert "＋" are hidden in `production.css` (the generated files untouched). A send that goes
 empties the field and keeps the box (and, on the desktop, the focus); one that is refused keeps the

@@ -11,8 +11,9 @@ const byId = id => document.getElementById(id);
 // where a message goes — a live pane by its host's own name, or a resume of an idle session.
 function composeTargetLine(row, mode) {
   if (mode !== "tmux") return "Resumes this session";
-  const host = row?.term === "herdr" ? "herdr" : "tmux";
-  return row?.target ? `Types into ${host} pane ${row.target}` : `Types into its ${host} pane`;
+  // #s297 (Hong: "just show herdr is enough"): herdr's pane id is detail the box does not need.
+  if (row?.term === "herdr") return "Types into herdr";
+  return row?.target ? `Types into tmux pane ${row.target}` : "Types into its tmux pane";
 }
 // #s237: images go only to a Claude session in a herdr pane (the row says `sendsImages`), within
 // Codex native mode's bounds (codex-workspace/attachments.js), which the server checks again.

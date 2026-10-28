@@ -13865,7 +13865,7 @@ fn a_herdr_session_takes_images_from_the_compose_box() {
     let attach = format!("(function(){{ var a = document.getElementById('composeAttach'), f = document.getElementById('composeInput').getBoundingClientRect(), r = a.getBoundingClientRect(); return document.querySelector('#composer .compose-note').textContent + '|' + ({PHONE_HITTABLE})(a) + '|' + (r.left >= f.left && r.right <= f.left + 60 && r.bottom <= f.bottom && r.top >= f.top) + '|' + (r.width >= 34); }})()");
     harness::until(
         &tab,
-        &format!("{attach} === 'Types into herdr pane w1:p2|true|true|true'"),
+        &format!("{attach} === 'Types into herdr|true|true|true'"),
         "the box to name the herdr pane and offer images inside the field, at its left",
         Duration::from_secs(5),
         &attach,
