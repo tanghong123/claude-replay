@@ -461,14 +461,17 @@ a plan while it waits (measured, Claude Code 2.1.312), so the monitor reads the 
 the client saw the wait; `GET /api/dialog` reads it and `POST /api/answer` answers it, both behind
 the send's gates and the pane grant (a grant to send now also answers dialogs). The parser takes the
 choices only where they are the dialog's own (the review of #s298 found the agent's text read as
-one): the last run numbered from 1, followed by nothing but the dialog's foot, under a full-width
-rule outside any `╌` preview box, with no numbered line between; a question's ☐ or tabs decide its
-kind before a "Do you want …?". An answer names the dialog's fingerprint (what is asked, the note,
+one): the last run numbered from 1, the dialog's foot right after it (a narrow pane may wrap the
+rest), under a full-width rule outside any `╌` preview box, with no numbered line between but inside
+such a box (a command's own, as a commit message's list); a question's ☐ or tabs decide its kind
+before a "Do you want …?". An answer names the dialog's fingerprint (what is asked, the note,
 the choices and their descriptions, a plan's file and text) and is refused if the pane shows
 another; one answer at a time per pane; a digit picks at once and is never followed by Enter (a
 stray one is a draft in the input box), ticks are toggled where they differ, seen, then Tab, a
 written answer is its choice's digit, the text, and the only Enter once the pane shows it; and the
-answer is done when that dialog has gone, else held. A permission offers Yes and No only: "don't ask
+answer is done once the screen has moved on from the one before its last key (a dialog just like it
+may stand in its place), else held after about three seconds; gone, the input box must hold no
+draft, which a dialog that closed in the moment before the key would leave there. A permission offers Yes and No only: "don't ask
 again" and "switch to auto mode" change settings; a plan never offers to bypass permissions. A
 plan's text is read by its file's NAME from the plans of the client home whose `sessions/` records
 the session. A layout the parser does not know is no dialog, and the card says to answer it in the

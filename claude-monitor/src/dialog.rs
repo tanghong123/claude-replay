@@ -228,7 +228,12 @@ pub fn parse(screen: &str) -> Option<Dialog> {
             _ => break,
         }
     }
-    if choices.len() < 2 || !lines[end + 1..].iter().all(|l| is_foot(l)) {
+    // What follows the choices starts with the dialog's foot (a narrow pane wraps the foot and a
+    // plan's path onto further lines, so only its first line is held to the list).
+    let after = lines[end + 1..]
+        .iter()
+        .find(|l| !l.trim().is_empty() && !is_rule(l, '\u{2500}'));
+    if choices.len() < 2 || after.is_some_and(|l| !is_foot(l)) {
         return None;
     }
     // The dialog's top: the nearest rule above its first choice that runs the screen's width (the
@@ -252,10 +257,17 @@ pub fn parse(screen: &str) -> Option<Dialog> {
                 == 0
     })?;
     let head: Vec<&str> = lines[top + 1..first].to_vec();
-    // A numbered line between the top and the choices: the run is not the dialog's own (a choice's
-    // description numbered "1." took it over, or the dialog has no numbered choices).
-    if head.iter().any(|l| choice_line(l).is_some()) {
-        return None;
+    // A numbered line between the top and the choices, outside a `╌` box: the run is not the
+    // dialog's own (a choice's description numbered "1." took it over, or the dialog has no numbered
+    // choices). Inside a box it is the command's or a preview's own text — a commit message that
+    // lists its changes — and stays the dialog's.
+    let mut boxed = false;
+    for l in &head {
+        if is_rule(l, '\u{254c}') {
+            boxed = !boxed;
+        } else if !boxed && choice_line(l).is_some() {
+            return None;
+        }
     }
     let foot: Vec<&str> = lines[end + 1..].to_vec();
     let asked_at = head.iter().rposition(|l| !l.trim().is_empty())?;
@@ -290,12 +302,25 @@ pub fn parse(screen: &str) -> Option<Dialog> {
     } else if asked.ends_with("Would you like to proceed?") && asked.contains("plan") {
         d.kind = Kind::Plan;
         d.title = "Claude's plan".into();
-        d.plan_file = foot
+        // The plan's file: after "ctrl+g to edit in Vim ·", on its line or the next, wrapped by a
+        // narrow pane mid-name onto further lines.
+        let from = foot
             .iter()
-            .map(|l| l.trim())
-            .find(|l| l.ends_with(".md") && l.contains("/plans/"))
+            .position(|l| l.trim().starts_with("ctrl+g to edit"));
+        let tail: String = from
+            .map(|i| {
+                let first = foot[i].split_once('\u{b7}').map_or("", |(_, rest)| rest);
+                std::iter::once(first)
+                    .chain(foot[i + 1..].iter().copied())
+                    .map(str::trim)
+                    .collect()
+            })
+            .unwrap_or_default();
+        d.plan_file = tail
+            .split_whitespace()
+            .last()
+            .filter(|p| p.ends_with(".md") && p.contains("/plans/"))
             .map(str::to_string);
-        d.plan_file.as_ref()?;
         // The plan's own text, where it fits on the screen: between the `╌` rules above the dialog.
         let dashes: Vec<usize> = lines[..top]
             .iter()
@@ -914,10 +939,10 @@ mod tests {
     fn numbers_that_are_not_the_dialogs_own_choices_are_no_dialog() {
         assert_eq!(parse(&fixture("no-dialog-reply-above-trust.txt")), None);
         assert_eq!(parse(&fixture("question-numbered-description.txt")), None);
-        // Anything after the choices but the dialog's own foot.
-        let trailing = format!(
-            "{}\nmore of the agent's reply\n",
-            fixture("question-single.txt")
+        // Anything after the choices where the dialog's own foot would start.
+        let trailing = fixture("question-single.txt").replace(
+            "Enter to select · ↑/↓ to navigate · Esc to cancel",
+            "more of the agent's reply",
         );
         assert_eq!(parse(&trailing), None);
     }
@@ -991,5 +1016,30 @@ mod tests {
                 (3, "Tell Claude what to change")
             ]
         );
+    }
+
+    /// #s298's second review: a command's own numbered lines, inside its `╌` box (a commit message
+    /// that lists its changes), leave the permission readable.
+    #[test]
+    fn a_command_with_numbered_lines_is_still_a_permission() {
+        let d = parse(&fixture("permission-commit-heredoc.txt")).expect("a dialog");
+        assert_eq!(d.kind, Kind::Permission);
+        assert!(d.detail.contains("1. Count each plot."), "{}", d.detail);
+        assert_eq!(labels(&d), [(1, "Yes"), (3, "No")]);
+    }
+
+    /// #s298's second review: a narrow pane wraps the foot, and a plan's path, which may also share
+    /// the foot's line; the dialog and the plan's file are read all the same.
+    #[test]
+    fn a_wrapped_foot_and_a_plans_path_are_read_whole() {
+        let q = parse(&fixture("question-narrow-foot.txt")).expect("a dialog");
+        assert_eq!(q.kind, Kind::Question);
+        let wrapped = parse(&fixture("plan-wrapped-path.txt")).expect("a dialog");
+        assert_eq!(
+            wrapped.plan_file.as_deref(),
+            Some("~/.claude/plans/tally-the-petrel-nests-quiet-ridge.md")
+        );
+        let one = parse(&fixture("plan-one-line-foot.txt")).expect("a dialog");
+        assert_eq!(one.plan_file.as_deref(), Some("~/.claude/plans/tally.md"));
     }
 }

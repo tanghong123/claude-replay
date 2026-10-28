@@ -1406,7 +1406,17 @@ fn herdr_answer_with(
     };
     let plan = plan.as_deref();
     let mut typed = false;
-    for step in steps {
+    // The screen just before the last key: the answer has taken once the screen is another, even
+    // where a dialog just like this one stands in its place (two alike permissions in a row).
+    let last = steps.len().saturating_sub(1);
+    let mut before = String::new();
+    for (i, step) in steps.into_iter().enumerate() {
+        if i == last {
+            before = herdr_screen(program, &socket, pane).map_err(|e| match e {
+                HerdrSendError::Failed(e) if typed => part_way(format!("{e:#}")),
+                e => e,
+            })?;
+        }
         match step {
             dialog::Step::Type(text) => {
                 herdr_send_text(&socket, pane, &text).map_err(|e| {
@@ -1458,17 +1468,42 @@ fn herdr_answer_with(
             }
         }
     }
-    // The answer is in once the dialog has gone, or another stands (the question's next part): a
-    // dialog still showing after it did not take it.
-    for i in 0..10 {
+    // The answer is in once the screen has moved on: the dialog gone, or another standing (the
+    // question's next part). The same dialog on the same screen after about three seconds did not
+    // take it. Gone, the input box must hold no draft: a dialog that closed in the moment before the
+    // first key leaves that key in the input, where it would hold every later send.
+    let read = || {
+        herdr_screen(program, &socket, pane).map_err(|e| match e {
+            HerdrSendError::Failed(e) => part_way(format!("{e:#}")),
+            e => e,
+        })
+    };
+    for i in 0..20 {
         if i > 0 {
             std::thread::sleep(std::time::Duration::from_millis(150));
         }
-        let same = dialog::parse(&herdr_screen(program, &socket, pane)?)
-            .is_some_and(|d| d.fingerprint_with(plan) == fingerprint);
-        if !same {
-            return Ok(());
+        let screen = read()?;
+        let same = screen == before
+            && dialog::parse(&screen).is_some_and(|d| d.fingerprint_with(plan) == fingerprint);
+        if same {
+            continue;
         }
+        if dialog::parse(&screen).is_none() {
+            let input = herdr_cli(
+                program,
+                &socket,
+                &[
+                    "pane", "read", pane, "--source", "visible", "--lines", "40", "--ansi",
+                ],
+            )
+            .map_err(|e| part_way(format!("{e:#}")))?;
+            if herdr_input_line(&input) == InputLine::Draft {
+                return Err(HerdrSendError::Held(
+                    "the dialog closed as the answer went, and what was typed may be in the session's input: clear it there".into(),
+                ));
+            }
+        }
+        return Ok(());
     }
     Err(HerdrSendError::Held(
         "the answer was typed but the dialog is still showing: look at it in the session".into(),
@@ -3075,6 +3110,39 @@ mod tests {
         let server = w.serve((blocked(), dialog_fixture("permission-bash.txt")));
         let r = w.answer(&fp, dialog::Answer::Choice(1));
         assert!(matches!(r, Err(HerdrSendError::Held(ref why)) if why.contains("still showing")));
+        server.join().unwrap();
+    }
+
+    /// #s298's second review: a dialog that closed in the moment before the key leaves it in the
+    /// input box; the answer says so rather than that it went.
+    #[test]
+    fn a_key_left_in_the_input_box_is_said() {
+        let w = HerdrWorld::new("ad");
+        w.set(&blocked(), &dialog_fixture("permission-bash.txt"));
+        let fp = w.shown().unwrap().fingerprint();
+        let idle = format!(r#"{{"agent_status":"idle","agent_session":{{"value":"{SID}"}}}}"#);
+        let server = w.serve((idle, screen("\u{276f}\u{a0}1")));
+        let r = w.answer(&fp, dialog::Answer::Choice(1));
+        assert!(
+            matches!(r, Err(HerdrSendError::Held(ref why)) if why.contains("in the session's input"))
+        );
+        server.join().unwrap();
+    }
+
+    /// #s298's second review: a permission just like the one answered, standing in its place, is
+    /// the answer taken, not refused.
+    #[test]
+    fn a_dialog_just_like_the_answered_one_is_the_answer_taken() {
+        let w = HerdrWorld::new("al");
+        w.set(&blocked(), &dialog_fixture("permission-bash.txt"));
+        let fp = w.shown().unwrap().fingerprint();
+        let next = dialog_fixture("permission-bash.txt").replacen(
+            "Count the petrel nests",
+            "Count the petrel nests again",
+            1,
+        );
+        let server = w.serve((blocked(), next));
+        assert!(w.answer(&fp, dialog::Answer::Choice(1)).is_ok());
         server.join().unwrap();
     }
 }
