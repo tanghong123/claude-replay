@@ -201,7 +201,7 @@ can be a scroll batch old while the reader moves, so "below the reader" is not k
 | I6 | pads before any layout read | Unchanged: fills mount through `mountRange`. |
 | I7 | a change that moved the DOM is placed before paint | A fill at or above `P` lands only on a still view, in one transaction that redraws, measures and places in the same task. Nothing is written into a glide. |
 | I8 | a change that has not touched the DOM may wait | A fill outside the window changes nothing in the sums (its units are placeholders before and after, at the same height) and, with the ranged rewrite, redraws nothing. |
-| I9 | growth below `P` never moves a non-following reader | A fill below `P` is measured below it; nothing above `P` moves. |
+| I9 | growth below `P` never moves a non-following reader | A fill below `P` is measured below it; nothing above `P` moves. A placeholder straddling the top is not `P`'s anchor while the unit after it begins on screen (#s291): held by its unseen top, the fill that replaced its height carried what the reader saw by the difference (3.5px, measured). |
 | I10 | a jump lands on content | A jump to a turn lands at once on its prompt placeholder, which shows the prompt's label; the prompt unit carries the landing's row, so the landing hold (framework §4.10) keeps its top in place while the turn fills. A fill does not end the hold: only the reader's input, a scroll the engine did not make, or a reshape do. A jump to a RECORD waits for its unit (§6.5). |
 | I11 | the record under `P` is mounted | Unchanged: a placeholder is an item like any other. |
 | I12 | a rewrite that drops `P`'s key falls back | A fill keeps every key, by construction. The head's records can still be rewritten under the same epoch: a monitor restart resumes at epoch 1, and a client ahead of a log that was cut gets everything from 0 with no epoch change (`pull.rs`). So any pull that changes a record below `upto`, whatever its epoch, cancels the reads and starts the session over, and every fetched record is checked against the index's fingerprint (`h`) before it fills. Never a rename. |
@@ -280,14 +280,54 @@ can be a scroll batch old while the reader moves, so "below the reader" is not k
 
 ### 6.6 Memory on a phone
 
-With D4's first option the page ends up holding every record, as it does today. A bound has to wait
-for stage 3: search and the filter read the records in the page, and dropping some would make them
-wrong.
+With D4's first option the page ends up holding every record. A bound had to wait for stage 3:
+search and the filter read the records in the page, and dropping some would have made them wrong.
+Stage 3 (§7) answers them on the server, and #s285 built the bound below.
 
-Designed now, built with stage 3: the records of turns far from the reader (by bytes, not turns:
-say 16 MB kept around `P`) go back to `PENDING`. Their units become placeholders again at their kept
-measured heights, so a drop is a rewrite in place that moves nothing, and a later fetch is a fill.
-Only head turns are dropped, whose offsets the index knows; never the live tail.
+Designed with stage 2: the records of turns far from the reader (by bytes, not turns: say 16 MB kept
+around `P`) go back to `PENDING`. Their units become placeholders again at their kept measured
+heights, so a drop is a rewrite in place that moves nothing, and a later fetch is a fill. Only head
+turns are dropped, whose offsets the index knows; never the live tail.
+
+**As built (#s285)**, after Hong chose on #s290 ("Read up to about 16 MB, then only what I visit"):
+- **The background read stops at the budget.** D4 reads the rest from the tail backwards. It stops
+  before the turn that would take the head's reads past `KEEP_BYTES` (16 MiB of the log;
+  `?keepBytes=` for a case). Reaching the budget drops nothing, so what the background has read is
+  one unbroken run of turns behind the tail. A visit that takes the reads past the budget ends the
+  background read too, so nothing let go for it is read again behind the reader. After that, only
+  what the window shows or a jump names is read. A head under the budget is read whole, as before, and the head and its index then go.
+- **Asks lapse.** After every transaction the page asks again for what the window shows and for the
+  jump it still waits on (a held turn, record or search hit, a link on its way). Every earlier ask
+  goes back to the background order first (`unwant`). So a turn the reader scrolled past is not read
+  once the background read is over, and a jump they gave up costs at most the read already asked:
+  the next fill lets go of a held jump the reader moved away from before its own transaction asks.
+- **A read starts once every ask made with it is in** (a microtask): the store is idle when the
+  reader asks, and a read started on the first ask read the window's farthest turn first.
+- **The farthest go after each fill** (`dropFar`): while the reads hold more than the budget, the read
+  turns farthest from the reader's unit go back to `PENDING` through the store's `drop`. Their units
+  are rebuilt in place by the fill's own path (`Projection.fill`), as placeholders under the same keys.
+  Their heights are kept by key, so the sums do not move and nothing mounted is redrawn.
+- **What is never dropped:** a turn within twice the reach the window asks for (so nothing it asks
+  for is dropped and read again; the reach is taken again before each drop), the read in flight, one
+  with a piece still waiting to go in, and the head's last turn when the tail goes on with it (its
+  last unit reaches into the tail).
+- **What a dropped turn costs:** what any turn still on its way costs. The counts, search and the
+  filter answer from the index and the server for every record below `upto`, so a drop changes none of
+  them. The filter remembers every record it has opened under its tools (`filterSeen`), so a turn
+  read again does not open a fold the reader closed, and nothing is redrawn for it.
+- **A task's "Go to the turn"** reads its target from what the page holds only when that record is in
+  the tail. The tail is always held, and it comes after every record of the head. Otherwise the button
+  asks the server's search for the latest record of the head that names the task (`findTaskRecord`),
+  then jumps there, reading the turn. It asks twice, as `taskRecordTargets` matches: for the subject,
+  which Claude Code writes only where the task is created, and for `#<id>` as a whole word, which is
+  how every TaskUpdate (`{taskId, status}`) is drawn. A reader who moved on while it was asked is not
+  taken back. Without this, a task recorded in a turn never read said "still
+  loading" for good, and one whose latest record was dropped pointed at an older one.
+- **The bound** is the budget, plus whatever the window and its reach hold that cannot be let go. A
+  single turn larger than the budget, read because the reader is in it, is held whole.
+- **The cases** are `a_reader_across_a_network_keeps_about_its_budget_of_a_long_session`,
+  `the_turn_the_tail_goes_on_with_is_never_let_go` and
+  `a_task_recorded_in_a_turn_never_read_is_found_on_the_server`.
 
 ### 6.7 Who gets it
 
@@ -482,7 +522,8 @@ server keeps no lowercased text.
 - **Dropping far turns on a phone** (§6.6) becomes possible once search no longer needs every record in
   the page; it is a change to the store and the projection of its own, filed as its own task.
 - Fetching the rest behind the reader (D4) stays: with search on the server it could stop, which is a
-  choice for Hong once stage 3 has run on the phone.
+  choice for Hong once stage 3 has run on the phone. (He chose on #s290: it stops once the page holds
+  about 16 MB, §6.6.)
 
 ### 7.6 As built (#s278)
 

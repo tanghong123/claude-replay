@@ -158,3 +158,64 @@ fn a_mute_chrome_launch_is_given_up_and_killed() {
         .collect();
     assert!(left.is_empty(), "nothing of that launch is left: {left:?}");
 }
+
+/// #s293: a case that ends takes every process left of the browsers its runner launched with it —
+/// a helper whose browser was killed but which never exited — and leaves a sibling run's alone. On
+/// a drained, throttled Mac about 200 such helpers piled up under one scenarios binary.
+#[test]
+fn a_case_that_ends_takes_its_runners_leftover_browser_helpers_with_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::thread::spawn(|| {
+        let _serial = harness::serial();
+        harness::base("helper-leftovers")
+    })
+    .join()
+    .unwrap();
+    let _ = std::fs::create_dir_all(&root);
+    let draft = root.join("helper.draft");
+    std::fs::write(&draft, "#!/bin/sh\nwhile :; do sleep 1; done\n").unwrap();
+    std::fs::set_permissions(&draft, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Copied into place by a child, so the script is never open for writing in this process.
+    let helper = root.join("helper");
+    assert!(Command::new("cp")
+        .arg(&draft)
+        .arg(&helper)
+        .status()
+        .unwrap()
+        .success());
+    let profile = |owner: u32| {
+        format!(
+            "--user-data-dir={}",
+            std::env::temp_dir()
+                .join(format!("cr-browser-chrome-{owner}-999"))
+                .display()
+        )
+    };
+    let mut ours = Command::new(&helper)
+        .arg(profile(std::process::id()))
+        .spawn()
+        .unwrap();
+    // Another run's: the parent of this process (cargo, or the shell) is alive.
+    let mut theirs = Command::new(&helper)
+        .arg(profile(std::os::unix::process::parent_id()))
+        .spawn()
+        .unwrap();
+    std::thread::spawn(|| drop(harness::serial()))
+        .join()
+        .unwrap();
+    let gone = (0..50).any(|_| {
+        if ours.try_wait().unwrap().is_some() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        false
+    });
+    let survived = theirs.try_wait().unwrap().is_none();
+    let _ = ours.kill();
+    let _ = theirs.kill();
+    let _ = ours.wait();
+    let _ = theirs.wait();
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(gone, "this runner's leftover helper goes when a case ends");
+    assert!(survived, "…and another run's is left alone");
+}

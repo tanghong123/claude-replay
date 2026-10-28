@@ -322,8 +322,9 @@ const recordStore = new RecordStore({
   },
 // #314 (design/tail-first-open.md): a first open asks for the last 512 KB of the committed log and
 // draws it, then reads the head behind it; the server sends a log under twice that whole. A case
-// sets `?tailBudget=` so a small fixture exercises it, as `?trace=` and `?historyMs=` serve cases.
-}, { tailBudget: Number(new URLSearchParams(location.search).get("tailBudget")) || 512 * 1024, headPieceBytes: Number(new URLSearchParams(location.search).get("headPiece")) || 0, windowed: WINDOWED, emptySession: null, sessionFailure: null });
+// sets `?tailBudget=` so a small fixture exercises it, as `?trace=` and `?historyMs=` serve cases;
+// `?keepBytes=` does the same for what a reader across a network keeps of the head (#s285).
+}, { tailBudget: Number(new URLSearchParams(location.search).get("tailBudget")) || 512 * 1024, headPieceBytes: Number(new URLSearchParams(location.search).get("headPiece")) || 0, keepBytes: Number(new URLSearchParams(location.search).get("keepBytes")) || 0, windowed: WINDOWED, emptySession: null, sessionFailure: null });
 
 function toast(message) {
   const element = byId("toast"); element.textContent = message; element.classList.add("show");
@@ -981,6 +982,7 @@ function takeFills() {
     }
     applyFill(recordStore.takeFill());
   }
+  dropFar();
 }
 function fillMustWait({ from, to }) {
   const a = unitAt(from), b = unitAt(to - 1);
@@ -990,35 +992,98 @@ function fillMustWait({ from, to }) {
   // be a scroll batch old there, so "below the reader" is not known well enough to let one in.
   return viewport.dragging || viewport.touchGlide || viewport.readerMoving();
 }
-function applyFill({ from, to }) {
-  const records = recordStore.records;
-  for (let i = from; i < to; i++) recordState.recSizes[i] = recordTextSize(records[i]);
-  const run = projection.fill(records, from, to);
+function applyFill(fill) {
+  // A held jump the reader has moved away from goes first, or the fill's own transaction would ask
+  // for its turn again (#s285: once the background read is over nothing else reads it).
+  if (heldTurnJump && viewport.lastUserInput > heldTurnJump.at) heldTurnJump = null;
   // Units that did not come out as their placeholders were: the index and the log disagree, and
   // nothing may be renamed (framework I12) — the session starts over.
-  if (!run) { recordStore.recover(); return; }
-  recordState.units = projection.units;
-  recordState.taskTargets = taskRecordTargets(recordState.meta?.tasks || [], records);
-  recordState.agentTargets = agentTargetsNow(records);
-  viewport.setUnits(recordState.units, run);
+  if (!rewriteInPlace(fill)) { recordStore.recover(); return; }
+  recordState.taskTargets = taskRecordTargets(recordState.meta?.tasks || [], recordStore.records);
+  recordState.agentTargets = agentTargetsNow(recordStore.records);
   landOnHash();
-  if (heldTurnJump && viewport.lastUserInput > heldTurnJump.at) heldTurnJump = null;
   landHeldJump();
   renderNavigator(); refreshFilterHits(); updateSearch(false);
 }
+/** Records `[from, to)` were rewritten where they stand — filled, or let go (#s285): the units over
+ *  them are rebuilt under their own keys, and the engine redraws that run alone. False when the units
+ *  did not come out as they were. */
+function rewriteInPlace({ from, to }) {
+  const records = recordStore.records;
+  for (let i = from; i < to; i++) recordState.recSizes[i] = recordTextSize(records[i]);
+  const run = projection.fill(records, from, to);
+  if (!run) return false;
+  recordState.units = projection.units;
+  viewport.setUnits(recordState.units, run);
+  return true;
+}
+/** The unit the reader is on, for what to read first and what to let go of last. */
+function readerUnit() {
+  const p = viewport.position;
+  return !p ? viewport.lo : p.source === "tail" ? recordState.units.length - 1 : p.index ?? viewport.lo;
+}
 /** #s277: ask the store for what the window shows — a screen's worth of units beyond it either way,
- *  the nearest to the reader asked last, which the store reads first. */
+ *  the nearest to the reader asked last, which the store reads first — and for the jump the page
+ *  still waits on. Every earlier ask lapses first (#s285): a turn the reader left, or a jump they gave
+ *  up, is not read for them once the background read is over. */
 function wantWindow() {
   if (!recordStore.head?.reads) return;
   const units = recordState.units;
-  const p = viewport.position;
-  const at = !p ? viewport.lo : p.source === "tail" ? units.length - 1 : p.index ?? viewport.lo;
+  const at = readerUnit();
   const span = Math.max(8, viewport.hi - viewport.lo);
   const lo = Math.max(0, viewport.lo - span), hi = Math.min(units.length, viewport.hi + span);
   const owed = [];
   for (let i = lo; i < hi; i++) if (units[i].owed > 0) owed.push(i);
   owed.sort((x, y) => Math.abs(y - at) - Math.abs(x - at));
+  recordStore.unwant();
   for (const i of owed) recordStore.want(units[i].from, units[i].to + 1, 1);
+  // A held turn, record or search hit, and a link on its way, keep their asks while they wait.
+  for (const r of [heldTurnJump?.record, hashWait?.record]) {
+    const unit = r == null ? null : units[unitAt(r)];
+    if (unit?.owed > 0) recordStore.want(unit.from, unit.to + 1, 0);
+  }
+}
+/** Units `[lo, hi)` the page never lets go of (#s285): the window and the reader's unit, and twice the
+ *  reach `wantWindow` asks for either way, so nothing it asks for is let go. */
+function keptAround() {
+  const at = readerUnit(), span = 2 * Math.max(8, viewport.hi - viewport.lo);
+  return [Math.min(at, viewport.lo) - span, Math.max(at, viewport.hi) + span, at];
+}
+/** #s285 (design/slow-links.md §6.6; Hong on #s290: "Read up to about 16 MB, then only what I
+ *  visit"): once the turns read hold more than the page keeps, the farthest from the reader are let
+ *  go. Their units become placeholders again under the same keys, at the heights they were measured
+ *  at, so the sums do not move and nothing mounted is redrawn; a visit reads them again. Never a turn
+ *  in or near the window (`keptAround`), nor the head's last turn when the tail goes on with it. */
+function dropFar() {
+  const reads = recordStore.head?.reads;
+  if (!reads || recordStore.held <= recordStore.keepBytes) return;
+  const units = recordState.units;
+  const last = reads.at(-1);
+  const goesOn = (units[unitAt(last.last)]?.to ?? -1) > last.last;
+  const [lo, hi, at] = keptAround();
+  const far = [];
+  for (const read of goesOn ? reads.slice(0, -1) : reads) {
+    if (read.next === read.r) continue;
+    const a = unitAt(read.r), b = unitAt(read.next - 1);
+    if (a < 0 || b < 0 || (b >= lo && a < hi)) continue;
+    far.push({ read, a, b, distance: b < at ? at - b : a - at });
+  }
+  far.sort((x, y) => y.distance - x.distance);
+  let dropped = false;
+  for (const { read, a, b } of far) {
+    if (recordStore.held <= recordStore.keepBytes) break;
+    // Each drop is a transaction of its own: what the window holds is asked again before the next.
+    const [nowLo, nowHi] = keptAround();
+    if (b >= nowLo && a < nowHi) continue;
+    const run = recordStore.drop(read);
+    if (!run) continue;
+    if (!rewriteInPlace(run)) { recordStore.recover(); return; }
+    dropped = true;
+  }
+  if (!dropped) return;
+  recordState.taskTargets = taskRecordTargets(recordState.meta?.tasks || [], recordStore.records);
+  recordState.agentTargets = agentTargetsNow(recordStore.records);
+  renderNavigator(); refreshFilterHits(); updateSearch(false);
 }
 /** A jump to record `r`, or, while its turn is on its way, the turn fetched first (#s277): a TURN
  *  lands at once on its placeholder; a record inside one waits for its unit, unless the reader
@@ -1032,6 +1097,45 @@ function jumpOrFetch(r, reveal) {
   if (unit?.owed > 0) recordStore.want(unit.from, unit.to + 1, 0);
   if (!landed && (unit?.owed > 0 || recordState.records[r]?.kind === "pending")) { heldTurnJump = { record: r, reveal, at: performance.now() }; toast("Still loading — the page goes there when it arrives"); }
   return landed;
+}
+
+/** The kinds of record a task's status is read from on the server: a task, or a tool call (Claude
+ *  Code's TaskCreate and TaskUpdate, a todo or plan update). */
+const TASK_RECORD_KINDS = new Set(["task", "tool"]);
+/** The ask `findTaskRecord` has out: a later click, or the reader moving on, sets it aside. */
+let taskFind = null;
+/** #s285: where a task's status was last recorded while a records-by-turn head is out and the page
+ *  does not hold that record. Asked of the server's search, which answers for every record of the
+ *  head whether read or not, by what `taskRecordTargets` matches: the task's subject (which only its
+ *  creation carries) and `#<id>` as a whole word (which every TaskUpdate does, `{taskId, status}`).
+ *  The latest of those, or of a held record below the boundary, is jumped to as any target is. */
+async function findTaskRecord(task, key) {
+  const head = recordStore.head, owed = owedIndex(), session = recordState.session;
+  const held = recordState.taskTargets.get(key) ?? -1;
+  const subject = String(task.subject || task.title || "").trim().toLowerCase();
+  const id = String(task.id ?? "").trim().toLowerCase();
+  const asks = [];
+  if (subject) asks.push({ lc: subject, whole: false, wanted: 0, tools: [] });
+  if (id) asks.push({ lc: `#${id}`, whole: true, wanted: 0, tools: [] });
+  if (!head || !owed || !asks.length) return;
+  const mine = taskFind = { at: performance.now() };
+  let replies = null;
+  try {
+    replies = await Promise.all(asks.map(q => fetch(`/search?session=${encodeURIComponent(session)}&epoch=${head.epoch}&upto=${owed.upto}&q=${encodeURIComponent(JSON.stringify(q))}`, { cache: "no-store" })
+      .then(response => (response.ok ? response.json() : Promise.reject(response.status)))));
+  } catch (_) {}
+  if (taskFind !== mine || recordState.session !== session) return;
+  taskFind = null;
+  // The reader moved on while it was asked: they are not taken back.
+  if (viewport.lastUserInput > mine.at) return;
+  // The head landed meanwhile: the page's own target is whole now.
+  if (!recordStore.head) { const target = recordState.taskTargets.get(key); if (target != null) jumpOrFetch(target, "task"); return; }
+  if (recordStore.head !== head) return;
+  if (!replies) { toast("Could not ask the monitor where the task was recorded — try again"); return; }
+  let best = held;
+  for (const found of replies) for (const [r] of found.records || []) if (r > best && TASK_RECORD_KINDS.has(owed.facts?.[r]?.[0])) best = r;
+  if (best < 0) { toast("This record stream did not keep where the task's status was set"); return; }
+  jumpOrFetch(best, "task");
 }
 
 /** #s277 (design/slow-links.md §6.5): the record a link names while its turn is on its way, from the
@@ -1067,7 +1171,7 @@ function landOnHash() {
   if (index < 0) {
     const owed = owedRecordFor(id);
     if (owed < 0) return false;
-    if (hashWait?.identity !== identity) hashWait = { identity, at: performance.now() };
+    if (hashWait?.identity !== identity) hashWait = { identity, at: performance.now(), record: owed };
     else if (viewport.lastUserInput > hashWait.at) { landedHash = identity; hashWait = null; return false; }
     recordStore.want(owed, owed + 1, 0);
     return false;
@@ -1075,7 +1179,7 @@ function landOnHash() {
   for (const rid of chain) recordState.folds.set(rid, false);
   if (!viewport.jumpToRecord(index, "hash")) {
     // Here, but its unit still owes records (#s277): the same wait, which a reader who moves ends.
-    if (hashWait?.identity !== identity) hashWait = { identity, at: performance.now() };
+    if (hashWait?.identity !== identity) hashWait = { identity, at: performance.now(), record: index };
     else if (viewport.lastUserInput > hashWait.at) { landedHash = identity; hashWait = null; return false; }
     const unit = recordState.units[unitAt(index)];
     if (unit?.owed > 0) recordStore.want(unit.from, unit.to + 1, 0);
@@ -1553,6 +1657,9 @@ function renderNavigator() {
     const from = unit.view.peer.from;
     return `<button class="outline-turn-row outline-peer${unit.pending ? " outline-turn-pending" : ""}" style="--peer-hue:${peerHue(from)}" data-turn-record="${unit.from}" data-turn-number="${unit.turn}" data-peer-from="${escapeText(from)}" title="${escapeText(unit.label)}${unit.pending ? STILL_LOADING : ""}"><span class="outline-number">${String(unit.turn).padStart(2, "0")} ·</span><span class="outline-peer-from" title="Sent by ${escapeText(from)}, another session"><span class="outline-peer-glyph" aria-hidden="true">⇄</span>${escapeText(from)}</span><span class="outline-label">${escapeText(peerLabelRest(unit.label, from))}</span></button>`;
   };
+  // #s292: the number column fits the session's widest turn number, the same width on every row, so
+  // "150 ·" keeps to one line and the labels stay in line (a 24px column wrapped every row from 100).
+  byId("navigatorTurns").style.setProperty("--outline-digits", String(Math.max(2, String(turnCount).length)));
   byId("navigatorTurns").innerHTML = (earlier > 0 ? `<div class="activity-empty outline-turns-loading" role="status">Turns 1–${earlier} are still loading</div>` : "") + rows.map(r => r.unit?.view?.peer ? peerRow(r.unit) : r.unit
     ? `<button class="outline-turn-row${r.unit.view?.reply ? " outline-quoted" : ""}${r.unit.pending ? " outline-turn-pending" : ""}" data-turn-record="${r.unit.from}" data-turn-number="${r.unit.turn}" title="${escapeText(r.unit.label)}${r.unit.pending ? STILL_LOADING : ""}"><span class="outline-number">${String(r.unit.turn).padStart(2, "0")} ·</span>${r.unit.view?.reply ? `<span class="outline-quote-marker" role="img" aria-label="Quoted reply" title="Reply to selected text">│</span>` : ""}<span class="outline-label">${escapeText(r.unit.label)}</span>${r.unit.view?.reply?.items.length > 1 ? `<span class="outline-reply-count" aria-label="${r.unit.view.reply.items.length - 1} more annotations">+${r.unit.view.reply.items.length - 1}</span>` : ""}</button>`
     : `<button class="outline-epoch${r.pending ? " outline-turn-pending" : ""}" type="button" data-turn-record="${r.at}" title="${escapeText(r.tick.title)}${r.tick.sizes ? ` · ${escapeText(r.tick.sizes)}` : ""} — jump to the compaction" aria-label="${escapeText(r.tick.title)}${r.tick.sizes ? `, ${escapeText(r.tick.sizes)}` : ""}"><span class="outline-epoch-line" aria-hidden="true"></span><span class="outline-epoch-glyph" aria-hidden="true">${r.tick.glyph}</span>${r.tick.sizes ? `<span class="outline-epoch-sizes">${escapeText(r.tick.sizes)}</span>` : ""}<span class="outline-epoch-line" aria-hidden="true"></span></button>`
@@ -2706,6 +2813,13 @@ function computeFilterHits() {
   // one out — the owner's "1577 matches", none visible, cannot be built any more (#356).
   const wanted = queryTools();
   const before = recordState.filterHits;
+  // Every record id this filter has opened, kept beyond the hits of the records here (#s285): a turn
+  // let go and read again brings its ids back, which are not new, so a fold the reader closed stays
+  // closed and nothing is redrawn for it. A fresh filter starts it again, and other tools start it
+  // from the hits before them, as they always did.
+  const tools = JSON.stringify(wanted);
+  const seen = before && recordState.filterSeen?.tools === tools ? recordState.filterSeen.ids : new Set(before || []);
+  recordState.filterSeen = { tools, ids: seen };
   const hits = new Set(), direct = new Set(), indices = [];
   // An EMPTY list means "every tool" to the shared matcher, so no tools must match nothing here.
   if (wanted.length) recordState.records.forEach((record, index) => { if (filterChain(record, wanted, hits, direct)) indices.push(index); });
@@ -2724,7 +2838,7 @@ function computeFilterHits() {
   // same way as one that was there when it was applied — and opening a fold is a change to what
   // is rendered, not to what is painted, so the caller has to re-render for it to be seen.
   let opened = false;
-  for (const id of hits) if (!before?.has(id)) { recordState.folds.set(id, false); opened = true; }
+  for (const id of hits) if (!seen.has(id)) { seen.add(id); recordState.folds.set(id, false); opened = true; }
   for (const unit of projection.units) {
     if (unit.type !== "process" || recordState.processExpanded.has(unit.key)) continue;
     if (indices.some(index => index >= unit.from && index <= unit.to)) { recordState.processFolds.set(unit.key, false); recordState.processExpanded.add(unit.key); opened = true; }
@@ -3508,8 +3622,16 @@ function openTaskPopover(index, opener) {
   const task = tasks[index];
   if (!task) return;
   const key = String(task.id ?? index);
-  const d = taskDetails(task, recordState.taskTargets.get(key) ?? null);
-  const jump = d.target == null && recordStore.head
+  // #s285: while a records-by-turn head is out, a record the page holds is where the task's status
+  // was last recorded only when it is in the tail, which is always held and comes after every record
+  // of the head. Otherwise the server is asked (`findTaskRecord`): the turn that holds the latest one
+  // may never have been read, or been let go.
+  const owed = recordStore.windowed ? owedIndex() : null;
+  const held = recordState.taskTargets.get(key) ?? null;
+  const d = taskDetails(task, owed && held != null && held < owed.upto ? null : held);
+  const jump = d.target == null && owed
+    ? `<button type="button" class="task-popover-jump" data-task-find="${index}">Go to the turn where this task's status was recorded</button>`
+    : d.target == null && recordStore.head
     ? `<button type="button" class="task-popover-jump" disabled title="The session's earlier turns are still loading">Go to the turn — still loading</button>`
     : d.target == null
     ? `<button type="button" class="task-popover-jump" disabled title="This record stream did not keep where the task's status was set">Go to the turn — not kept in this stream</button>`
@@ -3533,7 +3655,9 @@ function openTaskPopover(index, opener) {
 taskPopover.addEventListener("click", event => {
   if (event.target.closest(".task-popover-close")) { closeTaskPopover(); return; }
   const jump = event.target.closest("[data-task-record]");
-  if (jump) { const at = Number(jump.dataset.taskRecord); closeTaskPopover(false); jumpOrFetch(at, "task"); }
+  if (jump) { const at = Number(jump.dataset.taskRecord); closeTaskPopover(false); jumpOrFetch(at, "task"); return; }
+  const find = event.target.closest("[data-task-find]");
+  if (find) { const index = Number(find.dataset.taskFind), task = (recordState.meta?.tasks || [])[index]; closeTaskPopover(false); if (task) findTaskRecord(task, String(task.id ?? index)); }
 });
 document.addEventListener("keydown", event => { if (event.key === "Escape" && !taskPopover.hidden) { event.stopPropagation(); closeTaskPopover(); } }, true);
 document.addEventListener("pointerdown", event => { if (!taskPopover.hidden && !taskPopover.contains(event.target) && !event.target.closest("[data-task-open]")) closeTaskPopover(false); });
@@ -4188,7 +4312,7 @@ var phoneDock;
   });
   addEventListener("keydown", event => { if (event.key === "Escape") closePane(); });
   // The card's own jump to the turn leaves for the transcript: the list goes with the card.
-  taskPopover.addEventListener("click", event => { if (event.target.closest("[data-task-record]")) closePane(); });
+  taskPopover.addEventListener("click", event => { if (event.target.closest("[data-task-record], [data-task-find]")) closePane(); });
 
   // #s37 (design/phone-landscape.md §3.2): on a WIDE phone held sideways the session list is a
   // column beside the session, and the handle hides and shows it. That is its own remembered choice

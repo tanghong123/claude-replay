@@ -1884,7 +1884,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // change it"), and with the call inside the window it fired on the runaway replay: one I13,
   // `{from: true, to: false}`, on a `records` transaction, in two runs of three.
   assert.match(src, /this\.confirmFollow\(startTop\);\n\s*const following0 = this\.following;/, "…as the deferred half of the scroll handler, outside what I13 measures (#213)");
-  assert.match(src, /syncPosition\(\) \{\n    if \(this\.following \|\| this\.dragging \|\| !this\.count\) \{ this\.position = null; return; \}\n(?:.*\n){0,3}?    this\.position = this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "…and every transaction re-reads it where it left the reader (a landing the reader asked for excepted, #196 stage 4)");
+  assert.match(src, /syncPosition\(placed = null\) \{\n    if \(this\.following \|\| this\.dragging \|\| !this\.count\) \{ this\.position = null; return; \}\n(?:.*\n){0,3}?    const read = this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "…and every transaction re-reads it where it left the reader (a landing the reader asked for excepted, #196 stage 4)");
+  // #s291: the remainder a whole-pixel placement leaves is the engine's, not the reader's — read back
+  // as the new `P`, a run of fills walked a reader 1.3px.
+  assert.match(src, /const left = exact == null \? 0 : this\.frame\.scrollTop\(\) - exact;\n\s*if \(left && Math\.abs\(left\) <= 1\) \{/, "…less the remainder of the anchor it placed, never a clamp's (#s291)");
+  assert.match(src, /this\.syncPosition\(placed === "placed" && !drift && !smooth \? p0 : null\);/, "…and only for a placement with no drift of the reader's in it");
+  assert.match(src, /const PLACE_EPSILON = 0\.5;/, "a placement writes any correction a whole-pixel offset can make (#s291)");
+  assert.match(src, /if \(child\.top < viewportTop - 1 && this\.placeholderAt\(Number\(child\.element\.dataset\.unitIndex\)\)\) \{/, "a placeholder straddling the top is no anchor while the unit after it begins on screen (#s291)");
   assert.match(src, /const startTop = this\.frame\.scrollTop\(\);\n\s*this\.confirmFollow\(startTop\);\n\s*const following0 = this\.following;\n\s*try \{\n\s*(?:const|let) p0 = this\.positionFor\(options\);\n(?:\s*\/\/.*\n)*\s*const drift = p0 && p0\.at != null && !this\.inFlight\(\) \? startTop - p0\.at : 0;/, "the placement adds what the reader scrolled since `P` was read, computed once at the transaction's start (and not while a smooth write travels, #196 stage 4)");
   assert.match(src, /place\(position, drift = 0, smooth = false\) \{\n(?:.*\n){0,6}?    const want = base \+ drift;/, "…so a clamp inside the transaction or the engine's own write is never counted as theirs (measured: 1,882px of clamp placed twice)");
   assert.match(src, /transact\("update", \{ range: p0 => this\.rangeFor\(p0\), tail: false/, "the deferred window update is one transaction, ranged around `P` (framework I11), and leaves the tail alone on the reader's own scroll batch");
@@ -1944,7 +1950,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /function filterChain\(record, wanted, hits, direct\) \{/, "a hit chain: the record or a nested one carries a selected tool");
   // Only what is NEWLY on the chain opens (#126): a live session must not re-open a fold the
   // reader closed a moment ago, and a record that arrives under a filter must still be added.
-  assert.match(app, /for \(const id of hits\) if \(!before\?\.has\(id\)\) \{ recordState\.folds\.set\(id, false\); opened = true; \}/, "every record newly on a chain opens");
+  // What this filter has already opened is remembered beyond the records here (#s285): a turn let go
+  // and read again brings its ids back, and they are not new.
+  assert.match(app, /const seen = before && recordState\.filterSeen\?\.tools === tools \? recordState\.filterSeen\.ids : new Set\(before \|\| \[\]\);/, "a fresh filter starts what it has opened afresh, and other tools from the hits before them");
+  assert.match(app, /for \(const id of hits\) if \(!seen\.has\(id\)\) \{ seen\.add\(id\); recordState\.folds\.set\(id, false\); opened = true; \}/, "every record newly on a chain opens");
   assert.match(app, /if \(recordState\.filterOpened\) viewport\.rerender\(\);/, "…and a fold opened for an ARRIVING record reaches the DOM, which only a render does");
   assert.match(app, /function refreshFilterHits\(\) \{/, "…and records arriving under a filter join it");
   assert.match(app, /renderNavigator\(\); refreshFilterHits\(\); updateSearch\(false\);/, "…on the arrival path");
@@ -3268,7 +3277,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // thrown and never corrected (framework §4.12).
 {
   const engine = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
-  assert.match(engine, /this\.syncPosition\(\);\n\s*this\.check\(cause, p0, placed, mounted, drift, following0\);/, "the checks run at the end of every transaction, after P is re-read");
+  assert.match(engine, /this\.syncPosition\([^\n]*\);\n\s*this\.check\(cause, p0, placed, mounted, drift, following0\);/, "the checks run at the end of every transaction, after P is re-read");
   assert.match(engine, /const following0 = this\.following;/, "…against the follow state the transaction started with (I13)");
   for (const rule of ["I1", "I3", "I4", "I5", "I7", "I10", "I11", "I13", "I14", "shape"]) assert.match(engine, new RegExp(`v\\("${rule}"|this\\.violation\\("${rule}"`), `rule ${rule} is checked`);
   assert.match(engine, /if \(this\.dragging\) this\.violation\("I14"/, "a write under a drag is reported where it would happen");

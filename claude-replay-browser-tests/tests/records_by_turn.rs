@@ -11,7 +11,9 @@
 //! The page takes stage 2 for a reader across a network; a case opens a local monitor with
 //! `?windowed=1`, which picks that path, and queues every read of the head (`queue_the_head`) so it
 //! decides when each piece arrives. Searching the earlier turns on the server while the head is out
-//! (#s278, stage 3) is here too. Ports 2770–2779, and 2785–2789 for stage 3 (the sandbox holds 2780–2781).
+//! (#s278, stage 3) is here too, and so is what a reader keeps of a long session (#s285). Ports
+//! 2770–2779, 2782–2784 for what a reader keeps, 2785–2789 for stage 3 and 2790 (the sandbox holds
+//! 2780–2781).
 
 mod harness;
 
@@ -35,9 +37,30 @@ fn open(
     std::sync::Arc<headless_chrome::Tab>,
     std::path::PathBuf,
 ) {
+    open_with_tasks(port, case, jsonl, phone, hold_index, extra, &[])
+}
+
+/// `open`, with the session's task list (`id`, `subject`, `status`).
+fn open_with_tasks(
+    port: u16,
+    case: &str,
+    jsonl: &str,
+    phone: bool,
+    hold_index: bool,
+    extra: &str,
+    tasks: &[(&str, &str, &str)],
+) -> (
+    harness::Monitor,
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+    std::path::PathBuf,
+) {
     let base = harness::base(case);
     let stores = harness::Stores::new(&base);
     let path = stores.claude_session(SID, jsonl);
+    if !tasks.is_empty() {
+        stores.claude_tasks(SID, tasks);
+    }
     let m = harness::Monitor::spawn(harness::Kind::V1, port, &base, Some(&stores), true);
     let (browser, tab) = harness::chrome_tab();
     if phone {
@@ -529,6 +552,83 @@ fn a_link_into_a_turn_on_its_way_lands_on_its_row_unless_the_reader_moves() {
     );
 }
 
+/// #s291: a reader who scrolled away from a landed link and then waits while the head fills in its
+/// background order is not moved by the fills. The first piece fills the prompt placeholder that
+/// straddles the top of the view and the answer under it, the unit the reader sees first; the later
+/// ones fill what is below and move the estimates above. That unit keeps its top within half a pixel
+/// at every release: it used to rise 3.5px with the straddling prompt as the anchor, which the fill
+/// shrank, and then walk by the sub-pixel remainders each placement left.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_fills_around_a_scrolled_reader_leave_what_they_see_where_it_is() {
+    let _serial = serial();
+    let (_m, _b, tab, _) = open(2790, "by-turn-below", &session(60), false, false, "");
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
+    let facts = harness::eval(&tab, "(async function(){ var r = await fetch('/turn-index?session=SID&epoch=1&upto=1000000'); var j = await r.json(); return JSON.stringify(j.facts || []); })()".replace("SID", SID).as_str());
+    let facts: Vec<serde_json::Value> =
+        serde_json::from_str(facts.as_str().unwrap_or("[]")).unwrap_or_default();
+    let t7 = facts
+        .iter()
+        .position(|f| f[1] == "t7")
+        .expect("turn 7 in the facts");
+    let act = facts[t7..]
+        .iter()
+        .find(|f| f[0] == "act")
+        .expect("a group of steps in turn 7");
+    let id: u64 = act[1].as_str().unwrap()[1..].parse().unwrap();
+    let nested = format!("b{}", id + 1);
+    harness::eval(&tab, &format!("location.hash = '{nested}'; 1"));
+    harness::until(&tab, "document.getElementById('toast').textContent.indexOf('Still loading') >= 0 || window.__heldReads.length >= 1", "the link's turn asked for", Duration::from_secs(10), STATE);
+    release_until(
+        &tab,
+        &format!("!!document.querySelector('[data-record-id=\"{nested}\"]')"),
+        "the link's turn filled",
+    );
+    harness::until(
+        &tab,
+        &format!("(function(){{ var e = document.querySelector('[data-record-id=\"{nested}\"]'); if (!e) return false; var s = document.querySelector('.transcript').getBoundingClientRect(), r = e.getBoundingClientRect(); return r.top >= s.top && r.top < s.bottom && r.height > 0; }})()"),
+        "the linked row in view",
+        Duration::from_secs(10),
+        STATE,
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    harness::scroll_by(&tab, Surface::AppShell, 400);
+    std::thread::sleep(Duration::from_millis(500));
+    let (key, top) = anchor(&tab);
+    let mut tops = vec![top];
+    let started = std::time::Instant::now();
+    while harness::eval(&tab, WHOLE).as_bool() != Some(true) {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the whole head to arrive: {}",
+            harness::eval(&tab, STATE)
+        );
+        harness::eval(&tab, "window.__release(1)");
+        std::thread::sleep(Duration::from_millis(250));
+        if let Some(now) = top_of(&tab, &key) {
+            tops.push(now);
+        }
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    tops.push(top_of(&tab, &key).expect("the reader's unit is still mounted"));
+    let worst = tops.iter().map(|t| (t - top).abs()).fold(0.0, f64::max);
+    assert!(
+        worst <= 0.5,
+        "the fills leave {key} where the reader saw it: {top} → {tops:?}"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
+}
+
 /// The tail grows and a queued prompt is picked up (#165) while the head is filled in: both apply,
 /// the reader at the tail stays there and following, and the Turns pane counts the new turn.
 #[test]
@@ -809,6 +909,470 @@ fn a_group_of_steps_reaching_into_the_tail_stays_drawn_while_it_fills() {
     assert!(
         harness::at_tail(&tab, Surface::AppShell),
         "still at the tail"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
+}
+
+/// Release the head's reads one at a time until the page stops asking: no read waits, twice, 800 ms
+/// apart.
+fn release_until_quiet(tab: &headless_chrome::Tab, what: &str) {
+    let started = std::time::Instant::now();
+    let mut quiet = 0;
+    while quiet < 2 {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "{what}: {}",
+            harness::eval(tab, STATE)
+        );
+        if harness::eval(tab, "window.__heldReads.length").as_i64() == Some(0) {
+            quiet += 1;
+            std::thread::sleep(Duration::from_millis(800));
+        } else {
+            quiet = 0;
+            harness::eval(tab, "window.__release(1)");
+            std::thread::sleep(Duration::from_millis(120));
+        }
+    }
+}
+
+/// The head's turns from the index the monitor serves, each with whether the Turns pane lists it as
+/// here (`held`) and its bytes in the head: `{turns: [[number, bytes, held]…], last}`, `last` the head's
+/// last turn.
+const HEAD_TURNS: &str = r#"(async function(){
+  var r = await fetch('/turn-index?session=SID&epoch=1&upto=1000000'), j = await r.json(), tail = window.__tailFrom;
+  var turns = (j.turns || []).filter(function (t) { return t.o < tail; }).map(function (t) {
+    var row = document.querySelector('#navigatorTurns .outline-turn-row[data-turn-number="' + t.turn + '"]');
+    return [Number(t.turn), Math.min(t.end, tail) - t.o, !!row && !row.classList.contains('outline-turn-pending')];
+  });
+  return JSON.stringify({ turns: turns, last: turns.length ? turns[turns.length - 1][0] : null });
+})()"#;
+
+/// The bytes of the head the page holds, by the Turns pane, and the head's last turn.
+fn head_held(tab: &headless_chrome::Tab) -> (i64, i64, serde_json::Value) {
+    let v: serde_json::Value = serde_json::from_str(
+        harness::eval(tab, &HEAD_TURNS.replace("SID", SID))
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let held = v["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t[2].as_bool() == Some(true))
+        .map(|t| t[1].as_i64().unwrap())
+        .sum();
+    (held, v["last"].as_i64().unwrap(), v)
+}
+
+/// #s285 (design/slow-links.md §6.6; Hong on #s290: "Read up to about 16 MB, then only what I
+/// visit"). With what the page keeps set small (`?keepBytes=`), a reader at the tail has the head read
+/// behind them only until the turns read hold that much: there the background read stops, the earliest
+/// turns still on their way. A tap on turn 1 reads it and the turns around it, and the turns read first,
+/// now the farthest from the reader, are let go: back to placeholders, listed as coming again, so what
+/// the page holds stays near its budget. The reader's turn does not move, nothing reads the turns let go
+/// back while the reader stays, and a tap on one of them reads it again, as a fill.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_reader_across_a_network_keeps_about_its_budget_of_a_long_session() {
+    const KEEP: i64 = 24 * 1024;
+    // What a held count may run past the budget by once the reader visits: the turns the window holds
+    // that the page could not let go of.
+    const SLACK: i64 = 4096 + 4096;
+    let _serial = serial();
+    let (_m, _b, tab, _) = open(
+        2782,
+        "by-turn-keep",
+        &session(120),
+        false,
+        false,
+        &format!("&keepBytes={KEEP}"),
+    );
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
+    release_until_quiet(&tab, "the background read to stop");
+    let (held, last, turns) = head_held(&tab);
+    let head: i64 = turns["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t[1].as_i64().unwrap())
+        .sum();
+    assert!(
+        head > 4 * KEEP,
+        "the head is several budgets long: {head} bytes"
+    );
+    assert!(
+        (KEEP - 2048..=KEEP).contains(&held),
+        "the background read stops before the turn that would pass the budget: {held} of {KEEP}, {turns}"
+    );
+    let gaps = turns["turns"]
+        .as_array()
+        .unwrap()
+        .windows(2)
+        .filter(|w| w[0][2].as_bool() == Some(true) && w[1][2].as_bool() == Some(false))
+        .count();
+    assert_eq!(
+        gaps, 0,
+        "…and what it read is one run behind the tail, with no turn let go: {turns}"
+    );
+    assert!(
+        state(&tab)["pending"].as_i64().unwrap() > 0,
+        "the earliest turns are still on their way"
+    );
+    assert!(
+        harness::at_tail(&tab, Surface::AppShell),
+        "the reader is still at the tail"
+    );
+
+    // A visit to the session's first turn reads it, and the turns read first are let go.
+    tab.find_element("#navigatorTurns .outline-turn-pending[data-turn-number=\"1\"]")
+        .expect("turn 1 is listed while still coming")
+        .click()
+        .expect("click it");
+    release_until_quiet(&tab, "turn 1 and its neighbours to be read");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window > [data-unit-key=\"user:t1\"]:not(.unit-placeholder)')",
+        "turn 1 filled",
+        Duration::from_secs(10),
+        STATE,
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    let (held, _, turns) = head_held(&tab);
+    assert!(
+        held <= KEEP + SLACK,
+        "what the page holds stays near its budget: {held} of {KEEP}, {turns}"
+    );
+    let dropped = last - 1;
+    let gone = format!(
+        "!!document.querySelector('#navigatorTurns .outline-turn-pending[data-turn-number=\"{dropped}\"]')"
+    );
+    assert_eq!(
+        harness::eval(&tab, &gone).as_bool(),
+        Some(true),
+        "turn {dropped}, read first and now the farthest, is let go: {turns}"
+    );
+    // Nothing reads them back while the reader stays.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(
+        harness::eval(&tab, "window.__heldReads.length").as_i64(),
+        Some(0),
+        "no read asked for while the reader stays: {}",
+        harness::eval(&tab, "JSON.stringify(window.__readLog)")
+    );
+
+    // A reader who passes through turn 80 and goes on to turn 35 before its neighbours arrive has
+    // them read for nobody: what the window asked for there lapses. Only turn 80, already in flight
+    // when they moved on, is read. (A window of placeholders reaches about 20 turns either way, so
+    // turn 35's own asks stop short of 62.)
+    let tap = |n: i64| {
+        tab.find_element(&format!(
+            "#navigatorTurns .outline-turn-pending[data-turn-number=\"{n}\"]"
+        ))
+        .unwrap_or_else(|_| panic!("turn {n} is listed while still coming"))
+        .click()
+        .expect("click it");
+    };
+    tap(80);
+    harness::until(
+        &tab,
+        "window.__heldReads.length >= 1",
+        "turn 80's read asked for",
+        Duration::from_secs(10),
+        STATE,
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    tap(35);
+    std::thread::sleep(Duration::from_millis(300));
+    release_until(
+        &tab,
+        "!!document.querySelector('.virtual-window > [data-unit-key=\"user:t35\"]:not(.unit-placeholder)')",
+        "turn 35's prompt filled",
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    // The turns read around turn 35 take the page past its budget, and the turns let go for them
+    // include turns ABOVE the reader: their units keep their heights, so the reader does not move.
+    let top = top_of(&tab, "user:t35").expect("turn 35 mounted");
+    let (_, _, before) = head_held(&tab);
+    release_until_quiet(&tab, "turn 35 and its neighbours to be read");
+    let (_, _, turns) = head_held(&tab);
+    let was_held = |v: &serde_json::Value, n: i64| {
+        v["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t[0].as_i64() == Some(n) && t[2].as_bool() == Some(true))
+    };
+    let above: Vec<i64> = (1..35)
+        .filter(|&n| was_held(&before, n) && !was_held(&turns, n))
+        .collect();
+    assert!(
+        !above.is_empty(),
+        "turns above the reader are let go: {before} → {turns}"
+    );
+    let now = top_of(&tab, "user:t35").expect("turn 35 still mounted");
+    assert!(
+        (now - top).abs() <= 1.0,
+        "letting turns {above:?} go above the reader moves nothing: {top} → {now}"
+    );
+    let near80: Vec<i64> = turns["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| (t[0].as_i64().unwrap(), t[2].as_bool() == Some(true)))
+        .filter(|&(n, held)| (62..=98).contains(&n) && n != 80 && held)
+        .map(|(n, _)| n)
+        .collect();
+    assert!(
+        near80.is_empty(),
+        "no turn near 80 is read for a reader who moved on, but {near80:?}: {turns}"
+    );
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window > [data-unit-key=\"user:t35\"]:not(.unit-placeholder)')",
+        "turn 35 filled",
+        Duration::from_secs(10),
+        STATE,
+    );
+
+    // A visit to a turn let go reads it again.
+    let offset = turn_offset(&tab, dropped);
+    tab.find_element(&format!(
+        "#navigatorTurns .outline-turn-pending[data-turn-number=\"{dropped}\"]"
+    ))
+    .expect("the turn let go is listed as coming")
+    .click()
+    .expect("click it");
+    harness::until(
+        &tab,
+        "window.__heldReads.length >= 1",
+        "a read asked for",
+        Duration::from_secs(10),
+        STATE,
+    );
+    assert_eq!(
+        harness::eval(&tab, "window.__heldReads[0].from").as_i64(),
+        Some(offset),
+        "the turn let go is read first: {}",
+        harness::eval(&tab, "JSON.stringify(window.__readLog)")
+    );
+    release_until_quiet(&tab, "the turn let go to be read again");
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.virtual-window > [data-unit-key=\"user:t{dropped}\"]:not(.unit-placeholder)')"),
+        "the turn let go filled again",
+        Duration::from_secs(10),
+        STATE,
+    );
+    let (held, _, turns) = head_held(&tab);
+    assert!(
+        held <= KEEP + SLACK,
+        "and the page still holds about its budget: {held} of {KEEP}, {turns}"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
+}
+
+/// #s285: the head's last turn is the live one when the tail starts in the middle of it (a long run of
+/// steps, as an unattended run writes), and it is never let go, however far the reader goes from it:
+/// letting go of it would put back "earlier still loading" on the turn being written.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_turn_the_tail_goes_on_with_is_never_let_go() {
+    let _serial = serial();
+    let mut jsonl = session(60);
+    jsonl += &harness::user_at("the long one", &harness::at("50:00"));
+    for k in 0..320 {
+        jsonl += &harness::edit_tool_at(
+            &format!("e{k}"),
+            &format!("/r/skua/src/module_{k:03}.rs"),
+            &harness::at("50:01"),
+        );
+        jsonl += &harness::tool_result_at(&format!("e{k}"), &harness::at("50:01"));
+    }
+    // A turn after it, so the long one is in the committed log the tail is cut from.
+    jsonl += &harness::assistant_at("done with the long one", &harness::at("50:02"));
+    jsonl += &harness::user_at("and the last one", &harness::at("51:00"));
+    jsonl += &harness::assistant_at("noted", &harness::at("51:01"));
+    let (_m, _b, tab, _) = open(
+        2784,
+        "by-turn-live-kept",
+        &jsonl,
+        false,
+        false,
+        "&tailBudget=16384&keepBytes=8192",
+    );
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
+    release_until_quiet(&tab, "the live turn's earlier steps to be read");
+    let (_, last, turns) = head_held(&tab);
+    assert_eq!(last, 61, "the tail starts inside the long turn: {turns}");
+    const LIVE_HELD: &str = "(function(){ var row = document.querySelector('#navigatorTurns .outline-turn-row[data-turn-number=\"61\"]'); return !!row && !row.classList.contains('outline-turn-pending'); })()";
+    assert_eq!(
+        harness::eval(&tab, LIVE_HELD).as_bool(),
+        Some(true),
+        "the live turn's part in the head is read: {turns}"
+    );
+    tab.find_element("#navigatorTurns .outline-turn-pending[data-turn-number=\"1\"]")
+        .expect("turn 1 is listed while still coming")
+        .click()
+        .expect("click it");
+    release_until_quiet(&tab, "turn 1 and its neighbours to be read");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window > [data-unit-key=\"user:t1\"]:not(.unit-placeholder)')",
+        "turn 1 filled",
+        Duration::from_secs(10),
+        STATE,
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    let (_, _, turns) = head_held(&tab);
+    assert_eq!(
+        harness::eval(&tab, LIVE_HELD).as_bool(),
+        Some(true),
+        "the live turn is kept while the reader is far from it, over the budget: {turns}"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
+}
+
+/// #s285: a task whose status was recorded in turns the page never read (the background read stops at
+/// what the page keeps, far below them) is still found: the task's "Go to the turn" asks the server
+/// where it was last recorded, reads that turn and lands there. Claude Code names the task's subject
+/// only where it is created (turn 3); a later TaskUpdate carries `{taskId, status}`, drawn as `#1`
+/// (turn 10), and that latest one is where the jump lands. Before, it said "still loading" for as long
+/// as the head was out, which over the budget is for good.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_task_recorded_in_a_turn_never_read_is_found_on_the_server() {
+    const SUBJECT: &str = "settle the drawer offsets";
+    let _serial = serial();
+    let mut lines: Vec<String> = session(120).lines().map(|l| format!("{l}\n")).collect();
+    // After turn `n`'s prompt, a call named `name` with `input` and its result.
+    let mut call_after = |n: u32, id: &str, name: &str, input: &str, result: &str| {
+        let at = lines
+            .iter()
+            .position(|l| l.contains(&format!("question {}:", n - 1)))
+            .expect("the turn's prompt");
+        let ts = lines[at]
+            .split("\"timestamp\":\"")
+            .nth(1)
+            .and_then(|t| t.split('"').next())
+            .expect("its timestamp")
+            .to_string();
+        lines.insert(at + 1, format!("{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"{name}\",\"input\":{input}}}]}},\"timestamp\":\"{ts}\"}}\n{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"{result}\"}}]}},\"timestamp\":\"{ts}\"}}\n"));
+    };
+    call_after(
+        3,
+        "tc1",
+        "TaskCreate",
+        &format!(
+            "{{\"subject\":\"{SUBJECT}\",\"description\":\"so a drawer opens where it was\"}}"
+        ),
+        &format!("Task #1 created successfully: {SUBJECT}"),
+    );
+    call_after(
+        10,
+        "tu1",
+        "TaskUpdate",
+        "{\"taskId\":\"1\",\"status\":\"in_progress\"}",
+        "Updated task #1 status",
+    );
+    let (_m, _b, tab, _) = open_with_tasks(
+        2783,
+        "by-turn-task",
+        &lines.concat(),
+        false,
+        false,
+        "&keepBytes=24576",
+        &[("1", SUBJECT, "in_progress")],
+    );
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
+    release_until_quiet(&tab, "the background read to stop");
+    assert_eq!(
+        harness::eval(&tab, "!!document.querySelector('#navigatorTurns .outline-turn-pending[data-turn-number=\"3\"]') && !!document.querySelector('#navigatorTurns .outline-turn-pending[data-turn-number=\"10\"]')").as_bool(),
+        Some(true),
+        "turns 3 and 10 are never read: {}",
+        harness::eval(&tab, STATE)
+    );
+    harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
+    harness::show_every_pane_row(&tab);
+    harness::until(
+        &tab,
+        "[].some.call(document.querySelectorAll('#navigatorWork .work-task'), function (r) { return /#1(?!\\d)/.test(r.textContent); })",
+        "the task listed",
+        Duration::from_secs(20),
+        "document.getElementById('navigatorWork').innerText.slice(0, 200)",
+    );
+    harness::eval(
+        &tab,
+        "[].filter.call(document.querySelectorAll('#navigatorWork .work-task'), function (r) { return /#1(?!\\d)/.test(r.textContent); })[0].querySelector('.work-task-head').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "!document.getElementById('taskPopover').hidden",
+        "the task's details",
+        Duration::from_secs(5),
+        "document.getElementById('taskPopover').innerHTML.slice(0, 300)",
+    );
+    assert_eq!(
+        harness::eval(&tab, "(function(){ var b = document.querySelector('#taskPopover .task-popover-jump'); return !!b && !b.disabled && b.hasAttribute('data-task-find'); })()").as_bool(),
+        Some(true),
+        "the jump is offered, to be found on the server: {}",
+        harness::eval(&tab, "document.getElementById('taskPopover').innerText")
+    );
+    let o10 = turn_offset(&tab, 10);
+    harness::eval(
+        &tab,
+        "document.querySelector('#taskPopover [data-task-find]').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "window.__heldReads.length >= 1",
+        "a turn's read asked for",
+        Duration::from_secs(10),
+        STATE,
+    );
+    assert_eq!(
+        harness::eval(&tab, "window.__heldReads[0].from").as_i64(),
+        Some(o10),
+        "the turn that last recorded the task's status is read, not the one that created it: {}",
+        harness::eval(&tab, "JSON.stringify(window.__readLog)")
+    );
+    release_until_quiet(&tab, "turn 10 to be read");
+    harness::until(
+        &tab,
+        "((document.querySelector('#navigatorTurns .outline-turn-row.current') || {}).dataset || {}).turnNumber === '10'",
+        "the reader on turn 10",
+        Duration::from_secs(10),
+        STATE,
     );
     assert_eq!(
         harness::eval(&tab, VIOLATIONS).as_str(),

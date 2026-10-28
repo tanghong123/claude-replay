@@ -7672,6 +7672,72 @@ fn a_phone_header_is_one_row_and_its_tools_float_in_a_pill() {
     }
 }
 
+/// #s292: a turn number of three digits keeps its dot on its own line, in the desktop's Turns pane
+/// and in a phone's Turns sheet, and every row's label starts at the same place. The number column
+/// was 24px, and "150 ·" in the number's 9.5px mono needs about 29px: every row from turn 100 read
+/// "150" over "·".
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_three_digit_turn_number_keeps_its_row_to_one_line() {
+    let _serial = serial();
+    let base = harness::base("turn-number-width");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        PHONE_SID,
+        &harness::long_session(120, harness::Shape::default()),
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2841, &base, Some(&stores), true);
+    // Each row's number height, its label's left edge, and the room between the number's TEXT and the
+    // label beyond the grid's gap (the text, not its box: a box held at 24px lets its text run on).
+    let rows = |tab: &headless_chrome::Tab, root: &str| -> serde_json::Value {
+        let js = format!("(function(){{ var at = function (n) {{ var r = document.querySelector('{root} .outline-turn-row[data-turn-number=\"' + n + '\"]'); if (!r) return null; var n = r.querySelector('.outline-number'), num = n.getBoundingClientRect(), label = r.querySelector('.outline-label').getBoundingClientRect(), text = document.createRange(); text.selectNodeContents(n); return [Math.round(num.height * 10) / 10, Math.round(label.left * 10) / 10, Math.round((label.left - text.getBoundingClientRect().right - parseFloat(getComputedStyle(r).columnGap)) * 10) / 10]; }}; return JSON.stringify({{ r5: at(5), r99: at(99), r100: at(100), r120: at(120) }}); }})()");
+        serde_json::from_str(harness::eval(tab, &js).as_str().unwrap()).unwrap()
+    };
+    let one_line = |seen: &serde_json::Value, wher: &str| {
+        let r5 = &seen["r5"];
+        assert!(
+            r5[0].as_f64().unwrap_or(0.0) > 0.0,
+            "{wher}: rows 5, 99, 100 and 120 laid out: {seen}"
+        );
+        for n in ["r99", "r100", "r120"] {
+            assert_eq!(
+                seen[n][0], r5[0],
+                "{wher}: {n}'s number is one line, as turn 5's is: {seen}"
+            );
+            assert_eq!(
+                seen[n][1], r5[1],
+                "{wher}: {n}'s label starts where turn 5's does: {seen}"
+            );
+            assert!(
+                seen[n][2].as_f64().unwrap_or(-99.0) >= -1.0,
+                "{wher}: {n}'s number ends a column gap before its label: {seen}"
+            );
+        }
+    };
+
+    let (_desk, desk) = desktop_tab(&m);
+    harness::until(
+        &desk,
+        "!!document.querySelector('#navigatorTurns .outline-turn-row[data-turn-number=\"120\"]')",
+        "the desktop's Turns pane to list turn 120",
+        Duration::from_secs(30),
+        "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
+    );
+    one_line(&rows(&desk, "#navigatorTurns"), "the desktop's Turns pane");
+
+    let (_phone, tab) = phone_tab(&m, 390, 844);
+    phone_tap(&tab, "#phonePane-turns");
+    harness::until(
+        &tab,
+        "!document.getElementById('phonePaneMenu').hidden && !!document.querySelector('#phonePaneMenu .outline-turn-row[data-turn-number=\"120\"]')",
+        "the phone's Turns sheet to list turn 120",
+        Duration::from_secs(20),
+        "document.getElementById('phonePaneMenu').hidden",
+    );
+    one_line(&rows(&tab, "#phonePaneMenu"), "the phone's Turns sheet");
+    drop(m);
+}
+
 /// #313, the owner: "the control of outline pane selection is not usable via fingers … move the
 /// controls of the three panes to the top area (showing the icons, press-open drop down for
 /// selection)". Since #s37 the icons float in the pill at the foot and each pane is a sheet rising

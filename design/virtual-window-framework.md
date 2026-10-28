@@ -124,7 +124,7 @@ Three things are the reader's, and only the reader's:
 
 | source | value | when |
 |---|---|---|
-| **anchor** | `{key, top, block, blockTop}` — a mounted record's identity, its offset from the viewport top, and the first visible ROW inside it when the record straddles the top edge (#98, #177, #178) | the ordinary case: something mounted is on screen |
+| **anchor** | `{key, top, block, blockTop}` — a mounted record's identity, its offset from the viewport top, and the first visible ROW inside it when the record straddles the top edge (#98, #177, #178); never a PLACEHOLDER straddling the top while the record after it begins on screen, whose top is out of sight and whose height a fill replaces (#s291) | the ordinary case: something mounted is on screen |
 | **model** | `{index, offset}` — the record whose span the scroll offset falls in, and how far into it, signed (#191) | nothing mounted is on screen — the reader is in a pad after a fling or a released thumb |
 | **tail** | — | following: the position is the end, whatever the end is |
 | **offset** | `{y}` — a raw scroll offset the reader asked for | a page key (`pageBy`), a restore by offset when the remembered record is gone, the drag-select band's nudge; it lives only until the next transaction re-reads an anchor |
@@ -374,7 +374,7 @@ transact(cause, { mutate, range, measure, position, spontaneous, tail, commanded
   placed = P0.tail ? (commanded || resting ? place(tail) : defer("tail"))   // #165
                    : place(P0, drift)                                        // I2, I7
   if placed && viewport shows unmounted territory: mount(rangeForScroll()); place again   // #191
-  syncPosition()               // P re-read where the transaction left the reader
+  syncPosition(P0 if placed, no drift)   // P re-read where the transaction left the reader, less the remainder of P0's placement
   trace(cause, …)
 ```
 
@@ -603,6 +603,15 @@ it only at the true end otherwise — computed ONCE at the end, with `followChan
 differs from where the transaction started, so a jump to the end does not flip the pill twice.
 `follow()` is the one that SETS the pin: `P := tail`, the commanded converge, `followChanged`,
 remember. The classic page's `toBottom(commanded)` and the shell's `toBottom()` become it.
+
+**A placement's remainder is not the reader's** (#s291). The offset is kept in whole pixels and a
+write rounds to the nearest, so `place` writes no correction of half a pixel or less
+(`PLACE_EPSILON`) and leaves up to that much behind. `syncPosition` re-reads `P` on whatever anchor
+the reader now sees first, and adds back the remainder of the anchor the transaction placed (when
+the reader did not drift and it is within a pixel, which a clamp is not), so `P` is where the
+placement asked. Read as it stood, each remainder became the next `P`: a reader under a run of fills,
+each moving the estimates above them by under a pixel, walked 1.3px over ten with a pixel's
+threshold.
 
 **The commanded position outlives its transaction.** `syncPosition` re-reads `P` from the DOM at
 the end of every transaction; after a jump that would make `P` the first visible row, which sits

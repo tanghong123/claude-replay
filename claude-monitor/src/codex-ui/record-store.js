@@ -14,6 +14,14 @@ const WAITING_AFTER_MS = 1200;
  *  records, and a dropped read keeps the records it finished. */
 export const HEAD_PIECE_BYTES = 1024 * 1024;
 
+/** How much of the head a page reading it turn by turn keeps, in bytes of the log (#s285,
+ *  design/slow-links.md §6.6; Hong on #s290: "Read up to about 16 MB, then only what I visit"). The
+ *  rest behind the reader is read in the background until the turns read hold this much; after that
+ *  only what the reader visits or a jump names is read, and the turns farthest from the reader are let
+ *  go as they move (`drop`). A head smaller than this is read whole, as before. The largest logs
+ *  measured were 90 to 150 MB of records, which Safari held whole. */
+export const KEEP_BYTES = 16 * 1024 * 1024;
+
 /** How many times in a row the server may REFUSE a read of the head (an HTTP error, or a range that
  *  brings no whole record) before the page starts the session over. A network drop is never
  *  counted: a phone out of signal keeps what it has and tries again every few seconds, however
@@ -39,6 +47,7 @@ export class RecordStore {
     this.handlers = handlers;
     this.tailBudget = options.tailBudget || 0;
     this.headPieceBytes = options.headPieceBytes || HEAD_PIECE_BYTES;
+    this.keepBytes = options.keepBytes || KEEP_BYTES;
     this.emptySession = options.emptySession;
     this.sessionFailure = options.sessionFailure;
     // Stage 2 (#s277, design/slow-links.md §6): read the head turn by turn, in the order the reader
@@ -302,7 +311,7 @@ export class RecordStore {
 
   /** Stage 2 (#s277, design/slow-links.md §6.4): the head read turn by turn, in the order the reader
    *  needs it — the turn a jump names, then the turns the window shows, then the rest from the tail
-   *  backwards (D4) — instead of whole from the top. Each turn is read from its first record, in
+   *  backwards (D4) until the reads hold `keepBytes` (#s285) — instead of whole from the top. Each turn is read from its first record, in
    *  ranges of at most `headPieceBytes` from where its last read ended, which the server answers in
    *  whole records; one read at a time. What a read brings waits in `fills` until the page takes it
    *  (`takeFill`), which it does when the view allows (§6.3). The units of the reads are the index's
@@ -316,8 +325,15 @@ export class RecordStore {
     for (const read of reads) Object.assign(read, { next: read.r, at: read.o, done: read.o >= read.end, want: Infinity, asked: 0 });
     head.reads = reads;
     head.asked = 0;
+    // The bytes of the log the reads hold (#s285), and whether the background read has reached what
+    // the page keeps: from then on it is over.
+    head.held = 0;
+    head.full = false;
     this.readNext(generation, head);
   }
+
+  /** The bytes of the log the head's reads hold now, those waiting in `fills` included (#s285). */
+  get held() { return this.head?.held || 0; }
 
   /** The read that holds record `r`, or null. */
   readFor(r) {
@@ -344,8 +360,22 @@ export class RecordStore {
       }
       r = read.last + 1;
     }
-    if (owed && !head.reading) this.readNext(this.generation, head);
+    // The next read starts once every ask made with this one is in (a jump's, after the window's it
+    // set off): started here, the first ask — the window's farthest — would be read first (#s285: a
+    // store whose background read is over is idle when the reader asks).
+    if (owed && !head.reading && !head.kicked) {
+      head.kicked = true;
+      queueMicrotask(() => { head.kicked = false; this.readNext(this.generation, head); });
+    }
     return owed;
+  }
+
+  /** Every ask not yet read goes back to the background order (#s285): the page asks again after
+   *  every transaction for what the window shows and for the jump it still waits on, so a turn the
+   *  reader has left, or a jump they gave up, is no longer read for them once the background read is
+   *  over. */
+  unwant() {
+    for (const read of this.head?.reads || []) if (read.want < Infinity) read.want = Infinity;
   }
 
   readNext(generation, head) {
@@ -354,14 +384,36 @@ export class RecordStore {
     let pick = null;
     for (const read of head.reads) {
       if (read.done) continue;
+      // Once the page holds what it keeps, the rest is read only where the reader goes (#s285).
+      if (head.full && read.want === Infinity) continue;
       if (!pick || read.want < pick.want || (read.want === pick.want && (read.want < Infinity ? read.asked > pick.asked : read.r > pick.r))) pick = read;
     }
     if (!pick) return;
+    // The background read ends before the turn that would take the page past what it keeps (#s285):
+    // reaching the budget stops it, and only what the reader visits makes the page let go of a turn.
+    if (pick.want === Infinity && head.held + pick.end - pick.at > this.keepBytes) { head.full = true; return; }
     head.reading = true;
+    head.current = pick;
     this.readPiece(generation, head, pick).finally(() => {
       head.reading = false;
+      head.current = null;
       this.readNext(generation, head);
     });
+  }
+
+  /** Let go of the records `read` has brought (#s285, design/slow-links.md §6.6): they go back to
+   *  `PENDING`, and the turn is read again from its start if the reader comes back to it — a fill like
+   *  any other. Never the read in flight, nor one with a piece still waiting in `fills`. Returns the
+   *  records let go, `{from, to}`, or null. */
+  drop(read) {
+    const head = this.head;
+    if (!head?.reads || read.next === read.r || head.current === read) return null;
+    if (this.fills.some(fill => fill.from <= read.last && fill.from + fill.records.length > read.r)) return null;
+    const from = read.r, to = read.next;
+    for (let i = from; i < to; i++) this.records[i] = PENDING;
+    head.held -= read.at - read.o;
+    Object.assign(read, { next: read.r, at: read.o, done: read.o >= read.end, want: Infinity, asked: 0 });
+    return { from, to };
   }
 
   /** One range of `read`'s turn: its whole records wait in `fills`, as each completes (#s274's
@@ -392,6 +444,10 @@ export class RecordStore {
       this.fills.push({ from: read.next, records });
       read.next += records.length;
       read.at += whole.length;
+      head.held += whole.length;
+      // A visit that takes the page past what it keeps ends the background read too: what is let go
+      // for it is never read again behind the reader's back.
+      if (head.held > this.keepBytes) head.full = true;
       this.handlers.filled?.();
       return true;
     };
