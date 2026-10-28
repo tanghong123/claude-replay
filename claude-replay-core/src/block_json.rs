@@ -80,6 +80,9 @@ fn block_fields(b: &Block, o: &mut Map<String, Value>) {
         | Block::UserReply { text: t, .. }
         | Block::UserInbox { text: t, .. }
         | Block::AssistantText(t)
+        // #s305: a reply cut off mid-stream is prose here, as it was before the mark: the
+        // stream is public, and the mark is drawn, not stated.
+        | Block::AssistantCutOff(t)
         | Block::ToolResult(t) => {
             o.insert("text".into(), json!(t));
         }

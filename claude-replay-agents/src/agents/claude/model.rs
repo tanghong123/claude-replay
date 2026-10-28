@@ -86,6 +86,24 @@ fn assistant_phase(v: &Value, content: &[Value]) -> Option<AssistantPhase> {
     }
 }
 
+/// The content index of a reply the person CUT OFF mid-stream (#s305), if this record is one:
+/// Claude Code 2.1.311 keeps the partial reply when Esc stops it and flags the record
+/// `isAbortedMidStream`. The mark goes on the record's LAST text block, where the reply stopped.
+/// Only an unphased record is read (the one shape measured: `stop_reason` null, text alone); a
+/// flagged record with a stop reason or a call is the census's REVISIT, drawn as before.
+fn cut_off_text(v: &Value, content: &[Value], phase: Option<AssistantPhase>) -> Option<usize> {
+    if phase.is_some() || v.get("isAbortedMidStream").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    content.iter().rposition(|blk| {
+        blk.get("type").and_then(Value::as_str) == Some("text")
+            && blk
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|t| !t.trim().is_empty())
+    })
+}
+
 /// L1 classification of a plain-string `user` message into the **structured** message the
 /// shared fold places — this is where Claude's raw wrappers (`<task-notification>`,
 /// `<command-name>`, `<local-command-*>`, skill bodies, caveats) are parsed, so the fold
@@ -986,6 +1004,20 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // finer than the text, is a RENDER question for the owner, queued with the record
             // count and client version, never decided here.
             "streamCutCause",
+            // #s305 (client 2.1.311): the boolean `true` on an assistant record the person cut off
+            // with Esc while it streamed. An ordinary API answer (its own requestId, a real model,
+            // no `isApiErrorMessage`), `stop_reason` null, one text block, and the very next record
+            // is the user's "[Request interrupted by user]" naming it as parent. Met on ONE record
+            // on hong-devserver, measured 2026-10-28; before 2.1.311 the client kept no partial
+            // reply at all. Read (`cut_off_text`): the reply is an `AssistantCutOff` block, prose
+            // everywhere but where it is drawn, which ends it with a "cut off" line. Its usage is
+            // the stream's opening figure (8 output tokens against about 166 characters), since no
+            // final usage arrives on an abort, so the cost counts a little too little output;
+            // nothing better is recorded, so nothing corrects it. REVISIT: (1) the flag on a record
+            // holding a `thinking` or `tool_use` block, where a call that never ran would be drawn
+            // as one that did, or on one with a `stop_reason`, which gets a phase and no mark; (2)
+            // a flagged record NOT followed by an interrupt marker; (3) a value other than `true`.
+            "isAbortedMidStream",
             "apiErrorStatus",
             "supersedesUuids",
             "errorDetails",
@@ -3202,7 +3234,8 @@ pub(crate) fn decode_line_known(
                 return;
             }
             let phase = assistant_phase(&v, content);
-            for blk in content {
+            let cut = cut_off_text(&v, content, phase);
+            for (i, blk) in content.iter().enumerate() {
                 match blk.get("type").and_then(|t| t.as_str()) {
                     Some("text") => {
                         if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
@@ -3213,6 +3246,8 @@ pub(crate) fn decode_line_known(
                                         phase,
                                         inferred: true,
                                     });
+                                } else if cut == Some(i) {
+                                    msgs.push(Message::AssistantCutOff(t.to_string()));
                                 } else {
                                     msgs.push(Message::AssistantText(t.to_string()));
                                 }
@@ -4401,7 +4436,9 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     continue;
                 }
                 let phase = assistant_phase(&v, content);
-                for blk in content {
+                // #s305 mirror: a reply the person cut off mid-stream.
+                let cut = cut_off_text(&v, content, phase);
+                for (i, blk) in content.iter().enumerate() {
                     match blk.get("type").and_then(|t| t.as_str()) {
                         Some("text") => {
                             if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
@@ -4412,6 +4449,8 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                             phase,
                                             inferred: true,
                                         });
+                                    } else if cut == Some(i) {
+                                        out.push(Block::AssistantCutOff(t.to_string()));
                                     } else {
                                         out.push(Block::AssistantText(t.to_string()));
                                     }
@@ -7949,6 +7988,74 @@ mod tests {
                 .iter()
                 .any(|b| matches!(b, Block::AssistantText(_) | Block::AssistantMessage { .. })),
             "the cut is not the assistant speaking: {blocks:?}"
+        );
+    }
+
+    /// #s305: a reply the person cut off with Esc (2.1.311's `isAbortedMidStream`) is the
+    /// assistant's prose with a cut-off mark, on BOTH parse paths: the record's last text block
+    /// becomes `AssistantCutOff`, everything else folds exactly as the same transcript without the
+    /// flag (the interrupt marker after it included), a flagged record that has a phase keeps it
+    /// and gets no mark, and the key is known to the census.
+    #[test]
+    fn a_reply_aborted_mid_stream_is_cut_off_on_both_parse_paths() {
+        unknown_watch_keys(true);
+        let flagged = r##"
+{"type":"user","version":"2.1.311","sessionId":"s-s305","uuid":"u1","timestamp":"2026-10-28T01:00:00.000Z","message":{"role":"user","content":"Where do the skuas nest this year?"}}
+{"type":"assistant","version":"2.1.311","sessionId":"s-s305","uuid":"a1","parentUuid":"u1","requestId":"req_s305","apiBlockIndex":0,"isAbortedMidStream":true,"timestamp":"2026-10-28T01:00:02.000Z","message":{"role":"assistant","model":"claude-opus-5","stop_reason":null,"usage":{"input_tokens":12,"output_tokens":8},"content":[{"type":"text","text":"The skuas moved to the north cliff, above the tern colony, and the"}]}}
+{"type":"user","version":"2.1.311","sessionId":"s-s305","uuid":"u2","parentUuid":"a1","timestamp":"2026-10-28T01:00:03.000Z","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}
+{"type":"user","version":"2.1.311","sessionId":"s-s305","uuid":"u3","timestamp":"2026-10-28T01:00:09.000Z","message":{"role":"user","content":"Just the cliff, thanks."}}
+{"type":"assistant","version":"2.1.311","sessionId":"s-s305","uuid":"a2","isAbortedMidStream":true,"timestamp":"2026-10-28T01:00:10.000Z","message":{"role":"assistant","stop_reason":null,"content":[{"type":"text","text":"North cliff."},{"type":"text","text":"Above the petrels"}]}}
+{"type":"assistant","version":"2.1.311","sessionId":"s-s305","uuid":"a3","isAbortedMidStream":true,"timestamp":"2026-10-28T01:00:11.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}
+"##;
+        let messages = tokenize(flagged.lines());
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s305"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| matches!(m, Message::AssistantCutOff(_)))
+                .count(),
+            2,
+            "one mark per cut record: {messages:?}"
+        );
+
+        let mut ut = Vec::new();
+        let via_engine = replay(&messages, &mut ut, &CLAUDE_SHAPING);
+        let mut ut_main = Vec::new();
+        let via_main = parse_main(flagged.lines(), &mut ut_main);
+        assert_eq!(format!("{via_main:?}"), format!("{via_engine:?}"));
+        assert_eq!(ut, ut_main);
+
+        // Unflagged, the same transcript folds as it always did; flagged, only the marked
+        // blocks differ, and only in being marked.
+        let plain = flagged.replace(r#""isAbortedMidStream":true,"#, "");
+        let before = parse_main(plain.lines(), &mut Vec::new());
+        assert_eq!(before.len(), via_main.len(), "{before:?}\n{via_main:?}");
+        let mut marked = Vec::new();
+        for (b, a) in before.iter().zip(&via_main) {
+            match (b, a) {
+                (Block::AssistantText(was), Block::AssistantCutOff(now)) => {
+                    assert_eq!(was, now, "the recorded text is kept");
+                    marked.push(now.as_str());
+                }
+                _ => assert_eq!(format!("{b:?}"), format!("{a:?}")),
+            }
+        }
+        assert_eq!(
+            marked,
+            [
+                "The skuas moved to the north cliff, above the tern colony, and the",
+                "Above the petrels",
+            ],
+            "the last text block of each unphased cut record, and no other"
+        );
+        assert!(
+            via_main.iter().any(|b| matches!(b,
+                Block::AssistantMessage { text, phase: AssistantPhase::Final, .. } if text == "Done.")),
+            "a flagged record with a phase keeps it, unmarked: {via_main:?}"
         );
     }
 

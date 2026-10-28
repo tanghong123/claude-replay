@@ -346,6 +346,14 @@ pub enum Block {
     QueueEvent { text: String },
     /// Assistant prose (markdown).
     AssistantText(String),
+    /// Assistant prose the person CUT OFF while it streamed (#s305): Claude Code 2.1.311 keeps
+    /// the partial reply when Esc stops it, flagging the record `isAbortedMidStream`, and the
+    /// interrupt marker follows as the next user record. It is prose like `AssistantText` in
+    /// every respect — the same kind, search class and `--json` line (the stream is public, and
+    /// says nothing new) — and differs only where it is DRAWN: the pages and the TUI end it with
+    /// a quiet "cut off" line, so a filtered or jumped-to view, where the marker is not beside
+    /// it, still says the reply stopped there. The recorded text is kept as it is.
+    AssistantCutOff(String),
     /// Assistant prose whose turn phase is known. This stays distinct from `AssistantText` so
     /// older/other agent formats do not invent phase information.
     ///
@@ -796,6 +804,10 @@ pub enum BlockKind {
     Compaction,
 }
 
+/// The line that ends a reply the person cut off mid-stream (`Block::AssistantCutOff`, #s305),
+/// on every surface that draws one.
+pub const CUT_OFF_NOTE: &str = "Cut off: interrupted mid-reply";
+
 /// Classify a block. (An `Agent`/`Task` `ToolUse` never reaches here — the tokenizer turns
 /// it into a `SubAgent` — so it maps to the generic `Tool`, harmlessly.)
 pub fn block_kind(b: &Block) -> BlockKind {
@@ -804,7 +816,9 @@ pub fn block_kind(b: &Block) -> BlockKind {
         Block::UserText(_) | Block::UserReply { .. } | Block::UserInbox { .. } => User,
         Block::PeerText { .. } => Peer,
         Block::QueueEvent { .. } => Queue,
-        Block::AssistantText(_) | Block::AssistantMessage { .. } => Assistant,
+        Block::AssistantText(_) | Block::AssistantCutOff(_) | Block::AssistantMessage { .. } => {
+            Assistant
+        }
         Block::Thinking { tools, .. } => {
             if tools.is_empty() {
                 Think

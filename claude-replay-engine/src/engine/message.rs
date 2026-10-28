@@ -72,6 +72,8 @@ pub enum Message {
     LineStart(Option<EpochSeconds>),
     /// Assistant prose content item (already non-empty).
     AssistantText(String),
+    /// Assistant prose the person cut off mid-stream (#s305, `Block::AssistantCutOff`).
+    AssistantCutOff(String),
     /// Assistant prose with an explicitly persisted phase.
     AssistantMessage {
         text: String,

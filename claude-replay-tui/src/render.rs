@@ -677,6 +677,14 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
             }
         }
         Block::AssistantText(t) => out.extend(assistant_lines(t, width, None)),
+        // #s305: the reply as it was recorded, then one dim line saying it stopped there.
+        Block::AssistantCutOff(t) => {
+            out.extend(assistant_lines(t, width, None));
+            out.push(Line::from(Span::styled(
+                format!("  ⎿ \u{a0}{}", crate::model::CUT_OFF_NOTE),
+                theme::dim(),
+            )));
+        }
         // An INFERRED phase does not change the drawing: Claude Code marks narration and final
         // answer identically, and deriving the phase from `stop_reason` is not a licence to
         // depart from that. Only a transcript that STATES the phase gets the phased treatment.
@@ -1231,7 +1239,7 @@ fn render_header(b: &Block) -> Line<'static> {
             ..
         } => agent_done_header(agent_type, description, *status, agent_id, false),
         Block::Attachment(a) => attachment_line(a),
-        Block::AssistantText(t) => Line::from(vec![
+        Block::AssistantText(t) | Block::AssistantCutOff(t) => Line::from(vec![
             Span::styled("⏺", theme::assistant_marker()),
             Span::raw(format!(" {}", t.lines().next().unwrap_or(""))),
         ]),
@@ -1302,7 +1310,10 @@ fn body_len(b: &Block) -> usize {
         // A turn collapses to its one-line `✻ Thought for…` summary (handled in
         // `render_collapsed`), so this count isn't consumed; approximate anyway.
         Block::Thinking { text, .. } => text.lines().count().saturating_sub(1),
-        Block::AssistantText(_) | Block::AssistantMessage { .. } | Block::PeerText { .. } => 0, // never collapsed
+        Block::AssistantText(_)
+        | Block::AssistantCutOff(_)
+        | Block::AssistantMessage { .. }
+        | Block::PeerText { .. } => 0, // never collapsed
         // #s83: the message, then the receipt's lines.
         Block::ToolUse {
             sent: Some(text),

@@ -17981,6 +17981,128 @@ fn app_shell_shows_another_sessions_message_as_its_own_turn() {
     scenario_another_sessions_message_is_its_own_turn(&page.tab, Surface::AppShell, &fx);
 }
 
+// ── scenario: a reply the person cut off mid-stream says so (#s305)
+
+/// Claude Code 2.1.311 keeps a reply the person stopped with Esc, flagging the record
+/// `isAbortedMidStream`, and the interrupt marker follows as the next user record. Both pages
+/// drew the partial reply as ordinary prose, so a view where the marker is not beside it (a
+/// filter, a jump) read it as a whole answer. Now the reply ends with a quiet "cut off" line
+/// inside its own record, after the prose as recorded; an ordinary reply carries none.
+fn scenario_a_reply_cut_off_by_an_interrupt_is_marked_cut_off(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let note = claude_replay_core::model::CUT_OFF_NOTE;
+    let read = format!(
+        "(function(){{ \
+           var notes = [...document.querySelectorAll('.note, .renderer-note')] \
+             .filter(function(n){{ return n.textContent.indexOf({note:?}) >= 0; }}); \
+           var out = notes.map(function(n){{ \
+             var box = n.parentElement; \
+             while (box && box.textContent.indexOf('north cliff, above the tern colony') < 0) box = box.parentElement; \
+             if (!box) return {{ alone: true }}; \
+             var prose = [...box.querySelectorAll('p')].find(function(p){{ return p.textContent.indexOf('north cliff') >= 0; }}); \
+             var r = n.getBoundingClientRect(); \
+             return {{ \
+               after: !!prose && !!(prose.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING), \
+               own: box.textContent.indexOf('Just the cliff') < 0 && box.textContent.indexOf('Request interrupted') < 0, \
+               shown: r.height > 0 && r.width > 0, \
+               prose: prose ? prose.textContent : null \
+             }}; \
+           }}); \
+           var plain = [...document.querySelectorAll('.note, .renderer-note')] \
+             .filter(function(n){{ return n.textContent.indexOf('Cut off') >= 0; }}).length; \
+           return JSON.stringify({{ marks: out, all: plain }}); \
+         }})()"
+    );
+    let mut last = serde_json::Value::Null;
+    for _ in 0..40 {
+        last = serde_json::from_str(eval(tab, &read).as_str().unwrap_or("null"))
+            .unwrap_or(serde_json::Value::Null);
+        if last["marks"].as_array().is_some_and(|m| !m.is_empty()) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let marks = last["marks"].as_array().cloned().unwrap_or_default();
+    assert_eq!(
+        marks.len(),
+        1,
+        "{surface:?}: one cut-off line, for the one reply cut off: {last}"
+    );
+    let mark = &marks[0];
+    assert_eq!(
+        mark["own"], true,
+        "{surface:?}: the line sits inside the cut reply's own record: {mark}"
+    );
+    assert_eq!(
+        mark["after"], true,
+        "{surface:?}: after the prose, as recorded: {mark}"
+    );
+    assert_eq!(mark["shown"], true, "{surface:?}: and it is drawn: {mark}");
+    assert!(
+        mark["prose"]
+            .as_str()
+            .is_some_and(|p| p.ends_with("above the tern colony, and the")),
+        "{surface:?}: the recorded text is kept as it is: {mark}"
+    );
+    assert_eq!(
+        last["all"], 1,
+        "{surface:?}: an ordinary reply carries no such line: {last}"
+    );
+}
+
+/// Twelve turns, then a question whose reply the person cut off with Esc (the flagged record and
+/// the interrupt marker after it, as Claude Code 2.1.311 writes them), then a follow-up answered
+/// whole — #s305.
+fn cut_off_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    let line = |v: serde_json::Value| format!("{v}\n");
+    transcript += &user_at("Where do the skuas nest this year?", &now_minus(60));
+    transcript += &line(serde_json::json!({
+        "type": "assistant", "cwd": "/r", "timestamp": now_minus(58), "requestId": "req_s305",
+        "apiBlockIndex": 0, "isAbortedMidStream": true,
+        "message": {"role": "assistant", "model": "claude-opus-5", "stop_reason": null,
+                    "usage": {"input_tokens": 12, "output_tokens": 8},
+                    "content": [{"type": "text", "text": "The skuas moved to the north cliff, above the tern colony, and the"}]}
+    }));
+    transcript += &line(serde_json::json!({
+        "type": "user", "cwd": "/r", "timestamp": now_minus(57),
+        "message": {"role": "user", "content": [{"type": "text", "text": "[Request interrupted by user]"}]}
+    }));
+    transcript += &user_at("Just the cliff, thanks.", &now_minus(40));
+    transcript += &assistant_at("The north cliff.", &now_minus(30));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 14,
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_marks_a_reply_cut_off_by_an_interrupt() {
+    let _serial = serial();
+    let fx = cut_off_fixture("scenario-cut-off-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_reply_cut_off_by_an_interrupt_is_marked_cut_off(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_marks_a_reply_cut_off_by_an_interrupt() {
+    let _serial = serial();
+    let fx = cut_off_fixture("scenario-cut-off-app");
+    let page = open(Surface::AppShell, &fx, 3088);
+    scenario_a_reply_cut_off_by_an_interrupt_is_marked_cut_off(&page.tab, Surface::AppShell);
+}
+
 /// #s272: Hong's messages that aries-inbox types into the Aries pane arrive as one signed
 /// element, recorded as a whole-turn paste. A verified one is HIS card in its own style: what the
 /// relay says of it as chips (via, kind, the issue, the agent and task, when), the words it answers
