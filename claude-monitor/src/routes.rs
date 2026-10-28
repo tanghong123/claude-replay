@@ -352,6 +352,22 @@ mod tests {
             "405 Method Not Allowed",
             "an answer is a POST"
         );
+        // Paired, a session the index cannot resolve to a proven pane is refused before any pane
+        // is read or typed into.
+        let read = Request {
+            authenticated: true,
+            ..get("api/dialog", "target=s1")
+        };
+        let answer = Request {
+            method: "POST",
+            body: br#"{"fingerprint":"ab","choice":1}"#,
+            authenticated: true,
+            ..get("api/answer", "target=s1")
+        };
+        for r in [read, answer] {
+            let reply = body(&dispatch(&backend, &front, &r));
+            assert!(reply.contains("\"ok\":false"), "{}: {reply}", r.name);
+        }
         // `/session` is retired (#s99), under either name the page used for the session.
         for query in ["session=s1", "id=s1&chrome=embed"] {
             let r = dispatch(&backend, &front, &get("session", query));

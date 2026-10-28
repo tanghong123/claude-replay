@@ -26,7 +26,8 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    permission prompt, a plan — shown in the compose box above its field, its choices as buttons
    (dialog-card.js). The box keeps its place on a desktop and is the dock's reply box on a phone. */
 #app .compose-dialog[hidden]{display:none}
-#app .compose-dialog{display:grid;gap:6px;min-width:0;padding:6px 0 8px;color:var(--ink);font-size:13px;line-height:1.4}
+#app .compose-dialog{display:grid;grid-auto-rows:max-content;gap:6px;min-width:0;padding:6px 0 8px;color:var(--ink);font-size:13px;line-height:1.4}
+#app .compose-dialog .dialog-body{display:grid;gap:6px;min-width:0}
 #app .compose-dialog.answering{opacity:.6;pointer-events:none}
 #app .compose-dialog p{margin:0}
 #app .compose-dialog .dialog-head{display:flex;align-items:baseline;gap:8px;min-width:0}
@@ -1490,7 +1491,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .composer.production-show .compose-images{grid-area:images;padding:0 2px}
   #app .composer.production-show .compose-image-remove{width:32px;height:32px;font-size:22px}
   /* #s298: the dialog rises above the field as a glass card; its choices are rows a finger hits. */
-  #app .composer.production-show .compose-dialog{grid-area:dialog;max-height:calc(100dvh - var(--phone-kb,0px) - 230px);overflow:auto;box-sizing:border-box;padding:12px 14px;border-radius:20px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px color-mix(in srgb,var(--line) 70%,transparent),0 8px 28px rgba(0,0,0,.14);font-size:15px}
+  #app .composer.production-show .compose-dialog{grid-area:dialog;max-height:calc(100dvh - var(--phone-kb,0px) - var(--phone-top,56px) - 100px);overflow:auto;box-sizing:border-box;padding:12px 14px;border-radius:20px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px color-mix(in srgb,var(--line) 70%,transparent),0 8px 28px rgba(0,0,0,.14);font-size:15px}
   #app .composer.production-show:has(.compose-dialog:not([hidden])){grid-template-areas:"note note" "dialog dialog" "close field"}
   #app .composer.production-show:has(.compose-dialog:not([hidden])):has(.compose-images:not(:empty)){grid-template-areas:"note note" "dialog dialog" "images images" "close field"}
   #app .compose-dialog .dialog-choices{flex-direction:column}
@@ -1591,6 +1592,20 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      end, where its heading is; it sits above the handle while open. (Aa's sheet does not by its own
      z: it lives in the dock, whose z 14 caps it — #s242 below.) */
   .phone-pane-menu:not([hidden]){z-index:23}
+  /* #s298: a dialog in the reply box may rise over the top bar too (in Safari's 292px it was a 62px
+     slit below it, its choices out of reach), above the handle as a pane's sheet is, and uses the
+     width, which is what is spare: a question's choices side by side under it (each with its
+     description), a permission's, a plan's or a review's few short choices beside the command or
+     the plan they answer, which keeps them in sight however long that is. */
+  #app .composer.production-show:has(.compose-dialog:not([hidden])){z-index:23}
+  #app .composer.production-show .compose-dialog{max-height:calc(100dvh - var(--phone-kb,0px) - 120px - env(safe-area-inset-bottom,0px))}
+  #app .compose-dialog .dialog-choices{flex-direction:row}
+  #app .compose-dialog .dialog-choice{width:auto;flex:1 1 160px}
+  #app .composer.production-show .compose-dialog:is([data-kind=permission],[data-kind=plan],[data-kind=review]){grid-template-columns:minmax(0,1fr) minmax(200px,34%);column-gap:14px;align-items:start}
+  #app .compose-dialog:is([data-kind=permission],[data-kind=plan],[data-kind=review])>.dialog-body{grid-column:1;grid-row:1}
+  #app .compose-dialog:is([data-kind=permission],[data-kind=plan],[data-kind=review])>.dialog-hint{grid-column:1;grid-row:2}
+  #app .compose-dialog:is([data-kind=permission],[data-kind=plan],[data-kind=review])>.dialog-choices{grid-column:2;grid-row:1/span 2}
+  #app .compose-dialog:is([data-kind=permission],[data-kind=plan],[data-kind=review]) .dialog-choice{flex:1 1 auto}
 }
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
   #app .reading-cluster>.reading-options,.phone-pane-menu:not([hidden]){left:auto;right:calc(12px + env(safe-area-inset-right,0px))}

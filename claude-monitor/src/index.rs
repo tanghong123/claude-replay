@@ -111,8 +111,6 @@ pub struct PaneTarget {
     /// The process names the session exactly in its own argv (#s234): with a herdr pane, a
     /// grant for the same session, pane and server may follow it across a restore.
     pub named: bool,
-    /// The session's transcript: where its client keeps its files, a plan's among them (#s298).
-    pub transcript: PathBuf,
 }
 
 /// Why a send-prompt was refused — each a distinct, reportable fact (mirrors the §3.1/§4
@@ -841,7 +839,6 @@ impl Index {
             client_wait: claude_replay_core::adapter(agent)
                 .client_wait(&path)
                 .is_some(),
-            transcript: path,
         })
     }
 

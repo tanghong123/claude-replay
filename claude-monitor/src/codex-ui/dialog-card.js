@@ -68,7 +68,10 @@ export class DialogCard {
     this.dialog = d.dialog;
     this.render(d.dialog);
   }
-  show(children) {
+  show(children, kind = "") {
+    // The kind lays the card out: held sideways a question's choices go in a row under it, a
+    // permission's, a plan's or a review's beside what it shows (production.css).
+    if (kind) this.box.dataset.kind = kind; else delete this.box.dataset.kind;
     this.box.replaceChildren(...children);
     this.box.hidden = false;
     this.box.dispatchEvent(new Event("compose-dialog", { bubbles: true }));
@@ -83,6 +86,8 @@ export class DialogCard {
     this.show([el("p", "dialog-text", "Claude is waiting on you."), el("p", "dialog-note", `To see and answer it here, allow this monitor to type into ${where}.`), choices]);
   }
   render(d) {
+    // What is asked, then the choices, then the written answer's hint: three children, so a phone
+    // held sideways can set the choices beside what is asked (production.css).
     const parts = [];
     const head = el("div", "dialog-head");
     head.append(el("span", "dialog-kind", KIND[d.kind] || "Claude asks"));
@@ -97,6 +102,8 @@ export class DialogCard {
     parts.push(el("p", "dialog-text", d.text));
     const detail = d.kind === "plan" ? (d.plan || d.detail) : d.detail;
     if (detail) parts.push(el("pre", `dialog-detail dialog-${d.kind}`, detail));
+    const body = el("div", "dialog-body");
+    body.append(...parts);
     const choices = el("div", "dialog-choices");
     if (d.multi) {
       for (const c of d.choices.filter(c => !c.freeText)) {
@@ -123,7 +130,7 @@ export class DialogCard {
         choices.append(b);
       }
       // A permission's No, then the field: "tell Claude what to do instead" is the next message.
-      const no = d.kind === "permission" && d.choices.find(c => c.label.startsWith("No"));
+      const no = d.kind === "permission" && d.choices.find(c => c.label === "No" || c.label.startsWith("No,"));
       if (no) {
         const b = el("button", "dialog-choice dialog-instead");
         b.type = "button";
@@ -132,10 +139,9 @@ export class DialogCard {
         choices.append(b);
       }
     }
-    parts.push(choices);
-    const free = this.freeText;
-    if (free) parts.push(el("p", "dialog-hint", d.kind === "plan" ? "Or tell Claude what to change, below." : "Or write your own answer, below."));
-    this.show(parts);
+    const shown = [body, choices];
+    if (this.freeText) shown.push(el("p", "dialog-hint", d.kind === "plan" ? "Or tell Claude what to change, below." : "Or write your own answer, below."));
+    this.show(shown, d.kind);
   }
   // Answer the dialog shown; true when the server typed it. A held answer says why and reads the
   // pane again, since what it shows has changed.

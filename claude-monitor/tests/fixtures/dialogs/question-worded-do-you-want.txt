@@ -1,0 +1,19 @@
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   ~/code/petrel
+
+❯ Ask me whether to start on the north ridge.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Start
+
+Do you want to start on the north ridge?
+
+❯ 1. North ridge
+     Start before the skua colony wakes.
+  2. Not yet
+     Wait for the tide.
+  3. Type something.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

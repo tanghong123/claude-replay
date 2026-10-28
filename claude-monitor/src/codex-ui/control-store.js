@@ -227,6 +227,8 @@ export class ControlStore {
       // #s226: a herdr pane is named as one; a tmux pane as one too (#s236).
       const where = controlState.row.term === "herdr" ? `herdr pane ${controlState.row.target}` : controlState.row.target ? `tmux pane ${controlState.row.target}` : "its tmux pane";
       byId("confirmText").textContent = `The message goes to ${where} and runs with that agent's current permissions.`;
+      // This confirm grants and SENDS: a dialog's grant that was left open does not stand in.
+      this.afterGrant = null;
       byId("confirmLayer").classList.add("production-open");
       return;
     }

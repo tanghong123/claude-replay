@@ -1295,13 +1295,14 @@ fn herdr_dialog(
     })
 }
 
-/// Read the pane, for about a second, until its dialog is still THIS one and `took` says the step
-/// before has taken.
+/// Read the pane, for about a second, until its dialog is still THIS one (`plan`: the plan's text
+/// as it was read for the fingerprint) and `took` says the step before has taken.
 fn herdr_dialog_until(
     program: &std::ffi::OsStr,
     socket: &std::path::Path,
     pane: &str,
     fingerprint: &str,
+    plan: Option<&str>,
     took: impl Fn(&dialog::Dialog) -> bool,
 ) -> Result<bool, HerdrSendError> {
     for i in 0..7 {
@@ -1309,18 +1310,46 @@ fn herdr_dialog_until(
             std::thread::sleep(std::time::Duration::from_millis(150));
         }
         let shown = dialog::parse(&herdr_screen(program, socket, pane)?);
-        if shown.is_some_and(|d| d.fingerprint() == fingerprint && took(&d)) {
+        if shown.is_some_and(|d| d.fingerprint_with(plan) == fingerprint && took(&d)) {
             return Ok(true);
         }
     }
     Ok(false)
 }
 
+/// The panes an answer is being typed into, each its server and id (#s298's review): one answer at
+/// a time per pane, or a second tap — a phone and a desktop, or a quick repeat — would pass the
+/// fingerprint check before the client redraws and answer the NEXT dialog.
+static ANSWERING: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+struct Answering(String);
+
+impl Answering {
+    fn claim(pane: &str) -> Option<Answering> {
+        let mut busy = ANSWERING.lock().unwrap_or_else(|e| e.into_inner());
+        if busy.iter().any(|p| p == pane) {
+            return None;
+        }
+        busy.push(pane.to_string());
+        Some(Answering(pane.to_string()))
+    }
+}
+
+impl Drop for Answering {
+    fn drop(&mut self) {
+        ANSWERING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|p| p != &self.0);
+    }
+}
+
 /// Answer the dialog in a Claude session's herdr pane (#s298, Hong's Way 1 on #s299): read it
-/// again and refuse if it is not the one the reader saw (its fingerprint), then type the answer's
-/// steps (`dialog::steps`) through the socket, reading the pane wherever a step must be seen to
-/// have taken before the next. The only Enter submits a written answer the pane shows in its
-/// choice; a digit picks at once, and an Enter after one could reach the input box.
+/// again and refuse if it is not the one the reader saw (its fingerprint, a plan's text included),
+/// then type the answer's steps (`dialog::steps`) through the socket, reading the pane wherever a
+/// step must be seen to have taken before the next, and at the end until that dialog has gone. The
+/// only Enter submits a written answer the pane shows in its choice; a digit picks at once, and an
+/// Enter after one could reach the input box. One answer at a time per pane.
 pub fn herdr_answer(
     socket: Option<&str>,
     pane: &str,
@@ -1350,12 +1379,19 @@ fn herdr_answer_with(
     answer: &dialog::Answer,
 ) -> Result<(), HerdrSendError> {
     let socket = herdr_pane_socket(socket, pane)?;
+    // Keyed by the server too: two herdr servers' pane ids repeat.
+    let Some(_answering) = Answering::claim(&format!("{}\u{0}{pane}", socket.display())) else {
+        return Err(HerdrSendError::Held(
+            "another answer is being typed into this session: nothing more was typed".into(),
+        ));
+    };
     let Shown::Dialog(shown) = herdr_dialog(program, &socket, pane, sid, client_wait)? else {
         return Err(HerdrSendError::Held(
             "no dialog the monitor can read is open in the session now: nothing was typed".into(),
         ));
     };
-    if shown.fingerprint() != fingerprint {
+    let plan = shown.plan_file.as_deref().and_then(|f| plan_text(sid, f));
+    if shown.fingerprint_with(plan.as_deref()) != fingerprint {
         return Err(HerdrSendError::Held(
             "the dialog changed since it was shown: nothing was typed, so look again".into(),
         ));
@@ -1368,6 +1404,7 @@ fn herdr_answer_with(
             "the answer stopped part-way ({why}): finish it in the session"
         ))
     };
+    let plan = plan.as_deref();
     let mut typed = false;
     for step in steps {
         match step {
@@ -1386,18 +1423,18 @@ fn herdr_answer_with(
                     .map_err(|e| part_way(format!("{e:#}")))?;
             }
             dialog::Step::Cursor(n) => {
-                let open = herdr_dialog_until(program, &socket, pane, fingerprint, |d| {
+                let open = herdr_dialog_until(program, &socket, pane, fingerprint, plan, |d| {
                     d.choices.iter().any(|c| c.n == n && c.cursor)
                 })?;
                 if !open {
                     return Err(part_way("the written answer's field did not open".into()));
                 }
             }
-            dialog::Step::Label(n, start) => {
-                let shows = herdr_dialog_until(program, &socket, pane, fingerprint, |d| {
+            dialog::Step::Label(n, start, before) => {
+                let shows = herdr_dialog_until(program, &socket, pane, fingerprint, plan, |d| {
                     d.choices
                         .iter()
-                        .any(|c| c.n == n && c.label.starts_with(&start))
+                        .any(|c| c.n == n && c.label != before && c.label.starts_with(&start))
                 })?;
                 if !shows {
                     return Err(part_way(
@@ -1406,7 +1443,7 @@ fn herdr_answer_with(
                 }
             }
             dialog::Step::Ticks(want) => {
-                let ticked = herdr_dialog_until(program, &socket, pane, fingerprint, |d| {
+                let ticked = herdr_dialog_until(program, &socket, pane, fingerprint, plan, |d| {
                     let now: Vec<u32> = d
                         .choices
                         .iter()
@@ -1421,28 +1458,54 @@ fn herdr_answer_with(
             }
         }
     }
-    Ok(())
+    // The answer is in once the dialog has gone, or another stands (the question's next part): a
+    // dialog still showing after it did not take it.
+    for i in 0..10 {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+        let same = dialog::parse(&herdr_screen(program, &socket, pane)?)
+            .is_some_and(|d| d.fingerprint_with(plan) == fingerprint);
+        if !same {
+            return Ok(());
+        }
+    }
+    Err(HerdrSendError::Held(
+        "the answer was typed but the dialog is still showing: look at it in the session".into(),
+    ))
 }
 
-/// A plan's text from the file its dialog names (#s298), read only where that file is the
-/// session's own client's: `<claude home>/plans/<name>.md`, under the home whose `projects/`
-/// holds the session's transcript. At most 64 KiB.
-pub fn plan_text(transcript: &std::path::Path, shown: &str) -> Option<String> {
+/// A plan's text from the file its dialog names (#s298), read only from the plans of the
+/// session's own client: the screen gives the file's NAME alone, and the folder is the one whose
+/// `sessions/` records this session (Claude Code writes `<home>/sessions/<pid>.json` naming it),
+/// the plans beside it a plain file each. At most 64 KiB.
+pub fn plan_text(sid: &str, shown: &str) -> Option<String> {
     use std::io::Read;
-    let path = match shown.strip_prefix("~/") {
-        Some(rest) => std::path::Path::new(&std::env::var_os("HOME")?).join(rest),
-        None => std::path::PathBuf::from(shown),
-    }
-    .canonicalize()
-    .ok()?;
-    let plans = path.parent()?;
-    if plans.file_name()? != "plans" || path.extension()? != "md" {
+    let (folder, name) = shown.rsplit_once('/')?;
+    let name_ok = name.ends_with(".md")
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
+    if !name_ok || !folder.ends_with("/plans") {
         return None;
     }
-    // Both resolved: a client home's `projects/` may be a link into another (an account's own
-    // home sharing `~/.claude/projects`, measured on hong-devserver).
-    let projects = plans.parent()?.join("projects").canonicalize().ok()?;
-    if !transcript.canonicalize().ok()?.starts_with(projects) {
+    let home = match folder.strip_suffix("/plans")?.strip_prefix("~/") {
+        Some(rest) => std::path::Path::new(&std::env::var_os("HOME")?).join(rest),
+        None => std::path::PathBuf::from(folder.strip_suffix("/plans")?),
+    };
+    let records_session = std::fs::read_dir(home.join("sessions"))
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| std::fs::read(e.path()).ok())
+        .filter_map(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .any(|v| v.get("sessionId").and_then(|s| s.as_str()) == Some(sid));
+    if !records_session {
+        return None;
+    }
+    let path = home.join("plans").join(name);
+    if !std::fs::symlink_metadata(&path).ok()?.file_type().is_file() {
         return None;
     }
     let mut bytes = Vec::new();
@@ -1660,10 +1723,7 @@ pub fn dialog_route(idx: &index::Index, req: &claude_replay_html::Request) -> Ht
         .and_then(|socket| herdr_dialog(&herdr_program(), &socket, pane, &sid, target.client_wait));
     let resp = match read {
         Ok(Shown::Dialog(d)) => {
-            let plan = d
-                .plan_file
-                .as_deref()
-                .and_then(|f| plan_text(&target.transcript, f));
+            let plan = d.plan_file.as_deref().and_then(|f| plan_text(&sid, f));
             json!({"ok": true, "sid": sid, "open": true, "dialog": d.to_json(plan.as_deref())})
         }
         Ok(Shown::Nothing) => json!({"ok": true, "sid": sid, "open": false, "dialog": null}),
@@ -2023,7 +2083,7 @@ mod tests {
             crate::write_script(
                 &w.fake,
                 &format!(
-                    "#!/bin/sh\necho \"$HERDR_SOCKET_PATH $*\" >> '{log}'\ncase \"$1 $2\" in\n  'agent get') if [ -f '{agent}.later' ] && [ -f '{agent}.seen' ]; then cat '{agent}.later'; else touch '{agent}.seen'; cat '{agent}'; fi ;;\n  'pane read') cat '{screen}' ;;\nesac\n",
+                    "#!/bin/sh\necho \"$HERDR_SOCKET_PATH $*\" >> '{log}'\ncase \"$1 $2\" in\n  'agent get') if [ -f '{agent}.later' ] && [ -f '{agent}.seen' ]; then cat '{agent}.later'; else touch '{agent}.seen'; cat '{agent}'; fi ;;\n  'pane read') cat '{screen}' ;;\n  'pane send-keys') if [ -f '{screen}.keys' ]; then cat '{screen}.keys' > '{screen}'; fi ;;\nesac\n",
                     log = w.log.display(),
                     agent = w.agent.display(),
                     screen = w.screen.display(),
@@ -2896,6 +2956,11 @@ mod tests {
             (blocked(), dialog_fixture("question-free-chosen.txt")),
             (blocked(), dialog_fixture("question-free-typed.txt")),
         ]);
+        std::fs::write(
+            w.screen.with_extension("txt.keys"),
+            screen("\u{276f}\u{a0}"),
+        )
+        .unwrap();
         assert!(w
             .answer(&fp, dialog::Answer::Text("Petrel watch".into()))
             .is_ok());
@@ -2931,6 +2996,11 @@ mod tests {
             (blocked(), one),
             (blocked(), dialog_fixture("question-multi-toggled.txt")),
         ]);
+        std::fs::write(
+            w.screen.with_extension("txt.keys"),
+            dialog_fixture("question-second-tab.txt"),
+        )
+        .unwrap();
         assert!(w.answer(&fp, dialog::Answer::Choices(vec![3, 1])).is_ok());
         assert_eq!(typed(&server.join().unwrap()), ["1", "3"]);
         let calls = w.calls();
@@ -2942,44 +3012,69 @@ mod tests {
         assert!(!calls.contains("enter"), "{calls}");
     }
 
-    /// #s298: a plan's text is read only from `<claude home>/plans/*.md` beside the `projects/`
-    /// that holds the session's transcript.
+    /// #s298: a plan's text is read only from the plans of a client home whose `sessions/` records
+    /// this session, by the file's name alone, and only a plain file there.
     #[test]
     fn a_plan_is_read_only_from_the_sessions_own_client_home() {
         let root = std::env::temp_dir().join(format!("cm-plan-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let home = root.join("claude");
-        std::fs::create_dir_all(home.join("projects/-p")).unwrap();
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
         std::fs::create_dir_all(home.join("plans")).unwrap();
-        // An account's home whose `projects/` is a link into the shared one.
-        let account = root.join("account");
-        std::fs::create_dir_all(account.join("plans")).unwrap();
-        std::os::unix::fs::symlink(home.join("projects"), account.join("projects")).unwrap();
-        std::fs::write(account.join("plans/mine.md"), "# Mine\n").unwrap();
-        std::fs::create_dir_all(root.join("elsewhere/plans")).unwrap();
-        let transcript = home.join("projects/-p/s.jsonl");
-        std::fs::write(&transcript, "").unwrap();
+        std::fs::write(
+            home.join("sessions/4242.json"),
+            format!(r#"{{"pid":4242,"sessionId":"{SID}"}}"#),
+        )
+        .unwrap();
         std::fs::write(home.join("plans/tally.md"), "# Tally the nests\n").unwrap();
-        std::fs::write(home.join("plans/tally.txt"), "not a plan").unwrap();
-        std::fs::write(root.join("elsewhere/plans/x.md"), "someone else's").unwrap();
-        let at = |p: std::path::PathBuf| plan_text(&transcript, &p.display().to_string());
-        assert_eq!(
-            at(home.join("plans/tally.md")).as_deref(),
-            Some("# Tally the nests\n")
-        );
-        assert_eq!(at(home.join("plans/tally.txt")), None);
-        assert_eq!(at(root.join("elsewhere/plans/x.md")), None);
-        assert_eq!(at(home.join("plans/../plans/missing.md")), None);
-        let linked = account.join("projects/-p/s.jsonl");
+        std::fs::write(root.join("elsewhere.md"), "someone else's").unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere.md"), home.join("plans/linked.md"))
+            .unwrap();
+        let at = |name: &str| plan_text(SID, &format!("{}/plans/{name}", home.display()));
+        assert_eq!(at("tally.md").as_deref(), Some("# Tally the nests\n"));
+        assert_eq!(at("linked.md"), None, "a link out of the plans");
+        assert_eq!(at("../elsewhere.md"), None, "a name, not a path");
+        assert_eq!(at("missing.md"), None);
         assert_eq!(
             plan_text(
-                &linked,
-                &account.join("plans/mine.md").display().to_string()
-            )
-            .as_deref(),
-            Some("# Mine\n"),
-            "a home whose projects/ is a link"
+                "another-session",
+                &format!("{}/plans/tally.md", home.display())
+            ),
+            None,
+            "a home that does not record this session"
+        );
+        assert_eq!(
+            plan_text(SID, &format!("{}/notes/tally.md", home.display())),
+            None
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #s298's review: one answer at a time per pane.
+    #[test]
+    fn a_pane_takes_one_answer_at_a_time() {
+        let first = Answering::claim("w9:p9").expect("free");
+        assert!(
+            Answering::claim("w9:p9").is_none(),
+            "busy while the first is typed"
+        );
+        assert!(
+            Answering::claim("w9:p8").is_some(),
+            "another pane is not held"
+        );
+        drop(first);
+        assert!(Answering::claim("w9:p9").is_some(), "free again");
+    }
+
+    /// #s298's review: a digit typed while the dialog stays the same did not take: held, and said.
+    #[test]
+    fn an_answer_the_dialog_did_not_take_is_held() {
+        let w = HerdrWorld::new("an");
+        w.set(&blocked(), &dialog_fixture("permission-bash.txt"));
+        let fp = w.shown().unwrap().fingerprint();
+        let server = w.serve((blocked(), dialog_fixture("permission-bash.txt")));
+        let r = w.answer(&fp, dialog::Answer::Choice(1));
+        assert!(matches!(r, Err(HerdrSendError::Held(ref why)) if why.contains("still showing")));
+        server.join().unwrap();
     }
 }

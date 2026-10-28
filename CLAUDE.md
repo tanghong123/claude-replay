@@ -459,14 +459,22 @@ a plan while it waits (measured, Claude Code 2.1.312), so the monitor reads the 
 (`dialog.rs`, the screens as fixtures in `tests/fixtures/dialogs/`). A row says `dialog`
 (`question`, `permission`, `plan`) for a session the page can answer (`sendsImages`) while herdr or
 the client saw the wait; `GET /api/dialog` reads it and `POST /api/answer` answers it, both behind
-the send's gates and the pane grant (a grant to send now also answers dialogs). An answer names the
-dialog's fingerprint and is refused if the pane shows another; a digit picks at once and is never
-followed by Enter (a stray one is a draft in the input box), ticks are toggled where they differ,
-seen, then Tab, and a written answer is its choice's digit, the text, and the only Enter once the
-pane shows it. A permission offers Yes and No only: "don't ask again" and "switch to auto mode"
-change settings. A layout the parser does not know is no dialog, and the card says to answer it in
-the session. The card sits in the compose box above its field (`dialog-card.js`); ✎ and the compose
-button wear an amber dot while Claude asks
+the send's gates and the pane grant (a grant to send now also answers dialogs). The parser takes the
+choices only where they are the dialog's own (the review of #s298 found the agent's text read as
+one): the last run numbered from 1, followed by nothing but the dialog's foot, under a full-width
+rule outside any `╌` preview box, with no numbered line between; a question's ☐ or tabs decide its
+kind before a "Do you want …?". An answer names the dialog's fingerprint (what is asked, the note,
+the choices and their descriptions, a plan's file and text) and is refused if the pane shows
+another; one answer at a time per pane; a digit picks at once and is never followed by Enter (a
+stray one is a draft in the input box), ticks are toggled where they differ, seen, then Tab, a
+written answer is its choice's digit, the text, and the only Enter once the pane shows it; and the
+answer is done when that dialog has gone, else held. A permission offers Yes and No only: "don't ask
+again" and "switch to auto mode" change settings; a plan never offers to bypass permissions. A
+plan's text is read by its file's NAME from the plans of the client home whose `sessions/` records
+the session. A layout the parser does not know is no dialog, and the card says to answer it in the
+session. The card sits in the compose box above its field (`dialog-card.js`), and held sideways
+rises over the top bar with its choices beside what is asked; ✎ and the compose button wear an
+amber dot while Claude asks
 (`a_herdr_dialog_is_answered_from_the_compose_box`). Hooks were measured and not used: a question's
 PreToolUse hook holds the terminal while it waits.
 
