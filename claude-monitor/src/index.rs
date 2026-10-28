@@ -301,6 +301,10 @@ struct State {
     /// tmux control address, and whether the link is proven. The send-prompt route reads
     /// this for both transports — idle-resume (no live pid) and tmux (a proven live link).
     send_links: HashMap<String, SendLink>,
+    /// Growth of a different session contradicted this PID's explicit owner. Retain the
+    /// doubt after growth stops; only process departure or newer owner growth clears it.
+    /// Keyed by (pid, owner sid), with the cwd and conflicting growth observation.
+    growth_conflicts: HashMap<(u32, String), (String, Instant)>,
     /// Which session started each headless worker (#s53), worker sid → starter sid: banked from a
     /// running worker's environment (`bank_started_by`) and kept in `<cache_root>/started-by.json`,
     /// because the edge is visible only while the worker runs and its transcript never records it.
@@ -1187,6 +1191,15 @@ impl Index {
         let owners = explicit_process_owners(&st.procs, &st.rows);
         let known_sids: Vec<String> = st.rows.keys().cloned().collect();
         let prefix_unique = |pf: &str| known_sids.iter().filter(|s| s.starts_with(pf)).count() == 1;
+        st.growth_conflicts.retain(|(pid, sid), (cwd, observed)| {
+            st.procs
+                .iter()
+                .any(|p| p.pid == *pid && p.cwd.as_ref() == Some(cwd))
+                && st
+                    .rows
+                    .get(sid)
+                    .is_some_and(|row| row.grew_at.is_none_or(|grew| grew <= *observed))
+        });
         let shared_cwds = unclassified_agent_cwds(&st.procs);
         let mut growers: HashMap<(Option<Agent>, String), Vec<String>> = HashMap::new();
         for (sid, row) in &st.rows {
@@ -1216,20 +1229,43 @@ impl Index {
                 continue; // several sessions sharing candidate processes prove nothing
             }
             let agent = st.rows[&sids[0]].agent;
-            let mut cands = st.procs.iter().filter(|p| {
-                is_agent_exe(&p.exe_base, &p.argv)
-                    && serves(p, agent)
-                    && (session_ref(&p.argv).is_none()
-                        || process_names_session(&p.argv, &sids[0], &prefix_unique))
+            let candidates: Vec<&Proc> = st
+                .procs
+                .iter()
+                .filter(|p| {
+                    is_agent_exe(&p.exe_base, &p.argv)
+                        && serves(p, agent)
+                        && !is_helper(&p.argv)
+                        && !is_one_shot(&p.argv)
+                        && p.cwd.as_deref() == Some(cwd.as_str())
+                })
+                .collect();
+            // A same-PID /clear or /resume can leave argv naming the OLD session. Do not
+            // guess that the sole candidate changed owners, but do not let that stale name
+            // authorize a send either. Fence all contradictory explicit owners, including a
+            // retained growth proof, through the common facts/send-link boundary below.
+            if let [p] = candidates.as_slice() {
+                if let Some(ids) = owners.get(&p.pid) {
+                    let observed = st.rows[&sids[0]]
+                        .grew_at
+                        .expect("grower has an observation");
+                    for sid in ids.iter().filter(|sid| **sid != sids[0]) {
+                        st.growth_conflicts
+                            .insert((p.pid, sid.clone()), (cwd.clone(), observed));
+                    }
+                }
+            }
+            // Keep the existing ownership filter for proof creation: an explicitly owned
+            // sibling does not make the remaining unnamed process ambiguous.
+            let mut cands = candidates.into_iter().filter(|p| {
+                (session_ref(&p.argv).is_none()
+                    || process_names_session(&p.argv, &sids[0], &prefix_unique))
                     && owners
                         .get(&p.pid)
-                        .is_none_or(|ids| ids.iter().all(|id| id == &sids[0]))
-                    && !is_helper(&p.argv)
-                    && !is_one_shot(&p.argv)
-                    && p.cwd.as_deref() == Some(cwd.as_str())
+                        .is_none_or(|ids| ids.iter().all(|sid| *sid == sids[0]))
             });
             let (Some(p), None) = (cands.next(), cands.next()) else {
-                continue; // zero or several candidates — no forced pairing
+                continue;
             };
             let pid = p.pid;
             // #s89: a process writes ONE session at a time, so a fresh proof takes its pid from
@@ -1494,7 +1530,7 @@ impl Index {
                 .is_some_and(|(newest, _)| *newest == sid.as_str());
             // A pairing that growth proved (#146) outranks the directory heuristic — it is
             // evidence about THIS session, not a pick among the directory's sessions.
-            let link = proved_links
+            let mut link = proved_links
                 .remove(sid.as_str())
                 .or_else(|| {
                     let &(pid, rivals) = paired.get(sid.as_str())?;
@@ -1520,6 +1556,12 @@ impl Index {
                         &prefix_unique,
                     )
                 });
+            if let Some(link) = &mut link {
+                if st.growth_conflicts.contains_key(&(link.pid, sid.clone())) {
+                    link.confirmed = false;
+                    link.named = false;
+                }
+            }
             let (state, conf) = if growing {
                 ("growing", "")
             } else {
@@ -2286,9 +2328,12 @@ fn head_one_shot(path: &Path) -> Option<String> {
 ///      session merely runs. Exact.
 ///   2. The session's transcript held OPEN by an agent process — exact (Codex holds its
 ///      rollout `.jsonl` open; Claude appends-and-closes, so this never fires for it).
-///   3. An agent process whose cwd matches the session's and whose argv names no session —
-///      the directory heuristic, for the NEWEST session of that cwd only (`heuristic_ok`),
-///      never a daemon helper. **Confirmed when it is the only such process in the
+///   3. An unclaimed agent process whose cwd matches the session's and whose argv names no
+///      session — the directory heuristic, enabled by `DirectoryMatch::Unclaimed` for that
+///      agent's newest remaining session in the cwd, never a daemon helper. Explicitly linked,
+///      growth-proven and time-paired sessions do not compete for recency or ambiguity; their
+///      processes are reserved. An unclassified agent keeps the shared directory scope.
+///      **Confirmed when it is the only such process in the
 ///      directory** — the owner's rule (2026-09-23): "when there is only one active claude
 ///      process associated with a claude session, we would pair them even if the session id
 ///      is not in argv." With one process there is one pane, and that pane is the injection
@@ -2300,6 +2345,8 @@ fn head_one_shot(path: &Path) -> Option<String> {
 /// Step 3 is the COMMON path, not a fallback: `claude --resume` with no id (the picker) is how
 /// most of these sessions were launched (measured: 9 of 12 live agents here), and Claude never
 /// holds its transcript open, so steps 1–2 cannot fire for them.
+/// Assembly downgrades a link contradicted by sole-candidate growth before deriving either
+/// the UI's send affordance or the route's send link, even when argv still names the session.
 fn link(
     procs: &[Proc],
     sid: &str,
@@ -6008,6 +6055,22 @@ n/Users/x/proj
     /// this transcript; two growing sessions of the same agent remain ambiguous.
     #[test]
     fn growth_proofs_are_scoped_to_each_agent_in_a_shared_directory() {
+        // The scanner probes cwd only for recognized agents. Configure the extra executable
+        // in an isolated test process, before its once-per-run pattern cache is initialized.
+        const CHILD: &str = "CM_CONFIGURED_GROWTH_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "index::tests::growth_proofs_are_scoped_to_each_agent_in_a_shared_directory",
+                ])
+                .env(CHILD, "1")
+                .env(AGENT_PATTERNS_ENV, "custom-agent")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
         let scratch =
             std::env::temp_dir().join(format!("cm-growth-agent-scope-{}", std::process::id()));
         let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
@@ -6050,6 +6113,10 @@ n/Users/x/proj
         // An extra recognized process whose kind is unknown may serve either agent. Its cwd
         // is a shared scope, so neither grower acquires a proof from that ambiguous evidence.
         let mut unclassified = parse_ps("800 custom-agent\n");
+        assert!(is_agent_exe(
+            &unclassified[0].exe_base,
+            &unclassified[0].argv
+        ));
         apply_lsof(&mut unclassified, "p800\nfcwd\nn/w/harbor\n");
         st.procs.extend(unclassified);
         st.rows.remove("second-claude");
@@ -6137,6 +6204,123 @@ n/Users/x/proj
             facts.iter().find(|f| f.sid == "older").unwrap().pid,
             Some(901)
         );
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    /// A same-PID /clear or /resume leaves argv naming the old session. Conflicting
+    /// growth must fence that old link, including an already consented tmux pane.
+    #[test]
+    fn conflicting_growth_withholds_send_from_a_stale_argv_owner() {
+        let scratch = std::env::temp_dir().join(format!("cm-stale-argv-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let owner = "11111111-2222-4333-8444-555555555555";
+        for argv in [
+            format!("claude --resume {owner}"),
+            format!("claude --session-id {owner}"),
+            "claude attach 11111111".into(),
+        ] {
+            for (herdr, retained) in [(false, false), (false, true), (true, false), (true, true)] {
+                let mut procs = parse_ps(&format!("701 {argv}\n900 codex\n"));
+                apply_lsof(
+                    &mut procs,
+                    "p701\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+                );
+                if herdr {
+                    apply_env(&mut procs, "701 claude HERDR_PANE_ID=w1:p6\n");
+                    apply_nesting(&mut procs, "1 0 launchd\n60 1 herdr\n701 60 claude\n");
+                } else {
+                    apply_env(&mut procs, "701 claude TMUX_PANE=%3\n");
+                }
+                let mut st = State {
+                    procs,
+                    ..State::default()
+                };
+                let mut old = growth_row("/w/harbor", false);
+                old.proved_pid = retained.then(|| (701, "/w/harbor".into()));
+                st.rows.insert(owner.into(), old);
+                st.rows
+                    .insert("new-session".into(), growth_row("/w/harbor", true));
+                let mut codex = growth_row("/w/harbor", true);
+                codex.agent = Agent::CODEX;
+                st.rows.insert("codex".into(), codex);
+                // A separate unnamed process makes normal ownership unambiguous. Its
+                // departure then leaves exactly the stale named process as the candidate.
+                let mut unnamed = parse_ps("700 claude\n");
+                apply_lsof(&mut unnamed, "p700\nfcwd\nn/w/harbor\n");
+                st.procs.extend(unnamed);
+                idx.prove_by_growth(&mut st);
+                assert_eq!(
+                    st.rows["new-session"]
+                        .proved_pid
+                        .as_ref()
+                        .map(|(pid, _)| *pid),
+                    Some(700)
+                );
+                let mut before = Vec::new();
+                idx.assemble(&st, &mut before);
+                assert!(before.iter().find(|f| f.sid == owner).unwrap().confirmed);
+                st.procs.retain(|p| p.pid != 700);
+                idx.prove_by_growth(&mut st);
+                assert!(
+                    st.rows["new-session"].proved_pid.is_none(),
+                    "do not guess a new owner"
+                );
+                for idle in [false, true] {
+                    if idle {
+                        st.rows.get_mut("new-session").unwrap().grew_at = None;
+                        idx.prove_by_growth(&mut st);
+                    }
+                    let mut facts = Vec::new();
+                    let snapshot = idx.assemble(&st, &mut facts);
+                    let old = facts.iter().find(|f| f.sid == owner).unwrap();
+                    assert_eq!(old.pid, Some(701));
+                    let send = SendLink {
+                        pid: old.pid,
+                        pane: old.pane.clone(),
+                        confirmed: old.confirmed,
+                        named: old.named,
+                    };
+                    assert_eq!(
+                        pane_target_from(Agent::CLAUDE, &send),
+                        Err(SendRefusal::UnprovenLink),
+                        "{argv}, herdr={herdr}, idle={idle}"
+                    );
+                    assert!(!old.named, "a stale name cannot carry restore consent");
+                    let row = snapshot["groups"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .flat_map(|g| g["rows"].as_array().unwrap())
+                        .find(|r| r["id"] == owner)
+                        .unwrap();
+                    assert!(row.get("injectable").is_none());
+                }
+                // Fresh growth of the original session is independent recovery evidence.
+                st.rows.get_mut(owner).unwrap().grew_at = Some(Instant::now());
+                idx.prove_by_growth(&mut st);
+                let mut facts = Vec::new();
+                idx.assemble(&st, &mut facts);
+                assert!(facts.iter().find(|f| f.sid == owner).unwrap().confirmed);
+                assert!(facts.iter().find(|f| f.sid == "codex").unwrap().confirmed);
+
+                // A new contradiction fences again. Process exit discards that fence;
+                // the PID can subsequently belong to a new explicit launch.
+                st.rows.get_mut(owner).unwrap().grew_at = None;
+                st.rows.get_mut("new-session").unwrap().grew_at = Some(Instant::now());
+                idx.prove_by_growth(&mut st);
+                let at = st.procs.iter().position(|p| p.pid == 701).unwrap();
+                let process = st.procs.remove(at);
+                idx.prove_by_growth(&mut st);
+                st.rows.get_mut("new-session").unwrap().grew_at = None;
+                st.procs.push(process);
+                idx.prove_by_growth(&mut st);
+                let mut facts = Vec::new();
+                idx.assemble(&st, &mut facts);
+                assert!(facts.iter().find(|f| f.sid == owner).unwrap().confirmed);
+            }
+        }
         std::fs::remove_dir_all(&scratch).unwrap();
     }
 

@@ -351,6 +351,15 @@ process is a candidate only for sessions of its OWN agent (#s59, `serves`): a Cl
 pane in one repo had the Codex process (the lower pid) linked to the Claude session, unconfirmed and
 unwritable; an exe the monitor cannot place (an extra pattern) stays a candidate for any agent. The send
 gate's "another live session in this project" counts the same agent only, for the same reason.
+Recency and ambiguity are selected per agent and exact cwd (#s250); a configured executable
+whose kind is unknown keeps the shared scope. Explicit argv/open-transcript links, retained
+growth proofs and time-paired workers do not compete for the newest unnamed session, and
+their PIDs are reserved from directory matching. Growth cannot borrow another session's
+explicitly owned process. If the only interactive candidate names a different session, the
+index retains that contradiction and marks its old owner's link unconfirmed, withholding
+both sending and restore-consent following even after growth stops. The fence clears when
+that process leaves its cwd or the old session exhibits newer growth. Like growth proofs,
+these observations are scan-local memory, not a durable session-identity registry.
 **A one-shot (`claude -p`/`--print`) is headless and pairs by TIME** (#s50): knack's coordinator
 starts workers from its Bash, all in one repo, each inheriting the coordinator's `TMUX_PANE`, and the
 directory rule gave a process to the newest session only — so a worker deep in a long command lost
