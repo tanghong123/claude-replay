@@ -1768,6 +1768,23 @@ pub fn chrome_with(extra: &[&str]) -> headless_chrome::Browser {
     panic!("chrome launches: {LAUNCHES} launches failed (last: {last})")
 }
 
+/// The flags every Chrome a case launches carries, so none reaches for this Mac's keychain (Aries
+/// for Hong, 2026-10-28): the suite's Chrome for Testing, with a profile of its own, asked macOS for
+/// a keychain to keep its data in, and macOS put "找不到钥匙串" (no keychain found) on Hong's screen,
+/// offering a Reset to Default that would replace his login keychain. `--use-mock-keychain` keeps
+/// Chrome's secrets in memory on macOS; `--password-store=basic` is the same on Linux.
+pub const NO_KEYCHAIN: [&str; 2] = ["--use-mock-keychain", "--password-store=basic"];
+
+/// `extra`, then [`NO_KEYCHAIN`]: the arguments of a Chrome a case launches itself.
+pub fn chrome_args<'a>(extra: &[&'a str]) -> Vec<&'a std::ffi::OsStr> {
+    extra
+        .iter()
+        .copied()
+        .chain(NO_KEYCHAIN.iter().copied())
+        .map(std::ffi::OsStr::new)
+        .collect()
+}
+
 /// One Chrome launch, given up after `patience` (#s143). headless_chrome finds the DevTools
 /// address by a BLOCKING read of Chrome's stderr, so its own 30 s timeout is checked only between
 /// reads and never fires on a Chrome that starts and says nothing: a suite stood still for an
@@ -1795,6 +1812,7 @@ pub fn launch_within(
             std::ffi::OsStr::new("--disable-renderer-backgrounding"),
         ];
         args.extend(extra.iter().map(std::ffi::OsStr::new));
+        args.extend(NO_KEYCHAIN.iter().map(std::ffi::OsStr::new));
         let _ = tx.send(headless_chrome::Browser::new(
             headless_chrome::LaunchOptions::default_builder()
                 .path(path)

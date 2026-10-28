@@ -169,11 +169,11 @@ fn live_viewport_follows_pinned_and_holds_unpinned() {
                 .headless(true)
                 // Never let tab-backgrounding heuristics starve timers or rendering — the
                 // page's poll loop and the renderer's scroll events are the test subject.
-                .args(vec![
-                    std::ffi::OsStr::new("--disable-background-timer-throttling"),
-                    std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
-                    std::ffi::OsStr::new("--disable-renderer-backgrounding"),
-                ])
+                .args(harness::chrome_args(&[
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                ]))
                 .build()
                 .unwrap(),
         )
@@ -445,11 +445,11 @@ fn jump_to_bottom_lands_after_a_viewport_resize() {
                 .path(harness::browser_path())
                 .headless(true)
                 .window_size(Some((1400, 900)))
-                .args(vec![
-                    std::ffi::OsStr::new("--disable-background-timer-throttling"),
-                    std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
-                    std::ffi::OsStr::new("--disable-renderer-backgrounding"),
-                ])
+                .args(harness::chrome_args(&[
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                ]))
                 .build()
                 .unwrap(),
         )
@@ -568,11 +568,11 @@ fn a_turn_landing_holds_through_late_reflow() {
             headless_chrome::LaunchOptions::default_builder()
                 .path(harness::browser_path())
                 .headless(true)
-                .args(vec![
-                    std::ffi::OsStr::new("--disable-background-timer-throttling"),
-                    std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
-                    std::ffi::OsStr::new("--disable-renderer-backgrounding"),
-                ])
+                .args(harness::chrome_args(&[
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                ]))
                 .build()
                 .unwrap(),
         )
@@ -676,11 +676,11 @@ fn stepping_search_hits_keeps_the_viewport_when_the_match_is_visible() {
                 // the top chrome, where scrolling to it is the CORRECT behaviour and the test
                 // would be measuring the wrong thing.
                 .window_size(Some((1200, 900)))
-                .args(vec![
-                    std::ffi::OsStr::new("--disable-background-timer-throttling"),
-                    std::ffi::OsStr::new("--disable-backgrounding-occluded-windows"),
-                    std::ffi::OsStr::new("--disable-renderer-backgrounding"),
-                ])
+                .args(harness::chrome_args(&[
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                ]))
                 .build()
                 .unwrap(),
         )
@@ -838,6 +838,7 @@ fn a_workflow_fleet_renders_under_its_launching_block() {
             headless_chrome::LaunchOptions::default_builder()
                 .path(harness::browser_path())
                 .headless(true)
+                .args(harness::chrome_args(&[]))
                 .build()
                 .unwrap(),
         )
@@ -1445,6 +1446,7 @@ fn the_artifact_roster_groups_republishes_by_url() {
             headless_chrome::LaunchOptions::default_builder()
                 .path(harness::browser_path())
                 .headless(true)
+                .args(harness::chrome_args(&[]))
                 .build()
                 .unwrap(),
         )
@@ -1624,6 +1626,7 @@ fn the_classic_page_keys_resolve_through_the_shared_table() {
                 .path(harness::browser_path())
                 .headless(true)
                 .window_size(Some((1200, 800)))
+                .args(harness::chrome_args(&[]))
                 .build()
                 .unwrap(),
         )
