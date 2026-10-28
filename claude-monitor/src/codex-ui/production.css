@@ -1696,7 +1696,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    the sender is a chip before the label. The person's own rows are unchanged. */
 .turn.peer[style*="--peer-hue"],#app .outline-peer{--peer:hsl(var(--peer-hue) 58% 33%)}
 :root[data-theme="dark"] .turn.peer[style*="--peer-hue"],:root[data-theme="dark"] #app .outline-peer{--peer:hsl(var(--peer-hue) 68% 70%)}
-#app .outline-turn-row.outline-peer{grid-template-columns:24px auto minmax(0,1fr)}
+#app .outline-turn-row.outline-peer{grid-template-columns:minmax(24px,max-content) auto minmax(0,1fr)}
 #app .outline-peer-from{max-width:9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:1px 6px 1px 5px;border-radius:5px;background:color-mix(in srgb,var(--peer) 12%,transparent);color:var(--peer);font-size:10.5px;font-weight:650;line-height:1.35}
 #app .outline-peer-glyph{margin-right:3px}
 #app .phone-pane-body .outline-peer-from{font-size:13px}
@@ -1709,7 +1709,13 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 #app .outline-quoted .outline-label{min-width:0}
 #app .outline-reply-count{flex:none;color:var(--faint);font:11px var(--mono);margin-left:auto}
 
-#app .outline-turn-row.outline-quoted{grid-template-columns:24px 7px minmax(0,1fr) auto}
+#app .outline-turn-row.outline-quoted{grid-template-columns:minmax(24px,max-content) 7px minmax(0,1fr) auto}
 /* #s276: a turn the turn index lists whose records are still coming reads as the other rows, in
    the quieter text colour, until they arrive; a tap on it is held until then. */
 #app .outline-turn-pending .outline-label,#app .outline-turn-pending .outline-number,#app .outline-epoch.outline-turn-pending{color:var(--faint)}
+/* #s292: the number column fits the session's widest turn number. "150 ·" is about 29px in the
+   number's 9.5px mono, and the 24px column wrapped every row from turn 100 into two lines. The list
+   says how many digits (--outline-digits, app.js) and every number takes that width in its own
+   font, so the labels stay in line; a session under 100 turns keeps its 24px column. */
+#app .outline-turn-row{grid-template-columns:minmax(24px,max-content) minmax(0,1fr) auto}
+#app .outline-turn-row .outline-number{white-space:nowrap;min-width:calc((var(--outline-digits,2) + 2) * 1ch)}
