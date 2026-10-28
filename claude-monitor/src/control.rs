@@ -823,7 +823,14 @@ fn herdr_program() -> std::ffi::OsString {
 
 /// How long one herdr step may take before the send gives up (a hung herdr must not hold the
 /// request, nor the reader's pending send, for ever).
+#[cfg(not(test))]
 const HERDR_STEP: std::time::Duration = std::time::Duration::from_secs(5);
+/// The tests' stand-in herdr is a shell script, and on a loaded machine one answered later than
+/// the 5 s a real herdr gets (#s300: three test processes side by side failed 4 runs of 18, each
+/// "herdr agent get … did not answer within 5s", and CI's Linux runner once). No test measures
+/// the bound, so a test gets more of it.
+#[cfg(test)]
+const HERDR_STEP: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Run `herdr` against the pane's own server and return its stdout. Every step addresses that
 /// one server the same way, by `HERDR_SOCKET_PATH` (as herdr sets it in its panes), so the checks
@@ -1657,8 +1664,12 @@ mod tests {
     impl HerdrWorld {
         fn new(name: &str) -> HerdrWorld {
             // Short: a Unix socket's path must fit in `SUN_LEN` (104 bytes on macOS), and the
-            // scratch sits deep in the workspace's target.
-            let dir = std::env::temp_dir().join(format!("h{name}{}", std::process::id()));
+            // scratch sits deep in the workspace's target. One directory per WORLD, not per name
+            // (#s300): two tests named theirs "p", ran on parallel threads, and each removed the
+            // other's socket and answers mid-send, which failed one of them on Linux CI.
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!("h{name}{}-{n}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             let socket = dir.join("herdr.sock");
@@ -1765,10 +1776,30 @@ mod tests {
         }
     }
 
+    /// What a send came to, for an assertion's message: `HerdrSendError` is not `Debug`.
+    fn shown(sent: &Result<(), HerdrSendError>) -> String {
+        match sent {
+            Ok(()) => "sent".into(),
+            Err(HerdrSendError::Held(why)) => format!("held: {why}"),
+            Err(HerdrSendError::Failed(e)) => format!("failed: {e:#}"),
+        }
+    }
+
     impl Drop for HerdrWorld {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.dir);
         }
+    }
+
+    /// #s300: two worlds given one name are two worlds. Each used to be `h<name><pid>`, removed
+    /// first, so the two tests that both named theirs "p" deleted each other's socket and answers
+    /// when libtest ran them together.
+    #[test]
+    fn two_herdr_worlds_named_alike_never_share_a_directory() {
+        let a = HerdrWorld::new("t");
+        let b = HerdrWorld::new("t");
+        assert_ne!(a.dir, b.dir);
+        assert!(a.socket.exists() && b.socket.exists(), "both sockets stand");
     }
 
     /// #s226 end to end against a stand-in `herdr` and a stand-in herdr server: every step names
@@ -1782,7 +1813,11 @@ mod tests {
         let idle = format!(r#"{{"agent_status":"idle","agent_session":{{"value":"{SID}"}}}}"#);
         w.set(&idle, &screen("\u{276f}\u{a0}half a thought"));
         let held = w.send("hello");
-        assert!(matches!(held, Err(HerdrSendError::Held(ref why)) if why.contains("draft")));
+        assert!(
+            matches!(held, Err(HerdrSendError::Held(ref why)) if why.contains("draft")),
+            "{}",
+            shown(&held)
+        );
         // An empty input: typed over the socket, seen in the input, then one Enter.
         w.set(
             &idle,
@@ -1945,10 +1980,12 @@ mod tests {
         let idle = format!(r#"{{"agent_status":"idle","agent_session":{{"value":"{SID}"}}}}"#);
         // A draft in the pane: held, and nothing saved.
         w.set(&idle, &screen("\u{276f}\u{a0}half a thought"));
-        assert!(matches!(
-            w.send_images("look", &images_in(&dir, 2)),
-            Err(HerdrSendError::Held(_))
-        ));
+        let held = w.send_images("look", &images_in(&dir, 2));
+        assert!(
+            matches!(held, Err(HerdrSendError::Held(_))),
+            "{}",
+            shown(&held)
+        );
         assert!(!dir.exists(), "a held send writes no image");
         w.set(
             &idle,
@@ -2066,7 +2103,8 @@ mod tests {
             let held = w.send("rm the build");
             assert!(
                 matches!(held, Err(HerdrSendError::Held(ref why)) if why.contains("typed") && why.contains("not sent")),
-                "{name}"
+                "{name}: {}",
+                shown(&held)
             );
             server.join().unwrap();
             assert_eq!(
@@ -2083,7 +2121,9 @@ mod tests {
         std::fs::write(w.agent.with_extension("json.later"), &blocked).unwrap();
         let held = w.send("rm the build");
         assert!(
-            matches!(held, Err(HerdrSendError::Held(ref why)) if why.contains("permission prompt"))
+            matches!(held, Err(HerdrSendError::Held(ref why)) if why.contains("permission prompt")),
+            "{}",
+            shown(&held)
         );
         assert_eq!(w.calls().matches("agent get").count(), 2, "{}", w.calls());
         assert!(
