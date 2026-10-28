@@ -82,6 +82,7 @@ pub struct Serial {
 
 impl Drop for Serial {
     fn drop(&mut self) {
+        reap_own_browsers();
         let roots = CASE_ROOTS.with(|roots| std::mem::take(&mut *roots.borrow_mut()));
         if std::thread::panicking() || std::env::var_os("CR_KEEP_SCRATCH").is_some() {
             return;
@@ -2063,6 +2064,44 @@ fn reap_stranded_browsers() {
             eprintln!("harness: reaped {killed} browser process(es) stranded by an earlier run");
         }
     });
+}
+
+/// Kill every process left of the browsers THIS process launched (#s293), as each case ends: the
+/// [`Serial`] guard drops after the case's browsers, cases run one at a time and none keeps a
+/// browser across cases, so nothing live is in range. headless_chrome kills only the browser
+/// process when it drops; its helpers then exit on their own, within a second on a Mac at rest. On
+/// a drained, throttled one they did not (2026-10-28: about 200 helpers with parent 1 under one
+/// scenarios binary, load near 1000, until the battery gave out), and
+/// [`reap_stranded_browsers`] takes only processes whose owner is gone, never a running binary's
+/// own. Matched on the `--user-data-dir` argument itself, so a command that merely names the mark
+/// (a watchdog's `awk`) is never in range, nor a sibling suite's profiles or the developer's Chrome.
+pub fn reap_own_browsers() {
+    let mark = format!(
+        "{}{}-",
+        std::env::temp_dir().join(BROWSER_PROFILE_MARK).display(),
+        std::process::id()
+    );
+    let Ok(out) = std::process::Command::new("ps")
+        .args(["-Awwo", "pid=,command="])
+        .output()
+    else {
+        return;
+    };
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some((pid, command)) = line.trim().split_once(' ') else {
+            continue;
+        };
+        let ours = command.split(' ').any(|arg| {
+            arg.strip_prefix("--user-data-dir=")
+                .is_some_and(|dir| dir.starts_with(&mark))
+        });
+        if ours {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", pid])
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
 }
 
 /// Kill a monitor a previous run left on this port. `Monitor`'s `Drop` has the same hole as the
