@@ -3,7 +3,7 @@
 
 use crate::diff::{diff_row_groups, line_diff, DiffKind, LineOp};
 use crate::highlight::{self, Hl};
-use crate::model::{AssistantPhase, Attachment, Block, Inbox};
+use crate::model::{AssistantPhase, Attachment, AttachmentKind, Block, Inbox};
 use crate::present::{
     display_name, edit_summary, file_edit_summary, not_applied, run_changes, spawn_chip,
     thinking_summary, tool_execution_failed, tool_execution_summary, turn_summary, write_content,
@@ -445,13 +445,18 @@ fn render_diff(
 /// A one-line marker for a surfaced attachment: `▤ <kind>  <name>`. The **name** is
 /// the actionable target — clicking it (or Enter on the focused block) downloads the
 /// embedded content or reveals the path in the file manager — so it's underlined like
-/// a link.
+/// a link. An `edited` one is the client telling the agent a file changed on disk (#s296),
+/// never a file the person edited or attached, so it says that, as both pages do.
 fn attachment_line(a: &Attachment) -> Line<'static> {
     let mark = theme::tool();
     let name = mark.add_modifier(Modifier::UNDERLINED);
+    let kind = match a.kind {
+        AttachmentKind::Edited => "changed on disk",
+        k => k.as_str(),
+    };
     let mut spans = vec![
         Span::styled("▤ ", mark),
-        Span::styled(format!("{} ", a.kind), mark),
+        Span::styled(format!("{kind} "), mark),
         Span::styled(a.name.clone(), name),
     ];
     // The size the transcript recorded (#261): a file put back into context after a compaction
@@ -1477,6 +1482,28 @@ mod tests {
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
+    }
+
+    /// #s296: Claude Code's notice that a file changed on disk read "▤ edited CLAUDE.md" under
+    /// the person's prompt, as if they had edited it. It says what happened; the other kinds keep
+    /// their word, and `--json` keeps `edited` (the html crate's `att_kind`).
+    #[test]
+    fn a_changed_on_disk_notice_says_so_and_other_kinds_keep_their_word() {
+        let att = |kind| Attachment {
+            lines: None,
+            kind,
+            name: "CLAUDE.md".into(),
+            path: Some("/w/CLAUDE.md".into()),
+            content: crate::model::AttachmentContent::None,
+        };
+        assert_eq!(
+            texts(&[attachment_line(&att(AttachmentKind::Edited))]),
+            ["▤ changed on disk CLAUDE.md"]
+        );
+        assert_eq!(
+            texts(&[attachment_line(&att(AttachmentKind::Ref))]),
+            ["▤ ref CLAUDE.md"]
+        );
     }
 
     /// The windowing foundation: concatenating [`assemble_one`] over the blocks (threading the
