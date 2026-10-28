@@ -34,6 +34,9 @@ export async function launch({ width = 1440, height = 900, profileDir }) {
   const args = [
     "--headless=new", `--user-data-dir=${dir}`, "--remote-debugging-port=0",
     "--no-first-run", "--no-default-browser-check", "--disable-background-timer-throttling",
+    // Never reach for this Mac's keychain (Aries for Hong, 2026-10-28: macOS asked Hong for a
+    // keychain for Chrome, offering a Reset to Default): secrets stay in memory.
+    "--use-mock-keychain", "--password-store=basic",
     "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding",
     "--hide-scrollbars", "--force-color-profile=srgb", `--window-size=${width},${height}`,
     "about:blank",

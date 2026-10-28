@@ -370,7 +370,14 @@ unclaimed one-shot session of its cwd that began in its window (3 s before, 60 s
 unless another one-shot could have taken it instead; a paired session is neither the directory's
 newest nor a sibling, so the coordinator keeps its own pane. A one-shot's prompt is in its argv, so
 only `--session-id`/`--resume` name it; and whatever linked it, its terminal is Detached — a send
-into the pane it inherited would type into the coordinator.
+into the pane it inherited would type into the coordinator. **A `-p` in an interactive launch's
+prompt makes no one-shot** (#s301): `ps` joins argv with spaces, so `claude … "… mkdir -p counts …"`
+read as one, and its session was never linked (no liveness, no send, no dialog). The process's own
+record decides where it exists (`apply_session_files`): Claude Code writes `<claude home>/sessions/
+<pid>.json` (the home from the process's `CLAUDE_CONFIG_DIR`, else `~/.claude`) with `entrypoint`
+`cli` for an interactive launch and `sdk-cli` for `claude -p` (measured, 2.1.312; both say `kind:
+interactive`), believed only when it names the pid and began no earlier than the process. A one-shot
+writes it only once under way, so until then the argv decides, the safe way.
 **A headless worker lives in its starter's Agents pane, not in the session list** (#s53, the owner:
 "keep them under agents outline pane, and don't put them on main session list"). Claude Code exports
 its own session id into every Bash command (`CLAUDE_CODE_SESSION_ID`, with
@@ -461,6 +468,34 @@ page). Unlike tmux's status line, nothing announces the send in the pane: no her
 was measured, and the typed text sits in the box before it is submitted. Caveat from the trial: herdr
 restores a session as `claude --resume <id>`, dropping its start flags, so one started with
 `--dangerously-skip-permissions` comes back in `settings.json`'s mode.
+**A dialog in a herdr pane is answered from the compose box** (#s298, Hong chose Way 1 on #s299, so
+Remote Control is not needed for it): a question (`AskUserQuestion`), a permission prompt or a plan's
+approval is drawn in the pane and answered by keys, and the transcript does not carry a question or
+a plan while it waits (measured, Claude Code 2.1.312), so the monitor reads the dialog off the screen
+(`dialog.rs`, the screens as fixtures in `tests/fixtures/dialogs/`). A row says `dialog`
+(`question`, `permission`, `plan`) for a session the page can answer (`sendsImages`) while herdr or
+the client saw the wait; `GET /api/dialog` reads it and `POST /api/answer` answers it, both behind
+the send's gates and the pane grant (a grant to send now also answers dialogs). The parser takes the
+choices only where they are the dialog's own (the review of #s298 found the agent's text read as
+one): the last run numbered from 1, the dialog's foot right after it (a narrow pane may wrap the
+rest), under a full-width rule outside any `╌` preview box, with no numbered line between but inside
+such a box (a command's own, as a commit message's list); a question's ☐ or tabs decide its kind
+before a "Do you want …?". An answer names the dialog's fingerprint (what is asked, the note,
+the choices and their descriptions, a plan's file and text) and is refused if the pane shows
+another; one answer at a time per pane; a digit picks at once and is never followed by Enter (a
+stray one is a draft in the input box), ticks are toggled where they differ, seen, then Tab, a
+written answer is its choice's digit, the text, and the only Enter once the pane shows it; and the
+answer is done once the screen has moved on from the one before its last key (a dialog just like it
+may stand in its place), else held after about three seconds; gone, the input box must hold no
+draft, which a dialog that closed in the moment before the key would leave there. A permission offers Yes and No only: "don't ask
+again" and "switch to auto mode" change settings; a plan never offers to bypass permissions. A
+plan's text is read by its file's NAME from the plans of the client home whose `sessions/` records
+the session. A layout the parser does not know is no dialog, and the card says to answer it in the
+session. The card sits in the compose box above its field (`dialog-card.js`), and held sideways
+rises over the top bar with its choices beside what is asked; ✎ and the compose button wear an
+amber dot while Claude asks
+(`a_herdr_dialog_is_answered_from_the_compose_box`). Hooks were measured and not used: a question's
+PreToolUse hook holds the terminal while it waits.
 
 **Text in the preview pane is mdrev's viewer, as a guest** (#270,
 `design/mdrev-in-the-preview-pane.md`; every text file since #s13), and **mdrev is PINNED** (#274, the owner: "only depend on

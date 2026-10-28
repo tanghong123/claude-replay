@@ -503,6 +503,13 @@ struct Proc {
     /// running worker whose parent pid was 1, so the process tree alone would not have said. Set
     /// only when both are present.
     parent_session: Option<String>,
+    /// `CLAUDE_CONFIG_DIR` from the environment: where this Claude process keeps its files (#s301).
+    claude_home: Option<String>,
+    /// `CLAUDE_CONFIG_DIR` was set, but not to an absolute path: where its files are is not known.
+    claude_home_unknown: bool,
+    /// The process's own record, `<claude home>/sessions/<pid>.json`, says it is an interactive
+    /// launch (`entrypoint: cli`), whatever its argv reads like (#s301, `apply_session_files`).
+    cli_launch: bool,
 }
 
 /// A terminal multiplexer that hosts panes (#s226).
@@ -535,12 +542,13 @@ enum DirectoryMatch<'a> {
 /// outside a fork — as a whole token? What lets a consent grant follow a herdr restore, which runs
 /// `claude --resume <id>` (#s234). Stricter than `session_ref` on purpose (the #s234 review): no
 /// bare uuid anywhere in the argv (an interactive prompt may quote another session's id), no
-/// `attach` client, no path form, and no one-shot, whose prompt rides in its argv. Known gap: the
+/// `attach` client, no path form, and no argv with `-p` in it anywhere (`argv_says_one_shot`, never
+/// `one_shot`): a one-shot's prompt rides in its argv, and so does an interactive start prompt. Known gap: the
 /// argv is `ps -o command`'s space-joined line, so a prompt that quotes `--resume <id>` word for word
 /// reads as the flag; that can only mislead the row's badge, since `herdr agent get` must still name
 /// this session before anything is typed (`control::herdr_send_verdict`).
 fn names_exactly(argv: &str, sid: &str) -> bool {
-    if is_one_shot(argv) {
+    if argv_says_one_shot(argv) {
         return false;
     }
     let toks: Vec<&str> = argv.split_whitespace().collect();
@@ -1150,14 +1158,14 @@ impl Index {
                 .filter(|(_, r)| r.one_shot)
                 .filter_map(|(sid, r)| Some((sid.as_str(), r.cwd.as_deref()?, r.first_event?))),
         );
-        let named = st
-            .procs
-            .iter()
-            .filter(|p| is_one_shot(&p.argv))
-            .filter_map(|p| match session_ref(&p.argv) {
-                Some(SessionRef::Exact(sid)) => Some((sid, p.pid)),
-                _ => None,
-            });
+        let named =
+            st.procs
+                .iter()
+                .filter(|p| one_shot(p))
+                .filter_map(|p| match session_ref(&p.argv) {
+                    Some(SessionRef::Exact(sid)) => Some((sid, p.pid)),
+                    _ => None,
+                });
         let found: Vec<(String, u32)> = paired
             .into_iter()
             .map(|(sid, (pid, _))| (sid, pid))
@@ -1236,7 +1244,7 @@ impl Index {
                     is_agent_exe(&p.exe_base, &p.argv)
                         && serves(p, agent)
                         && !is_helper(&p.argv)
-                        && !is_one_shot(&p.argv)
+                        && !one_shot(p)
                         && p.cwd.as_deref() == Some(cwd.as_str())
                 })
                 .collect();
@@ -1909,6 +1917,24 @@ fn annotate_agent_state(root: &mut Value, tracker: &crate::state::StateTracker) 
             row["stateSince"] = json!(since);
             // #s238: herdr's own status decided it, or the monitor derived it.
             row["stateSource"] = json!(if by_herdr { "herdr" } else { "derived" });
+            // #s298: a dialog the reader can answer from the page — a Claude session in a herdr
+            // pane the monitor may type into (`sendsImages` says exactly that), waiting on a
+            // question, a permission or a plan that herdr or the client itself saw, never a guess.
+            use claude_replay_core::state::{AgentState, Confidence, StateReason};
+            let seen = by_herdr || verdict.confidence == Confidence::Observed;
+            let dialog = match verdict.reason {
+                StateReason::Question => Some("question"),
+                StateReason::Permission => Some("permission"),
+                StateReason::PlanApproval => Some("plan"),
+                _ => None,
+            };
+            if let (true, true, Some(dialog)) = (
+                row.get("sendsImages") == Some(&json!(true)),
+                verdict.state == AgentState::Wait && seen,
+                dialog,
+            ) {
+                row["dialog"] = json!(dialog);
+            }
         } else {
             // Non-immediate states pass through a one-tick stability gate. Keep the additive
             // wire shape deterministic during that first scan, while labeling the coarse
@@ -2198,7 +2224,7 @@ fn pair_one_shots<'a>(
     for p in procs {
         let headless_new = is_agent_exe(&p.exe_base, &p.argv)
             && serves(p, Agent::CLAUDE)
-            && is_one_shot(&p.argv)
+            && one_shot(p)
             && !is_helper(&p.argv)
             && session_ref(&p.argv).is_none();
         if let (true, Some(cwd), Some(start)) = (headless_new, p.cwd.as_deref(), p.started) {
@@ -2362,7 +2388,7 @@ fn link(
         named: names_exactly(&p.argv, sid),
         // A helper's pane is the one it INHERITED from the client that spawned it, never
         // where a session's UI is — see `is_helper`.
-        terminal: if is_helper(&p.argv) || is_one_shot(&p.argv) {
+        terminal: if is_helper(&p.argv) || one_shot(p) {
             Terminal::Detached
         } else {
             Terminal::of(p)
@@ -2380,7 +2406,7 @@ fn link(
             Terminal::Detached => 0,
         };
         (
-            if is_helper(&p.argv) || is_one_shot(&p.argv) {
+            if is_helper(&p.argv) || one_shot(p) {
                 0
             } else {
                 rank
@@ -2410,7 +2436,7 @@ fn link(
                 is_agent_exe(&p.exe_base, &p.argv)
                     && serves(p, agent)
                     && !is_helper(&p.argv)
-                    && !is_one_shot(&p.argv)
+                    && !one_shot(p)
                     && p.cwd.as_deref() == Some(cwd)
                     && session_ref(&p.argv).is_none()
                     && !claimed.contains(&p.pid)
@@ -2470,7 +2496,7 @@ fn session_ref(argv: &str) -> Option<SessionRef> {
     }
     // A one-shot's argv carries its PROMPT (#s50): a session id the prompt merely mentions
     // must not name the process. Only the flags above can.
-    if is_one_shot(argv) {
+    if argv_says_one_shot(argv) {
         return None;
     }
     if toks.get(1) == Some(&"attach") {
@@ -2507,14 +2533,73 @@ fn is_helper(argv: &str) -> bool {
             .any(|t| t == "--bg-pty-host" || t == "--bg-spare")
 }
 
-/// A one-shot run, `claude -p` / `--print` (#s50): it answers one prompt and exits. It reads no
-/// pane — a worker a session started from its Bash INHERITS that session's `TMUX_PANE` (measured
-/// on aries-black: knack's workers read as pane %0, their coordinator's) — so, like a helper, it
-/// is never a directory candidate and its terminal is Detached whatever it inherited; a send into
-/// that pane would type into the coordinator. Unless its flags resume a session it starts a NEW
-/// one, which is what pairs it (`pair_one_shots`).
-fn is_one_shot(argv: &str) -> bool {
+/// Whether the ARGV reads as a one-shot run, `claude -p` / `--print` (#s50): a `-p` anywhere in it,
+/// a start prompt's words included, since `ps` joins argv with spaces. Use it where only the argv
+/// matters (what may name a session); for a PROCESS ask `one_shot`, which its own record can
+/// overrule (#s301). A one-shot answers one prompt and exits. It reads no pane — a worker a session
+/// started from its Bash INHERITS that session's `TMUX_PANE` (measured on aries-black: knack's
+/// workers read as pane %0, their coordinator's) — so, like a helper, it is never a directory
+/// candidate and its terminal is Detached whatever it inherited; a send into that pane would type
+/// into the coordinator. Unless its flags resume a session it starts a NEW one, which is what pairs
+/// it (`pair_one_shots`).
+fn argv_says_one_shot(argv: &str) -> bool {
     argv.split_whitespace().any(|t| t == "-p" || t == "--print")
+}
+
+/// A one-shot PROCESS (#s301): `-p`/`--print` in its argv, unless its own record says it is an
+/// interactive launch. `ps` joins argv with spaces, so a start prompt such as "… mkdir -p counts …"
+/// put `-p` in an interactive session's argv, and that session was never linked to its process: no
+/// liveness, no send, no dialog. Without the record (a one-shot writes it only once it is under
+/// way) the argv decides, the safe way: a one-shot read as interactive could be sent to through the
+/// pane it inherited, its starter's.
+fn one_shot(p: &Proc) -> bool {
+    !p.cli_launch && argv_says_one_shot(&p.argv)
+}
+
+/// Read the record Claude Code keeps for each of its processes, `<claude home>/sessions/<pid>.json`
+/// (the home is `CLAUDE_CONFIG_DIR` from the process's environment, else `~/.claude`), for the
+/// processes whose argv reads as a one-shot (#s301). Measured on Claude Code 2.1.312: an interactive
+/// launch writes `"entrypoint": "cli"`, a `claude -p` writes `"sdk-cli"` (both say `kind:
+/// interactive`). A record is believed only when it names this pid and began no earlier than the
+/// process did: a file left by an earlier process with the same pid does not.
+fn apply_session_files(procs: &mut [Proc], default_home: Option<&Path>) {
+    for p in procs.iter_mut() {
+        p.cli_launch = false;
+        // A process with no terminal is never taken for an interactive launch, whatever its record
+        // says (the review of #s301): a worker started from an agent's Bash has none, and one that
+        // inherited "cli" would otherwise depend on the client rewriting it.
+        if proc_agent(p) != Some(Agent::CLAUDE)
+            || !argv_says_one_shot(&p.argv)
+            || p.tty.is_none()
+            || p.claude_home_unknown
+        {
+            continue;
+        }
+        let home = match (&p.claude_home, default_home) {
+            (Some(h), _) => PathBuf::from(h),
+            (None, Some(h)) => h.to_path_buf(),
+            (None, None) => continue,
+        };
+        let path = home.join("sessions").join(format!("{}.json", p.pid));
+        // A plain file of a record's size only: the scan holds the index's lock, and a FIFO there
+        // would block the read for ever (#s266 bounded the scan's probes for the same reason).
+        let small_file =
+            std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= 64 * 1024);
+        let Some(v) = small_file
+            .then(|| std::fs::read(&path).ok())
+            .flatten()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        else {
+            continue;
+        };
+        let own = v.get("pid").and_then(Value::as_u64) == Some(u64::from(p.pid));
+        // Begun with THIS process (measured: about 2 s after it), not before it nor long after.
+        let with_it = match (v.get("startedAt").and_then(Value::as_u64), p.started) {
+            (Some(ms), Some(started)) => ms / 1000 + 5 >= started && ms / 1000 <= started + 60,
+            _ => false,
+        };
+        p.cli_launch = own && with_it && v.get("entrypoint").and_then(Value::as_str) == Some("cli");
+    }
 }
 
 /// The agent a process IS, by its executable — or `None` for one the monitor cannot place (a
@@ -2581,7 +2666,7 @@ fn process_names_session(argv: &str, sid: &str, prefix_unique: &dyn Fn(&str) -> 
 fn unclassified_agent_cwds(procs: &[Proc]) -> HashSet<&str> {
     procs
         .iter()
-        .filter(|p| proc_agent(p).is_none() && !is_helper(&p.argv) && !is_one_shot(&p.argv))
+        .filter(|p| proc_agent(p).is_none() && !is_helper(&p.argv) && !one_shot(p))
         .filter_map(|p| p.cwd.as_deref())
         .collect()
 }
@@ -2748,6 +2833,8 @@ fn scan_procs() -> Vec<Proc> {
         apply_nesting(&mut procs, &run(&["ps", "-axo", "pid=,ppid=,ucomm="]));
     }
     apply_lsof(&mut procs, &run(&lsof_argv(&pids)));
+    let home = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude"));
+    apply_session_files(&mut procs, home.as_deref());
     procs
 }
 
@@ -2924,6 +3011,9 @@ fn parse_ps_with(out: &str, is_file: &dyn Fn(&str) -> bool) -> Vec<Proc> {
             tmux_server_pid: None,
             started: None,
             parent_session: None,
+            claude_home: None,
+            claude_home_unknown: false,
+            cli_launch: false,
         });
     }
     procs
@@ -2987,6 +3077,20 @@ fn apply_env(procs: &mut [Proc], out: &str) {
             }
         }
         p.parent_session = session.filter(|_| child);
+        // #s301: the client's home, read from the ENVIRONMENT alone (`ps eww` prints the command
+        // first, and a prompt may hold "CLAUDE_CONFIG_DIR=…"); a relative one is no answer at all.
+        let env = rest
+            .trim_start()
+            .strip_prefix(p.argv.as_str())
+            .unwrap_or(rest);
+        p.claude_home = None;
+        p.claude_home_unknown = false;
+        for tok in env.split_whitespace() {
+            if let Some(v) = tok.strip_prefix("CLAUDE_CONFIG_DIR=") {
+                p.claude_home_unknown = !v.starts_with('/');
+                p.claude_home = Some(v.to_string()).filter(|v| v.starts_with('/'));
+            }
+        }
     }
 }
 
@@ -5792,11 +5896,11 @@ n/Users/x/proj
         let sid = "19fe604e-d16f-4bbe-adfc-c6ff07463983";
         let brief =
             format!("claude -p Review the run of {sid} and report --output-format stream-json");
-        assert!(is_one_shot(&brief));
+        assert!(argv_says_one_shot(&brief));
         assert_eq!(session_ref(&brief), None);
         let resumed = format!("claude -p next --resume {sid} --output-format stream-json");
         assert_eq!(session_ref(&resumed), Some(SessionRef::Exact(sid.into())));
-        assert!(!is_one_shot(
+        assert!(!argv_says_one_shot(
             "claude --dangerously-skip-permissions --resume"
         ));
         // Linked by its flag, a resumed one-shot is still headless: never the pane it inherited.
@@ -5817,6 +5921,128 @@ n/Users/x/proj
         .expect("link");
         assert!(l.confirmed);
         assert_eq!(l.terminal.kind(), "detached");
+    }
+
+    /// #s301: an interactive launch whose start prompt holds `-p` ("mkdir -p counts") is an
+    /// interactive process once its own record says `entrypoint: cli`, and its session is linked
+    /// in its pane by the directory rule; a `claude -p`'s record (`sdk-cli`), a record left by an
+    /// earlier process with the same pid, or none at all leave the argv's one-shot reading.
+    #[test]
+    fn an_interactive_prompt_holding_dash_p_is_no_one_shot_by_its_own_record() {
+        let home = std::env::temp_dir().join(format!("cm-cli-launch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        let record = |pid: u32, entrypoint: &str, started_ms: u64| {
+            std::fs::write(
+                home.join("sessions").join(format!("{pid}.json")),
+                format!(r#"{{"pid":{pid},"sessionId":"x","entrypoint":"{entrypoint}","kind":"interactive","startedAt":{started_ms}}}"#),
+            )
+            .unwrap();
+        };
+        let launch = "claude --model haiku Count the nests, then run mkdir -p counts";
+        let mut procs = parse_ps(&format!(
+            "  601 {launch}\n  602 {launch}\n  603 claude -p Count the nests\n  604 {launch}\n"
+        ));
+        // Each started 10 s before `now`.
+        apply_tty(
+            &mut procs,
+            "  601 ttys001 00:10\n  602 ttys002 00:10\n  603 ?? 00:10\n  604 ttys004 00:10\n",
+            10_000,
+        );
+        apply_env(
+            &mut procs,
+            &format!(
+                "  601 claude HERDR_PANE_ID=w1:p1 CLAUDE_CONFIG_DIR={home}\n  602 claude CLAUDE_CONFIG_DIR={home}\n  603 claude CLAUDE_CONFIG_DIR={home}\n",
+                home = home.display()
+            ),
+        );
+        record(601, "cli", 9_992_000);
+        record(602, "cli", 5_000_000); // an earlier process with this pid
+        record(603, "sdk-cli", 9_992_000);
+        apply_session_files(&mut procs, None);
+        let shot: Vec<bool> = procs.iter().map(one_shot).collect();
+        assert_eq!(
+            shot,
+            [false, true, true, true],
+            "{:?}",
+            procs.iter().map(|p| p.cli_launch).collect::<Vec<_>>()
+        );
+        // 604 has no CLAUDE_CONFIG_DIR: the default home is read, and holds no record of it.
+        apply_session_files(&mut procs, Some(&home));
+        assert!(one_shot(&procs[3]));
+        // Linked by the directory rule, alone in its cwd.
+        apply_lsof(&mut procs, "p601\nfcwd\nn/w/petrel\n");
+        let l = link(
+            &procs[..1],
+            "5a5a5a5a-0000-4000-8000-000000000601",
+            Agent::CLAUDE,
+            Path::new("/n.jsonl"),
+            Some("/w/petrel"),
+            DirectoryMatch::Unclaimed(&HashSet::new()),
+            &|_| true,
+        )
+        .expect("linked");
+        assert_eq!(l.pid, 601);
+        assert!(l.confirmed);
+
+        // The integrated growth matcher must use the same process classification as link:
+        // a start prompt's `-p` cannot exclude an interactive process from growth evidence.
+        let idx = Index::new(home.join("cache"), home.join("state"), Vec::new());
+        let mut st = State {
+            procs: vec![procs.remove(0)],
+            ..State::default()
+        };
+        st.rows
+            .insert("interactive".into(), growth_row("/w/petrel", true));
+        idx.prove_by_growth(&mut st);
+        assert_eq!(
+            st.rows["interactive"]
+                .proved_pid
+                .as_ref()
+                .map(|(pid, _)| *pid),
+            Some(601)
+        );
+
+        // The review of #s301: what a `cli` record cannot overrule. Each process below has a
+        // record saying `cli`, begun with it, yet stays a one-shot.
+        let mut more = parse_ps(&format!(
+            "  611 {launch}\n  612 {launch}\n  613 {launch}\n  614 {launch}\n  615 {launch} CLAUDE_CONFIG_DIR={h}\n  616 {launch}\n  617 {launch}\n",
+            h = home.display()
+        ));
+        apply_tty(
+            &mut more,
+            // 611 has no terminal (a worker started from an agent's Bash); 612 no known start.
+            "  611 ?? 00:10\n  613 ttys013 00:10\n  614 ttys014 00:10\n  615 ttys015 00:10\n  616 ttys016 00:10\n  617 ttys017 00:10\n",
+            10_000,
+        );
+        let env = |pid: u32, extra: &str| format!("  {pid} {launch} {extra}\n");
+        let mut env_out = String::new();
+        for pid in [611, 612, 614, 617] {
+            env_out += &env(pid, &format!("CLAUDE_CONFIG_DIR={}", home.display()));
+        }
+        // 613: a relative home is no answer; 615: the home named in its PROMPT, not its environment.
+        env_out += &env(613, "CLAUDE_CONFIG_DIR=relative/home");
+        // Its argv ends "… CLAUDE_CONFIG_DIR=<home>", and its environment holds none.
+        env_out += &format!(
+            "  615 {launch} CLAUDE_CONFIG_DIR={} TERM=xterm\n",
+            home.display()
+        );
+        apply_env(&mut more, &env_out);
+        for pid in 611..=617 {
+            record(pid, "cli", 9_992_000);
+        }
+        // 614: the record names another pid; 616: not JSON; 617: begun long after this process.
+        std::fs::write(
+            home.join("sessions/614.json"),
+            r#"{"pid":999,"entrypoint":"cli","startedAt":9992000}"#,
+        )
+        .unwrap();
+        std::fs::write(home.join("sessions/616.json"), "{not json").unwrap();
+        record(617, "cli", 9_995_000_000);
+        apply_session_files(&mut more, None);
+        let held: Vec<(u32, bool)> = more.iter().map(|p| (p.pid, one_shot(p))).collect();
+        assert!(held.iter().all(|(_, shot)| *shot), "{held:?}");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// #s50: two one-shots started inside each other's window each take a session — both are
@@ -6452,6 +6678,101 @@ n/Users/x/proj
         idx.assemble(&st, &mut facts);
         assert_eq!(facts.iter().find(|f| f.sid == "current").unwrap().pid, None);
         std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    /// #s298: a row says `dialog` — question, permission or plan — only for a session the page can
+    /// answer (`sendsImages`: a Claude session in a herdr pane it may type into) and only for a
+    /// wait herdr or the client itself saw; an inferred permission, a busy session or a row it
+    /// cannot type into says nothing.
+    #[test]
+    fn a_row_offers_a_dialog_only_where_one_was_seen_and_can_be_answered() {
+        use claude_replay_core::state::{AgentState, Confidence, StateReason, Verdict};
+        let v = |state, reason, confidence| Verdict {
+            state,
+            reason,
+            detail: String::new(),
+            confidence,
+        };
+        let mut tracker = crate::state::StateTracker::default();
+        let cases = [
+            (
+                "q",
+                true,
+                v(
+                    AgentState::Wait,
+                    StateReason::Question,
+                    Confidence::Observed,
+                ),
+                false,
+                Some("question"),
+            ),
+            (
+                "p",
+                true,
+                v(
+                    AgentState::Wait,
+                    StateReason::PlanApproval,
+                    Confidence::Observed,
+                ),
+                false,
+                Some("plan"),
+            ),
+            (
+                "h",
+                true,
+                v(
+                    AgentState::Wait,
+                    StateReason::Permission,
+                    Confidence::Inferred,
+                ),
+                true,
+                Some("permission"),
+            ),
+            (
+                "g",
+                true,
+                v(
+                    AgentState::Wait,
+                    StateReason::Permission,
+                    Confidence::Inferred,
+                ),
+                false,
+                None,
+            ),
+            (
+                "b",
+                true,
+                v(AgentState::Busy, StateReason::Tool, Confidence::Observed),
+                true,
+                None,
+            ),
+            (
+                "t",
+                false,
+                v(
+                    AgentState::Wait,
+                    StateReason::Question,
+                    Confidence::Observed,
+                ),
+                false,
+                None,
+            ),
+        ];
+        let mut rows = Vec::new();
+        for (sid, answerable, verdict, by_herdr, _) in &cases {
+            tracker.publish(sid, verdict.clone(), *by_herdr);
+            rows.push(if *answerable {
+                json!({"id": sid, "sendsImages": true})
+            } else {
+                json!({"id": sid})
+            });
+        }
+        let mut root = json!({"groups": [{"rows": rows}]});
+        annotate_agent_state(&mut root, &tracker);
+        for (i, (sid, _, _, _, want)) in cases.iter().enumerate() {
+            let row = &root["groups"][0]["rows"][i];
+            assert_eq!(row["dialog"].as_str(), *want, "{sid}: {row}");
+        }
     }
 
     /// #s234's review: only the flags a launch passes name a session for a grant to follow — never
