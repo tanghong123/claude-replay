@@ -445,6 +445,9 @@ export class RecordStore {
       read.next += records.length;
       read.at += whole.length;
       head.held += whole.length;
+      // A visit that takes the page past what it keeps ends the background read too: what is let go
+      // for it is never read again behind the reader's back.
+      if (head.held > this.keepBytes) head.full = true;
       this.handlers.filled?.();
       return true;
     };

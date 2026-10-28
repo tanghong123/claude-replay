@@ -1180,30 +1180,47 @@ fn the_turn_the_tail_goes_on_with_is_never_let_go() {
     );
 }
 
-/// #s285: a task whose status was recorded in a turn the page never read (the background read stops
-/// at what the page keeps, far below it) is still found: the task's "Go to the turn" asks the server
-/// where it was last recorded, reads that turn and lands there. Before, it said "still loading" for as
-/// long as the head was out, which over the budget is for good.
+/// #s285: a task whose status was recorded in turns the page never read (the background read stops at
+/// what the page keeps, far below them) is still found: the task's "Go to the turn" asks the server
+/// where it was last recorded, reads that turn and lands there. Claude Code names the task's subject
+/// only where it is created (turn 3); a later TaskUpdate carries `{taskId, status}`, drawn as `#1`
+/// (turn 10), and that latest one is where the jump lands. Before, it said "still loading" for as long
+/// as the head was out, which over the budget is for good.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_task_recorded_in_a_turn_never_read_is_found_on_the_server() {
     const SUBJECT: &str = "settle the drawer offsets";
     let _serial = serial();
-    // Turn 3 records the task's status.
     let mut lines: Vec<String> = session(120).lines().map(|l| format!("{l}\n")).collect();
-    let at = lines
-        .iter()
-        .position(|l| l.contains("question 2:"))
-        .expect("turn 3's prompt");
-    let ts = lines[at]
-        .split("\"timestamp\":\"")
-        .nth(1)
-        .and_then(|t| t.split('"').next())
-        .expect("its timestamp")
-        .to_string();
-    lines.insert(
-        at + 1,
-        harness::named_tool_at("tu3", "TaskUpdate", SUBJECT, &ts),
+    // After turn `n`'s prompt, a call named `name` with `input` and its result.
+    let mut call_after = |n: u32, id: &str, name: &str, input: &str, result: &str| {
+        let at = lines
+            .iter()
+            .position(|l| l.contains(&format!("question {}:", n - 1)))
+            .expect("the turn's prompt");
+        let ts = lines[at]
+            .split("\"timestamp\":\"")
+            .nth(1)
+            .and_then(|t| t.split('"').next())
+            .expect("its timestamp")
+            .to_string();
+        lines.insert(at + 1, format!("{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"{name}\",\"input\":{input}}}]}},\"timestamp\":\"{ts}\"}}\n{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"{result}\"}}]}},\"timestamp\":\"{ts}\"}}\n"));
+    };
+    call_after(
+        3,
+        "tc1",
+        "TaskCreate",
+        &format!(
+            "{{\"subject\":\"{SUBJECT}\",\"description\":\"so a drawer opens where it was\"}}"
+        ),
+        &format!("Task #1 created successfully: {SUBJECT}"),
+    );
+    call_after(
+        10,
+        "tu1",
+        "TaskUpdate",
+        "{\"taskId\":\"1\",\"status\":\"in_progress\"}",
+        "Updated task #1 status",
     );
     let (_m, _b, tab, _) = open_with_tasks(
         2783,
@@ -1223,9 +1240,9 @@ fn a_task_recorded_in_a_turn_never_read_is_found_on_the_server() {
     );
     release_until_quiet(&tab, "the background read to stop");
     assert_eq!(
-        harness::eval(&tab, "!!document.querySelector('#navigatorTurns .outline-turn-pending[data-turn-number=\"3\"]')").as_bool(),
+        harness::eval(&tab, "!!document.querySelector('#navigatorTurns .outline-turn-pending[data-turn-number=\"3\"]') && !!document.querySelector('#navigatorTurns .outline-turn-pending[data-turn-number=\"10\"]')").as_bool(),
         Some(true),
-        "turn 3 is never read: {}",
+        "turns 3 and 10 are never read: {}",
         harness::eval(&tab, STATE)
     );
     harness::eval(&tab, "var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); 'ok'");
@@ -1254,7 +1271,7 @@ fn a_task_recorded_in_a_turn_never_read_is_found_on_the_server() {
         "the jump is offered, to be found on the server: {}",
         harness::eval(&tab, "document.getElementById('taskPopover').innerText")
     );
-    let o3 = turn_offset(&tab, 3);
+    let o10 = turn_offset(&tab, 10);
     harness::eval(
         &tab,
         "document.querySelector('#taskPopover [data-task-find]').click(); 'ok'",
@@ -1262,29 +1279,23 @@ fn a_task_recorded_in_a_turn_never_read_is_found_on_the_server() {
     harness::until(
         &tab,
         "window.__heldReads.length >= 1",
-        "turn 3's read asked for",
+        "a turn's read asked for",
         Duration::from_secs(10),
         STATE,
     );
     assert_eq!(
         harness::eval(&tab, "window.__heldReads[0].from").as_i64(),
-        Some(o3),
-        "the turn that recorded the task is read: {}",
+        Some(o10),
+        "the turn that last recorded the task's status is read, not the one that created it: {}",
         harness::eval(&tab, "JSON.stringify(window.__readLog)")
     );
-    release_until_quiet(&tab, "turn 3 to be read");
+    release_until_quiet(&tab, "turn 10 to be read");
     harness::until(
         &tab,
-        "((document.querySelector('#navigatorTurns .outline-turn-row.current') || {}).dataset || {}).turnNumber === '3'",
-        "the reader on turn 3",
+        "((document.querySelector('#navigatorTurns .outline-turn-row.current') || {}).dataset || {}).turnNumber === '10'",
+        "the reader on turn 10",
         Duration::from_secs(10),
         STATE,
-    );
-    let shown = harness::eval(&tab, &format!("(function(){{ var s = document.querySelector('.transcript').getBoundingClientRect(); return [].some.call(document.querySelectorAll('.virtual-window *'), function (e) {{ if (e.children.length || e.textContent.indexOf('{SUBJECT}') < 0) return false; var r = e.getBoundingClientRect(); return r.bottom > s.top && r.top < s.bottom; }}); }})()"));
-    assert_eq!(
-        shown.as_bool(),
-        Some(true),
-        "the record that names the task is on the screen"
     );
     assert_eq!(
         harness::eval(&tab, VIOLATIONS).as_str(),

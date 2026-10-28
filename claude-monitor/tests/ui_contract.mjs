@@ -1946,7 +1946,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // reader closed a moment ago, and a record that arrives under a filter must still be added.
   // What this filter has already opened is remembered beyond the records here (#s285): a turn let go
   // and read again brings its ids back, and they are not new.
-  assert.match(app, /const seen = before && recordState\.filterSeen \? recordState\.filterSeen : \(recordState\.filterSeen = new Set\(\)\);/, "a fresh filter starts what it has opened afresh");
+  assert.match(app, /const seen = before && recordState\.filterSeen\?\.tools === tools \? recordState\.filterSeen\.ids : new Set\(before \|\| \[\]\);/, "a fresh filter starts what it has opened afresh, and other tools from the hits before them");
   assert.match(app, /for \(const id of hits\) if \(!seen\.has\(id\)\) \{ seen\.add\(id\); recordState\.folds\.set\(id, false\); opened = true; \}/, "every record newly on a chain opens");
   assert.match(app, /if \(recordState\.filterOpened\) viewport\.rerender\(\);/, "…and a fold opened for an ARRIVING record reaches the DOM, which only a render does");
   assert.match(app, /function refreshFilterHits\(\) \{/, "…and records arriving under a filter join it");

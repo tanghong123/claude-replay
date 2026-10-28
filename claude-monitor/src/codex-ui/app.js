@@ -1035,8 +1035,10 @@ function wantWindow() {
   owed.sort((x, y) => Math.abs(y - at) - Math.abs(x - at));
   recordStore.unwant();
   for (const i of owed) recordStore.want(units[i].from, units[i].to + 1, 1);
-  // A held turn, record or search hit, and a link on its way, keep their asks while they wait.
-  for (const r of [heldTurnJump?.record, hashWait?.record]) {
+  // A held turn, record or search hit, and a link on its way, keep their asks while they wait —
+  // not once the reader has moved since, which gives them up.
+  const waiting = [heldTurnJump, hashWait].filter(jump => jump && viewport.lastUserInput <= jump.at);
+  for (const r of waiting.map(jump => jump.record)) {
     const unit = r == null ? null : units[unitAt(r)];
     if (unit?.owed > 0) recordStore.want(unit.from, unit.to + 1, 0);
   }
@@ -1097,29 +1099,41 @@ function jumpOrFetch(r, reveal) {
   return landed;
 }
 
-/** The kinds of record `taskRecordTargets` reads a task's status from: a task, a tool call (a plan or
- *  todo update), or an agent call named for one. */
-const TASK_RECORD_KINDS = new Set(["task", "tool", "agent"]);
+/** The kinds of record a task's status is read from on the server: a task, or a tool call (Claude
+ *  Code's TaskCreate and TaskUpdate, a todo or plan update). */
+const TASK_RECORD_KINDS = new Set(["task", "tool"]);
+/** The ask `findTaskRecord` has out: a later click, or the reader moving on, sets it aside. */
+let taskFind = null;
 /** #s285: where a task's status was last recorded while a records-by-turn head is out and the page
- *  does not hold it — the latest record below the head's boundary that mentions the task (its
- *  subject, else `#<id>`), of a kind `taskRecordTargets` reads, asked of the server's search, which
- *  answers for every record of the head whether read or not. Then the jump any target takes. */
-async function findTaskRecord(task) {
+ *  does not hold that record. Asked of the server's search, which answers for every record of the
+ *  head whether read or not, by what `taskRecordTargets` matches: the task's subject (which only its
+ *  creation carries) and `#<id>` as a whole word (which every TaskUpdate does, `{taskId, status}`).
+ *  The latest of those, or of a held record below the boundary, is jumped to as any target is. */
+async function findTaskRecord(task, key) {
   const head = recordStore.head, owed = owedIndex(), session = recordState.session;
+  const held = recordState.taskTargets.get(key) ?? -1;
   const subject = String(task.subject || task.title || "").trim().toLowerCase();
   const id = String(task.id ?? "").trim().toLowerCase();
-  const lc = subject || (id ? `#${id}` : "");
-  if (!head || !owed || !lc) return;
-  let found = null;
+  const asks = [];
+  if (subject) asks.push({ lc: subject, whole: false, wanted: 0, tools: [] });
+  if (id) asks.push({ lc: `#${id}`, whole: true, wanted: 0, tools: [] });
+  if (!head || !owed || !asks.length) return;
+  const mine = taskFind = { at: performance.now() };
+  let replies = null;
   try {
-    const q = { lc, whole: false, wanted: 0, tools: [] };
-    const response = await fetch(`/search?session=${encodeURIComponent(session)}&epoch=${head.epoch}&upto=${owed.upto}&q=${encodeURIComponent(JSON.stringify(q))}`, { cache: "no-store" });
-    if (response.ok) found = await response.json();
+    replies = await Promise.all(asks.map(q => fetch(`/search?session=${encodeURIComponent(session)}&epoch=${head.epoch}&upto=${owed.upto}&q=${encodeURIComponent(JSON.stringify(q))}`, { cache: "no-store" })
+      .then(response => (response.ok ? response.json() : Promise.reject(response.status)))));
   } catch (_) {}
-  if (recordState.session !== session || recordStore.head !== head) return;
-  if (!found) { toast("Could not ask the monitor where the task was recorded — try again"); return; }
-  let best = -1;
-  for (const [r] of found.records || []) if (r > best && TASK_RECORD_KINDS.has(owed.facts?.[r]?.[0])) best = r;
+  if (taskFind !== mine || recordState.session !== session) return;
+  taskFind = null;
+  // The reader moved on while it was asked: they are not taken back.
+  if (viewport.lastUserInput > mine.at) return;
+  // The head landed meanwhile: the page's own target is whole now.
+  if (!recordStore.head) { const target = recordState.taskTargets.get(key); if (target != null) jumpOrFetch(target, "task"); return; }
+  if (recordStore.head !== head) return;
+  if (!replies) { toast("Could not ask the monitor where the task was recorded — try again"); return; }
+  let best = held;
+  for (const found of replies) for (const [r] of found.records || []) if (r > best && TASK_RECORD_KINDS.has(owed.facts?.[r]?.[0])) best = r;
   if (best < 0) { toast("This record stream did not keep where the task's status was set"); return; }
   jumpOrFetch(best, "task");
 }
@@ -2798,8 +2812,11 @@ function computeFilterHits() {
   const before = recordState.filterHits;
   // Every record id this filter has opened, kept beyond the hits of the records here (#s285): a turn
   // let go and read again brings its ids back, which are not new, so a fold the reader closed stays
-  // closed and nothing is redrawn for it. A fresh filter starts it again.
-  const seen = before && recordState.filterSeen ? recordState.filterSeen : (recordState.filterSeen = new Set());
+  // closed and nothing is redrawn for it. A fresh filter starts it again, and other tools start it
+  // from the hits before them, as they always did.
+  const tools = JSON.stringify(wanted);
+  const seen = before && recordState.filterSeen?.tools === tools ? recordState.filterSeen.ids : new Set(before || []);
+  recordState.filterSeen = { tools, ids: seen };
   const hits = new Set(), direct = new Set(), indices = [];
   // An EMPTY list means "every tool" to the shared matcher, so no tools must match nothing here.
   if (wanted.length) recordState.records.forEach((record, index) => { if (filterChain(record, wanted, hits, direct)) indices.push(index); });
@@ -3637,7 +3654,7 @@ taskPopover.addEventListener("click", event => {
   const jump = event.target.closest("[data-task-record]");
   if (jump) { const at = Number(jump.dataset.taskRecord); closeTaskPopover(false); jumpOrFetch(at, "task"); return; }
   const find = event.target.closest("[data-task-find]");
-  if (find) { const task = (recordState.meta?.tasks || [])[Number(find.dataset.taskFind)]; closeTaskPopover(false); if (task) findTaskRecord(task); }
+  if (find) { const index = Number(find.dataset.taskFind), task = (recordState.meta?.tasks || [])[index]; closeTaskPopover(false); if (task) findTaskRecord(task, String(task.id ?? index)); }
 });
 document.addEventListener("keydown", event => { if (event.key === "Escape" && !taskPopover.hidden) { event.stopPropagation(); closeTaskPopover(); } }, true);
 document.addEventListener("pointerdown", event => { if (!taskPopover.hidden && !taskPopover.contains(event.target) && !event.target.closest("[data-task-open]")) closeTaskPopover(false); });
