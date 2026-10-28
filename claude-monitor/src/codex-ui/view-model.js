@@ -320,7 +320,8 @@ export function viewRecord(record) {
     // saying what they were, each measured 92px wider than the card it sat in. The head is the
     // same either way — what a record IS does not depend on whether it kept its content — and
     // only the body still turns on `isPointerAttachment` (components.js).
-    const view = rendererRecord(record, "attachment", head.att_kind || "file");
+    // #s296: `edited` is the client telling the model a file changed on disk, not an edit.
+    const view = rendererRecord(record, "attachment", head.att_kind === "edited" ? "changed on disk" : head.att_kind || "file");
     // `att_name` first: the adapter already puts the DISPLAY path there (`displayPath`), which
     // is what a reader wants to see; the absolute path is the fallback when there is no name.
     view.summary = head.att_name || head.att_path || "";

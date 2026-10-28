@@ -492,7 +492,7 @@ fn pulse_within(adapter: &dyn TranscriptAdapter, path: &Path, window: u64) -> Op
                 last_user = true;
                 saw_conversation = true;
             }
-            Message::AssistantText(t) => {
+            Message::AssistantText(t) | Message::AssistantCutOff(t) => {
                 last_user = false;
                 saw_conversation = true;
                 pulse.final_text = Some(t.clone());

@@ -1773,3 +1773,17 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    font, so the labels stay in line; a session under 100 turns keeps its 24px column. */
 #app .outline-turn-row{grid-template-columns:minmax(24px,max-content) minmax(0,1fr) auto}
 #app .outline-turn-row .outline-number{white-space:nowrap;min-width:calc((var(--outline-digits,2) + 2) * 1ch)}
+/* #s305: a reply the person cut off mid-stream ends with a note saying so. Inside an assistant reply
+   it is one quiet line, as the classic page draws it (the result mark and the words, dim mono),
+   never the bordered card a note is elsewhere, and it sits close under the prose it ends. */
+.turn.assistant>.body>.renderer-note{display:flex;gap:8px;margin:0 0 6px;padding:0;border:0;border-radius:0;background:none;font:11.5px/1.6 var(--mono);color:var(--faint)}
+.turn.assistant>.body>.renderer-note::before{content:"⎿";flex:none}
+.turn.assistant>.body>.renderer-note p{margin:0;font:inherit}
+.turn.assistant>.body>*:has(+.renderer-note:last-child){margin-bottom:4px}
+
+/* #s296: a file changed on disk that the client told the agent about, drawn after a prompt as a
+   line of its own below the turn, from the left: it is the client speaking, never the person's
+   attachment (`promptNoticesHtml`). The prompt's row wraps to take it. */
+#app .turn.user:has(> .turn-notice){flex-wrap:wrap}
+#app .turn-notice{flex:0 0 100%;order:3;margin:6px 0 0;color:var(--faint);font:12px/1.45 var(--sans);text-align:left}
+#app .turn-notice-file{padding:0;border:0;background:none;color:var(--sub);font:inherit;cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px}

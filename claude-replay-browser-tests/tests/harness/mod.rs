@@ -205,11 +205,11 @@ pub fn queued_at(t: &str, ts: &str) -> String {
 pub fn compaction_at(ts: &str) -> String {
     format!("{{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"timestamp\":\"{ts}\",\"content\":\"Conversation compacted\",\"compactMetadata\":{{\"trigger\":\"auto\",\"preTokens\":594718,\"postTokens\":8617}}}}\n")
 }
-/// A file the reader had OPEN IN THEIR EDITOR when they sent the prompt — Claude Code records it
-/// as a standalone `attachment` event right after the user message, and both pages hang it off
-/// that prompt. `edited_text_file` is path-only by design (the inline `snippet` is truncated), so
-/// the engine gives it `AttachmentKind::Edited` and no bytes: the card's whole job is to say the
-/// file was edited and offer a way to it.
+/// Claude Code's notice to the model that a file it had read CHANGED ON DISK since (#s296; it was
+/// once taken for a file open in the reader's editor): an `edited_text_file` attachment, written
+/// on the first turn after the change, often right after the prompt. Path-only, so the engine
+/// gives it `AttachmentKind::Edited` and no bytes; the pages draw it as a notice, never as a file
+/// the person attached.
 pub fn edited_file_at(path: &str, ts: &str) -> String {
     format!(
         "{{\"type\":\"attachment\",\"timestamp\":\"{ts}\",\"attachment\":{{\"type\":\"edited_text_file\",\"filename\":\"{path}\",\"snippet\":\"1\\tintro\"}}}}\n"

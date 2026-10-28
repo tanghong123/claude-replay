@@ -215,6 +215,9 @@ impl<'a> Replayer<'a> {
                 Message::AssistantText(t) => {
                     self.out.push(Block::AssistantText(t.clone()));
                 }
+                Message::AssistantCutOff(t) => {
+                    self.out.push(Block::AssistantCutOff(t.clone()));
+                }
                 Message::AssistantMessage {
                     text,
                     phase,
