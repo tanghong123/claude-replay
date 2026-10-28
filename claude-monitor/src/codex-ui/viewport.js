@@ -4,6 +4,7 @@ import { clampPrompts, renderUnit } from "./components.js";
 // scroll rules for both pages. What reads layout and what writes the DOM stays here.
 import { VirtualWindow, elementFrame, mountEverythingRequested } from "./shared/virtual-window.js";
 import { renderMermaid } from "./shared/mermaid.js";
+import { placeholderUnit } from "./view-model.js";
 
 export function revealNavigationContext(units, index, state, recordIndex, reveal = "record") {
   const unit = units[index];
@@ -47,7 +48,9 @@ import { applyViewChoices, parseViewMemory, serializeViewMemory, viewChoices, vi
 // what displaces a reader when a run mounted above them is measured (#180 measured 2355px and
 // 2854px of drift here for a 900px request). The shell before #107 guessed 132px for everything,
 // which was the wrong side of the old rule and the wrong distance from this one.
-const ESTIMATES = { user: 44, assistant: 40, process: 34 };
+// The tail-first open's pending card (#314) is a kind of its own: its 84px (a 64px minimum and its
+// margins) used to fall through to the process mean, which it then taught (#s277).
+const ESTIMATES = { user: 44, assistant: 40, process: 34, pending: 84 };
 const ESTIMATE = 34;
 const REMEMBER_MS = 250;
 const OVERSCAN = 1500;
@@ -231,6 +234,9 @@ export class Viewport extends VirtualWindow {
    *  three populations with three different shapes, and one mean over all of them would be wrong
    *  about each. The shell names the kind; the engine keeps the means (#196 stage 3). */
   kindOf(index) { return this.units[index]?.type; }
+  /** Stage 2 (#s277, design/slow-links.md §6.2): a unit some of whose records have not arrived is a
+   *  placeholder — drawn at its height in the sums, never measured, never learned from. */
+  placeholderAt(index) { return placeholderUnit(this.units[index]); }
   /** A unit in this shell's vocabulary, for the history (#197, design/viewport-history.md §3): its
    *  type, its turn, the records it spans and their kinds (an assistant's commentary phase folded
    *  into its kind — it is what puts the text among the process rows) — a process group is one
@@ -312,7 +318,7 @@ export class Viewport extends VirtualWindow {
    *  heights are this shell's, so it says). A remembered position, once its unit has streamed in,
    *  is the command it already was: the swap first — `jumpTo` checks the index against the count
    *  — and no mount before it, so the estimator learns nothing a restore never taught it. */
-  setUnits(units, changedUnit = 0, shift = 0) {
+  setUnits(units, changedUnit = 0, shift = 0, renamed = null) {
     this.empty.hidden = true;
     if (this.pendingView) { applyViewChoices(this.state, this.pendingView); this.pendingView = null; }
     const swap = () => {
@@ -331,7 +337,7 @@ export class Viewport extends VirtualWindow {
       for (const child of this.window.children) this.stampNeighbours(child, Number(child.dataset.unitIndex));
       // #314: a tail-first open's head landed — `shift` more units stand where its pending card
       // stood, and the engine moves the reader's position with the index space, not the reader.
-      return shift ? { from: changedUnit, shift } : changedUnit;
+      return shift ? { from: changedUnit, shift, renamed } : changedUnit;
     };
     if (!units.length) {
       this.recordsChanged(swap);
@@ -370,8 +376,12 @@ export class Viewport extends VirtualWindow {
   jumpToRecord(recordIndex, reveal = "record") {
     const index = this.units.findIndex(unit => recordIndex >= unit.from && recordIndex <= unit.to);
     // A record the head of a tail-first open still owes is not a place to land (#314): the caller
-    // tries again once it has arrived, as a link to it does.
+    // tries again once it has arrived, as a link to it does. A TURN still on its way is (#s277,
+    // design/slow-links.md §6.5): its placeholder shows the prompt's label and keeps its top while
+    // the turn fills under the landing; a record inside one needs its row and the folds around it,
+    // which only the real unit has.
     if (index < 0 || this.units[index].type === "pending") return false;
+    if (this.placeholderAt(index) && !(reveal === "turn" && this.units[index].type === "user")) return false;
     // Outline navigation reveals one deliberate level of context. A turn opens its following
     // process list (including progressive items), while a task/agent/search hit additionally
     // opens the exact execution block. These are monotonic opens: an existing Expand all state

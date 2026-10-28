@@ -11,11 +11,12 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .markdown-table-scroll{width:100%;max-width:100%;margin:14px 0 18px;overflow-x:auto;border-radius:10px}.markdown-table-scroll>table{display:table!important;width:100%!important;min-width:100%;margin:0!important;overflow:visible!important}
 .transcript{overflow-anchor:none}.virtual-pad{width:1px;pointer-events:none}.virtual-window{display:block}.monitor-empty{min-height:280px;display:grid;place-content:center;justify-items:center;gap:6px;padding:32px;color:var(--faint);text-align:center}.monitor-empty[hidden]{display:none!important}.monitor-empty strong{color:var(--sub);font-size:13px}.monitor-empty span{max-width:430px;font-size:11px}.monitor-error{color:var(--red)}.monitor-disabled{opacity:.48;cursor:not-allowed!important}.monitor-disabled-note{margin:7px 0;padding:9px 11px;border:1px solid var(--process-content-border,var(--line));border-radius:8px;background:var(--process-control-bg,var(--panel));color:var(--faint);font-size:11px}.fallback-raw{max-height:260px;overflow:auto;white-space:pre-wrap}.search-scope-note{padding:8px 10px;color:var(--faint);font-size:10.5px}.preview-error{min-height:240px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:7px;padding:28px;color:var(--sub);font-size:12px}.preview-error strong{color:var(--ink);font-size:14px}.preview-error>span{max-width:340px;line-height:1.6}.preview-error-actions{display:flex;gap:7px;margin-top:7px}.artifact-text{white-space:pre-wrap;font:12px/1.7 var(--mono)}.artifact-image{display:block;max-width:100%;height:auto;margin:0 auto}.artifact-html-frame{display:block;width:100%;height:100%;min-height:420px;border:0;background:#fff}.outline-placeholder{padding:9px 11px;color:var(--faint);font-size:10.5px}.session-state.inferred{box-shadow:0 0 0 1px currentColor;background:transparent}.process-surface[data-prod-sticky="true"] .process-surface-headbar{position:sticky;top:0;z-index:3}.write-help.show{display:block}.composer.production-show{display:block}.confirm-layer.production-open,.search-layer.production-open{display:grid}.search-layer.production-open{display:flex}.preview-body.production-loading{display:grid;place-items:center;color:var(--faint)}.passcode-input{width:100%;height:38px;margin:-7px 0 14px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);outline:0}.passcode-input:focus{border-color:var(--blue)}.production-revoke{margin-left:auto;border:0;background:transparent;color:var(--faint);font:10px var(--sans);cursor:pointer}.production-revoke:hover{color:var(--red)}
 /* #s236 (Hong: the compose box said too much, and "writes to live tmux" for a herdr pane): the head is the
-   session's name alone, the foot ONE line from `composeTargetLine` (amber for a live pane), and the
+   session's name alone, the foot ONE line from `composeTargetLine` (amber for a live pane; on a
+   desktop it sits in the caption row beside the name, #s245), and the
    reference's static "· writes to live tmux" and its inert "＋" are gone. */
 #app .composer>.composer-head>span,#app .composer .risk,#app .composer .compose-foot:before{display:none}
 #app .composer.live #composeTarget{color:var(--amber)}
-/* #s237: images for a Claude session in a herdr pane: the attach control leads the foot, the strip sits above the field. */
+/* #s237: images for a Claude session in a herdr pane: the attach control leads the foot (inside the field at its left, on a desktop as on a phone, #s245), the strip sits above the field. */
 #app .composer .compose-attach{flex:none;width:30px;height:30px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--sub);display:grid;place-items:center;cursor:pointer}
 #app .composer .compose-attach:hover{background:var(--hover);color:var(--ink)}
 #app .composer .compose-attach[hidden]{display:none}
@@ -27,6 +28,30 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
 #app .compose-image img{display:block;width:100%;height:100%;object-fit:cover}
 #app .compose-image-loading{display:grid;place-content:center;height:100%;font-size:10px;color:var(--sub)}
 #app .compose-image-remove{position:absolute;right:0;top:0;width:24px;height:24px;padding:0;border:0;border-radius:0 0 0 8px;background:var(--bg);color:var(--ink);font-size:18px;line-height:1;cursor:pointer}
+/* #s245 (Hong, 2026-10-25, at about 2000px): on a desktop the open box was centred on the whole
+   workspace, so it lay over the outline column, and stood 169px tall over the transcript's last
+   lines. It keeps to the session's reading column now (`--compose-x`/`-w`/`-bottom`, measured by
+   `placeDeskCompose` in app.js), one caption line (the session's name, where the message goes, a
+   pane grant's revoke, ✕; the name gives way first) over ONE line of field that grows with the draft
+   to a cap (`--compose-cap`, a share of the column) and then scrolls, the send beside it rather than
+   over its scrollbar; and the transcript ends above it (`--compose-room`, never less than the 140px
+   it keeps without the box), pushed up rather than covered. Native mode lays out its own. */
+@media(min-width:761px) and (min-height:501px),(min-width:761px) and (pointer:fine){
+  body:not([data-shared-codex]) #app .workspace .composer.production-show{left:var(--compose-x,50%);bottom:var(--compose-bottom,17px);width:var(--compose-w,min(880px,calc(100% - 44px)));max-width:none;min-height:0;display:grid;grid-template-columns:fit-content(25%) minmax(0,1fr) auto auto;grid-template-areas:"title target revoke close" "images images images images" "field field field field";align-items:center;column-gap:8px;row-gap:1px;padding:4px 7px 7px 13px;border-radius:14px}
+  body:not([data-shared-codex]) #app .composer.production-show>:is(.composer-head,.compose-foot){display:contents}
+  body:not([data-shared-codex]) #app .composer.production-show>.compose-note{display:none}
+  body:not([data-shared-codex]) #app .composer.production-show #composerTitle{grid-area:title;min-width:0;font-size:11px}
+  body:not([data-shared-codex]) #app .composer.production-show #composeTarget{grid-area:target;min-width:0;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  body:not([data-shared-codex]) #app .composer.production-show .production-revoke{grid-area:revoke}
+  body:not([data-shared-codex]) #app .composer.production-show #closeComposer{grid-area:close;width:24px;height:24px}
+  body:not([data-shared-codex]) #app .composer.production-show .compose-images{grid-area:images}
+  body:not([data-shared-codex]) #app .composer.production-show textarea{grid-area:field;box-sizing:border-box;width:auto;min-height:0;max-height:var(--compose-cap,min(264px,32vh));margin-right:38px;padding:6px 4px 6px 0;font-size:14px;line-height:21px;overflow-y:auto}
+  body:not([data-shared-codex]) #app .composer.production-show.attachable textarea{padding-left:32px}
+  body:not([data-shared-codex]) #app .composer.production-show #sendBtn{grid-area:field;justify-self:end;align-self:end;width:30px;height:30px;margin:0 0 1px}
+  body:not([data-shared-codex]) #app .composer.production-show .compose-attach{grid-area:field;justify-self:start;align-self:end;margin:0 0 1px -6px}
+  body:not([data-shared-codex]) #app .workspace.desk-composing .transcript-inner{padding-bottom:max(140px,calc(var(--compose-room,140px) + 24px))}
+  body:not([data-shared-codex]) #app .workspace.desk-composing .jump-to-bottom{bottom:var(--compose-lift,150px)}
+}
 
 /* Explicit session debug identities, revealed from the header title without changing the demo shell. */
 .session-heading{position:relative}.session-heading>#sessionTitle{max-width:290px;padding:4px 5px;margin-left:-5px;border-radius:6px;outline:0;cursor:default}.session-heading>#sessionTitle:hover,.session-heading>#sessionTitle:focus-visible,.session-heading>#sessionTitle[aria-expanded="true"]{background:var(--hover)}.session-heading>#sessionTitle:focus-visible{box-shadow:0 0 0 2px color-mix(in srgb,var(--primary) 18%,transparent)}.session-copy-menu{position:absolute;left:-5px;top:calc(100% + 12px);z-index:70;width:min(330px,calc(100vw - 32px));padding:6px;border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb,var(--bg) 98%,transparent);box-shadow:0 14px 38px rgba(34,43,73,.14);opacity:0;visibility:hidden;transform:translateY(-4px);transition:opacity .12s ease,transform .12s ease,visibility .12s;pointer-events:none}.session-copy-menu:before{content:"";position:absolute;left:0;right:0;top:-13px;height:13px}.session-copy-menu.open{opacity:1;visibility:visible;transform:none;pointer-events:auto}.session-copy-caption{padding:5px 8px 4px;color:var(--faint);font-size:9px;font-weight:680;letter-spacing:.08em;text-transform:uppercase}.session-copy-menu>button{width:100%;min-height:45px;padding:7px 8px;border-radius:8px;background:transparent;display:grid;grid-template-columns:18px minmax(0,1fr);align-items:center;gap:8px;text-align:left;color:var(--sub);cursor:pointer}.session-copy-menu>button:hover:not(:disabled),.session-copy-menu>button:focus-visible{background:var(--hover);color:var(--ink);outline:0}.session-copy-menu>button:disabled{opacity:.48;cursor:default}.session-copy-menu>button>.icon{width:14px;height:14px;color:var(--faint)}.session-copy-menu>button span,.session-copy-menu>button strong,.session-copy-menu>button small{display:block;min-width:0}.session-copy-menu>button strong{font-size:11px;font-weight:620}.session-copy-menu>button small{margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--faint);font:9px var(--mono)}@media(max-width:700px){.session-heading>#sessionTitle{max-width:42vw}.session-copy-menu{position:fixed;left:10px;top:51px;width:min(330px,calc(100vw - 20px))}}
@@ -1612,6 +1637,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .turn.pending-head{display:flex;align-items:center;justify-content:center;gap:10px;min-height:64px;margin:6px 0 14px;padding:14px;border-radius:12px;background:var(--panel);box-shadow:0 0 0 1px var(--line);color:var(--sub);font:13px/1.35 var(--sans);font-variant-numeric:tabular-nums}
 .pending-head-spinner{flex:none;width:18px;height:18px;border-radius:50%;border:2px solid color-mix(in srgb,var(--primary) 22%,transparent);border-top-color:var(--primary);animation:session-loading-spin .8s linear infinite}
 @media(prefers-reduced-motion:reduce){.pending-head-spinner{animation:none}}
+/* #s277 (design/slow-links.md §6.2): a unit still on its way. The engine sets its height (its height in the sums); nothing inside may change it. */
+#app .turn.unit-placeholder{box-sizing:border-box;overflow:hidden;display:flex;align-items:flex-start;gap:8px;padding:10px 0;color:var(--faint);font:13px/1.35 var(--sans);font-variant-numeric:tabular-nums}
+#app .turn.unit-placeholder.placeholder-user{justify-content:flex-end}
+#app .unit-placeholder .placeholder-turn{flex:none;color:var(--faint)}
+#app .unit-placeholder.placeholder-user .placeholder-label{min-width:0;max-width:80%;padding:8px 12px;border-radius:14px;background:var(--panel);box-shadow:0 0 0 1px var(--line);color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* #s12: the phone's REVIEW SHEET — the pane's Markdown full-screen over the whole app, on the review
    prefix (shared review), above the drawer and the bars, below the toasts; a close control back to
    exactly where the reader was. The pane's own Review control is a phone's alone. */
@@ -1632,6 +1662,25 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    the person's right-hand bubble and the agent's prose: a rule in the peer hue down its left edge,
    its sender above the message. */
 :root{--peer:#2b6f8e}[data-theme="dark"]{--peer:#7ab8d6}
+/* #s272: a relayed message from the person, verified — their bubble, marked in its own hue, what
+   the relay says of it as chips above it, the words it answers quoted, the relay's instructions
+   folded below. */
+:root{--inbox:#9a5b00}[data-theme="dark"]{--inbox:#f0b45c}
+.turn.user.inbox .user-prompt{display:flex;flex-direction:column;align-items:flex-end}
+.turn.user.inbox .user-prompt>.prompt-copy-shell,.turn.user.inbox .user-prompt>.prompt-attachments{align-self:stretch}
+.turn.user.inbox .body,:root[data-theme="dark"] .turn.user.inbox .body{box-shadow:inset 3px 0 0 var(--inbox)}
+.inbox-head{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:baseline;gap:4px 6px;margin:0 0 6px;font-size:12px;line-height:1.4}
+.inbox-from{color:var(--inbox);font-weight:650}
+.inbox-chip{color:var(--sub);border:1px solid var(--line);border-radius:999px;padding:0 7px;line-height:18px;white-space:nowrap}
+.inbox-chip[data-chip="kind"],.inbox-chip[data-chip="to"]{color:var(--inbox)}
+.inbox-quote{align-self:stretch;margin:0 0 6px;padding:2px 0 2px 10px;border-left:2px solid var(--line);color:var(--sub);font-size:13px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
+.inbox-quote-from{font-weight:650;margin-right:6px}
+.inbox-do{align-self:stretch;margin:6px 0 0;text-align:right}
+.inbox-do-h{all:unset;cursor:pointer;color:var(--faint);font-size:12px;min-height:24px}
+.inbox-do-h::before{content:"▸";margin-right:5px}.inbox-do.open .inbox-do-h::before{content:"▾"}
+.inbox-do-h:focus-visible{outline:2px solid var(--inbox);outline-offset:2px;border-radius:3px}
+.inbox-do-b{margin:4px 0 0;color:var(--sub);font-size:12.5px;line-height:1.5;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere}
+@media(hover:none){.inbox-do-h{min-height:44px;display:inline-flex;align-items:center}}
 .turn.peer{position:relative;display:flex;flex-direction:column;align-items:flex-start}
 .turn.peer .peer-card{width:max-content;max-width:min(86%,720px);padding:10px 14px 12px 13px;border:1px solid var(--line);border-left:3px solid var(--peer);border-radius:4px 12px 12px 4px;background:var(--bg)}
 .turn.peer .peer-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;margin:0 0 6px;font-size:12.5px;line-height:1.4}
@@ -1661,3 +1710,6 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 #app .outline-reply-count{flex:none;color:var(--faint);font:11px var(--mono);margin-left:auto}
 
 #app .outline-turn-row.outline-quoted{grid-template-columns:24px 7px minmax(0,1fr) auto}
+/* #s276: a turn the turn index lists whose records are still coming reads as the other rows, in
+   the quieter text colour, until they arrive; a tap on it is held until then. */
+#app .outline-turn-pending .outline-label,#app .outline-turn-pending .outline-number,#app .outline-epoch.outline-turn-pending{color:var(--faint)}

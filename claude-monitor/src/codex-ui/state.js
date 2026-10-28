@@ -10,7 +10,7 @@ const json = (key, fallback) => {
 export const indexState = {
   groups: [], rows: new Map(), selected: "",
   collapsed: new Set(json("am-demo-collapsed", [])), ignoredCount: 0, showHidden: false,
-  // The session filter (#202): which of the three buckets — recent (active in the last hour) /
+  // The session filter (#202): which of the three buckets — recent (active in the last 6 hours) /
   // blocked / idle — the tree shows. The owner's default is Active recently and Blocked (a new
   // key, so the earlier release's remembered set does not override it); remembered like the
   // other view choices; every bucket is "no filter". Include hidden stays a view state (not

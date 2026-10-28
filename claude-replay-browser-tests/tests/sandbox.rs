@@ -107,6 +107,55 @@ fn open_on(surface: Surface, fx: &Fixture, port: u16, phone: Option<(u32, u32)>)
     }
 }
 
+/// #s277: the synthetic session opened records by turn (`?windowed=1`), its tail beginning at the
+/// record a recording's did (`Export::tail_start`), the head's reads queued (`harness::queue_the_head`)
+/// for the replay to let in on the recorded timeline. The monitor folds the session first (read
+/// whole), so its own turn index says where that record starts in the log it serves, which is what
+/// the tail budget is counted in.
+fn open_windowed(fx: &Fixture, port: u16, tail_start: usize, phone: Option<(u32, u32)>) -> Opened {
+    let (browser, tab) = harness::chrome_tab();
+    if let Some((w, h)) = phone {
+        harness::phone(&tab, w, h);
+    }
+    let stores = Stores {
+        root: fx.base.join("stores"),
+    };
+    let monitor = Monitor::spawn(Kind::V1, port, &fx.base, Some(&stores), true);
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={SID}&windowed=0"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length >= 1",
+        "the synthetic session folded and drawn whole",
+        Duration::from_secs(60),
+        "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : 'no window'",
+    );
+    let budget = harness::eval(
+        &tab,
+        &format!("(async function(){{ var r = await fetch('/turn-index?session={SID}&epoch=1&upto=1000000000'); var j = await r.json(); var rows = (j.turns || []).filter(function (t) {{ return t.r <= {tail_start}; }}); var row = rows[rows.length - 1]; return row ? j.bytes - row.o : null; }})()"),
+    )
+    .as_i64()
+    .expect("the tail's first turn in the monitor's index");
+    harness::queue_the_head(&tab, false);
+    monitor.open(
+        &tab,
+        &format!("?ui=app&session={SID}&windowed=1&tailBudget={budget}&headPiece=4096"),
+    );
+    harness::until(
+        &tab,
+        "!!window.__viewportHistory && !document.querySelector('.turn.pending-head') && !!document.querySelector('#navigatorTurns .outline-turn-pending')",
+        "the synthetic session opened records by turn, the head laid out",
+        Duration::from_secs(60),
+        "JSON.stringify({ card: !!document.querySelector('.turn.pending-head'), pending: document.querySelectorAll('#navigatorTurns .outline-turn-pending').length, tailFrom: window.__tailFrom })",
+    );
+    Opened {
+        tab,
+        _browser: browser,
+        _server: None,
+        _monitor: Some(monitor),
+    }
+}
+
 fn settle() {
     std::thread::sleep(Duration::from_millis(700));
 }
@@ -170,7 +219,12 @@ fn replay(export: &Export, surface: Surface, port: u16, label: &str, tolerance: 
         &synthetic(&profile, opened, &calib),
     );
     let script = growth(export, &profile, &calib);
-    let page = open(surface, &fx, port);
+    // #s277: a records-by-turn recording opens records by turn, its fills let in on its timeline.
+    let windowed = export.windowed() && surface == Surface::AppShell;
+    let page = match export.tail_start().filter(|_| windowed) {
+        Some(tail_start) => open_windowed(&fx, port, tail_start, None),
+        None => open(surface, &fx, port),
+    };
     settle();
     // The profile the page built, against the recorded one: total height, and the residual on
     // the mounted records.
@@ -203,6 +257,18 @@ fn replay(export: &Export, surface: Surface, port: u16, label: &str, tolerance: 
             }
         }
     });
+    // One queued piece of the head let in per recorded fill, at its recorded time.
+    let filler = windowed.then(|| {
+        let tab = page.tab.clone();
+        let fills = export.fills();
+        eprintln!("{label}: {} fills recorded", fills.len());
+        std::thread::spawn(move || {
+            for gap in fills {
+                std::thread::sleep(gap);
+                harness::eval(&tab, "window.__release(1)");
+            }
+        })
+    });
     let mut diffs = Vec::new();
     for (gap, step, t) in steps(export, Duration::from_millis(2000)) {
         std::thread::sleep(gap);
@@ -234,6 +300,11 @@ fn replay(export: &Export, surface: Surface, port: u16, label: &str, tolerance: 
         });
     }
     let _ = grower.join();
+    if let Some(filler) = filler {
+        let _ = filler.join();
+        harness::eval(&page.tab, "window.__release()");
+        settle();
+    }
     // How close the rebuilt page came: the item count (a merged record shifts every index after
     // it), and the per-kind residual over the items measured in both.
     let after = export_now(&page.tab);
@@ -618,5 +689,128 @@ fn sandbox_phone_jitter_app_replays() {
     assert!(
         against.is_empty(),
         "no glide moves the reader against its own direction: {against:?}"
+    );
+}
+
+/// #s277: a records-by-turn open's export names where its tail began — the first record of the
+/// first unit after the short card, `shift` units on once the index laid the head out — and its
+/// fills, the records deltas that name the run they rewrote, as gaps from the landing.
+#[test]
+fn a_records_by_turn_open_names_its_tail_and_its_fills() {
+    let items: Vec<serde_json::Value> = (0..31)
+        .map(|i| serde_json::json!(["user", 40.0, i + 1, i, i]))
+        .collect();
+    let export = harness::history::Export::from_value(serde_json::json!({
+        "format": "viewport-history/1",
+        "page": "app",
+        "session": { "items": items },
+        "actions": [],
+        "states": [],
+        "deltas": [
+            { "t": 10.0, "count0": 0, "count1": 5, "from": 0 },
+            { "t": 900.0, "count0": 5, "count1": 30, "from": 0, "shift": 25 },
+            { "t": 1200.0, "count0": 30, "count1": 30, "from": 3, "to": 6 },
+            { "t": 2000.0, "count0": 30, "count1": 31, "from": 30 },
+            { "t": 2100.0, "count0": 31, "count1": 31, "from": 8, "to": 9 }
+        ]
+    }));
+    assert!(export.windowed(), "a delta naming its run is a fill");
+    assert_eq!(
+        export.tail_start(),
+        Some(26),
+        "the tail began at the unit after the card"
+    );
+    assert_eq!(
+        export.fills(),
+        [Duration::from_millis(300), Duration::from_millis(900)],
+        "each fill, as the gap since the one before (the first since the landing); growth is not a fill"
+    );
+    let plain = harness::history::Export::from_value(serde_json::json!({
+        "format": "viewport-history/1", "page": "app", "session": { "items": [] },
+        "actions": [], "states": [], "deltas": [{ "t": 10.0, "count0": 0, "count1": 5, "from": 0 }]
+    }));
+    assert!(!plain.windowed() && plain.fills().is_empty() && plain.tail_start().is_none());
+}
+
+/// #s277: record a walk with many fills for the sandbox (`CR_RECORD_FILL_WALK=<file>`; nothing
+/// otherwise). A 120-turn session opened records by turn on a desktop window, the head's reads let
+/// in one at a time while the reader wheels up through the placeholders, then a jump to an early
+/// turn and back down; the page's own export is written to the file (kinds, heights, indices, turns
+/// and timings: `history_fixtures_carry_no_content` reads it).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor; records a fixture"]
+fn sandbox_record_a_fill_walk() {
+    let Ok(out) = std::env::var("CR_RECORD_FILL_WALK") else {
+        return;
+    };
+    let _serial = serial();
+    let fx = fixture(
+        "sandbox-record-fill-walk",
+        &harness::long_session(120, harness::Shape::default()),
+    );
+    let (_browser, tab) = harness::chrome_tab();
+    let stores = Stores {
+        root: fx.base.join("stores"),
+    };
+    let monitor = Monitor::spawn(Kind::V1, 2780, &fx.base, Some(&stores), true);
+    monitor.pair(&tab);
+    harness::queue_the_head(&tab, false);
+    monitor.open(
+        &tab,
+        &format!("?ui=app&session={SID}&windowed=1&tailBudget=16384&headPiece=4096"),
+    );
+    harness::until(
+        &tab,
+        "!!window.__viewportHistory && !document.querySelector('.turn.pending-head') && !!document.querySelector('#navigatorTurns .outline-turn-pending')",
+        "the session opened records by turn",
+        Duration::from_secs(60),
+        "window.__tailFrom",
+    );
+    settle();
+    for _ in 0..24 {
+        harness::eval(&tab, "window.__release(1)");
+        harness::scroll_by(&tab, Surface::AppShell, -450);
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    let _ = harness::jump_to_turn(&tab, Surface::AppShell, 12);
+    for _ in 0..8 {
+        harness::eval(&tab, "window.__release(1)");
+        harness::scroll_by(&tab, Surface::AppShell, 400);
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    harness::eval(&tab, "window.__release()");
+    settle();
+    let violations = harness::probe(&tab, "(window.__viewportViolations || []).slice()");
+    assert!(
+        violations.as_array().is_some_and(Vec::is_empty),
+        "the recorded walk broke no invariant: {violations}"
+    );
+    let export = harness::eval(
+        &tab,
+        "JSON.stringify(window.__viewportHistory.export(), null, 1)",
+    );
+    std::fs::write(&out, export.as_str().expect("the export")).expect("the fixture written");
+    eprintln!("recorded {out}");
+}
+
+/// #s277: a walk with many fills, recorded on a records-by-turn open (`fill-walk-app.json`, from
+/// `sandbox_record_a_fill_walk`), replays: the synthetic session opened records by turn with its
+/// tail where the recording's began, one piece of the head let in per recorded fill on the recorded
+/// timeline beside the recorded wheels and jump. No violation, and the turn under the reader stays
+/// within 3 of the recording's at every step.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn sandbox_fill_walk_app_replays() {
+    let _serial = serial();
+    let export = fixture_export("fill-walk-app.json");
+    assert!(
+        export.windowed(),
+        "the fixture is a records-by-turn open's export"
+    );
+    let diffs = replay(&export, Surface::AppShell, 2781, "fill-walk-app", 3);
+    let worst = worst_delta(&diffs);
+    assert!(
+        worst <= 3,
+        "fill-walk-app: the replay's turn stays within 3 of the recording (worst {worst})"
     );
 }

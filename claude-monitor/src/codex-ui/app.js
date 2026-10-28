@@ -18,7 +18,7 @@ import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
 import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, querySpans, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, prefixOf, CLASS_ORDER, wholeAt, toolMatches, recordHasTool, toolLetters as sessionToolLetters, resolveTools as resolveToolSpec } from "./shared/search.js";
 import { parseJumpQuery } from "./jump-query.js";
-import { agentRecordTargets, currentTurnIndex, escapeText, peerHue, peerLabelRest, plainText, recordForSearch, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick } from "./view-model.js";
+import { agentRecordTargets, currentTurnIndex, escapeText, peerHue, peerLabelRest, plainText, recordForSearch, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick, replyContext } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 import { sharedKeyboardFrame } from "./phone-keyboard.js";
 import { revealMermaidSource } from "./shared/mermaid.js";
@@ -38,6 +38,8 @@ const transcript = byId("transcript");
 const projection = new Projection();
 let toastTimer = 0;
 let landedHash = "";
+// #s277: a link waiting for its turn to arrive, and when it began to wait (`landOnHash`).
+let hashWait = null;
 
 document.querySelectorAll("[data-icon]").forEach(element => { element.innerHTML = svg(element.dataset.icon); });
 // The sidebar head's controls (#75, #76): the generated shell gives the theme toggle and
@@ -145,12 +147,14 @@ const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, 
   // can name a window the place has since moved — measured at three turns behind, until a
   // one-pixel nudge put it right. The key costs no layout read; reading the DOM here does, and
   // that forced flush moved the reader (the smooth-step case's record went 190px).
-  afterTransaction: () => { const p = viewport.position; if (p && p.key) updateTurnBar(p.key); },
+  afterTransaction: () => { const p = viewport.position; if (p && p.key) updateTurnBar(p.key); wantWindow(); },
   afterScroll: () => {
     updateStickyHeaders(); updateOutlineFocus(); updateTurnBar();
     // The reader moved themselves: wherever a jump last landed them is no longer where they
-    // are, so the next step enters afresh at the nearest hit rather than stepping past it.
-    if (performance.now() - viewport.lastUserInput < viewport.userIntentMs) recordState.landed = null;
+    // are, so the next step enters afresh at the nearest hit rather than stepping past it. Only
+    // input LATER than the landing (#s259): the jump stamps intent itself, so its own scroll came
+    // inside the window and cleared the landing it had just made.
+    if (viewport.lastUserInput > recordState.landedAt && performance.now() - viewport.lastUserInput < viewport.userIntentMs) recordState.landed = null;
   },
   followChanged: paintJump
 });
@@ -238,7 +242,7 @@ const paneLayoutChanged = () => {
   paneLaidOutWidth = width;
   viewport.remeasure();
 };
-const preview = new Preview({ layoutChanged: paneLayoutChanged, toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => viewport.jumpToRecord(at, "artifact") });
+const preview = new Preview({ layoutChanged: paneLayoutChanged, toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") });
 const attachmentViewer = new AttachmentViewer({ toast });
 const controlActions = { renderTree, recordSnapshot: () => ({ session: recordState.session, records: recordState.records }), toast, refreshIndex: loadSessions, pauseIndex: () => sessionIndex.stop(), resumeIndex: () => sessionIndex.start(), selectSession, refreshEmpty: () => recordStore.refreshEmpty() };
 const ordinaryControls = new ControlStore(controlActions);
@@ -265,9 +269,26 @@ const sessionIndex = new SessionIndexStore({
   },
   error: error => { console.warn("Session index refresh failed", error); toast("Session scan failed — retrying"); }
 });
+// #s277 (design/slow-links.md §6.7, D3): a reader across a network — the test gzip and masking use —
+// reads a tail-first open's head turn by turn, in the order the view needs it; the desktop reads it
+// whole (stage 1). `?windowed=1|0` picks either path for a case.
+const WINDOWED = (() => { const q = new URLSearchParams(location.search).get("windowed"); return q === "1" ? true : q === "0" ? false : !revealHere(); })();
 const recordStore = new RecordStore({
-  reset: () => { lastRecordCount = -1; heldRecords = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
+  reset: () => { lastRecordCount = -1; heldRecords = null; heldTurnJump = null; fillWaiting = false; recordState.headIndex = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; projection.stub = null; projection.upto = Infinity; hashWait = null; remoteSearch = null; remoteFilter = null; stepWhenFound = null; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
+  // #s276: the map of the records the head still owes — the panes it fills are whole from now on.
+  indexed: index => {
+    recordState.headIndex = index;
+    // #s277 (design/slow-links.md §6.2): the units the head's records will make, from what the index
+    // says of each record, take the short card's place — a prepend, held for a still view (#340)
+    // like the head's landing; from then on every fill is a rewrite in place.
+    if (recordStore.windowed) { projection.stub = stubFor(index); projection.upto = index.upto; updateRecords({ records: recordStore.records, meta: recordStore.meta, changedFrom: 0, prepended: index.upto }); }
+    renderNavigator(); renderArtifacts(); renderChips(); if (byId("navigatorOptions").classList.contains("open")) renderFilterMenu();
+  },
+  // #s277: a piece of the head was read; it goes in when the view lets it (`takeFills`).
+  filled: () => takeFills(),
+  // #s277: the last piece is in — every record is here, and the index answers for none of them.
+  headRead: () => { recordState.headIndex = null; renderNavigator(); renderArtifacts(); renderChips(); },
   empty: () => viewport.showEmpty("Start this session", "Send the first message below. Codex runs in the selected directory."),
   materializing: () => viewport.showEmpty("Loading session history…", "Waiting for the latest messages to become available."),
   // #221: a first open with no cache waits on the server folding the whole transcript. Say so,
@@ -290,6 +311,11 @@ const recordStore = new RecordStore({
   opened: () => sessionLoading?.hide(),
   // #314: how much of a tail-first open's head has arrived — the pending card says it in place,
   // without a render (its height is its own and does not change).
+  // #s274: a head piece that failed is read again; the card says so until the next bytes arrive.
+  headFailed: () => {
+    recordState.headProgress = { ...(recordState.headProgress || { got: 0, total: 0 }), retrying: true };
+    for (const text of viewport.window.querySelectorAll("[data-pending-text]")) text.textContent = pendingHeadText(recordState.headProgress);
+  },
   headProgress: (got, total) => {
     recordState.headProgress = { got, total };
     for (const text of viewport.window.querySelectorAll("[data-pending-text]")) text.textContent = pendingHeadText(recordState.headProgress);
@@ -297,7 +323,7 @@ const recordStore = new RecordStore({
 // #314 (design/tail-first-open.md): a first open asks for the last 512 KB of the committed log and
 // draws it, then reads the head behind it; the server sends a log under twice that whole. A case
 // sets `?tailBudget=` so a small fixture exercises it, as `?trace=` and `?historyMs=` serve cases.
-}, { tailBudget: Number(new URLSearchParams(location.search).get("tailBudget")) || 512 * 1024, emptySession: null, sessionFailure: null });
+}, { tailBudget: Number(new URLSearchParams(location.search).get("tailBudget")) || 512 * 1024, headPieceBytes: Number(new URLSearchParams(location.search).get("headPiece")) || 0, windowed: WINDOWED, emptySession: null, sessionFailure: null });
 
 function toast(message) {
   const element = byId("toast"); element.textContent = message; element.classList.add("show");
@@ -456,7 +482,7 @@ function renderTree() {
 
 // The session filter (#202, the owner's shape): a glyph in the head-actions row — between
 // Expand every group and the sidebar collapse — opening a sheet under the sidebar's head with
-// three checkboxes: Active recently (any activity in the last hour, and every session busy
+// three checkboxes: Active in the last 6 hours (#s253; any activity then, and every session busy
 // now), Blocked (what "needs attention" means: a wait, or an idle reason that cut the work
 // short) and Idle (neither), then Include hidden. "Everything" in the sheet's head checks the
 // three and leaves Include hidden alone. Recent and blocked overlap by design (the shared
@@ -478,11 +504,11 @@ byId("sidebarCollapse").insertAdjacentElement("beforebegin", filterBtn);
 const filterSheet = document.createElement("div");
 filterSheet.className = "navigator-options session-filter-options"; filterSheet.id = "sessionFilter"; filterSheet.hidden = true;
 filterSheet.setAttribute("role", "group"); filterSheet.setAttribute("aria-label", "Show sessions");
-filterSheet.innerHTML = `<div class="scope-menu-head"><strong>SHOW</strong><button class="scope-menu-action" type="button" data-filter-reset title="Every state — Active recently, Blocked and Idle; Include hidden stays as it is">Everything</button></div>
+filterSheet.innerHTML = `<div class="scope-menu-head"><strong>SHOW</strong><button class="scope-menu-action" type="button" data-filter-reset title="Every state — active in the last 6 hours, blocked and idle; Include hidden stays as it is">Everything</button></div>
 <div class="scope-menu-list">
-<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-bucket="recent" title="Any activity in the last hour, and every session that is busy now"><span class="scope-check"></span><span>${FILTER_LABELS.recent}</span><span class="scope-count" data-bucket-count="recent"></span></button>
+<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-bucket="recent" title="Any activity in the last 6 hours, and every session that is busy now"><span class="scope-check"></span><span>${FILTER_LABELS.recent}</span><span class="scope-count" data-bucket-count="recent"></span></button>
 <button class="scope-option" type="button" role="checkbox" aria-checked="false" data-bucket="blocked" title="${BLOCKED_SUMMARY}"><span class="scope-check"></span><span>${FILTER_LABELS.blocked}</span><span class="scope-count" data-bucket-count="blocked"></span></button>
-<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-bucket="idle" title="Neither of the two — no activity in the last hour and nothing owed"><span class="scope-check"></span><span>${FILTER_LABELS.idle}</span><span class="scope-count" data-bucket-count="idle"></span></button>
+<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-bucket="idle" title="Neither of the two — no activity in the last 6 hours and nothing owed"><span class="scope-check"></span><span>${FILTER_LABELS.idle}</span><span class="scope-count" data-bucket-count="idle"></span></button>
 </div>
 <div class="scope-menu-divider"></div>
 <div class="scope-menu-list">
@@ -645,7 +671,7 @@ function renderFilterControl(counts, shown, total) {
   const filtered = bucketFilterActive();
   const chosen = FILTER_BUCKETS.filter(bucket => indexState.buckets.has(bucket)).map(bucket => FILTER_LABELS[bucket]);
   filterBtn.classList.toggle("on", filtered); filterMini.classList.toggle("on", filtered);
-  filterBtn.title = filtered ? `Showing ${chosen.join(" and ")} — ${shown} of ${total}` : "Filter the sessions — active recently, blocked, idle — and include hidden ones";
+  filterBtn.title = filtered ? `Showing ${chosen.join(" and ")} — ${shown} of ${total}` : "Filter the sessions — active in the last 6 hours, blocked, idle — and include hidden ones";
   for (const option of filterSheet.querySelectorAll("[data-bucket]")) {
     const on = indexState.buckets.has(option.dataset.bucket);
     option.classList.toggle("on", on); option.setAttribute("aria-checked", String(on));
@@ -808,6 +834,15 @@ let lastRecordCount = -1; // -1: nothing applied since the last reset — the ne
 // delivers them lazily — the case caught the head landing into a glide that way once #372 stopped
 // the engine's own writes, whose echoes had been keeping that clock fresh.
 let heldRecords = null;
+// #s276: a turn the reader chose in the Turns pane while its records were still on their way: it is
+// landed on once they arrive, unless the reader has moved since (`at` against the engine's input).
+let heldTurnJump = null;
+// #s278: the server's answers while a records-by-turn head is out (`remoteFound`) — the text search's
+// and the filter's, apart, so neither throws the other's away — and a step asked for before the
+// answer it waits on landed (`{delta, at, slot}`: that answer's own slot).
+let remoteSearch = null;
+let remoteFilter = null;
+let stepWhenFound = null;
 function updateRecords(update) {
   if (!heldRecords && !(update.prepended && (viewport.readerMoving() || viewport.touchGlide))) { applyRecords(update); return; }
   const first = !heldRecords;
@@ -825,16 +860,28 @@ function applyRecords({ records, meta, changedFrom, prepended }) {
   for (let i = sizes.length; i < records.length; i++) sizes[i] = recordTextSize(records[i]);
   if (metaArrived) { renderHeader(); refreshFleets(); }
   recordState.taskTargets = taskRecordTargets(meta?.tasks || [], records);
-  recordState.agentTargets = agentRecordTargets(directAgents(meta), records);
+  recordState.agentTargets = agentTargetsNow(records, meta);
   // #314: a tail-first open's head landed in front of the tail. The first unit after the pending
   // card keeps its key; how far it moved is how many units now stand where the card stood.
-  const after = prepended ? projection.units.find(unit => unit.type !== "pending")?.key : null;
-  const was = after ? projection.units.findIndex(unit => unit.key === after) : -1;
+  // Found by its first record, not its key (#s277): when the head's records join the tail's first
+  // group of steps, that group is keyed by its first record, in the head — the same content, renamed,
+  // which the engine is told so the reader's anchor resolves.
+  const after = prepended ? projection.units.find(unit => unit.type !== "pending") : null;
+  const was = after ? projection.units.indexOf(after) : -1;
   const changedUnit = projection.rebuild(records, changedFrom);
   recordState.units = projection.units;
-  const shift = after ? Math.max(0, projection.units.findIndex(unit => unit.key === after) - was) : 0;
-  viewport.setUnits(recordState.units, changedUnit, shift);
+  const now = after ? unitAt(after.from) : -1;
+  const shift = now >= 0 ? Math.max(0, now - was) : 0;
+  const renamed = now >= 0 && recordState.units[now].key !== after.key ? { [after.key]: recordState.units[now].key } : null;
+  viewport.setUnits(recordState.units, changedUnit, shift, renamed);
+  // The head landed whole (stage 1), or a pull replaced it: the index answers for nothing now. A
+  // stage-2 prepend (the placeholders laid out) leaves the head out and the index with it.
+  if (prepended && !recordStore.head) recordState.headIndex = null;
   landOnHash();
+  // A held turn goes when the records under it are rewritten (a resync) or the reader moved;
+  // otherwise it is landed on as soon as `jumpToRecord` takes it, which it refuses while pending.
+  if (heldTurnJump && ((!prepended && changedFrom <= heldTurnJump.record) || viewport.lastUserInput > heldTurnJump.at)) heldTurnJump = null;
+  landHeldJump();
   // What arrived since the last apply is "new" only once the session is OPEN (#84): the first
   // apply after a reset is the session's own content — a re-open restored to a remembered
   // position is not following, and counting that batch said "11696 new messages" on a session
@@ -866,6 +913,142 @@ function applyRecords({ records, meta, changedFrom, prepended }) {
   }
   if (!wasFollowing && delta && !opening) recordState.newRecords += delta;
   paintJump(); renderHeader(); renderNavigator(); refreshFilterHits(); updateSearch(false);
+  // #s277: pieces of the head that waited on a held prepend go in now, if the view lets them.
+  takeFills();
+}
+
+/** #s277 (design/slow-links.md §6.2): what a record not fetched yet stands as — its kind, id and
+ *  commentary bit from the index's facts, and for a turn's opener its number, label, sender and
+ *  quoted reply from the index's rows — so `buildUnits` makes the units the records will make. */
+function stubFor(index) {
+  const rows = new Map((index.turns || []).map(row => [row.r, row]));
+  return i => {
+    const fact = index.facts?.[i];
+    if (!fact) return null;
+    const row = rows.get(i);
+    return { kind: fact[0], id: fact[1] || undefined, ...(fact[2] ? { phase: "commentary" } : {}), ...(row ? { turn: row.turn, label: row.label, head: row.head, reply_context: row.reply_context } : {}) };
+  };
+}
+
+/** The sub-agents' records: those here, and (#s277) the index's for the ones still on their way, so
+ *  an agent's jump reads its turn and lands. */
+function agentTargetsNow(records, meta = recordState.meta) {
+  const targets = agentRecordTargets(directAgents(meta), records);
+  for (const agent of owedIndex()?.agents || []) if (!targets.has(agent.id) && records[agent.r]?.kind === "pending") targets.set(agent.id, agent.r);
+  return targets;
+}
+
+/** A jump held for its records (a turn, a record, a search hit) lands once they are here; a search
+ *  hit then lands on its own mark, as a step does (#s278). */
+function landHeldJump() {
+  if (!heldTurnJump || !viewport.jumpToRecord(heldTurnJump.record, heldTurnJump.reveal || "turn")) return;
+  const { record, reveal } = heldTurnJump;
+  heldTurnJump = null;
+  if (reveal === "search" || reveal === "filter") {
+    recordState.landed = record; recordState.landedAt = performance.now();
+    const at = activeMatches().indexOf(record);
+    if (at >= 0) recordState.match = at;
+  }
+  if (reveal === "search") { markSearch(); landOnCurrentMark(); }
+}
+
+/** The unit that holds record `r`, by its index, or -1. */
+function unitAt(r) {
+  const units = recordState.units;
+  let lo = 0, hi = units.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (units[mid].to < r) lo = mid + 1;
+    else if (units[mid].from > r) hi = mid - 1;
+    else return mid;
+  }
+  return -1;
+}
+
+// #s277 (design/slow-links.md §6.3): pieces of the head the store has read wait there until the view
+// lets them in. A fill that would redraw a mounted unit at or above the reader waits for a still view
+// and no thumb held (D5: a write into an iOS glide does not stick, and absorbing it would pile up in a
+// top pad that runs out near the session's top); one below the reader, or outside the window, goes in
+// at once — it moves nothing. A held prepend goes first: the fills are written against its units.
+let fillWaiting = false;
+function takeFills() {
+  if (fillWaiting) return;
+  for (let next = recordStore.peekFill(); next; next = recordStore.peekFill()) {
+    if (heldRecords || fillMustWait(next)) {
+      fillWaiting = true;
+      viewport.whenStill(() => { fillWaiting = false; takeFills(); });
+      return;
+    }
+    applyFill(recordStore.takeFill());
+  }
+}
+function fillMustWait({ from, to }) {
+  const a = unitAt(from), b = unitAt(to - 1);
+  if (a < 0 || b < 0) return true;
+  if (b < viewport.lo || a >= viewport.hi) return false;
+  // Any fill that would redraw a mounted unit waits while the view moves: the engine's position can
+  // be a scroll batch old there, so "below the reader" is not known well enough to let one in.
+  return viewport.dragging || viewport.touchGlide || viewport.readerMoving();
+}
+function applyFill({ from, to }) {
+  const records = recordStore.records;
+  for (let i = from; i < to; i++) recordState.recSizes[i] = recordTextSize(records[i]);
+  const run = projection.fill(records, from, to);
+  // Units that did not come out as their placeholders were: the index and the log disagree, and
+  // nothing may be renamed (framework I12) — the session starts over.
+  if (!run) { recordStore.recover(); return; }
+  recordState.units = projection.units;
+  recordState.taskTargets = taskRecordTargets(recordState.meta?.tasks || [], records);
+  recordState.agentTargets = agentTargetsNow(records);
+  viewport.setUnits(recordState.units, run);
+  landOnHash();
+  if (heldTurnJump && viewport.lastUserInput > heldTurnJump.at) heldTurnJump = null;
+  landHeldJump();
+  renderNavigator(); refreshFilterHits(); updateSearch(false);
+}
+/** #s277: ask the store for what the window shows — a screen's worth of units beyond it either way,
+ *  the nearest to the reader asked last, which the store reads first. */
+function wantWindow() {
+  if (!recordStore.head?.reads) return;
+  const units = recordState.units;
+  const p = viewport.position;
+  const at = !p ? viewport.lo : p.source === "tail" ? units.length - 1 : p.index ?? viewport.lo;
+  const span = Math.max(8, viewport.hi - viewport.lo);
+  const lo = Math.max(0, viewport.lo - span), hi = Math.min(units.length, viewport.hi + span);
+  const owed = [];
+  for (let i = lo; i < hi; i++) if (units[i].owed > 0) owed.push(i);
+  owed.sort((x, y) => Math.abs(y - at) - Math.abs(x - at));
+  for (const i of owed) recordStore.want(units[i].from, units[i].to + 1, 1);
+}
+/** A jump to record `r`, or, while its turn is on its way, the turn fetched first (#s277): a TURN
+ *  lands at once on its placeholder; a record inside one waits for its unit, unless the reader
+ *  moves first. */
+function jumpOrFetch(r, reveal) {
+  heldTurnJump = null;
+  const landed = viewport.jumpToRecord(r, reveal);
+  // Whether it must wait is the unit's to say — owed records, read or not yet taken — never the
+  // store's alone, which knows nothing of a piece waiting to go in.
+  const unit = recordState.units[unitAt(r)];
+  if (unit?.owed > 0) recordStore.want(unit.from, unit.to + 1, 0);
+  if (!landed && (unit?.owed > 0 || recordState.records[r]?.kind === "pending")) { heldTurnJump = { record: r, reveal, at: performance.now() }; toast("Still loading — the page goes there when it arrives"); }
+  return landed;
+}
+
+/** #s277 (design/slow-links.md §6.5): the record a link names while its turn is on its way, from the
+ *  index's facts — a turn's opener by its own id, a block by the nearest record id at or below it
+ *  (ids number blocks in document order, nested ones after their record's) — or -1. */
+function owedRecordFor(id) {
+  const facts = recordStore.windowed ? recordState.headIndex?.facts : null;
+  if (!facts) return -1;
+  const block = /^b(\d+)$/.exec(id);
+  let best = -1, bestN = -1;
+  for (let r = 0; r < facts.length; r++) {
+    const own = facts[r][1];
+    if (own === id) return r;
+    const n = block && /^b(\d+)$/.exec(own || "");
+    if (n && Number(n[1]) <= Number(block[1]) && Number(n[1]) > bestN) { best = r; bestN = Number(n[1]); }
+  }
+  return best;
 }
 
 function landOnHash() {
@@ -879,9 +1062,26 @@ function landOnHash() {
   // brought to the top and flashed.
   const chain = [];
   const index = recordState.records.findIndex(record => recordChain(record, id, chain));
-  if (index < 0) return false;
+  // #s277: a link into a turn still on its way reads that turn first, and lands once it is here —
+  // unless the reader has moved since it was opened: then it stops waiting, as a held tap does.
+  if (index < 0) {
+    const owed = owedRecordFor(id);
+    if (owed < 0) return false;
+    if (hashWait?.identity !== identity) hashWait = { identity, at: performance.now() };
+    else if (viewport.lastUserInput > hashWait.at) { landedHash = identity; hashWait = null; return false; }
+    recordStore.want(owed, owed + 1, 0);
+    return false;
+  }
   for (const rid of chain) recordState.folds.set(rid, false);
-  if (!viewport.jumpToRecord(index, "hash")) return false;
+  if (!viewport.jumpToRecord(index, "hash")) {
+    // Here, but its unit still owes records (#s277): the same wait, which a reader who moves ends.
+    if (hashWait?.identity !== identity) hashWait = { identity, at: performance.now() };
+    else if (viewport.lastUserInput > hashWait.at) { landedHash = identity; hashWait = null; return false; }
+    const unit = recordState.units[unitAt(index)];
+    if (unit?.owed > 0) recordStore.want(unit.from, unit.to + 1, 0);
+    return false;
+  }
+  hashWait = null;
   landedHash = identity;
   const nested = chain.length > 1 ? viewport.window.querySelector(`[data-record-id="${CSS.escape(id)}"]`) : null;
   if (nested) {
@@ -1312,31 +1512,50 @@ function toggleDrawer(key) {
   setDrawerOpen(key, closing ? 0 : 1);
 }
 window.addEventListener("resize", stackOutlineHeads);
+/** What a Turns pane row whose records are still coming adds to its title (#s276). */
+const STILL_LOADING = " — still loading; the page goes there when it arrives";
+/** A turn the turn index lists (#s276), shaped as a Turns pane row reads a unit: its first record,
+ *  its number and label, and the sender or the quoted reply it carries. Its records are still on
+ *  their way (`pending`). */
+function indexedTurn(t) {
+  const view = t.kind === "peer" ? { peer: { from: t.head?.from || "another session", mode: t.head?.mode || "" } } : { reply: t.kind === "user" ? replyContext(t) || undefined : undefined };
+  return { from: t.r, turn: Number(t.turn) || 0, label: t.label || "", view, pending: true };
+}
 function renderNavigator() {
   const turns = recordState.units.filter(unit => unit.type === "user");
-  // #342: while a tail-first open's head is still coming (#314), the turns drawn are the last few —
-  // the owner's 141-turn session read "8" — but their NUMBERS are the true ones from the first
-  // moment, so the session's count is the highest of them. Once the head lands they are all here.
-  const loading = turns.length > 0 && recordState.units.some(unit => unit.type === "pending");
-  const turnCount = loading ? Math.max(...turns.map(unit => unit.turn || 0)) : turns.length;
-  const earlier = loading ? (turns[0].turn || 1) - 1 : 0;
+  const loading = recordState.units.some(unit => unit.type === "pending");
+  // #s276: while the head is out, the turn index lists the turns it holds, so the pane is whole
+  // from the first moment; a row whose records are still coming is marked, and a tap on it is held.
+  // Rows follow the UNITS (a held landing keeps the head pending there); the compaction ticks
+  // below follow the records they are read from.
+  const index = loading ? recordState.headIndex : null;
+  const owed = index ? index.turns.map(t => ({ at: t.r, unit: indexedTurn(t) })) : [];
+  // #342: without the index, the turns drawn are the last few — the owner's 141-turn session read
+  // "8" — but their NUMBERS are the true ones from the first moment, so the session's count is the
+  // highest of them. Once the head lands they are all here.
+  const partial = !index && loading && turns.length > 0;
+  const turnCount = partial ? Math.max(...turns.map(unit => unit.turn || 0)) : owed.length + turns.length;
+  const earlier = partial ? (turns[0].turn || 1) - 1 : 0;
   byId("navigatorTurnCount").textContent = turnCount;
   // A compaction is an epoch tick between turns (#69, restyled in #86): a hairline with a glyph
   // for how it happened and the context size from → to, in the rows' own type, no prose — so a
   // session that compacted fifteen times reads as fifteen chapters. The tick jumps to the
   // compaction record like a turn row jumps to its turn.
-  const epochs = [];
+  const epochs = (owedIndex()?.compactions || []).filter(c => recordState.records[c.r]?.kind === "pending").map(c => ({ at: c.r, tick: compactionTick(c.head || {}), pending: true }));
   recordState.records.forEach((record, i) => { if (record.kind === "compaction") epochs.push({ at: i, tick: compactionTick(record.head || {}) }); });
-  const rows = [...turns.map(unit => ({ at: unit.from, unit })), ...epochs].sort((a, b) => a.at - b.at);
+  // #s277: a turn whose records are still on their way is a placeholder unit; its row reads what the
+  // index said of its opener, and is marked as the index's own rows were.
+  const rowUnit = unit => !unit.owed ? unit : unit.stub ? { ...indexedTurn({ ...unit.stub, r: unit.from }), turn: unit.turn, label: unit.label } : { ...unit, pending: true };
+  const rows = [...owed, ...turns.map(unit => ({ at: unit.from, unit: rowUnit(unit) })), ...epochs].sort((a, b) => a.at - b.at);
   // #s138, Hong: a turn another session opened is told from the person's own, and one sender from
   // another — its row carries the sender as a chip in the sender's own hue (the card's too).
   const peerRow = unit => {
     const from = unit.view.peer.from;
-    return `<button class="outline-turn-row outline-peer" style="--peer-hue:${peerHue(from)}" data-turn-record="${unit.from}" data-peer-from="${escapeText(from)}" title="${escapeText(unit.label)}"><span class="outline-number">${String(unit.turn).padStart(2, "0")} ·</span><span class="outline-peer-from" title="Sent by ${escapeText(from)}, another session"><span class="outline-peer-glyph" aria-hidden="true">⇄</span>${escapeText(from)}</span><span class="outline-label">${escapeText(peerLabelRest(unit.label, from))}</span></button>`;
+    return `<button class="outline-turn-row outline-peer${unit.pending ? " outline-turn-pending" : ""}" style="--peer-hue:${peerHue(from)}" data-turn-record="${unit.from}" data-turn-number="${unit.turn}" data-peer-from="${escapeText(from)}" title="${escapeText(unit.label)}${unit.pending ? STILL_LOADING : ""}"><span class="outline-number">${String(unit.turn).padStart(2, "0")} ·</span><span class="outline-peer-from" title="Sent by ${escapeText(from)}, another session"><span class="outline-peer-glyph" aria-hidden="true">⇄</span>${escapeText(from)}</span><span class="outline-label">${escapeText(peerLabelRest(unit.label, from))}</span></button>`;
   };
   byId("navigatorTurns").innerHTML = (earlier > 0 ? `<div class="activity-empty outline-turns-loading" role="status">Turns 1–${earlier} are still loading</div>` : "") + rows.map(r => r.unit?.view?.peer ? peerRow(r.unit) : r.unit
-    ? `<button class="outline-turn-row${r.unit.view?.reply ? " outline-quoted" : ""}" data-turn-record="${r.unit.from}" title="${escapeText(r.unit.label)}"><span class="outline-number">${String(r.unit.turn).padStart(2, "0")} ·</span>${r.unit.view?.reply ? `<span class="outline-quote-marker" role="img" aria-label="Quoted reply" title="Reply to selected text">│</span>` : ""}<span class="outline-label">${escapeText(r.unit.label)}</span>${r.unit.view?.reply?.items.length > 1 ? `<span class="outline-reply-count" aria-label="${r.unit.view.reply.items.length - 1} more annotations">+${r.unit.view.reply.items.length - 1}</span>` : ""}</button>`
-    : `<button class="outline-epoch" type="button" data-turn-record="${r.at}" title="${escapeText(r.tick.title)}${r.tick.sizes ? ` · ${escapeText(r.tick.sizes)}` : ""} — jump to the compaction" aria-label="${escapeText(r.tick.title)}${r.tick.sizes ? `, ${escapeText(r.tick.sizes)}` : ""}"><span class="outline-epoch-line" aria-hidden="true"></span><span class="outline-epoch-glyph" aria-hidden="true">${r.tick.glyph}</span>${r.tick.sizes ? `<span class="outline-epoch-sizes">${escapeText(r.tick.sizes)}</span>` : ""}<span class="outline-epoch-line" aria-hidden="true"></span></button>`
+    ? `<button class="outline-turn-row${r.unit.view?.reply ? " outline-quoted" : ""}${r.unit.pending ? " outline-turn-pending" : ""}" data-turn-record="${r.unit.from}" data-turn-number="${r.unit.turn}" title="${escapeText(r.unit.label)}${r.unit.pending ? STILL_LOADING : ""}"><span class="outline-number">${String(r.unit.turn).padStart(2, "0")} ·</span>${r.unit.view?.reply ? `<span class="outline-quote-marker" role="img" aria-label="Quoted reply" title="Reply to selected text">│</span>` : ""}<span class="outline-label">${escapeText(r.unit.label)}</span>${r.unit.view?.reply?.items.length > 1 ? `<span class="outline-reply-count" aria-label="${r.unit.view.reply.items.length - 1} more annotations">+${r.unit.view.reply.items.length - 1}</span>` : ""}</button>`
+    : `<button class="outline-epoch${r.pending ? " outline-turn-pending" : ""}" type="button" data-turn-record="${r.at}" title="${escapeText(r.tick.title)}${r.tick.sizes ? ` · ${escapeText(r.tick.sizes)}` : ""} — jump to the compaction" aria-label="${escapeText(r.tick.title)}${r.tick.sizes ? `, ${escapeText(r.tick.sizes)}` : ""}"><span class="outline-epoch-line" aria-hidden="true"></span><span class="outline-epoch-glyph" aria-hidden="true">${r.tick.glyph}</span>${r.tick.sizes ? `<span class="outline-epoch-sizes">${escapeText(r.tick.sizes)}</span>` : ""}<span class="outline-epoch-line" aria-hidden="true"></span></button>`
   ).join("") || '<div class="activity-empty">No turns</div>';
   const tasks = recordState.meta?.tasks || [];
   // #224, the owner: the head counts what the pane SHOWS. A task the session recorded no title for
@@ -1536,7 +1755,21 @@ function renderSessionInfo(turns, agents) {
 // has to reach both hosts — a handler bound to the navigator alone stopped hearing the fold
 // clicks the moment `#navigatorSession` left it.
 const navigatorClick = event => {
-  const turn = event.target.closest("[data-turn-record]"); if (turn) { setTurnsFollow(true, false); viewport.jumpToRecord(Number(turn.dataset.turnRecord), "turn"); return; }
+  const turn = event.target.closest("[data-turn-record]");
+  if (turn) {
+    setTurnsFollow(true, false);
+    const record = Number(turn.dataset.turnRecord);
+    heldTurnJump = null;
+    // #s276: a turn the index listed whose records have not arrived is not a place to land yet
+    // (`jumpToRecord` refuses the loading card): the page goes there when they do. Stage 2 (#s277)
+    // lands at once on the turn's placeholder and reads that turn first (`jumpOrFetch`).
+    if (recordStore.windowed) { jumpOrFetch(record, "turn"); return; }
+    if (!viewport.jumpToRecord(record, "turn") && turn.classList.contains("outline-turn-pending")) {
+      heldTurnJump = { record, at: performance.now() };
+      toast("Still loading — the page goes there when it arrives");
+    }
+    return;
+  }
   const infoFold = event.target.closest("[data-info-fold]");
   if (infoFold) {
     const key = infoFold.dataset.infoFold;
@@ -1547,8 +1780,8 @@ const navigatorClick = event => {
     return;
   }
   const open = event.target.closest("[data-task-open]"); if (open) { openTaskPopover(Number(open.dataset.taskOpen), open); return; }
-  const task = event.target.closest("[data-task-record]"); if (task) { closeTaskPopover(); viewport.jumpToRecord(Number(task.dataset.taskRecord), "task"); return; }
-  const agent = event.target.closest("[data-agent-record]"); if (agent) { viewport.jumpToRecord(Number(agent.dataset.agentRecord), "agent"); return; }
+  const task = event.target.closest("[data-task-record]"); if (task) { closeTaskPopover(); jumpOrFetch(Number(task.dataset.taskRecord), "task"); return; }
+  const agent = event.target.closest("[data-agent-record]"); if (agent) { jumpOrFetch(Number(agent.dataset.agentRecord), "agent"); return; }
   const child = event.target.closest("[data-child-outline]"); if (child) { descendTo(child.dataset.childOutline); return; }
   const worker = event.target.closest("[data-worker-session]"); if (worker) { descendTo(worker.dataset.workerSession); return; }
   // A card's head opens and shuts ITS drawer (#74, #139) — the whole head, and nothing else
@@ -1598,6 +1831,17 @@ function markQuery() {
   document.querySelector(".header-searchbox")?.classList.toggle("has-query", !!boxQuery());
 }
 function updateSearch(reset) {
+  // #s278: text typed but not submitted (search on Enter) is not searched by a fill, a pull or an
+  // answer arriving. A search started any other way — Enter, a scope row, whole words, a chip's ✕ —
+  // submits the box as it stands, ends a step still waiting on the last query's answer, and asks
+  // again where an answer gave up, the search's or the filter's.
+  let refilter = false;
+  if (reset) {
+    recordState.pendingSearch = false;
+    stepWhenFound = null;
+    if (remoteSearch?.found?.failed) remoteSearch = null;
+    if (remoteFilter?.found?.failed) { remoteFilter = null; refilter = true; }
+  } else if (recordState.pendingSearch) return;
   // The chips and the typed text together are the query (#303): a chip is a facet frozen out of
   // the text, so it is parsed exactly as the token it was.
   const raw = boxQuery();
@@ -1635,7 +1879,16 @@ function updateSearch(reset) {
   recordState.matches = [];
   const classCounts = zeroCounts();
   let total = 0;
+  // #s278: the server answers for the records below a records-by-turn head's boundary, and the page
+  // counts the rest itself — never both for one record (`scanFrom`, as the panes count).
+  const from = scanFrom();
+  const remote = query ? remoteFound({ lc: query, whole, wanted, tools }) : { ready: true, found: null };
+  if (remote.found) {
+    for (const [r, n] of remote.found.records) { recordState.matches.push(r); total += n; }
+    for (const k of CLASS_ORDER) classCounts[k] += remote.found.counts[k] || 0;
+  }
   if (query) recordState.records.forEach((record, index) => {
+    if (index < from) return;
     const { text, parts } = searchTextOf(record);
     // `o(…)` narrows the TOOLS class: "Bash calls whose text matches", counted inside the call's
     // own words (design §4), beside whatever the other letters ask for.
@@ -1643,9 +1896,16 @@ function updateSearch(reset) {
     if (inScope) { recordState.matches.push(index); total += inScope; }
   });
   if (toolsChanged) applyToolFilter();
+  else if (refilter) refreshFilterHits();
   for (const k of CLASS_ORDER) { const cell = byId("scopeRow").querySelector(`[data-scope-count="${k}"]`); if (cell) cell.textContent = query ? String(classCounts[k]) : ""; }
-  if (reset) { recordState.match = recordState.matches.length ? 0 : -1; recordState.landed = null; } else recordState.match = Math.min(recordState.match, recordState.matches.length - 1);
-  paintMatchCount(query ? countLabel(total, set, whole, q.toolSpec) : "");
+  if (reset) { recordState.match = recordState.matches.length ? 0 : -1; recordState.landed = null; }
+  else {
+    // #s278: hits the server answered can arrive in front of the ones counted here; the current hit
+    // stays the one the reader landed on.
+    const at = recordState.landed != null ? recordState.matches.indexOf(recordState.landed) : -1;
+    recordState.match = at >= 0 ? at : Math.min(recordState.match, recordState.matches.length - 1);
+  }
+  paintMatchCount(query ? (remote.ready ? countLabel(total, set, whole, q.toolSpec) + (remote.found?.failed ? " · earlier turns not searched" : "") : "Searching…") : "");
   markSearch();
   applyFilters();
 }
@@ -1653,7 +1913,11 @@ function updateSearch(reset) {
  *  filter found (#133) — the filter is a search, and a search says how many. */
 function paintMatchCount(text) {
   const hits = !text && queryTools().length ? (recordState.filterMatches || []).length : 0;
-  byId("transcriptSearchCount").textContent = text || (hits ? `${hits} ${hits === 1 ? "match" : "matches"}` : "");
+  // #s278: the filter's answer for the records still on their way is not in yet — or gave up.
+  const filtering = !text && queryTools().length && remoteFilter && !!owedIndex();
+  const waiting = filtering && !remoteFilter.found, failed = filtering && !!remoteFilter.found?.failed;
+  const count = hits ? `${hits} ${hits === 1 ? "match" : "matches"}` : "";
+  byId("transcriptSearchCount").textContent = text || (waiting ? "Searching…" : failed ? `${count || "0 matches"} · earlier turns not searched` : count);
 }
 /** The scope rows rewrite the box's prefix (the classic page's applyScopeFromMenu). */
 function applyScopeFromMenu() {
@@ -1704,6 +1968,11 @@ function activeMatches() {
   return queryTools().length ? recordState.filterMatches || [] : [];
 }
 function stepSearch(delta) {
+  // #s278: while the server's answer for the search or the filter is out, the hits here are only the
+  // tail's — a step now would skip every earlier one; it steps once that answer lands (`askRemote`).
+  const waitingOn = recordState.search ? remoteSearch : queryTools().length ? remoteFilter : null;
+  if (waitingOn && !waitingOn.found && owedIndex()) { stepWhenFound = { delta, at: performance.now(), slot: waitingOn }; return; }
+  stepWhenFound = null;
   const matches = activeMatches();
   if (!matches.length) return;
   const textual = !!recordState.search;
@@ -1714,27 +1983,55 @@ function stepSearch(delta) {
     ? viewport.window.querySelector("mark.search-mark.current")
     : (at != null ? [...viewport.window.querySelectorAll("[data-block-index]")].find(element => Number(element.dataset.blockIndex) === at) : null);
   const box = current?.getBoundingClientRect(), view = viewport.scroller.getBoundingClientRect();
-  const onScreen = !!box && box.bottom >= view.top && box.top <= view.bottom;
+  // #s257: a match under the box or the dock is not one the reader has seen; the step lands on it.
+  // Unless the view is at its end and cannot lift it further (a phone's keyboard, a tall runtime
+  // panel): counted unseen there, each step re-entered from the top and bounced between the last
+  // two hits without ever wrapping.
+  const onScreen = !!box && box.bottom >= view.top && (box.top < searchFloor(view) || box.top <= view.bottom && viewport.gapToBottom() <= 1);
+  // Where the last step LANDED the reader, while they have not moved since (#s259): pressing next
+  // where you already are must move on from there, whatever the rect says. The cursor alone cannot
+  // say this: a fresh query points it at the first hit without taking the reader anywhere, and the
+  // first step must land there. Re-entering from the top instead starts at the first hit of the
+  // UNIT at the top, so under a cover over the whole column the steps fell back inside a unit
+  // holding several hits. Only while that unit still crosses the view: not every move reaches the
+  // engine as input (a key the browser scrolls with natively, the browser's own find), and a reader
+  // who went elsewhere enters at the hit nearest them.
+  const held = recordState.landed == null || !landedInView(view) ? -1 : matches.indexOf(recordState.landed);
   if (recordState.match >= 0 && onScreen) {
     recordState.match = (recordState.match + delta + matches.length) % matches.length;
+  } else if (held >= 0) {
+    recordState.match = (held + delta + matches.length) % matches.length;
   } else {
     const top = recordIndexAtTop();
     const k = matches.findIndex(index => index >= top);
-    const nearest = delta > 0 ? (k >= 0 ? k : 0) : (k > 0 ? k - 1 : matches.length - 1);
-    // The nearest hit from the top can BE the one the reader is already looking at — after a
-    // jump it always is, since the jump put it there — and then "next" has to mean the one
-    // after it, or the control does nothing at all.
-    // Advance only when the nearest hit is the one a jump LANDED the reader on — pressing next
-    // where you already are must move. The cursor alone cannot say this: a fresh query points it
-    // at the first hit without taking the reader anywhere, and the first step must land there.
-    const already = matches[nearest] === recordState.landed;
-    recordState.match = already ? (nearest + delta + matches.length) % matches.length : nearest;
+    recordState.match = delta > 0 ? (k >= 0 ? k : 0) : (k > 0 ? k - 1 : matches.length - 1);
   }
   recordState.landed = matches[recordState.match];
-  viewport.jumpToRecord(recordState.landed, textual ? "search" : "filter");
+  // A record a tail-first open has not brought yet is not reached (#314): nothing landed there.
+  if (viewport.jumpToRecord(recordState.landed, textual ? "search" : "filter")) recordState.landedAt = performance.now();
+  else {
+    // #s278: a hit whose turn is still on its way reads that turn and lands once its unit is whole
+    // (`landHeldJump`), unless the reader moves first.
+    const unit = recordState.units[unitAt(recordState.landed)];
+    if (unit?.owed > 0 || recordState.records[recordState.landed]?.kind === "pending") {
+      if (unit) recordStore.want(unit.from, unit.to + 1, 0);
+      heldTurnJump = { record: recordState.landed, reveal: textual ? "search" : "filter", at: performance.now() };
+      toast("Still loading — the page goes there when it arrives");
+    }
+    recordState.landed = null;
+  }
   if (!textual) return;
   markSearch();
   landOnCurrentMark();
+}
+/** Whether the record a step last landed still crosses `view` — covered or not: its own row, or its
+ *  unit's where its row is not drawn (#s264: a reader who moved within a tall unit has left it). */
+function landedInView(view) {
+  const unit = recordState.units.find(u => recordState.landed >= u.from && recordState.landed <= u.to);
+  const row = unit && unitRow(unit.key);
+  const own = row && [...row.querySelectorAll("[data-block-index]")].find(element => Number(element.dataset.blockIndex) === recordState.landed && element.getBoundingClientRect().height > 0);
+  const r = (own || row)?.getBoundingClientRect();
+  return !!r && r.bottom > view.top && r.top < view.bottom;
 }
 /** A hit inside a head's one-line TARGET is unreachable until the target is shown in full
  *  (#262). The span is `nowrap` with `overflow-x:hidden` — measured 572px wide over a 44,782px
@@ -1779,11 +2076,53 @@ function landOnCurrentMark() {
   // with the match out of sight. The block's own scrollLeft, never the transcript's offset.
   revealSideways(mark);
   const box = mark.getBoundingClientRect(), view = viewport.scroller.getBoundingClientRect();
-  // #s37: on a phone the toolbar floats over the transcript's foot (and the find pill with it), so a
-  // match under it is not on screen.
-  const floor = phoneDock && getComputedStyle(phoneDock).display !== "none" ? Math.min(view.bottom, phoneDock.getBoundingClientRect().top) : view.bottom;
-  if (box.top >= view.top && box.bottom <= floor) return;
-  viewport.reveal(mark, { top: Math.min(120, view.height / 3) });
+  // A match under whatever floats over the transcript's foot is not on screen (#s37, #s248, #s257),
+  // nor one behind the turn bar at its top (#s263).
+  const floor = searchFloor(view), ceiling = searchCeiling(view, mark);
+  if (box.top >= ceiling && box.bottom <= floor) return;
+  // A third of the space between them, so a short one still shows the match: measured from the
+  // column's top, a cover within 93px of it put the match behind the bar. Never so far down that the
+  // match crosses the cover (#s267: a third of a short space under a group's 40px head did), and a
+  // cover over the whole column leaves none: the match lands just below the bar or the head.
+  const space = Math.max(0, floor - ceiling);
+  viewport.reveal(mark, { top: Math.min(120, ceiling - view.top + Math.min(space / 3, Math.max(0, space - box.height))) });
+}
+/** Where a landing may put `mark` at the transcript's top: below the turn bar while it is drawn
+ *  (#123; hidden on a phone, where the turn is the top bar's subtitle), on or off, since a landing can
+ *  turn it on (#s263); and below the head of the process group holding the mark (#s267), which sticks
+ *  there whenever the group spans the top, as it does once a match deep inside it is revealed. Its
+ *  height, not where it is now: the reveal is what makes it stick. On a phone held sideways with the
+ *  keyboard up the space above the find pill is about 75px, and a third of it put the match behind
+ *  the 40px head. Only the landing asks: a step's "already on screen" keeps the column's top, since a
+ *  hit the reader scrolled up behind the bar is behind them, and counting it unseen sent the next
+ *  step back to it. */
+function searchCeiling(view, mark) {
+  let ceiling = view.top;
+  if (getComputedStyle(turnStickyBar).display !== "none") {
+    const r = turnStickyBar.getBoundingClientRect();
+    if (r.height > 0 && r.bottom > view.top) ceiling = r.bottom;
+  }
+  const head = mark?.closest("[data-process-surface]")?.querySelector(".process-surface-headbar");
+  if (head && !head.contains(mark)) ceiling = Math.max(ceiling, view.top + head.getBoundingClientRect().height);
+  return Math.min(view.bottom, ceiling);
+}
+/** Where a match stops being in sight at the transcript's foot: the bottom of `view`, or the top of
+ *  whatever is drawn over it there — a phone's floating toolbar (#s37), an open compose box (#s245,
+ *  #s248; native mode's is resident) and native mode's runtime panel above it (#s257), each when it
+ *  is drawn, at any width. A step's "already on screen" and its landing both ask this, so a match
+ *  under any of them is neither seen nor left there. */
+function searchFloor(view) {
+  let floor = view.bottom;
+  const over = element => {
+    if (!element || getComputedStyle(element).display === "none") return;
+    const r = element.getBoundingClientRect();
+    if (r.height > 0 && r.bottom > view.top) floor = Math.min(floor, Math.max(view.top, r.top));
+  };
+  over(phoneDock);
+  const composer = byId("composer");
+  if (composer.classList.contains("production-show")) over(composer);
+  over(document.querySelector(".shared-runtime"));
+  return floor;
 }
 /** Scroll the nearest horizontally scrolling block holding `mark` so the mark sits in it, with a
  *  little of what precedes it — only when it is not already wholly visible there. */
@@ -1829,7 +2168,62 @@ function markSearch() {
 // `?liveSearchLimit=<chars>` lowers the limit for one page — a case's way onto the large-session
 // path (#308) without a ten-megabyte fixture, in the manner of `?historyMs`.
 const liveSearchLimit = Number(new URLSearchParams(location.search).get("liveSearchLimit")) || LIVE_SEARCH_LIMIT;
-function searchIsLive() { let n = 0; for (const s of recordState.recSizes) n += s; return n <= liveSearchLimit; }
+function searchIsLive() {
+  // #s278: while a records-by-turn head is out the server answers for it — on Enter, never a round
+  // trip per keystroke over a slow link (design/slow-links.md §7.3).
+  if (recordStore.windowed && owedIndex()) return false;
+  let n = 0; for (const s of recordState.recSizes) n += s; return n <= liveSearchLimit;
+}
+// #s278 (design/slow-links.md §7): search and the filter for the records below a records-by-turn
+// head's boundary, asked of the server while the head is out, one answer per query (its words, class
+// mask, whole words and tools, under the head's epoch and boundary). It quotes no text; it lives as
+// long as the index does (`remoteSearch`, declared beside the other state a reset clears).
+const REMOTE_TRIES = 5;
+function remoteFound(q) {
+  const head = recordStore.head, owed = owedIndex();
+  if (!recordStore.windowed || !head || !owed) return { ready: true, found: null };
+  const key = `${JSON.stringify(q)}@${head.epoch}/${owed.upto}`;
+  const held = q.lc ? remoteSearch : remoteFilter;
+  if (held?.key === key) return { ready: !!held.found, found: held.found };
+  const mine = { key, found: null, tries: 0 };
+  // A step waiting on the answer this one replaces (the same query read anew: a session letter that
+  // moved to another tool) waits on this one instead.
+  if (held && stepWhenFound?.slot === held) stepWhenFound.slot = mine;
+  if (q.lc) remoteSearch = mine; else remoteFilter = mine;
+  askRemote(mine, q, head, owed);
+  return { ready: false, found: null };
+}
+/** One ask of `/search` for `mine`. A failed ask is asked again every few seconds — a 409 too: a
+ *  session the server's cache let go answers it until the next pull brings it back, and one whose log
+ *  really moved starts over, which drops this ask — and after five the page counts what it holds,
+ *  saying the earlier turns were not searched. */
+function askRemote(mine, q, head, owed) {
+  const current = () => (q.lc ? remoteSearch : remoteFilter) === mine;
+  const settle = found => {
+    mine.found = found;
+    if (q.lc) updateSearch(false);
+    else {
+      refreshFilterHits();
+      // The hits the answer brings can come in front of the one the reader landed on.
+      if (!recordState.search && recordState.landed != null) { const at = activeMatches().indexOf(recordState.landed); if (at >= 0) recordState.match = at; }
+    }
+    // The step asked for while this answer was out, unless something new is typed or the reader
+    // has moved since.
+    const asked = stepWhenFound;
+    if (!asked || asked.slot !== mine) return;
+    stepWhenFound = null;
+    if (!recordState.pendingSearch && viewport.lastUserInput <= asked.at) stepSearch(asked.delta);
+  };
+  mine.tries++;
+  fetch(`/search?session=${encodeURIComponent(recordState.session)}&epoch=${head.epoch}&upto=${owed.upto}&q=${encodeURIComponent(JSON.stringify(q))}`, { cache: "no-store" })
+    .then(response => (response.ok ? response.json() : Promise.reject(response.status)))
+    .then(found => { if (current()) settle(found); })
+    .catch(() => {
+      if (!current()) return;
+      if (mine.tries >= REMOTE_TRIES) settle({ records: [], counts: {}, total: 0, failed: true });
+      else setTimeout(() => { if (current()) askRemote(mine, q, head, owed); }, 3000);
+    });
+}
 byId("transcriptSearchInput").oninput = () => {
   if (searchIsLive()) { recordState.pendingSearch = false; updateSearch(true); return; }
   recordState.pendingSearch = true;
@@ -1840,13 +2234,33 @@ byId("transcriptSearchInput").onkeydown = event => {
   // the query, its count and its marks stay, and the next key is the page's keymap's again. An open
   // filter popover closes with it, as the page-wide Escape closes it.
   if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); event.currentTarget.blur(); setPhoneSearch(false); return; }
-  if (event.key !== "Enter") return;
+  // An Enter that commits an input method's composition (pinyin, kana) is the input method's; Safari
+  // sends it with `isComposing` false and keyCode 229.
+  if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
   event.preventDefault(); event.stopPropagation();
   // A large session searches on Enter (#104): that Enter also MOVES — to the nearest hit below the
   // reader (above, with Shift), wrapping — rather than only counting (#308, the owner).
   if (recordState.pendingSearch) { recordState.pendingSearch = false; updateSearch(true); }
   stepSearch(event.shiftKey ? -1 : 1);
+  // #s287: a phone held sideways in Safari with its tab bar keeps about 16px of the page above the
+  // keyboard (iOS 26.4: Safari's two bars take 110pt of 402, the keyboard with its candidate and
+  // accessory bars 276), so the find pill, lifted to that strip's foot, sits under Safari's bars and
+  // the hit just landed is out of sight; the Home Screen app held sideways keeps 126px, where the pill
+  // fits and no line of the transcript does above it. There Return also puts the keyboard down, and
+  // the reader sees the hit, the count and the steps; a tap on the field brings it back. Wherever a
+  // line shows above the pill, the keyboard stays.
+  if (phoneSearch.matches && noLineAboveFindPill()) event.currentTarget.blur();
 };
+/** Whether the keyboard leaves no room for a line of the transcript between the column's top and the
+ *  find pill: a hit landed there cannot be seen. A line below a process group's sticky head (40px,
+ *  `searchCeiling`) needs about 60px. Both are inside the app, which is moved back over iOS's keyboard
+ *  scroll, so their difference is what the reader has. */
+function noLineAboveFindPill() {
+  const visible = window.visualViewport;
+  if (!visible || !phoneDock || Math.abs(visible.scale - 1) >= 0.01) return false;
+  if (visible.height >= document.documentElement.clientHeight) return false;
+  return phoneDock.getBoundingClientRect().top - viewport.scroller.getBoundingClientRect().top < 64;
+}
 // Whole words: production-only chrome, layered beside the box at runtime so the extracted demo
 // shell stays exact (#293 — the same way the shell switch is added). `w:` keeps working typed.
 // It sits after ↑ ↓ and before the filter button (owner, #296): stepping comes first, then the
@@ -1985,7 +2399,31 @@ function boxQuery() {
 /** The session's tools, each with its LETTER — the shared table (#367: the common tools' letters are
  *  reserved and never change; the rest depend on the session). */
 function toolLetters() {
-  return sessionToolLetters(toolCounts(recordState.records));
+  return sessionToolLetters(sessionToolCounts());
+}
+/** The turn index while the records it answers for are still placeholders in the array the page
+ *  scans (#s276), else null — so nothing is counted twice. Not the units: while a landing is held
+ *  (#340) the store has already written the head into that array and the units still show it
+ *  pending. */
+function owedIndex() {
+  // Stage 2 (#s277) fills the head in any order, so the index stands while the head is out, and the
+  // scans beside it read only the records at or above its boundary (`scanFrom`).
+  if (recordStore.windowed) return recordStore.head ? recordState.headIndex : null;
+  return recordState.records[0]?.kind === "pending" ? recordState.headIndex : null;
+}
+/** Where the scans beside the index start: its boundary while it answers for a head filled in any
+ *  order (#s277, design/slow-links.md §6.5), else 0 — never both for one record. */
+function scanFrom() {
+  const owed = owedIndex();
+  return owed && recordStore.windowed ? owed.upto : 0;
+}
+/** How many calls of each tool the session holds: the records here, and the index's count of the
+ *  ones still coming (#s276), so the letters and counts are the whole session's before it lands. */
+function sessionToolCounts() {
+  const from = scanFrom();
+  const counts = toolCounts(from ? recordState.records.slice(from) : recordState.records);
+  for (const [name, n] of Object.entries(owedIndex()?.tools || {})) counts[name] = (counts[name] || 0) + n;
+  return counts;
 }
 /** An `o(…)` text → the tool KEYS it means (names, `mcp__<server>__*` for a family). */
 function resolveTools(value) {
@@ -2112,7 +2550,14 @@ byId("transcriptSearchInput").addEventListener("keydown", event => {
   }
 }, true);
 wholeWords.onclick = () => { uiState.searchWhole = !uiState.searchWhole; applyScopeFromMenu(); renderFilterMenu(); };
-byId("findNext").onclick = () => stepSearch(1); byId("findPrev").onclick = () => stepSearch(-1);
+byId("findNext").onclick = () => stepFromBox(1); byId("findPrev").onclick = () => stepFromBox(-1);
+/** A step from the box's arrows or keys: text typed and not yet entered is entered first, as Enter
+ *  enters it (#s278) — stepping the last query's hits under new text read as stepping the new one,
+ *  and over a slow link those hits were the tail's alone. */
+function stepFromBox(delta) {
+  if (recordState.pendingSearch) updateSearch(true);
+  stepSearch(delta);
+}
 
 function toolNames(records, into = []) {
   for (const record of records || []) {
@@ -2150,7 +2595,7 @@ function renderFilterMenu() {
   // a top-level scan listed nothing (#110) — and MCP calls collapsed into one expandable family
   // instead of one row per `mcp__server__tool`, which is what a session with dozens of them needs.
   // Most-used first here; the classic page keeps its alphabetical order.
-  const groups = toolTree(toolCounts(recordState.records), uiState.toolTreeOpen, "count");
+  const groups = toolTree(sessionToolCounts(), uiState.toolTreeOpen, "count");
   const rows = groups.flatMap(g => g.rows);
   const letterOf = new Map(toolLetters().map(e => [e.key, e.letter]));
   byId("filterOptions").innerHTML = rows
@@ -2264,6 +2709,14 @@ function computeFilterHits() {
   const hits = new Set(), direct = new Set(), indices = [];
   // An EMPTY list means "every tool" to the shared matcher, so no tools must match nothing here.
   if (wanted.length) recordState.records.forEach((record, index) => { if (filterChain(record, wanted, hits, direct)) indices.push(index); });
+  // #s278: a record still on its way answers the filter when the server says it holds such a call;
+  // its folds open when it arrives (design/slow-links.md §7.3). Asked with text up too, so the
+  // filter is whole the moment the text goes.
+  const remote = wanted.length ? remoteFound({ lc: "", whole: false, wanted: 0, tools: wanted }) : null;
+  if (remote?.found) {
+    for (const [r] of remote.found.records) if (recordState.records[r]?.kind === "pending") indices.push(r);
+    indices.sort((x, y) => x - y);
+  }
   recordState.filterHits = hits;
   recordState.filterDirect = direct;
   recordState.filterMatches = indices;
@@ -2306,8 +2759,8 @@ function applyToolFilter() {
     const start = recordIndexAtTop();
     const target = indices.find(index => index >= start) ?? indices[0];
     recordState.match = target == null ? -1 : indices.indexOf(target);
-    recordState.landed = target ?? null;
-    if (target != null) viewport.jumpToRecord(target, "filter");
+    recordState.landed = target != null && viewport.jumpToRecord(target, "filter") ? target : null;
+    recordState.landedAt = performance.now();
   } else if (recordState.filterHits) {
     const snapshot = recordState.filterSnapshot;
     recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.filterMatches = null;
@@ -2683,6 +3136,10 @@ function openReference(path) {
     for (const part of record.body || []) if (part.p === "blocks") for (const child of part.items || []) visit(child);
   };
   recordState.records.forEach(visit);
+  // #s276: a path offered in the records still coming, from the index — first in the session's
+  // order, so its file stamp stands where the records here offer none.
+  const owed = offered?.fileSig ? null : owedIndex()?.files?.find(file => candidates.has(file.path));
+  if (owed && (owed.fsig || !offered)) offered = { record: null, path: owed.path, fileSig: owed.fsig || "", revealSig: owed.sig || "" };
   if (offered) { openReferenceOffer(offered); return; }
   const copy = navigator.clipboard?.writeText(decoded);
   if (copy) copy.then(
@@ -3018,7 +3475,7 @@ byId("navigatorToggle")?.remove();
 // as the pane's pinned first tab, and the count on the pane's own button so a closed pane
 // still says there is something to see.
 function renderArtifacts() {
-  preview.setRoster(recordState.session === indexState.selected ? artifactRoster(recordState.records) : []);
+  preview.setRoster(recordState.session === indexState.selected ? artifactRoster(recordState.records, owedIndex()?.artifacts, scanFrom()) : []);
 }
 // The task details popover (#60): one element, filled per task, anchored beside the row;
 // Escape and its close control dismiss it and focus returns to the row it came from.
@@ -3052,7 +3509,9 @@ function openTaskPopover(index, opener) {
   if (!task) return;
   const key = String(task.id ?? index);
   const d = taskDetails(task, recordState.taskTargets.get(key) ?? null);
-  const jump = d.target == null
+  const jump = d.target == null && recordStore.head
+    ? `<button type="button" class="task-popover-jump" disabled title="The session's earlier turns are still loading">Go to the turn — still loading</button>`
+    : d.target == null
     ? `<button type="button" class="task-popover-jump" disabled title="This record stream did not keep where the task's status was set">Go to the turn — not kept in this stream</button>`
     : `<button type="button" class="task-popover-jump" data-task-record="${d.target}">Go to the turn where this task's status was recorded</button>`;
   // The card's anatomy is the shared module's (#125): the glyph, the chips, the
@@ -3074,7 +3533,7 @@ function openTaskPopover(index, opener) {
 taskPopover.addEventListener("click", event => {
   if (event.target.closest(".task-popover-close")) { closeTaskPopover(); return; }
   const jump = event.target.closest("[data-task-record]");
-  if (jump) { const at = Number(jump.dataset.taskRecord); closeTaskPopover(false); viewport.jumpToRecord(at, "task"); }
+  if (jump) { const at = Number(jump.dataset.taskRecord); closeTaskPopover(false); jumpOrFetch(at, "task"); }
 });
 document.addEventListener("keydown", event => { if (event.key === "Escape" && !taskPopover.hidden) { event.stopPropagation(); closeTaskPopover(); } }, true);
 document.addEventListener("pointerdown", event => { if (!taskPopover.hidden && !taskPopover.contains(event.target) && !event.target.closest("[data-task-open]")) closeTaskPopover(false); });
@@ -3167,10 +3626,26 @@ function unitAtTop() {
 }
 /** The record index the viewport starts at — `unitAtTop` names a UNIT, and a unit's key is not
  *  a record index; reading `.from` off the key gave `undefined`, so every cold step and every
- *  filter landed on the session's first hit instead of the nearest one (#118). */
+ *  filter landed on the session's first hit instead of the nearest one (#118). Inside the unit it
+ *  is the last record row drawn at or above the same line (#s264): a process unit groups a turn's
+ *  calls and can be thousands of pixels tall, and its `.from` sent a reader deep inside it back to
+ *  its first hit. The unit's `.from` stands in where no row of it is drawn there (a folded one).
+ *  A record's own sub-rows (a call inside an act, `11.1`) are not records and are passed over;
+ *  the first reads `11.0`, which is its record's index again. */
 function recordIndexAtTop() {
   const key = unitAtTop();
-  return recordState.units.find(unit => unit.key === key)?.from ?? 0;
+  const unit = recordState.units.find(u => u.key === key);
+  if (!unit) return 0;
+  const line = viewport.scroller.getBoundingClientRect().top + viewport.landing + 8;
+  let at = unit.from;
+  for (const element of unitRow(key)?.querySelectorAll("[data-block-index]") || []) {
+    const index = Number(element.dataset.blockIndex), r = element.getBoundingClientRect();
+    if (Number.isInteger(index) && index > at && index <= unit.to && r.height > 0 && r.top <= line) at = index;
+  }
+  return at;
+}
+function unitRow(key) {
+  return [...viewport.window.children].find(child => child.dataset.unitKey === key);
 }
 // The turn the reader is in — ONE rule for the turn bar, the navigator pane and the keys. At
 // the bottom no further header can ever cross the line, so the last turn could otherwise never
@@ -3334,7 +3809,7 @@ const keyActions = {
   "search": () => { if (indexState.selected) { setPhoneSearch(true); byId("transcriptSearchInput").focus(); } else openGlobalSearch(); },
   "turn-next": () => stepTurn(1), "turn-prev": () => stepTurn(-1),
   "head-next": () => stepHead(1), "head-prev": () => stepHead(-1),
-  "hit-next": () => stepSearch(1), "hit-prev": () => stepSearch(-1),
+  "hit-next": () => stepFromBox(1), "hit-prev": () => stepFromBox(-1),
   "wrap": () => setReading({ wrap: !uiState.reading.wrap }),
   "size-down": () => setReading({ size: uiState.reading.size - SIZE_STEP }), "size-up": () => setReading({ size: uiState.reading.size + SIZE_STEP }),
   "page-down": () => pageTranscript(1), "page-up": () => pageTranscript(-1),
@@ -3508,12 +3983,60 @@ var phoneDock;
   const composeNote = document.createElement("div");
   composeNote.className = "compose-note";
   composer.prepend(composeNote);
-  // The field grows with its text to five lines, then scrolls.
+  // The field grows with its text to five lines, then scrolls. On a desktop `placeDeskCompose`
+  // fits it, once the box has the width the text wraps in.
   const fitCompose = () => {
     if (controls.nativeActive) { controls.fitComposer(); return; }
     composeInput.style.height = "";
     if (PHONE.matches && composer.classList.contains("production-show")) composeInput.style.height = `${Math.min(composeInput.scrollHeight, 132)}px`;
   };
+  // #s245: a desktop's open box keeps to the session's reading column — the transcript's own text
+  // width, inside its column, never over the outline beside it — and the transcript's end is
+  // pushed above it (`--compose-room`), so a reader following the end still sees it as the box grows.
+  const workspace = composer.closest(".workspace"), transcriptInner = byId("transcriptInner");
+  let deskRoom = null, deskFrame = 0;
+  const placeDeskCompose = () => {
+    const open = composer.classList.contains("production-show") && !PHONE.matches && !controls.nativeActive && !document.body.dataset.sharedCodex;
+    const was = deskRoom;
+    workspace.classList.toggle("desk-composing", open);
+    if (open) {
+      const ws = workspace.getBoundingClientRect(), col = transcript.getBoundingClientRect(), text = transcriptInner.getBoundingClientRect();
+      const left = Math.min(Math.max(text.left, col.left + 16), col.right - 16), right = Math.max(left, Math.min(text.right, col.right - 16));
+      workspace.style.setProperty("--compose-x", `${(left + right) / 2 - ws.left}px`);
+      workspace.style.setProperty("--compose-w", `${right - left}px`);
+      workspace.style.setProperty("--compose-bottom", `${ws.bottom - col.bottom + 16}px`);
+      // The field's cap is a share of the column, so the box never takes most of a short one.
+      workspace.style.setProperty("--compose-cap", `${Math.round(Math.max(42, Math.min(264, col.height * 0.35)))}px`);
+      // One line at rest, growing with the draft at THIS width to the cap, then scrolling: measured
+      // from no height at all, so a shorter draft or a wider box shrinks it again.
+      const kept = composeInput.scrollTop;
+      composeInput.style.height = "0px";
+      composeInput.style.height = `${composeInput.scrollHeight}px`;
+      composeInput.scrollTop = kept;
+      const box = composer.getBoundingClientRect(), jumpHome = byId("jumpToBottom").offsetParent;
+      deskRoom = Math.round(box.height + 16);
+      workspace.style.setProperty("--compose-room", `${deskRoom}px`);
+      // The jump to the end sits above the box, measured from its own container's foot.
+      if (jumpHome) workspace.style.setProperty("--compose-lift", `${Math.round(jumpHome.getBoundingClientRect().bottom - (col.bottom - deskRoom)) + 10}px`);
+    } else deskRoom = null;
+    // The end moved under a reader who is following it: keep them there, as new records would.
+    if (deskRoom !== was && viewport.following) viewport.convergeBottom();
+  };
+  // A column that changes size or a text width that changes (a pane, the outline, Wide transcript,
+  // the window) moves the box in the next frame: writing it inside the observer's delivery would
+  // resize what it watches and loop. The text column's height changes with every record drawn,
+  // and that alone moves nothing.
+  const deskSizes = new WeakMap();
+  const deskObserver = new ResizeObserver(entries => {
+    let moved = false;
+    for (const { target, contentRect: r } of entries) {
+      const size = target === transcriptInner ? `${r.width}` : `${r.width}x${r.height}`;
+      if (deskSizes.get(target) !== size) { deskSizes.set(target, size); moved = true; }
+    }
+    if (!moved || deskFrame) return;
+    deskFrame = requestAnimationFrame(() => { deskFrame = 0; placeDeskCompose(); });
+  });
+  for (const box of [transcript, transcriptInner]) deskObserver.observe(box);
   const paintCompose = () => {
     dockCompose.hidden = !composeFab.classList.contains("show");
     const draft = !!composeInput.value.trim() || !!composer.dataset.imageDraft;
@@ -3523,10 +4046,11 @@ var phoneDock;
     // Moving a pending button on focus would move it between pointerdown and click.
     const sharedFocus = !!controls.nativeActive && (document.activeElement === composeInput || keyboardOpen && (composer.contains(document.activeElement) || controls.runtimePanel?.contains(document.activeElement)));
     app.classList.toggle("composing", PHONE.matches && composer.classList.contains("production-show") && (!controls.nativeActive || sharedFocus));
-    if (controls.nativeActive) { controls.fitComposer(); return; }
-    // #s236: the phone's note is the same one line the desktop's foot shows (`composeTargetLine`).
+    if (controls.nativeActive) { controls.fitComposer(); placeDeskCompose(); return; }
+    // #s236: the phone's note is the same one line the desktop's caption shows (`composeTargetLine`).
     composeNote.textContent = byId("composeTarget").textContent;
     fitCompose();
+    placeDeskCompose();
   };
   new MutationObserver(paintCompose).observe(composeFab, { attributes: true, attributeFilter: ["class"] });
   new MutationObserver(paintCompose).observe(composer, { attributes: true, attributeFilter: ["class"] });

@@ -61,9 +61,13 @@ pub struct Frontend {
 }
 
 /// The listener's handler over one backend and one frontend. It also installs the pinned mdrev,
-/// because this is the one constructor the monitor goes through.
+/// and where a relayed message's key is read (#s272), because this is the one constructor the
+/// monitor goes through.
 pub fn handler(backend: Arc<Backend>, front: Frontend) -> RouteHandler {
     install_mdrev(&backend.scratch);
+    claude_replay_core::claude_inbox::install_key_source(
+        claude_replay_core::claude_inbox::key_from_state_dir,
+    );
     Arc::new(move |req: &Request| dispatch(&backend, &front, req))
 }
 
@@ -132,11 +136,11 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
         // The session view the classic hosts framed (#s99): a link saved from before says so in a
         // plain 404, whatever the scratch directory beneath the static fallback holds.
         "session" => HttpResponse::not_found("the /session page is retired; open the session at /"),
-        // Everything else is the session service's own wire surface — /pull, /records,
+        // Everything else is the session service's own wire surface — /pull, /records, /turn-index,
         // /__reveal, static assets (§6.3). A session's feed is asked for by id, and the
         // service must have been shown that id first (#309).
         _ => {
-            if matches!(name, "pull" | "records") {
+            if matches!(name, "pull" | "records" | "turn-index" | "search") {
                 if let Some(id) = query_get(query, "session") {
                     ensure_known(backend, &index::percent_decode(id));
                 }
@@ -184,6 +188,7 @@ mod tests {
             body: b"",
             authenticated: false,
             origin_ok: true,
+            masked: false,
         }
     }
 

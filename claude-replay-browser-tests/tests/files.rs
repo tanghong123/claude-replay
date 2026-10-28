@@ -811,7 +811,7 @@ fn a_phone_downloads_what_the_session_handed_over_wherever_it_lives() {
     )
     .unwrap();
     let m = Monitor::spawn(Kind::V1, 2933, &base, Some(&stores), true);
-    let (_browser, tab) = chrome_tab();
+    let (browser, tab) = chrome_tab();
     harness::phone(&tab, 440, 956);
     m.pair(&tab);
     m.open(&tab, &format!("?ui=app&session={HANDED}"));
@@ -856,6 +856,7 @@ fn a_phone_downloads_what_the_session_handed_over_wherever_it_lives() {
         &tab,
         "delete Navigator.prototype.share; delete Navigator.prototype.canShare; 'ok'",
     );
+    let home = harness::HomeDownloads::now();
     eval(
         &tab,
         "document.querySelector('#previewBody [data-preview-download]').click(); 'ok'",
@@ -867,6 +868,14 @@ fn a_phone_downloads_what_the_session_handed_over_wherever_it_lives() {
         Duration::from_secs(20),
         "document.getElementById('toast').textContent",
     );
+    // #s254: the save is real, so it lands in the test browser's own folder, byte for byte the
+    // film, and never in the developer's ~/Downloads, where every run used to leave a copy.
+    let saved = harness::until_downloaded(&browser, "tour.mp4", Duration::from_secs(30));
+    assert!(
+        std::fs::read(&saved).unwrap() == bytes,
+        "the saved film is the film itself"
+    );
+    home.assert_gained_nothing_like("tour");
 
     // The pasted image: its saved original is served, so the lightbox opens the original rather
     // than the downscaled copy the transcript carries.

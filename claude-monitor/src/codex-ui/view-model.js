@@ -6,6 +6,7 @@ import { recordText, stripTags } from "./shared/search.js";
 // display name, failed / running / completed from the words the server writes, and the exit
 // code and duration as facts — one vocabulary with the classic page's chips.
 import { displayName, toolHead, stateLabel } from "./shared/tool-head.js";
+import { inboxOf } from "./shared/inbox.js";
 import { svg } from "./icons.js";
 
 export const escapeText = value => String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
@@ -242,23 +243,29 @@ export function taskDetails(task = {}, target = null) {
 /** The session's published artifacts (#78), as the classic page's `collectArtifacts` groups
  *  them: one entry per URL — the stable identity; a republish keeps it — in first-seen order,
  *  with how many times it was published, the latest name / icon / description, and the index
- *  of the record that published it last. Walks nested blocks the way the classic page does. */
-export function artifactRoster(records = []) {
+ *  of the record that published it last. Walks nested blocks the way the classic page does.
+ *  `owed` is the turn index's list of what the records still coming published (#s276), each with
+ *  its record (`at`), in order: they come first in the session. */
+export function artifactRoster(records = [], owed = [], start = 0) {
   const by = new Map();
+  const add = (a, at) => {
+    const e = by.get(a.url) || { url: a.url, count: 0, name: "", icon: "", desc: "", at };
+    e.count += 1;
+    e.name = a.name || e.name;
+    e.icon = a.icon || e.icon;
+    e.desc = a.desc || e.desc;
+    e.at = at;
+    by.set(a.url, e);
+  };
+  for (const a of owed || []) if (a && a.url) add(a, a.at);
   const scan = (block, at) => {
     const a = block?.head?.artifact;
-    if (a && a.url) {
-      const e = by.get(a.url) || { url: a.url, count: 0, name: "", icon: "", desc: "", at };
-      e.count += 1;
-      e.name = a.name || e.name;
-      e.icon = a.icon || e.icon;
-      e.desc = a.desc || e.desc;
-      e.at = at;
-      by.set(a.url, e);
-    }
+    if (a && a.url) add(a, at);
     for (const part of block?.body || []) if (part.p === "blocks") for (const item of part.items || []) scan(item, at);
   };
-  records.forEach((record, i) => scan(record, i));
+  // `start`: while the index answers for the records below it (#s277, a head filled in any order),
+  // only those at or above it are scanned — never both for one record.
+  records.forEach((record, i) => { if (i >= start) scan(record, i); });
   return [...by.values()];
 }
 
@@ -290,7 +297,8 @@ export function viewRecord(record) {
   const head = record.head || {};
   if (record.kind === "user") {
     const reply = replyContext(record);
-    return { t: "user", id: record.id, html: reply ? replyHtml(reply) : partsHtml(record.body), reply, markdown: true, source: record };
+    // #s272: a relayed message from the person, verified — what the relay says of it rides along.
+    return { t: "user", id: record.id, html: reply ? replyHtml(reply) : partsHtml(record.body), reply, inbox: inboxOf(record), markdown: true, source: record };
   }
   // Another session's message (#s79): a turn like a prompt (so the Turns pane and the sticky strip
   // count it), drawn as its own card and never as the person's bubble.
@@ -453,7 +461,16 @@ function codeRows(part, capped, recordId = "", state = null) {
 }
 
 export class Projection {
-  constructor() { this.units = []; }
+  constructor() {
+    this.units = [];
+    // Stage 2 (#s277, design/slow-links.md §6.2): what a record not fetched yet stands as — its
+    // kind, id and, for a turn's opener, number and label, from the turn index — so the units over
+    // it are the ones the records will make, keyed as they will be. Null: one card for the head.
+    this.stub = null;
+    // Where the tail begins (the index's `upto`): a group of steps that reaches past it is the live
+    // turn's, and is drawn with what has arrived, never as a placeholder (`placeholderUnit`).
+    this.upto = Infinity;
+  }
   rebuild(records, changedFrom = 0) {
     // Desktop attachments are separate canonical records immediately after their prompt. When
     // one arrives in a later pull, rewind only that owning prompt unit; otherwise an incremental
@@ -481,18 +498,48 @@ export class Projection {
       }
     }
     const prefix = this.units.slice(0, keep);
-    const units = buildUnits(records, changedFrom, prefix.at(-1)?.turn || 0);
+    const units = buildUnits(records, changedFrom, prefix.at(-1)?.turn || 0, records.length, this.stub, this.upto);
     this.units = prefix.concat(units);
     return keep;
   }
+
+  /** Stage 2 (#s277, design/slow-links.md §6.3): records `[from, to)` were filled in where they
+   *  stand. The units over them are rebuilt alone: their boundaries and keys are the placeholders'
+   *  own, since the facts the placeholders were built from are what `buildUnits` groups by. Returns
+   *  the run of unit indices rewritten, `{from, to}`, or null when the units did not come out as the
+   *  placeholders were — the index and the log disagree, and nothing may be renamed. */
+  fill(records, from, to) {
+    const units = this.units;
+    let a = 0, b = units.length - 1;
+    while (a < units.length && units[a].to < from) a++;
+    while (b >= 0 && units[b].from >= to) b--;
+    if (a > b) return null;
+    const rebuilt = buildUnits(records, units[a].from, units[a - 1]?.turn || 0, units[b].to + 1, this.stub, this.upto);
+    if (rebuilt.length !== b - a + 1 || rebuilt.some((unit, k) => unit.key !== units[a + k].key || unit.to !== units[a + k].to)) return null;
+    this.units = units.slice(0, a).concat(rebuilt, units.slice(b + 1));
+    return { from: a, to: b + 1 };
+  }
 }
 
-function buildUnits(records, from, turn) {
+/** #s277 (design/slow-links.md §6.2): is this unit drawn as a placeholder? One that still owes
+ *  records is — except a group of steps that reaches into the tail: that is the live turn's (a tail
+ *  that starts in the middle of a long turn holds nothing else), and it is drawn with what has
+ *  arrived, measured as any unit is, while its earlier steps are on their way. */
+export function placeholderUnit(unit) {
+  return (unit?.owed || 0) > 0 && !(unit.type === "process" && unit.live);
+}
+
+function buildUnits(records, from, turn, end = records.length, stub = null, upto = Infinity) {
   const units = [];
   let process = null;
   const flush = () => { if (process) units.push(process); process = null; };
-  for (let i = from; i < records.length; i++) {
-    const record = records[i];
+  for (let i = from; i < end; i++) {
+    let record = records[i];
+    // Stage 2 (#s277): a record not fetched yet stands as what the turn index says of it, and the
+    // unit it joins is a placeholder (`owed` counts its records still to come) until every record
+    // it spans has arrived.
+    const owed = record?.kind === "pending" && stub ? stub(i) : null;
+    if (owed) record = owed;
     if (record?.kind === "pending") {
       // #314: the head of a tail-first open, not arrived yet — ONE unit for the whole run, the
       // "loading earlier turns" card. It takes in the tail's leading records up to its first user
@@ -509,21 +556,26 @@ function buildUnits(records, from, turn) {
       i = end;
       continue;
     }
-    const view = viewRecord(record);
+    const view = owed ? null : viewRecord(record);
+    const unpaid = owed ? 1 : 0;
     if (record.kind === "user" || record.kind === "command" || record.kind === "peer") {
       flush(); turn = Number(record.turn || turn + 1);
-      units.push({ type: "user", key: `user:${record.id || i}`, from: i, to: i, turn, view, attachments: [], label: record.label || plainText(record).slice(0, 80) });
+      units.push({ type: "user", key: `user:${record.id || i}`, from: i, to: i, turn, view, attachments: [], label: record.label || (owed ? "" : plainText(record).slice(0, 80)), owed: unpaid, ...(owed ? { stub: owed } : {}) });
     } else if (record.kind === "attachment" && !process && units.at(-1)?.type === "user") {
       const unit = units.at(-1);
-      const path = view.attachment?.att_path || "";
-      const duplicate = unit.attachments.some(item => path && item.attachment?.att_path === path);
-      if (!duplicate) unit.attachments.push(view);
-      unit.to = i;
+      if (view) {
+        const path = view.attachment?.att_path || "";
+        const duplicate = unit.attachments.some(item => path && item.attachment?.att_path === path);
+        if (!duplicate) unit.attachments.push(view);
+      }
+      unit.to = i; unit.owed += unpaid;
     } else if (record.kind === "assistant" && record.phase !== "commentary") {
-      flush(); units.push({ type: "assistant", key: `assistant:${record.id || i}`, from: i, to: i, turn, view });
+      flush(); units.push({ type: "assistant", key: `assistant:${record.id || i}`, from: i, to: i, turn, view, owed: unpaid });
     } else {
-      if (!process) process = { type: "process", key: `process:${record.id || i}`, from: i, to: i, turn, views: [] };
-      process.to = i; process.views.push({ index: i, view });
+      if (!process) process = { type: "process", key: `process:${record.id || i}`, from: i, to: i, turn, views: [], owed: 0 };
+      process.to = i; process.owed += unpaid;
+      if (i >= upto) process.live = true;
+      if (view) process.views.push({ index: i, view });
     }
   }
   flush();

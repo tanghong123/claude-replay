@@ -25,6 +25,7 @@
   --tool: #2e7d55;
   --link: #3a6ea5;
   --peer: #2b6f8e; /* another session's message (#s79): a third voice beside the person and the agent */
+  --inbox: #8a5a12; /* the person's message relayed from elsewhere (#s272), verified */
   --icfg: #28567e;
   --icbg: #eae7db;
   --addbg: #e5f1e2;
@@ -54,6 +55,7 @@
   --tool: #7fcd90;
   --link: #8fbde8;
   --peer: #7ab8d6;
+  --inbox: #e0a85a;
   --icfg: #a5cdf0;
   --icbg: #252b31;
   --addbg: #20351f;
@@ -515,6 +517,22 @@ body.selecting #toolmenu, body.selecting #agentmenu {
   background: linear-gradient(transparent, var(--card)); pointer-events: none;
 }
 .clampbtn { margin-top: 4px; }
+/* A relayed message from the person, verified (#s272): their card, marked in their own hue down
+   the left, what the relay says of it as a row of chips, the words it answers quoted above theirs,
+   and the relay's instructions folded below. */
+.uturn.inbox { border-left: 3px solid var(--inbox); border-radius: 4px 10px 10px 4px; }
+.inbox-h { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: baseline; margin: 0 0 8px; font-size: 12.5px; }
+.inbox-from { color: var(--inbox); font-weight: 650; margin-right: 2px; }
+.inbox-chip { color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 7px; line-height: 18px; white-space: nowrap; }
+.inbox-chip[data-chip="kind"], .inbox-chip[data-chip="to"] { color: var(--inbox); }
+.inbox-quote { margin: 0 0 8px; padding: 2px 0 2px 10px; border-left: 2px solid var(--border); color: var(--muted); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.inbox-quote-from { font-weight: 650; margin-right: 6px; }
+.inbox-do { margin: 8px 0 0; }
+.inbox-do-h { all: unset; cursor: pointer; color: var(--faint); font-size: 12px; }
+.inbox-do-h::before { content: "▸"; margin-right: 5px; }
+.inbox-do.open .inbox-do-h::before { content: "▾"; }
+.inbox-do-h:focus-visible { outline: 2px solid var(--inbox); outline-offset: 2px; border-radius: 3px; }
+.inbox-do-b { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* Another session's message (#s79, Hong's choice: a card from the left). Never the person's
    ❯ card: a rule in the peer hue down its left edge, its sender above the message. */
 .pturn {

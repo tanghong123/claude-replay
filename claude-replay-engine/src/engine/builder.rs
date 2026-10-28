@@ -71,6 +71,8 @@ pub struct SessionAccumulator<S: BlockStore = InMemoryStore> {
     /// Spawn identity for the **committed** prefix only, folded on drain. The replayer's live
     /// map also holds open-window spawns, which a checkpoint must not claim.
     committed_agents: std::collections::HashMap<String, (crate::model::AgentId, String)>,
+    /// The ids of the committed relayed messages (#s272), folded on drain like `committed_agents`.
+    committed_inbox: std::collections::BTreeSet<String>,
     /// Resumable drains since the last checkpoint. Only resumable ones count: a checkpoint must
     /// ride a record that carries a resume payload (§6.6), so a straddling drain does not
     /// advance the clock — it waits for the next qualifying one.
@@ -182,6 +184,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             emitted: Boundary::default(),
             meta_out: Vec::new(),
             committed_agents: Default::default(),
+            committed_inbox: Default::default(),
             since_checkpoint: 0,
             links: Vec::new(),
         }
@@ -216,6 +219,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
         // A resumed writer continues from the restored state: without this its next checkpoint
         // would claim the session began at the resume point.
         acc.committed_agents = mm.agent_ids.clone();
+        acc.committed_inbox = mm.inbox_ids.clone();
         acc.committed_meta = mm.session_meta.clone();
         acc.cwd = mm.cwd.clone();
         acc.task_fold = mm.tasks.clone();
@@ -227,6 +231,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
         // has been stamped.
         acc.replayer.reseed(
             mm.agent_ids.clone(),
+            mm.inbox_ids.iter().cloned().collect(),
             mm.user_times.clone(),
             mm.turn_durations.clone(),
             resume.prev_ts,
@@ -291,6 +296,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
         crate::engine::meta_stream::MaterializedMeta {
             session_meta: self.committed_meta.clone(),
             agent_ids: self.committed_agents.clone(),
+            inbox_ids: self.committed_inbox.clone(),
             turn_durations: self
                 .replayer
                 .turn_durations()
@@ -434,6 +440,10 @@ impl<S: BlockStore> SessionAccumulator<S> {
                 // blocks, so a checkpoint never claims an open-window spawn.
                 for (k, id, ty) in crate::engine::meta_stream::agent_pairs(b) {
                     self.committed_agents.insert(k, (id, ty));
+                }
+                if let Block::UserInbox { inbox, .. } = b {
+                    rec.inbox_ids.push(inbox.id.clone());
+                    self.committed_inbox.insert(inbox.id.clone());
                 }
             }
             let times = self.replayer.user_times().to_vec();
@@ -594,6 +604,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
         self.committed.clear();
         self.committed_meta = SessionMeta::default();
         self.committed_agents.clear();
+        self.committed_inbox.clear();
         self.since_checkpoint = 0;
         self.task_fold = crate::engine::tasks::TaskFold::default();
         // An append-only store (tier-b) discards its backing too — the rebuilt session's

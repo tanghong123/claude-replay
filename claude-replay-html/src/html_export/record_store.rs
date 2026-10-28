@@ -10,6 +10,7 @@
 //! so this store implements [`BlockStore`] but NOT `BlockRead` — the type system then keeps
 //! every committed consumer on the pointer path.
 
+use super::turn_index::IndexFile;
 use super::{render_blocks, EmitState};
 use crate::cache::DurableStore;
 use crate::engine::{BlockStore, SessionMeta};
@@ -47,6 +48,9 @@ pub struct RecordStore {
     log: Log,
     cx: RenderCx,
     emit: EmitState,
+    /// The turn index beside the log (#s276), behind a lock of its own so a read through the
+    /// session's shared store can bring a lagging one level with the log.
+    index: std::sync::Mutex<IndexFile>,
 }
 
 impl RecordStore {
@@ -67,7 +71,9 @@ impl RecordStore {
             .append(true)
             .open(path)?;
         let len = file.metadata()?.len();
+        let index = IndexFile::open(path.with_extension("index"), path, len);
         Ok(Self {
+            index: std::sync::Mutex::new(index),
             log: Log {
                 path: path.to_path_buf(),
                 file,
@@ -109,12 +115,29 @@ impl RecordStore {
         self.log.file.set_len(len)?;
         self.log.file.seek(SeekFrom::End(0))?;
         self.log.len = len;
+        self.index_file().cut_to(len);
         Ok(())
+    }
+
+    fn index_file(&self) -> std::sync::MutexGuard<'_, IndexFile> {
+        self.index.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The `/turn-index` reply (#s276) for a page still waiting for records `[0, upto)`, after
+    /// indexing whatever the sidecar lacks.
+    pub(crate) fn turn_index(&self, epoch: u64, upto: usize) -> serde_json::Value {
+        self.index_file()
+            .reply(&self.log.path, self.log.len, epoch, upto)
     }
 
     /// Current log length (EOF) — the end bound of a committed `{offset, len}` pointer.
     pub(crate) fn log_len(&self) -> u64 {
         self.log.len
+    }
+
+    /// The log's path: search on the server (#s278) reads its records outside the session lock.
+    pub(crate) fn log_path(&self) -> &std::path::Path {
+        &self.log.path
     }
 
     /// The render continuation as of the committed frontier — the open turn renders each poll
@@ -142,6 +165,37 @@ impl RecordStore {
             }
             Err(_) => Vec::new(),
         }
+    }
+
+    /// The `/records` range read, in WHOLE records (#s274): `None` when `start` is not where a
+    /// record starts (byte 0, or just after a framing newline), and an end inside a record carried
+    /// on to that record's end. Secret masking (#365) finds a JSON string's quotes by counting from
+    /// the first byte of a reply, so a reply that starts or ends inside a record could carry a
+    /// secret unmasked to a phone; every pointer the server issues is a record boundary, and a
+    /// client reading a long range in pieces asks from boundaries it has seen.
+    pub(crate) fn read_records(&self, start: u64, end: u64) -> Option<Vec<u8>> {
+        use std::io::BufRead;
+        if start > 0 {
+            let mut before = [0u8; 1];
+            let mut f = std::fs::File::open(&self.log.path).ok()?;
+            f.seek(SeekFrom::Start(start - 1)).ok()?;
+            f.read_exact(&mut before).ok()?;
+            if before[0] != b'\n' {
+                return None;
+            }
+        }
+        let mut bytes = self.read_range(start, end);
+        let end = start + bytes.len() as u64;
+        if end < self.log.len && bytes.last().is_some_and(|b| *b != b'\n') {
+            if let Ok(mut f) = std::fs::File::open(&self.log.path) {
+                if f.seek(SeekFrom::Start(end)).is_ok() {
+                    let mut rest =
+                        std::io::BufReader::new(std::io::Read::take(f, self.log.len - end));
+                    let _ = rest.read_until(b'\n', &mut bytes);
+                }
+            }
+        }
+        Some(bytes)
     }
 }
 
@@ -181,6 +235,14 @@ impl BlockStore for RecordStore {
         let _ = self.log.file.write_all(rec.as_bytes());
         let _ = self.log.file.write_all(b"\n");
         self.log.len += rec.len() as u64 + 1;
+        // The turn index grows with the log (#s276), parsed only while it is level with it.
+        let mut index = self.index_file();
+        if index.level_at(locator.offset) {
+            if let Ok(record) = serde_json::from_str::<serde_json::Value>(rec) {
+                index.push(&record, locator.offset, rec.as_bytes());
+            }
+        }
+        drop(index);
         locator
     }
 
@@ -618,6 +680,90 @@ mod tests {
             0,
             "an unterminated id is not a claim"
         );
+    }
+
+    /// #s276: the turn index is cut with the log, wherever the log is cut. The hard case is a log
+    /// cut and grown back to the SAME length over records of the same sizes: lines left from before
+    /// the cut chain perfectly over the new log, so only the cut itself keeps them from being
+    /// served. Here the source shrinks (the session is rebuilt, the log cut to nothing) and grows
+    /// again with prompts of the same length and different words; the index must name the new ones.
+    /// Then the process goes, and a resumed one answers as a cold one does.
+    #[test]
+    fn the_turn_index_follows_every_cut_of_the_log() {
+        let root = tmp("index-cut");
+        let src = root.join("t.jsonl");
+        let labels_of = |log: &str| -> Vec<String> {
+            log.lines()
+                .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+                .filter(|r| r["kind"] == "user" && r["turn"].is_u64())
+                .map(|r| r["label"].as_str().unwrap_or("").to_string())
+                .collect()
+        };
+        let index_labels = |ix: &serde_json::Value| -> Vec<String> {
+            ix["turns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["label"].as_str().unwrap_or("").to_string())
+                .collect()
+        };
+        write_transcript(&src, 6);
+        let c = cache(&root);
+        let (before, _) = open_and_fold(&c, &root, &src);
+        let ss = c.shared_peek("s").expect("resident");
+        let ix = ss.store_read(|e, st| st.turn_index(e, usize::MAX));
+        assert_eq!(index_labels(&ix), labels_of(&before));
+
+        // Shrink the source: the session is rebuilt and its log cut to nothing…
+        write_transcript(&src, 3);
+        ss.advance().unwrap();
+        // …then grow it back with prompts of the same length in other words.
+        for i in 3..6 {
+            let t = (i * 4) as u32;
+            append(&src, &user(&format!("ASK {i}"), t));
+            append(&src, &tool(&format!("b{i}"), t + 1));
+            append(&src, &result(&format!("b{i}"), t + 2));
+            append(&src, &asst(&format!("reply {i}"), t + 3));
+        }
+        ss.advance().unwrap();
+        let log_path =
+            crate::cache::admit::entry_dir(&root, Presentation::Html, "s").join("records.jsonl");
+        let after = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(
+            after.len(),
+            before.len(),
+            "the log grew back to the same length"
+        );
+        assert_ne!(after, before);
+        let ix = ss.store_read(|e, st| st.turn_index(e, usize::MAX));
+        assert_eq!(
+            index_labels(&ix),
+            labels_of(&after),
+            "the index names the new prompts"
+        );
+        assert!(index_labels(&ix).contains(&"ASK 4".to_string()));
+        drop(ss);
+        c.release_all();
+
+        // A resumed process answers as a cold one over the same transcript.
+        let c = cache(&root);
+        open_and_fold(&c, &root, &src);
+        let resumed = c
+            .shared_peek("s")
+            .unwrap()
+            .store_read(|e, st| st.turn_index(e, usize::MAX));
+        c.release_all();
+        let fresh_root = tmp("index-cut-fresh");
+        let c = cache(&fresh_root);
+        open_and_fold(&c, &fresh_root, &src);
+        let cold = c
+            .shared_peek("s")
+            .unwrap()
+            .store_read(|e, st| st.turn_index(e, usize::MAX));
+        c.release_all();
+        for k in ["turns", "tools", "records", "bytes"] {
+            assert_eq!(resumed[k], cold[k], "{k}");
+        }
     }
 
     /// A changed render flavor (a different fold policy) must REBUILD, not resume: the records

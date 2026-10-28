@@ -342,8 +342,14 @@ The state is DERIVED from the clocks, never stored beside them: `readerOwnsPosit
 `rest()` itself while it is still true, and by `endDrag`. Two things wait: a placement on the tail
 (`pendingTail`, #165) and the sums taking a moved estimate (`estimatesPending`, #194). At rest the
 estimates transaction runs first (it moves the sums, with `P` held across the shift), then the
-converge. The three timers (`settleTimer`, `estimatesTimer`, `bottomTimer`) became this one;
-`owed` and the settle's drop are gone with them (§4.8). A page that stamps `lastUserInput` itself
+converge. The estimates transaction measures the mounted window before the late apply (#s269): it
+runs on a timer, and a size change the observer has not delivered yet (it delivers only in a frame,
+and a headless tab draws lazily) is in the DOM but not the sums. The anchor's placement reads its
+rect and held the reader, but the coverage test (§4.3, a placement that leaves the viewport on
+unmounted territory) judged by sums without the growth, re-mounted around the raw offset and lost
+the anchor. A measure that moves the mean applies it there, traced `late: false`. The three timers
+(`settleTimer`, `estimatesTimer`, `bottomTimer`) became this one; `owed` and the settle's drop are
+gone with them (§4.8). A page that stamps `lastUserInput` itself
 (the shell's keys, until stage 4) is covered: the timer re-checks the clock when it fires.
 
 **Why a timer remains (I8):** wheel and trackpad gestures end without an event. A fling is a

@@ -15,6 +15,9 @@ serde_json = "1"
 # Reuse the workspace Markdown grammar to identify literal source spans, without rendering.
 pulldown-cmark = { version = "0.13", default-features = false }
 anyhow = "1"
+# #s272: HMAC-SHA256 for a relayed message's signature, written out over `sha2` as
+# claude-replay-html's `sig.rs` does (`sha2` is already in this workspace; `hmac` is not).
+sha2 = "0.10"
 
 # QoderWork keeps its session titles in SQLite, not in the transcript, so reading them needs a
 # database — and since ~July 2026 QoderWork stopped writing the plaintext `<sid>-session.json`

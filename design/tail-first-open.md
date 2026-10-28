@@ -62,7 +62,9 @@ count is not `k`, is a resync — never a splice.
   see below the card stays where it was (§4). A tall stand-in would give a true scrollbar from the
   first moment, but a fling up would land in blank space and, when the turns arrived, somewhere at
   that depth rather than on anything the reader had seen. The card has its own `kindOf`, which the
-  estimator never learns from (it would be a sample of the wrong shape).
+  estimator never learns from (it would be a sample of the wrong shape). #s277 found that the code
+  does learn from it, as a process group: `kindFor` falls back to `process`. Stage 2's
+  `placeholderAt` seam ends that (`design/slow-links.md` §6.2).
 - **A remembered position, or a link, into the head waits for it**: the restore does not count its
   batches while the head is pending, and a jump never lands on the card.
 - **Search, the outline and the filters** work on what is loaded: in phase 1 the Turns drop-down

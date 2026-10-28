@@ -6558,8 +6558,8 @@ fn fake_agent(sid: &str, transcript: &std::path::Path) -> harness::Reap {
 
 fn bucket_world(base: &std::path::Path) -> BucketWorld {
     let stores = Stores::new(base);
-    // Minutes ago: the four live rows are "active recently"; the finished one, two hours back,
-    // is not.
+    // Minutes ago: the four live rows are recent; the finished one, eight hours back, is not
+    // (the window is six hours since #s253).
     let t = |i: u32| harness::rfc3339_secs_ago(120 - u64::from(i));
     let q = stores.claude_session(
         BUCKET_Q,
@@ -6590,8 +6590,8 @@ fn bucket_world(base: &std::path::Path) -> BucketWorld {
             harness::tool_open_at("toolu_m", &t(1))
         ),
     );
-    // Finished two hours ago: idle, and not "active recently".
-    let old = |i: u64| harness::rfc3339_secs_ago(7200 + 60 - i);
+    // Finished eight hours ago: idle, and not recent.
+    let old = |i: u64| harness::rfc3339_secs_ago(8 * 3600 + 60 - i);
     stores.claude_session(
         BUCKET_D,
         &format!(
@@ -6761,7 +6761,8 @@ const BUCKET_SHEET_JS: &str = "(function () { var s = document.getElementById('s
 /// #202: the session filter on the app shell — the glyph in the head-actions row (between
 /// Expand every group and the sidebar collapse) opens a sheet of checkboxes under the sidebar's
 /// head: Active recently, Blocked, Idle and Include hidden, with a count beside each — and the
-/// tree follows every click. Active recently is an hour of activity (busy included) and overlaps
+/// tree follows every click. Active recently is six hours of activity since #s253 (busy included;
+/// its label says so) and overlaps
 /// Blocked by design; a bucket unchecked leaves the tree; the last one unchecked puts every bucket
 /// back (a set is never empty); Everything restores the three and leaves Include hidden alone;
 /// the choice survives a reload; Include hidden shows a hidden row dimmed; Escape closes the sheet.
@@ -6865,8 +6866,8 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     assert_eq!(s1["open"], true, "the glyph opens the sheet: {s1}");
     assert_eq!(
         eval(&tab, "document.querySelector('#sessionFilter [data-bucket=\"all\"]') === null && document.querySelector('#sessionFilter [data-bucket=\"recent\"] span:nth-child(2)').textContent", false).as_str(),
-        Some("Active recently"),
-        "no All checkbox, and the first is Active recently"
+        Some("Active in the last 6 hours"),
+        "no All checkbox, and the first is the recent choice, its window in its label (#s253)"
     );
     assert_eq!(
         (
@@ -8107,9 +8108,12 @@ fn a_phone_over_the_tailnet_sees_secrets_masked_and_the_desktop_does_not() {
     let stores = harness::Stores::new(&base);
     // Assembled here, so no line of this source is a whole key (CI runs gitleaks over it).
     let key = format!("sk-ant-api03-{}", "Z".repeat(40));
+    // #s288: a key alone on its line follows the `n` of the record's `\n`, which the masker once
+    // read as inside a word.
+    let alone = format!("ghp_{}", "Y".repeat(36));
     let transcript = harness::long_session(4, harness::Shape::default())
         + &harness::user_at(
-            &format!("the deploy key is {key} for now"),
+            &format!("the deploy key is {key} for now\\n\\nand the backup:\\n{alone}"),
             &harness::rfc3339_secs_ago(60),
         );
     stores.claude_session(PHONE_SID, &transcript);
@@ -8157,6 +8161,11 @@ fn a_phone_over_the_tailnet_sees_secrets_masked_and_the_desktop_does_not() {
         on_phone.contains("the deploy key is") && on_phone.contains("for now"),
         "…and only the key: {on_phone:?}"
     );
+    let backup = on_phone.split("and the backup:").nth(1).unwrap_or("");
+    assert!(
+        !on_phone.contains(&alone) && backup.contains(&"*".repeat(alone.len())),
+        "…and the key alone on its line too (#s288): {on_phone:?}"
+    );
     // The desktop, on this machine: untouched.
     let (_desk_browser, desk) = harness::chrome_tab();
     m.pair(&desk);
@@ -8165,7 +8174,7 @@ fn a_phone_over_the_tailnet_sees_secrets_masked_and_the_desktop_does_not() {
     desk.wait_until_navigated().unwrap();
     let on_desk = read(&desk, "the prompt on the desktop");
     assert!(
-        on_desk.contains(&key),
+        on_desk.contains(&key) && on_desk.contains(&alone),
         "the desktop reads the transcript as it is: {on_desk:?}"
     );
 }
@@ -9001,8 +9010,127 @@ fn tail_first_world(
 }
 
 const OUTLINE_TURNS: &str = "document.querySelectorAll('#navigatorTurns .outline-turn-row').length";
-const HEAD_LANDED: &str = "document.querySelectorAll('#navigatorTurns .outline-turn-row').length === 60 && !document.querySelector('.turn.pending-head')";
+/// The Turns pane's rows whose records are here — not the turn index's rows for records still
+/// coming (#s276).
+const LOADED_TURNS: &str = "document.querySelectorAll('#navigatorTurns .outline-turn-row:not(.outline-turn-pending)').length";
+const HEAD_LANDED: &str = "document.querySelectorAll('#navigatorTurns .outline-turn-row:not(.outline-turn-pending)').length === 60 && !document.querySelector('#navigatorTurns .outline-turn-pending') && !document.querySelector('.turn.pending-head')";
 const VIOLATIONS: &str = "JSON.stringify(window.__viewportViolations || [])";
+/// The head landed in a session of any length: no row still coming, no loading card.
+const HEAD_LANDED_ALL: &str = "!document.querySelector('#navigatorTurns .outline-turn-pending') && !document.querySelector('.turn.pending-head') && document.querySelectorAll('#navigatorTurns .outline-turn-row').length > 0";
+
+/// #s274 (Hong, on a phone over the tailnet: "Loading earlier turns" climbed to 48% and fell back to
+/// 1%, again and again). The head was ONE `/records` read, and a link that dropped it mid-transfer
+/// started it again from the top. Now it comes as ranges the server answers in whole records, each
+/// record kept as it completes, so a drop costs at most the record in flight: the read goes on from
+/// the first record it had not finished. Here the head is cut once, part way, and the card's
+/// percentages are read throughout: they never step back, the card says the connection dropped, and
+/// the head lands whole.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_head_cut_mid_transfer_goes_on_from_the_record_it_was_reading() {
+    let _serial = serial();
+    let base = harness::base("head-cut-mid-transfer");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        TAIL_SID,
+        &harness::long_session(60, harness::Shape::default()),
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2837, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    m.pair(&tab);
+    // Before the page's own scripts: every `/records` read is held 150 ms and then fed 4 KB every
+    // 20 ms, as a slow link feeds it, so the card can be watched; the first whose range holds byte
+    // CUT of the head ends there with an error, once, as a dropped link does; and the pending card's
+    // text is sampled every 20 ms. The head is about 56 KB, read 8 KB at a time.
+    {
+        use headless_chrome::protocol::cdp::Page;
+        tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+            source: r#"(function(){
+  var CUT = 30000, STEP = 4096, real = window.fetch, cut = false;
+  window.__headReads = []; window.__pendingSeen = [];
+  setInterval(function(){ var t = document.querySelector('[data-pending-text]'); if (t) window.__pendingSeen.push(t.textContent); }, 20);
+  var wait = function(ms){ return new Promise(function(done){ setTimeout(done, ms); }); };
+  window.fetch = function(input, init){
+    var url = String(input && input.url || input), m = /\/records\?.*[?&]from=(\d+)&len=(\d+)/.exec(url);
+    var answer = real.call(this, input, init);
+    if (!m) return answer;
+    var from = Number(m[1]), len = Number(m[2]), cutHere = !cut && from <= CUT && from + len > CUT;
+    if (cutHere) cut = true;
+    window.__headReads.push([from, len]);
+    return answer.then(function(r){
+      return wait(150).then(function(){ return r.arrayBuffer(); }).then(function(buffer){
+        var bytes = new Uint8Array(buffer), at = 0, stop = cutHere ? CUT - from : bytes.length;
+        var body = new ReadableStream({ pull: function(c){
+          return wait(20).then(function(){
+            if (at >= stop) { if (cutHere) c.error(new TypeError('network connection was lost')); else c.close(); return; }
+            var next = Math.min(stop, at + STEP); c.enqueue(bytes.slice(at, next)); at = next;
+          });
+        }});
+        return new Response(body, { status: r.status, headers: r.headers });
+      });
+    });
+  };
+})();"#
+                .to_string(),
+            world_name: None,
+            include_command_line_api: None,
+            run_immediately: None,
+        })
+        .expect("the cut is installed");
+    }
+    m.open(
+        &tab,
+        &format!("?ui=app&session={TAIL_SID}&tailBudget=8192&headPiece=8192"),
+    );
+    harness::until(
+        &tab,
+        HEAD_LANDED,
+        "the head to land in front of the tail, after the cut",
+        Duration::from_secs(30),
+        "JSON.stringify({ turns: document.querySelectorAll('#navigatorTurns .outline-turn-row').length, reads: window.__headReads, seen: (window.__pendingSeen || []).slice(-3) })",
+    );
+    let seen = harness::eval(&tab, "JSON.stringify(window.__pendingSeen)");
+    let seen: Vec<String> = serde_json::from_str(seen.as_str().unwrap_or("[]")).unwrap_or_default();
+    let shares: Vec<u64> = seen
+        .iter()
+        .filter_map(|t| {
+            let (_, rest) = t.split_once("— ")?;
+            rest.split('%').next()?.trim().parse().ok()
+        })
+        .collect();
+    assert!(
+        shares.windows(2).all(|w| w[1] >= w[0]),
+        "the share never steps back across the cut: {shares:?}"
+    );
+    assert!(
+        seen.iter().any(|t| t.contains("the connection dropped")),
+        "the card said the connection dropped while it read again: {seen:?}"
+    );
+    let reads = harness::eval(&tab, "JSON.stringify(window.__headReads)");
+    let reads: Vec<(u64, u64)> =
+        serde_json::from_str(reads.as_str().unwrap_or("[]")).unwrap_or_default();
+    // The server answers in whole records, so the read after the cut starts at the first record
+    // the cut one had not finished: after that read's start, at or before the cut.
+    let cut_at = reads
+        .iter()
+        .position(|&(from, len)| from <= 30000 && from + len > 30000)
+        .expect("a read held the cut");
+    let after = reads.get(cut_at + 1).map(|r| r.0);
+    assert!(
+        after.is_some_and(|from| from > reads[cut_at].0 && from <= 30000),
+        "the read after the cut went on from the first record it had not finished: {reads:?}"
+    );
+    assert_eq!(
+        reads.iter().filter(|&&(from, _)| from == 0).count(),
+        1,
+        "the head's start was never asked for again: {reads:?}"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken across the landing"
+    );
+}
 
 /// #314 (design/tail-first-open.md; the owner chose option A — "this may help the desktop case as
 /// well"): a long session opens at its TAIL. While the head is still coming the reader is at the
@@ -9014,10 +9142,18 @@ const VIOLATIONS: &str = "JSON.stringify(window.__viewportViolations || [])";
 fn app_shell_opens_a_long_session_at_its_tail_first() {
     let _serial = serial();
     let (_m, _b, tab) = tail_first_world(2801, "tail-first-open");
-    let loaded = harness::eval(&tab, OUTLINE_TURNS).as_i64().unwrap_or(0);
+    let loaded = harness::eval(&tab, LOADED_TURNS).as_i64().unwrap_or(0);
     assert!(
         loaded > 0 && loaded < 60,
-        "only the tail's turns before the head lands: {loaded}"
+        "only the tail's turns are here before the head lands: {loaded}"
+    );
+    // #s276: the turn index lists the rest, marked as still coming.
+    harness::until(
+        &tab,
+        &format!("{OUTLINE_TURNS} === 60"),
+        "the Turns pane to list every turn from the index",
+        Duration::from_secs(10),
+        OUTLINE_TURNS,
     );
     assert_eq!(
         harness::sticky_turn(&tab, harness::Surface::AppShell).map(|t| t.0),
@@ -9055,6 +9191,234 @@ fn app_shell_opens_a_long_session_at_its_tail_first() {
         shift.as_i64().unwrap_or(0) > 0,
         "the history records the landing as a prepend, with its shift: {shift}"
     );
+}
+
+/// #s276 (design/slow-links.md stage 1): while the head of a tail-first open is still coming, the
+/// turn index fills what the page used to read off the records it had — the tail alone. Here the
+/// head holds nearly everything: a peer's turn, a compaction, Read/Grep/Edit/Write/MCP calls, an
+/// artifact and an offered file. Held, the Turns pane lists every turn and the compaction (those
+/// still coming marked), the turn count, the tool letters and counts and the artifact roster are
+/// the whole session's, and a link in the tail to a file the head offered opens it. Then the head
+/// lands, and each is read again: the same, with nothing marked. A turn chosen while it was still
+/// coming is landed on once it arrives.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_lists_the_whole_session_before_the_head_lands() {
+    let _serial = serial();
+    let base = harness::base("turn-index");
+    let stores = harness::Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("notes.txt"), "plain notes from the head").unwrap();
+    let notes = repo.join("notes.txt").display().to_string();
+    let at = |m: u32, s: u32| harness::at(&format!("{m:02}:{s:02}"));
+    let mut jsonl = harness::user_at("set the stage", &at(0, 1));
+    jsonl += &harness::read_tool_at("r1", &notes, &at(0, 2));
+    jsonl += &harness::tool_result_at("r1", &at(0, 2));
+    jsonl += &harness::named_tool_at("g1", "Grep", "petrel", &at(0, 3));
+    jsonl += &harness::named_tool_at("m1", "mcp__notes__search", "tern", &at(0, 3));
+    jsonl += &harness::edit_tool_at("e1", &notes, &at(0, 4));
+    jsonl += &harness::tool_result_at("e1", &at(0, 4));
+    jsonl += &harness::write_tool_at(
+        "w1",
+        &repo.join("draft.py").display().to_string(),
+        4,
+        &at(0, 5),
+    );
+    jsonl += &harness::tool_result_at("w1", &at(0, 5));
+    jsonl += &harness::artifact_publish_at(
+        "p1",
+        &repo.join("deck.html").display().to_string(),
+        "Skua deck",
+        "chart",
+        "https://claude.ai/artifact/skua-deck",
+        &at(0, 6),
+    );
+    jsonl += &harness::assistant_at("set", &at(0, 7));
+    jsonl += &harness::compaction_at(&at(0, 8));
+    let body = "skua-HD here: the nightly moved";
+    jsonl += &format!(
+        "{}\n",
+        serde_json::json!({
+            "type": "user", "cwd": "/r", "timestamp": at(0, 9), "isMeta": true,
+            "promptSource": "system", "turnOrigin": "peer",
+            "origin": {"kind": "peer", "from": "uds:/tmp/s.sock", "verifiedPeerPid": 1, "msg_id": "m1",
+                       "name": "skua-HD", "fromMode": "bypass", "body": body},
+            "message": {"role": "user", "content": format!("Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/s.sock\" from-name=\"skua-HD\" from-mode=\"bypass\">\n{body}\n</cross-session-message>\n\nThis came from another Claude session — not typed by your user.")}
+        })
+    );
+    jsonl += &harness::assistant_at("noted", &at(0, 10));
+    jsonl += &harness::long_session(40, harness::Shape::default());
+    jsonl += &harness::user_at("where are the notes?", &at(59, 50));
+    jsonl += &harness::assistant_at(&format!("They are in [the notes]({notes})."), &at(59, 51));
+    let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(TAIL_SID, &jsonl);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2838, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    m.pair(&tab);
+    harness::hold_the_head(&tab);
+    m.open(&tab, &format!("?ui=app&session={TAIL_SID}&tailBudget=8192"));
+    harness::until(
+        &tab,
+        "window.__headRequested >= 1 && !!document.querySelector('#navigatorTurns .outline-turn-pending')",
+        "the tail drawn and the turn index read while the head is held",
+        Duration::from_secs(20),
+        OUTLINE_TURNS,
+    );
+    // What the panes say: every Turns row (number, label, sender), the compaction ticks, the
+    // turn count, the filter menu's tools with their letters and counts, and the roster.
+    const PANES: &str = r#"(function(){
+      var rows = [].slice.call(document.querySelectorAll('#navigatorTurns > *')).map(function (r) {
+        return (r.classList.contains('outline-epoch') ? 'epoch ' : '') + r.textContent.replace(/\s+/g, ' ').trim();
+      });
+      document.getElementById('filterTranscriptBtn').click();
+      var tools = document.getElementById('filterOptions').innerText.replace(/\s+/g, ' ').trim();
+      document.getElementById('filterTranscriptBtn').click();
+      return JSON.stringify({ rows: rows, count: document.getElementById('navigatorTurnCount').textContent, tools: tools, roster: (document.getElementById('previewBtn').title.match(/\d+ published artifacts?/) || [''])[0] });
+    })()"#;
+    let held = harness::eval(&tab, PANES);
+    let pending = harness::eval(
+        &tab,
+        "document.querySelectorAll('#navigatorTurns .outline-turn-pending').length",
+    )
+    .as_i64()
+    .unwrap_or(0);
+    let loaded = harness::eval(&tab, LOADED_TURNS).as_i64().unwrap_or(0);
+    assert!(
+        loaded > 0 && pending > loaded,
+        "most turns are still coming ({pending} listed from the index, {loaded} here): {held}"
+    );
+    let held_text = held.as_str().unwrap_or("");
+    for want in [
+        "skua-HD",
+        "epoch ",
+        "Grep 1",
+        "MCP 1",
+        "Update 1",
+        "Write 1",
+        "Bash 14",
+        "1 published artifact",
+        "\"count\":\"43\"",
+    ] {
+        assert!(
+            held_text.contains(want),
+            "held, the panes are the whole session's ({want:?}): {held_text}"
+        );
+    }
+
+    // A link in the tail to a file only the head offered opens it.
+    harness::eval(&tab, "(function(){ var a = [].slice.call(document.querySelectorAll('.transcript .markdown a')).pop(); a.click(); return 1; })()");
+    harness::until(
+        &tab,
+        "(document.getElementById('previewBody') || {}).textContent.indexOf('plain notes from the head') >= 0",
+        "the head's file to open in the pane from a link in the tail",
+        Duration::from_secs(10),
+        "(document.getElementById('previewBody') || {}).textContent || document.getElementById('toast').textContent",
+    );
+    harness::eval(&tab, "document.getElementById('closePreview') && document.getElementById('closePreview').click(); 1");
+
+    // A turn chosen while still coming is held, and landed on once it arrives.
+    tab.find_element("#navigatorTurns .outline-turn-pending[data-turn-number=\"5\"]")
+        .expect("turn 5 is listed while still coming")
+        .click()
+        .expect("click it");
+    harness::until(
+        &tab,
+        "document.getElementById('toast').textContent.indexOf('Still loading') >= 0",
+        "the page to say the turn is still coming",
+        Duration::from_secs(5),
+        "document.getElementById('toast').textContent",
+    );
+    harness::eval(&tab, "window.__releaseHead(); 1");
+    harness::until(
+        &tab,
+        HEAD_LANDED_ALL,
+        "the head to land",
+        Duration::from_secs(20),
+        OUTLINE_TURNS,
+    );
+    harness::until(
+        &tab,
+        "((document.querySelector('#navigatorTurns .outline-turn-row.current') || {}).dataset || {}).turnNumber === '5'",
+        "the held turn to be landed on",
+        Duration::from_secs(10),
+        "((document.querySelector('#navigatorTurns .outline-turn-row.current') || {}).textContent || '')",
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    let landed = harness::eval(&tab, PANES);
+    let (h, l): (serde_json::Value, serde_json::Value) = (
+        serde_json::from_str(held_text).unwrap(),
+        serde_json::from_str(landed.as_str().unwrap_or("{}")).unwrap(),
+    );
+    let mut differ = Vec::new();
+    for k in ["count", "tools", "roster"] {
+        if h[k] != l[k] {
+            differ.push(format!("{k}: held {} landed {}", h[k], l[k]));
+        }
+    }
+    let (hr, lr) = (h["rows"].as_array().unwrap(), l["rows"].as_array().unwrap());
+    for i in 0..hr.len().max(lr.len()) {
+        if hr.get(i) != lr.get(i) {
+            differ.push(format!(
+                "row {i}: held {:?} landed {:?}",
+                hr.get(i),
+                lr.get(i)
+            ));
+        }
+    }
+    assert!(
+        differ.is_empty(),
+        "the panes read the same once the head has landed: {differ:#?}"
+    );
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
+}
+
+/// #s276: a tap on a turn still coming is held until it arrives — unless the reader moves first.
+/// Here they tap turn 10 while the head is held, then scroll the tail: when the head lands they stay
+/// where they scrolled, on a tail turn, and turn 10 is not forced on them.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_held_turn_tap_gives_way_to_the_reader() {
+    let _serial = serial();
+    let (_m, _b, tab) = tail_first_world(2839, "tail-first-held-tap");
+    harness::until(
+        &tab,
+        "!!document.querySelector('#navigatorTurns .outline-turn-pending[data-turn-number=\"10\"]')",
+        "turn 10 listed from the index while still coming",
+        Duration::from_secs(10),
+        OUTLINE_TURNS,
+    );
+    tab.find_element("#navigatorTurns .outline-turn-pending[data-turn-number=\"10\"]")
+        .expect("turn 10's row")
+        .click()
+        .expect("tap it");
+    std::thread::sleep(Duration::from_millis(300));
+    harness::scroll_by(&tab, harness::Surface::AppShell, -400);
+    std::thread::sleep(Duration::from_millis(600));
+    let here = harness::sticky_turn(&tab, harness::Surface::AppShell).map(|t| t.0);
+    assert!(
+        here.is_some_and(|t| t > 50),
+        "the reader is in the tail: {here:?}"
+    );
+    harness::eval(&tab, "window.__releaseHead(); 1");
+    harness::until(
+        &tab,
+        HEAD_LANDED,
+        "the head to land",
+        Duration::from_secs(20),
+        OUTLINE_TURNS,
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    assert_eq!(
+        harness::sticky_turn(&tab, harness::Surface::AppShell).map(|t| t.0),
+        here,
+        "the reader stays where they scrolled; the held tap gave way"
+    );
+    assert_eq!(harness::eval(&tab, VIOLATIONS).as_str(), Some("[]"));
 }
 
 /// #314: a reader who has scrolled up INSIDE the tail keeps their place when the head lands in
@@ -9190,7 +9554,9 @@ fn app_shell_a_search_typed_before_the_head_lands_finds_it_after() {
         &tab,
         "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'question'; b.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()",
     );
-    let loaded = harness::eval(&tab, OUTLINE_TURNS).as_i64().unwrap_or(0);
+    // The turns whose records are here: the Turns pane lists the rest from the index (#s276), but
+    // the search reads the records (on the server it is stage 3, design/slow-links.md).
+    let loaded = harness::eval(&tab, LOADED_TURNS).as_i64().unwrap_or(0);
     harness::until(
         &tab,
         &format!("({count}) > 0"),
@@ -10002,6 +10368,7 @@ fn tail_first_phone(
     budget: u32,
     head: &str,
     tasks: &[(&str, &str, &str)],
+    index: bool,
 ) -> (
     harness::Monitor,
     headless_chrome::Browser,
@@ -10024,6 +10391,9 @@ fn tail_first_phone(
     harness::phone(&tab, 390, 844);
     m.pair(&tab);
     harness::hold_the_head(&tab);
+    if !index {
+        harness::refuse_the_index(&tab);
+    }
     m.open(
         &tab,
         &format!("?ui=app&session={TAIL_SID}&tailBudget={budget}"),
@@ -10054,7 +10424,7 @@ fn tail_first_phone(
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_fling_keeps_its_turn_when_the_head_lands() {
     let _serial = serial();
-    let (_m, _b, tab) = tail_first_phone(2722, "tail-first-fling", 24576, "", &[]);
+    let (_m, _b, tab) = tail_first_phone(2722, "tail-first-fling", 24576, "", &[], true);
     let s = harness::Surface::AppShell;
     let room = harness::eval(
         &tab,
@@ -10147,7 +10517,7 @@ fn a_phone_fling_keeps_its_turn_when_the_head_lands() {
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_fling_heard_late_still_holds_the_head() {
     let _serial = serial();
-    let (_m, _b, tab) = tail_first_phone(2935, "tail-first-fling-deaf", 24576, "", &[]);
+    let (_m, _b, tab) = tail_first_phone(2935, "tail-first-fling-deaf", 24576, "", &[], true);
     let s = harness::Surface::AppShell;
     harness::eval(
         &tab,
@@ -10364,7 +10734,9 @@ fn a_phone_fling_over_under_estimated_answers_does_not_jitter() {
 /// how many had been drawn. While the head is held here the icon reads the session's count (the
 /// highest turn number), the Turns list says which turns are still loading, and Tasks and Agents —
 /// from the whole session's meta, including agents spawned in the head — are whole too; once the
-/// head lands the three are the same and the note is gone.
+/// head lands the three are the same and the note is gone. This is the page WITHOUT the turn index
+/// (#s276), which lists every turn from the first moment: a server that has none, or a link that
+/// failed to bring it, is refused it here.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_tail_first_open_counts_the_whole_session() {
@@ -10389,6 +10761,7 @@ fn a_phone_tail_first_open_counts_the_whole_session() {
             ("2", "land the head", "in_progress"),
             ("3", "count the turns", "pending"),
         ],
+        false,
     );
     let counts = "JSON.stringify([].slice.call(document.querySelectorAll('.phone-pane-count')).map(function (c) { return c.hidden ? '' : c.textContent; }))";
     let drawn = harness::eval(
@@ -12597,6 +12970,774 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
     );
 }
 
+/// #s245: where the desktop's compose box sits against the session's column — the box, the
+/// transcript (the column it must keep inside), the outline beside it, the field and how much of its
+/// draft it shows, the last record drawn, and how far the transcript is from its end.
+const DESKTOP_COMPOSE_GEOMETRY: &str = "(function(){ var R = function (e) { if (!e) return null; var b = e.getBoundingClientRect(); return { l: Math.round(b.left), t: Math.round(b.top), r: Math.round(b.right), b: Math.round(b.bottom), h: Math.round(b.height) }; }; var c = document.getElementById('composer'), t = document.querySelector('.session-main>.transcript'), n = document.getElementById('sessionNavigator'), i = document.getElementById('composeInput'), w = document.querySelector('.transcript .virtual-window'), cs = getComputedStyle(i); var rows = w ? [...w.children].filter(function (e) { return e.getBoundingClientRect().height > 0; }) : []; return JSON.stringify({ w: innerWidth, h: innerHeight, shown: c.classList.contains('production-show'), box: R(c), col: R(t), nav: R(n), field: R(i), fieldH: i.clientHeight, fieldScroll: i.scrollHeight, lh: parseFloat(cs.lineHeight), last: R(rows[rows.length - 1]), gap: Math.round(t.scrollHeight - t.clientHeight - t.scrollTop), jump: R(document.getElementById('jumpToBottom')) }); })()";
+
+/// #s245 (Hong, 2026-10-25, a screenshot at about 2000px wide): the open compose box on a desktop
+/// spanned the outline column to the right edge and stood tall over the transcript's last lines.
+/// It keeps to the session's column, at a wide window and at narrow ones, never over the outline;
+/// empty it is one line of field under its one-line caption; it grows with the draft to a cap and
+/// then scrolls inside; and the transcript ends ABOVE it, pushed up rather than covered, as Claude
+/// Code's own composer does — at rest, with a few lines and at the cap, the last record drawn sits
+/// above the box. The phone's reply box (#s39) is its own layout and its cases hold it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_desktop_compose_box_keeps_to_the_session_column_and_grows_with_its_draft() {
+    let _serial = serial();
+    let base = harness::base("desktop-compose");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        PHONE_SID,
+        &harness::long_session(24, harness::Shape::default()),
+    );
+    stores.claude_tasks(
+        PHONE_SID,
+        &[
+            ("1", "fit the box to the column", "in_progress"),
+            ("2", "grow it with the draft", "pending"),
+        ],
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3245, &base, Some(&stores), true);
+    let (_b, tab) = desktop_tab(&m);
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "document.getElementById('composeFab').click(); 'ok'");
+    let geometry = |what: &str| -> serde_json::Value {
+        harness::pause(what, Duration::from_millis(500));
+        let g = harness::eval(&tab, DESKTOP_COMPOSE_GEOMETRY);
+        let g: serde_json::Value = serde_json::from_str(g.as_str().unwrap_or("{}")).unwrap();
+        // For a person to look at: each state, in each theme.
+        if let Some(dir) = std::env::var_os("CR_COMPOSE_SCREENSHOT_DIR") {
+            use headless_chrome::protocol::cdp::Page;
+            for theme in ["light", "dark"] {
+                harness::eval(
+                    &tab,
+                    &format!("document.documentElement.dataset.theme = '{theme}'; 'ok'"),
+                );
+                harness::pause("the theme to paint", Duration::from_millis(200));
+                let png = tab
+                    .capture_screenshot(Page::CaptureScreenshotFormatOption::Png, None, None, true)
+                    .unwrap();
+                let name = format!("compose-{}-{}-{theme}.png", g["w"], what.replace(' ', "-"));
+                std::fs::write(std::path::Path::new(&dir).join(name), png).unwrap();
+            }
+            harness::eval(&tab, "delete document.documentElement.dataset.theme; 'ok'");
+        }
+        g
+    };
+    let type_lines = |n: usize| {
+        let text = (1..=n)
+            .map(|i| format!("line {i} of the draft"))
+            .collect::<Vec<_>>()
+            .join("\\n");
+        harness::eval(&tab, &format!("(function(){{ var i = document.getElementById('composeInput'); i.focus(); i.value = '{text}'; i.dispatchEvent(new Event('input', {{ bubbles: true }})); return 'ok'; }})()"));
+    };
+    let px = |g: &serde_json::Value, a: &str, b: &str| g[a][b].as_f64().unwrap_or(f64::NAN);
+    // Hong's own layout too: a wide window with the right pane open, where the session's column
+    // is narrow and the box centred on the workspace lay half over the outline.
+    for (w, h, pane) in [
+        (2000.0, 1100.0, false),
+        (2000.0, 1100.0, true),
+        (1280.0, 900.0, false),
+        (1000.0, 800.0, false),
+    ] {
+        let open = harness::eval(
+            &tab,
+            "!document.getElementById('app').classList.contains('preview-off')",
+        );
+        if open.as_bool() != Some(pane) {
+            harness::eval(
+                &tab,
+                &format!(
+                    "document.getElementById('{}').click(); 'ok'",
+                    if pane { "previewBtn" } else { "closePreview" }
+                ),
+            );
+            harness::until(
+                &tab,
+                &format!(
+                    "!document.getElementById('app').classList.contains('preview-off') === {pane}"
+                ),
+                "the right pane to open or close",
+                Duration::from_secs(10),
+                "document.getElementById('app').className",
+            );
+        }
+        let w = if pane { w - 1.0 } else { w };
+        harness::resize(&tab, w, h);
+        harness::until(
+            &tab,
+            &format!("Math.abs(innerWidth - {w}) < 40"),
+            "the window to take its width",
+            Duration::from_secs(5),
+            "innerWidth",
+        );
+        // The page hears a resize in a frame and remeasures after it; a jump sent into that is
+        // overtaken by the remeasure's own anchor, and the reader would no longer be at the end.
+        harness::pause("the page to take the new width", Duration::from_millis(700));
+        harness::jump_to_end(&tab, harness::Surface::AppShell);
+        harness::until(
+            &tab,
+            "(function(){ var t = document.querySelector('.session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop <= 2; })()",
+            "the reader to be at the end",
+            Duration::from_secs(5),
+            "(function(){ var t = document.querySelector('.session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop; })()",
+        );
+        type_lines(0);
+        let empty = geometry("the box to settle empty");
+        eprintln!("#s245 {w}x{h} empty: {empty}");
+        assert_eq!(empty["shown"], true, "{empty}");
+        // Inside the session's column, and never over the outline beside it.
+        assert!(
+            px(&empty, "box", "l") >= px(&empty, "col", "l") - 1.0
+                && px(&empty, "box", "r") <= px(&empty, "col", "r") + 1.0,
+            "the box keeps to the session's column at {w}px: {empty}"
+        );
+        if px(&empty, "nav", "r") - px(&empty, "nav", "l") > 10.0 {
+            assert!(
+                px(&empty, "box", "l") >= px(&empty, "nav", "r") - 1.0,
+                "the box stays off the outline at {w}px: {empty}"
+            );
+        }
+        // Empty: one line of field under a one-line caption.
+        let lh = empty["lh"].as_f64().unwrap_or(20.0);
+        assert!(
+            px(&empty, "field", "h") <= lh + 18.0 && px(&empty, "box", "h") <= 96.0,
+            "the empty box is one line of field at {w}px: {empty}"
+        );
+        // The transcript ends above the box: the last record drawn is in view, and over it.
+        let ends_above = |g: &serde_json::Value, what: &str| {
+            let held = g["gap"].as_f64().unwrap_or(99.0) <= 2.0
+                && px(g, "last", "b") <= px(g, "box", "t") + 1.0
+                && px(g, "last", "b") > px(g, "col", "t");
+            if !held {
+                let states = harness::eval(
+                    &tab,
+                    "JSON.stringify((window.__viewportHistory || { states: [] }).states.slice(-6))",
+                );
+                panic!(
+                    "{what} at {w}px: the transcript ends above the box: {g}\nengine: {states:?}"
+                );
+            }
+        };
+        ends_above(&empty, "empty");
+        // A few lines: the field grows to show them all, and the transcript is pushed up.
+        type_lines(4);
+        let four = geometry("the box to grow with four lines");
+        eprintln!("#s245 {w}x{h} four: {four}");
+        assert!(
+            px(&four, "field", "h") >= px(&empty, "field", "h") + 3.0 * lh - 2.0
+                && four["fieldScroll"].as_f64().unwrap_or(0.0)
+                    <= four["fieldH"].as_f64().unwrap_or(0.0) + 1.0,
+            "four lines are all in sight at {w}px: {four}"
+        );
+        ends_above(&four, "four lines");
+        // A reader who has scrolled up is offered the way back to the end above the box, not under it.
+        harness::scroll_by(&tab, harness::Surface::AppShell, -400);
+        let jump = "(function(){ var j = document.getElementById('jumpToBottom'), c = document.getElementById('composer').getBoundingClientRect(), r = j.getBoundingClientRect(), at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return j.classList.contains('show') + '|' + (r.bottom <= c.top || r.right <= c.left || r.left >= c.right) + '|' + (!!at && j.contains(at)); })()";
+        harness::until(
+            &tab,
+            &format!("{jump} === 'true|true|true'"),
+            "the jump to the end to show clear of the box",
+            Duration::from_secs(5),
+            jump,
+        );
+        // And the box growing does not move them: only a reader following the end is kept at it.
+        let offset = "(function(){ var t = document.querySelector('.session-main>.transcript'); return JSON.stringify([Math.round(t.scrollTop), Math.round(t.scrollHeight - t.clientHeight - t.scrollTop)]); })()";
+        let before = harness::eval(&tab, offset);
+        type_lines(8);
+        let grown = geometry("the box to grow under a reader who scrolled up");
+        let after = harness::eval(&tab, offset);
+        let read = |v: &serde_json::Value| -> Vec<f64> {
+            serde_json::from_str(v.as_str().unwrap_or("[]")).unwrap_or_default()
+        };
+        let (b, a) = (read(&before), read(&after));
+        assert!(
+            px(&grown, "box", "h") > px(&four, "box", "h") + lh
+                && b.len() == 2
+                && a.len() == 2
+                && (a[0] - b[0]).abs() <= 1.0
+                && a[1] > 2.0,
+            "a reader scrolled up stays where they were as the box grows at {w}px: {before:?} then {after:?}, {grown}"
+        );
+        harness::jump_to_end(&tab, harness::Surface::AppShell);
+        harness::until(
+            &tab,
+            "(function(){ var t = document.querySelector('.session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop <= 2; })()",
+            "the reader to be back at the end",
+            Duration::from_secs(5),
+            "(function(){ var t = document.querySelector('.session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop; })()",
+        );
+        // A long draft: the field stops at its cap and scrolls inside.
+        type_lines(60);
+        let long = geometry("the box to reach its cap");
+        eprintln!("#s245 {w}x{h} long: {long}");
+        assert!(
+            long["fieldScroll"].as_f64().unwrap_or(0.0)
+                > long["fieldH"].as_f64().unwrap_or(0.0) + lh
+                && px(&long, "box", "h") <= 0.5 * px(&long, "col", "h"),
+            "a long draft scrolls inside a capped field at {w}px: {long}"
+        );
+        ends_above(&long, "a long draft");
+        // Emptied, it is one line again.
+        type_lines(0);
+        let again = geometry("the box to shrink back");
+        assert!(
+            (px(&again, "box", "h") - px(&empty, "box", "h")).abs() <= 1.0,
+            "emptied, the box is as short as it began at {w}px: {again}"
+        );
+        ends_above(&again, "emptied");
+    }
+    // A draft that wraps is fitted again when the box's width changes under it — the right pane
+    // opening at 1280px narrows the session's column — not only on the next keystroke.
+    harness::resize(&tab, 1280.0, 900.0);
+    harness::until(
+        &tab,
+        "Math.abs(innerWidth - 1280) < 40",
+        "the window to take its width",
+        Duration::from_secs(5),
+        "innerWidth",
+    );
+    harness::pause("the page to take the new width", Duration::from_millis(700));
+    // Short enough to stay under the cap even in the narrowed box (205px at this width).
+    let paragraph = "a paragraph long enough to wrap ".repeat(4);
+    harness::eval(&tab, &format!("(function(){{ var i = document.getElementById('composeInput'); i.focus(); i.value = '{paragraph}'; i.dispatchEvent(new Event('input', {{ bubbles: true }})); return 'ok'; }})()"));
+    let wide = geometry("the paragraph to wrap in the wide box");
+    let pane = |open: bool| {
+        harness::eval(
+            &tab,
+            &format!(
+                "document.getElementById('{}').click(); 'ok'",
+                if open { "previewBtn" } else { "closePreview" }
+            ),
+        );
+        harness::until(
+            &tab,
+            &format!(
+                "!document.getElementById('app').classList.contains('preview-off') === {open}"
+            ),
+            "the right pane to open or close",
+            Duration::from_secs(10),
+            "document.getElementById('app').className",
+        );
+    };
+    pane(true);
+    let narrow = geometry("the paragraph to wrap in the narrowed box");
+    pane(false);
+    let back = geometry("the paragraph to wrap in the wide box again");
+    eprintln!("#s245 wrap: {wide}\n{narrow}\n{back}");
+    let fits = |g: &serde_json::Value| {
+        g["fieldScroll"].as_f64().unwrap_or(0.0) <= g["fieldH"].as_f64().unwrap_or(0.0) + 1.0
+    };
+    assert!(
+        px(&narrow, "box", "r") - px(&narrow, "box", "l")
+            < px(&wide, "box", "r") - px(&wide, "box", "l") - 100.0,
+        "the pane narrows the box: {wide} then {narrow}"
+    );
+    assert!(
+        fits(&wide)
+            && fits(&narrow)
+            && fits(&back)
+            && narrow["fieldH"].as_f64() > wide["fieldH"].as_f64()
+            && (back["fieldH"].as_f64().unwrap_or(0.0) - wide["fieldH"].as_f64().unwrap_or(0.0))
+                .abs()
+                <= 1.0,
+        "the field shows the whole paragraph at each width, taller while narrow: {wide}\n{narrow}\n{back}"
+    );
+}
+
+/// #s247: a resume whose agent fails as it starts tells the page why. The monitor answered a resume
+/// the moment its process was spawned, so the page said "Resuming the session" while the agent had
+/// already stopped (a session it could not find, a login, a flag). It now watches the start: a
+/// failure is the send's answer, its draft kept; an agent still running is the "Resuming" it always
+/// was. A fake `claude` on the MONITOR's PATH alone records its argv, and a mode file says whether
+/// it fails.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_resume_that_fails_as_it_starts_tells_the_page_why() {
+    let _serial = serial();
+    let base = harness::base("resume-startup");
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        PHONE_SID,
+        &harness::long_session(6, harness::Shape::default()).replace(
+            "\"cwd\":\"/r\"",
+            &format!("\"cwd\":{:?}", repo.display().to_string()),
+        ),
+    );
+    let bin = base.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let (mode, argv) = (base.join("mode"), base.join("argv"));
+    std::fs::write(&mode, "fail").unwrap();
+    let fake = bin.join("claude");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{argv}'\nif [ \"$(cat '{mode}')\" = fail ]; then printf 'No conversation found with session ID: %s\\n' \"$2\" >&2; exit 1; fi\nsleep 4\n",
+            argv = argv.display(),
+            mode = mode.display()
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let m = harness::Monitor::spawn_with(
+        harness::Kind::V1,
+        3247,
+        &base,
+        Some(&stores),
+        true,
+        &[("PATH", path.as_str())],
+    );
+    let (_b, tab) = desktop_tab(&m);
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "document.getElementById('composeFab').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.querySelector('#composer .compose-target, #composer .compose-note, #composer') && /Resumes this session/.test(document.getElementById('composer').textContent)",
+        "the box to say it resumes this session",
+        Duration::from_secs(10),
+        "document.getElementById('composer').textContent",
+    );
+    let send = |text: &str| {
+        harness::eval(
+            &tab,
+            &format!("(function(){{ var i = document.getElementById('composeInput'); i.focus(); i.value = {text:?}; i.dispatchEvent(new Event('input', {{ bubbles: true }})); document.getElementById('sendBtn').click(); return 'ok'; }})()"),
+        );
+    };
+    let seen = "JSON.stringify({ toast: document.getElementById('toast').textContent, draft: document.getElementById('composeInput').value })";
+
+    // The agent stops at once: the page says why, and the draft stays for another try.
+    send("try the resume");
+    harness::until(
+        &tab,
+        &format!("/No conversation found with session ID: {PHONE_SID}/.test(document.getElementById('toast').textContent) && /exit status: 1/.test(document.getElementById('toast').textContent)"),
+        "the agent's own failure in place of \"Resuming the session\"",
+        Duration::from_secs(15),
+        seen,
+    );
+    assert_eq!(
+        harness::eval(&tab, "document.getElementById('composeInput').value"),
+        serde_json::Value::String("try the resume".into()),
+        "a resume that failed keeps its draft"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&argv).unwrap(),
+        format!("--resume\n{PHONE_SID}\n--dangerously-skip-permissions\n-p\n--\ntry the resume\n"),
+        "the resume was the agent's own shape, the prompt after --"
+    );
+
+    // The agent starts and keeps running: the send went, as before.
+    std::fs::write(&mode, "run").unwrap();
+    send("now it starts");
+    harness::until(
+        &tab,
+        "document.getElementById('toast').textContent === 'Resuming the session' && document.getElementById('composeInput').value === ''",
+        "a resume that started to read as one",
+        Duration::from_secs(15),
+        seen,
+    );
+    assert!(
+        std::fs::read_to_string(&argv)
+            .unwrap()
+            .ends_with("--\nnow it starts\n"),
+        "the second resume carried its own prompt"
+    );
+}
+
+/// #s248 (found by the review of #s245): a search step lands a match's record near the top and
+/// then checks the match itself is on screen. On a desktop with the compose box open, the box
+/// covers the transcript's foot, and a match deep in a tall record landed in that band counted
+/// as on screen and stayed hidden under it. The only match here is paragraph 14 of a 30-paragraph
+/// answer, with eight lines in the box; a step must leave it above the box.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_desktop_search_step_never_leaves_a_match_under_the_compose_box() {
+    let _serial = serial();
+    let base = harness::base("desktop-compose-search");
+    let stores = harness::Stores::new(&base);
+    let mut t = harness::long_session(4, harness::Shape::default());
+    let tall = (1..=30)
+        .map(|k| {
+            if k == 14 {
+                "paragraph 14 holds the needle the search looks for.".to_string()
+            } else {
+                format!("paragraph {k} of the long answer.")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    t += &harness::user_at("give me the long answer", &harness::now_minus(600));
+    t += &harness::assistant_at(&tall, &harness::now_minus(590));
+    for k in 0..4u64 {
+        t += &harness::user_at(&format!("follow-up {k}"), &harness::now_minus(500 - 60 * k));
+        t += &harness::assistant_at(
+            &format!("reply {k}: short."),
+            &harness::now_minus(490 - 60 * k),
+        );
+    }
+    stores.claude_session(PHONE_SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3246, &base, Some(&stores), true);
+    let (_b, tab) = desktop_tab(&m);
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "(function(){ document.getElementById('composeFab').click(); var i = document.getElementById('composeInput'); i.value = [1, 2, 3, 4, 5, 6, 7, 8].map(function (n) { return 'draft line ' + n; }).join('\\n'); i.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "document.getElementById('composer').getBoundingClientRect().height > 150",
+        "the box to grow with its eight lines",
+        Duration::from_secs(5),
+        "document.getElementById('composer').getBoundingClientRect().height",
+    );
+    harness::eval(&tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window mark.search-mark.current')",
+        "the search to mark its one match",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    harness::pause("the search's landing to settle", Duration::from_millis(600));
+    // Step to it: the record lands near the top, and the match must end in sight above the box.
+    // Its record's head then sits above the column: the landing alone (the head near the top)
+    // would have left the match under the box, so only the reveal can have put it in sight.
+    harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+    let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); if (!m) return 'none'; var r = m.getBoundingClientRect(), rec = m.closest('[data-block-index]').getBoundingClientRect(); return JSON.stringify({ above: r.bottom <= c.top + 0.5 && r.top >= t.top - 0.5, revealed: rec.top < t.top - 0.5, mark: [Math.round(r.top), Math.round(r.bottom)], record: Math.round(rec.top), box: Math.round(c.top), col: [Math.round(t.top), Math.round(t.bottom)] }); })()";
+    harness::until(
+        &tab,
+        &format!("(function(){{ var g = {seen}; return g !== 'none' && JSON.parse(g).above && JSON.parse(g).revealed; }})()"),
+        "a step to leave the match in sight above the compose box",
+        Duration::from_secs(5),
+        seen,
+    );
+}
+
+/// #s257 (found by the review of #s248): a fresh query points the search at its FIRST hit without
+/// moving the reader, and the first ↓ lands there, or moves on to the next hit if the first is
+/// already on screen. On a desktop with the compose box open, a first hit under the box counted
+/// as on screen, so ↓ skipped it and the reader never saw it. Here "needle one" sits under the box
+/// when the query is typed; the first ↓ must land on it, above the box, not on "needle two".
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_desktop_search_first_step_lands_on_a_first_hit_under_the_compose_box() {
+    let _serial = serial();
+    let base = harness::base("desktop-compose-first-hit");
+    let stores = harness::Stores::new(&base);
+    let mut t = harness::long_session(6, harness::Shape::default());
+    for (k, (ask, answer)) in [
+        ("where is the first one", "needle one sits in this answer."),
+        ("and the next", "plain words only here."),
+        ("and after that", "needle two sits in this answer."),
+        ("last", "nothing more."),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let k = k as u64;
+        t += &harness::user_at(ask, &harness::now_minus(600 - 60 * k));
+        t += &harness::assistant_at(answer, &harness::now_minus(590 - 60 * k));
+    }
+    stores.claude_session(PHONE_SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3249, &base, Some(&stores), true);
+    let (_b, tab) = desktop_tab(&m);
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "(function(){ document.getElementById('composeFab').click(); var i = document.getElementById('composeInput'); i.value = 'draft line 1\\ndraft line 2\\ndraft line 3'; i.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    harness::pause("the box to take its lines", Duration::from_millis(500));
+    // Bring "needle one" down under the box: the reader scrolls up until it sits in the box's band.
+    let first = "(function(){ var e = [...document.querySelectorAll('.virtual-window [data-block-index]')].find(function (n) { return /needle one/.test(n.textContent) && !n.querySelector('[data-block-index]'); }), c = document.getElementById('composer').getBoundingClientRect(); if (!e) return null; var r = e.getBoundingClientRect(); return JSON.stringify({ top: Math.round(r.top), bottom: Math.round(r.bottom), box: Math.round(c.top), boxBottom: Math.round(c.bottom) }); })()";
+    let at = harness::eval(&tab, first);
+    let at: serde_json::Value = serde_json::from_str(at.as_str().unwrap_or("null")).unwrap();
+    let dy = at["top"].as_f64().unwrap() - (at["box"].as_f64().unwrap() + 12.0);
+    harness::scroll_by(&tab, harness::Surface::AppShell, dy as i64);
+    harness::pause("the scroll to settle", Duration::from_millis(500));
+    let under = harness::eval(&tab, first);
+    let under: serde_json::Value = serde_json::from_str(under.as_str().unwrap_or("null")).unwrap();
+    assert!(
+        under["top"].as_f64().unwrap() >= under["box"].as_f64().unwrap()
+            && under["top"].as_f64().unwrap() < under["boxBottom"].as_f64().unwrap(),
+        "premise: the first hit sits under the box before the query: {under}"
+    );
+    harness::eval(&tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window mark.search-mark.current')",
+        "the query to mark its first hit",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    harness::pause("the query to settle", Duration::from_millis(400));
+    harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+    let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); if (!m) return 'none'; var r = m.getBoundingClientRect(); return JSON.stringify({ text: m.closest('[data-block-index]').textContent.match(/needle \\w+/)[0], above: r.bottom <= c.top + 0.5 && r.top >= t.top - 0.5, mark: Math.round(r.top), box: Math.round(c.top) }); })()";
+    harness::until(
+        &tab,
+        &format!("(function(){{ var g = {seen}; if (g === 'none') return false; g = JSON.parse(g); return g.text === 'needle one' && g.above; }})()"),
+        "the first step to land on the first hit, in sight above the box",
+        Duration::from_secs(5),
+        seen,
+    );
+}
+
+/// #s259 (the review of 7b4be452): a step goes on from the hit the last step landed while the reader
+/// has not moved since, but not every move reaches the engine as input — a key the browser scrolls
+/// with natively, the browser's own find. A reader who went elsewhere that way must enter at the hit
+/// nearest them, not be taken back beside the old one. Here the move is a script's, which stamps no
+/// input at all.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_search_step_after_an_unheard_move_enters_at_the_nearest_hit() {
+    let _serial = serial();
+    let base = harness::base("search-unheard-move");
+    let stores = harness::Stores::new(&base);
+    let mut t = harness::long_session(4, harness::Shape::default());
+    let filler = (1..=14)
+        .map(|n| format!("filler paragraph {n} of the answer."))
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    for k in 0..10u64 {
+        t += &harness::user_at(&format!("question {k}"), &harness::now_minus(900 - 60 * k));
+        t += &harness::assistant_at(
+            &format!("answer {k} holds the needle.\\n\\n{filler}"),
+            &harness::now_minus(890 - 60 * k),
+        );
+    }
+    stores.claude_session(PHONE_SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3250, &base, Some(&stores), true);
+    let (_b, tab) = desktop_tab(&m);
+    harness::eval(&tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window mark.search-mark.current')",
+        "the query to mark its first hit",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    harness::pause("the query to settle", Duration::from_millis(400));
+    let landed = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); return m ? Number((m.parentElement.textContent.match(/answer (\\d+)/) || [0, -1])[1]) : -1; })()";
+    harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+    harness::pause("the step's landing to settle", Duration::from_millis(600));
+    let first = harness::eval(&tab, landed).as_i64().unwrap_or(-1);
+    assert!(first >= 0, "the first step lands a hit");
+    // Far from it, by script: no wheel, no key, nothing the engine hears as the reader.
+    let to = if first < 5 { 0.7 } else { 0.25 };
+    harness::eval(&tab, &format!("(function(){{ var s = document.querySelector('.session-main>.transcript'); s.scrollTo({{ top: s.scrollHeight * {to}, behavior: 'instant' }}); return 'ok'; }})()"));
+    harness::pause("the move to settle", Duration::from_millis(700));
+    // The nearest hit: the first at or below the unit at the top, as the page reads the top.
+    let nearest = "(function(){ var t = document.querySelector('.session-main>.transcript'), line = t.getBoundingClientRect().top + (parseFloat(getComputedStyle(t).scrollPaddingTop) || 18) + 8; var kids = [...document.querySelector('.virtual-window').children], at = 0; kids.forEach(function (c, i) { if (c.getBoundingClientRect().top <= line) at = i; }); for (var i = at; i < kids.length; i++) { var m = kids[i].textContent.match(/answer (\\d+) holds the needle/); if (m) return Number(m[1]); } return -1; })()";
+    let want = harness::eval(&tab, nearest).as_i64().unwrap_or(-1);
+    assert!(
+        want >= 0 && want != (first + 1) % 10 && want != first,
+        "premise: the move took the reader away from hit {first} and its next: nearest is {want}"
+    );
+    harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+    harness::pause("the step's landing to settle", Duration::from_millis(600));
+    let got = harness::eval(&tab, landed).as_i64().unwrap_or(-1);
+    assert_eq!(
+        got,
+        want,
+        "after a move the engine did not hear, the step enters at the hit nearest the reader (the last landed was {first})"
+    );
+}
+
+/// #s263 (found by the review of #s259): a step's reveal puts the match a third of the way down the
+/// space above the cover at the transcript's foot. Measured from the column's top, that third fell
+/// behind the turn bar sticking there (about 31px) whenever the cover stopped within 93px of it: a
+/// short window with the compose box open. The match is paragraph 14 of a 30-paragraph answer, so
+/// the landing alone leaves it under the box and only the reveal brings it up; it must end below
+/// the bar and above the box.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_search_step_in_a_short_space_leaves_the_match_below_the_turn_bar() {
+    let _serial = serial();
+    let base = harness::base("search-short-space");
+    let stores = harness::Stores::new(&base);
+    let mut t = harness::long_session(4, harness::Shape::default());
+    let tall = (1..=30)
+        .map(|k| {
+            if k == 14 {
+                "paragraph 14 holds the needle the search looks for.".to_string()
+            } else {
+                format!("paragraph {k} of the long answer.")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    t += &harness::user_at("give me the long answer", &harness::now_minus(600));
+    t += &harness::assistant_at(&tall, &harness::now_minus(590));
+    for k in 0..4u64 {
+        t += &harness::user_at(&format!("follow-up {k}"), &harness::now_minus(500 - 60 * k));
+        t += &harness::assistant_at(
+            &format!("reply {k}: short."),
+            &harness::now_minus(490 - 60 * k),
+        );
+    }
+    stores.claude_session(PHONE_SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3251, &base, Some(&stores), true);
+    let (_b, tab) = desktop_tab(&m);
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "(function(){ document.getElementById('composeFab').click(); var i = document.getElementById('composeInput'); i.value = 'draft line 1\\ndraft line 2\\ndraft line 3'; i.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    // The space between the column's top and the box: 62 to 75px. Room enough below the bar for
+    // the match (a correct landing of its 20px needs about 61), and short enough that the old third
+    // (at most 25) left it well behind the bar's 31. Walked down to, measured at each height, since
+    // how much of the window the browser's frame takes differs between platforms; a 5px step moves
+    // the space about 3px, inside the band.
+    let space = "(function(){ var c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); return Math.round(c.top - t.top); })()";
+    let mut seen = Vec::new();
+    for h in (300..=600).rev().step_by(5) {
+        harness::resize(&tab, 1280.0, h as f64);
+        harness::pause("the box to follow the window", Duration::from_millis(300));
+        let got = harness::eval(&tab, space).as_i64().unwrap_or(-1);
+        seen.push((h, got));
+        if (62..=75).contains(&got) {
+            break;
+        }
+    }
+    let got = seen.last().map(|&(_, s)| s).unwrap_or(-1);
+    assert!(
+        (62..=75).contains(&got),
+        "premise: some window height leaves the box 62 to 75px below the column's top: {seen:?}"
+    );
+    harness::eval(&tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window mark.search-mark.current')",
+        "the search to mark its one match",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    harness::pause("the query to settle", Duration::from_millis(600));
+    harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+    // The bar is on (the turn's card has scrolled past), so behind it the match is hidden.
+    let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), c = document.getElementById('composer').getBoundingClientRect(), bar = document.getElementById('turnStickyBar'), b = bar.getBoundingClientRect(); if (!m) return 'none'; var r = m.getBoundingClientRect(); return JSON.stringify({ between: r.top >= b.bottom - 0.5 && r.bottom <= c.top + 0.5, on: bar.classList.contains('on'), mark: [Math.round(r.top), Math.round(r.bottom)], bar: Math.round(b.bottom), box: Math.round(c.top) }); })()";
+    harness::until(
+        &tab,
+        &format!("(function(){{ var g = {seen}; return g !== 'none' && JSON.parse(g).between && JSON.parse(g).on; }})()"),
+        "a step to leave the match below the turn bar and above the compose box",
+        Duration::from_secs(5),
+        seen,
+    );
+}
+
+/// #s257 (the review of 0fd1bd4d): a step counts a match as seen only when it is in sight above
+/// whatever covers the transcript's foot. But with a phone's keyboard up, the dock rides the
+/// keyboard while the transcript keeps its height (#372), so the end of the transcript can never
+/// rise above it. A last hit there, once landed on, read as unseen, and the next step re-entered
+/// from the hit nearest the top: ↓ went back and forth between the last two hits and never wrapped.
+/// At the view's end a match that cannot be lifted further counts as seen; three steps from the
+/// end visit "needle high", "needle low" and then wrap to "needle first".
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_search_with_the_keyboard_up_wraps_past_a_last_hit_under_the_dock() {
+    let _serial = serial();
+    let mut extra = String::new();
+    let mut at = 59u64;
+    let mut pair = |ask: &str, answer: &str| {
+        extra += &harness::user_at(ask, &harness::now_minus(at));
+        extra += &harness::assistant_at(answer, &harness::now_minus(at - 1));
+        at -= 2;
+    };
+    pair("the first one", "needle first is here.");
+    for k in 0..8 {
+        pair(&format!("filler {k}"), "plain words.");
+    }
+    // With the keyboard up a phone shows about 340px above the dock: "needle high" in it, one
+    // exchange above "needle low", which the view's end leaves under the dock.
+    pair("the high one", "needle high is here.");
+    pair("a spacer", "plain words.");
+    pair("the low one", "needle low is here.");
+    let (_m, _b, tab, _path) = phone_world_at(3248, "phone-search-keyboard-wrap", 390, 844, &extra);
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open')",
+        "a tap on the search to open the find pill",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    harness::eval(&tab, "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 336; } }); visualViewport.dispatchEvent(new Event('resize')); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "(function(){ var d = document.getElementById('phoneDock').getBoundingClientRect(); return Math.abs(d.bottom - (innerHeight - 336 - 8)) <= 1; })()",
+        "the find pill resting just above the keyboard",
+        Duration::from_secs(5),
+        "document.getElementById('phoneDock').getBoundingClientRect().bottom",
+    );
+    harness::eval(&tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "/^3\\b/.test(document.getElementById('transcriptSearchCount').textContent)",
+        "the query to count its three hits",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    harness::pause("the query to settle", Duration::from_millis(400));
+    let current = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); if (!m) return 'none'; var d = document.getElementById('phoneDock').getBoundingClientRect(), t = document.querySelector('.transcript'); return JSON.stringify({ text: m.closest('[data-block-index]').textContent.match(/needle \\w+/)[0], under: m.getBoundingClientRect().top >= d.top, end: t.scrollHeight - t.clientHeight - t.scrollTop <= 1 }); })()";
+    let step = |want: &str| -> serde_json::Value {
+        harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+        harness::until(
+            &tab,
+            &format!("(function(){{ var g = {current}; return g !== 'none' && JSON.parse(g).text === '{want}'; }})()"),
+            &format!("the step to land on {want}"),
+            Duration::from_secs(5),
+            current,
+        );
+        harness::pause("the step to settle", Duration::from_millis(400));
+        serde_json::from_str(harness::eval(&tab, current).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    step("needle high");
+    let low = step("needle low");
+    assert!(
+        low["under"] == true && low["end"] == true,
+        "premise: the last hit lands at the view's end, still under the dock: {low}"
+    );
+    step("needle first");
+}
+
 /// #s237: the page's own world for a session in a herdr pane — `/api/sessions` says the phone's
 /// session is a live, consented Claude session in herdr pane w1:p2 that takes images, and
 /// `/api/send` is answered here and recorded (`window.__sent`), so nothing is typed anywhere.
@@ -12741,11 +13882,13 @@ fn a_herdr_session_takes_images_from_the_compose_box() {
     );
     harness::eval(&desk, "document.getElementById('composeFab').click(); 'ok'");
     harness::eval(&desk, ADD_IMAGES);
-    let desktop = "(function(){ var a = document.getElementById('composeAttach'), foot = document.querySelector('#composer .compose-foot'), s = document.getElementById('composeImages').getBoundingClientRect(), f = document.getElementById('composeInput').getBoundingClientRect(); return !a.hidden + '|' + (foot.firstElementChild === a) + '|' + document.querySelectorAll('#composeImages img').length + '|' + (s.bottom <= f.top + 1); })()";
+    // #s245: the desktop's field is one line with the attach control inside it at its left, clear
+    // of the text, and reachable there.
+    let desktop = "(function(){ var a = document.getElementById('composeAttach'), i = document.getElementById('composeInput'), foot = document.querySelector('#composer .compose-foot'), s = document.getElementById('composeImages').getBoundingClientRect(), f = i.getBoundingClientRect(), r = a.getBoundingClientRect(), at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !a.hidden + '|' + (foot.firstElementChild === a) + '|' + document.querySelectorAll('#composeImages img').length + '|' + (s.bottom <= f.top + 1) + '|' + (r.left >= f.left - 8 && r.right <= f.left + parseFloat(getComputedStyle(i).paddingLeft) + 1 && r.top >= f.top - 1 && r.bottom <= f.bottom + 1 && !!at && a.contains(at)); })()";
     harness::until(
         &desk,
-        &format!("{desktop} === 'true|true|2|true'"),
-        "the desktop's attach control first in the foot and both images above the field",
+        &format!("{desktop} === 'true|true|2|true|true'"),
+        "the desktop's attach control first in the foot, inside the field at its left, and both images above the field",
         Duration::from_secs(5),
         desktop,
     );
@@ -13097,6 +14240,92 @@ fn a_phone_find_pill_rides_the_keyboard() {
         "the dock back in its place once the keyboard goes",
         Duration::from_secs(5),
         facts,
+    );
+}
+
+/// #s287: a phone held sideways in Safari with its tab bar keeps about 16px of the page above the
+/// keyboard (measured on the iOS 26.4 Simulator: Safari's two bars 110pt of 402, the keyboard with
+/// its candidate and accessory bars 276), so the find pill, at that strip's foot, sits under Safari's
+/// bars; the Home Screen app held sideways keeps 126px, where the pill fits and no line of the
+/// transcript does above it. In both, Return runs the search, lands on a hit and puts the keyboard
+/// down, and once it is down the hit, the count and the steps are on screen. Where a line shows above
+/// the pill, Return keeps the keyboard up.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_held_sideways_puts_the_keyboard_down_on_return_where_the_find_pill_cannot_fit() {
+    let _serial = serial();
+    let (_m, _b, tab, _path) = phone_world_at(3254, "phone-search-no-room", 874, 292, "");
+    let open = || {
+        let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+        phone_tap_at(&tab, gx, gy);
+        harness::until(
+            &tab,
+            "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
+            "a tap on the search to open the find pill with the field focused",
+            Duration::from_secs(5),
+            "document.querySelector('.header-searchbox').className + ' ' + (document.activeElement && document.activeElement.id)",
+        );
+    };
+    // The keyboard comes up leaving `visible` px (None: it goes down), the find pill at its foot.
+    let keyboard = |visible: Option<i64>| {
+        let (set, foot) = match visible {
+            Some(v) => (
+                format!("Object.defineProperty(visualViewport, 'height', {{ configurable: true, get: function () {{ return {v}; }} }});"),
+                format!("{v} - 8"),
+            ),
+            None => ("delete visualViewport.height;".to_string(), "innerHeight - 8".to_string()),
+        };
+        harness::eval(&tab, &format!("(function(){{ {set} visualViewport.dispatchEvent(new Event('resize')); return 'ok'; }})()"));
+        harness::until(
+            &tab,
+            &format!("(function(){{ var d = document.getElementById('phoneDock').getBoundingClientRect(); return Math.abs(d.bottom - ({foot})) <= 1 || {}; }})()", visible.is_none()),
+            "the find pill at the foot of what the keyboard leaves",
+            Duration::from_secs(5),
+            "JSON.stringify(document.getElementById('phoneDock').getBoundingClientRect())",
+        );
+    };
+    let enter = "(function(){ var b = document.getElementById('transcriptSearchInput'); b.focus(); b.value = 'question'; b.dispatchEvent(new Event('input', { bubbles: true })); b.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return 'ok'; })()";
+    let after = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), r = m && m.getBoundingClientRect(), t = document.querySelector('.transcript').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(); return JSON.stringify({ focused: document.activeElement === document.getElementById('transcriptSearchInput'), mark: r ? [Math.round(r.top), Math.round(r.bottom)] : null, seen: !!r && r.top >= t.top && r.bottom <= d.top, column: Math.round(t.top), pill: [Math.round(d.top), Math.round(d.bottom)], count: document.getElementById('transcriptSearchCount').textContent, open: document.querySelector('.header-searchbox').classList.contains('phone-open') }); })()";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, after).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    for visible in [16, 126] {
+        open();
+        keyboard(Some(visible));
+        harness::eval(&tab, enter);
+        harness::until(
+            &tab,
+            "document.activeElement !== document.getElementById('transcriptSearchInput') && !!document.querySelector('.virtual-window mark.search-mark.current')",
+            &format!("Return to land on a hit and put the keyboard down, {visible}px left above it"),
+            Duration::from_secs(5),
+            after,
+        );
+        // iOS takes the keyboard down once the field has lost focus.
+        keyboard(None);
+        harness::pause("the keyboard to go", Duration::from_millis(400));
+        let gone = read();
+        assert_eq!(
+            gone["seen"],
+            serde_json::Value::Bool(true),
+            "with the keyboard down the hit is between the column's top and the pill ({visible}px): {gone}"
+        );
+        assert!(
+            gone["count"].as_str().unwrap_or("").contains("hit") && gone["open"] == true,
+            "the find pill stays with its count and steps ({visible}px): {gone}"
+        );
+    }
+    // The keyboard leaves 200px: a line of the transcript shows above the pill, and Return keeps the
+    // keyboard up.
+    open();
+    keyboard(Some(200));
+    harness::eval(&tab, enter);
+    harness::pause("Return to run", Duration::from_millis(400));
+    let kept = read();
+    assert_eq!(
+        kept["focused"],
+        serde_json::Value::Bool(true),
+        "where a line shows above the pill, Return keeps the keyboard up: {kept}"
     );
 }
 
@@ -14126,5 +15355,218 @@ fn a_phone_s_turns_list_stays_where_the_finger_left_it() {
             );
         }
         drop(monitor);
+    }
+}
+
+/// #s264 (raised by the third review of #s259): a step that re-enters from the reader's place starts
+/// at the first hit at or after the record at the top. That record was the UNIT's first, and a
+/// process unit groups a turn's calls and progress and can be thousands of pixels tall, so a reader
+/// deep inside one was sent back to its first hit. Here one Codex process unit holds four commands,
+/// each output long and holding a hit, every detail opened by the section's own control. Scrolled to the
+/// third output, a fresh query's first step lands there, not on the first; and after a move the
+/// engine never hears, back to the first output inside the same unit, the next step enters there
+/// rather than going on from the third.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_search_step_deep_inside_a_tall_unit_enters_at_the_record_there() {
+    let _serial = serial();
+    let base = harness::base("search-tall-unit");
+    let stores = harness::Stores::new(&base);
+    // A Codex rollout: there each command is a record of its own, where Claude's consecutive calls
+    // are ONE act record, whose hits are one match.
+    let sid = "019a0000-0000-7000-8000-000000000264";
+    let mut items = vec![
+        serde_json::json!({"timestamp": harness::rfc3339_secs_ago(900), "type": "session_meta", "payload": {"id": sid, "cwd": "/r", "originator": "codex-tui", "cli_version": "0.147.0"}}),
+    ];
+    let filler: String = (1..=30).map(|n| format!("plain line {n}\n")).collect();
+    for k in 0..4u64 {
+        let ts = |d: u64| harness::rfc3339_secs_ago(880 - 60 * k - d);
+        items.push(serde_json::json!({"timestamp": ts(0), "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": format!("question {k}")}]}}));
+        if k == 3 {
+            for j in 0..4u64 {
+                items.push(serde_json::json!({"timestamp": ts(1 + 2 * j), "type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "call_id": format!("call-{j}"), "arguments": format!("{{\"cmd\":\"cat part-{j}.txt\"}}")}}));
+                items.push(serde_json::json!({"timestamp": ts(2 + 2 * j), "type": "response_item", "payload": {"type": "function_call_output", "call_id": format!("call-{j}"), "output": format!("output {j} holds the needle.\n{filler}")}}));
+            }
+        }
+        items.push(serde_json::json!({"timestamp": ts(20), "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": format!("answer {k}.")}]}}));
+    }
+    let history: String = items.iter().map(|v| v.to_string() + "\n").collect();
+    stores.codex_session(sid, &history);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3252, &base, Some(&stores), true);
+    let (_b, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    m.pair(&tab);
+    // The monitor keys a Codex session by its file's stem.
+    m.open(&tab, &format!("?ui=app&session=rollout-{sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user') && innerWidth >= 1200 && !!document.querySelector('[data-process-surface]')",
+        "the Codex session to draw its process unit",
+        Duration::from_secs(30),
+        "document.querySelector('.transcript') && document.querySelector('.transcript').innerText.slice(0, 300)",
+    );
+    harness::eval(&tab, "(function(){ var p = [...document.querySelectorAll('[data-process-surface]')].pop(); p.querySelector('[data-process-bulk]').click(); return 'ok'; })()");
+    harness::pause(
+        "every detail of the section to open",
+        Duration::from_millis(800),
+    );
+    // Where each output's record row sits against the line the page reads the top by, and which
+    // unit holds it: all four must be ONE unit, taller than the view, or the case tests nothing.
+    let rows = "(function(){ var t = document.querySelector('.session-main>.transcript'), r = t.getBoundingClientRect(), line = r.top + (parseFloat(getComputedStyle(t).scrollPaddingTop) || 18) + 8; var out = { line: Math.round(line), view: [Math.round(r.top), Math.round(r.bottom)], rows: {} }; [...document.querySelectorAll('.virtual-window [data-block-index]')].forEach(function (e) { var m = e.textContent.match(/output (\\d) holds the needle/); if (!m || e.querySelector('[data-block-index]')) return; var b = e.getBoundingClientRect(), u = e.closest('[data-unit-key]'); var rec = e; while (rec && !Number.isInteger(Number(rec.dataset.blockIndex))) rec = rec.parentElement && rec.parentElement.closest('[data-block-index]'); out.rows[m[1]] = { top: Math.round(b.top), bottom: Math.round(b.bottom), record: rec && rec.dataset.blockIndex, unit: u && u.dataset.unitKey, unitHeight: u && Math.round(u.getBoundingClientRect().height) }; }); return JSON.stringify(out); })()";
+    let read = |tab: &headless_chrome::Tab| -> serde_json::Value {
+        serde_json::from_str(harness::eval(tab, rows).as_str().unwrap_or("null")).unwrap()
+    };
+    let to_row = |tab: &headless_chrome::Tab, k: &str| {
+        // The row's top just above the line: the reader is at that output's start.
+        let g = read(tab);
+        let dy = g["rows"][k]["top"].as_f64().unwrap() - (g["line"].as_f64().unwrap() - 4.0);
+        dy as i64
+    };
+    let g = read(&tab);
+    assert!(
+        (0..4).all(
+            |k| g["rows"][k.to_string()]["unit"] == g["rows"]["0"]["unit"]
+                && !g["rows"]["0"]["unit"].is_null()
+        ) && (0..4)
+            .map(|k| g["rows"][k.to_string()]["record"].to_string())
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            == 4
+            && g["rows"]["0"]["unitHeight"].as_f64().unwrap_or(0.0)
+                > 2.0 * (g["view"][1].as_f64().unwrap() - g["view"][0].as_f64().unwrap()),
+        "premise: the four outputs are four records of one unit, taller than two views: {g}"
+    );
+    let dy = to_row(&tab, "2");
+    harness::scroll_by(&tab, harness::Surface::AppShell, dy);
+    harness::pause("the scroll to settle", Duration::from_millis(500));
+    let g = read(&tab);
+    let (top, line) = (
+        g["rows"]["2"]["top"].as_f64().unwrap_or(f64::NAN),
+        g["line"].as_f64().unwrap(),
+    );
+    assert!(
+        top <= line && top > line - 40.0,
+        "premise: the reader is at the third output's start: {g}"
+    );
+    harness::eval(&tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window mark.search-mark')",
+        "the query to mark its hits",
+        Duration::from_secs(10),
+        "document.getElementById('transcriptSearchCount').textContent",
+    );
+    harness::pause("the query to settle", Duration::from_millis(400));
+    let landed = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); var e = m && m.closest('[data-block-index]'); var g = e && e.textContent.match(/output (\\d) holds/); return g ? Number(g[1]) : -1; })()";
+    harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+    harness::pause("the step's landing to settle", Duration::from_millis(600));
+    assert_eq!(
+        harness::eval(&tab, landed).as_i64().unwrap_or(-1),
+        2,
+        "a reader at the third output steps onto its hit, not the unit's first: {}",
+        read(&tab)
+    );
+    // Back to the first output by script, which the engine never hears: still inside the unit.
+    let dy = to_row(&tab, "0");
+    harness::eval(&tab, &format!("(function(){{ var s = document.querySelector('.session-main>.transcript'); s.scrollTo({{ top: s.scrollTop + ({dy}), behavior: 'instant' }}); return 'ok'; }})()"));
+    harness::pause("the move to settle", Duration::from_millis(700));
+    let g = read(&tab);
+    assert!(
+        g["rows"]["2"].is_null()
+            || g["rows"]["2"]["top"].as_f64().unwrap() >= g["view"][1].as_f64().unwrap(),
+        "premise: the output the step landed is out of view after the move: {g}"
+    );
+    harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+    harness::pause("the step's landing to settle", Duration::from_millis(600));
+    assert_eq!(
+        harness::eval(&tab, landed).as_i64().unwrap_or(-1),
+        0,
+        "after a move the engine did not hear, the step enters at the output there, not after the one it left: {}",
+        read(&tab)
+    );
+}
+
+/// #s267 (raised by the second review of #s263): a search landing puts the match a third of the way
+/// down the space between the top and whatever covers the foot. Inside a process group whose head
+/// sticks at the top (about 40px), a short space put it behind the head: a phone held sideways with
+/// the keyboard up leaves about 75px above the find pill, and a third of that is 25. Measured before
+/// the fix: the match at 76-92 under a head at 51-91, not hit-testable. The landing now counts the
+/// head of the group holding the match, and never puts the match past the pill: at 59px a third
+/// under the head would cross it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_search_held_sideways_lands_a_match_below_its_process_head() {
+    let _serial = serial();
+    let mut extra = String::new();
+    extra += &harness::user_at("run the long one", &harness::now_minus(59));
+    extra += &harness::bash_call_at("cat long.txt", "toolu_s267", &harness::now_minus(58));
+    let body: String = (1..=60)
+        .map(|n| {
+            if n == 30 {
+                "line 30 holds the needle\\n".to_string()
+            } else {
+                format!("plain line {n}\\n")
+            }
+        })
+        .collect();
+    extra += &harness::tool_result_text("toolu_s267", &body, &harness::now_minus(57));
+    extra += &harness::assistant_at("it ran.", &harness::now_minus(56));
+    for k in 0..6u64 {
+        extra += &harness::user_at(&format!("after {k}"), &harness::now_minus(50 - 2 * k));
+        extra += &harness::assistant_at(
+            "plain words here.\\n\\nanother paragraph.",
+            &harness::now_minus(49 - 2 * k),
+        );
+    }
+    // Two spaces above the find pill: 75px, where a third clears the head, and 59px, where a third
+    // under the head would cross the pill and the landing must stop at the space less the match.
+    for target in [75i64, 59] {
+        let (_m, _b, tab, _path) = phone_world_at(
+            3253,
+            &format!("phone-search-process-head-{target}"),
+            844,
+            390,
+            &extra,
+        );
+        let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+        phone_tap_at(&tab, gx, gy);
+        harness::until(
+            &tab,
+            "document.querySelector('.header-searchbox').classList.contains('phone-open')",
+            "the search to open",
+            Duration::from_secs(5),
+            "document.querySelector('.header-searchbox').className",
+        );
+        // The keyboard as the keyboard-wrap case raises it, sized from the space with none, so the
+        // space is the target whatever the platform's chrome: the find pill rides it one for one.
+        let space = "(function(){ var d = document.getElementById('phoneDock').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); return Math.round(d.top - t.top); })()";
+        let open = harness::eval(&tab, space).as_i64().unwrap_or(0);
+        let kb = open - target;
+        harness::eval(&tab, &format!("(function(){{ Object.defineProperty(visualViewport, 'height', {{ configurable: true, get: function () {{ return innerHeight - {kb}; }} }}); visualViewport.dispatchEvent(new Event('resize')); return 'ok'; }})()"));
+        harness::until(
+            &tab,
+            &format!("Math.abs({space} - {target}) <= 3"),
+            "the find pill to ride the keyboard up to the target space",
+            Duration::from_secs(5),
+            space,
+        );
+        harness::eval(&tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
+        harness::until(
+            &tab,
+            "!!document.querySelector('.virtual-window mark.search-mark')",
+            "the query to mark its hit",
+            Duration::from_secs(10),
+            "document.getElementById('transcriptSearchCount').textContent",
+        );
+        harness::pause("the query to settle", Duration::from_millis(400));
+        harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
+        let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); if (!m) return 'none'; var s = m.closest('[data-process-surface]'), h = s && s.querySelector('.process-surface-headbar'), d = document.getElementById('phoneDock').getBoundingClientRect(), r = m.getBoundingClientRect(), hr = h && h.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return JSON.stringify({ ok: !!hr && s.dataset.prodSticky === 'true' && r.top >= hr.bottom - 0.5 && r.bottom <= d.top + 0.5 && !!hit && (hit === m || m.contains(hit)), mark: [Math.round(r.top), Math.round(r.bottom)], head: hr ? [Math.round(hr.top), Math.round(hr.bottom)] : null, stuck: s && s.dataset.prodSticky, dock: Math.round(d.top) }); })()";
+        harness::until(
+            &tab,
+            &format!("(function(){{ var g = {seen}; return g !== 'none' && JSON.parse(g).ok; }})()"),
+            &format!("the step to land the match below its group's stuck head and above the find pill, {target}px between them"),
+            Duration::from_secs(5),
+            seen,
+        );
     }
 }

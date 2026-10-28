@@ -214,12 +214,14 @@ assert.deepEqual(store.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 });
   assert.equal(noTurn.units[1].type, "process");
 
   const realFetch = globalThis.fetch;
-  const lines = records => new Response(records.map(record => JSON.stringify(record)).join("\n") + "\n", { status: 200 });
+  // The server answers a `/records` range with exactly those bytes of the log.
+  const logOf = records => new TextEncoder().encode(records.map(record => JSON.stringify(record)).join("\n") + "\n");
+  const ranged = log => async url => { const q = new URL(url, "http://x").searchParams; const from = Number(q.get("from")); return new Response(log.slice(from, from + Number(q.get("len"))), { status: 200 }); };
   const head = [{ kind: "user", id: "u1", turn: 1, body: [] }, { kind: "assistant", id: "a1", phase: "final", body: [] }, { kind: "user", id: "u2", turn: 2, body: [] }];
   try {
-    globalThis.fetch = async () => lines(head);
+    globalThis.fetch = ranged(logOf(head));
     tailStore.session = "s";
-    const pending = { count: 3, len: 300, epoch: 3 };
+    const pending = { count: 3, len: logOf(head).length, epoch: 3 };
     tailStore.head = pending;
     await tailStore.loadHead(tailStore.generation, pending);
     assert.deepEqual(tailStore.records.map(record => record.id), ["u1", "a1", "u2", "b3", "u4", "a5"], "the head replaces its placeholders in place");
@@ -230,16 +232,375 @@ assert.deepEqual(store.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 });
     const misfit = new RecordStore({ update: () => {}, reset: () => resets++ }, { tailBudget: 1024 });
     misfit.apply(tail(), 3);
     misfit.session = "s";
-    const owed = { count: 3, len: 300, epoch: 3 };
+    const owed = { count: 3, len: logOf(head.slice(0, 1)).length, epoch: 3 };
     misfit.head = owed;
-    globalThis.fetch = async () => lines(head.slice(0, 1));
+    globalThis.fetch = ranged(logOf(head.slice(0, 1)));
     await misfit.loadHead(misfit.generation, owed);
     assert.equal(resets, 1, "a head whose count is not the one the pull named starts the session over");
     assert.deepEqual(misfit.records, [], "…and is never spliced in");
+
+    // #s280: a pull that rewrites what the head still owes under the SAME epoch (a client ahead of a
+    // log that was cut is sent it from 0, pull.rs) drops the head in flight, which then never writes
+    // over the records the pull brought; the placeholders it replaced are the head landing.
+    const cutSeen = [];
+    const cutStore = new RecordStore({ update: update => cutSeen.push(update) }, { tailBudget: 1024 });
+    cutStore.apply(tail(), 3);
+    cutStore.session = "s";
+    const inFlight = { count: 3, len: logOf(head).length, epoch: 3 };
+    cutStore.head = inFlight;
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    globalThis.fetch = async url => { await gate; return ranged(logOf(head))(url); };
+    const reading = cutStore.loadHead(cutStore.generation, inFlight);
+    const fresh = [{ kind: "user", id: "n1", turn: 1, body: [] }, { kind: "assistant", id: "n2", phase: "final", body: [] }, { kind: "user", id: "n3", turn: 2, body: [] }, ...tail().committed];
+    cutStore.apply({ epoch: 3, committed_from: 0, committed: fresh, provisional_gen: 0, provisional_from: 0, provisional: [], meta: null });
+    assert.equal(cutStore.head, null, "a same-epoch rewrite below the head boundary drops the head in flight");
+    assert.equal(cutStore.index, null, "…and its turn index");
+    assert.equal(cutSeen.at(-1).prepended, 3, "…and the placeholders it replaced are reported as the head landing");
+    release();
+    await reading;
+    assert.deepEqual(cutStore.records.map(record => record.id), fresh.map(record => record.id), "the late head never writes over the records the pull brought");
+    assert.equal(cutSeen.at(-1).prepended, 3, "…nor reports a landing of its own");
+
+    let cutResets = 0;
+    const partial = new RecordStore({ update: () => {}, reset: () => cutResets++ }, { tailBudget: 1024 });
+    partial.apply(tail(), 3);
+    partial.head = { count: 3, len: logOf(head).length, epoch: 3 };
+    partial.apply({ epoch: 3, committed_from: 1, committed: fresh.slice(1), provisional_gen: 0, provisional_from: 0, provisional: [], meta: null });
+    assert.equal(cutResets, 1, "a cut that leaves a placeholder with no head to fill it starts the session over");
+    assert.deepEqual(partial.records, [], "…rather than waiting on it for ever");
   } finally {
     globalThis.fetch = realFetch;
   }
   console.log("#314 tail-first open cases passed");
+}
+
+// #s274: the head comes in ranges of at most HEAD_PIECE_BYTES, which the server answers in WHOLE
+// records (an end inside one carried on to its end, a start inside one refused: secret masking reads
+// whole records). A read that drops keeps the records it finished, and the next range starts at the
+// first record it did not, so the progress only climbs. A 409, or a head that will not parse, starts
+// the session over.
+{
+  const { HEAD_PIECE_BYTES } = await import("../../claude-monitor/src/codex-ui/record-store.js");
+  const realFetch = globalThis.fetch;
+  // ~2.4 MB of records in a three-byte character, so a cut anywhere may fall inside one.
+  const big = Array.from({ length: 24 }, (_, i) => ({ kind: i % 2 ? "assistant" : "user", id: `h${i}`, turn: i, body: [{ p: "md", h: "中".repeat(33_000) }] }));
+  const bytes = new TextEncoder().encode(big.map(record => JSON.stringify(record)).join("\n") + "\n");
+  assert.ok(bytes.length > 2 * HEAD_PIECE_BYTES, "the fixture spans three ranges");
+  const tailReply = () => ({ epoch: 7, committed_from: 24, committed: [{ kind: "user", id: "t24", turn: 25, body: [] }], provisional_gen: 0, provisional_from: 0, provisional: [], meta: { tasks: [], children: [] } });
+  // The server's range read: whole records, or 400 for a start inside one.
+  const served = [];
+  const serve = (url, cutAfter = Infinity) => {
+    const q = new URL(url, "http://x").searchParams, from = Number(q.get("from"));
+    let end = Math.min(bytes.length, from + Number(q.get("len")));
+    served.push(from);
+    if (from > 0 && bytes[from - 1] !== 10) return new Response("from is not where a record starts", { status: 400 });
+    while (end < bytes.length && bytes[end - 1] !== 10) end++;
+    const body = bytes.slice(from, end);
+    let at = 0;
+    // Pull-based, so the bytes before a drop really arrive before the error (#s274's review).
+    return new Response(new ReadableStream({ pull(c) {
+      if (at >= Math.min(body.length, cutAfter)) { if (cutAfter < body.length) c.error(new TypeError("network connection was lost")); else c.close(); return; }
+      const next = Math.min(body.length, cutAfter, at + 65_536); c.enqueue(body.slice(at, next)); at = next;
+    } }), { status: 200 });
+  };
+  const landed = store => new Promise(resolve => { const update = store.handlers.update; store.handlers.update = u => { update?.(u); if (u.prepended) resolve(u); }; });
+  try {
+    const progress = [], failures = [];
+    let dropped = false;
+    const store = new RecordStore({ update: () => {}, headProgress: got => progress.push(got), headFailed: (e, n) => failures.push(n) }, { tailBudget: 1024 });
+    store.session = "s";
+    store.apply(tailReply(), 24);
+    const head = { count: 24, len: bytes.length, epoch: 7 };
+    store.head = head;
+    // The second range drops 300 KB in, inside a record.
+    globalThis.fetch = async url => {
+      const from = Number(new URL(url, "http://x").searchParams.get("from"));
+      if (!dropped && from > 0) { dropped = true; return serve(url, 300_000); }
+      return serve(url);
+    };
+    const done = landed(store);
+    await store.loadHead(store.generation, head);
+    await done;
+    assert.deepEqual(store.records.slice(0, 24).map(record => record.id), big.map(record => record.id), "the head lands whole, in place");
+    assert.equal(store.records[5].body[0].h, "中".repeat(33_000), "…its characters intact");
+    assert.deepEqual(failures, [1], "one read dropped, once");
+    assert.ok(served.every(from => from === 0 || bytes[from - 1] === 10), `every range started where a record starts: ${served}`);
+    const second = served[1], resumed = served[2];
+    assert.ok(resumed > second && resumed <= second + 300_000, `after the drop the read went on from the first record it had not finished (${second} -> ${resumed}), never from the start`);
+    assert.equal(served.filter(from => from === 0).length, 1, "the head's start was asked for once");
+    const backwards = progress.findIndex((got, i) => i && got < progress[i - 1]);
+    assert.equal(backwards, -1, `the progress never steps back (${progress[backwards - 1]} -> ${progress[backwards]})`);
+    assert.equal(progress.at(-1), bytes.length, "…and ends at the whole head");
+
+    // A 409 starts the session over: the log left that epoch (and the epoch number of a rebuilt
+    // log can be the same as before, so a 409 is never taken as "carry on").
+    let resets = 0;
+    const stale = new RecordStore({ update: () => {}, reset: () => resets++ }, { tailBudget: 1024 });
+    stale.session = "s"; stale.apply(tailReply(), 24);
+    const gone = { count: 24, len: bytes.length, epoch: 7 };
+    stale.head = gone;
+    globalThis.fetch = async () => new Response("stale epoch", { status: 409 });
+    await stale.loadHead(stale.generation, gone);
+    assert.equal(resets, 1, "a 409 starts the session over");
+    assert.deepEqual(stale.records, []);
+
+    // A head that will not parse is not this head: it starts over, never retries the same bytes.
+    const broken = new RecordStore({ update: () => {}, reset: () => resets++, headFailed: () => { throw new Error("a broken head must not be retried"); } }, { tailBudget: 1024 });
+    broken.session = "s"; broken.apply(tailReply(), 24);
+    const junk = new TextEncoder().encode("{not json\n");
+    const owed = { count: 24, len: junk.length, epoch: 7 };
+    broken.head = owed;
+    globalThis.fetch = async () => new Response(junk, { status: 200 });
+    await broken.loadHead(broken.generation, owed);
+    assert.equal(resets, 2, "a head that does not parse starts the session over");
+
+    // A phone out of signal: thirty network failures in a row are retried, never given up on, and
+    // the head lands when the link comes back. A server that keeps REFUSING is given up on. (Timers
+    // run at once here, so the back-off costs the test nothing.)
+    const realTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = fn => { queueMicrotask(fn); return 0; };
+    try {
+      const outage = new RecordStore({ update: () => {}, reset: () => resets++ }, { tailBudget: 1024 });
+      outage.session = "s"; outage.apply(tailReply(), 24);
+      const away = { count: 24, len: bytes.length, epoch: 7 };
+      outage.head = away;
+      let tries = 0;
+      globalThis.fetch = async url => { if (++tries <= 30) throw new TypeError("Load failed"); return serve(url); };
+      const back = landed(outage);
+      await outage.loadHead(outage.generation, away);
+      await back;
+      assert.equal(resets, 2, "a long outage never starts the session over");
+      assert.equal(outage.records[23].id, "h23", "…and the head lands when the link is back");
+
+      const refusing = new RecordStore({ update: () => {}, reset: () => resets++ }, { tailBudget: 1024 });
+      refusing.session = "s"; refusing.apply(tailReply(), 24);
+      const no = { count: 24, len: bytes.length, epoch: 7 };
+      refusing.head = no;
+      globalThis.fetch = async () => new Response("busy", { status: 503 });
+      const gaveUp = new Promise(resolve => { refusing.handlers.reset = () => { resets++; resolve(); }; });
+      await refusing.loadHead(refusing.generation, no);
+      await gaveUp;
+      assert.equal(resets, 3, "a server that keeps refusing is given up on: the session starts over");
+    } finally {
+      globalThis.setTimeout = realTimeout;
+    }
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log("#s274 head in pieces cases passed");
+}
+
+// #s276: the turn index. Asked for beside the head, under its epoch and for exactly the records the
+// page still waits for; kept only while that head is out; a reply for another boundary or epoch is
+// not this head's; a 409 is the head's to handle; a failed read is tried a few times, then the page
+// does without it. The roster folds the index's artifacts in ahead of the records here.
+{
+  const realFetch = globalThis.fetch, realTimeout = globalThis.setTimeout;
+  const tailReply = () => ({ epoch: 4, committed_from: 5, committed: [{ kind: "user", id: "t9", turn: 9, body: [] }], provisional_gen: 0, provisional_from: 0, provisional: [], meta: { tasks: [], children: [] } });
+  const index = { t: "turn-index", epoch: 4, upto: 5, records: 6, turns: [{ r: 0, kind: "user", id: "t1", turn: 1, label: "first" }], compactions: [], tools: { Bash: 2 }, artifacts: [], files: [] };
+  const asked = [];
+  globalThis.setTimeout = fn => { queueMicrotask(fn); return 0; };
+  try {
+    const heard = [];
+    const store = new RecordStore({ update: () => {}, indexed: ix => heard.push(ix) }, { tailBudget: 1024 });
+    store.session = "s 1"; store.apply(tailReply(), 5);
+    const head = { count: 5, len: 100, epoch: 4 };
+    store.head = head;
+    globalThis.fetch = async url => { asked.push(url); return new Response(JSON.stringify(index), { status: 200 }); };
+    await store.loadIndex(store.generation, head);
+    assert.deepEqual(asked, ["/turn-index?session=s%201&epoch=4&upto=5"], "asked once, for the head's records under its epoch");
+    assert.equal(store.index.turns[0].label, "first", "kept while the head is out");
+    assert.equal(heard.length, 1, "…and the page hears of it");
+
+    // The head lands: the index no longer answers for anything.
+    const log = new TextEncoder().encode(Array.from({ length: 5 }, (_, i) => JSON.stringify({ kind: "assistant", id: `a${i}`, body: [] })).join("\n") + "\n");
+    head.len = log.length;
+    globalThis.fetch = async url => { const q = new URL(url, "http://x").searchParams; const from = Number(q.get("from")); return new Response(log.slice(from, from + Number(q.get("len"))), { status: 200 }); };
+    await store.loadHead(store.generation, head);
+    assert.equal(store.head, null);
+    assert.equal(store.index, null, "dropped once the head lands");
+
+    // Not this head's: another boundary, another epoch, a 409 (the head's to handle), a stale open.
+    for (const [reply, why] of [[{ ...index, upto: 4 }, "another boundary"], [{ ...index, epoch: 5 }, "another epoch"]]) {
+      const other = new RecordStore({ update: () => {}, indexed: () => { throw new Error(`taken: ${why}`); } }, { tailBudget: 1024 });
+      other.session = "s"; other.apply(tailReply(), 5);
+      const owed = { count: 5, len: 100, epoch: 4 };
+      other.head = owed;
+      globalThis.fetch = async () => new Response(JSON.stringify(reply), { status: 200 });
+      await other.loadIndex(other.generation, owed);
+      assert.equal(other.index, null, `a reply for ${why} is not this head's`);
+    }
+    let tries = 0;
+    const stale = new RecordStore({ update: () => {} }, { tailBudget: 1024 });
+    stale.session = "s"; stale.apply(tailReply(), 5);
+    const gone = { count: 5, len: 100, epoch: 4 };
+    stale.head = gone;
+    globalThis.fetch = async () => { tries++; return new Response("stale epoch", { status: 409 }); };
+    await stale.loadIndex(stale.generation, gone);
+    assert.equal(tries, 1, "a 409 is not retried: the head starts the session over");
+
+    // A failed read is tried a few times, then the page does without it.
+    tries = 0;
+    const flaky = new RecordStore({ update: () => {} }, { tailBudget: 1024 });
+    flaky.session = "s"; flaky.apply(tailReply(), 5);
+    const away = { count: 5, len: 100, epoch: 4 };
+    flaky.head = away;
+    globalThis.fetch = async () => { tries++; throw new TypeError("Load failed"); };
+    await flaky.loadIndex(flaky.generation, away);
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    assert.equal(tries, 5, "tried five times, then left alone");
+    assert.equal(flaky.index, null);
+  } finally {
+    globalThis.fetch = realFetch;
+    globalThis.setTimeout = realTimeout;
+  }
+
+  const { artifactRoster } = await import("../../claude-monitor/src/codex-ui/view-model.js");
+  const roster = artifactRoster(
+    [{ kind: "tool", head: { artifact: { url: "u1", name: "Deck v2" } }, body: [] }, { kind: "tool", head: { artifact: { url: "u3", name: "New" } }, body: [] }],
+    [{ url: "u1", name: "Deck", icon: "chart", at: 0 }, { url: "u2", name: "Notes", at: 2 }]
+  );
+  assert.deepEqual(roster.map(e => [e.url, e.count, e.name, e.icon, e.at]), [["u1", 2, "Deck v2", "chart", 0], ["u2", 1, "Notes", "", 2], ["u3", 1, "New", "", 1]], "the index's artifacts come first, then the records here, one row per URL");
+  console.log("#s276 turn index cases passed");
+}
+
+// #s277 (design/slow-links.md §6): records by turn. The placeholders are the units the records will
+// make — the same keys, types, ranges and turn numbers, built from the index's facts — and a fill
+// rebuilds only the units over the records it brought; a unit owes until its last record is here.
+// The store reads the head turn by turn: a jump's turn first, then what the window shows (the latest
+// asked first), then the rest from the tail backwards; the page takes each piece when it may, and
+// once the last is taken the head and its index go.
+{
+  const { PENDING } = await import("../../claude-monitor/src/codex-ui/record-store.js");
+  const R = [
+    { kind: "user", id: "t1", turn: 1, label: "one", body: [] },
+    { kind: "attachment", id: "b1", head: { att_path: "/a.png" }, body: [] },
+    { kind: "assistant", id: "b2", phase: "commentary", body: [] },
+    { kind: "act", id: "b3", body: [] },
+    { kind: "tool", id: "b6", tool: "Agent", body: [] },
+    { kind: "assistant", id: "b7", phase: "final", body: [] },
+    { kind: "peer", id: "t2", turn: 2, label: "tern: hi", head: { from: "tern", mode: "bypass" }, body: [] },
+    { kind: "compaction", id: "b8", head: {}, body: [] },
+    { kind: "command", id: "t3", turn: 3, label: "/clear", body: [] },
+    { kind: "assistant", id: "b9", phase: "final", body: [] },
+    { kind: "user", id: "t4", turn: 4, label: "tail", body: [] },
+    { kind: "assistant", id: "b10", phase: "final", body: [] },
+  ];
+  const upto = 10;
+  const facts = R.slice(0, upto).map(r => (r.kind === "assistant" && r.phase === "commentary" ? [r.kind, r.id, 1] : [r.kind, r.id]));
+  const turns = R.slice(0, upto).map((r, i) => [r, i]).filter(([r]) => ["user", "peer", "command"].includes(r.kind)).map(([r, i]) => ({ r: i, kind: r.kind, id: r.id, turn: r.turn, label: r.label, head: r.kind === "peer" ? r.head : undefined }));
+  const rows = new Map(turns.map(t => [t.r, t]));
+  const stub = i => { const f = facts[i]; if (!f) return null; const row = rows.get(i); return { kind: f[0], id: f[1], ...(f[2] ? { phase: "commentary" } : {}), ...(row ? { turn: row.turn, label: row.label, head: row.head } : {}) }; };
+  const shape = units => units.map(u => [u.type, u.key, u.from, u.to, u.turn]);
+
+  const whole = new Projection();
+  whole.rebuild(R, 0);
+  const records = R.map((r, i) => (i < upto ? PENDING : r));
+  const laid = new Projection();
+  laid.stub = stub;
+  laid.rebuild(records, 0);
+  assert.deepEqual(shape(laid.units), shape(whole.units), "the placeholders are the units the records will make: keys, types, ranges, turn numbers");
+  assert.ok(laid.units.filter(u => u.from < upto).every(u => u.owed > 0), "every unit over the head owes until its records are here");
+  assert.equal(laid.units.find(u => u.key === "user:t2").label, "tern: hi", "a turn's placeholder carries its label from the index");
+
+  // Fills in any order, in pieces: each rebuilds only its units, and the end is the whole build.
+  for (const [from, to] of [[6, 8], [3, 5], [0, 2], [2, 3], [5, 6], [8, 10]]) {
+    for (let i = from; i < to; i++) records[i] = R[i];
+    const before = laid.units.slice();
+    const run = laid.fill(records, from, to);
+    assert.ok(run, `a fill of [${from}, ${to}) keeps its units' keys`);
+    before.forEach((u, k) => { if (k < run.from || k >= run.to) assert.equal(laid.units[k], u, "a unit outside the fill is not rebuilt"); });
+  }
+  assert.deepEqual(shape(laid.units), shape(whole.units), "filled whole, the units are the whole build's");
+  assert.ok(laid.units.every(u => !u.owed), "…and owe nothing");
+  const half = new Projection();
+  half.stub = stub;
+  const partly = R.map((r, i) => (i < upto ? PENDING : r));
+  half.rebuild(partly, 0);
+  partly[3] = R[3];
+  half.fill(partly, 3, 4);
+  assert.equal(half.units.find(u => u.key === "process:b2").owed, 2, "a group of steps owes until its last record is here");
+  partly[0] = { ...R[0], id: "t9" };
+  assert.equal(half.fill(partly, 0, 1), null, "a record whose unit does not come out as its placeholder was is never renamed");
+
+  // A tail that starts in the middle of a long turn (no prompt in it): its first group of steps joins
+  // the head's, keyed by the head's record. That group is the LIVE turn's: drawn with what has arrived,
+  // never as a placeholder, while its earlier steps are on their way.
+  const { placeholderUnit } = await import("../../claude-monitor/src/codex-ui/view-model.js");
+  const longTurn = [{ kind: "user", id: "t1", turn: 1, label: "go", body: [] }, ...Array.from({ length: 6 }, (_, k) => ({ kind: "edit", id: `b${k + 1}`, body: [] }))];
+  const cutAt = 4;
+  const liveFacts = longTurn.slice(0, cutAt).map(r => [r.kind, r.id]);
+  const liveRows = new Map([[0, { r: 0, kind: "user", id: "t1", turn: 1, label: "go" }]]);
+  const live = new Projection();
+  live.stub = i => { const f = liveFacts[i]; if (!f) return null; const row = liveRows.get(i); return { kind: f[0], id: f[1], ...(row ? { turn: row.turn, label: row.label } : {}) }; };
+  live.upto = cutAt;
+  live.rebuild(longTurn.map((r, i) => (i < cutAt ? PENDING : r)), 0);
+  const group = live.units.find(u => u.type === "process");
+  assert.equal(group.key, "process:b1", "the group is keyed by its first record, in the head");
+  assert.ok(group.owed > 0 && group.live, "it owes the head's steps and reaches the tail");
+  assert.equal(placeholderUnit(group), false, "…so it is drawn with what has arrived, not as a placeholder");
+  assert.deepEqual(group.views.map(v => v.index), [4, 5, 6], "…the tail's steps");
+  assert.equal(placeholderUnit(live.units[0]), true, "the prompt still on its way is a placeholder");
+
+  // The read queue: turns from the index's map, a jump's turn first, then the window's (the latest
+  // asked first), then the rest from the tail backwards; each piece waits for the page.
+  const realFetch = globalThis.fetch;
+  const log = R.slice(0, upto).map(r => JSON.stringify(r) + "\n");
+  const offsets = []; let at = 0; for (const line of log) { offsets.push(at); at += new TextEncoder().encode(line).length; }
+  const bytes = new TextEncoder().encode(log.join(""));
+  const reads = [];
+  try {
+    globalThis.fetch = async url => { const q = new URL(url, "http://x").searchParams; const from = Number(q.get("from")); reads.push(from); return new Response(bytes.slice(from, from + Number(q.get("len"))), { status: 200 }); };
+    const done = [];
+    const store = new RecordStore({ update: () => {}, filled: () => {}, headRead: () => done.push(true) }, { tailBudget: 1024, windowed: true });
+    store.session = "s";
+    store.records = R.map((r, i) => (i < upto ? PENDING : r));
+    const head = { count: upto, len: bytes.length, epoch: 1 };
+    store.head = head;
+    const rowsWithBytes = turns.map((t, k) => ({ ...t, last: (turns[k + 1]?.r ?? upto) - 1, o: offsets[t.r], end: turns[k + 1] ? offsets[turns[k + 1].r] : bytes.length }));
+    head.reading = true; // hold the queue while the wants are placed
+    store.startReads(store.generation, head, { turns: rowsWithBytes });
+    assert.equal(head.reads.length, 3, "one read per turn of the index");
+    store.want(8, 9, 0);
+    store.want(0, 1, 1);
+    head.reading = false;
+    store.readNext(store.generation, head);
+    for (let i = 0; i < 40 && head.reads.some(r => !r.done); i++) await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(reads, [offsets[8], offsets[0], offsets[6]], "the jump's turn, then the window's, then the rest from the tail backwards");
+    assert.deepEqual(store.fills.map(f => f.from), [8, 0, 6], "each piece waits for the page, in read order");
+    assert.equal(store.records[8], PENDING, "…and fills nothing until it is taken");
+    assert.deepEqual(store.peekFill(), { from: 8, to: 10 });
+    while (store.peekFill()) store.takeFill();
+    assert.deepEqual(store.records.map(r => r.id), R.map(r => r.id), "taken, the records stand where they belong");
+    assert.equal(store.head, null, "the last piece taken, the head goes");
+    assert.equal(done.length, 1, "…and the page hears it");
+
+    // A turn whose records do not come out at its count starts the session over.
+    let resets = 0;
+    const short = new RecordStore({ update: () => {}, reset: () => resets++ }, { tailBudget: 1024, windowed: true });
+    short.session = "s"; short.records = R.map((r, i) => (i < upto ? PENDING : r));
+    const owed = { count: upto, len: bytes.length, epoch: 1 };
+    short.head = owed;
+    short.startReads(short.generation, owed, { turns: [{ ...rowsWithBytes[0], last: 6 }] });
+    for (let i = 0; i < 20 && resets === 0; i++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(resets, 1, "a turn that brings more records than the index said starts over");
+
+    // A record that is not the one the index described there (the log rewritten under one epoch).
+    let renamed = 0;
+    const other = new RecordStore({ update: () => {}, reset: () => renamed++ }, { tailBudget: 1024, windowed: true });
+    other.session = "s"; other.records = R.map((r, i) => (i < upto ? PENDING : r));
+    const changed = { count: upto, len: bytes.length, epoch: 1 };
+    other.head = changed;
+    other.index = { facts: facts.map((f, i) => (i === 1 ? [f[0], "b99"] : f)) };
+    other.startReads(other.generation, changed, { turns: [rowsWithBytes[0]] });
+    for (let i = 0; i < 20 && renamed === 0; i++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(renamed, 1, "a record that is not the one the index described starts over, and fills nothing");
+    assert.ok(!other.fills.length, "…not a piece of it");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log("#s277 records by turn cases passed");
 }
 
 const fixtures = [
@@ -650,19 +1011,19 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(sessionBucket({ state: "growing" }), "active", "legacy growing is active");
   assert.equal(sessionBucket({ state: "finished" }), "idle", "legacy finished is idle");
   assert.equal(sessionBucket({ state: "idle" }), "idle");
-  // The filter's buckets: recent is an hour of activity or busy now, blocked is needsPerson,
+  // The filter's buckets: recent is six hours of activity or busy now, blocked is needsPerson,
   // idle is neither; a row may be in two.
-  assert.equal(RECENT_SECS, 3600, "an hour, the owner's word");
+  assert.equal(RECENT_SECS, 6 * 3600, "six hours, the owner's word (#s253)");
   assert.deepEqual(FILTER_BUCKETS, ["recent", "blocked", "idle"]);
-  assert.deepEqual(FILTER_LABELS, { recent: "Active recently", blocked: "Blocked", idle: "Idle" });
-  const now = 1_000_000, fresh = now - 60, stale = now - 7200;
+  assert.deepEqual(FILTER_LABELS, { recent: "Active in the last 6 hours", blocked: "Blocked", idle: "Idle" });
+  const now = 1_000_000, fresh = now - 60, stale = now - RECENT_SECS - 3600;
   assert.deepEqual(sessionFilterBuckets({ agentState: "busy", stateReason: "tool", activityTs: stale }, now), ["recent"], "busy is recent whatever its clock says");
-  assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "done", activityTs: fresh }, now), ["recent"], "an hour of activity is recent");
+  assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "done", activityTs: fresh }, now), ["recent"], "recent activity is recent");
   assert.deepEqual(sessionFilterBuckets({ agentState: "wait", stateReason: "question", activityTs: fresh }, now), ["recent", "blocked"], "a fresh wait is both");
   assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "stalled", activityTs: stale }, now), ["blocked"], "an old stall is blocked only");
   assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "done", activityTs: stale }, now), ["idle"], "an old answer is idle");
   assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "exited" }, now), ["idle"], "no clock at all is idle");
-  assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "done", activityTs: now - RECENT_SECS - 1 }, now), ["idle"], "the hour is a boundary");
+  assert.deepEqual(sessionFilterBuckets({ agentState: "idle", stateReason: "done", activityTs: now - RECENT_SECS - 1 }, now), ["idle"], "six hours is a boundary");
   const rows = [{ id: "b", agentState: "wait", stateReason: "question", activityTs: fresh }, { id: "a", agentState: "busy", stateReason: "tool", activityTs: fresh }, { id: "i", agentState: "idle", stateReason: "done", activityTs: stale }, { id: "s", agentState: "idle", stateReason: "stalled", activityTs: stale }];
   const agents = groupSessions([{ label: "p", rows }]);
   const ids = tree => tree.flatMap(a => a.projects.flatMap(p => p.rows.map(r => r.id)));
@@ -1268,7 +1629,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(engineSource209, /if \(!this\.queued\.length && !this\.inFlight\(\)\) this\.afterTransaction\(\);/, "…called once the transaction is complete, not between queued ones, and never while a smooth write travels");
   assert.match(engineSource209, /this\.trace\("arrived"[\s\S]{0,400}?this\.afterTransaction\(\);/, "…and the arrival of that write calls it instead");
   assert.match(viewportSource, /afterTransaction\(\) \{ this\.actions\.afterTransaction\?\.\(\); \}/, "the shell's viewport forwards it");
-  assert.match(appSource, /afterTransaction: \(\) => \{ const p = viewport\.position; if \(p && p\.key\) updateTurnBar\(p\.key\); \}/, "…and the shell repaints the bar from the ENGINE's belief");
+  assert.match(appSource, /afterTransaction: \(\) => \{ const p = viewport\.position; if \(p && p\.key\) updateTurnBar\(p\.key\); wantWindow\(\); \}/, "…and the shell repaints the bar from the ENGINE's belief (and, #s277, asks the store for what the window shows)");
   assert.match(appSource, /return currentTurnIndex\(units, atKey === undefined \? unitAtTop\(\) : atKey\);/, "…which is what the key argument is for: no layout read at the boundary");
   assert.doesNotMatch(classicExportSource, /afterTransaction\(\) \{/, "the classic page does NOT spy at the boundary — its spy measures rects, and forcing that flush there moved the reader");
   assert.match(css, /\.session-navigator\{overflow-anchor:none\}/, "scroll anchoring would fight a body that is changing height");
@@ -1333,7 +1694,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /display\.kind === "priced"/, "only a complete total is split into own and sub-agent components");
   assert.match(appSource, /\["cache read", usage\.cache_read\], \.\.\.\(usage\.compacted \? \[\["compacted", usage\.compacted\]\] : \[\]\)/, "cached-read tokens and the compaction summary, when there is one");
   assert.match(appSource, /if \(record\.kind === "compaction"\) epochs\.push\(\{ at: i, tick: compactionTick\(record\.head \|\| \{\}\) \}\)/, "a compaction becomes an epoch tick from the record's facts");
-  assert.match(appSource, /<button class="outline-epoch" type="button" data-turn-record="\$\{r\.at\}"/, "…that jumps to the compaction record");
+  assert.match(appSource, /<button class="outline-epoch\$\{r\.pending \? " outline-turn-pending" : ""\}" type="button" data-turn-record="\$\{r\.at\}"/, "…that jumps to the compaction record (#s276: marked while its record is still coming)");
   console.log("#67/#68/#69 info and turns pane cases passed");
 }
 
@@ -1455,7 +1816,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(artifactRoster([]), []);
   // #95: the roster is the right pane's pinned first tab, not a header menu.
   assert.ok(!/artifactsBtn|artifactsMenu/.test(appSource) && !/artifacts-btn|artifacts-menu/.test(productionCss), "the header control is gone");
-  assert.match(appSource, /preview\.setRoster\(recordState\.session === indexState\.selected \? artifactRoster\(recordState\.records\) : \[\]\)/, "the header render hands the roster to the pane");
+  assert.match(appSource, /preview\.setRoster\(recordState\.session === indexState\.selected \? artifactRoster\(recordState\.records, owedIndex\(\)\?\.artifacts, scanFrom\(\)\) : \[\]\)/, "the header render hands the roster to the pane (scanning above the index's boundary while it answers for the head, #s277)");
   assert.match(previewSource, /class="preview-tab pinned \$\{roster \? "on" : ""\}" data-preview-tab="\$\{ROSTER_ID\}"/, "…which pins it as a tab");
   assert.match(previewSource, /<span class="preview-tab-label">Artifacts \(\$\{this\.roster\.length\}\)<\/span>/, "…labelled with the count");
   assert.match(previewSource, /const roster = !item && this\.roster\.length > 0;/, "…and shown when no file tab is selected, so an opened pane lands on it");
@@ -1466,7 +1827,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(previewSource, /if \(key === this\.rosterKey\) return;/, "an unchanged roster re-renders nothing — an open file tab is not re-fetched underneath the reader");
   assert.match(previewSource, /<a href="\$\{escapeText\(r\.url\)\}" target="_blank" rel="noopener"/, "a row is a link in a new tab");
   assert.match(previewSource, /this\.actions\.jumpToRecord\?\.\(Number\(jump\.dataset\.artifactRecord\)\)/, "…with a jump to the publishing record");
-  assert.match(appSource, /jumpToRecord: at => viewport\.jumpToRecord\(at, "artifact"\)/, "…which the app wires to the viewport");
+  assert.match(appSource, /jumpToRecord: at => jumpOrFetch\(at, "artifact"\)/, "…which the app wires to the viewport (reading its turn first while it is on its way, #s277)");
   console.log("#78 / #95 artifact roster cases passed");
 }
 
@@ -1506,7 +1867,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /if \(options\.spontaneous\) return this\.position;/, "…which places the KEPT position, never one captured after the move (#98; #196 stage 2)");
   assert.doesNotMatch(src, /restore:deferred|this\.owed|scheduleSettle|settleTimer|bottomTimer|estimatesTimer/, "#196 stage 2: no correction is owed, deferred or dropped any more — a placement lands at once, whatever the reader is doing (framework I7); the tail and the estimates wait for rest on the one timer");
   assert.match(src, /defer\(what\) \{\n    if \(what === "tail"\) this\.pendingTail = true;\n    else this\.estimatesPending = true;\n    this\.armRest\(\);/, "…and that timer is the only thing that waits (framework §4.2)");
-  assert.match(src, /this\.updatePads\(\);\n    this\.afterMount\(fresh\);\n    this\.measureMounted\(\);\n    this\.updatePads\(\);/, "PAD, then measure (#179): both `afterMount` (the classic page's clamp pass) and `measureMounted` force layout, and until the pads are written the page is short by whatever the new window dropped off its top — a browser clamps `scrollTop` to it and a reader on the tail is pulled up by the whole difference (262px on the shell, 228 on the classic page)");
+  assert.match(src, /this\.updatePads\(\);\n    \/\/ A fresh placeholder[^\n]*\n    this\.fitPlaceholders\(fresh\);\n    this\.afterMount\(fresh\);\n    this\.measureMounted\(\);\n    this\.updatePads\(\);/, "PAD, then measure (#179): `fitPlaceholders` (#s277: it reads the margins of a placeholder it sizes), `afterMount` (the classic page's clamp pass) and `measureMounted` all force layout, and until the pads are written the page is short by whatever the new window dropped off its top — a browser clamps `scrollTop` to it and a reader on the tail is pulled up by the whole difference (262px on the shell, 228 on the classic page)");
   assert.match(src, /if \(!this\.position \|\| \(this\.position\.at !== this\.frame\.scrollTop\(\) && !this\.inFlight\(\)\)\) this\.position = this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "a transaction the engine is about to make re-reads `P` when the offset moved since it was read (#196 stage 2: the reader's scroll moves `P`, it does not erase it) — unless a smooth write of the engine's own is what is moving it (stage 4)");
   // #213, the owner's rule: a transaction confirms `following` against the OFFSET before it acts on
   // it. Follow is released in the scroll handler, and the browser can deliver that event most of a
@@ -1588,7 +1949,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /function refreshFilterHits\(\) \{/, "…and records arriving under a filter join it");
   assert.match(app, /renderNavigator\(\); refreshFilterHits\(\); updateSearch\(false\);/, "…on the arrival path");
   assert.match(app, /recordState\.filterSnapshot = \{ folds: new Map\(recordState\.folds\)/, "the fold state is snapshotted for the clear");
-  assert.match(app, /if \(target != null\) viewport\.jumpToRecord\(target, "filter"\);/, "…and the view lands on the nearest hit");
+  assert.match(app, /recordState\.landed = target != null && viewport\.jumpToRecord\(target, "filter"\) \? target : null;/, "…and the view lands on the nearest hit");
   // #133: on THIS shell a tool filter is a search by kind — it finds, marks and steps, and
   // hides nothing, so every hit is read in its own surroundings. (The classic page still cuts;
   // the two surfaces differ here on purpose.)
@@ -1602,9 +1963,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // #303: ticking a tool sets the box's tools CHIP — part of the box, parsed with its text.
   assert.match(app, /uiState\.chips\.tools = names\.slice\(\);\n\s*setScopeChip\(\[\.\.\.uiState\.chips\.scope\]\);\n\s*updateSearch\(true\);/, "…and ticking a tool sets the box's chip, which is part of the query (#101, #292, #303); `o(…)` is the tools chip, so the scope chip drops a bare `o` (#367)");
   assert.match(app, /const raw = boxQuery\(\);/, "…because the query is the chips and the text together (#303)");
-  assert.match(app, /recordState\.landed = matches\[recordState\.match\];\s*\n\s*viewport\.jumpToRecord\(recordState\.landed, textual \? "search" : "filter"\);/, "…landing each one in its surroundings");
-  assert.match(app, /const already = matches\[nearest\] === recordState\.landed;/, "pressing next where a jump already landed moves on — while the first step after a fresh query still lands on the first hit");
-  assert.match(app, /byId\("transcriptSearchCount"\)\.textContent = text \|\| \(hits \? `\$\{hits\} \$\{hits === 1 \? "match" : "matches"\}` : ""\);/, "the box counts what the filter found, the way it counts a search");
+  assert.match(app, /recordState\.landed = matches\[recordState\.match\];\s*\n(?:\s*\/\/.*\n)*\s*if \(viewport\.jumpToRecord\(recordState\.landed, textual \? "search" : "filter"\)\) recordState\.landedAt = performance\.now\(\);\n\s*else \{\n[\s\S]*?\n\s*recordState\.landed = null;\n\s*\}/, "…landing each one in its surroundings, stamped after the jump's own intent, and nothing landed where the jump could not go (#s259; #s278: a hit still on its way is held for its turn)");
+  assert.match(app, /const held = recordState\.landed == null \|\| !landedInView\(view\) \? -1 : matches\.indexOf\(recordState\.landed\);/, "pressing next where a jump already landed moves on from that hit while its unit is still in view — while the first step after a fresh query still lands on the first hit (#s259)");
+  assert.match(app, /\} else if \(held >= 0\) \{\n\s*recordState\.match = \(held \+ delta \+ matches\.length\) % matches\.length;/, "…from the landed hit itself, never the first hit of the unit at the top (#s259)");
+  assert.match(app, /recordState\.landed = target != null && viewport\.jumpToRecord\(target, "filter"\) \? target : null;\n\s*recordState\.landedAt = performance\.now\(\);/, "…and the tool filter's landing is stamped the same way (#s259)");
+  // #s259: the jump stamps intent itself, so its own scroll must not count as the reader moving off.
+  assert.match(app, /if \(viewport\.lastUserInput > recordState\.landedAt && performance\.now\(\) - viewport\.lastUserInput < viewport\.userIntentMs\) recordState\.landed = null;/, "…and only input later than the landing clears it");
+  assert.match(app, /const count = hits \? `\$\{hits\} \$\{hits === 1 \? "match" : "matches"\}` : "";\n\s*byId\("transcriptSearchCount"\)\.textContent = text \|\| \(waiting \? "Searching…" : failed \? `\$\{count \|\| "0 matches"\} · earlier turns not searched` : count\);/, "the box counts what the filter found, the way it counts a search — and says it is searching while the server's part is out (#s278), never the tail's part alone, and when it gave up");
   console.log("#110 / #133 tool filter cases passed");
 }
 
@@ -1713,7 +2078,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const appSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   const nav = appSrc.slice(appSrc.indexOf("function renderNavigator("), appSrc.indexOf("const tasks = recordState.meta?.tasks"));
   assert.match(nav, /r\.unit\?\.view\?\.peer \? peerRow\(r\.unit\)/, "a peer turn's row is drawn by peerRow");
-  assert.match(nav, /class="outline-turn-row outline-peer" style="--peer-hue:\$\{peerHue\(from\)\}"/, "…in its sender's hue");
+  assert.match(nav, /class="outline-turn-row outline-peer\$\{unit\.pending \? " outline-turn-pending" : ""\}" style="--peer-hue:\$\{peerHue\(from\)\}"/, "…in its sender's hue");
   assert.match(nav, /class="outline-peer-from"/, "…with the sender as a chip");
   console.log("#s138 peer row cases passed");
 }
@@ -1767,17 +2132,21 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   assert.match(app, /const index = recordState\.records\.findIndex\(record => recordChain\(record, id, chain\)\);/, "a hash resolves through nested records");
   assert.match(app, /for \(const rid of chain\) recordState\.folds\.set\(rid, false\);/, "…opening the chain to it");
-  assert.match(app, /if \(!viewport\.jumpToRecord\(index, "hash"\)\) return false;/, "…and lands there");
+  assert.match(app, /if \(!viewport\.jumpToRecord\(index, "hash"\)\) \{\n[\s\S]*?return false;\n  \}\n  hashWait = null;/, "…and lands there (#s277: or, its unit still on its way, waits for it unless the reader moves)");
   console.log("#116 deep link cases passed");
 }
 
 // #100: stepping re-enters from the viewport once the current hit is off screen; the term lands in view.
 {
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
-  assert.match(app, /const onScreen = !!box && box\.bottom >= view\.top && box\.top <= view\.bottom;/, "the current hit's mark decides whether the sequence continues");
+  assert.match(app, /const onScreen = !!box && box\.bottom >= view\.top && \(box\.top < searchFloor\(view\) \|\| box\.top <= view\.bottom && viewport\.gapToBottom\(\) <= 1\);/, "the current hit's mark decides whether the sequence continues — in sight above whatever covers the transcript's foot, or at the view's end where nothing can lift it (#s257); a hit behind the turn bar at the top is behind the reader and counts as seen (#s263)");
   assert.match(app, /const k = matches\.findIndex\(index => index >= top\);/, "…else the first hit at or below the viewport top");
-  assert.match(app, /const nearest = delta > 0 \? \(k >= 0 \? k : 0\) : \(k > 0 \? k - 1 : matches\.length - 1\);/, "forward from there, backward from the one above, wrapping");
+  assert.match(app, /recordState\.match = delta > 0 \? \(k >= 0 \? k : 0\) : \(k > 0 \? k - 1 : matches\.length - 1\);/, "forward from there, backward from the one above, wrapping");
   assert.match(app, /function landOnCurrentMark\(\) \{/, "the landing brings the term into view");
+  assert.match(app, /if \(box\.top >= ceiling && box\.bottom <= floor\) return;\n(?:[^\n]*\n){4}\s*const space = Math\.max\(0, floor - ceiling\);\n\s*viewport\.reveal\(mark, \{ top: Math\.min\(120, ceiling - view\.top \+ Math\.min\(space \/ 3, Math\.max\(0, space - box\.height\)\)\) \}\);/, "…between the turn bar and the cover, a third of the way down the space between them (#s263), never crossing the cover (#s267)");
+  assert.match(app, /function searchCeiling\(view, mark\) \{\n\s*let ceiling = view\.top;\n\s*if \(getComputedStyle\(turnStickyBar\)\.display !== "none"\) \{/, "…the bar counted wherever it is drawn, on or off; on a phone it is not");
+  assert.match(app, /const head = mark\?\.closest\("\[data-process-surface\]"\)\?\.querySelector\("\.process-surface-headbar"\);\n\s*if \(head && !head\.contains\(mark\)\) ceiling = Math\.max\(ceiling, view\.top \+ head\.getBoundingClientRect\(\)\.height\);/, "…and the head of the process group holding the mark, which sticks there once the match is revealed (#s267)");
+  assert.match(app, /const floor = searchFloor\(view\), ceiling = searchCeiling\(view, mark\);/, "…asked for the mark being landed");
   const vp = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   assert.match(vp, /if \(reveal === "search" \|\| reveal === "hash"\) \{\n\s*const openAll = view =>/, "a search or deep-link reveal opens the nested chain and its caps");
   console.log("#100 hit stepping cases passed");
@@ -1821,7 +2190,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(recordTextSize(record), 4 + 9 + 100, "head strings, part strings, nested records — without building the text");
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   assert.match(app, /const liveSearchLimit = Number\(new URLSearchParams\(location\.search\)\.get\("liveSearchLimit"\)\) \|\| LIVE_SEARCH_LIMIT;/, "the shared limit, which a case may lower for one page (#308)");
-  assert.match(app, /function searchIsLive\(\) \{ let n = 0; for \(const s of recordState\.recSizes\) n \+= s; return n <= liveSearchLimit; \}/, "live while small");
+  assert.match(app, /function searchIsLive\(\) \{\n(?:\s*\/\/.*\n)*\s*if \(recordStore\.windowed && owedIndex\(\)\) return false;\n\s*let n = 0; for \(const s of recordState\.recSizes\) n \+= s; return n <= liveSearchLimit;\n\}/, "live while small (#s278: and on Enter while a records-by-turn head is out, where the server answers)");
   // #308: the Enter that runs a pending search also steps — to the nearest hit from the reader.
   assert.match(app, /if \(recordState\.pendingSearch\) \{ recordState\.pendingSearch = false; updateSearch\(true\); \}\n\s*stepSearch\(event\.shiftKey \? -1 : 1\);/, "Enter runs a pending search AND steps (#308)");
   console.log("#104 large-session search cases passed");
@@ -2102,7 +2471,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   assert.match(app, /const q = splitQuery\(raw, undefined, spec => resolveToolSpec\(spec, toolLetters\(\)\)\);/, "the app shell splits the query through the module, its letters the shared table's");
   // The count is the shared label (#367: no clash to name instead — none can be built).
-  assert.match(app, /paintMatchCount\(query \? countLabel\(total, set, whole, q\.toolSpec\) : ""\);/);
+  assert.match(app, /paintMatchCount\(query \? \(remote\.ready \? countLabel\(total, set, whole, q\.toolSpec\) \+ \(remote\.found\?\.failed \? " · earlier turns not searched" : ""\) : "Searching…"\) : ""\);/);
   assert.doesNotMatch(app, /facetClash|toolConflict|scopeConflict/, "#356's greying is gone with the clashes it greyed");
   // #303: the scope rows set the box's scope CHIP; the typed text keeps no prefix of its own.
   assert.match(app, /input\.value = writePrefix\(input\.value, \[\]\);\n\s*setScopeChip\(letters\);/);
@@ -2118,7 +2487,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(comp118, /data-record-kind="\$\{escapeText\(view\.raw\?\.kind \|\| view\.renderer\)\}"/, "every renderer row carries its record kind");
   assert.match(comp118, /class="turn user" data-kind="user" data-record-kind="user"/);
   assert.match(comp118, /class="turn user command" data-kind="user" data-record-kind="command"/);
-  assert.match(app, /const key = unitAtTop\(\);\n  return recordState\.units\.find\(unit => unit\.key === key\)\?\.from \?\? 0;/, "a unit key is resolved to a record index");
+  assert.match(app, /const key = unitAtTop\(\);\n  const unit = recordState\.units\.find\(u => u\.key === key\);\n  if \(!unit\) return 0;/, "a unit key is resolved to a record index");
+  assert.match(app, /let at = unit\.from;\n  for \(const element of unitRow\(key\)\?\.querySelectorAll\("\[data-block-index\]"\) \|\| \[\]\) \{\n[^\n]*\n\s*if \(Number\.isInteger\(index\) && index > at && index <= unit\.to && r\.height > 0 && r\.top <= line\) at = index;/, "…the last record row of that unit drawn at or above the line, its `.from` where none is (#s264)");
+  assert.match(app, /const r = \(own \|\| row\)\?\.getBoundingClientRect\(\);/, "…and a landed hit is in view by its own row, its unit's where its row is not drawn (#s264)");
   assert.doesNotMatch(app, /unitAtTop\(\)\?\.from/, "…never read as one");
   const js = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
   assert.match(js, /var q = shared\.splitQuery\(v, undefined, resolveSearchTools\);/, "the classic page runs the same split, with the same letters");
@@ -2221,7 +2592,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // Step 3: the estimate is a floor per unit type — and since #184 the floor is the SEED of a
   // running mean rather than the answer, because a constant floor is the guess furthest from the
   // truth and that distance is what displaces a reader when a run above them is measured (#180).
-  assert.match(vp, /const ESTIMATES = \{ user: 44, assistant: 40, process: 34 \};/);
+  assert.match(vp, /const ESTIMATES = \{ user: 44, assistant: 40, process: 34, pending: 84 \};/);
   // Both facts, not their adjacency: #232 put the `renderAll` test knob between them, and a
   // contract that pins where a line SITS breaks on an unrelated insertion while saying nothing
   // about what it was protecting.
@@ -2347,7 +2718,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 {
   const components174 = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   const stamped = [...components174.matchAll(/<div class="turn [^"]*"[^>]*?data-record-id="\$\{escapeText\(unit\.view\?\.id \|\| ""\)\}"/g)];
-  assert.equal(stamped.length, 4, "the four prose turn wrappers — user, slash command, another session's message (#s79), assistant — each stamp the record id the classic page has always carried");
+  assert.equal(stamped.length, 5, "the five prose turn wrappers — slash command, another session's message (#s79), a relayed message from the person (#s272), user, assistant — each stamp the record id the classic page has always carried");
   assert.match(components174, /data-record-id="\$\{escapeText\(key\)\}"/, "…and a tool rendering still stamps its own, on the `.renderer` inside the turn");
   // The painter that means "a tool head" must stay scoped to one, or widening the attribute
   // silently widens what it paints.
@@ -2687,7 +3058,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(engine, /settleEstimates\(\) \{\n\s*if \(this\.readerOwnsPosition\(\)\) \{/, "…and a reader who owns the position holds the shift off");
   assert.match(engine, /this\.trace\("estimates:pending", \{\}\)/, "…recorded (#192)");
   assert.match(engine, /this\.trace\("estimates:applied", \{ estimate: [^}]*late: true/, "…and the late apply is recorded as late");
-  assert.match(engine, /this\.transact\("estimates", \{ mutate: \(\) => this\.applyLate\(\), range: p0 => this\.rangeFor\(p0\) \}\);/, "the late apply is a transaction of its own at rest: `P` read before the shift, the window settled around it, the placement after (#196 stage 2)");
+  assert.match(engine, /this\.transact\("estimates", \{ mutate: \(\) => \{ this\.measureMounted\(\); this\.applyLate\(\); \}, range: p0 => this\.rangeFor\(p0\) \}\);/, "the late apply is a transaction of its own at rest: `P` read before the shift, the window settled around it, the placement after (#196 stage 2) — the mounted heights read first, since a timer can run before the observer has delivered a size change (#s269)");
   assert.match(engine, /if \(options\.mutate\) this\.updatePads\(\);\n      let mounted = null;/, "…and the pads follow the sums before any mount decides it has nothing to do (measured: a window 400 records above the reader when they did not)");
   assert.match(engine, /learn\(index, height\) \{\n\s*const key = this\.identityAt\(index\);\n\s*const kind = this\.kindFor\(index\);\n\s*const prior = this\.shares\.get\(key\);\n\s*let previous = 0;\n\s*if \(prior && prior\.kind !== kind\) \{ this\.guesses\.get\(prior\.kind\)\.forget\(prior\.share\); this\.countShare\(prior\.kind, prior\.share, 0\); \}\n\s*else if \(prior\) previous = prior\.share;/, "the engine learns one share per identity, replacing the record's own and moving it between kinds (I5, #196 stage 3)");
   assert.doesNotMatch(engine, /lo = Math\.min\(this\.lo, hi\)/, "#194's lo-hold is gone (#196 stage 2): a mount above a moving reader is placed back at once, in the same task, so there is nothing to hold off (framework I7 — the fling case measures it)");
@@ -2779,7 +3150,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(app, /viewport\.pageBy\(direction, \{ intent: true \}\);/, "paging is the engine's, stamped as before");
   assert.match(app, /viewport\.reveal\(heads\[next\], \{ top: 160, smooth: true, intent: true \}\);/, "a stepped head is revealed smoothly — the classic page's rule, stamped as before");
   assert.match(app, /viewport\.reveal\(nested, \{ top: 18 \}\);/, "a nested hash landing is a reveal");
-  assert.match(app, /viewport\.reveal\(mark, \{ top: Math\.min\(120, view\.height \/ 3\) \}\);/, "…and so is a search mark below the fold");
+  assert.match(app, /viewport\.reveal\(mark, \{ top: Math\.min\(120, ceiling - view\.top \+ Math\.min\(space \/ 3, Math\.max\(0, space - box\.height\)\)\) \}\);/, "…and so is a search mark below the fold (#s248: a third into the space above the floor, #s263: below the turn bar)");
   assert.match(classic, /vw\.jumpTo\(\{ index: ti, top: GOTO_Y \}, \{ dirtyFrom: ti, intent: true \}\);/, "goToId is one landing, stamped");
   assert.match(classic, /vw\.jumpTo\(\{ index: ti, top: dy \}, \{ intent: true \}\);/, "landOn is one landing, stamped as it always was");
   assert.match(classic, /vw\.jumpTo\(\{ index: idIndex\[anchorId\], top: anchorTop \}\);/, "a filter change re-lands the anchored record with no stamp");
@@ -2805,12 +3176,19 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
   const pages = classic + shell + app;
   assert.doesNotMatch(pages, /\b(reconcile|rangeAround|rangeForScroll|mountRange|clearWindow|applyWindow|replaceMounted|setWindow)\(/, "no page names a window: the range is the engine's, from P0 (framework I11)");
-  assert.match(engine, /recordsChanged\(mutate\) \{\n(?:\s*\/\/.*\n)*\s*let moved = null;\n\s*return this\.transact\("records", \{\n\s*mutate: \(\) => \{\n(?:\s*\/\/.*\n)*\s*const count0 = this\.count;\n\s*const tail0 = this\.tailSnapshot\(\);\n\s*const result = mutate \? mutate\(\) : undefined;\n(?:.*\n){0,3}?\s*const first = from == null \? Infinity : from;\n(?:.*\n){0,1}?\s*this\.pendingDelta = \{ count0, count1: this\.count, from: Math\.min\(first, count0\), tail0 \};\n(?:.*\n){0,1}?\s*return first;\n\s*\},\n\s*translate: p0 => \(moved \? this\.shiftPosition\(p0, moved\.from, moved\.shift\) : p0\),\n\s*dirtyFrom: from => from,\n\s*range: p0 => this\.count \? this\.rangeFor\(p0\) : \{ lo: 0, hi: 0 \},/, "the records transaction: the page's mutation, its return as dirtyFrom, the window from P0, an empty count empties the window — and the delta's shape taken around the mutation (#197), a prepend's shift in it (#314)");
+  assert.match(engine, /recordsChanged\(mutate\) \{\n(?:\s*\/\/.*\n)*\s*let moved = null;\n\s*let bounded = null;\n\s*return this\.transact\("records", \{\n\s*mutate: \(\) => \{\n(?:\s*\/\/.*\n)*\s*const count0 = this\.count;\n\s*const tail0 = this\.tailSnapshot\(\);\n\s*const result = mutate \? mutate\(\) : undefined;\n(?:.*\n){0,3}?\s*const first = from == null \? Infinity : from;\n(?:.*\n){0,2}?\s*this\.pendingDelta = \{ count0, count1: this\.count, from: Math\.min\(first, count0\), tail0 \};\n(?:.*\n){0,2}?\s*return first;\n\s*\},\n\s*translate: p0 => \(moved \? this\.shiftPosition\(p0, moved\.from, moved\.shift, moved\.renamed\) : p0\),\n\s*dirtyFrom: from => bounded \|\| from,\n\s*range: p0 => this\.count \? this\.rangeFor\(p0\) : \{ lo: 0, hi: 0 \},/, "the records transaction: the page's mutation, its return as dirtyFrom, the window from P0, an empty count empties the window — and the delta's shape taken around the mutation (#197), a prepend's shift in it (#314), and a bounded rewrite redraws only its run (#s277)");
+  // #s277 (design/slow-links.md §6.2–6.3): a placeholder is SIZED — never measured, never learned —
+  // and follows the applied estimate wherever it moves; a bounded rewrite redraws its run alone.
+  assert.match(engine, /measureMounted\(\) \{[\s\S]*?if \(this\.placeholderAt\(index\)\) continue;[\s\S]*?this\.learn\(index, height\);/, "a placeholder is skipped by the measure, so it never teaches the estimator (#s277)");
+  assert.match(engine, /applyEstimates\(\) \{[\s\S]*?if \(moved\) this\.fitPlaceholders\(\);\n    return moved;/, "…and is redrawn wherever the applied estimate moves, inside that transaction (#s277)");
+  assert.match(engine, /\(index < dirty\.from \|\| index >= dirty\.to\)/, "a mounted item is reused unless it lies in the rewritten run (#s277)");
+  assert.match(engine, /if \(!this\.placeholderAt\(index\)\) continue;\n\s*const drawn = itemHeight\(child\), sums = this\.heightOf\(index\);/, "the check mode holds a placeholder to its height in the sums (#s277)");
   assert.match(engine, /const changed = options\.mutate \? options\.mutate\(\) : undefined;\n(?:.*\n){0,6}?\s*const dirtyFrom = typeof options\.dirtyFrom === "function" \? options\.dirtyFrom\(changed\) : options\.dirtyFrom;/, "…and `dirtyFrom` may be a function of what the mutation returned");
   // #314: a prepend moves the index space, not the reader — P0 is translated after the mutation and
   // before the window is chosen from it or the placement is derived from it.
   assert.match(engine, /const changed = options\.mutate \? options\.mutate\(\) : undefined;\n(?:\s*\/\/.*\n)*\s*if \(options\.translate\) p0 = options\.translate\(p0\);\n(?:.*\n)*?\s*const range = typeof options\.range === "function" \? options\.range\(p0\) : options\.range;/, "a prepend translates P0 before the range and the placement (#314)");
-  assert.match(engine, /shiftPosition\(p, from, shift\) \{\n\s*if \(!p \|\| p\.source === "tail" \|\| p\.source === "offset"\) return p;/, "…the tail stays the tail (#314)");
+  assert.match(engine, /const rename = key => \(renamed && key && renamed\[key\]\) \|\| key;[\s\S]*?return after \? \{ \.\.\.after, key: rename\(after\.key\) \} : p;[\s\S]*?const translated = \{ \.\.\.p, index: index \+ shift, key: rename\(p\.key\) \};/, "a prepend renames the anchor's key when the page says the landing renamed its unit (#s277: the head's steps joined the tail's first group)");
+  assert.match(engine, /shiftPosition\(p, from, shift, renamed = null\) \{\n\s*if \(!p \|\| p\.source === "tail" \|\| p\.source === "offset"\) return p;/, "…the tail stays the tail (#314)");
   assert.match(engine, /if \(options\.place === false \|\| options\.position === null\) return null;\n(?:.*\n){0,3}?\s*if \(this\.following\) return options\.tail === false \? null : TAIL;\n\s*if \(!this\.count \|\| this\.dragging\) return null;/, "the tail is P0 before the count is asked: a records change that fills an empty page while following starts from the tail");
   assert.doesNotMatch(engine, /options\.refresh|refresh: |, refresh[,)]|forceIndex|reconcile\(lo, hi|\bclearWindow\(/, "the `refresh` option, `forceIndex`, the page-facing reconcile and clearWindow are gone");
   assert.match(engine, /mountRange\(lo, hi, dirtyFrom = Infinity, p0 = null\) \{/, "mountRange takes the dirty index and P0 only");
@@ -2874,7 +3252,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(classic, /vw\.jumpTo\(\{ index: ti, top: GOTO_Y \}, \{ decide: false \}\);/, "the search walk materializes a record as an undecided landing");
   assert.match(classic, /function refreshWindow\(\) \{ vw\.rerender\(\); \}/, "the classic re-render is the engine's");
   // The shell: the swap is the mutation; the restore stays a command with the swap before it.
-  assert.match(shell, /const swap = \(\) => \{\n(?:.*\n){0,12}?\s*this\.units = units;\n(?:\s*\/\/.*\n)*\s*for \(const child of this\.window\.children\) this\.stampNeighbours\(child, Number\(child\.dataset\.unitIndex\)\);\n(?:\s*\/\/.*\n)*\s*return shift \? \{ from: changedUnit, shift \} : changedUnit;\n\s*\};/, "the units swap re-stamps the kept elements' neighbours (#201) and returns the first rebuilt unit — with the shift when a tail-first head landed (#314)");
+  assert.match(shell, /const swap = \(\) => \{\n(?:.*\n){0,12}?\s*this\.units = units;\n(?:\s*\/\/.*\n)*\s*for \(const child of this\.window\.children\) this\.stampNeighbours\(child, Number\(child\.dataset\.unitIndex\)\);\n(?:\s*\/\/.*\n)*\s*return shift \? \{ from: changedUnit, shift, renamed \} : changedUnit;\n\s*\};/, "the units swap re-stamps the kept elements' neighbours (#201) and returns the first rebuilt unit — with the shift when a tail-first head landed (#314)");
   assert.match(shell, /swap\(\);\n\s*this\.rebuildPrefix\(\);\n(?:.*\n){0,3}?\s*this\.jumpTo\(\{ key: memory\.key, index, top: memory\.top \}, \{ dirtyFrom: changedUnit \}\);/, "a restore swaps first and jumps, with no mount before it");
   assert.equal((shell.match(/this\.recordsChanged\(swap\);/g) || []).length, 2, "an empty list and a plain delta are the one transaction");
   assert.doesNotMatch(shell + app, /\.render\(\)/, "the shell re-renders through rerender()");

@@ -1036,7 +1036,22 @@ impl Stores {
             ("CLAUDE_JDI_TASKS_ROOT", self.root.join("claude-tasks")),
             // #283: Claude Code's per-user scratch (`/tmp/claude-<uid>` on a real machine).
             ("CLAUDE_SCRATCH_ROOT", self.root.join("claude-scratch")),
+            // #s272: where a relayed message's key is read, so no case reads this Mac's own.
+            ("ARIES_STATE_DIR", self.root.join("aries")),
         ]
+    }
+
+    /// #s272: the inbox key the relayed messages are signed with — the format's test key, 32
+    /// zero bytes, 0600 as aries-inbox makes it — and the `uploads/` beside it, where aries-inbox
+    /// saves a message's pictures (a picture line names a file only there), returned.
+    pub fn aries_key(&self) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = self.root.join("aries");
+        std::fs::create_dir_all(dir.join("uploads")).unwrap();
+        let key = dir.join("inbox-key");
+        std::fs::write(&key, [0u8; 32]).unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        dir.join("uploads")
     }
 
     /// A Claude session `sid` under the project slug `-r` (the builders' cwd), with `jsonl`.
@@ -1792,7 +1807,12 @@ pub fn launch_within(
         ));
     });
     match rx.recv_timeout(patience) {
-        Ok(Ok(browser)) => Ok(browser),
+        Ok(Ok(browser)) => {
+            if let Some(pid) = browser.get_process_id() {
+                profiles().lock().unwrap().insert(pid, profile);
+            }
+            Ok(browser)
+        }
         Ok(Err(e)) => Err(format!("chrome did not launch: {e}")),
         Err(_) => Err(format!(
             "chrome printed no DevTools address in {:.0}s; killed its {} process(es) (load {})",
@@ -1844,11 +1864,133 @@ fn browser_profile() -> PathBuf {
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).unwrap();
+    give_downloads_a_home(&dir);
     case_root(&dir);
     dir
 }
 
 const BROWSER_PROFILE_MARK: &str = "cr-browser-chrome-";
+
+/// The folder inside a profile its browser saves downloads to.
+const DOWNLOADS: &str = "downloads";
+
+/// Point the profile's downloads at a folder inside it (#s254), before the browser starts. A fresh
+/// profile saves to the user's own `~/Downloads`, and headless Chrome is no exception: every suite
+/// run left a 9 MB `tour (N).mp4` there (the #374 film, which a case really downloads) and a
+/// `.crdownload` stub, 87 and 81 of them before anyone noticed. The profile's preference is read
+/// at launch, so it covers every tab of the browser however the case opens it, and the folder goes
+/// with the profile, which is a case root.
+fn give_downloads_a_home(profile: &Path) {
+    let downloads = profile.join(DOWNLOADS);
+    std::fs::create_dir_all(&downloads).unwrap();
+    std::fs::create_dir_all(profile.join("Default")).unwrap();
+    let prefs = serde_json::json!({
+        "download": { "default_directory": downloads, "prompt_for_download": false, "directory_upgrade": true },
+        "savefile": { "default_directory": downloads },
+    });
+    std::fs::write(
+        profile.join("Default").join("Preferences"),
+        prefs.to_string(),
+    )
+    .unwrap();
+}
+
+/// Each launched browser's profile, by the browser's pid.
+fn profiles() -> &'static std::sync::Mutex<std::collections::HashMap<u32, PathBuf>> {
+    static PROFILES: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<u32, PathBuf>>,
+    > = std::sync::OnceLock::new();
+    PROFILES.get_or_init(Default::default)
+}
+
+/// Where `browser` saves its downloads: the folder inside its own profile.
+pub fn downloads(browser: &headless_chrome::Browser) -> PathBuf {
+    let pid = browser
+        .get_process_id()
+        .expect("a browser this harness launched");
+    profiles()
+        .lock()
+        .unwrap()
+        .get(&pid)
+        .expect("a browser this harness launched")
+        .join(DOWNLOADS)
+}
+
+/// Wait until `browser` has saved `name` whole — the file there and no `.crdownload` beside it —
+/// and answer its path.
+pub fn until_downloaded(
+    browser: &headless_chrome::Browser,
+    name: &str,
+    timeout: Duration,
+) -> PathBuf {
+    let dir = downloads(browser);
+    let end = Instant::now() + timeout;
+    loop {
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if names.iter().any(|n| n == name) && !names.iter().any(|n| n.ends_with(".crdownload")) {
+            return dir.join(name);
+        }
+        assert!(
+            Instant::now() < end,
+            "{name} never finished downloading into {}: {names:?}",
+            dir.display()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The developer's `~/Downloads` by name, to show a case saved nothing there (#s254).
+pub struct HomeDownloads(Option<std::collections::BTreeSet<String>>);
+
+impl HomeDownloads {
+    fn list() -> Option<std::collections::BTreeSet<String>> {
+        let dir = PathBuf::from(std::env::var_os("HOME")?).join("Downloads");
+        match std::fs::read_dir(&dir) {
+            Ok(entries) => Some(
+                entries
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect(),
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Default::default()),
+            Err(e) => {
+                eprintln!(
+                    "harness: cannot read {} ({e}); not checking that it gains nothing",
+                    dir.display()
+                );
+                None
+            }
+        }
+    }
+
+    pub fn now() -> Self {
+        Self(Self::list())
+    }
+
+    /// Fail if, since [`HomeDownloads::now`], `~/Downloads` gained a file named like `stem` or
+    /// an in-flight download (`.crdownload`). Only those, so a file the developer downloads
+    /// meanwhile is not taken for the case's.
+    pub fn assert_gained_nothing_like(&self, stem: &str) {
+        let (Some(before), Some(after)) = (&self.0, Self::list()) else {
+            return;
+        };
+        let gained: Vec<&String> = after
+            .difference(before)
+            .filter(|n| n.starts_with(stem) || n.ends_with(".crdownload"))
+            .collect();
+        assert!(
+            gained.is_empty(),
+            "a test browser saved into ~/Downloads: {gained:?}"
+        );
+    }
+}
 
 /// Kill the browsers a previous run left behind, once per process, before the first launch.
 ///
@@ -3213,6 +3355,63 @@ pub fn hold_the_head(tab: &headless_chrome::Tab) {
         run_immediately: None,
     })
     .expect("the head is held");
+}
+
+/// #s277: queue the head's reads of a records-by-turn open (`?windowed=1`): every `/records` read below the tail's own offset (the first one the page
+/// makes) waits until `window.__release(n)`; `window.__answer409 = n` answers the next `n` released
+/// reads with a stale epoch. With `hold_index`, the turn index waits too, until
+/// `window.__releaseIndex()`. `window.__readLog` lists every head read's offset, in order. With
+/// `window.__holdSearch` set, each search on the server (#s278) waits until `window.__releaseSearch()`.
+pub fn queue_the_head(tab: &headless_chrome::Tab, hold_index: bool) {
+    use headless_chrome::protocol::cdp::Page;
+    let source = r#"(function(){
+      var real = window.fetch;
+      window.__tailFrom = null; window.__heldReads = []; window.__readLog = []; window.__answer409 = 0;
+      window.__holdIndex = HOLD; window.__heldIndex = []; window.__tailPulls = 0;
+      window.__holdSearch = false; window.__heldSearch = [];
+      window.__release = function (n) { var k = n == null ? Infinity : n; while (k-- > 0 && window.__heldReads.length) window.__heldReads.shift().go(); return window.__heldReads.length; };
+      window.__releaseIndex = function () { window.__holdIndex = false; while (window.__heldIndex.length) window.__heldIndex.shift()(); };
+      window.__releaseSearch = function () { window.__holdSearch = false; while (window.__heldSearch.length) window.__heldSearch.shift()(); };
+      window.fetch = function (input, init) {
+        var url = String(input && input.url || input), self = this;
+        if (/\/pull\?/.test(url) && /[?&]tail=/.test(url)) window.__tailPulls++;
+        if (/\/turn-index\?/.test(url) && window.__holdIndex) return new Promise(function (res) { window.__heldIndex.push(function () { res(real.call(self, input, init)); }); });
+        if (/\/search\?/.test(url) && window.__holdSearch) return new Promise(function (res) { window.__heldSearch.push(function () { res(real.call(self, input, init)); }); });
+        if (/\/records\?/.test(url)) {
+          var from = Number(new URL(url, location.href).searchParams.get('from'));
+          if (window.__tailFrom == null) { window.__tailFrom = from; return real.call(self, input, init); }
+          if (from < window.__tailFrom) {
+            window.__readLog.push(from);
+            return new Promise(function (res) { window.__heldReads.push({ from: from, go: function () {
+              if (window.__answer409 > 0) { window.__answer409--; res(new Response('stale epoch', { status: 409 })); }
+              else res(real.call(self, input, init));
+            } }); });
+          }
+        }
+        return real.call(this, input, init);
+      };
+    })();"#
+        .replace("HOLD", if hold_index { "true" } else { "false" });
+    tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+        source,
+        world_name: None,
+        include_command_line_api: None,
+        run_immediately: None,
+    })
+    .expect("the head's reads are queued");
+}
+
+/// Answer every `/turn-index` read with a refusal (#s276), as a server from before the turn index
+/// would: the page then reads the panes from the records it has, as it did before.
+pub fn refuse_the_index(tab: &headless_chrome::Tab) {
+    use headless_chrome::protocol::cdp::Page;
+    tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+        source: r#"(function(){ var real = window.fetch; window.__indexRefused = 0; window.fetch = function(input, init){ var url = String(input && input.url || input); if (/\/turn-index\?/.test(url)) { window.__indexRefused++; return Promise.resolve(new Response("not found", { status: 404 })); } return real.call(this, input, init); }; })();"#.to_string(),
+        world_name: None,
+        include_command_line_api: None,
+        run_immediately: None,
+    })
+    .expect("the index is refused");
 }
 
 /// A finger's TAP at `(x, y)` (#330): Chrome's own synthesized touch tap, so the page sees what a

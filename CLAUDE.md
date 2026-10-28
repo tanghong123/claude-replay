@@ -77,7 +77,15 @@ back with `scrollTo` fights iOS and jitters, so the app is moved back over the s
 (`translateY(visualViewport.pageTop)`) and `--phone-top`/`--phone-bottom` are measured against the
 app's box — iOS reports an `innerHeight` that shrinks as it scrolls, and a `visualViewport.offsetTop`
 equal to the page offset. Held by `a_phone_find_pill_rides_the_keyboard`, which shadows
-`visualViewport.height` and `pageTop`. The transcript's foot is padded by the dock's static height
+`visualViewport.height` and `pageTop`. Held sideways in Safari with its tab bar the keyboard leaves
+about 16px of the page (#s287, measured on iOS 26.4: Safari's bars 110pt of 402, the keyboard with
+its candidate and accessory bars 276), less than the pill, which sits under Safari's bars; the Home
+Screen app keeps 126px, the pill and no line above it. Where no line of the transcript shows between
+the column's top and the pill, Return also puts the keyboard down (`noLineAboveFindPill`), so the hit,
+the count and the steps show; elsewhere the keyboard stays
+(`a_phone_held_sideways_puts_the_keyboard_down_on_return_…`). An Enter that commits an input method's
+composition does not search.
+The transcript's foot is padded by the dock's static height
 (`--phone-dock-h`, never a measured value a keyboard would move under a glide), and the search's
 landing treats the dock as an obstacle. **The compose box is the dock's third mode** (#s39,
 `design/phone-landscape.md` §3.5c, the owner approved the mockup): with write mode on and a writable
@@ -91,11 +99,67 @@ sideways it spans the session's column (`a_phone_writes_from_the_dock_and_keeps_
 **The box says where a message goes in ONE line and stays open after a send** (#s236, Hong: "keep the
 entry dialog open", "too much info", and it said tmux for a herdr pane): `composeTargetLine`
 (`control-store.js`) gives "Types into herdr pane w1:p2", "Types into tmux pane %3" or "Resumes this
-session", the desktop's foot (amber for a live pane) and the phone's note alike; the head is the
-session's name alone, and the reference shell's "Write to this session ·", static "· writes to live
+session", the desktop's caption (amber for a live pane, beside the session's name alone) and the
+phone's note alike, and the reference shell's "Write to this session ·", static "· writes to live
 tmux" and inert "＋" are hidden in `production.css` (the generated files untouched). A send that goes
 empties the field and keeps the box (and, on the desktop, the focus); one that is refused keeps the
-draft; only ✕ closes it.
+draft; only ✕ closes it. **A resume is watched as it starts** (#s247, `control::watch_resume`): the
+agent's stderr is drained and its first 3 s watched (a session it cannot find fails in 0.7 s for
+Claude Code, 2 s for codex, measured), so one that stops is the send's answer, its exit status and
+the end of what it said, where the page used to say "Resuming the session"; one still running is
+left to run and reaped by a thread of its own, its late failure one stderr line (the status, never
+its output); the prompt is never sent twice (`a_resume_that_fails_as_it_starts_tells_the_page_why`,
+a fake `claude` on the monitor's PATH).
+**On a desktop the open box keeps to the session's reading column** (#s245, Hong: it was centred on the
+whole workspace, so with the right pane open it lay over the outline, and stood 169px tall over the
+transcript's end): `placeDeskCompose` (`app.js`) sets its edges from the transcript's text width inside
+its column; it is one caption line (name, target, a pane grant's revoke, ✕; the name gives way first)
+over ONE line of field that grows with the draft, at the box's current width, to a cap (a share of the
+column) and then scrolls; the transcript's end is padded above it (`--compose-room`), a reader following
+the end is kept there (`convergeBottom`) and one scrolled up is not moved, the jump to the end rides
+above it. Native mode lays out its own
+(`a_desktop_compose_box_keeps_to_the_session_column_and_grows_with_its_draft`).
+**A search step knows what covers the transcript's foot** (`searchFloor`, #s248, #s257): the phone's
+dock, an open compose box (native mode's is resident) and native mode's runtime panel above it, each
+while it is drawn, at any width. A match under one is neither counted as already seen nor left there
+by a landing, except at the view's end, where nothing can lift it (a phone's keyboard, a tall
+panel): there it counts as seen, or the steps bounce between the last two hits and never wrap.
+A landing also keeps the match below the turn bar sticking over a desktop's transcript top, drawn
+or faded (`searchCeiling`, #s263): it puts the match a third of the way down the space between the
+bar and the cover, at most 120px down. Measured from the column's top, a cover within 93px of it (a
+short window with the box open) left the match behind the bar. A step's "already seen" keeps the
+column's top: a hit the reader scrolled up behind the bar is behind them, not ahead. Inside a
+process group the landing also keeps the match below the group's head (#s267), which sticks at the
+top once a match deep inside is revealed: a phone held sideways with the keyboard up leaves about
+75px above the find pill, and a third of it put the match behind the 40px head. And the landing never
+puts the match so far down that it crosses the cover: in a short space the third is capped at the
+space less the match's own height.
+A step remembers the hit it landed, and the next step goes on from THAT hit when the current one
+is not in sight, while its record still crosses the view, until the reader moves: a scroll within
+the intent window of input that came after the landing, or a new query (#s259). The jump stamps
+intent itself, and its own scroll used to clear that memory; and a step re-entering from the top
+started at the first hit of the unit there. So where a cover reaches the transcript's top (native
+mode in a short window) every step landed the same hit again, or fell back inside a unit holding
+several. The record's being in view is what catches a move the engine never hears as input (a key
+the browser scrolls with natively, the browser's own find): that reader enters at the hit nearest
+them. Both read RECORDS, not units (#s264): the re-entry starts at the last record row drawn at or
+above the spy's line inside the unit there (`recordIndexAtTop`, the unit's first where none is
+drawn), and the landed hit is in view by its own row (its unit's where the row is not drawn). A
+process unit groups a turn's calls and can
+be thousands of pixels tall, so the unit sent a reader deep inside one back to its first hit, and
+kept going on from a hit they had scrolled away from inside it. A filter's landing reads the same
+place. A step goes from record to record: a Codex unit holds a record per command, while Claude's
+consecutive Bash, Read and thinking are ONE act record (each call a sub-row under the record's own
+row; Edit, Write and Skill stand alone), whose hits are one match.
+The cases are `a_desktop_search_step_never_leaves_a_match_under_the_compose_box`,
+`a_desktop_search_first_step_lands_on_a_first_hit_under_the_compose_box`,
+`a_phone_search_with_the_keyboard_up_wraps_past_a_last_hit_under_the_dock`,
+`native_desktop_search_step_never_leaves_a_match_under_the_composer`,
+`native_search_steps_move_on_when_the_composer_covers_the_whole_column`,
+`a_search_step_after_an_unheard_move_enters_at_the_nearest_hit`,
+`a_search_step_in_a_short_space_leaves_the_match_below_the_turn_bar`,
+`a_search_step_deep_inside_a_tall_unit_enters_at_the_record_there` and
+`a_phone_search_held_sideways_lands_a_match_below_its_process_head`.
 **Codex native mode's composer is resident** (the owner): once native mode is
 enabled, its compact composer stays visible on desktop and phone with no close action;
 thread text and image drafts belong to the selected thread. The ordinary writer keeps the
@@ -263,8 +327,10 @@ herdr looked). A wait herdr saw publishes at once, and the row's `stateSource` s
 `derived`. The app shell's session filter (a glyph in the sidebar's head-actions row,
 between Expand every group and the sidebar collapse, opening Active recently / Blocked / Idle /
 Include hidden checkboxes; Active recently and Blocked by default, remembered, never an empty
-set; "Everything" checks the three and leaves Include hidden alone) filters by a COVER of that partition: Active recently is an hour of
-activity or busy now and overlaps Blocked by design (`sessionFilterBuckets`). It replaced the
+set; "Everything" checks the three and leaves Include hidden alone) filters by a COVER of that partition: Active recently is six hours of
+activity or busy now (`RECENT_SECS`; #202 set an hour, and #s253, the owner, "make it 6 hours", after
+an idle session an hour and five minutes old dropped out of view; the checkbox reads "Active in the
+last 6 hours") and overlaps Blocked by design (`sessionFilterBuckets`). It replaced the
 Needs attention and Show Hidden controls.
 
 **Which process a session is linked to** (#269, `index.rs` `link()`) decides liveness AND whether
@@ -312,6 +378,13 @@ send gate does not count a session's own worker as "another active session". A f
 anywhere, and `note_forks_from_argv` is how one joins its #142 family. Diagnose against the
 machine, not the API: `term`/`injectable` describe the process the row was LINKED to, so a false
 link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and `ps -axww` first.
+**The scan's probes are bounded and read paths whole** (#s266, from collab #s298): each `ps` and
+`lsof` gets 15 s (`run_bounded`), after which the scan goes on without that source — `lsof -p` once
+sat 210 s in the kernel on Chromium's network service and the page on "Scanning sessions…" — and
+while one program's abandoned probe still runs no other starts, since a child stuck in the kernel
+cannot die; and `ps` joins argv with spaces, so an absolute first word naming no file is joined
+back until it names one (`exe_path`): ChatGPT's `…/Codex Framework.framework/…/Codex (Service)`
+had read as `codex`, an agent.
 **A session in a herdr pane is sent to through herdr** (#s226, Hong's move from tmux to herdr in
 stages, agentdev-setup-hong#s127; herdr 0.9.5 measured on aries-black by its steward). The agent's own
 environment names the pane (`HERDR_PANE_ID`, like `w1:p2`) and its server (`HERDR_SOCKET_PATH`, which
@@ -361,8 +434,8 @@ method), so the monitor does what a terminal paste does, measured on herdr 0.9.5
 `pane.send_text`) becomes `[Image #N]` in Claude's input, and on Enter an image block in the
 prompt itself, followed by a meta `[Image: source: <path>]` (a path typed plainly stays text, and
 the model can only Read it). The row says `sendsImages` (an injectable herdr pane, so Claude); the
-compose box then offers an attach control (leading the foot on a desktop, inside the field at its
-left on a phone), a strip of what is attached with a ✕ each, and an image pasted into the field.
+compose box then offers an attach control (inside the field at its left, on a desktop as on a
+phone, #s245), a strip of what is attached with a ✕ each, and an image pasted into the field.
 Codex native mode, which shares `#composer` and sends its own images, never shows these
 (`body[data-shared-codex]`). `/api/send?images=1` takes `{"prompt", "images": [data URL…]}` (PNG,
 JPEG, WebP or GIF by their bytes, at most 4 of 4 MiB and 8 MiB in all, Codex native mode's bounds;
@@ -385,7 +458,7 @@ restores a session as `claude --resume <id>`, dropping its start flags, so one s
 static version of mdrev, similar to how agent-monitor depends on crates in claude-replay. Future
 upgrades will be triggered explicitly and manually"). `vendor/mdrev` is a crate holding ONE public
 mdrev release's embedding kit, unmodified (`release/`: `bundle/`, `mdrev-cli.js` + `package.json`,
-`docs/*.md`); its version IS the release's (1.1.61, #s231), `release.sha256` is checked by its tests (never
+`docs/*.md`); its version IS the release's (1.1.65, #s289), `release.sha256` is checked by its tests (never
 hand-edit a vendored file), and its build script embeds `bundle/` as a table. Only `claude-monitor`
 depends on it, and `routes::handler` — the one constructor the monitor goes through — installs it
 into the html crate (`install_mdrev`), so `agent-replay` carries none of it. Nothing installed on
@@ -598,9 +671,14 @@ plain-text response to a client whose `Host` is not the loopback (the phone over
 same test as gzip), `always` masks the desktop too, `off` is the default — and `--mask-secrets`
 masks a `--dump-html`/`--dump-all-html` file. Applied to what is SERVED, never to the transcript
 or the cache, so the desktop and the phone read one cache. The rules are prefix scans (provider
-keys, JWTs, bearer tokens, a private key's body, a URL's password) replacing the secret with `*` of
+keys, JWTs, bearer tokens, a private key's body, a URL's password), each at a word's start — which in
+JSON's raw bytes includes the end of an escape (`\n`, `\\n` in JSON a tool printed, `\uXXXX`), of a
+terminal code (`\u001b[32m`, a progress bar's `\r\u001b[K`, `ESC ( B`, ESC printed as `\033` or `\e`) and
+a diff's `-`, or a key alone on a line went out whole (#s288) — replacing the secret with `*` of
 the SAME length — `/records` range-reads by byte offset, and a JSON string stays one — never
-touching a backslash or the byte after it, nor a `data:` URI or a long base64 run (a pasted image).
+touching an escape (a backslash and the byte after it, or a whole `\uXXXX`: a colour code inside a
+private key's span once read `\u****`, which is not JSON, #s286), nor a `data:` URI or a long base64
+run (a pasted image).
 The cases are `a_phone_over_the_tailnet_sees_secrets_masked_and_the_desktop_does_not` and
 `tests/dump_html_mask.rs`; their fake keys are assembled at run time because CI runs gitleaks over
 every line.
@@ -767,7 +845,8 @@ delivered is offered (`ToolUse::delivered` → `head.files`), not only the first
   from the page, put the JSON under `tests/fixtures/history/` (kinds, heights, indices, turns and
   timings — `history_fixtures_carry_no_content` refuses a uuid, a path or prose), and write a case
   like `sandbox_walk_classic_replays` (or `sandbox_runaway_classic_live_replays` for a tail that
-  grew while the reader moved: the deltas replay as timed appends).
+  grew while the reader moved: the deltas replay as timed appends; a records-by-turn open, #s277, opens
+  records by turn and lets in a piece of the head per recorded fill: `sandbox_fill_walk_app_replays`).
   **The engine's design as a framework** — the model, its fourteen numbered invariants with what
   holds each today (construction, a timer, or only a case), the seams a page implements, and the
   #196 refactors — is `design/virtual-window-framework.md` (#195); the history that led to it is
@@ -927,6 +1006,46 @@ identically to the prompt, its queued attachment and the queue operation so the 
 holds: a labelled verbatim card on both pages, a `┌ pasted` box in the TUI, `[pasted]` in a turn's
 label. Cases: `another_sessions_message_is_its_own_turn_and_pasted_text_a_fence` (both parse
 paths), the `#s79` contract block, `*_shows_another_sessions_message_as_its_own_turn`.
+
+**Hong's messages relayed into the Aries session are his, and shown so, only when signed** (#s272,
+Hong, 2026-10-26: they all read alike, and text that only looks like one must never pass for his).
+aries-inbox types his DingTalk messages, dashboard replies and card taps into the Aries pane as one
+element, `<aries-inbox v="1" from via kind at id [about to task guess] sig>`, then an optional
+`<reply-to>` line, an optional `<do>` line (Aries' instructions to itself), his words and a closing
+tag; `sig` is HMAC-SHA256 under the Mac's key `~/.local/state/aries/inbox-key`. The contract is
+project-h/aries `docs/inbox-format.md` (aries#s33), and `aries-inbox verify` is its reference
+check. The Claude adapter (`agents/claude/inbox.rs`) takes one as his only when it opens the user
+turn at its first character, its sig verifies, and its id is new to the session; anything else stays
+the text it is. It reads the element as `verify` does, and refuses where `verify` would read two
+ways (an attribute given twice), a sub-agent's record (`isSidechain`) and a queued pickup whose
+`origin` is not a person's. aries-inbox types a bracketed paste, and Claude Code 2.1.310 records a paste of four
+lines or about 800 characters inside `<pasted_content>` (measured in Aries' transcript: 8 of 193
+prompts before v1, and every v1 message is that long), so a turn that is WHOLLY one paste counts from
+the paste's first character (Aries' amendment). The paste also changes some characters (a tab, a
+CR, zero-width ones); aries-inbox writes the text pane-safe before signing, so the recorded bytes are
+the signed bytes and nothing is normalized here. A verified one is a `UserInbox` block, the person's
+turn (the `u:` class, the right-hand bubble, the Turns pane), its words in `text` and the rest in
+`inbox`; its `[pasted image: <path>]` lines naming a file under aries-inbox's own `uploads/` (by a
+plain path) become image attachments after it, offered as a prompt's pasted originals are (a handed
+stamp, #374): only a picture aries-inbox saved, in a verified message, is a file handed over, and any
+other such line (a path he typed or forwarded) is his words. `<reply-to>` and `<do>` are one line
+each, so a quote holding `</reply-to>` stays a quote. The card has no "show as typed": what was
+typed is the element, which the transcript keeps. Most of
+them arrive mid-turn, so the queued pickup is read too. The first-id rule is the fold's
+(`Replayer::inbox_ids`), persisted through the meta stream (`MetaRecord::inbox_ids`) so a resumed
+fold still reads a later copy as text. The fold reads no files: `agent-monitor`'s route handler and
+`agent-replay` install the key's source (`$ARIES_STATE_DIR`, else `~/.local/state/aries`; a key file
+others may write, or not 32 bytes, is refused with one stderr line), and with none installed nothing
+verifies. The verdict is part of the cached fold, which nothing ties to the key: replacing the key
+leaves cards already folded as they were until the cache is cleared or `FOLD_VERSION` moves. Both pages draw his card with the relay's chips (via, kind, issues, a
+relay's agent and task, when sent; `shared/inbox.js`), the words he answers quoted above his, and
+the instructions folded until asked; `--json` keeps `kind: "user"` and adds `inbox`. The fleet
+needs nothing: its tabs are each Mac's own monitor, which holds that Mac's key. Cases:
+`agents::claude::inbox::tests` (samples checked by `aries-inbox verify`, good and bad),
+`a_relayed_message_is_the_persons_turn_once_and_only_where_it_opens_the_turn` (both parse paths),
+`tests/relayed_messages.rs` (every resume point, a later poll) and
+`*_shows_a_relayed_message_as_his_card_and_a_copy_as_text`; the browser harness points
+`ARIES_STATE_DIR` into each case's stores, so no case reads this Mac's key.
 
 **`agent-replay --field-coverage` is the other half** (#363): `--unknown` catches a NEW shape, and
 cannot catch a KNOWN field going empty after a client update — a usage block that stops arriving
@@ -1188,7 +1307,69 @@ The preview pane remeasures the transcript only when it changes the transcript's
 `paneLayoutChanged` in `app.js`): on a phone and below 1180px it is an overlay, and a remeasure there
 only threw every measured height away (`a_phone_reader_who_opens_a_file_and_closes_the_pane_…`).
 While the head is still coming the phone's Turns count is the highest turn NUMBER drawn (#342). The
-classic page never asks for a tail and is unchanged.
+classic page never asks for a tail and is unchanged. **The head comes in ranges** (#s274, Hong on a
+phone over the tailnet: the head climbed to 48% and fell back to 1%, again and again, because one
+`/records` read of it restarted from the top after every drop): `RecordStore.loadHead` reads at most
+`HEAD_PIECE_BYTES` (1 MiB; `?headPiece=` for a case) a range, parses each record as it completes and
+starts the next range at the first record it has not finished, so the progress only climbs. **A
+`/records` reply is always whole records** (`RecordStore::read_records`): an end inside a record is
+carried on to its end and a start inside one is refused (400), because secret masking (#365) reads a
+JSON string's quotes from the first byte of a reply; a reply cut inside a record carried a private
+key's body to the phone unmasked (`a_masked_piece_of_the_record_log_shows_no_part_of_a_secret`). A
+409, a head that does not parse or one whose count differs starts the session over
+(`app_shell_head_cut_mid_transfer_goes_on_from_the_record_it_was_reading`). **The turn index**
+(#s276, `design/slow-links.md` stage 1) is the log's map: a sidecar `records.index` beside
+`records.jsonl`, one JSON line per committed record (its offset and a fingerprint; a turn opener's
+number, kind, label, time, sender and quoted reply; its tool calls by name, nested ones included;
+a compaction's head; the paths it offers with their stamps; its artifacts), read off the RENDERED
+record by the page's own rules (`turn_index.rs`). It grows in `RecordStore::put` and is cut in
+`cut_to`, the one seam every cut of the log goes through; a log from before it, or one that grew
+while it lagged, is indexed from the log at the next read (117 MB in 0.22 s, measured). `/turn-index
+?session=&epoch=&upto=` answers for the records BELOW `upto` exactly, since a turn can straddle the
+head's boundary (409 on a stale epoch, masked and gzipped like `/records`). The page asks for it
+beside the head and uses it only while the head is out: the Turns pane lists every turn and
+compaction (those still coming marked `outline-turn-pending`, a tap on one held until it arrives,
+unless the reader moves first), and the turn count, the tool letters and counts, the artifact
+roster and a link to a file the head offered are the whole session's
+(`app_shell_lists_the_whole_session_before_the_head_lands` reads them held, then landed, and
+compares). Search still reads the records (stage 3). Without the index (a refusal, five failed
+reads) the page reads the tail as before (`a_phone_tail_first_open_counts_the_whole_session`
+refuses it). **Records by turn** (#s277, `design/slow-links.md` §6, Hong's #s279: stage 2) is a
+reader across a network's path (`WINDOWED`: not `revealHere()`; `?windowed=1|0` for a case; the
+desktop keeps stage 1). When the index lands, the card gives way to the units every earlier turn will
+make, keyed as they will be: the index reply carries each record's kind, commentary bit and id
+(`facts`), and the page's own `buildUnits` groups them (`Projection.stub`); a unit owes (`owed`)
+until its last record is here, and is a PLACEHOLDER (`placeholderUnit`, `placeholderAt`), which the
+engine draws at its height in the sums (margins included), never measures and never learns from,
+refitting the mounted ones wherever the applied estimate moves — except a group of steps that reaches
+into the tail (`live`: a tail that starts mid-turn holds no prompt), the live turn's, drawn with what
+has arrived; the landing tells the engine its new key (`renamed`), found by its first record. The store reads the head turn by turn from the index's map
+(`startReads`): a jump's turn first, then what the window shows (`wantWindow`, after every
+transaction), then the rest from the tail backwards, in pieces of `headPiece` whose records must be the
+ones the facts describe (else the session starts over), each waiting until the page takes it
+(`takeFills`). A fill is a rewrite in place of its own units (`Projection.fill`; a records change
+naming its run, `{from, to}`, redraws only that run); one that would redraw a mounted unit at or above
+the reader waits for a still view and no thumb held (D5). A turn tap lands at once on its placeholder;
+a record jump (a task, an agent, an artifact, a link) reads its turn and lands when its unit is whole,
+unless the reader moves first (`jumpOrFetch`, `owedRecordFor`). While the head is out the index answers
+for the records below `upto` and the scans only for those above it (`scanFrom`). The pending card is
+an estimator kind of its own (it used to teach the process mean). A measure the observer delivers late,
+after the reader scrolled into a pad, mounts the window where they are. The cases are
+`tests/records_by_turn.rs` (ports 2770–2779 and 2785–2789, with a shim that queues the head's reads). **Search on
+the server** (#s278, `design/slow-links.md` §7, stage 3): while a records-by-turn head is out, search
+runs on Enter and the server answers for the records below `upto` (`/search?session&epoch&upto&q`,
+the page's structured query — needle, whole words, class mask, resolved tools — never the box's
+grammar, which stays the page's); the page counts the rest and sums (`remoteFound`: text and the
+filter keep an answer each, dropped with the index; "Searching…" until it lands, and after five failed
+asks, a 409 included, "earlier turns not searched"), the filter's matches include records still on
+their way, a step onto an unfetched hit reads its turn and lands on its mark (`landHeldJump`), and a
+step while the answer is out waits for that answer unless the reader moves or starts another search
+(`stepWhenFound`); any search a control starts submits the box as it stands. The server's matcher
+(`html_export/search_match.rs`) is `shared/search.js`'s matching half ported literally, and
+`parity_with_the_page` runs both (node) over the rendering audit's corpus and edge records for 4,000+
+queries; the reply quotes no text, and a client the mask policy covers (#365) is searched over masked
+records (`Request::masked`), or its counts would read a masked secret back. The rest of the slow-link
+work is `design/slow-links.md`.
 
 **`claude-replay`** (root) — the thin assembly crate: clap CLI (`run_viewer`), `jdi/` the
 **`agent-jdi`** binary (unattended-run supervisor; see `src/jdi/DESIGN.md`), and compat

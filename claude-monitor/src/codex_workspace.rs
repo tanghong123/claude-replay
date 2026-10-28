@@ -563,6 +563,7 @@ mod tests {
                 body: b"prompt",
                 authenticated: true,
                 origin_ok: true,
+                masked: false,
             };
             assert_eq!(
                 deny_legacy_codex_write(&request, |id| id == "shared-thread")
@@ -584,6 +585,7 @@ mod tests {
             body,
             authenticated: false,
             origin_ok: true,
+            masked: false,
         };
         assert_eq!(render_route(&request).code, "401 Unauthorized");
         request.authenticated = true;

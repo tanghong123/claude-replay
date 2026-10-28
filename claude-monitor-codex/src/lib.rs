@@ -1975,6 +1975,7 @@ mod tests {
                 body: &[],
                 authenticated,
                 origin_ok,
+                masked: false,
             }
         }
         for (paired, origin, expected) in [
@@ -2069,6 +2070,7 @@ mod tests {
                         body: br#"{"threadId":"t"}"#,
                         authenticated: true,
                         origin_ok: true,
+                        masked: false,
                     })
                     .unwrap()
             });
@@ -2120,6 +2122,7 @@ mod tests {
                 body: b"",
                 authenticated: true,
                 origin_ok: true,
+                masked: false,
             })
             .unwrap();
         assert_eq!(response.code, "503 Service Unavailable");
@@ -2880,6 +2883,7 @@ mod tests {
             body: b"invalid JSON",
             authenticated,
             origin_ok,
+            masked: false,
         };
         assert_eq!(
             gateway
@@ -2944,6 +2948,7 @@ mod tests {
                     body: payload,
                     authenticated: true,
                     origin_ok: true,
+                    masked: false,
                 })
                 .unwrap()
         };
@@ -3877,6 +3882,7 @@ mod tests {
                     body: &[],
                     authenticated: true,
                     origin_ok: true,
+                    masked: false,
                 })
                 .unwrap();
             assert_eq!(response.code, "409 Conflict");
@@ -3966,6 +3972,7 @@ mod tests {
                 body: &[],
                 authenticated: true,
                 origin_ok: true,
+                masked: false,
             })
             .unwrap();
         assert_eq!(reply.code, "409 Conflict");
@@ -4017,6 +4024,7 @@ mod tests {
                         body: &[],
                         authenticated: true,
                         origin_ok: true,
+                        masked: false,
                     })
                     .unwrap()
             })
@@ -4059,6 +4067,7 @@ mod tests {
                 body: &[],
                 authenticated: true,
                 origin_ok: true,
+                masked: false,
             })
             .unwrap();
         assert_eq!(status.code, "200 OK");

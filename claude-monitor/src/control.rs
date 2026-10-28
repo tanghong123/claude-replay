@@ -231,7 +231,10 @@ pub fn passcode_check(
 /// shapes from agent-jdi: Claude resumes the SAME session id (append, not fork) with
 /// `-p`; Codex resumes by id. `--dangerously-skip-permissions` is deliberate (owner
 /// decision): a headless `-p` turn with no TTY would otherwise STALL on the first
-/// permission prompt — so an idle-send is an autonomous agent turn, not a chat.
+/// permission prompt — so an idle-send is an autonomous agent turn, not a chat. The prompt
+/// always follows `--` (#s251, measured on Claude Code 2.1.310 and codex 0.164.0): without it a
+/// prompt that starts with "-" is read as options, and `claude -p "-v please"` printed the
+/// version and exited 0, so the turn never ran and nothing said so.
 pub fn resume_command(
     target: &crate::index::SendTarget,
     prompt: &str,
@@ -244,38 +247,174 @@ pub fn resume_command(
                 target.sid.clone(),
                 "--dangerously-skip-permissions".into(),
                 "-p".into(),
+                "--".into(),
                 prompt.to_string(),
             ],
         )),
-        "codex" => Some((
-            "codex".into(),
-            vec![
-                "exec".into(),
-                "resume".into(),
-                target.sid.clone(),
-                "--dangerously-bypass-approvals-and-sandbox".into(),
-                prompt.to_string(),
-            ],
-        )),
+        "codex" => {
+            // Monitor rows use rollout filename stems. Codex resumes by native UUID;
+            // passing the stem can start a new thread instead of continuing this one.
+            let thread_id = index::trailing_uuid(&target.sid)?;
+            Some((
+                "codex".into(),
+                vec![
+                    "exec".into(),
+                    "resume".into(),
+                    thread_id,
+                    "--dangerously-bypass-approvals-and-sandbox".into(),
+                    "--".into(),
+                    prompt.to_string(),
+                ],
+            ))
+        }
         _ => None,
     }
 }
 
-/// Spawn a resume DETACHED, in the session's cwd, output discarded — the monitor does not
-/// supervise it; the turn's progress shows up as the row going active (its transcript grows).
+/// How long a resume is watched before it is left to run (#s247). Measured on a session the agent
+/// cannot find: Claude Code 2.1.310 exits in 0.7 s, codex 0.164.0 in 1.8–2.0 s. A send that
+/// starts well waits this long for its answer; one that fails says why instead of "Resuming".
+const RESUME_STARTUP_WATCH: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How much of a failed resume's error output reaches the page, from its end.
+const RESUME_ERROR_TAIL: usize = 400;
+
+/// Spawn a resume in the session's cwd and watch it start (#s247): an agent that exits with a
+/// failure within `RESUME_STARTUP_WATCH` is an error carrying the end of what it wrote to
+/// stderr, which the page shows in place of "Resuming the session"; one still running is left to
+/// run, a thread of its own reaping it. The monitor never sends the prompt again, so a resume
+/// whose fate is unknown cannot become two. The turn's progress shows as the row going active.
+///
+/// Refused before anything runs: a Codex row whose key names no thread id, and a Codex prompt
+/// that is just "-", which codex reads as "take the prompt from standard input" even after `--`
+/// (#s251), so the turn would fail with no one to see it.
 pub fn spawn_resume(target: &crate::index::SendTarget, prompt: &str) -> Result<()> {
+    if target.agent.label() == "codex" {
+        if index::trailing_uuid(&target.sid).is_none() {
+            anyhow::bail!(
+                "this Codex session's key ({}) names no thread id, so it cannot be resumed",
+                target.sid
+            );
+        }
+        if prompt == "-" {
+            anyhow::bail!(
+                "Codex reads a prompt of just \"-\" as \"read the prompt from standard input\"; add a word to it"
+            );
+        }
+    }
     let (program, args) = resume_command(target, prompt)
         .ok_or_else(|| anyhow::anyhow!("no resume shape for {}", target.agent.label()))?;
     let mut cmd = std::process::Command::new(program);
-    cmd.args(&args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+    cmd.args(&args);
     if let Some(cwd) = &target.cwd {
         cmd.current_dir(cwd);
     }
-    cmd.spawn().context("spawn the resume")?;
+    watch_resume(cmd, &target.sid, RESUME_STARTUP_WATCH)
+}
+
+/// Run `cmd` with its stderr captured and watch it for `watch` (#s247): `Ok` when it exits
+/// cleanly or is still running at the end, an error naming its exit status and the end of its
+/// stderr when it fails within the watch. stderr is drained by a thread of its own, so a chatty
+/// agent never blocks on a full pipe; a helper the agent leaves behind holding the pipe open is
+/// never waited for past a short grace; and a child still running is reaped when it ends, its
+/// late failure one stderr line here (its status, never its output).
+fn watch_resume(
+    mut cmd: std::process::Command,
+    sid: &str,
+    watch: std::time::Duration,
+) -> Result<()> {
+    use std::io::Read;
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().context("spawn the resume")?;
+    let tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let (drained, drained_rx) = std::sync::mpsc::channel::<()>();
+    if let Some(mut stderr) = child.stderr.take() {
+        let tail = std::sync::Arc::clone(&tail);
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = stderr.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                let mut kept = tail.lock().unwrap();
+                kept.extend_from_slice(&buf[..n]);
+                let over = kept.len().saturating_sub(4 * RESUME_ERROR_TAIL);
+                kept.drain(..over);
+            }
+            let _ = drained.send(());
+        });
+    }
+    let deadline = std::time::Instant::now() + watch;
+    loop {
+        if let Some(status) = child.try_wait().context("watch the resume")? {
+            if status.success() {
+                return Ok(());
+            }
+            let _ = drained_rx.recv_timeout(std::time::Duration::from_millis(200));
+            let said = error_tail(&tail.lock().unwrap());
+            anyhow::bail!(
+                "the resume stopped at once ({status}){}",
+                if said.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {said}")
+                }
+            );
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let sid = sid.to_string();
+    std::thread::spawn(move || {
+        if let Ok(status) = child.wait() {
+            if !status.success() {
+                eprintln!("agent-monitor: the resume of {sid} ended with {status}");
+            }
+        }
+    });
     Ok(())
+}
+
+/// The last words of a failed resume's stderr, as one line: terminal colour codes and other
+/// control characters dropped, blank lines skipped, at most [`RESUME_ERROR_TAIL`] bytes kept
+/// from the end on a character boundary.
+fn error_tail(raw: &[u8]) -> String {
+    let text = String::from_utf8_lossy(raw);
+    let mut clean = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else if c == '\n' || !c.is_control() {
+            clean.push(c);
+        }
+    }
+    let joined = clean
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if joined.len() <= RESUME_ERROR_TAIL {
+        return joined;
+    }
+    let mut start = joined.len() - RESUME_ERROR_TAIL;
+    while !joined.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &joined[start..])
 }
 
 /// Run a tmux subcommand for a target's socket, output discarded, and fail on a non-zero
@@ -2154,5 +2293,110 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&state);
         let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    use std::time::{Duration, Instant};
+
+    fn sh(script: &str) -> std::process::Command {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", script]);
+        cmd
+    }
+
+    /// #s247: an agent that fails as it starts is an error saying why, its colour codes dropped,
+    /// where the page used to say "Resuming the session".
+    #[test]
+    fn a_resume_that_fails_at_once_says_why() {
+        let why = watch_resume(
+            sh("printf '\\033[31mError:\\033[0m thread/resume failed: no rollout found\\n' >&2; exit 1"),
+            "s",
+            Duration::from_secs(3),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(why.contains("exit status: 1"), "{why}");
+        assert!(
+            why.contains("Error: thread/resume failed: no rollout found"),
+            "{why}"
+        );
+        assert!(!why.contains('\u{1b}'), "{why}");
+    }
+
+    /// #s247: a clean exit inside the watch is a send that went, and a child still running at the
+    /// watch's end is left to run without holding the reply back.
+    #[test]
+    fn a_resume_that_starts_is_left_to_run() {
+        assert!(watch_resume(sh("exit 0"), "s", Duration::from_secs(3)).is_ok());
+        let started = Instant::now();
+        assert!(watch_resume(sh("sleep 2"), "s", Duration::from_millis(200)).is_ok());
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// #s247: a resume left to run is reaped when it ends, failure or not: no zombie stays behind.
+    #[test]
+    fn a_resume_left_to_run_is_reaped() {
+        let scratch = std::env::temp_dir().join(format!("cm-resume-reap-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let pidfile = scratch.join("pid");
+        let script = format!("echo $$ > {}; sleep 0.4; exit 3", pidfile.display());
+        assert!(watch_resume(sh(&script), "s", Duration::from_millis(100)).is_ok());
+        let pid = (0..50)
+            .find_map(|_| {
+                std::thread::sleep(Duration::from_millis(20));
+                std::fs::read_to_string(&pidfile)
+                    .ok()
+                    .filter(|p| !p.trim().is_empty())
+            })
+            .expect("the child wrote its pid");
+        let gone = (0..50).any(|_| {
+            std::thread::sleep(Duration::from_millis(50));
+            let out = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", pid.trim()])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().is_empty()
+        });
+        assert!(gone, "pid {} was never reaped", pid.trim());
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    /// #s247: a helper the agent leaves behind holding stderr open must not hold the reply: the
+    /// failure is answered after a short grace with what was written before the exit.
+    #[test]
+    fn a_failed_resume_does_not_wait_for_a_helper_holding_its_stderr() {
+        let started = Instant::now();
+        let why = watch_resume(
+            sh("sleep 3 & echo 'No conversation found' >&2; exit 2"),
+            "s",
+            Duration::from_secs(3),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(why.contains("No conversation found"), "{why}");
+    }
+
+    /// #s247: what of stderr reaches the page is one line, its end kept.
+    #[test]
+    fn a_failed_resumes_error_tail_is_one_short_line() {
+        assert_eq!(
+            error_tail(b"\n  first\n\n\x1b[1msecond\x1b[0m  \n"),
+            "first second"
+        );
+        let long = "x".repeat(RESUME_ERROR_TAIL * 2) + " the end";
+        let tail = error_tail(long.as_bytes());
+        assert!(
+            tail.ends_with(" the end") && tail.starts_with('…'),
+            "{tail}"
+        );
+        assert!(tail.len() <= RESUME_ERROR_TAIL + '…'.len_utf8());
     }
 }

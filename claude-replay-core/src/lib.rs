@@ -24,7 +24,7 @@ pub use adapter::{
     LinePreprocessor, MetricsAccumulator, MetricsCursor, MetricsEvent, MetricsFold,
     PreprocessedLine, SniffClaim, SpawnRoster, StatusLineHook, TranscriptAdapter,
 };
-pub use claude_replay_agents::{claude_discover, codex_discover, qoderwork_discover};
+pub use claude_replay_agents::{claude_discover, claude_inbox, codex_discover, qoderwork_discover};
 pub use claude_replay_engine::{
     coverage, diff, engine, fold, follow, metrics, model, seam, state, summary, unknown,
 };

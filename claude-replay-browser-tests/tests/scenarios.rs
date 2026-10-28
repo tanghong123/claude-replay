@@ -17981,6 +17981,151 @@ fn app_shell_shows_another_sessions_message_as_its_own_turn() {
     scenario_another_sessions_message_is_its_own_turn(&page.tab, Surface::AppShell, &fx);
 }
 
+/// #s272: Hong's messages that aries-inbox types into the Aries pane arrive as one signed
+/// element, recorded as a whole-turn paste. A verified one is HIS card in its own style: what the
+/// relay says of it as chips (via, kind, the issue, the agent and task, when), the words it answers
+/// quoted, his words, his picture offered as a prompt's is, and the relay's instructions folded
+/// until asked. A later copy of the same id is plain text — the paste it is. Written once, run on
+/// both pages.
+fn scenario_a_relayed_message_is_his_card_and_a_copy_is_text(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let (rows, card, plain, picture) = match surface {
+        Surface::Classic => (
+            "document.querySelectorAll('#turnlist .side-item').length",
+            "#stream .uturn.inbox",
+            "#stream .uturn:not(.inbox)",
+            "#stream .amark .aname",
+        ),
+        Surface::AppShell => (
+            "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
+            ".turn.user.inbox",
+            ".turn.user:not(.inbox)",
+            ".turn.user.inbox .prompt-attachment",
+        ),
+    };
+    assert_eq!(
+        eval(tab, rows),
+        fx.turns,
+        "{surface:?}: his message and its copy are each a turn"
+    );
+    let json = |js: String| -> serde_json::Value {
+        serde_json::from_str(eval(tab, &js).as_str().unwrap_or("null"))
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let read = format!(
+        "(function(){{ var c = [...document.querySelectorAll('{card}')]; if (c.length !== 1) return JSON.stringify({{n: c.length}}); c = c[0]; \
+         var t = s => {{ var e = c.querySelector(s); return e ? e.textContent : null; }}; \
+         var b = c.querySelector('.inbox-do-b'); \
+         return JSON.stringify({{ n: 1, head: t('.inbox-h, .inbox-head'), quote: t('.inbox-quote'), words: t('.uturn-md, .prompt-copy-shell'), \
+           doLabel: t('.inbox-do-h'), doShown: !!(b && !b.hidden && b.offsetHeight > 0) }}); }})()"
+    );
+    let got = json(read.clone());
+    assert_eq!(
+        got["n"], 1,
+        "{surface:?}: one card of his, the copy is not one: {got}"
+    );
+    let head = got["head"].as_str().unwrap_or("");
+    for want in [
+        "Hong",
+        "via dashboard",
+        "relay",
+        "A13",
+        "→ skua-HD ?",
+        "skua#s3",
+        "sent ",
+    ] {
+        assert!(
+            head.contains(want),
+            "{surface:?}: the head says {want:?}: {head:?}"
+        );
+    }
+    let quote = got["quote"].as_str().unwrap_or("");
+    assert!(
+        quote.contains("Aries") && quote.contains("the skua build stalls at the link step"),
+        "{surface:?}: the words he answers are quoted: {quote:?}"
+    );
+    let words = got["words"].as_str().unwrap_or("");
+    assert!(
+        words.contains("ship it after the review")
+            && !words.contains("aries-inbox")
+            && !words.contains("pasted image"),
+        "{surface:?}: his words alone: {words:?}"
+    );
+    assert_eq!(
+        got["doLabel"], "Instructions for the agent",
+        "{surface:?}: {got}"
+    );
+    assert_eq!(
+        got["doShown"], false,
+        "{surface:?}: the instructions start folded: {got}"
+    );
+    let pictures = eval(
+        tab,
+        &format!(
+            "JSON.stringify([...document.querySelectorAll('{picture}')].map(e => e.textContent))"
+        ),
+    );
+    assert!(
+        pictures.as_str().unwrap_or("").contains("tern.png"),
+        "{surface:?}: his picture is offered after his words: {pictures}"
+    );
+    let opened = eval(
+        tab,
+        &format!("(function(){{ var b = document.querySelector('{card} .inbox-do-h'); if (!b) return false; b.click(); return true; }})()"),
+    );
+    assert_eq!(opened, true, "{surface:?}: the instructions have a control");
+    settle();
+    let got = json(read);
+    assert_eq!(
+        got["doShown"], true,
+        "{surface:?}: one click opens the instructions: {got}"
+    );
+    let text = eval(tab, &format!("(function(){{ var b = document.querySelector('{card} .inbox-do-b'); return b ? b.textContent : ''; }})()"));
+    assert!(
+        text.as_str()
+            .unwrap_or("")
+            .contains("pass his words on to skua-HD"),
+        "{surface:?}: they say what the relay said: {text}"
+    );
+    let copy = eval(
+        tab,
+        &format!("(function(){{ var u = [...document.querySelectorAll('{plain}')].pop(); return u ? u.textContent : ''; }})()"),
+    );
+    let copy = copy.as_str().unwrap_or("");
+    assert!(
+        copy.contains("<aries-inbox") && copy.contains("dash-1-skua"),
+        "{surface:?}: a later copy of the same id is the text it is: {copy:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_shows_a_relayed_message_as_his_card_and_a_copy_as_text() {
+    let _serial = serial();
+    let fx = inbox_fixture("scenario-inbox-classic");
+    // The classic page's server runs in this process: its key source, as `agent-replay`'s.
+    claude_replay_core::claude_inbox::install_key_source(
+        claude_replay_core::claude_inbox::key_from_state_dir,
+    );
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_relayed_message_is_his_card_and_a_copy_is_text(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_shows_a_relayed_message_as_his_card_and_a_copy_as_text() {
+    let _serial = serial();
+    let fx = inbox_fixture("scenario-inbox-app");
+    let page = open(Surface::AppShell, &fx, 3086);
+    scenario_a_relayed_message_is_his_card_and_a_copy_is_text(&page.tab, Surface::AppShell, &fx);
+}
+
 /// #s83: a message the agent SENT to another session shows the message on its card, with the
 /// client's delivery receipt beneath it as a sentence. The owner found the card showing only the
 /// receipt's JSON (`{"success":true,"message":"…"}`), with the message itself nowhere. Written
@@ -18169,6 +18314,51 @@ fn peer_fixture(name: &str) -> Fixture {
         "message": {"role": "user", "content": format!("Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/s.sock\" from-name=\"skua-HD\" from-mode=\"bypass\">\n{body}\n</cross-session-message>\n\nThis came from another Claude session — not typed by your user.")}
     }));
     transcript += &assistant_at("answer peer: pinned", &now_minus(30));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 14,
+    }
+}
+
+/// Twelve turns, then a relay from Hong signed with the format's test key (a quote, a picture
+/// saved beside the fixture, instructions), as Claude Code records the paste aries-inbox types,
+/// then the same message again — #s272.
+fn inbox_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let picture = stores.aries_key().join("tern.png");
+    std::fs::write(
+        &picture,
+        claude_replay_core::diff::base64_decode(harness::TINY_PNG_B64).unwrap(),
+    )
+    .unwrap();
+    let element = claude_replay_core::claude_inbox::sign_for_test(
+        &[0; 32],
+        &format!(
+            "<aries-inbox v=\"1\" from=\"Hong\" via=\"dashboard\" kind=\"relay\" at=\"{}\" id=\"dash-1-skua\" about=\"A13\" to=\"skua-HD\" task=\"skua#s3\" guess=\"repo\" sig=\"-\">\n\
+             <reply-to from=\"Aries\" at=\"{}\">A13: the skua build stalls at the link step</reply-to>\n\
+             <do>pass his words on to skua-HD as a relay, and log it on the task</do>\n\
+             ship it after the review\n\
+             [pasted image: {}]\n\
+             </aries-inbox>",
+            now_minus(61),
+            now_minus(70),
+            picture.display()
+        ),
+    );
+    let paste =
+        format!("\n\n<pasted_content id=\"608f\">\n{element}\n</pasted_content id=\"608f\">\n");
+    let line = |v: serde_json::Value| format!("{v}\n");
+    let mut transcript = long_session(12, Shape::default());
+    for (at, answer) in [(60, 55), (40, 30)] {
+        transcript += &line(serde_json::json!({
+            "type": "user", "cwd": "/r", "timestamp": now_minus(at), "origin": {"kind": "human"},
+            "message": {"role": "user", "content": paste}
+        }));
+        transcript += &assistant_at("relayed to skua-HD", &now_minus(answer));
+    }
     let path = stores.claude_session(SID, &transcript);
     Fixture {
         base,

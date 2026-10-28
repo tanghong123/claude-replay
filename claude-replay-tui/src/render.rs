@@ -3,7 +3,7 @@
 
 use crate::diff::{diff_row_groups, line_diff, DiffKind, LineOp};
 use crate::highlight::{self, Hl};
-use crate::model::{AssistantPhase, Attachment, Block};
+use crate::model::{AssistantPhase, Attachment, Block, Inbox};
 use crate::present::{
     display_name, edit_summary, file_edit_summary, not_applied, run_changes, spawn_chip,
     thinking_summary, tool_execution_failed, tool_execution_summary, turn_summary, write_content,
@@ -508,6 +508,64 @@ fn peer_lines(from: &str, text: &str, width: usize) -> Vec<Line<'static>> {
     out
 }
 
+/// The head of a relayed message from the person (#s272): who, where from, what kind, what it
+/// is about, a relay's agent and task, and when — the chips a page draws, as one line.
+fn inbox_head(inbox: &Inbox) -> String {
+    let mut parts = vec![inbox.from.clone()];
+    if let Some(v) = &inbox.via {
+        parts.push(format!("via {v}"));
+    }
+    if let Some(k) = &inbox.kind {
+        parts.push(k.clone());
+    }
+    parts.extend(inbox.about.iter().cloned());
+    match (&inbox.to, &inbox.task) {
+        (Some(to), Some(task)) => parts.push(format!("→ {to} {task}")),
+        (Some(to), None) => parts.push(format!("→ {to}")),
+        (None, Some(task)) => parts.push(task.clone()),
+        (None, None) => {}
+    }
+    if let Some(at) = &inbox.at {
+        // `2026-10-26T16:35:20+08:00` → `2026-10-26 16:35`, as the relay wrote it.
+        let at = at.replacen('T', " ", 1);
+        parts.push(at.chars().take(16).collect());
+    }
+    parts.join(" · ")
+}
+
+/// A relayed message from the person (#s272): their `❯` block, headed by what the relay says of
+/// it, then what it replies to behind a rule, and their words; its pictures follow as attachments.
+/// The relay's instructions to the agent are only counted: a page folds them away, and a terminal
+/// block has no fold.
+fn inbox_lines(text: &str, inbox: &Inbox) -> Vec<Line<'static>> {
+    let base = Style::default().fg(theme::user_fg()).bg(theme::user_bg());
+    let mark = base.fg(theme::user_marker());
+    let mut out = vec![Line::from(vec![
+        Span::styled("❯ ", mark),
+        Span::styled(inbox_head(inbox), mark),
+    ])];
+    if let Some(q) = &inbox.reply_to {
+        if let Some(from) = &q.from {
+            out.push(Line::from(Span::styled(format!("  │ {from}:"), mark)));
+        }
+        for l in q.text.lines() {
+            out.push(Line::from(Span::styled(format!("  │ {l}"), mark)));
+        }
+    }
+    for l in text.lines() {
+        out.push(Line::from(Span::styled(format!("  {l}"), base)));
+    }
+    let n = inbox.instructions.lines().count();
+    if n > 0 {
+        let s = if n == 1 { "" } else { "s" };
+        out.push(Line::from(Span::styled(
+            format!("  ⋯ {n} line{s} of instructions to the agent"),
+            mark,
+        )));
+    }
+    out
+}
+
 /// Is `line` the opening fence of a pasted block (#s79: the adapter writes ```` ```pasted ````,
 /// one backtick longer than any run inside)? Returns the fence, which the closing line repeats.
 fn pasted_fence(line: &str) -> Option<&str> {
@@ -603,6 +661,7 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                 }
             }
         }
+        Block::UserInbox { text, inbox } => out.extend(inbox_lines(text, inbox)),
         Block::PeerText { from, text, .. } => out.extend(peer_lines(from, text, width)),
         Block::QueueEvent { text } => {
             // A dim `⧗ queued: …` marker for a mid-turn prompt still in flight (the
@@ -1161,6 +1220,7 @@ fn render_header(b: &Block) -> Line<'static> {
             format!("⧗ queued: {}", text.lines().next().unwrap_or("")),
             Style::default().fg(theme::fold_header()),
         ),
+        Block::UserInbox { text, inbox } => inbox_lines(text, inbox).swap_remove(0),
         Block::PeerText { from, .. } => peer_header(from),
         Block::SubAgent(sa) => agent_header(sa, false),
         Block::AgentDone {
@@ -1226,6 +1286,7 @@ fn body_len(b: &Block) -> usize {
         | Block::UserText(t)
         | Block::UserReply { text: t, .. }
         | Block::QueueEvent { text: t } => t.lines().count().saturating_sub(1),
+        Block::UserInbox { text, inbox } => inbox_lines(text, inbox).len() - 1,
         Block::Attachment(_) => 0, // one-line marker; not foldable
         Block::SubAgent(sa) => {
             let p = if sa.prompt.trim().is_empty() {
