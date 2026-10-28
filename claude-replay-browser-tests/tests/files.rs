@@ -19,7 +19,7 @@ use std::time::Duration;
 
 mod harness;
 use harness::{
-    at, base, chrome_tab, edited_file_at, eval, read_tool_at, serial, tool_result_at, until,
+    at, base, chrome_tab, eval, read_tool_at, restored_file_at, serial, tool_result_at, until,
     user_at, Kind, Monitor, Stores,
 };
 
@@ -62,7 +62,10 @@ fn fixture(name: &str) -> (PathBuf, Stores, PathBuf) {
         jsonl += &tool_result_at(&format!("t{i}"), &ts);
     }
     jsonl += &user_at("and this draft", &at("00:20"));
-    jsonl += &edited_file_at(&repo.join("draft.md").display().to_string(), &at("00:21"));
+    // A file the prompt brought with it (#s296: an `edited_text_file` is the client's notice, not
+    // an attachment, and draws no card).
+    let draft = repo.join("draft.md").display().to_string();
+    jsonl += &restored_file_at(&draft, "draft.md", 1, &at("00:21"));
     let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(SID, &jsonl);
     (base, stores, repo)

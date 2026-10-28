@@ -7626,101 +7626,105 @@ fn app_shell_wide_is_one_click_from_the_header() {
     scenario_wide_is_one_click_from_the_header(&page.tab, Surface::AppShell, &fx);
 }
 
-// ── scenario: an attachment card says WHY the file is there, not just what opens (#171) ──────
+// ── scenario: a file changed on disk is the client's notice, never the person's card (#s296) ──
 
-/// A fixture whose last prompt carries a file the reader had open in their editor. The engine
-/// surfaces it as an `attachment` record right after the user message; both pages hang it off
-/// that prompt. The name deliberately contains no form of "edit", so an assertion looking for
-/// the verb cannot pass on the filename.
-fn fixture_edited_attachment(name: &str, turns: u32) -> Fixture {
+/// A fixture whose last prompt is followed by Claude Code's notice to the model that a file it had
+/// read changed on disk (`edited_text_file`), as Hong's ab-面试 session had after its CLAUDE.md was
+/// rewritten. The name deliberately contains no form of "edit" or "change", so an assertion looking
+/// for the words cannot pass on the filename.
+fn fixture_changed_on_disk(name: &str, turns: u32) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
     let mut jsonl = long_session(turns, Shape::default());
-    jsonl += &harness::user_at("does this read right", "2026-09-08T04:00:00.000Z");
+    jsonl += &harness::user_at("test message, ignore please", "2026-09-08T04:00:00.000Z");
     jsonl += &harness::edited_file_at("/w/notes/crux-on-linux.md", "2026-09-08T04:00:01.000Z");
-    jsonl += &assistant_at("reading it now", "2026-09-08T04:00:05.000Z");
+    jsonl += &assistant_at("Ignored.", "2026-09-08T04:00:05.000Z");
     let path = stores.claude_session(SID, &jsonl);
     Fixture { base, path, turns }
 }
 
-/// #171: the card must name the REASON the file is attached, not only what a click does. The
-/// owner put the two surfaces side by side: the classic page said `edited crux-on-linux.md` —
-/// a verb and a name — and the app shell showed a card with an MD badge, the filename and
-/// "opens in the preview pane", which describes the affordance and leaves the reason unsaid.
-///
-/// The field was there the whole time. `att_kind` holds "edited"; the classic page reads it at
-/// export.js's `.akind`, the shell's OWN renderer-note fallback reads it, and only the prompt
-/// card — the path a previewable file actually takes — dropped it.
-///
-/// The ranking is #166's: what the agent (or the reader) DID outranks what the UI offers. So
-/// the verb sits in the title row beside the name, and the affordance stays one rank below.
-fn scenario_an_attachment_says_why_it_is_there(
+/// #s296 (#171 before it): a record must say WHY a file is named there. #171 read `att_kind:
+/// "edited"` as a file the reader had open in their editor, and gave the prompt's card the verb.
+/// It is not one: it is Claude Code telling the MODEL that a file it had read changed on disk, so
+/// Hong saw "edited CLAUDE.md" under a message he attached nothing to. Both pages now say "changed
+/// on disk" beside the name, on one line. The app shell draws it as a line of its own BELOW the
+/// prompt, from the left (the client speaking), and never as a card inside the person's prompt.
+fn scenario_a_changed_on_disk_notice_says_what_happened(
     tab: &headless_chrome::Tab,
     surface: Surface,
     _fx: &Fixture,
 ) {
     jump_to_end(tab, surface);
     await_tail(tab, surface, "a fresh open to land at the tail");
-    // Classic writes the verb into `.akind` beside `.aname`; the shell into the card's title row.
     let (kind, name) = match surface {
         Surface::Classic => (".amark .akind", ".amark .aname"),
-        Surface::AppShell => (".prompt-file .prompt-file-kind", ".prompt-file strong"),
+        Surface::AppShell => (
+            ".turn.user > .turn-notice",
+            ".turn.user > .turn-notice .turn-notice-file",
+        ),
     };
     until(
         tab,
         &format!("!!document.querySelector('{name}')"),
-        "the attachment to render as a card naming the file",
+        "the notice naming the file",
         Duration::from_secs(20),
-        "document.querySelectorAll('.amark, .prompt-attachment').length + ' attachment cards'",
+        "document.querySelectorAll('.amark, .turn-notice, .prompt-attachment').length + ' attachment marks'",
     );
     let seen = probe(
         tab,
         &format!(
-            "(function(){{ var k = document.querySelector('{kind}'); var n = document.querySelector('{name}');              var kb = k && k.getBoundingClientRect(), nb = n && n.getBoundingClientRect();              return {{ kind: k ? (k.textContent || '').trim() : null,                       width: kb ? kb.width : 0,                       name: n ? (n.textContent || '').trim() : null,                       nameWidth: nb ? nb.width : 0,                       sameLine: !!(kb && nb) && Math.abs(kb.bottom - nb.bottom) < 4 }}; }})()"
+            "(function(){{ var k = document.querySelector('{kind}'); var n = document.querySelector('{name}'); var kb = k && k.getBoundingClientRect(), nb = n && n.getBoundingClientRect(); return {{ kind: k ? (k.textContent || '').trim() : null, name: n ? (n.textContent || '').trim() : null, nameWidth: nb ? nb.width : 0, sameLine: !!(kb && nb) && (nb.top + nb.bottom) / 2 > kb.top && (nb.top + nb.bottom) / 2 < kb.bottom, kindBox: kb ? [Math.round(kb.top), Math.round(kb.bottom)] : null, nameBox: nb ? [Math.round(nb.top), Math.round(nb.bottom)] : null }}; }})()"
         ),
     );
-    assert_eq!(
-        seen["kind"].as_str(),
-        Some("edited"),
-        "{surface:?}: the card must say why the file is there, from att_kind — saw {seen}"
-    );
-    // A `flex: none` label that a cascade collision has collapsed still has text; only its box
-    // says whether the reader can read it (rect-is-not-visibility's cheaper half).
     assert!(
-        seen["width"].as_f64().unwrap_or(0.0) > 0.0,
-        "{surface:?}: the verb must occupy real width, not be collapsed to nothing — saw {seen}"
+        seen["kind"]
+            .as_str()
+            .is_some_and(|k| k.contains("changed on disk")),
+        "{surface:?}: it says what happened to the file — saw {seen}"
     );
     assert_eq!(
         seen["name"].as_str(),
         Some("crux-on-linux.md"),
-        "{surface:?}: and the name stays the thing the reader scans for — saw {seen}"
+        "{surface:?}: and names it — saw {seen}"
     );
-    // The two read as ONE phrase — "edited crux-on-linux.md" — which is the whole point: a verb
-    // stacked above its noun is two facts, a verb beside it is a reason. And the name must keep
-    // most of the room; the verb is `flex: none` precisely so it can never take the name's.
     assert!(
         seen["sameLine"].as_bool().unwrap_or(false)
-            && seen["nameWidth"].as_f64().unwrap_or(0.0) > seen["width"].as_f64().unwrap_or(0.0),
-        "{surface:?}: verb and name must share a line with the name leading it — saw {seen}"
+            && seen["nameWidth"].as_f64().unwrap_or(0.0) > 0.0,
+        "{surface:?}: on one line — saw {seen}"
     );
+    if surface == Surface::AppShell {
+        // Not the person's: no card in the prompt, and the line sits below the bubble, from the
+        // left, as the client's own words do.
+        let layout = probe(
+            tab,
+            "(function(){ var t = document.querySelector('.turn-notice').closest('.turn.user'); var b = t.querySelector('.user-prompt').getBoundingClientRect(), n = t.querySelector('.turn-notice').getBoundingClientRect(), r = t.getBoundingClientRect(); return { cards: t.querySelectorAll('.prompt-attachment').length, below: n.top >= b.bottom - 1, left: n.left - r.left, bubbleLeft: b.left - r.left }; })()",
+        );
+        assert_eq!(layout["cards"], 0, "no card in the prompt — saw {layout}");
+        assert!(
+            layout["below"].as_bool().unwrap_or(false)
+                && layout["left"].as_f64().unwrap_or(99.0) < 2.0
+                && layout["bubbleLeft"].as_f64().unwrap_or(0.0) > 40.0,
+            "the notice is a line below the bubble, from the left — saw {layout}"
+        );
+    }
 }
 
 #[test]
 #[ignore = "needs a local Chrome"]
-fn classic_page_an_attachment_says_why_it_is_there() {
+fn classic_page_a_changed_on_disk_notice_says_what_happened() {
     let _serial = serial();
-    let fx = fixture_edited_attachment("scenario-attkind-classic", 8);
+    let fx = fixture_changed_on_disk("scenario-changed-classic", 8);
     let page = open(Surface::Classic, &fx, 0);
-    scenario_an_attachment_says_why_it_is_there(&page.tab, Surface::Classic, &fx);
+    scenario_a_changed_on_disk_notice_says_what_happened(&page.tab, Surface::Classic, &fx);
 }
 
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
-fn app_shell_an_attachment_says_why_it_is_there() {
+fn app_shell_a_changed_on_disk_notice_says_what_happened() {
     let _serial = serial();
-    let fx = fixture_edited_attachment("scenario-attkind-app", 8);
+    let fx = fixture_changed_on_disk("scenario-changed-app", 8);
     let page = open(Surface::AppShell, &fx, 2925);
-    scenario_an_attachment_says_why_it_is_there(&page.tab, Surface::AppShell, &fx);
+    scenario_a_changed_on_disk_notice_says_what_happened(&page.tab, Surface::AppShell, &fx);
 }
 
 // ── scenario: a converge must not outrank a hand on the wheel (#165) ─────────────────────────

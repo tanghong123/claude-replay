@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
-import { PROMPT_CLAMP_LINES, PROMPT_MIN_HIDDEN, promptExpanderHtml, promptHiddenLines, rawTurnHtml, rendererStartsClosed, changeBadgeHtml, groupImageRuns, imageRunHtml, imageThumbHtml } from "../../claude-monitor/src/codex-ui/components.js";
+import { PROMPT_CLAMP_LINES, PROMPT_MIN_HIDDEN, promptExpanderHtml, promptHiddenLines, rawTurnHtml, rendererStartsClosed, changeBadgeHtml, groupImageRuns, imageRunHtml, imageThumbHtml, isChangedNotice, promptNoticesHtml } from "../../claude-monitor/src/codex-ui/components.js";
 import { attachmentCapability, canReveal, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
 import { costDisplay, reportedCostDisplay } from "../../claude-replay-html/src/html/shared/cost-display.js";
 import { fleetGroups } from "../../claude-replay-html/src/html/shared/fleet.js";
@@ -624,6 +624,30 @@ assert.equal(richProjection.units[0].attachments.length, 1, "adjacent attachment
 assert.equal(richProjection.units[0].to, 1, "the prompt unit owns its attachment record for stable virtualization");
 assert.equal(richProjection.units[1].view.presentation, "proposed_plan");
 assert.equal(richProjection.units[2].views[0].view.interaction.answers[0].label, "Use v2");
+// #s296: Claude Code's notice to the model that a file changed on disk (`att_kind: "edited"`) lands
+// right after a prompt and joins its attachments, but it is never drawn as the person's card: a
+// line of its own naming the file, which still opens it. Hong saw "edited CLAUDE.md" under a
+// message he attached nothing to.
+{
+  const notice = { id: "changed", attachment: { att_kind: "edited", att_name: "CLAUDE.md", att_path: "/h/CLAUDE.md", att_sig: "reveal-signed" } };
+  const real = { id: "real", attachment: { att_kind: "file", att_name: "notes.md", att_path: "/w/notes.md", att_fsig: "file-signed", att_sig: "reveal-signed" } };
+  assert.equal(isChangedNotice(notice), true);
+  assert.equal(isChangedNotice(real), false, "a file the person attached is not a notice");
+  const line = promptNoticesHtml([real, notice]);
+  assert.match(line, /^<div class="turn-notice" role="note"><button class="turn-notice-file" [^>]*data-attachment="changed"[^>]*>CLAUDE\.md<\/button> changed on disk; the agent was shown what changed<\/div>$/, "one line for the notice, naming the file, and nothing for the real attachment");
+  assert.equal(promptNoticesHtml([real]), "", "no notice, no line");
+  const prompt = new Projection();
+  prompt.rebuild([
+    { kind: "user", id: "p", turn: 1, label: "test", body: [{ p: "md", h: "<p>test</p>" }] },
+    { kind: "attachment", id: "changed", head: { att_kind: "edited", att_name: "CLAUDE.md", att_path: "/h/CLAUDE.md" }, body: [] },
+    { kind: "assistant", id: "a", phase: "final", head: {}, body: [{ p: "md", h: "<p>Ignored.</p>" }] }
+  ], 0);
+  assert.equal(prompt.units[0].attachments.length, 1, "the projection still keeps it with its prompt, as the turn index lays the units out");
+  assert.equal(viewRecord({ kind: "attachment", id: "c", head: { att_kind: "edited", att_name: "x.rs" }, body: [] }).name, "changed on disk", "…and inside a group of steps its row says what it is");
+  const componentsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(componentsSrc, /function renderPromptAttachments\(attachments = \[\]\) \{\n  attachments = attachments\.filter\(view => !isChangedNotice\(view\)\);/, "the prompt's cards leave the notice out");
+  assert.equal((componentsSrc.match(/\$\{promptNoticesHtml\(unit\.attachments\)\}<\/div>`;/g) || []).length, 4, "…and every kind of prompt turn draws its notices last");
+}
 const incrementalPrompt = new Projection();
 const promptRecords = [{ kind: "user", id: "late-prompt", turn: 1, body: [{ p: "md", h: "<p>Prompt</p>" }] }];
 incrementalPrompt.rebuild(promptRecords, 0);
@@ -1560,7 +1584,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(css, /\.renderer-title\{color:var\(--faint\);font-weight:400;min-width:0;overflow-wrap:anywhere\}/, "a head's title wraps at any character, so a path cannot outgrow it");
   assert.match(css, /\.renderer-head\{max-width:100%;min-width:0\}/, "…and the head itself refuses to grow past the record it belongs to");
   const viewModelSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-model.js", import.meta.url), "utf8");
-  assert.match(viewModelSrc, /const view = rendererRecord\(record, "attachment", head\.att_kind \|\| "file"\);/, "…and every attachment takes the KIND as its title, not only a pointer (#254 did half of it, #261 the rest)");
+  assert.match(viewModelSrc, /const view = rendererRecord\(record, "attachment", head\.att_kind === "edited" \? "changed on disk" : head\.att_kind \|\| "file"\);/, "…and every attachment takes the KIND as its title, not only a pointer (#254 did half of it, #261 the rest), an `edited` one saying what it is (#s296)");
   assert.match(appSource, /function chainOffsetLimit\(nav\) \{/, "…with the ceiling enforced against the writers the chain cannot see — `scrollIntoView`, a focus ring, a drag");
   // #262: a hit inside a head's one-line target is unreachable — the span is `nowrap` with
   // `overflow-x:hidden`, measured 572px over a 44,782px command, and nothing writes its

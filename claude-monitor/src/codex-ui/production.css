@@ -1780,3 +1780,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .turn.assistant>.body>.renderer-note::before{content:"⎿";flex:none}
 .turn.assistant>.body>.renderer-note p{margin:0;font:inherit}
 .turn.assistant>.body>*:has(+.renderer-note:last-child){margin-bottom:4px}
+
+/* #s296: a file changed on disk that the client told the agent about, drawn after a prompt as a
+   line of its own below the turn, from the left: it is the client speaking, never the person's
+   attachment (`promptNoticesHtml`). The prompt's row wraps to take it. */
+#app .turn.user:has(> .turn-notice){flex-wrap:wrap}
+#app .turn-notice{flex:0 0 100%;order:3;margin:6px 0 0;color:var(--faint);font:12px/1.45 var(--sans);text-align:left}
+#app .turn-notice-file{padding:0;border:0;background:none;color:var(--sub);font:inherit;cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px}
