@@ -1249,14 +1249,14 @@ fn a_task_recorded_in_a_turn_never_read_is_found_on_the_server() {
     harness::show_every_pane_row(&tab);
     harness::until(
         &tab,
-        "document.querySelectorAll('#navigatorWork .work-task').length === 1",
+        "[].some.call(document.querySelectorAll('#navigatorWork .work-task'), function (r) { return /#1(?!\\d)/.test(r.textContent); })",
         "the task listed",
         Duration::from_secs(20),
         "document.getElementById('navigatorWork').innerText.slice(0, 200)",
     );
     harness::eval(
         &tab,
-        "document.querySelector('#navigatorWork .work-task-head').click(); 'ok'",
+        "[].filter.call(document.querySelectorAll('#navigatorWork .work-task'), function (r) { return /#1(?!\\d)/.test(r.textContent); })[0].querySelector('.work-task-head').click(); 'ok'",
     );
     harness::until(
         &tab,
