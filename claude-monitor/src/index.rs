@@ -2551,9 +2551,61 @@ fn argv_says_one_shot(argv: &str) -> bool {
 /// put `-p` in an interactive session's argv, and that session was never linked to its process: no
 /// liveness, no send, no dialog. Without the record (a one-shot writes it only once it is under
 /// way) the argv decides, the safe way: a one-shot read as interactive could be sent to through the
-/// pane it inherited, its starter's.
+/// pane it inherited, its starter's. A Codex process is one when it runs Codex headless
+/// (`codex_headless`), and never for a `-p`, which is Codex's `--profile` (#s326, codex-cli
+/// 0.165.0): `codex -p work` read as a one-shot was never linked to its pane, and a `codex exec`
+/// an agent's Bash starts inherits that agent's pane as a `claude -p` does.
 fn one_shot(p: &Proc) -> bool {
-    !p.cli_launch && argv_says_one_shot(&p.argv)
+    match proc_agent(p) {
+        Some(Agent::CODEX) => codex_headless(&p.argv),
+        _ => !p.cli_launch && argv_says_one_shot(&p.argv),
+    }
+}
+
+/// Codex's global options that take a value as the next word (codex-cli 0.165.0 `--help`).
+const CODEX_VALUE_OPTIONS: &[&str] = &[
+    "-c",
+    "--config",
+    "--enable",
+    "--disable",
+    "--remote",
+    "--remote-auth-token-env",
+    "-i",
+    "--image",
+    "-m",
+    "--model",
+    "--local-provider",
+    "-p",
+    "--profile",
+    "-s",
+    "--sandbox",
+    "-C",
+    "--cd",
+    "--add-dir",
+    "-a",
+    "--ask-for-approval",
+];
+
+/// Whether a Codex argv runs headless: its subcommand, the first word that is neither an option
+/// nor an option's value, is `exec` (alias `e`) or `review` (both "non-interactively", codex-cli
+/// 0.165.0), or the word `exec` stands anywhere. `ps` joins argv with spaces, so an interactive start
+/// prompt that begins with "review" or "e", or holds the word "exec", reads as headless too: the safe
+/// way, which costs that session its pane link and never sends into another agent's pane.
+fn codex_headless(argv: &str) -> bool {
+    let mut toks = argv.split_whitespace().skip(1);
+    let mut subcommand = None;
+    while let Some(t) = toks.next() {
+        if t.starts_with('-') {
+            if CODEX_VALUE_OPTIONS.contains(&t) {
+                toks.next();
+            }
+            continue;
+        }
+        subcommand = Some(t);
+        break;
+    }
+    matches!(subcommand, Some("exec" | "e" | "review"))
+        || argv.split_whitespace().skip(1).any(|t| t == "exec")
 }
 
 /// Read the record Claude Code keeps for each of its processes, `<claude home>/sessions/<pid>.json`
@@ -5210,7 +5262,20 @@ mod tests {
         );
         assert_eq!(l.pid, 103);
         assert_eq!(l.terminal.target(), Some("1234.pts-0.host"));
-        // 102 (codex, no uuid in argv) heuristically matches its own cwd…
+        // 102 is a `codex exec`, Codex's one-shot (#s326): linked above by the transcript it holds
+        // open, it is no candidate for the newest session of its cwd, as a `claude -p` is none.
+        assert!(link(
+            &procs,
+            "zzz",
+            Agent::CODEX,
+            Path::new("/n.jsonl"),
+            Some("/Users/x/code/repo"),
+            DirectoryMatch::Unclaimed(&HashSet::new()),
+            &|_| true,
+        )
+        .is_none());
+        // An interactive codex there, with no uuid in its argv, matches its own cwd heuristically…
+        procs[1].argv = "/opt/homebrew/bin/codex".into();
         let l = link(
             &procs,
             "zzz",
@@ -7269,5 +7334,65 @@ n/Users/x/proj
         );
         assert_eq!(of(706), 0);
         assert_eq!(of(707), 0, "only an agent process owns a session");
+    }
+
+    /// #s326: Codex's `-p` is `--profile`, so `codex -p work` is an interactive launch: it is no
+    /// one-shot, keeps the tmux pane it runs in, and is its directory's candidate. Codex's one-shot
+    /// is `codex exec` (alias `e`), Detached whatever pane it inherited, as `claude -p` stays.
+    #[test]
+    fn a_codex_started_with_a_profile_is_no_one_shot() {
+        let mut procs = parse_ps("700 codex -p work\n701 claude -p fix-it\n");
+        for (argv, shot) in [
+            ("codex exec --json fix-it", true),
+            ("codex -p work exec fix-it", true),
+            ("codex e fix-it", true),
+            // The alias after options that take a value, and with one written `--opt=value`.
+            ("codex -p work e fix-it", true),
+            ("codex -m o3 -C /tmp e fix-it", true),
+            ("codex --config=model=o3 -c sandbox=x e fix-it", true),
+            ("codex -p work review", true),
+            ("codex --search exec resume --last", true),
+            ("codex -p work", false),
+            ("codex --no-alt-screen -m o3", false),
+            ("codex fix the review", false),
+            ("codex resume 5a5a5a5a-0000-4000-8000-000000000700", false),
+        ] {
+            let p = &parse_ps(&format!("900 {argv}\n"))[0];
+            assert_eq!(one_shot(p), shot, "{argv}");
+        }
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/w/harbor\np701\nfcwd\nn/w/petrel\n",
+        );
+        apply_env(
+            &mut procs,
+            "700 codex TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%3\n\
+             701 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%4\n",
+        );
+        assert!(!one_shot(&procs[0]) && one_shot(&procs[1]));
+        assert_eq!(Terminal::of(&procs[0]).kind(), "tmux");
+        let l = link(
+            &procs,
+            "5a5a5a5a-0000-4000-8000-000000000700",
+            Agent::CODEX,
+            Path::new("/c.jsonl"),
+            Some("/w/harbor"),
+            DirectoryMatch::Unclaimed(&HashSet::new()),
+            &|_| true,
+        )
+        .expect("the codex is its directory's process");
+        assert_eq!(l.pid, 700);
+        assert!(l.confirmed);
+        assert_eq!(l.terminal.kind(), "tmux");
+        assert!(link(
+            &procs,
+            "5a5a5a5a-0000-4000-8000-000000000701",
+            Agent::CLAUDE,
+            Path::new("/n.jsonl"),
+            Some("/w/petrel"),
+            DirectoryMatch::Unclaimed(&HashSet::new()),
+            &|_| true,
+        )
+        .is_none_or(|l| l.terminal.kind() == "detached"));
     }
 }

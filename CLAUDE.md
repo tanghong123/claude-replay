@@ -378,7 +378,11 @@ record decides where it exists (`apply_session_files`): Claude Code writes `<cla
 <pid>.json` (the home from the process's `CLAUDE_CONFIG_DIR`, else `~/.claude`) with `entrypoint`
 `cli` for an interactive launch and `sdk-cli` for `claude -p` (measured, 2.1.312; both say `kind:
 interactive`), believed only when it names the pid and began no earlier than the process. A one-shot
-writes it only once under way, so until then the argv decides, the safe way.
+writes it only once under way, so until then the argv decides, the safe way. A Codex process is a
+one-shot when its subcommand (the first word that is neither an option nor an option's value) is
+`exec`, its alias `e` or `review`, or the word `exec` stands anywhere, and never for a `-p`, which
+is its `--profile` (#s326, codex-cli 0.165.0): `codex -p work` read as one was never linked to its
+pane, and a `codex exec` an agent's Bash starts inherits that agent's pane as a `claude -p` does.
 **A headless worker lives in its starter's Agents pane, not in the session list** (#s53, the owner:
 "keep them under agents outline pane, and don't put them on main session list"). Claude Code exports
 its own session id into every Bash command (`CLAUDE_CODE_SESSION_ID`, with
