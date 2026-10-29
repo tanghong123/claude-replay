@@ -617,9 +617,14 @@ fn pane_send_beside_siblings(procs: &[Proc], pid: u32, sid: &str, addr: &PaneAdd
 /// through a pty wrapper (`script -q /dev/null claude`): it inherits the pane's `HERDR_PANE_ID` and
 /// socket, so both processes read as that pane, and herdr's record of the pane then names the
 /// child's session, which `herdr agent get` answers before typing. True when `pid` runs below
-/// another agent process (`Proc::under_agent`), or another interactive agent process (not a helper
-/// or a one-shot, which read no pane) is placed in the same pane of the same server — in any
-/// directory. Never true for a tmux pane, which keeps the one-live-session rule.
+/// another agent process (`Proc::under_agent`), or another interactive Claude process (not a
+/// helper or a one-shot, which read no pane) is placed in the same pane of the same server — in
+/// any directory. Only a Claude sibling counts: herdr's hook is installed for Claude alone, so only
+/// a child `claude` rewrites herdr's record of the pane, and once it has, the outer send is held
+/// by that check before typing. A `codex exec` or a Codex MCP server the outer agent's Bash starts
+/// inherits the pane as well and must not take the outer session's send away while it runs; an
+/// agent kind the monitor cannot place (an extra pattern) still counts. Never true for a tmux pane,
+/// which keeps the one-live-session rule.
 fn herdr_pane_shared(procs: &[Proc], pid: u32, addr: &PaneAddr) -> bool {
     if !matches!(addr, PaneAddr::Herdr { .. }) {
         return false;
@@ -630,6 +635,7 @@ fn herdr_pane_shared(procs: &[Proc], pid: u32, addr: &PaneAddr) -> bool {
         }
         p.herdr_pane.as_deref() == Some(addr.pane())
             && is_agent_exe(&p.exe_base, &p.argv)
+            && serves(p, Agent::CLAUDE)
             && !is_helper(&p.argv)
             && !one_shot(p)
             && Terminal::of(p).pane_addr().as_ref() == Some(addr)
@@ -682,7 +688,8 @@ struct ProcTable<'a> {
     /// Agent processes naming a session by a prefix only (`attach <prefix>`).
     prefixed: Vec<(String, &'a Proc)>,
     /// Agent processes by each transcript they hold open, in process order. `Path` hashes as it
-    /// compares, so this is `holds_transcript`'s lexical equality.
+    /// compares, so this is `holds_transcript`'s lexical equality; the test
+    /// `proc_table_holding_matches_holds_transcript` compares the two.
     holding: HashMap<&'a Path, Vec<&'a Proc>>,
 }
 
@@ -8894,6 +8901,126 @@ n/Users/x/proj
             ));
         }
         std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// The review of #s258: a `codex exec` (or a Codex MCP server) the outer `claude`'s Bash starts
+    /// inherits the herdr pane, but herdr's hook is Claude's alone, so it never rewrites herdr's
+    /// record of the pane: the outer session keeps its send and its compose box while it runs.
+    #[test]
+    fn a_codex_child_in_a_herdr_pane_leaves_the_outer_send() {
+        let scratch = std::env::temp_dir().join(format!("cm-codex-child-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let outer = "11111111-2222-4333-8444-555555555555";
+        let mut procs = parse_ps("700 claude\n900 codex exec --json fix-it\n");
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+        );
+        apply_env(
+            &mut procs,
+            "700 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n\
+             900 codex HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n60 1 herdr\n61 60 zsh\n700 61 claude\n800 700 zsh\n900 800 codex\n",
+        );
+        assert!(!procs[0].under_agent && procs[1].under_agent);
+        assert_eq!(procs[1].tty, None, "a Bash tool's child has no terminal");
+        procs[0].native_session = Identity::Verified(outer.into());
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        st.rows.insert(outer.into(), growth_row("/w/harbor", false));
+        idx.prove_by_growth(&mut st);
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        st.send_links = send_links_of(&facts);
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert!(matches!(
+            pane_send_target(&st, outer),
+            Ok((700, PaneAddr::Herdr { .. }))
+        ));
+        assert_eq!(registry_row(&snapshot, outer)["injectable"], true);
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// The review of #s258: the `under_agent` half of `herdr_pane_shared` on its own. An outer
+    /// Codex in a herdr pane starts an interactive `claude` through a pty wrapper; the outer agent
+    /// is no Claude sibling, so only the child's running below another agent refuses its session,
+    /// whose pane input reaches the Codex.
+    #[test]
+    fn a_claude_below_a_codex_in_a_herdr_pane_takes_no_send() {
+        let scratch = std::env::temp_dir().join(format!("cm-under-codex-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let child = "22222222-2222-4333-8444-555555555555";
+        let mut procs = parse_ps("700 codex\n900 claude\n");
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+        );
+        apply_env(
+            &mut procs,
+            "700 codex HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n\
+             900 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n60 1 herdr\n61 60 zsh\n700 61 codex\n800 700 script\n900 800 claude\n",
+        );
+        assert!(!procs[0].under_agent && procs[1].under_agent);
+        procs[1].native_session = Identity::Verified(child.into());
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        st.rows.insert(child.into(), growth_row("/w/harbor", false));
+        idx.prove_by_growth(&mut st);
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        st.send_links = send_links_of(&facts);
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert_eq!(st.send_links[child].pid, Some(900));
+        assert!(st.send_links[child].confirmed);
+        assert_eq!(
+            pane_send_target(&st, child),
+            Err(SendRefusal::HerdrPaneShared)
+        );
+        assert!(registry_row(&snapshot, child).get("injectable").is_none());
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// `ProcTable::holding` is `holds_transcript` looked up by path: every agent process holding a
+    /// transcript, however its path is spelled, in process order.
+    #[test]
+    fn proc_table_holding_matches_holds_transcript() {
+        let mut procs = parse_ps("701 claude\n702 codex\n703 claude\n704 vim\n");
+        apply_lsof(
+            &mut procs,
+            "p701\nf9\nn/x/proj/a.jsonl\np702\nf9\nn/x//proj/./a.jsonl\nf10\nn/x/proj/b.jsonl\n\
+             p703\nf9\nn/x/proj/b.jsonl\np704\nf9\nn/x/proj/a.jsonl\n",
+        );
+        let table = ProcTable::new(&procs);
+        for path in ["/x/proj/a.jsonl", "/x/proj/b.jsonl", "/x/proj/c.jsonl"] {
+            let path = Path::new(path);
+            let looked_up: Vec<u32> = table.holding(path).map(|p| p.pid).collect();
+            let asked: Vec<u32> = procs
+                .iter()
+                .filter(|p| is_agent_exe(&p.exe_base, &p.argv) && holds_transcript(p, path))
+                .map(|p| p.pid)
+                .collect();
+            assert_eq!(looked_up, asked, "{}", path.display());
+        }
+        assert_eq!(
+            table.holding(Path::new("/x/proj/a.jsonl")).count(),
+            2,
+            "a path spelled two ways is one transcript; vim holds none"
+        );
     }
 
     /// The review of #s258: a growth fence is recorded against the session the argv names even
