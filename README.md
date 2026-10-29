@@ -61,26 +61,33 @@ and the blocked ones.
   agent-process block, each step expandable on its own or all at once. A streaming parser and
   a validated cache let sessions of hundreds of megabytes open in seconds; the cache is the
   monitor's, on the disk of the machine it runs on, so reopening a session, even after a
-  restart, parses only what was written since.
+  restart, parses only what was written since. Read across a network (a phone over the
+  tailnet, say), the page first gets the whole session's list of turns, then reads it turn by
+  turn, those near the screen first, stopping at about 16 MB and reading the rest when you go
+  there.
 - **Fast, precise search.** It searches as you type, across the whole session rather than the
   part on screen: in a 600-turn session of about 8 MB of text, each keystroke updates the
   match count for the whole session in typically about 10 ms (about 20 ms for whole words,
-  measured on an Apple M4 Pro); a session with over about 10 MB of text searches on Enter. A
+  measured on an Apple M4 Pro); a session with over about 10 MB of text searches on Enter, as
+  does one read across a network while its earlier turns are still loading, where the monitor
+  answers for the part not yet loaded. A
   prefix at the start of the box is a filter grammar: `u` your turns, `a` the agent's
   replies, `t` thinking, `o` tools, and the letters combine (`ua:`); `o(…)` narrows the tools
   (`o(B)` is Bash, `o(Bash,Read)` two tools); `w` matches whole words only; a colon ends the
   prefix, as in `w: tag`.
 - **File preview.** A text file a session mentions opens in a preview pane, in the bundled
   mdrev viewer, highlighted by language with numbered lines. On a machine joined to an mdrev
-  service you can add, edit, close and delete your own notes there, while shared review stays
-  in the detached Markdown tab. An HTML page renders as a
+  service you can add, edit, close and delete your own notes there, while shared review with
+  colleagues happens in the detached Markdown tab (↗ in the pane's head), or a phone's Review
+  sheet. An HTML page renders as a
   sandboxed page on a paired monitor, and as text on an unpaired one. Consecutive images form
   one group: click one to open it in the pane, or Open all for the whole group. A finger's
   double-tap zooms in and back to fit; a mouse double-click switches between 1:1 and fit.
 - **Keeps the reading context.** A message from another session gets a turn of its own,
   pasted text carries a label, quoted replies read as quotations, and Mermaid diagrams draw
-  inline. Truncated Bash output is marked and links to the full output; an Artifact edit
-  shows the diff it applied, and a publish lists the files it removed.
+  inline. A reply you cut off mid-stream says so, and a file the agent had read that changed on
+  disk gets a line of its own. Truncated Bash output is marked and links to the full output; an
+  Artifact edit shows the diff it applied, and a publish lists the files it removed.
 - **Phone access.** A phone on your tailnet can read a *paired* monitor (see below). On a
   phone the page is a reader: the session list is a drawer, and the tools float at the foot.
 - **Write mode.** On a paired monitor, and only after you turn it on and grant it, you can
@@ -88,6 +95,12 @@ and the blocked ones.
   herdr pane takes a grant for that pane, and can also require a passcode set only in a
   terminal. A Claude Code session in a herdr pane can also take images: PNG, JPEG, WebP or GIF,
   at most four, each up to 4 MiB and 8 MiB in all.
+- **Answer Claude from the page.** When a Claude Code session in a herdr pane stops on a
+  question, a permission prompt or a plan, the compose button wears an amber dot, and the box
+  shows what Claude asks: tap a choice, tick several and choose Next, or write an answer or
+  feedback on the plan. It takes the same grant as write mode. Choices that change settings
+  ("don't ask again", "switch to auto mode") stay in the terminal, and an answer goes only to
+  the dialog you were shown: if the pane shows another, nothing is typed.
 - **Codex native mode.** Release binaries include it from 1.400.0: on a paired monitor, turn
   on Write and then Codex native to start or continue Codex conversations through a local
   Codex app-server, with text and images, interrupts, approvals and questions
