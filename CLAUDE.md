@@ -1184,10 +1184,12 @@ risk, approves and lands it under the owner's account without asking, once all t
 3. **Current.** main is merged in (or the branch rebased onto it), and the result is still green.
 
 Then approve, land it fast-forward only under the landing lock, post a note on the change naming the
-reviewed commit and the checks, and close its review task with what landed. Requested changes go to
-the author as findings on the change, never to the owner; the owner hears of a disagreement only
-when a second round still has one. A change that cannot land fast-forward gets main merged into its
-branch first, then lands fast-forward: never a server-side merge commit.
+reviewed commit and the checks, and close its review task with what landed. One review task carries
+the change from first review to landing, every task about it tagged `mr-<n>`: see the taskq skill's
+`references/merge-requests.md`. Requested changes go to the author as findings on the change, never
+to the owner; the owner hears of a disagreement only when a second round still has one. A change
+that cannot land fast-forward gets main merged into its branch first, then lands fast-forward: never
+a server-side merge commit.
 
 **Still the owner's.** Review it, then bring it to the owner in one line instead of landing:
 - releases, version numbers and the Homebrew formulas;
