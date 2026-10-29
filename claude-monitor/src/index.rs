@@ -2625,19 +2625,43 @@ fn serves(p: &Proc, agent: Agent) -> bool {
 
 /// Every session named by each process's argv or open transcript. Keep all owners rather
 /// than only the best-hosted link: a second client of one session is already claimed too.
+/// Each process is read once (#s311): its argv names at most one session, found by id or by
+/// its unique prefix, and its open transcripts are looked up by path. Asking every process
+/// about every session, twice a tick, doubled the scan at 4,000 sessions.
 fn explicit_process_owners(
     procs: &[Proc],
     rows: &HashMap<String, Row>,
 ) -> HashMap<u32, HashSet<String>> {
-    let known_sids: Vec<&str> = rows.keys().map(String::as_str).collect();
-    let prefix_unique = |pf: &str| known_sids.iter().filter(|s| s.starts_with(pf)).count() == 1;
+    // `Path` hashes as it compares, so this lookup is `holds_transcript`'s lexical equality.
+    let mut by_transcript: HashMap<&Path, Vec<&String>> = HashMap::new();
+    for (sid, row) in rows {
+        by_transcript
+            .entry(row.path.as_path())
+            .or_default()
+            .push(sid);
+    }
     let mut owners: HashMap<u32, HashSet<String>> = HashMap::new();
     for p in procs.iter().filter(|p| is_agent_exe(&p.exe_base, &p.argv)) {
-        for (sid, row) in rows {
-            if process_names_session(&p.argv, sid, &prefix_unique) || holds_transcript(p, &row.path)
-            {
-                owners.entry(p.pid).or_default().insert(sid.clone());
+        // `process_names_session`, for the one session it can name.
+        let named = match session_ref(&p.argv) {
+            Some(SessionRef::Exact(id)) => rows.get_key_value(&id).map(|(sid, _)| sid),
+            Some(SessionRef::Prefix(prefix)) => {
+                let mut hits = rows.keys().filter(|sid| sid.starts_with(&prefix));
+                match (hits.next(), hits.next()) {
+                    (Some(sid), None) => Some(sid),
+                    _ => None,
+                }
             }
+            None => None,
+        };
+        let held = p
+            .open_jsonl
+            .iter()
+            .filter_map(|path| by_transcript.get(Path::new(path)))
+            .flatten()
+            .copied();
+        for sid in named.into_iter().chain(held) {
+            owners.entry(p.pid).or_default().insert(sid.clone());
         }
     }
     owners
@@ -7186,5 +7210,64 @@ n/Users/x/proj
         .expect("the Codex session links");
         assert_eq!((codex.pid, codex.confirmed), (9807, true));
         assert_eq!(codex.terminal.target(), Some("%2"));
+    }
+
+    /// #s311: the owners map reads each process once, and must say exactly what asking every
+    /// process about every session said: an exact id, a prefix only when one session has it,
+    /// an open transcript under any spelling of its path, and nothing a non-agent names.
+    #[test]
+    fn explicit_owners_read_once_agree_with_asking_every_session() {
+        let one = "11111111-2222-4333-8444-555555555555";
+        let twin_a = "abcdef01-2222-4333-8444-000000000001";
+        let twin_b = "abcdef01-2222-4333-8444-000000000002";
+        let held = "99999999-2222-4333-8444-555555555555";
+        let mut procs = parse_ps(&format!(
+            "701 claude --resume {one}\n\
+             702 claude attach 11111111\n\
+             703 claude attach abcdef01\n\
+             704 claude --session-id 00000000-0000-4000-8000-000000000000\n\
+             705 codex\n\
+             706 claude\n\
+             707 vim {one}\n"
+        ));
+        apply_lsof(
+            &mut procs,
+            "p705\nfcwd\nn/w/harbor\nf12\nn/x//proj/./held.jsonl\np706\nfcwd\nn/w/harbor\nf9\nn/x/proj/other.jsonl\n",
+        );
+        let mut rows = HashMap::new();
+        for (sid, path) in [
+            (one, "/x/proj/one.jsonl"),
+            (twin_a, "/x/proj/a.jsonl"),
+            (twin_b, "/x/proj/b.jsonl"),
+            (held, "/x/proj/held.jsonl"),
+        ] {
+            let mut row = growth_row("/w/harbor", false);
+            row.path = PathBuf::from(path);
+            rows.insert(sid.to_string(), row);
+        }
+        let known: Vec<&str> = rows.keys().map(String::as_str).collect();
+        let prefix_unique = |pf: &str| known.iter().filter(|s| s.starts_with(pf)).count() == 1;
+        let mut asked: HashMap<u32, HashSet<String>> = HashMap::new();
+        for p in procs.iter().filter(|p| is_agent_exe(&p.exe_base, &p.argv)) {
+            for (sid, row) in &rows {
+                if process_names_session(&p.argv, sid, &prefix_unique)
+                    || holds_transcript(p, &row.path)
+                {
+                    asked.entry(p.pid).or_default().insert(sid.clone());
+                }
+            }
+        }
+        let owners = explicit_process_owners(&procs, &rows);
+        assert_eq!(owners, asked);
+        let of = |pid: u32| owners.get(&pid).map(|s| s.len()).unwrap_or(0);
+        assert!(owners[&701].contains(one) && owners[&702].contains(one));
+        assert_eq!(of(703), 0, "a prefix two sessions share names neither");
+        assert_eq!(of(704), 0, "an id no session has names nothing");
+        assert!(
+            owners[&705].contains(held),
+            "a held transcript, however its path is spelled"
+        );
+        assert_eq!(of(706), 0);
+        assert_eq!(of(707), 0, "only an agent process owns a session");
     }
 }
