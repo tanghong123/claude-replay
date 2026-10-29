@@ -1739,8 +1739,10 @@ const ARTIFACT_TYPED_PUBLISH_SHAPE: &[&str] = &[
 /// nothing published or changed), and the card draws that text. `opened` is a boolean the text
 /// states. REVISIT: `opened` arriving false. The card's target is the bare action word ("open"),
 /// and this result's `title` is the only place the artifact is named: a label question, not a
-/// shape one.
-const ARTIFACT_OPEN_SHAPE: &[&str] = &["artifact_id", "opened", "title", "url"];
+/// shape one. Client 2.1.312 adds `owned` as its last key (#s319, one record on this machine,
+/// measured 2026-10-30, the same call input): `{opened, url, artifact_id, title, owned}`, `owned`
+/// true, as in a create, a publish and a read by URL. REVISIT: `owned` arriving false.
+const ARTIFACT_OPEN_SHAPE: &[&str] = &["artifact_id", "opened", "owned", "title", "url"];
 
 /// The whole of an Artifact `read` result (#s181, client 2.1.303, one record, measured 2026-10-19;
 /// the call input is `{action: "read", url, paths}` with 2 paths): `{files_read: {url, title, ver,
@@ -1974,6 +1976,9 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // `files_written` in the publish shape also silences `icon` again, which came back beside it.
     ("files_written", ARTIFACT_PUBLISH_SHAPE),
     ("opened", ARTIFACT_OPEN_SHAPE),
+    // #s319 (client 2.1.312): an open now carries `owned`, true as in a create and a publish.
+    // Known only in this shape; adding it also silences `opened` again, which came back beside it.
+    ("owned", ARTIFACT_OPEN_SHAPE),
     // #s152 (client 2.1.296): a publish into an artifact made from a type. `files_written` is the
     // call input again with a digest per file, `files_removed` the input's null-valued `files`
     // keys, `own_files` and `type_files` the instance's files and the type's, as in a create. Each
@@ -9335,8 +9340,9 @@ mod tests {
         );
     }
 
-    /// #s87: an Artifact `open` result (client 2.1.296) is known whole, and `opened` beside a key
-    /// from outside its shape is reported.
+    /// #s87: an Artifact `open` result (client 2.1.296) is known whole, and so is client 2.1.312's,
+    /// which ends with `owned` (#s319); `opened` and `owned` beside a key from outside the shape
+    /// are reported.
     #[test]
     fn an_artifact_open_result_is_known_in_its_own_shape() {
         let open = serde_json::json!({
@@ -9347,10 +9353,26 @@ mod tests {
             "a whole open result is known: {:?}",
             unknown_tool_result_keys(&open)
         );
+        let owned = serde_json::json!({
+            "opened": true, "url": "https://example.test/artifact/x", "artifact_id": "x",
+            "title": "X", "owned": true
+        });
+        assert!(
+            unknown_tool_result_keys(&owned).is_empty(),
+            "a 2.1.312 open result is known: {:?}",
+            unknown_tool_result_keys(&owned)
+        );
         assert_eq!(
             unknown_tool_result_keys(&serde_json::json!({"opened": true, "stdout": "ok"})),
             vec!["opened"],
             "outside the open shape, opened is reported"
+        );
+        assert_eq!(
+            unknown_tool_result_keys(
+                &serde_json::json!({"opened": true, "owned": true, "stdout": "ok"})
+            ),
+            vec!["opened", "owned"],
+            "outside the open shape, opened and owned are reported"
         );
     }
 
