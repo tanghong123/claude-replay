@@ -302,17 +302,13 @@ fn in_plan_mode(transcript: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// The records that carry the CONVERSATION. One of them after a `continued-in` means the old
-/// session was taken up again; anything else (`cost-state`, `last-prompt`, `custom-title`, …) is
-/// the client's bookkeeping and may follow the move.
-const CONVERSATION_TYPES: &[&str] = &[
-    "user",
-    "assistant",
-    "system",
-    "attachment",
-    "progress",
-    "queue-operation",
-];
+/// The records that take a moved session BACK: a turn's own records. One of them after a
+/// `continued-in` means the old session was taken up again. Anything else may follow the move:
+/// the client's bookkeeping (`cost-state`, `last-prompt`, `custom-title`, …) and the move's own
+/// `queue-operation` enqueues. One transcript reviewed for #s294 had five enqueues 33–41 ms after
+/// its `continued-in` and nothing more, and the new session opened a second later holding that
+/// same queue. Every real take-back seen there went on with a `user` record.
+const CONVERSATION_TYPES: &[&str] = &["user", "assistant"];
 
 /// The session a Claude conversation was MOVED to (#s294). Claude Code 2.1.312 moves an
 /// interactive session into a daemon background job under a new id ("parking" it, measured: an
@@ -841,6 +837,20 @@ mod tests {
             )),
             want,
             "bookkeeping and a line being written may follow the move"
+        );
+        // The move's own queue: enqueues a few ms after it, the new session opening with them.
+        let enqueue = |n: u32| {
+            format!(
+                r#"{{"type":"queue-operation","operation":"enqueue","timestamp":"2026-10-28T02:14:53.26{n}Z","sessionId":"{a}","content":"q{n}"}}"#
+            )
+        };
+        let queued: Vec<String> = (0..5).map(enqueue).collect();
+        let mut lines: Vec<&str> = vec![&user, &moved];
+        lines.extend(queued.iter().map(String::as_str));
+        assert_eq!(
+            continued_in(&write("queued.jsonl", &lines)),
+            want,
+            "the move's own enqueues do not take the session back"
         );
         assert_eq!(
             continued_in(&write("again.jsonl", &[&moved, &user])),

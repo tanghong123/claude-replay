@@ -714,7 +714,9 @@ pub fn herdr_input_images(screen: &str) -> usize {
 /// It does when it IS `sid`, or one of the sessions whose conversation was moved into `sid`
 /// (#s294, `continues`): the hook reports a session only when one starts, and a move starts none,
 /// so herdr keeps the id the move left. Nothing else counts.
-fn herdr_runs(reported: Option<&str>, sid: &str, continues: &[String]) -> bool {
+/// `continues` is filled only for a pane process whose own argv and record say the move happened
+/// while it ran (`index::Moves::continues`); every other link passes it empty.
+pub(crate) fn herdr_runs(reported: Option<&str>, sid: &str, continues: &[String]) -> bool {
     reported.is_some_and(|r| r == sid || continues.iter().any(|c| c == r))
 }
 
@@ -730,19 +732,7 @@ pub fn herdr_send_verdict(
     input: InputLine,
     client_wait: bool,
 ) -> Result<(), String> {
-    match agent.session.as_deref() {
-        None => {
-            return Err(format!(
-                "herdr does not say which session runs in pane {pane}: run `herdr integration install claude` on this machine, then send again"
-            ))
-        }
-        Some(other) if !herdr_runs(Some(other), sid, continues) => {
-            return Err(format!(
-                "pane {pane} runs another session ({other}), not this one: nothing was typed"
-            ))
-        }
-        Some(_) => {}
-    }
+    herdr_names(sid, continues, pane, agent)?;
     if agent.status.as_deref() == Some("blocked") || client_wait {
         return Err(
             "a question or a permission prompt is open in the session: answer it there first"
@@ -761,14 +751,20 @@ pub fn herdr_send_verdict(
     }
 }
 
-/// herdr's own hook says the pane runs THIS session (#s226): the first check of a send, and of
-/// reading or answering a dialog (#s298).
-fn herdr_names(sid: &str, pane: &str, agent: &HerdrAgent) -> Result<(), String> {
+/// herdr's own hook says the pane runs THIS session (#s226), or a session whose conversation was
+/// moved into it on the way to the pane's process (#s294, [`herdr_runs`]): the first check of a
+/// send, and of reading or answering a dialog (#s298).
+fn herdr_names(
+    sid: &str,
+    continues: &[String],
+    pane: &str,
+    agent: &HerdrAgent,
+) -> Result<(), String> {
     match agent.session.as_deref() {
         None => Err(format!(
             "herdr does not say which session runs in pane {pane}: run `herdr integration install claude` on this machine, then send again"
         )),
-        Some(other) if other != sid => Err(format!(
+        Some(other) if !herdr_runs(Some(other), sid, continues) => Err(format!(
             "pane {pane} runs another session ({other}), not this one: nothing was typed"
         )),
         Some(_) => Ok(()),
@@ -1308,12 +1304,13 @@ fn herdr_dialog(
     socket: &std::path::Path,
     pane: &str,
     sid: &str,
+    continues: &[String],
     client_wait: bool,
 ) -> Result<Shown, HerdrSendError> {
     let agent = parse_herdr_agent(
         &herdr_cli(program, socket, &["agent", "get", pane]).map_err(HerdrSendError::Failed)?,
     );
-    herdr_names(sid, pane, &agent).map_err(HerdrSendError::Held)?;
+    herdr_names(sid, continues, pane, &agent).map_err(HerdrSendError::Held)?;
     if agent.status.as_deref() != Some("blocked") && !client_wait {
         return Ok(Shown::Nothing);
     }
@@ -1382,6 +1379,7 @@ pub fn herdr_answer(
     socket: Option<&str>,
     pane: &str,
     sid: &str,
+    continues: &[String],
     client_wait: bool,
     fingerprint: &str,
     answer: &dialog::Answer,
@@ -1391,17 +1389,20 @@ pub fn herdr_answer(
         socket,
         pane,
         sid,
+        continues,
         client_wait,
         fingerprint,
         answer,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn herdr_answer_with(
     program: &std::ffi::OsStr,
     socket: Option<&str>,
     pane: &str,
     sid: &str,
+    continues: &[String],
     client_wait: bool,
     fingerprint: &str,
     answer: &dialog::Answer,
@@ -1413,7 +1414,8 @@ fn herdr_answer_with(
             "another answer is being typed into this session: nothing more was typed".into(),
         ));
     };
-    let Shown::Dialog(shown) = herdr_dialog(program, &socket, pane, sid, client_wait)? else {
+    let Shown::Dialog(shown) = herdr_dialog(program, &socket, pane, sid, continues, client_wait)?
+    else {
         return Err(HerdrSendError::Held(
             "no dialog the monitor can read is open in the session now: nothing was typed".into(),
         ));
@@ -1783,8 +1785,16 @@ pub fn dialog_route(idx: &index::Index, req: &claude_replay_html::Request) -> Ht
     let index::PaneAddr::Herdr { socket, pane } = &target.addr else {
         unreachable!("dialog_pane answers a herdr pane only")
     };
-    let read = herdr_pane_socket(socket.as_deref(), pane)
-        .and_then(|socket| herdr_dialog(&herdr_program(), &socket, pane, &sid, target.client_wait));
+    let read = herdr_pane_socket(socket.as_deref(), pane).and_then(|socket| {
+        herdr_dialog(
+            &herdr_program(),
+            &socket,
+            pane,
+            &sid,
+            &target.continues,
+            target.client_wait,
+        )
+    });
     let resp = match read {
         Ok(Shown::Dialog(d)) => {
             let plan = d.plan_file.as_deref().and_then(|f| plan_text(&sid, f));
@@ -1825,6 +1835,7 @@ pub fn answer_route(idx: &index::Index, req: &claude_replay_html::Request) -> Ht
         socket.as_deref(),
         pane,
         &sid,
+        &target.continues,
         target.client_wait,
         &fingerprint,
         &answer,
@@ -2342,10 +2353,12 @@ mod tests {
         );
     }
 
-    /// #s294 with #s298: a move permits an ordinary send through herdr's stale hook, including
-    /// the check before Enter. Reading or answering a dialog still requires the exact session.
+    /// #s294 with #s298: where the scan found the conversation moved into SID on the way to the
+    /// pane's process (`continues`), herdr's stale hook naming the old id lets a send through, the
+    /// check before Enter included, and lets the dialog be read and answered. With no `continues`,
+    /// the old id is another session for each of them.
     #[test]
-    fn a_moved_session_sends_without_relaxing_dialog_identity() {
+    fn a_moved_session_sends_reads_and_answers_through_herdrs_old_id() {
         let w = HerdrWorld::new("m");
         let old = r#"{"agent_status":"idle","agent_session":{"value":"old-session"}}"#;
         w.set(old, &screen("\u{276f}\u{a0}"));
@@ -2368,18 +2381,53 @@ mod tests {
         );
         assert_eq!(w.calls().matches("pane send-keys w1:p2 enter").count(), 1);
 
-        let reads = w.calls().matches("pane read w1:p2").count();
-        w.set(
-            r#"{"agent_status":"blocked","agent_session":{"value":"old-session"}}"#,
-            include_str!("../tests/fixtures/dialogs/question-single.txt"),
+        let unmoved = herdr_send_with(
+            w.fake.as_os_str(),
+            w.socket.to_str(),
+            "w1:p2",
+            SID,
+            &[],
+            false,
+            "hello",
+            &no_images(),
         );
-        let dialog = herdr_dialog(w.fake.as_os_str(), &w.socket, "w1:p2", SID, true);
         assert!(
-            matches!(dialog, Err(HerdrSendError::Held(ref why)) if why.contains("another session")),
-            "dialog access must keep its exact-session check"
+            matches!(unmoved, Err(HerdrSendError::Held(ref why)) if why.contains("another session")),
+            "{}",
+            shown(&unmoved)
         );
-        assert_eq!(w.calls().matches("pane read w1:p2").count(), reads);
         assert_eq!(w.calls().matches("pane send-keys w1:p2 enter").count(), 1);
+
+        let continues = ["old-session".to_string()];
+        let old_blocked = r#"{"agent_status":"blocked","agent_session":{"value":"old-session"}}"#;
+        let a = HerdrWorld::new("ma");
+        a.set(old_blocked, &dialog_fixture("permission-bash.txt"));
+        let read = |continues: &[String]| {
+            herdr_dialog(
+                a.fake.as_os_str(),
+                &a.socket,
+                "w1:p2",
+                SID,
+                continues,
+                false,
+            )
+        };
+        let Ok(Shown::Dialog(d)) = read(&continues) else {
+            panic!("the moved session's dialog is read through herdr's old id");
+        };
+        assert!(
+            matches!(read(&[]), Err(HerdrSendError::Held(ref why)) if why.contains("another session")),
+            "without the move the old id is another session"
+        );
+        let refused = a.answer_as(&[], &d.fingerprint(), dialog::Answer::Choice(1));
+        assert!(
+            matches!(refused, Err(HerdrSendError::Held(ref why)) if why.contains("another session"))
+        );
+        assert!(a.listener.borrow().is_some(), "nothing reached the socket");
+        let server = a.serve((old_blocked.into(), screen("\u{276f}\u{a0}")));
+        let answered = a.answer_as(&continues, &d.fingerprint(), dialog::Answer::Choice(1));
+        assert!(answered.is_ok(), "{}", shown(&answered));
+        assert_eq!(typed(&[server.join().unwrap()]), ["1"]);
     }
 
     fn data_url(kind: &str, bytes: &[u8]) -> String {
@@ -2975,18 +3023,35 @@ mod tests {
 
     impl HerdrWorld {
         fn answer(&self, fingerprint: &str, answer: dialog::Answer) -> Result<(), HerdrSendError> {
+            self.answer_as(&[], fingerprint, answer)
+        }
+        /// An answer for SID where the scan found `continues` moved into it (#s294).
+        fn answer_as(
+            &self,
+            continues: &[String],
+            fingerprint: &str,
+            answer: dialog::Answer,
+        ) -> Result<(), HerdrSendError> {
             herdr_answer_with(
                 self.fake.as_os_str(),
                 self.socket.to_str(),
                 "w1:p2",
                 SID,
+                continues,
                 false,
                 fingerprint,
                 &answer,
             )
         }
         fn shown(&self) -> Option<dialog::Dialog> {
-            match herdr_dialog(self.fake.as_os_str(), &self.socket, "w1:p2", SID, false) {
+            match herdr_dialog(
+                self.fake.as_os_str(),
+                &self.socket,
+                "w1:p2",
+                SID,
+                &[],
+                false,
+            ) {
                 Ok(Shown::Dialog(d)) => Some(d),
                 Ok(_) => None,
                 Err(_) => panic!("the pane could not be read"),

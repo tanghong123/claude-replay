@@ -324,31 +324,6 @@ impl State {
             .or_else(|| row.one_shot.then_some(row.spawned_by.as_deref()).flatten())?;
         (parent != sid && self.rows.contains_key(parent)).then_some(parent)
     }
-
-    /// The sessions whose conversation was moved into `sid` (#s294), directly or along a chain
-    /// of moves — what herdr may still say a pane runs, since its Claude hook reports a session
-    /// only when one STARTS and a move starts none.
-    fn moved_into(&self, sid: &str) -> Vec<String> {
-        let moves = Moves::of(&self.rows);
-        let mut out: Vec<String> = moves
-            .0
-            .keys()
-            .filter(|from| {
-                let mut cur: &str = from;
-                for _ in 0..8 {
-                    match moves.0.get(cur) {
-                        Some(&(next, _)) if next == sid => return true,
-                        Some(&(next, _)) => cur = next,
-                        None => return false,
-                    }
-                }
-                false
-            })
-            .map(|from| from.to_string())
-            .collect();
-        out.sort();
-        out
-    }
 }
 
 /// One session's attributed link, banked from the scan for the send routes (#133).
@@ -362,6 +337,9 @@ struct SendLink {
     confirmed: bool,
     /// The process names the session exactly in its own argv (#s234).
     named: bool,
+    /// The sessions moved into this one on the way to the linked process (#s294,
+    /// `Moves::continues`).
+    continues: Vec<String>,
 }
 
 /// Per-session scan state, persistent across cycles — the "previous scan" half of §5's diff.
@@ -538,6 +516,23 @@ struct Proc {
     /// The process's own record, `<claude home>/sessions/<pid>.json`, says it is an interactive
     /// launch (`entrypoint: cli`), whatever its argv reads like (#s301, `apply_session_files`).
     cli_launch: bool,
+    /// The process's own record says its conversation was PARKED in a background job (#s294,
+    /// `apply_session_files`): the session the record names (the one the process started on) and
+    /// the job's id, the first eight characters of the session the conversation moved to.
+    parked: Option<Parked>,
+}
+
+/// What a process's own record says about a move (#s294). Measured on Claude Code 2.1.312, on
+/// both moves found on this machine: the pane process's `sessions/<pid>.json` keeps the OLD
+/// `sessionId` and gains `parkedJobId`, the job's short id (`jobs/<id>/state.json` names the new
+/// session, which starts with it). The job's engine writes a record of its own that names the new
+/// session (`kind: bg`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Parked {
+    /// The record's `sessionId`: the session the process was started on.
+    session: String,
+    /// `parkedJobId`.
+    job: String,
 }
 
 /// A terminal multiplexer that hosts panes (#s226).
@@ -875,7 +870,7 @@ impl Index {
             sid: sid.to_string(),
             pid,
             named: link.named,
-            continues: st.moved_into(sid),
+            continues: link.continues.clone(),
             addr,
             client_wait: claude_replay_core::adapter(agent)
                 .client_wait(&path)
@@ -958,7 +953,17 @@ impl Index {
                 if row.tree_mtime != now_mtime || row.transcript_len != now_len {
                     let prev_event = row.last_event;
                     row.last_event = last_event_ts(&row.path).or(row.last_event);
-                    row.continued_in = discover::continued_in(row.agent, &row.path);
+                    let written = std::fs::metadata(&row.path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|m| m.duration_since(SystemTime::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs());
+                    let now_secs = SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    row.continued_in = discover::continued_in(row.agent, &row.path)
+                        .filter(|c| move_plausible(c.at, now_secs, written));
                     if !row.start_probed {
                         row.first_event = first_event_ts(&row.path);
                         row.brief = head_one_shot(&row.path);
@@ -1119,6 +1124,7 @@ impl Index {
                         pane: f.pane.clone(),
                         confirmed: f.confirmed,
                         named: f.named,
+                        continues: f.continues.clone(),
                     },
                 )
             })
@@ -1221,8 +1227,24 @@ impl Index {
     }
 
     fn prove_by_growth(&self, st: &mut State) {
+        // #s294: a session whose conversation was moved is finished, whatever its tail grew by as
+        // the client moved it (the move's own queue enqueues): it is no grower, and an older proof
+        // of it is dropped — or its proof outranks the move and the old session keeps the pane.
+        let moved: HashSet<String> = Moves::of(&st.rows)
+            .0
+            .keys()
+            .map(|s| s.to_string())
+            .collect();
+        for sid in &moved {
+            if let Some(row) = st.rows.get_mut(sid) {
+                row.proved_pid = None;
+            }
+        }
         let mut growers: HashMap<String, Vec<String>> = HashMap::new();
         for (sid, row) in &st.rows {
+            if moved.contains(sid) {
+                continue;
+            }
             // #s89: a ONE-SHOT session is written by its own `claude -p`, which is never a
             // candidate below, so its growth says nothing about the interactive process sharing
             // its directory. Counted as a grower it was the lone one while the person's session sat
@@ -1494,7 +1516,7 @@ impl Index {
                     })
                 })
                 .or_else(|| {
-                    link_moved(
+                    link(
                         &st.procs,
                         sid,
                         row.agent,
@@ -1505,6 +1527,13 @@ impl Index {
                         &moves,
                     )
                 });
+            // #s294: the sessions herdr may still name for this row's pane — only where the
+            // linked process itself names a session the conversation moved here from.
+            let continues = link
+                .as_ref()
+                .and_then(|l| st.procs.iter().find(|p| p.pid == l.pid))
+                .map(|p| moves.continues(p, sid, &prefix_unique))
+                .unwrap_or_default();
             let (state, conf) = if growing {
                 ("growing", "")
             } else {
@@ -1562,6 +1591,7 @@ impl Index {
                 pane: link.as_ref().and_then(|l| l.terminal.pane_addr()),
                 confirmed: link.as_ref().map(|l| l.confirmed).unwrap_or(false),
                 named: link.as_ref().is_some_and(|l| l.named),
+                continues,
                 tree_mtime: row.tree_mtime,
             });
             // #113: a row is hidden if its OWN key is on the list, or its whole group is.
@@ -2303,75 +2333,12 @@ fn head_one_shot(path: &Path) -> Option<String> {
 /// Step 3 is the COMMON path, not a fallback: `claude --resume` with no id (the picker) is how
 /// most of these sessions were launched (measured: 9 of 12 live agents here), and Claude never
 /// holds its transcript open, so steps 1–2 cannot fire for them.
-#[cfg(test)]
-fn link(
-    procs: &[Proc],
-    sid: &str,
-    agent: Agent,
-    transcript: &Path,
-    cwd: Option<&str>,
-    heuristic_ok: bool,
-    prefix_unique: &dyn Fn(&str) -> bool,
-) -> Option<AgentLink> {
-    link_moved(
-        procs,
-        sid,
-        agent,
-        transcript,
-        cwd,
-        heuristic_ok,
-        prefix_unique,
-        &Moves::default(),
-    )
-}
-
-/// Where conversations were MOVED (#s294): a session's id → the session it continued in and when
-/// the client recorded the move, for each move whose target this index knows.
 ///
-/// Claude Code 2.1.312 moves an interactive session into a daemon background job under a new id
-/// (measured: an idle `claude --resume A` in a herdr pane went on as B with nothing typed). The
-/// pane's process keeps `--resume A` in its argv and is where the reader types B's prompts, so a
-/// process named A drives B. A's transcript ends with the `continued-in` record that says so.
-#[derive(Default)]
-struct Moves<'a>(HashMap<&'a str, (&'a str, u64)>);
-
-impl<'a> Moves<'a> {
-    /// Every move in `rows` whose target is itself a row.
-    fn of(rows: &'a HashMap<String, Row>) -> Self {
-        Moves(
-            rows.iter()
-                .filter_map(|(sid, r)| {
-                    let c = r.continued_in.as_ref()?;
-                    let (next, _) = rows.get_key_value(c.session.as_str())?;
-                    (next != sid).then_some((sid.as_str(), (next.as_str(), c.at)))
-                })
-                .collect(),
-        )
-    }
-
-    /// The session a process naming `named` in its argv drives: each move it was ALIVE for is
-    /// followed — it started no later than the move — since the process that moves a
-    /// conversation keeps its argv. A process started after the move chose the old id itself,
-    /// and so did one whose start is unknown, as far as this can tell.
-    fn drives<'s>(&'s self, p: &Proc, named: &'s str) -> &'s str {
-        let mut cur = named;
-        for _ in 0..8 {
-            match self.0.get(cur) {
-                Some(&(next, at)) if next != cur && p.started.is_some_and(|s| s <= at) => {
-                    cur = next
-                }
-                _ => break,
-            }
-        }
-        cur
-    }
-}
-
-/// [`link`], with the conversations' [`Moves`] (#s294): a process whose argv names a session that
-/// moved while it ran is linked to the session it moved to — confirmed, since the argv and the
-/// transcript's own record say so together, but not `named` — and never to the one it left.
+/// Step 1 follows the conversations' [`Moves`] (#s294): a process whose argv names a session that
+/// moved while it ran is linked to the session it moved to (see [`Moves::chain`]), confirmed but
+/// not `named`, and never to the one it left.
 #[allow(clippy::too_many_arguments)]
-fn link_moved(
+fn link(
     procs: &[Proc],
     sid: &str,
     agent: Agent,
@@ -2413,12 +2380,14 @@ fn link_moved(
             std::cmp::Reverse(p.pid),
         )
     };
-    let names = |p: &Proc| match session_ref(&p.argv) {
-        Some(SessionRef::Exact(u)) => moves.drives(p, &u) == sid,
-        Some(SessionRef::Prefix(pf)) => {
-            sid.starts_with(pf.as_str()) && prefix_unique(&pf) && moves.drives(p, sid) == sid
-        }
-        None => false,
+    let names = |p: &Proc| {
+        let Some(u) = moves.named_session(p, sid, prefix_unique) else {
+            return false;
+        };
+        let chain = moves.chain(p, &u);
+        // A move is followed only for a process of the session's own agent (the review of #s294):
+        // an exact name alone never checked `serves`.
+        chain.last() == Some(&sid) && (chain.len() == 1 || serves(p, agent))
     };
     if let Some(p) = procs
         .iter()
@@ -2450,6 +2419,118 @@ fn link_moved(
         }
     }
     None
+}
+
+/// Where conversations were MOVED (#s294): a session's id → the session it continued in and when
+/// the client recorded the move, for each move whose target this index knows and runs the same
+/// agent.
+///
+/// Claude Code 2.1.312 moves an interactive session into a daemon background job under a new id
+/// (measured: an idle `claude --resume A` in a herdr pane went on as B with nothing typed). The
+/// pane's process keeps `--resume A` in its argv and is where the reader types B's prompts, so a
+/// process named A drives B. A's transcript ends with the `continued-in` record that says so, and
+/// the process's own record says it too ([`Parked`]).
+#[derive(Default)]
+struct Moves<'a>(HashMap<&'a str, (&'a str, u64)>);
+
+impl<'a> Moves<'a> {
+    /// Every move in `rows` whose target is itself a row of the same agent.
+    fn of(rows: &'a HashMap<String, Row>) -> Self {
+        Moves(
+            rows.iter()
+                .filter_map(|(sid, r)| {
+                    let c = r.continued_in.as_ref()?;
+                    let (next, target) = rows.get_key_value(c.session.as_str())?;
+                    (next != sid && target.agent == r.agent)
+                        .then_some((sid.as_str(), (next.as_str(), c.at)))
+                })
+                .collect(),
+        )
+    }
+
+    /// The session `p`'s argv names, when the scan is looking for `sid`'s process: an exact id, or
+    /// an `attach` prefix that exactly one known session starts with (`prefix_unique`). That
+    /// session is `sid` itself, or one a move took the conversation from (the review of #s294: an
+    /// `attach` client of the old session was linked to neither).
+    fn named_session(
+        &self,
+        p: &Proc,
+        sid: &str,
+        prefix_unique: &dyn Fn(&str) -> bool,
+    ) -> Option<String> {
+        match session_ref(&p.argv)? {
+            SessionRef::Exact(u) => Some(u),
+            SessionRef::Prefix(pf) if !prefix_unique(&pf) => None,
+            SessionRef::Prefix(pf) if sid.starts_with(pf.as_str()) => Some(sid.to_string()),
+            SessionRef::Prefix(pf) => self
+                .0
+                .keys()
+                .find(|from| from.starts_with(pf.as_str()))
+                .map(|from| from.to_string()),
+        }
+    }
+
+    /// The sessions a process naming `named` in its argv went through: `named` first, then each
+    /// session a move took the conversation to while the process ran, ending at the one it drives.
+    /// A move is followed only when
+    ///
+    /// * the process started no later than the move (a process started after it chose the old id
+    ///   itself, and so did one whose start is unknown, as far as this can tell), and
+    /// * the process's OWN record says its conversation was parked ([`Parked`]): its `sessionId`
+    ///   is `named` and its `parkedJobId` starts the session the chain ends at. The transcript's
+    ///   `continued-in` is a line any writer of the file can append; the record is the client's
+    ///   word about THIS process.
+    ///
+    /// The walk stops at a session it has already visited, so two transcripts naming each other
+    /// end where they began rather than by the parity of a step count.
+    fn chain<'s>(&'s self, p: &Proc, named: &'s str) -> Vec<&'s str> {
+        let mut path = vec![named];
+        let (Some(parked), Some(started)) = (p.parked.as_ref(), p.started) else {
+            return path;
+        };
+        if parked.session != named {
+            return path;
+        }
+        let mut keep = 1;
+        let mut cur = named;
+        while let Some(&(next, at)) = self.0.get(cur) {
+            if started > at || path.contains(&next) {
+                break;
+            }
+            path.push(next);
+            if next.starts_with(parked.job.as_str()) {
+                keep = path.len();
+            }
+            cur = next;
+        }
+        path.truncate(keep);
+        path
+    }
+
+    /// The sessions moved into `sid` on the way to `p` driving it — what herdr may still name for
+    /// `p`'s pane, since its Claude hook reports a session only when one STARTS. Empty unless
+    /// `p`'s argv names a session whose [`chain`](Self::chain) ends at `sid`: a process linked any
+    /// other way (the directory rule, a growth proof of a process that names nothing) proves
+    /// nothing about which session herdr's hook saw start in that pane.
+    fn continues(&self, p: &Proc, sid: &str, prefix_unique: &dyn Fn(&str) -> bool) -> Vec<String> {
+        let Some(u) = self.named_session(p, sid, prefix_unique) else {
+            return Vec::new();
+        };
+        let mut chain = self.chain(p, &u);
+        if chain.last() != Some(&sid) {
+            return Vec::new();
+        }
+        chain.pop();
+        chain.into_iter().map(str::to_string).collect()
+    }
+}
+
+/// Is a move dated `at` believable (the review of #s294)? Not when it is later than now or than the
+/// transcript's own last write, each with a few seconds' leeway: the record is the file's word, and
+/// a future date would make every later `--resume` of the old id follow it.
+fn move_plausible(at: u64, now: u64, written: Option<u64>) -> bool {
+    const SKEW: u64 = 5;
+    at <= now + SKEW && written.is_some_and(|w| at <= w + SKEW)
 }
 
 /// What a process's argv says about WHICH session it drives (#269) — Claude Code's launch
@@ -2565,14 +2646,21 @@ fn one_shot(p: &Proc) -> bool {
 /// launch writes `"entrypoint": "cli"`, a `claude -p` writes `"sdk-cli"` (both say `kind:
 /// interactive`). A record is believed only when it names this pid and began no earlier than the
 /// process did: a file left by an earlier process with the same pid does not.
+///
+/// The same record is read for a process whose argv NAMES a session (#s294), for its
+/// `parkedJobId`: what says this process's conversation was moved into a background job
+/// ([`Parked`]).
 fn apply_session_files(procs: &mut [Proc], default_home: Option<&Path>) {
     for p in procs.iter_mut() {
         p.cli_launch = false;
+        p.parked = None;
+        let reads_as_one_shot = argv_says_one_shot(&p.argv);
         // A process with no terminal is never taken for an interactive launch, whatever its record
         // says (the review of #s301): a worker started from an agent's Bash has none, and one that
-        // inherited "cli" would otherwise depend on the client rewriting it.
+        // inherited "cli" would otherwise depend on the client rewriting it. Nor is it a pane a
+        // moved conversation goes on in.
         if proc_agent(p) != Some(Agent::CLAUDE)
-            || !argv_says_one_shot(&p.argv)
+            || !(reads_as_one_shot || session_ref(&p.argv).is_some())
             || p.tty.is_none()
             || p.claude_home_unknown
         {
@@ -2601,7 +2689,27 @@ fn apply_session_files(procs: &mut [Proc], default_home: Option<&Path>) {
             (Some(ms), Some(started)) => ms / 1000 + 5 >= started && ms / 1000 <= started + 60,
             _ => false,
         };
-        p.cli_launch = own && with_it && v.get("entrypoint").and_then(Value::as_str) == Some("cli");
+        if !(own && with_it) {
+            continue;
+        }
+        p.cli_launch =
+            reads_as_one_shot && v.get("entrypoint").and_then(Value::as_str) == Some("cli");
+        let hexish =
+            |s: &&str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-');
+        p.parked = v
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .filter(|s| is_uuid(s))
+            .zip(
+                v.get("parkedJobId")
+                    .and_then(Value::as_str)
+                    .filter(|j| j.len() <= 36)
+                    .filter(hexish),
+            )
+            .map(|(session, job)| Parked {
+                session: session.to_string(),
+                job: job.to_string(),
+            });
     }
 }
 
@@ -2961,6 +3069,7 @@ fn parse_ps_with(out: &str, is_file: &dyn Fn(&str) -> bool) -> Vec<Proc> {
             claude_home: None,
             claude_home_unknown: false,
             cli_launch: false,
+            parked: None,
         });
     }
     procs
@@ -3069,8 +3178,10 @@ fn apply_lsof(procs: &mut [Proc], out: &str) {
 /// agent writes long after the user stopped. The bug they cause: a session last worked at
 /// 00:55 grew a `file-history-snapshot` (a git snapshot) at 21:55, and the rail read it as
 /// activity 11 h ago instead of the true ~32 h. Denylist, not allowlist: an unknown agent's
-/// real turns still count; only these named noise rows are skipped.
-const NON_ACTIVITY_TYPES: &[&str] = &["file-history-snapshot", "summary"];
+/// real turns still count; only these named noise rows are skipped. `continued-in` (#s294) is
+/// the client moving the conversation ELSEWHERE: counted as activity it made the old session the
+/// directory's lone grower, so a growth proof gave it the pane's process (the review of #s294).
+const NON_ACTIVITY_TYPES: &[&str] = &["file-history-snapshot", "summary", "continued-in"];
 
 /// The FIRST activity timestamp — `last_event_ts`'s head-side sibling, the start of the
 /// rail's session span (#129). Escalating windows, because the head is where an agent
@@ -3737,6 +3848,7 @@ mod tests {
             }),
             confirmed,
             named: false,
+            continues: Vec::new(),
         };
 
         // The happy path: live + proven + in tmux + a driven agent.
@@ -4790,6 +4902,7 @@ mod tests {
             None,
             false,
             &|_| true,
+            &Moves::default(),
         )
         .expect("argv link");
         assert_eq!(
@@ -4870,6 +4983,7 @@ mod tests {
             pane: Some(herdr.clone()),
             confirmed: true,
             named: true,
+            continues: Vec::new(),
         };
         assert_eq!(pane_target_from(Agent::CLAUDE, &send), Ok((201, herdr)));
         // herdr's hook proves the pane's session for Claude only.
@@ -5076,6 +5190,7 @@ mod tests {
             None,
             false,
             &|_| true,
+            &Moves::default(),
         )
         .expect("argv link");
         assert!(l.confirmed);
@@ -5096,6 +5211,7 @@ mod tests {
             None,
             false,
             &|_| true,
+            &Moves::default(),
         )
         .expect("fd link");
         assert!(l.confirmed);
@@ -5112,6 +5228,7 @@ mod tests {
             Some("/Users/x/other"),
             true,
             &|_| true,
+            &Moves::default(),
         )
         .expect("cwd link");
         assert!(
@@ -5122,7 +5239,8 @@ mod tests {
                 Path::new("/n.jsonl"),
                 Some("/Users/x/other"),
                 false,
-                &|_| true
+                &|_| true,
+                &Moves::default()
             )
             .is_none(),
             "only the NEWEST session of a cwd may claim a process heuristically"
@@ -5142,6 +5260,7 @@ mod tests {
             Some("/Users/x/code/repo"),
             true,
             &|_| true,
+            &Moves::default(),
         )
         .expect("codex cwd heuristic");
         assert!(l.confirmed, "alone in its cwd (#269)");
@@ -5192,6 +5311,7 @@ mod tests {
             cwd,
             true,
             &|_| true,
+            &Moves::default(),
         )
         .expect("link");
         assert_eq!(
@@ -5210,7 +5330,8 @@ mod tests {
             Path::new("/n.jsonl"),
             cwd,
             false,
-            &|_| true
+            &|_| true,
+            &Moves::default()
         )
         .is_none());
     }
@@ -5237,6 +5358,7 @@ mod tests {
             None,
             false,
             &|pf| pf == "f7e03d40",
+            &Moves::default(),
         )
         .expect("prefix link");
         assert!(l.confirmed);
@@ -5252,7 +5374,8 @@ mod tests {
             Path::new("/n.jsonl"),
             None,
             false,
-            &|_| false
+            &|_| false,
+            &Moves::default()
         )
         .is_none());
         // (d) the shapes, one by one.
@@ -5319,6 +5442,7 @@ mod tests {
             cwd,
             true,
             &|_| true,
+            &Moves::default(),
         )
         .expect("lone");
         assert!(l.confirmed && l.pid == 900);
@@ -5335,7 +5459,8 @@ mod tests {
                 Path::new("/n.jsonl"),
                 cwd,
                 true,
-                &|_| true
+                &|_| true,
+                &Moves::default()
             )
             .unwrap()
             .confirmed
@@ -5354,6 +5479,7 @@ mod tests {
             cwd,
             true,
             &|_| true,
+            &Moves::default(),
         )
         .expect("lone");
         assert!(
@@ -5383,6 +5509,7 @@ mod tests {
             cwd,
             true,
             &|_| true,
+            &Moves::default(),
         )
         .expect("engine");
         assert_eq!(l.pid, 15974);
@@ -5400,7 +5527,8 @@ mod tests {
                 Path::new("/n.jsonl"),
                 cwd,
                 true,
-                &|_| true
+                &|_| true,
+                &Moves::default()
             )
             .is_none(),
             "neither helper is a directory candidate for any other session"
@@ -5753,6 +5881,7 @@ n/Users/x/proj
             Some("/Users/hong/code/knack"),
             true,
             &|_| true,
+            &Moves::default(),
         )
         .expect("cwd link");
         assert_eq!(l.pid, 900, "the tmux-hosted process, not the first match");
@@ -5781,6 +5910,7 @@ n/Users/x/proj
             Some("/Users/hong/code/knack"),
             true,
             &|_| true,
+            &Moves::default(),
         )
         .expect("cwd link");
         assert_eq!(
@@ -5865,6 +5995,7 @@ n/Users/x/proj
             None,
             false,
             &|_| true,
+            &Moves::default(),
         )
         .expect("link");
         assert!(l.confirmed);
@@ -5928,6 +6059,7 @@ n/Users/x/proj
             Some("/w/petrel"),
             true,
             &|_| true,
+            &Moves::default(),
         )
         .expect("linked");
         assert_eq!(l.pid, 601);
@@ -5972,6 +6104,65 @@ n/Users/x/proj
         apply_session_files(&mut more, None);
         let held: Vec<(u32, bool)> = more.iter().map(|p| (p.pid, one_shot(p))).collect();
         assert!(held.iter().all(|(_, shot)| *shot), "{held:?}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// #s294: a pane process's own record says its conversation was parked, as Claude Code 2.1.312
+    /// writes it (measured on two moves): the old `sessionId` and the job's `parkedJobId`. Read for
+    /// a process whose argv names a session and that has a terminal, from a record of its own pid
+    /// begun with it; a malformed job id or session id is no answer, and neither is a record for a
+    /// process with no terminal or one whose argv names nothing.
+    #[test]
+    fn a_pane_process_record_says_where_its_conversation_was_parked() {
+        let home = std::env::temp_dir().join(format!("cm-parked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        let a = "aaaaaaaa-0000-4000-8000-000000000294";
+        let record = |pid: u32, session: &str, job: &str| {
+            std::fs::write(
+                home.join("sessions").join(format!("{pid}.json")),
+                format!(r#"{{"pid":{pid},"sessionId":"{session}","entrypoint":"cli","kind":"interactive","startedAt":9992000,"status":"idle","parkedJobId":"{job}"}}"#),
+            )
+            .unwrap();
+        };
+        let mut procs = parse_ps(&format!(
+            "  621 claude --resume {a}\n  622 claude --resume {a}\n  623 claude --resume\n  624 claude --resume {a}\n  625 claude --resume {a}\n"
+        ));
+        apply_tty(
+            &mut procs,
+            // 622 has no terminal.
+            "  621 ttys001 00:10\n  622 ?? 00:10\n  623 ttys003 00:10\n  624 ttys004 00:10\n  625 ttys005 00:10\n",
+            10_000,
+        );
+        let mut env = String::new();
+        for p in &procs {
+            env += &format!("  {} claude CLAUDE_CONFIG_DIR={}\n", p.pid, home.display());
+        }
+        apply_env(&mut procs, &env);
+        record(621, a, "bbbbbbbb");
+        record(622, a, "bbbbbbbb");
+        record(623, a, "bbbbbbbb"); // its argv names no session
+        record(624, a, "bb bb; rm"); // not a job id
+        record(625, "not-a-session", "bbbbbbbb");
+        apply_session_files(&mut procs, None);
+        let parked: Vec<Option<Parked>> = procs.iter().map(|p| p.parked.clone()).collect();
+        assert_eq!(
+            parked,
+            [
+                Some(Parked {
+                    session: a.into(),
+                    job: "bbbbbbbb".into()
+                }),
+                None,
+                None,
+                None,
+                None
+            ]
+        );
+        assert!(
+            !procs[0].cli_launch,
+            "a record is not a one-shot verdict here"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -6094,8 +6285,9 @@ n/Users/x/proj
     /// #s294, the synthetic repro: an idle `claude --resume A` in a herdr pane, and Claude Code moves
     /// the conversation into a background job as B with nothing typed. A's transcript ends with
     /// `continued-in` B, the job's engine is a `bg-spare` that names nothing, and the pane's process
-    /// still names A. B is the live row on that pane — sendable, herdr's stale A accepted for it —
-    /// and A is finished. A process started AFTER the move named A itself and keeps it.
+    /// still names A, and its own record says it was parked in B's job. B is the live row on that
+    /// pane — sendable, herdr's stale A accepted for it — and A is finished. A process started
+    /// AFTER the move named A itself and keeps it, and so does one whose record says nothing.
     #[test]
     fn a_conversation_moved_into_a_background_job_keeps_its_pane() {
         let scratch = std::env::temp_dir().join(format!("cm-moved-{}", std::process::id()));
@@ -6105,6 +6297,14 @@ n/Users/x/proj
         let b = "bbbbbbbb-0000-4000-8000-000000000294";
         let now = 1_791_400_000u64;
         let moved_at = now - 3_600;
+        let parked = |procs: &mut Vec<Proc>| {
+            for p in procs.iter_mut().filter(|p| p.pid == 700) {
+                p.parked = Some(Parked {
+                    session: a.into(),
+                    job: "bbbbbbbb".into(),
+                });
+            }
+        };
         let world = |pane_etime: &str| {
             let mut procs = parse_ps(&format!(
                 "  700 claude --resume {a}\n  701 claude bg-spare --bg-spare /tmp/cc-daemon-501/d/spare/s.claim.sock\n"
@@ -6127,6 +6327,7 @@ n/Users/x/proj
                 &mut procs,
                 "p700\nfcwd\nn/w/harbor\np701\nfcwd\nn/w/harbor\n",
             );
+            parked(&mut procs);
             let mut st = State {
                 procs,
                 ..Default::default()
@@ -6176,8 +6377,66 @@ n/Users/x/proj
         );
         assert_eq!(row_a["state"], "finished");
         assert_eq!(row_a["continuedIn"], b);
-        assert_eq!(st.moved_into(b), vec![a.to_string()]);
-        assert!(st.moved_into(a).is_empty());
+        assert_eq!(fact_b.continues, vec![a.to_string()]);
+        let fact_a = facts.iter().find(|f| f.sid == a).unwrap();
+        assert!(fact_a.continues.is_empty());
+
+        // The review of #s294, point 1: as the client moves the conversation, A's tail grows (its
+        // own enqueues), and then the reader types into B. Neither growth proof may hand A the
+        // pane: A is no grower and its older proof goes; B, the lone grower, is proved on the
+        // pane's process and is still the one herdr's A stands for.
+        let mut st = world("1-00:00:00");
+        st.rows.get_mut(a).unwrap().grew_at = Some(Instant::now());
+        st.rows.get_mut(a).unwrap().proved_pid = Some((700, "/w/harbor".into()));
+        idx.prove_by_growth(&mut st);
+        assert!(
+            st.rows[a].proved_pid.is_none(),
+            "a moved session keeps no proof"
+        );
+        assert!(st.rows[b].proved_pid.is_none(), "B has not grown yet");
+        st.rows.get_mut(b).unwrap().grew_at = Some(Instant::now());
+        idx.prove_by_growth(&mut st);
+        assert_eq!(st.rows[b].proved_pid.as_ref().map(|(p, _)| *p), Some(700));
+        let mut facts = Vec::new();
+        let snapshot = idx.assemble(&st, &mut facts);
+        let row_b = find(&snapshot, b).unwrap();
+        assert_eq!(row_b["pid"], 700, "{row_b}");
+        assert!(row_b.get("projActive").is_none(), "A is not live: {row_b}");
+        assert!(find(&snapshot, a).unwrap().get("pid").is_none());
+        let fact_b = facts.iter().find(|f| f.sid == b).unwrap();
+        assert_eq!(fact_b.continues, vec![a.to_string()], "proved, and moved");
+
+        // Point 2: the reader quits the pane and picks A again with `claude --resume` (the picker,
+        // no id), typing nothing yet. That process names no session, so nothing says herdr's A is
+        // B: whatever the directory rule links it to, it carries no `continues`.
+        let mut st = world("1-00:00:00");
+        st.procs.retain(|p| p.pid != 700);
+        let mut picker = parse_ps("  703 claude --resume\n");
+        apply_tty(&mut picker, "  703 ttys003 00:01:00\n", now);
+        let herdr =
+            "HERDR_ENV=1 HERDR_PANE_ID=w1:pC HERDR_SOCKET_PATH=/Users/x/.config/herdr/herdr.sock";
+        apply_env(&mut picker, &format!("  703 claude {herdr}\n"));
+        apply_nesting(
+            &mut picker,
+            "  1 0 launchd\n  60 1 herdr\n  61 60 zsh\n  703 61 claude\n",
+        );
+        apply_lsof(&mut picker, "p703\nfcwd\nn/w/harbor\n");
+        st.procs.extend(picker);
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        for f in &facts {
+            assert!(f.continues.is_empty(), "{}: {:?}", f.sid, f.continues);
+        }
+
+        // The process's own record does not say it was parked: the transcript alone moves nothing,
+        // and A keeps its process.
+        let mut st = world("1-00:00:00");
+        for p in &mut st.procs {
+            p.parked = None;
+        }
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert_eq!(find(&snapshot, a).unwrap()["pid"], 700);
+        assert!(find(&snapshot, b).unwrap().get("pid").is_none());
 
         // Without the move, the same machine reads as before the fix: A holds the pane and B
         // has no process at all — the "Exited abnormally" row.
@@ -6210,12 +6469,15 @@ n/Users/x/proj
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
-    /// #s294: moves chain — a conversation moved twice reaches its last session, and a session's
-    /// predecessors are every session along the chain. A move to a session this index does not
-    /// know is not followed.
+    /// #s294: moves chain. A conversation moved twice reaches the session the process's own record
+    /// names, and the sessions before it are what herdr may still name. A move to a session this
+    /// index does not know, or of another agent, is not followed; a process started after a move,
+    /// of unknown start, or whose record names another session or no job follows nothing; two
+    /// transcripts naming each other stop where the walk began to repeat; an `attach` client of the
+    /// old session follows its move.
     #[test]
     fn moves_chain_and_stop_at_an_unknown_session() {
-        let mut st = State::default();
+        let mut rows: HashMap<String, Row> = HashMap::new();
         let moved = |to: &str, at: u64| {
             let mut r = growth_row("/w/h", false);
             r.continued_in = Some(claude_replay_core::Continuation {
@@ -6224,26 +6486,120 @@ n/Users/x/proj
             });
             r
         };
-        st.rows.insert("a".into(), moved("b", 100));
-        st.rows.insert("b".into(), moved("c", 200));
-        st.rows.insert("c".into(), growth_row("/w/h", false));
-        st.rows.insert("x".into(), moved("gone", 100));
-        assert_eq!(st.moved_into("c"), vec!["a".to_string(), "b".to_string()]);
-        assert_eq!(st.moved_into("b"), vec!["a".to_string()]);
-        assert!(st.moved_into("gone").is_empty());
-        let moves = Moves::of(&st.rows);
-        let mut p = parse_ps("  9 claude --resume a\n").remove(0);
-        p.started = Some(50);
-        assert_eq!(moves.drives(&p, "a"), "c", "alive for both moves");
-        p.started = Some(150);
-        assert_eq!(moves.drives(&p, "a"), "a", "started after the first move");
-        p.started = None;
+        let a = "aaaaaaaa-0000-4000-8000-000000000001";
+        let b = "bbbbbbbb-0000-4000-8000-000000000002";
+        let c = "cccccccc-0000-4000-8000-000000000003";
+        let x = "eeeeeeee-0000-4000-8000-000000000004";
+        let k = "dddddddd-0000-4000-8000-000000000005";
+        let y = "ffffffff-0000-4000-8000-000000000006";
+        rows.insert(a.into(), moved(b, 100));
+        rows.insert(b.into(), moved(c, 200));
+        rows.insert(c.into(), growth_row("/w/h", false));
+        rows.insert(x.into(), moved("99999999-0000-4000-8000-000000000000", 100));
+        let mut codex = growth_row("/w/h", false);
+        codex.agent = Agent::CODEX;
+        rows.insert(k.into(), codex);
+        rows.insert(y.into(), moved(k, 100));
+        let moves = Moves::of(&rows);
+        assert!(!moves.0.contains_key(x), "an unknown target");
+        assert!(!moves.0.contains_key(y), "another agent's session");
+        let proc_of = |argv: &str, started: Option<u64>, parked: Option<(&str, &str)>| {
+            let mut p = parse_ps(&format!("  9 {argv}\n")).remove(0);
+            p.started = started;
+            p.parked = parked.map(|(session, job)| Parked {
+                session: session.into(),
+                job: job.into(),
+            });
+            p
+        };
+        let resume_a = format!("claude --resume {a}");
+        let p = proc_of(&resume_a, Some(50), Some((a, "cccccccc")));
+        assert_eq!(moves.chain(&p, a), vec![a, b, c], "alive for both moves");
+        assert_eq!(moves.continues(&p, c, &|_| true), vec![a, b]);
+        assert!(moves.continues(&p, b, &|_| true).is_empty(), "it drives c");
+        let p = proc_of(&resume_a, Some(50), Some((a, "bbbbbbbb")));
         assert_eq!(
-            moves.drives(&p, "a"),
-            "a",
-            "an unknown start follows nothing"
+            moves.chain(&p, a),
+            vec![a, b],
+            "the record names b's job: the walk ends there"
         );
-        assert_eq!(moves.drives(&p, "x"), "x");
+        let p = proc_of(&resume_a, Some(150), Some((a, "cccccccc")));
+        assert_eq!(moves.chain(&p, a), vec![a], "started after the first move");
+        let p = proc_of(&resume_a, None, Some((a, "cccccccc")));
+        assert_eq!(moves.chain(&p, a), vec![a], "an unknown start");
+        let p = proc_of(&resume_a, Some(50), None);
+        assert_eq!(moves.chain(&p, a), vec![a], "no record of a parked job");
+        let p = proc_of(&resume_a, Some(50), Some((c, "cccccccc")));
+        assert_eq!(
+            moves.chain(&p, a),
+            vec![a],
+            "the record is another session's"
+        );
+        let p = proc_of(&resume_a, Some(50), Some((a, "eeeeeeee")));
+        assert_eq!(
+            moves.chain(&p, a),
+            vec![a],
+            "a job on no session of the chain"
+        );
+
+        // Two transcripts naming each other: the walk stops at a session already visited.
+        let mut cyc: HashMap<String, Row> = HashMap::new();
+        cyc.insert(a.into(), moved(b, 100));
+        cyc.insert(b.into(), moved(a, 100));
+        let cycle = Moves::of(&cyc);
+        let p = proc_of(&resume_a, Some(50), Some((a, "bbbbbbbb")));
+        assert_eq!(cycle.chain(&p, a), vec![a, b]);
+
+        // `claude attach <a's prefix>`: the one known session with that prefix moved, and the
+        // client follows its move to b (it was linked to neither, the review of #s294).
+        let mut attach = proc_of("claude attach aaaaaaaa", Some(50), Some((a, "bbbbbbbb")));
+        attach.tty = Some("ttys004".into());
+        let only_a = |pf: &str| pf == "aaaaaaaa";
+        assert_eq!(moves.named_session(&attach, b, &only_a).as_deref(), Some(a));
+        let mut two: HashMap<String, Row> = HashMap::new();
+        two.insert(a.into(), moved(b, 100));
+        two.insert(b.into(), growth_row("/w/h", false));
+        let l = link(
+            std::slice::from_ref(&attach),
+            b,
+            Agent::CLAUDE,
+            Path::new("/b.jsonl"),
+            None,
+            false,
+            &only_a,
+            &Moves::of(&two),
+        )
+        .expect("the attach client drives b");
+        assert!(l.confirmed && !l.named);
+        assert!(link(
+            std::slice::from_ref(&attach),
+            a,
+            Agent::CLAUDE,
+            Path::new("/a.jsonl"),
+            None,
+            false,
+            &only_a,
+            &Moves::of(&two),
+        )
+        .is_none());
+    }
+
+    /// The review of #s294, point 4: a move dated in the future, or after the transcript's last
+    /// write, is not believed; a few seconds' leeway is.
+    #[test]
+    fn a_move_dated_later_than_now_or_its_file_is_not_believed() {
+        let now = 1_791_400_000;
+        assert!(move_plausible(now - 60, now, Some(now - 59)));
+        assert!(move_plausible(now + 3, now, Some(now + 1)));
+        assert!(
+            !move_plausible(now + 3_600, now, Some(now + 3_600)),
+            "the future"
+        );
+        assert!(
+            !move_plausible(now - 60, now, Some(now - 600)),
+            "after the file's last write"
+        );
+        assert!(!move_plausible(now - 60, now, None), "no write time");
     }
 
     /// #s298: a row says `dialog` — question, permission or plan — only for a session the page can
@@ -6732,6 +7088,7 @@ n/Users/x/proj
             cwd,
             true,
             &|_| true,
+            &Moves::default(),
         )
         .expect("the Claude session links");
         assert_eq!(claude.pid, 51668, "to the claude process, never codex");
@@ -6748,6 +7105,7 @@ n/Users/x/proj
             cwd,
             true,
             &|_| true,
+            &Moves::default(),
         )
         .expect("the Codex session links");
         assert_eq!((codex.pid, codex.confirmed), (9807, true));

@@ -353,14 +353,21 @@ unwritable; an exe the monitor cannot place (an extra pattern) stays a candidate
 gate's "another live session in this project" counts the same agent only, for the same reason.
 **A conversation MOVED to a new session keeps its pane** (#s294): Claude Code 2.1.312 moves an idle
 interactive session into a daemon background job under a new id with nothing typed, and ends the old
-transcript with `continued-in` (`continuedInSessionId`, read by the adapter's `continued_in` when it is
-the tail's last conversation record). The pane's process keeps `--resume <old>` in its argv and is
-where the reader types the new session's prompts, while the job's engine is a `bg-spare` naming
-nothing — so `Moves` gives a process naming the old id to the new session when it started no later
-than the move (one started after chose the old id itself), confirmed but not `named`; the old session
-is finished, out of the directory rule, and its row says `continuedIn`. herdr's Claude hook reports a
-session only when one STARTS, so it keeps the old id for that pane, and `herdr_send_verdict` accepts
-exactly the sessions moved into the target (`PaneTarget::continues`).
+transcript with `continued-in` (`continuedInSessionId`, read by the adapter's `continued_in` when no
+`user` or `assistant` record follows it: the move's own `queue-operation` enqueues may, and the index
+believes it only when it is dated no later than now and the file's last write). The pane's process
+keeps `--resume <old>` in its argv and is where the reader types the new session's prompts, while the
+job's engine is a `bg-spare` naming nothing; the pane process's own `sessions/<pid>.json` keeps the
+old `sessionId` and gains `parkedJobId`, the new session's first eight characters (the engine writes a
+record of its own naming the new session, `kind: bg`). So `Moves::chain` gives a process naming the
+old id to the new session, through a move of the same agent, only when it started no later than the
+move (one started after chose the old id itself) AND its own record names the old id and the job;
+confirmed but not `named`. An `attach` prefix of the old id follows the same way. The old session is
+finished: out of the directory rule and the growth proof (`continued-in` is no activity), and its row
+says `continuedIn`. herdr's Claude hook reports a session only when one STARTS, so it keeps the old id
+for that pane: the send, the dialog read and answer, and the state pass (`herdr_runs`) accept the
+sessions on that process's chain (`continues`, empty for a link made any other way, so a picker
+re-resume of the old id is never typed into as the new session).
 **A one-shot (`claude -p`/`--print`) is headless and pairs by TIME** (#s50): knack's coordinator
 starts workers from its Bash, all in one repo, each inheriting the coordinator's `TMUX_PANE`, and the
 directory rule gave a process to the newest session only — so a worker deep in a long command lost

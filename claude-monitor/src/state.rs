@@ -60,6 +60,9 @@ pub(crate) struct RowFacts {
     pub confirmed: bool,
     /// The process names the session exactly in its own argv (#s234).
     pub named: bool,
+    /// The sessions whose conversation was moved into this one on the way to the linked process
+    /// (#s294): herdr's hook may still name one of them for the pane, and that pane runs this one.
+    pub continues: Vec<String>,
     /// The tree mtime — the cache key for the content-derived facts.
     pub tree_mtime: Option<SystemTime>,
 }
@@ -181,8 +184,14 @@ impl StateTracker {
                     .as_ref()
                     .filter(|a| f.tree_mtime.is_none_or(|m| m <= a.asked_at))
                     .and_then(|a| {
+                        // #s294: or names a session moved into this one, as the send's check reads it.
                         a.panes.iter().find(|p| {
-                            &p.pane == pane && p.session.as_deref() == Some(f.sid.as_str())
+                            &p.pane == pane
+                                && crate::control::herdr_runs(
+                                    p.session.as_deref(),
+                                    &f.sid,
+                                    &f.continues,
+                                )
                         })
                     })
                     .map(|p| p.status.clone()),
@@ -744,6 +753,7 @@ mod tests {
             pane: None,
             confirmed: false,
             named: false,
+            continues: Vec::new(),
             tree_mtime: std::fs::metadata(path).and_then(|m| m.modified()).ok(),
         }
     }
@@ -1368,6 +1378,7 @@ mod tests {
                     Ok(vec![
                         pane("w1:p1", "s1", status),
                         pane("w1:p2", "other", "blocked"),
+                        pane("w1:p3", "old", "working"),
                     ])
                 }),
                 ms(30),
@@ -1379,7 +1390,18 @@ mod tests {
         assert!(heard(&tr.herdr, "/s/herdr.sock", |_| true).is_some());
 
         // The transcript says the turn ended; herdr sees the agent working.
-        let rows = [in_pane("s1", &t, "w1:p1"), in_pane("s2", &t, "w1:p2")];
+        // #s294: herdr's hook still names `old` in w1:p3, whose conversation the scan found moved
+        // into s3 on the way to that pane's process; s4 in the same pane has no such move.
+        let moved = RowFacts {
+            continues: vec!["old".into()],
+            ..in_pane("s3", &t, "w1:p3")
+        };
+        let rows = [
+            in_pane("s1", &t, "w1:p1"),
+            in_pane("s2", &t, "w1:p2"),
+            moved,
+            in_pane("s4", &t, "w1:p3"),
+        ];
         tr.tick(&root, &rows);
         tr.tick(&root, &rows);
         assert_eq!(
@@ -1390,6 +1412,16 @@ mod tests {
             now_is(&tr, "s2"),
             (AgentState::Idle, StateReason::Done, false),
             "herdr names another session in that pane: the derivation stands"
+        );
+        assert_eq!(
+            now_is(&tr, "s3"),
+            (AgentState::Busy, StateReason::Thinking, true),
+            "herdr's old id for a moved session's pane is that session's status"
+        );
+        assert_eq!(
+            now_is(&tr, "s4"),
+            (AgentState::Idle, StateReason::Done, false),
+            "the old id with no move into this session is another session"
         );
 
         // herdr sees a dialog: the wait publishes on the first tick that hears it.
