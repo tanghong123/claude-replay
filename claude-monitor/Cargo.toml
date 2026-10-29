@@ -38,3 +38,10 @@ sha2 = "0.10"
 # The terminal QR code `--pair-phone` prints for a phone to scan (#11). Unicode rendering only:
 # no image features, so no image dependencies.
 qrcode = { version = "0.14", default-features = false }
+
+[dev-dependencies]
+# The html crate's signing key and its render and mask policies come from the state directory,
+# which the tests redirect one at a time through a process-wide variable (`StateEnv`); with the
+# real ones, the first stamp of a run minted a key file into whichever test's scratch held it,
+# racing that test's cleanup (#s321). The tests get the html crate's fixed test values instead.
+claude-replay-html = { path = "../claude-replay-html", features = ["hermetic-tests"] }

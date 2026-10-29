@@ -655,7 +655,11 @@ A served page's file links are **capability-stamped**: the renderer signs each o
 with an HMAC (key at `<state>/file-sig-key`, 0600), and `/file` and `/__reveal` act only on a
 path carrying the stamp for THAT capability. So a route acts only on what was offered, and a
 reveal link cannot be edited into a byte read. `claude-replay-html/src/html_export/sig.rs` is
-the whole story.
+the whole story. Tests never touch the key or the policies on disk: the html crate's own get fixed
+values under `cfg(test)`, and claude-monitor's, which link it without that, get the same through
+its `hermetic-tests` feature, enabled from claude-monitor's dev-dependencies only (#s321: the
+first stamp of a run minted a real key into whichever test's state dir the process-wide variable
+named, racing that test's cleanup). No shipped build enables it; with it every stamp is forgeable.
 
 **Which paths may RENDER is a setting**, `<state>/render-policy.json`:
 `{"mode": "allowlist", "dirs": ["~/personal", "~/code"]}` — `mode` is `never`, `offered` (the
