@@ -1498,6 +1498,20 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "persistent",
     "pin",
     "plan",
+    // #s309, ExitPlanMode (client 2.1.199, one record on this machine, measured 2026-10-29): the
+    // boolean `true` on `{plan, isAgent, filePath, planWasEdited}`, absent when false (a 2.1.211
+    // result has the other three alone). The client's own schema, still in 2.1.312, says it is true
+    // when the person edited the plan (Claude Code's web UI, or Ctrl+G) and decides whether the plan
+    // is echoed back: the result's `plan` is the edited text, which also overwrites the plan file,
+    // and the tool_result text ends "## Approved Plan (edited by user):" and that text, which the
+    // card draws as the call's output. So the edit and its mark are already on the page. In the one
+    // record the call input's `plan` and the result's are byte-identical (6,665 characters). The
+    // plan.md attachment is drawn from the input (#16). REVISIT: a record whose two plans differ,
+    // where the attachment would show the plan from before the edit beside the approved one in the
+    // output, a RENDER question for the owner. The 2.1.312 schema also lists `hasTaskTool`,
+    // `awaitingLeaderApproval` and `requestId` (a teammate's plan sent to its lead), met in no
+    // record yet: they are judged when one carries them.
+    "planWasEdited",
     "projectId",
     "projects",
     "prompt",
@@ -9556,6 +9570,34 @@ mod tests {
             unknown_tool_result_keys(&serde_json::json!({"files_read": {}, "stdout": "ok"})),
             vec!["files_read"],
             "beside another key, files_read is reported"
+        );
+    }
+
+    /// #s309: an ExitPlanMode result whose plan the person edited (client 2.1.199) carries
+    /// `planWasEdited: true`, known; the card's output is the result text, which marks the plan as
+    /// edited and carries it. Hand-written: no real plan or paths.
+    #[test]
+    fn an_edited_plan_s_flag_is_known_and_its_card_carries_the_edit() {
+        let jsonl = r##"
+{"type":"assistant","version":"2.1.199","sessionId":"s-309","message":{"content":[{"type":"tool_use","id":"ep1","name":"ExitPlanMode","input":{"plan":"# Tern survey\n1. count the nests","planFilePath":"/w/.claude/plans/tern.md","allowedPrompts":[]}}]}}
+{"type":"user","version":"2.1.199","sessionId":"s-309","toolUseResult":{"plan":"# Tern survey\n1. count the nests\n2. ring the chicks","isAgent":false,"filePath":"/w/.claude/plans/tern.md","planWasEdited":true},"message":{"content":[{"type":"tool_result","tool_use_id":"ep1","content":"User has approved your plan. You can now start coding.\n\n## Approved Plan (edited by user):\n# Tern survey\n1. count the nests\n2. ring the chicks"}]}}
+"##;
+        let blocks = parse(jsonl);
+        assert!(
+            !unknown_shapes()
+                .iter()
+                .any(|s| s.example.as_deref() == Some("s-309")),
+            "nothing in an edited plan's result is reported: {:?}",
+            unknown_shapes()
+        );
+        let Block::ToolUse { name, output, .. } = &blocks[0] else {
+            panic!("expected the ExitPlanMode call at 0: {blocks:?}")
+        };
+        assert_eq!(name, "ExitPlanMode");
+        let output = output.as_deref().unwrap_or("");
+        assert!(
+            output.contains("(edited by user)") && output.contains("2. ring the chicks"),
+            "the card's output marks the plan as edited and carries the edit: {output:?}"
         );
     }
 
