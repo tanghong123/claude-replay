@@ -1649,11 +1649,20 @@ const ARTIFACT_CREATE_SHAPE: &[&str] = &[
 /// asked for and not written is a failure the card would not show. Since client 2.1.310 a publish
 /// from a file also carries `owned` beside `icon` (#s268, one record, measured 2026-10-26), true
 /// as in a create and a typed publish (#s181): a flag the card has no use for, eleven facts
-/// nothing renders. REVISIT: `owned` arriving false.
+/// nothing renders. REVISIT: `owned` arriving false. Since client 2.1.312 a publish from a file
+/// whose call input carries `edits` (`[{old_str, new_str}]`, 2 of them) ends with `editsApplied`
+/// beside `icon` (#s308, one record on aries-black, measured 2026-10-29): `2`, every edit sent.
+/// Only the typed shape held it, which has no `icon`, so neither shape fitted and `owned` and
+/// `icon` were reported. It is READ (#s182, `TOOL_RESULT_READ`): the card draws the edit's diff
+/// from the call input and says when fewer edits were applied than sent. That record said `updated`
+/// false with `seq` 1 beside its 2 applied edits. REVISIT: `updated` false beside `editsApplied`
+/// on a later publish, which would say the flag means something other than "the page changed";
+/// the card reads neither `updated` nor `seq`.
 const ARTIFACT_PUBLISH_SHAPE: &[&str] = &[
     "artifact_id",
     "audience",
     "contract",
+    "editsApplied",
     "files_written",
     "icon",
     "liveSubscription",
@@ -1728,6 +1737,19 @@ const ARTIFACT_OPEN_SHAPE: &[&str] = &["artifact_id", "opened", "title", "url"];
 /// carries both whole. REVISIT: a read whose text does not carry the files (a binary or a very
 /// large file), where `saved_to` would be the reader's only handle and the card should offer it.
 const ARTIFACT_READ_SHAPE: &[&str] = &["files_read"];
+
+/// Every key an Artifact `read` by URL alone was met with (#s308; the call input is `{action:
+/// "read", url}` with no `paths`): `{read: {bytes, code, codeText, result, durationMs, url, title},
+/// artifactRead: {slug, ver}, owned}`, integers and strings, `code` 200 and `result` empty in every
+/// one, and `owned` a boolean, true in all. Measured 2026-10-29: 3 records in 3 sessions on
+/// aries-black, client 2.1.312, and 2 in one session on this machine, client 2.1.311. Under client
+/// 2.1.296 the same read was `{read, artifactRead}` with no `owned`, and a read that got a 404 is
+/// `{read}` alone; both of those keys are on the flat ignored list, and `owned` is the one key out
+/// of a shape. It is the flag a create and a publish carry (#s181, #s268), with as little use on the
+/// card, which draws the result TEXT. The sibling of [`ARTIFACT_READ_SHAPE`], the read WITH `paths`.
+/// REVISIT: `owned` arriving false (a read of an artifact the caller does not own), or a read with
+/// `paths` on 2.1.312 or later carrying `owned` beside `files_read`.
+const ARTIFACT_URL_READ_SHAPE: &[&str] = &["artifactRead", "owned", "read"];
 
 /// The whole of an ArtifactComments `watch` result (#s268, client 2.1.310, one record, measured
 /// 2026-10-26; the call input is `{action: "watch", url}`): `{watch: {url, watching, outcome,
@@ -1928,7 +1950,9 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     ("icon", ARTIFACT_PUBLISH_SHAPE),
     // #s268 (client 2.1.310): a publish from a file now carries `owned` beside `icon`, true as in a
     // create and a typed publish. Known only in this shape; adding it also silences `icon` again,
-    // which came back beside it.
+    // which came back beside it. #s308 (client 2.1.312): a publish from a file with `edits` ends
+    // with `editsApplied`, which is READ; it is in this shape's array so that record keeps `owned`
+    // and `icon` known, as #s181 put it in the typed shape's.
     ("owned", ARTIFACT_PUBLISH_SHAPE),
     // #s87 (client 2.1.296): a publish's `files_written` repeats the call input's `files` map with a
     // digest per file, and an open's `opened` is a boolean its result text states. Both are generic
@@ -1951,6 +1975,10 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // #s181 (client 2.1.303): an Artifact read's whole result is `{files_read}`, whose text the card
     // draws in full. Known only as the whole result, as CronList's `jobs` is.
     ("files_read", ARTIFACT_READ_SHAPE),
+    // #s308 (clients 2.1.311 and 2.1.312): an Artifact read by URL alone now carries `owned` beside
+    // the flat-known `read` and `artifactRead`, true as in a create and a publish. Known only in
+    // this shape.
+    ("owned", ARTIFACT_URL_READ_SHAPE),
     // #s268 (client 2.1.310): an ArtifactComments watch's whole result is `{watch}`, connection
     // bookkeeping beside what the result text already says. `watch` is a generic word, so it is
     // known only as the whole result, never on the flat ignored list.
@@ -9226,6 +9254,20 @@ mod tests {
             "owned beside icon is known whole: {:?}",
             unknown_tool_result_keys(&owned)
         );
+        // #s308: since client 2.1.312 a publish from a file with edits also counts what it applied.
+        let mut edited = owned.clone();
+        edited["editsApplied"] = serde_json::json!(2);
+        assert!(
+            unknown_tool_result_keys(&edited).is_empty(),
+            "owned, icon and editsApplied are known whole: {:?}",
+            unknown_tool_result_keys(&edited)
+        );
+        edited["somethingNew"] = serde_json::json!(1);
+        assert_eq!(
+            unknown_tool_result_keys(&edited),
+            vec!["icon", "owned", "somethingNew"],
+            "beside a key from outside the shape, the shaped names come back with it"
+        );
     }
 
     /// #s268: an ArtifactComments `watch` result (client 2.1.310) is known whole, and `watch` beside
@@ -9514,6 +9556,33 @@ mod tests {
             unknown_tool_result_keys(&serde_json::json!({"files_read": {}, "stdout": "ok"})),
             vec!["files_read"],
             "beside another key, files_read is reported"
+        );
+    }
+
+    /// #s308: an Artifact read by URL alone (clients 2.1.311 and 2.1.312) is `{read, artifactRead,
+    /// owned}`, known whole; `owned` beside a key from outside that shape is reported. Hand-written:
+    /// no real ids, URLs or titles.
+    #[test]
+    fn an_artifact_read_by_url_is_known_with_owned_in_its_own_shape() {
+        let read = serde_json::json!({
+            "read": {
+                "bytes": 2048, "code": 200, "codeText": "OK", "result": "", "durationMs": 310,
+                "url": "https://example.test/artifact/x", "title": "Tern colony notes"
+            },
+            "artifactRead": {"slug": "x", "ver": "v3"},
+            "owned": true
+        });
+        assert!(
+            unknown_tool_result_keys(&read).is_empty(),
+            "a whole read by URL is known: {:?}",
+            unknown_tool_result_keys(&read)
+        );
+        let mut stray = read.clone();
+        stray["somethingNew"] = serde_json::json!(1);
+        assert_eq!(
+            unknown_tool_result_keys(&stray),
+            vec!["owned", "somethingNew"],
+            "beside a key from outside the shape, owned is reported"
         );
     }
 
