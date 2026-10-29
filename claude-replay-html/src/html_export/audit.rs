@@ -118,8 +118,9 @@ pub const CLAIMS: &[KindClaim] = &[
     },
     KindClaim {
         kind: "assistant",
-        parts: &["md"],
-        why: "both assistant arms (`AssistantText`, `AssistantMessage`) push exactly one `md`",
+        parts: &["md", "note"],
+        why: "the assistant arms (`AssistantText`, `AssistantMessage`, `AssistantCutOff`) push \
+              exactly one `md`; a reply cut off mid-stream (#s305) adds one `note` after it",
     },
     KindClaim {
         kind: "think",
@@ -239,6 +240,8 @@ pub fn corpus_for(kind: BlockKind) -> Vec<Block> {
                 phase: crate::model::AssistantPhase::Final,
                 inferred: false,
             },
+            // #s305: a reply the person cut off mid-stream, its prose then a `note`.
+            Block::AssistantCutOff("The skuas moved to the north cliff, and the".into()),
         ],
         // Thinking with no tools — `block_kind` calls that `Think`.
         Think => vec![Block::Thinking {
@@ -507,6 +510,13 @@ pub fn audit_jsonl() -> String {
     push(json!({"type":"assistant","timestamp":stamp(),
         "message":{"role":"assistant","content":[{"type":"text","text":"Because a browser can only be pointed at a **store**."}],
                    "usage":{"input_tokens":10,"output_tokens":20}}}));
+    // assistant / note — a reply the person cut off mid-stream (#s305): its prose, then the
+    // `note` that says it stopped there.
+    push(
+        json!({"type":"assistant","timestamp":stamp(),"isAbortedMidStream":true,
+        "message":{"role":"assistant","stop_reason":null,"content":[{"type":"text","text":"And a store is what the"}],
+                   "usage":{"input_tokens":10,"output_tokens":4}}}),
+    );
     // think / think — thinking with NO tool in the same message, which is what makes it `Think`
     // rather than `Act` (the `blocks` part is unreachable from this kind; see CLAIMS).
     push(json!({"type":"assistant","timestamp":stamp(),

@@ -1463,6 +1463,277 @@ fn delivery_recovery(
         .iter()
         .any(|m| m == "thread/queue/delete"));
 }
+/// #s257 (found by the review of #s248): native mode's composer stays open over the transcript's
+/// foot, and a search step only counted the ordinary box as covering it. A step lands the match's
+/// record near the top; the only match here is paragraph 14 of a 30-paragraph answer, with a few
+/// draft lines in the composer, so the landing alone leaves it under the composer. The step must
+/// leave it in sight above the composer, its record's head above the column (only the reveal does
+/// that).
+#[test]
+#[ignore = "requires release native Monitor and Chrome"]
+fn native_desktop_search_step_never_leaves_a_match_under_the_composer() {
+    let _serial = serial();
+    let root = base("native-desktop-search");
+    let stores = Stores::new(&root);
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let tall = (1..=30)
+        .map(|k| {
+            if k == 14 {
+                "paragraph 14 holds the needle the search looks for.".to_string()
+            } else if k == 8 {
+                "paragraph 8 holds the marker the second search looks for.".to_string()
+            } else {
+                format!("paragraph {k} of the long answer.")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let mut items = vec![
+        serde_json::json!({"type":"session_meta","payload":{"id":"native-search","cwd":project,"originator":"codex_cli_rs"}}),
+    ];
+    let turns = [
+        ("give me the long answer".to_string(), tall),
+        ("and a short one".into(), "short.".into()),
+        ("another".into(), "also short.".into()),
+        ("last".into(), "done.".into()),
+    ];
+    for (k, (ask, answer)) in turns.iter().enumerate() {
+        items.push(serde_json::json!({"timestamp":format!("2026-10-19T04:0{k}:00Z"),"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":ask}]}}));
+        items.push(serde_json::json!({"timestamp":format!("2026-10-19T04:0{k}:01Z"),"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":answer}]}}));
+    }
+    let history = items
+        .iter()
+        .map(|value| value.to_string() + "\n")
+        .collect::<String>();
+    let rollout = stores.codex_session("native-search", &history);
+    let native = native::NativeServer::start(&project, &root.join("state-19844"), &rollout);
+    let endpoint = native.endpoint.clone();
+    let args = vec![
+        "--codex-server-url",
+        endpoint.as_str(),
+        "--codex-allowed-root",
+        project.to_str().unwrap(),
+    ];
+    let monitor = Monitor::spawn_with_args(
+        Kind::V1,
+        19844,
+        &root,
+        Some(&stores),
+        true,
+        &[
+            ("HOME", root.to_str().unwrap()),
+            (
+                "CODEX_NATIVE_BINARY",
+                "/nonexistent/native-fixture-must-not-launch-codex",
+            ),
+        ],
+        &args,
+    );
+    let (_browser, tab) = chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    monitor.pair(&tab);
+    monitor.open(&tab, "/?ui=app");
+    wait(
+        &tab,
+        "!!document.getElementById('codexNativeButton') && innerWidth >= 1200",
+    );
+    click(&tab, "#filterBtn");
+    click(&tab, "[data-filter-reset]");
+    click(&tab, "#filterBtn");
+    click(&tab, "#writeSwitch");
+    wait(&tab, "!document.getElementById('codexNativeButton').hidden");
+    click(&tab, "#codexNativeButton");
+    wait(
+        &tab,
+        "document.getElementById('nativeEnable')?.getAttribute('aria-checked') === 'false'",
+    );
+    click(&tab, "#nativeEnable");
+    wait(
+        &tab,
+        "document.getElementById('codexNativeButton')?.dataset.nativeEnabled === 'true'",
+    );
+    wait(
+        &tab,
+        "!!document.querySelector('[data-session=rollout-native-search]')",
+    );
+    tab.press_key("Escape").unwrap();
+    click(&tab, "[data-session=rollout-native-search]");
+    wait(&tab, "document.body.dataset.sharedCodex === 'true' && document.getElementById('composer').classList.contains('production-show') && document.getElementById('transcript').innerText.includes('paragraph 30')");
+    eval(
+        &tab,
+        "(() => { const i = document.getElementById('composeInput'); i.value = 'draft line 1\\ndraft line 2\\ndraft line 3\\ndraft line 4\\ndraft line 5'; i.dispatchEvent(new Event('input', { bubbles: true })); return true; })()",
+    );
+    eval(&tab, "(() => { const b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return true; })()");
+    wait(
+        &tab,
+        "!!document.querySelector('.virtual-window mark.search-mark.current')",
+    );
+    harness::pause("the search to settle", Duration::from_millis(600));
+    click(&tab, "#findNext");
+    // The composer and, when it shows, the runtime panel above it are what cover the foot.
+    let seen = "(() => { const m = document.querySelector('.virtual-window mark.search-mark.current'), t = document.getElementById('transcript').getBoundingClientRect(); if (!m) return 'none'; const covers = [document.getElementById('composer'), document.querySelector('.shared-runtime')].filter(e => e && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().height > 0).map(e => e.getBoundingClientRect().top); const floor = Math.min(t.bottom, ...covers); const r = m.getBoundingClientRect(), rec = m.closest('[data-block-index]').getBoundingClientRect(); return JSON.stringify({ above: r.bottom <= floor + 0.5 && r.top >= t.top - 0.5, revealed: rec.top < t.top - 0.5, mark: [Math.round(r.top), Math.round(r.bottom)], record: Math.round(rec.top), floor: Math.round(floor), col: [Math.round(t.top), Math.round(t.bottom)] }); })()";
+    until(
+        &tab,
+        &format!("(() => {{ const g = {seen}; return g !== 'none' && JSON.parse(g).above && JSON.parse(g).revealed; }})()"),
+        "a step to leave the match in sight above native mode's composer",
+        Duration::from_secs(5),
+        seen,
+    );
+    // With the runtime panel showing above the composer (a queued message, a pending approval), the
+    // panel is what covers the foot. "marker" (paragraph 8) lands between the panel's top and the
+    // composer's: under the panel, though above the composer, so only a floor that counts the panel
+    // reveals it.
+    eval(&tab, "(() => { const q = document.querySelector('.shared-runtime .shared-queue'); const d = document.createElement('div'); d.style.height = '150px'; d.textContent = 'queued'; q.append(d); return true; })()");
+    wait(&tab, "getComputedStyle(document.querySelector('.shared-runtime')).display !== 'none' && document.querySelector('.shared-runtime').getBoundingClientRect().height > 100");
+    eval(&tab, "(() => { const b = document.getElementById('transcriptSearchInput'); b.value = 'marker'; b.dispatchEvent(new Event('input', { bubbles: true })); return true; })()");
+    wait(
+        &tab,
+        "!!document.querySelector('.virtual-window mark.search-mark.current') && /marker/.test(document.querySelector('.virtual-window mark.search-mark.current').textContent)",
+    );
+    harness::pause("the search to settle", Duration::from_millis(600));
+    click(&tab, "#findNext");
+    until(
+        &tab,
+        &format!("(() => {{ const g = {seen}; return g !== 'none' && JSON.parse(g).above && JSON.parse(g).revealed; }})()"),
+        "a step to leave the match in sight above native mode's runtime panel",
+        Duration::from_secs(5),
+        seen,
+    );
+}
+/// #s259 (found by the review of #s257): in a short window native mode's composer and its runtime
+/// panel can reach the transcript's top, and then no match is ever in sight above them. Each step
+/// fell back to the hit nearest the top, which is the one the step before had just landed, so it
+/// landed that one again: the jump's own scroll, inside the intent window the jump itself opens,
+/// had cleared the record of where it landed. Remembered, the landing still was not enough while
+/// the step re-entered from the top, which starts at the first hit of the unit there: three
+/// command outputs in one unit fell back to the first. From the top, each step must land the next
+/// hit in order. (Red either way the browser reports the engine's own scroll write: where it fires
+/// a scroll event the landing was forgotten, and where it does not the step fell back inside the
+/// unit.)
+#[test]
+#[ignore = "requires release native Monitor and Chrome"]
+fn native_search_steps_move_on_when_the_composer_covers_the_whole_column() {
+    let _serial = serial();
+    let root = base("native-covered-search");
+    let stores = Stores::new(&root);
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut items = vec![
+        serde_json::json!({"type":"session_meta","payload":{"id":"native-covered","cwd":project,"originator":"codex_cli_rs"}}),
+    ];
+    // Turn 2's three commands are ONE unit with three hits, the shape that bounced between its first
+    // two once the landing was remembered: a step re-entering from the top starts at the unit's
+    // first record.
+    for k in 0..6 {
+        items.push(serde_json::json!({"timestamp":format!("2026-10-19T04:{k:02}:00Z"),"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":format!("question {k}")}]}}));
+        let answer = if k == 2 {
+            for j in 0..3 {
+                items.push(serde_json::json!({"timestamp":format!("2026-10-19T04:{k:02}:0{}Z", 1 + 2 * j),"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":format!("call-{j}"),"arguments":format!("{{\"cmd\":\"cat part-{j}.txt\"}}")}}));
+                items.push(serde_json::json!({"timestamp":format!("2026-10-19T04:{k:02}:0{}Z", 2 + 2 * j),"type":"response_item","payload":{"type":"function_call_output","call_id":format!("call-{j}"),"output":format!("output {j} holds the needle.")}}));
+            }
+            "the commands ran.".to_string()
+        } else {
+            format!("answer {k} holds the needle.\n\nIt goes on for a second paragraph.\n\nAnd a third.")
+        };
+        items.push(serde_json::json!({"timestamp":format!("2026-10-19T04:{k:02}:09Z"),"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":answer}]}}));
+    }
+    let history = items
+        .iter()
+        .map(|value| value.to_string() + "\n")
+        .collect::<String>();
+    let rollout = stores.codex_session("native-covered", &history);
+    let native = native::NativeServer::start(&project, &root.join("state-19845"), &rollout);
+    let endpoint = native.endpoint.clone();
+    let args = vec![
+        "--codex-server-url",
+        endpoint.as_str(),
+        "--codex-allowed-root",
+        project.to_str().unwrap(),
+    ];
+    let monitor = Monitor::spawn_with_args(
+        Kind::V1,
+        19845,
+        &root,
+        Some(&stores),
+        true,
+        &[
+            ("HOME", root.to_str().unwrap()),
+            (
+                "CODEX_NATIVE_BINARY",
+                "/nonexistent/native-fixture-must-not-launch-codex",
+            ),
+        ],
+        &args,
+    );
+    let (_browser, tab) = chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    monitor.pair(&tab);
+    monitor.open(&tab, "/?ui=app");
+    wait(
+        &tab,
+        "!!document.getElementById('codexNativeButton') && innerWidth >= 1200",
+    );
+    click(&tab, "#filterBtn");
+    click(&tab, "[data-filter-reset]");
+    click(&tab, "#filterBtn");
+    click(&tab, "#writeSwitch");
+    wait(&tab, "!document.getElementById('codexNativeButton').hidden");
+    click(&tab, "#codexNativeButton");
+    wait(
+        &tab,
+        "document.getElementById('nativeEnable')?.getAttribute('aria-checked') === 'false'",
+    );
+    click(&tab, "#nativeEnable");
+    wait(
+        &tab,
+        "document.getElementById('codexNativeButton')?.dataset.nativeEnabled === 'true'",
+    );
+    wait(
+        &tab,
+        "!!document.querySelector('[data-session=rollout-native-covered]')",
+    );
+    tab.press_key("Escape").unwrap();
+    click(&tab, "[data-session=rollout-native-covered]");
+    wait(&tab, "document.body.dataset.sharedCodex === 'true' && document.getElementById('composer').classList.contains('production-show') && document.getElementById('transcript').innerText.includes('answer 5')");
+    eval(
+        &tab,
+        "(() => { const i = document.getElementById('composeInput'); i.value = 'draft line 1\\ndraft line 2\\ndraft line 3\\ndraft line 4\\ndraft line 5'; i.dispatchEvent(new Event('input', { bubbles: true })); const q = document.querySelector('.shared-runtime .shared-queue'); const d = document.createElement('div'); d.style.height = '240px'; d.textContent = 'queued'; q.append(d); return true; })()",
+    );
+    harness::resize(&tab, 1280.0, 380.0);
+    // The premise: the topmost cover reaches the transcript's top, so nothing is in sight above it.
+    let cover = "(() => { const t = document.getElementById('transcript').getBoundingClientRect(); const tops = [document.getElementById('composer'), document.querySelector('.shared-runtime')].filter(e => e && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().height > 0).map(e => Math.round(e.getBoundingClientRect().top)); return JSON.stringify({ col: [Math.round(t.top), Math.round(t.bottom)], tops, h: innerHeight }); })()";
+    until(
+        &tab,
+        &format!("(() => {{ const g = JSON.parse({cover}); return g.h <= 380 && g.tops.length > 0 && Math.min(...g.tops) <= g.col[0]; }})()"),
+        "the composer and its runtime panel to reach the transcript's top",
+        Duration::from_secs(5),
+        cover,
+    );
+    eval(&tab, "(() => { const b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return true; })()");
+    wait(
+        &tab,
+        "!!document.querySelector('.virtual-window mark.search-mark.current')",
+    );
+    harness::pause("the search to settle", Duration::from_millis(600));
+    // From the top, so the first step lands the first hit and the rest follow in order.
+    harness::scroll_by(&tab, harness::Surface::AppShell, -100_000);
+    harness::pause("the move to the top to settle", Duration::from_millis(500));
+    let landed = "(() => { const m = document.querySelector('.virtual-window mark.search-mark.current'); return m ? ((m.parentElement.textContent.match(/(answer|output) \\d/) || ['?'])[0]) : 'none'; })()";
+    let mut seen = Vec::new();
+    for _ in 0..6 {
+        click(&tab, "#findNext");
+        // Past the jump's own scroll event and the intent window it opened.
+        harness::pause("the step's landing to settle", Duration::from_millis(500));
+        seen.push(eval(&tab, landed).as_str().unwrap_or("?").to_string());
+    }
+    assert_eq!(
+        seen,
+        ["answer 0", "answer 1", "output 0", "output 1", "output 2", "answer 3"],
+        "each step lands the next hit, in order ({})",
+        eval(&tab, cover)
+    );
+}
 #[test]
 #[ignore = "requires release native Monitor and Chrome"]
 fn native_desktop_lifecycle() {

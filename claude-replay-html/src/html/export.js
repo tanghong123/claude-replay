@@ -588,12 +588,17 @@
     // Plain user turn — an always-open card. Long messages are clamped to a few
     // lines with a "more" expander (measured after layout in clampBatch).
     if (b.kind === "user") {
-      var card = el("div", "uturn blk");
+      // A relayed message from the person, verified (#s272): their card, headed by what the relay
+      // says of it, the words it replies to above theirs, the relay's instructions folded below.
+      var inbox = shared.inboxOf(b);
+      var card = el("div", "uturn blk" + (inbox ? " inbox" : ""));
       card.id = b.id;
       card.dataset.turn = b.turn;
       card.dataset.label = b.label;
       card.appendChild(el("span", "caret", "❯"));
       var ub = el("div", "uturn-body");
+      if (inbox) ub.appendChild(inboxHead(inbox));
+      if (inbox && inbox.reply_to) ub.appendChild(inboxQuote(inbox.reply_to));
       var md = el("div", "uturn-md");
       if (rawFor(b) && typeof b.src === "string") {
         md.appendChild(el("pre", "raw", b.src));   // textContent — exactly what was typed
@@ -601,12 +606,53 @@
         body.forEach(function (p) { renderPart(p, md); });
       }
       ub.appendChild(md);
+      if (inbox && typeof inbox.do === "string" && inbox.do) ub.appendChild(inboxDo(inbox.do));
       card.appendChild(ub);
       if (b.ts) card.appendChild(el("span", "ts", fmtTime(b.ts)));
       if (b.dur) card.appendChild(turnDur(b.dur));
       if (typeof b.src === "string") card.appendChild(rawToggle(b));
       card.appendChild(anchor(b.id));
       return card;
+    }
+
+    function inboxHead(inbox) {
+      var h = el("div", "inbox-h");
+      h.appendChild(el("span", "inbox-from", inbox.from));
+      shared.inboxChips(inbox, fmtTime).forEach(function (c) {
+        var chip = el("span", "inbox-chip", c.text);
+        chip.dataset.chip = c.cls;
+        chip.title = c.title;
+        h.appendChild(chip);
+      });
+      return h;
+    }
+    function inboxQuote(q) {
+      var bq = el("blockquote", "inbox-quote");
+      if (q.from) bq.appendChild(el("span", "inbox-quote-from", q.from));
+      bq.appendChild(el("span", "inbox-quote-text", String(q.text || "")));
+      return bq;
+    }
+    // Folded until asked: the relay's words to the agent, not the reader's. The page learns of
+    // the height change through the engine's hold, as a fold's does (`toggleFold`).
+    function inboxDo(text) {
+      var box = el("div", "inbox-do");
+      var btn = el("button", "inbox-do-h", shared.INBOX_DO_LABEL);
+      btn.type = "button";
+      btn.setAttribute("aria-expanded", "false");
+      var tx = el("div", "inbox-do-b", text);
+      tx.hidden = true;
+      btn.onclick = function () {
+        vw.readerReshaped();
+        vw.holdThrough(function () {
+          var open = tx.hidden;
+          tx.hidden = !open;
+          btn.setAttribute("aria-expanded", String(open));
+          box.classList.toggle("open", open);
+        });
+      };
+      box.appendChild(btn);
+      box.appendChild(tx);
+      return box;
     }
 
     // Another session's message (#s79) — the card from the left: `⇄`, its sender, then the
@@ -638,7 +684,8 @@
         var ac = el("div", "amark blk");
         ac.id = b.id;
         ac.appendChild(el("span", "acaret", "▤"));
-        ac.appendChild(el("span", "akind", (h.att_kind || "file") + " "));
+        // #s296: `edited` is Claude Code telling the model a file changed on disk, not an edit.
+        ac.appendChild(el("span", "akind", (h.att_kind === "edited" ? "changed on disk" : h.att_kind || "file") + " "));
         var an = el("span", "aname", h.att_name || "attachment");
         var text = h.att_text, datauri = h.att_datauri, path = h.att_path, href = h.att_href;
         var sig = h.att_sig;

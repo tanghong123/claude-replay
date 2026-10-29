@@ -82,6 +82,7 @@ pub struct Serial {
 
 impl Drop for Serial {
     fn drop(&mut self) {
+        reap_own_browsers();
         let roots = CASE_ROOTS.with(|roots| std::mem::take(&mut *roots.borrow_mut()));
         if std::thread::panicking() || std::env::var_os("CR_KEEP_SCRATCH").is_some() {
             return;
@@ -204,11 +205,11 @@ pub fn queued_at(t: &str, ts: &str) -> String {
 pub fn compaction_at(ts: &str) -> String {
     format!("{{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"timestamp\":\"{ts}\",\"content\":\"Conversation compacted\",\"compactMetadata\":{{\"trigger\":\"auto\",\"preTokens\":594718,\"postTokens\":8617}}}}\n")
 }
-/// A file the reader had OPEN IN THEIR EDITOR when they sent the prompt — Claude Code records it
-/// as a standalone `attachment` event right after the user message, and both pages hang it off
-/// that prompt. `edited_text_file` is path-only by design (the inline `snippet` is truncated), so
-/// the engine gives it `AttachmentKind::Edited` and no bytes: the card's whole job is to say the
-/// file was edited and offer a way to it.
+/// Claude Code's notice to the model that a file it had read CHANGED ON DISK since (#s296; it was
+/// once taken for a file open in the reader's editor): an `edited_text_file` attachment, written
+/// on the first turn after the change, often right after the prompt. Path-only, so the engine
+/// gives it `AttachmentKind::Edited` and no bytes; the pages draw it as a notice, never as a file
+/// the person attached.
 pub fn edited_file_at(path: &str, ts: &str) -> String {
     format!(
         "{{\"type\":\"attachment\",\"timestamp\":\"{ts}\",\"attachment\":{{\"type\":\"edited_text_file\",\"filename\":\"{path}\",\"snippet\":\"1\\tintro\"}}}}\n"
@@ -1036,7 +1037,22 @@ impl Stores {
             ("CLAUDE_JDI_TASKS_ROOT", self.root.join("claude-tasks")),
             // #283: Claude Code's per-user scratch (`/tmp/claude-<uid>` on a real machine).
             ("CLAUDE_SCRATCH_ROOT", self.root.join("claude-scratch")),
+            // #s272: where a relayed message's key is read, so no case reads this Mac's own.
+            ("ARIES_STATE_DIR", self.root.join("aries")),
         ]
+    }
+
+    /// #s272: the inbox key the relayed messages are signed with — the format's test key, 32
+    /// zero bytes, 0600 as aries-inbox makes it — and the `uploads/` beside it, where aries-inbox
+    /// saves a message's pictures (a picture line names a file only there), returned.
+    pub fn aries_key(&self) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = self.root.join("aries");
+        std::fs::create_dir_all(dir.join("uploads")).unwrap();
+        let key = dir.join("inbox-key");
+        std::fs::write(&key, [0u8; 32]).unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        dir.join("uploads")
     }
 
     /// A Claude session `sid` under the project slug `-r` (the builders' cwd), with `jsonl`.
@@ -1752,6 +1768,23 @@ pub fn chrome_with(extra: &[&str]) -> headless_chrome::Browser {
     panic!("chrome launches: {LAUNCHES} launches failed (last: {last})")
 }
 
+/// The flags every Chrome a case launches carries, so none reaches for this Mac's keychain (Aries
+/// for Hong, 2026-10-28): the suite's Chrome for Testing, with a profile of its own, asked macOS for
+/// a keychain to keep its data in, and macOS put "找不到钥匙串" (no keychain found) on Hong's screen,
+/// offering a Reset to Default that would replace his login keychain. `--use-mock-keychain` keeps
+/// Chrome's secrets in memory on macOS; `--password-store=basic` is the same on Linux.
+pub const NO_KEYCHAIN: [&str; 2] = ["--use-mock-keychain", "--password-store=basic"];
+
+/// `extra`, then [`NO_KEYCHAIN`]: the arguments of a Chrome a case launches itself.
+pub fn chrome_args<'a>(extra: &[&'a str]) -> Vec<&'a std::ffi::OsStr> {
+    extra
+        .iter()
+        .copied()
+        .chain(NO_KEYCHAIN.iter().copied())
+        .map(std::ffi::OsStr::new)
+        .collect()
+}
+
 /// One Chrome launch, given up after `patience` (#s143). headless_chrome finds the DevTools
 /// address by a BLOCKING read of Chrome's stderr, so its own 30 s timeout is checked only between
 /// reads and never fires on a Chrome that starts and says nothing: a suite stood still for an
@@ -1779,6 +1812,7 @@ pub fn launch_within(
             std::ffi::OsStr::new("--disable-renderer-backgrounding"),
         ];
         args.extend(extra.iter().map(std::ffi::OsStr::new));
+        args.extend(NO_KEYCHAIN.iter().map(std::ffi::OsStr::new));
         let _ = tx.send(headless_chrome::Browser::new(
             headless_chrome::LaunchOptions::default_builder()
                 .path(path)
@@ -2048,6 +2082,44 @@ fn reap_stranded_browsers() {
             eprintln!("harness: reaped {killed} browser process(es) stranded by an earlier run");
         }
     });
+}
+
+/// Kill every process left of the browsers THIS process launched (#s293), as each case ends: the
+/// [`Serial`] guard drops after the case's browsers, cases run one at a time and none keeps a
+/// browser across cases, so nothing live is in range. headless_chrome kills only the browser
+/// process when it drops; its helpers then exit on their own, within a second on a Mac at rest. On
+/// a drained, throttled one they did not (2026-10-28: about 200 helpers with parent 1 under one
+/// scenarios binary, load near 1000, until the battery gave out), and
+/// [`reap_stranded_browsers`] takes only processes whose owner is gone, never a running binary's
+/// own. Matched on the `--user-data-dir` argument itself, so a command that merely names the mark
+/// (a watchdog's `awk`) is never in range, nor a sibling suite's profiles or the developer's Chrome.
+pub fn reap_own_browsers() {
+    let mark = format!(
+        "{}{}-",
+        std::env::temp_dir().join(BROWSER_PROFILE_MARK).display(),
+        std::process::id()
+    );
+    let Ok(out) = std::process::Command::new("ps")
+        .args(["-Awwo", "pid=,command="])
+        .output()
+    else {
+        return;
+    };
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some((pid, command)) = line.trim().split_once(' ') else {
+            continue;
+        };
+        let ours = command.split(' ').any(|arg| {
+            arg.strip_prefix("--user-data-dir=")
+                .is_some_and(|dir| dir.starts_with(&mark))
+        });
+        if ours {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", pid])
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
 }
 
 /// Kill a monitor a previous run left on this port. `Monitor`'s `Drop` has the same hole as the
@@ -3340,6 +3412,63 @@ pub fn hold_the_head(tab: &headless_chrome::Tab) {
         run_immediately: None,
     })
     .expect("the head is held");
+}
+
+/// #s277: queue the head's reads of a records-by-turn open (`?windowed=1`): every `/records` read below the tail's own offset (the first one the page
+/// makes) waits until `window.__release(n)`; `window.__answer409 = n` answers the next `n` released
+/// reads with a stale epoch. With `hold_index`, the turn index waits too, until
+/// `window.__releaseIndex()`. `window.__readLog` lists every head read's offset, in order. With
+/// `window.__holdSearch` set, each search on the server (#s278) waits until `window.__releaseSearch()`.
+pub fn queue_the_head(tab: &headless_chrome::Tab, hold_index: bool) {
+    use headless_chrome::protocol::cdp::Page;
+    let source = r#"(function(){
+      var real = window.fetch;
+      window.__tailFrom = null; window.__heldReads = []; window.__readLog = []; window.__answer409 = 0;
+      window.__holdIndex = HOLD; window.__heldIndex = []; window.__tailPulls = 0;
+      window.__holdSearch = false; window.__heldSearch = [];
+      window.__release = function (n) { var k = n == null ? Infinity : n; while (k-- > 0 && window.__heldReads.length) window.__heldReads.shift().go(); return window.__heldReads.length; };
+      window.__releaseIndex = function () { window.__holdIndex = false; while (window.__heldIndex.length) window.__heldIndex.shift()(); };
+      window.__releaseSearch = function () { window.__holdSearch = false; while (window.__heldSearch.length) window.__heldSearch.shift()(); };
+      window.fetch = function (input, init) {
+        var url = String(input && input.url || input), self = this;
+        if (/\/pull\?/.test(url) && /[?&]tail=/.test(url)) window.__tailPulls++;
+        if (/\/turn-index\?/.test(url) && window.__holdIndex) return new Promise(function (res) { window.__heldIndex.push(function () { res(real.call(self, input, init)); }); });
+        if (/\/search\?/.test(url) && window.__holdSearch) return new Promise(function (res) { window.__heldSearch.push(function () { res(real.call(self, input, init)); }); });
+        if (/\/records\?/.test(url)) {
+          var from = Number(new URL(url, location.href).searchParams.get('from'));
+          if (window.__tailFrom == null) { window.__tailFrom = from; return real.call(self, input, init); }
+          if (from < window.__tailFrom) {
+            window.__readLog.push(from);
+            return new Promise(function (res) { window.__heldReads.push({ from: from, go: function () {
+              if (window.__answer409 > 0) { window.__answer409--; res(new Response('stale epoch', { status: 409 })); }
+              else res(real.call(self, input, init));
+            } }); });
+          }
+        }
+        return real.call(this, input, init);
+      };
+    })();"#
+        .replace("HOLD", if hold_index { "true" } else { "false" });
+    tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+        source,
+        world_name: None,
+        include_command_line_api: None,
+        run_immediately: None,
+    })
+    .expect("the head's reads are queued");
+}
+
+/// Answer every `/turn-index` read with a refusal (#s276), as a server from before the turn index
+/// would: the page then reads the panes from the records it has, as it did before.
+pub fn refuse_the_index(tab: &headless_chrome::Tab) {
+    use headless_chrome::protocol::cdp::Page;
+    tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+        source: r#"(function(){ var real = window.fetch; window.__indexRefused = 0; window.fetch = function(input, init){ var url = String(input && input.url || input); if (/\/turn-index\?/.test(url)) { window.__indexRefused++; return Promise.resolve(new Response("not found", { status: 404 })); } return real.call(this, input, init); }; })();"#.to_string(),
+        world_name: None,
+        include_command_line_api: None,
+        run_immediately: None,
+    })
+    .expect("the index is refused");
 }
 
 /// A finger's TAP at `(x, y)` (#330): Chrome's own synthesized touch tap, so the page sees what a

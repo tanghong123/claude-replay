@@ -1874,6 +1874,7 @@ esac
             body,
             authenticated: paired,
             origin_ok: true,
+            masked: false,
         }
     }
 

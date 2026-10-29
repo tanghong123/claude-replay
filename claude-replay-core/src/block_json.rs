@@ -60,6 +60,11 @@ pub fn write_blocks<'a, W: std::io::Write + ?Sized>(
         if let Block::UserReply { context, .. } = b {
             o.insert("reply_context".into(), json!(context));
         }
+        // #s272: a relayed message from the person, verified — what the relay wrote beside
+        // their words, which `text` holds.
+        if let Block::UserInbox { inbox, .. } = b {
+            o.insert("inbox".into(), json!(inbox));
+        }
         out.write_all(Value::Object(o).to_string().as_bytes())?;
         out.write_all(b"\n")?;
     }
@@ -73,7 +78,11 @@ fn block_fields(b: &Block, o: &mut Map<String, Value>) {
     match b {
         Block::UserText(t)
         | Block::UserReply { text: t, .. }
+        | Block::UserInbox { text: t, .. }
         | Block::AssistantText(t)
+        // #s305: a reply cut off mid-stream is prose here, as it was before the mark: the
+        // stream is public, and the mark is drawn, not stated.
+        | Block::AssistantCutOff(t)
         | Block::ToolResult(t) => {
             o.insert("text".into(), json!(t));
         }

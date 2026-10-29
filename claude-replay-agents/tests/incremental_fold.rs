@@ -118,6 +118,7 @@ fn run(adapter: &dyn TranscriptAdapter, path: &Path, park: Option<&Park>) -> (Ta
                     }
                 }
                 Message::AssistantText(_)
+                | Message::AssistantCutOff(_)
                 | Message::AssistantMessage { .. }
                 | Message::Thinking { .. } => working = true,
                 _ => {}

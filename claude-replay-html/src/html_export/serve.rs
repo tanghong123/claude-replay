@@ -1112,7 +1112,10 @@ impl SessionService {
     }
 
     /// Serve `[from, from+len)` off `<id>.records` — the client's committed range read (the
-    /// second phase of a pull whose reply carried a `committed_ext` pointer). `Err(StaleEpoch)` → **409**
+    /// second phase of a pull whose reply carried a `committed_ext` pointer, or a piece of a
+    /// tail-first open's head, #s274) — in whole records: an end inside a record is carried on to
+    /// its end, and a `from` that is not where a record starts is refused (`NotARecordStart` →
+    /// **400**), so secret masking always reads whole records. `Stale` → **409**
     /// when `epoch` doesn't match the log's current epoch: a reset recreated the log since the
     /// pointer was issued, so the bytes would be wrong — the client drops the whole reply and
     /// re-pulls with its old cursor (the epoch bump then resyncs it). Read under the session
@@ -1123,16 +1126,72 @@ impl SessionService {
         from: u64,
         len: u64,
         epoch: u64,
-    ) -> Result<Vec<u8>, StaleEpoch> {
+    ) -> Result<Vec<u8>, RecordsRefusal> {
         // Through the resident store, under the session lock — the epoch check can't tear
         // against a concurrent reset. A reaped resident yields 409; the client's next pull
         // rematerializes it and reissues the pointer.
+        let ss = self
+            .cache
+            .shared_peek(id)
+            .ok_or(RecordsRefusal::Stale(StaleEpoch))?;
+        ss.store_read(|cur_epoch, store| {
+            if cur_epoch != epoch {
+                return Err(RecordsRefusal::Stale(StaleEpoch));
+            }
+            store
+                .read_records(from, from.saturating_add(len))
+                .ok_or(RecordsRefusal::NotARecordStart)
+        })
+    }
+
+    /// The turn index for a page still waiting for records `[0, upto)` (#s276): their turns,
+    /// compactions, tool counts, artifacts and offered files, read under the session lock and
+    /// refused (**409**) when `epoch` is not the log's, as `/records` is.
+    pub fn turn_index_json(
+        &self,
+        id: &str,
+        epoch: u64,
+        upto: usize,
+    ) -> Result<Vec<u8>, StaleEpoch> {
         let ss = self.cache.shared_peek(id).ok_or(StaleEpoch)?;
         ss.store_read(|cur_epoch, store| {
             if cur_epoch != epoch {
                 return Err(StaleEpoch);
             }
-            Ok(store.read_range(from, from.saturating_add(len)))
+            Ok(store.turn_index(epoch, upto).to_string().into_bytes())
+        })
+    }
+
+    /// Search and the filter for a page still waiting for records `[0, upto)` (#s278,
+    /// `design/slow-links.md` §7): the records with hits and the counts, quoting no text. The log is
+    /// read OUTSIDE the session lock — a search of a long log must not hold the page's polls — and
+    /// the epoch is asked again after the read: a log that left it is refused (**409**) as
+    /// `/records` is, and one that could not be read is a **503** (the page asks again).
+    pub(crate) fn search_json(
+        &self,
+        id: &str,
+        epoch: u64,
+        upto: usize,
+        q: &super::search_match::Query,
+        masked: bool,
+    ) -> Result<Vec<u8>, SearchRefusal> {
+        let ss = self
+            .cache
+            .shared_peek(id)
+            .ok_or(SearchRefusal::Stale(StaleEpoch))?;
+        let (path, len) = ss.store_read(|cur_epoch, store| {
+            if cur_epoch != epoch {
+                return Err(SearchRefusal::Stale(StaleEpoch));
+            }
+            Ok((store.log_path().to_path_buf(), store.log_len()))
+        })?;
+        let found = super::search_match::search_log(&path, len, upto, q, masked)
+            .map_err(|_| SearchRefusal::Unreadable)?;
+        ss.store_read(|cur_epoch, store| {
+            if cur_epoch != epoch || store.log_len() < len {
+                return Err(SearchRefusal::Stale(StaleEpoch));
+            }
+            Ok(found.reply(epoch, upto).to_string().into_bytes())
         })
     }
 }
@@ -1348,6 +1407,24 @@ fn spawn_http_server(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StaleEpoch;
 
+/// Why `/search` answered no records (#s278).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchRefusal {
+    /// The log has left that epoch, or its resident was let go (409).
+    Stale(StaleEpoch),
+    /// The log could not be read (503).
+    Unreadable,
+}
+
+/// Why a `/records` range read was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordsRefusal {
+    /// The log has left that epoch (409).
+    Stale(StaleEpoch),
+    /// `from` is inside a record (400): a reply must hold whole records, for secret masking.
+    NotARecordStart,
+}
+
 /// Every plain-text reply's type (#317): WITH its charset. The refusal and error texts carry an em
 /// dash, and a browser in a zh locale decodes charset-less text as GBK, showing mojibake.
 pub const TEXT_PLAIN: &str = "text/plain; charset=utf-8";
@@ -1538,6 +1615,7 @@ pub fn get_request<'a>(name: &'a str, query: &'a str, authenticated: bool) -> Re
         body: &[],
         authenticated,
         origin_ok: true,
+        masked: false,
     }
 }
 
@@ -1559,6 +1637,10 @@ pub struct Request<'a> {
     /// `Origin`; a DNS-rebound one carries a foreign `Host`; both are refused here even if
     /// they somehow held a token.
     pub origin_ok: bool,
+    /// What this client is sent is masked (`mask_for`'s own question: the mask policy, and whether
+    /// the `Host` is the loopback). A route that answers from text it does not send — search on the
+    /// server (#s278) — asks it of what it reads, or its counts would see a secret the page cannot.
+    pub masked: bool,
 }
 
 impl Request<'_> {
@@ -2430,6 +2512,7 @@ fn serve_connection<R: Into<HttpReply>>(
         body: &body,
         authenticated: gate.token_ok(presented.as_deref()),
         origin_ok: !public && origin_ok(&headers, local_port, gate.trusted_hosts.as_ref()),
+        masked: super::mask::policy().masks(host_is_local(header_value(&headers, "host"))),
     };
 
     let (r, set_cookie, redirect_root) = match access {
@@ -2963,10 +3046,88 @@ pub fn service_routes(
         }
         return match live.records_bytes(id, num("from"), num("len"), num("epoch")) {
             Ok(bytes) => HttpResponse::ok("application/json; charset=utf-8", bytes),
+            Err(RecordsRefusal::Stale(StaleEpoch)) => HttpResponse {
+                code: "409 Conflict",
+                content_type: TEXT_PLAIN,
+                body: b"stale epoch".to_vec(),
+                headers: Vec::new(),
+                stream: None,
+            },
+            Err(RecordsRefusal::NotARecordStart) => HttpResponse {
+                code: "400 Bad Request",
+                content_type: TEXT_PLAIN,
+                body: b"from is not where a record starts".to_vec(),
+                headers: Vec::new(),
+                stream: None,
+            },
+        };
+    }
+    // `/turn-index?session=<id>&epoch=<e>&upto=<n>` — the record log's map for a page still
+    // waiting for its first `upto` records (#s276); 409 on a stale epoch, as `/records`.
+    if name == "turn-index" {
+        let Some(live) = live else {
+            return HttpResponse::not_found("no live server");
+        };
+        let id = query_get(query, "session").unwrap_or("");
+        let num = |k| {
+            query_get(query, k)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        if id.is_empty() || id.contains('/') || id.contains("..") {
+            return HttpResponse::not_found("no such agent");
+        }
+        return match live.turn_index_json(id, num("epoch"), num("upto") as usize) {
+            Ok(bytes) => HttpResponse::ok("application/json; charset=utf-8", bytes),
             Err(StaleEpoch) => HttpResponse {
                 code: "409 Conflict",
                 content_type: TEXT_PLAIN,
                 body: b"stale epoch".to_vec(),
+                headers: Vec::new(),
+                stream: None,
+            },
+        };
+    }
+    // `/search?session=<id>&epoch=<e>&upto=<n>&q=<the structured query, JSON>` — search and the
+    // filter for a page still waiting for its first `upto` records (#s278); 409 on a stale epoch,
+    // 400 for a query that is not one.
+    if name == "search" {
+        let Some(live) = live else {
+            return HttpResponse::not_found("no live server");
+        };
+        let id = query_get(query, "session").unwrap_or("");
+        let num = |k| {
+            query_get(query, k)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        if id.is_empty() || id.contains('/') || id.contains("..") {
+            return HttpResponse::not_found("no such agent");
+        }
+        let Ok(q) = serde_json::from_str::<super::search_match::Query>(&percent_decode(
+            query_get(query, "q").unwrap_or(""),
+        )) else {
+            return HttpResponse {
+                code: "400 Bad Request",
+                content_type: TEXT_PLAIN,
+                body: b"not a search query".to_vec(),
+                headers: Vec::new(),
+                stream: None,
+            };
+        };
+        return match live.search_json(id, num("epoch"), num("upto") as usize, &q, req.masked) {
+            Ok(bytes) => HttpResponse::ok("application/json; charset=utf-8", bytes),
+            Err(SearchRefusal::Stale(_)) => HttpResponse {
+                code: "409 Conflict",
+                content_type: TEXT_PLAIN,
+                body: b"stale epoch".to_vec(),
+                headers: Vec::new(),
+                stream: None,
+            },
+            Err(SearchRefusal::Unreadable) => HttpResponse {
+                code: "503 Service Unavailable",
+                content_type: TEXT_PLAIN,
+                body: b"the record log could not be read".to_vec(),
                 headers: Vec::new(),
                 stream: None,
             },
@@ -4145,6 +4306,7 @@ mod tests {
             body: b"",
             authenticated,
             origin_ok,
+            masked: false,
         };
         // Wrong method → 405, before anything else is even checked.
         assert_eq!(
@@ -4541,7 +4703,7 @@ mod tests {
                         r["epoch"].as_u64().unwrap(),
                     );
                     match live.records_bytes(id, from, len, epoch) {
-                        Err(StaleEpoch) => return, // 409: drop the reply whole; re-pull next tick
+                        Err(_) => return, // 409: drop the reply whole; re-pull next tick
                         Ok(bytes) => std::str::from_utf8(&bytes)
                             .expect("utf8 records")
                             .lines()
@@ -4947,6 +5109,370 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// #s274: what a phone reads of a long session is pieces of the record log, and secret
+    /// masking (#365) reads each reply from its first byte. A reply is whole records, wherever a
+    /// piece asked to end, so a masked piece shows no part of a secret — the reviewer's leak was a
+    /// piece starting or ending inside a record. Fake secrets are assembled at run time (CI runs
+    /// gitleaks over every line).
+    #[test]
+    fn a_masked_piece_of_the_record_log_shows_no_part_of_a_secret() {
+        use crate::cache::Cursor;
+        use crate::Transcript;
+        let base =
+            std::env::temp_dir().join(format!("cr-serve-mask-pieces-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("sid.jsonl");
+        std::fs::create_dir_all(&base).unwrap();
+        let key = format!("{}{}", ["sk", "ant", "api03-"].join("-"), "Q".repeat(40));
+        let tail = ["PRIVATE", "KEY-----"].join(" ");
+        let pem = format!(
+            "-----BEGIN RSA {tail}\n{}\n-----END RSA {tail}",
+            "Z".repeat(64)
+        );
+        let mut transcript = String::new();
+        for i in 0..6 {
+            let text = format!("turn {i}: the key {key} and the block {pem} and more words");
+            transcript += &serde_json::json!({"type": "user", "cwd": "/r", "timestamp": format!("2026-07-26T10:00:{:02}Z", i * 2), "message": {"role": "user", "content": [{"type": "text", "text": text}]}}).to_string();
+            transcript += "\n";
+            transcript += &serde_json::json!({"type": "assistant", "timestamp": format!("2026-07-26T10:00:{:02}Z", i * 2 + 1), "message": {"role": "assistant", "content": [{"type": "text", "text": format!("noted {i}")}]}}).to_string();
+            transcript += "\n";
+        }
+        std::fs::write(&sess, transcript).unwrap();
+        let live = SessionService {
+            fold: FoldPolicy::default(),
+            roots: std::sync::Mutex::new(vec![Root {
+                id: "sid".into(),
+                agent: Agent::CLAUDE,
+                path: sess.clone(),
+                cwd: "/r".into(),
+            }]),
+            cache: test_cache(&base),
+            port: std::sync::Arc::new(std::sync::OnceLock::new()),
+        };
+        live.cache
+            .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
+        let v: Value =
+            serde_json::from_str(&body(live.pull_response("sid", Cursor::default()))).unwrap();
+        let (end, epoch) = (
+            v["committed_ext"]["offset"].as_u64().unwrap()
+                + v["committed_ext"]["len"].as_u64().unwrap(),
+            v["epoch"].as_u64().unwrap(),
+        );
+        let whole = live.records_bytes("sid", 0, end, epoch).unwrap();
+        assert!(
+            String::from_utf8_lossy(&whole).contains(&"Q".repeat(40)),
+            "the fixture's records carry the key unmasked on disk"
+        );
+        let starts: Vec<u64> = std::iter::once(0)
+            .chain(
+                whole
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, b)| **b == b'\n')
+                    .map(|(i, _)| i as u64 + 1),
+            )
+            .filter(|&at| at < end)
+            .collect();
+        let mut pieces = 0;
+        for &from in &starts {
+            for len in (1..=(end - from)).step_by(37) {
+                let mut piece = live.records_bytes("sid", from, len, epoch).unwrap();
+                super::super::mask::mask_body("application/json; charset=utf-8", &mut piece);
+                let text = String::from_utf8_lossy(&piece);
+                for part in ["QQQQQQQQ", "ZZZZZZZZ"] {
+                    assert!(
+                        !text.contains(part),
+                        "a piece [{from}, +{len}) masked still shows {part:?}"
+                    );
+                }
+                pieces += 1;
+            }
+        }
+        assert!(pieces > 100, "many cuts were tried: {pieces}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// #s276: the turn index a page reads while its head loads. It lists the turns below the
+    /// boundary the page names, read under the log's epoch (a stale one is 409, as `/records`),
+    /// and it is the log's own: its sidecar grew a line per committed record. Masked like any
+    /// reply to a phone — a turn's label is the prompt's own words. Fake secrets are assembled at
+    /// run time (CI runs gitleaks over every line).
+    #[test]
+    fn the_turn_index_lists_the_turns_below_the_boundary_under_the_epoch() {
+        use crate::cache::Cursor;
+        use crate::Transcript;
+        let base = std::env::temp_dir().join(format!("cr-serve-turnindex-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("sid.jsonl");
+        std::fs::create_dir_all(&base).unwrap();
+        let key = format!("{}{}", ["sk", "ant", "api03-"].join("-"), "Q".repeat(40));
+        let mut transcript = String::new();
+        for i in 0..6 {
+            let text = format!("ask {i} with {key}");
+            transcript += &serde_json::json!({"type": "user", "cwd": "/r", "timestamp": format!("2026-07-26T10:00:{:02}Z", i * 3), "message": {"role": "user", "content": [{"type": "text", "text": text}]}}).to_string();
+            transcript += "\n";
+            transcript += &serde_json::json!({"type": "assistant", "timestamp": format!("2026-07-26T10:00:{:02}Z", i * 3 + 1), "message": {"role": "assistant", "content": [{"type": "tool_use", "id": format!("c{i}"), "name": "Bash", "input": {"command": "ls"}}]}}).to_string();
+            transcript += "\n";
+            transcript += &serde_json::json!({"type": "user", "timestamp": format!("2026-07-26T10:00:{:02}Z", i * 3 + 2), "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{i}"), "content": "out"}]}}).to_string();
+            transcript += "\n";
+        }
+        std::fs::write(&sess, transcript).unwrap();
+        let live = SessionService {
+            fold: FoldPolicy::default(),
+            roots: std::sync::Mutex::new(vec![Root {
+                id: "sid".into(),
+                agent: Agent::CLAUDE,
+                path: sess.clone(),
+                cwd: "/r".into(),
+            }]),
+            cache: test_cache(&base),
+            port: std::sync::Arc::new(std::sync::OnceLock::new()),
+        };
+        live.cache
+            .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
+        let v: Value =
+            serde_json::from_str(&body(live.pull_response("sid", Cursor::default()))).unwrap();
+        let epoch = v["epoch"].as_u64().unwrap();
+        let ext = &v["committed_ext"];
+        let records = live
+            .records_bytes(
+                "sid",
+                0,
+                ext["offset"].as_u64().unwrap() + ext["len"].as_u64().unwrap(),
+                epoch,
+            )
+            .unwrap();
+        let recs: Vec<Value> = String::from_utf8(records)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let opens: Vec<usize> = (0..recs.len())
+            .filter(|&i| recs[i]["turn"].is_u64() && recs[i]["kind"] == "user")
+            .collect();
+        assert!(
+            opens.len() >= 5,
+            "the committed log holds the turns: {opens:?}"
+        );
+
+        // The page waits for the records up to the third turn's second record.
+        let upto = opens[2] + 1;
+        let ix: Value =
+            serde_json::from_slice(&live.turn_index_json("sid", epoch, upto).unwrap()).unwrap();
+        assert_eq!(
+            (ix["epoch"].as_u64(), ix["upto"].as_u64()),
+            (Some(epoch), Some(upto as u64))
+        );
+        assert_eq!(
+            ix["records"].as_u64(),
+            Some(recs.len() as u64),
+            "a line per committed record"
+        );
+        let turns = ix["turns"].as_array().unwrap();
+        assert_eq!(turns.len(), 3, "the turns that open below the boundary");
+        for (t, &r) in turns.iter().zip(&opens) {
+            assert_eq!(t["r"].as_u64(), Some(r as u64));
+            assert_eq!(
+                (&t["id"], &t["turn"], &t["label"]),
+                (&recs[r]["id"], &recs[r]["turn"], &recs[r]["label"])
+            );
+        }
+        let calls = |rs: &[Value]| {
+            rs.iter()
+                .map(|r| r.to_string().matches("\"tool\":\"Bash\"").count())
+                .sum::<usize>()
+        };
+        assert_eq!(
+            ix["tools"]["Bash"].as_u64(),
+            Some(calls(&recs[..upto]) as u64),
+            "the calls below the boundary: {}",
+            ix["tools"]
+        );
+
+        // A stale epoch is refused, as `/records` refuses it.
+        assert_eq!(
+            live.turn_index_json("sid", epoch + 1, upto),
+            Err(StaleEpoch)
+        );
+
+        // Masked like any reply a phone reads.
+        let mut piece = live.turn_index_json("sid", epoch, upto).unwrap();
+        assert!(String::from_utf8_lossy(&piece).contains(&"Q".repeat(40)));
+        super::super::mask::mask_body("application/json; charset=utf-8", &mut piece);
+        assert!(!String::from_utf8_lossy(&piece).contains("QQQQQQQQ"));
+        assert!(
+            serde_json::from_slice::<Value>(&piece).is_ok(),
+            "still JSON once masked"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// #s278: search for a page still waiting for its first `upto` records. The reply is the
+    /// matcher's answer over exactly the records the page would read below the boundary — the log's
+    /// own lines — under its epoch (a stale one is 409); the filter's tools alone find the records
+    /// holding such a call; and it quotes no text, so a secret in a prompt never leaves in it.
+    #[test]
+    fn search_answers_the_records_below_the_boundary_and_quotes_nothing() {
+        use super::super::search_match::{Found, Query, Tool};
+        use crate::cache::Cursor;
+        use crate::Transcript;
+        let base = std::env::temp_dir().join(format!("cr-serve-search-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("sid.jsonl");
+        std::fs::create_dir_all(&base).unwrap();
+        let key = format!("{}{}", ["sk", "ant", "api03-"].join("-"), "Q".repeat(40));
+        let mut transcript = String::new();
+        for i in 0..6 {
+            let text = format!("ask petrel {i} with {key}");
+            transcript += &serde_json::json!({"type": "user", "cwd": "/r", "timestamp": format!("2026-07-26T10:00:{:02}Z", i * 3), "message": {"role": "user", "content": [{"type": "text", "text": text}]}}).to_string();
+            transcript += "\n";
+            transcript += &serde_json::json!({"type": "assistant", "timestamp": format!("2026-07-26T10:00:{:02}Z", i * 3 + 1), "message": {"role": "assistant", "content": [{"type": "tool_use", "id": format!("c{i}"), "name": "Bash", "input": {"command": "ls petrel"}}]}}).to_string();
+            transcript += "\n";
+            transcript += &serde_json::json!({"type": "user", "timestamp": format!("2026-07-26T10:00:{:02}Z", i * 3 + 2), "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{i}"), "content": "out"}]}}).to_string();
+            transcript += "\n";
+        }
+        std::fs::write(&sess, transcript).unwrap();
+        let live = SessionService {
+            fold: FoldPolicy::default(),
+            roots: std::sync::Mutex::new(vec![Root {
+                id: "sid".into(),
+                agent: Agent::CLAUDE,
+                path: sess.clone(),
+                cwd: "/r".into(),
+            }]),
+            cache: test_cache(&base),
+            port: std::sync::Arc::new(std::sync::OnceLock::new()),
+        };
+        live.cache
+            .register("sid", Transcript::open(Agent::CLAUDE, sess.clone()));
+        let v: Value =
+            serde_json::from_str(&body(live.pull_response("sid", Cursor::default()))).unwrap();
+        let epoch = v["epoch"].as_u64().unwrap();
+        let ext = &v["committed_ext"];
+        let records = live
+            .records_bytes(
+                "sid",
+                0,
+                ext["offset"].as_u64().unwrap() + ext["len"].as_u64().unwrap(),
+                epoch,
+            )
+            .unwrap();
+        let recs: Vec<Value> = String::from_utf8(records)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let opens: Vec<usize> = (0..recs.len())
+            .filter(|&i| recs[i]["kind"] == "user")
+            .collect();
+        assert!(
+            opens.len() >= 5,
+            "the committed log holds the turns: {opens:?}"
+        );
+        let upto = opens[3];
+        let query = |lc: &str, wanted: u8, tools: &[&str]| Query {
+            lc: lc.into(),
+            whole: false,
+            wanted,
+            tools: tools
+                .iter()
+                .map(|t| Tool {
+                    name: (*t).into(),
+                    prefix: false,
+                })
+                .collect(),
+        };
+        for q in [
+            query("petrel", 0, &[]),
+            query("petrel", super::super::search_match::U, &[]),
+            query("petrel", super::super::search_match::O, &["Bash"]),
+            query("", 0, &["Bash"]),
+        ] {
+            let reply: Value =
+                serde_json::from_slice(&live.search_json("sid", epoch, upto, &q, false).unwrap())
+                    .unwrap();
+            let mut expect = Found::default();
+            for (r, record) in recs[..upto].iter().enumerate() {
+                expect.take(r, record, &q);
+            }
+            assert_eq!(
+                reply,
+                expect.reply(epoch, upto),
+                "the matcher over the records below the boundary: {q:?}"
+            );
+            assert!(
+                reply["records"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|r| r[0].as_u64().unwrap() < upto as u64),
+                "nothing at or past the boundary"
+            );
+        }
+        let user: Value = serde_json::from_slice(
+            &live
+                .search_json(
+                    "sid",
+                    epoch,
+                    upto,
+                    &query("petrel", super::super::search_match::U, &[]),
+                    false,
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            user["total"].as_u64(),
+            Some(3),
+            "the three prompts below the boundary: {user}"
+        );
+        let calls: Value = serde_json::from_slice(
+            &live
+                .search_json("sid", epoch, upto, &query("", 0, &["bash"]), false)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            calls["records"].as_array().unwrap().len(),
+            3,
+            "the filter finds each call: {calls}"
+        );
+
+        // Nothing quoted: not the prompt's words, not the secret in it.
+        let raw = String::from_utf8(
+            live.search_json("sid", epoch, upto, &query("petrel", 0, &[]), false)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(!raw.contains("petrel") && !raw.contains("QQQQ"), "{raw}");
+
+        // A client sent masked records (#365) is answered from masked records: the key's
+        // characters are found unmasked, and never through the mask, so a count cannot read a
+        // masked secret back one character at a time.
+        let total = |masked: bool| {
+            let reply: Value = serde_json::from_slice(
+                &live
+                    .search_json("sid", epoch, upto, &query("qqqq", 0, &[]), masked)
+                    .unwrap(),
+            )
+            .unwrap();
+            reply["total"].as_u64().unwrap()
+        };
+        assert!(total(false) >= 3, "the key is in every prompt");
+        assert_eq!(
+            total(true),
+            0,
+            "a masked client's search never sees the key"
+        );
+
+        // A stale epoch is refused, as `/records` refuses it.
+        assert_eq!(
+            live.search_json("sid", epoch + 1, upto, &query("petrel", 0, &[]), false),
+            Err(SearchRefusal::Stale(StaleEpoch))
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// Part 2 end-to-end (no HTTP): a pull whose reply carries a `committed_ext` pointer, the
     /// `/records` range read materializing exactly the committed records, the applied cursor
     /// round-tripping to an idle re-pull, and the stale-epoch 409 path.
@@ -5018,7 +5544,44 @@ mod tests {
         assert_eq!(idle["provisional"].as_array().unwrap().len(), 0);
 
         // A pointer issued before a reset must not read a recreated log: stale epoch ⇒ Err (409).
-        assert!(live.records_bytes("sid", from, len, epoch + 1).is_err());
+        assert_eq!(
+            live.records_bytes("sid", from, len, epoch + 1),
+            Err(RecordsRefusal::Stale(StaleEpoch))
+        );
+
+        // #s274: a range read is whole records, for secret masking. An end inside a record is
+        // carried on to the record's end; a start inside one is refused.
+        let first_end = bytes.iter().position(|b| *b == b'\n').unwrap() as u64 + 1;
+        assert!(
+            bytes.len() as u64 > first_end,
+            "the fixture has a second record"
+        );
+        let cut = live
+            .records_bytes("sid", from, first_end / 2, epoch)
+            .expect("a range from a record start serves");
+        assert_eq!(
+            cut,
+            bytes[..first_end as usize],
+            "an end inside the first record is carried on to its end"
+        );
+        let at_boundary = live
+            .records_bytes("sid", from, first_end, epoch)
+            .expect("an end on a boundary serves");
+        assert_eq!(
+            at_boundary, cut,
+            "…and one already on a boundary is left as it is"
+        );
+        assert_eq!(
+            live.records_bytes("sid", from + first_end / 2, 10, epoch),
+            Err(RecordsRefusal::NotARecordStart),
+            "a start inside a record is refused"
+        );
+        assert_eq!(
+            live.records_bytes("sid", from + first_end, len - first_end, epoch)
+                .unwrap(),
+            bytes[first_end as usize..],
+            "a start right after a framing newline serves the rest"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -6120,6 +6683,7 @@ mod tests {
             &dir,
             &Request {
                 origin_ok: false,
+                masked: false,
                 ..get_request("file", &a_rs, true)
             },
         );

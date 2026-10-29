@@ -17,7 +17,7 @@ use crate::diff::{diff_row_groups, DiffKind};
 use crate::fold::FoldPolicy;
 use crate::highlight;
 use crate::model::{
-    AssistantPhase, AttachmentContent, Block, LoadedAttachment, ReplyContext, ReplyResponse,
+    AssistantPhase, AttachmentContent, Block, Inbox, LoadedAttachment, ReplyContext, ReplyResponse,
     ToolStatus,
 };
 use crate::present::{
@@ -46,9 +46,11 @@ pub fn mermaid_runtime_path() -> &'static str {
 }
 pub mod pairing;
 mod record_store;
+mod search_match; // search and the filter answered by the server, the page's matcher ported (#s278)
 mod serve;
 pub mod shared;
 pub(crate) mod sig; // capability signatures for the local-file routes
+mod turn_index; // the record log's map: turns and summaries for a page awaiting its head (#s276)
 pub use bundle::{dump_all_html, dump_html};
 pub use mdrev::{install as install_mdrev, version as mdrev_version, Kit as MdrevKit};
 pub use serve::{
@@ -1217,6 +1219,35 @@ impl Emitter<'_> {
         self.transcript?.load_attachment(content).ok().flatten()
     }
 
+    /// What a page draws of a relayed message besides the words (#s272). Its pictures are the
+    /// image attachments after it, offered as a prompt's are.
+    fn inbox_json(&self, inbox: &Inbox) -> Value {
+        let mut o = Map::new();
+        o.insert("from".into(), json!(inbox.from));
+        for (k, v) in [
+            ("via", &inbox.via),
+            ("kind", &inbox.kind),
+            ("at", &inbox.at),
+            ("to", &inbox.to),
+            ("task", &inbox.task),
+            ("guess", &inbox.guess),
+        ] {
+            if let Some(v) = v {
+                o.insert(k.into(), json!(v));
+            }
+        }
+        if !inbox.about.is_empty() {
+            o.insert("about".into(), json!(inbox.about));
+        }
+        if let Some(q) = &inbox.reply_to {
+            o.insert("reply_to".into(), json!(q));
+        }
+        if !inbox.instructions.is_empty() {
+            o.insert("do".into(), json!(inbox.instructions));
+        }
+        Value::Object(o)
+    }
+
     /// One block → its JSON object, recursing into a turn's absorbed tool calls.
     fn block(&mut self, b: &Block, ts: Option<f64>, turn_secs: Option<u64>) -> Value {
         let kind = html_kind(b);
@@ -1256,6 +1287,23 @@ impl Emitter<'_> {
                 if let Block::UserReply { context, .. } = b {
                     o.insert("reply_context".into(), json!(context));
                 }
+            }
+            // A relayed message from the person, verified (#s272): their turn like any prompt —
+            // the same id, label, source and body, drawn from their words alone — plus `inbox`,
+            // what the relay wrote beside them, which both pages draw as the card's chips, a
+            // quote, the pictures and the relay's instructions folded away.
+            Block::UserInbox { text, inbox } => {
+                self.turn += 1;
+                let id = format!("t{}", self.turn);
+                self.turns
+                    .push(SideEntry::turn(id.clone(), prompt_label(text, None, 46)));
+                o.insert("id".into(), json!(id));
+                o.insert("turn".into(), json!(self.turn));
+                o.insert("label".into(), json!(prompt_label(text, None, 80)));
+                // No `src`: what was typed is the element, not these words, so the card offers no
+                // "show as typed" (the paste is in the transcript).
+                body.extend(user_body_parts(text));
+                o.insert("inbox".into(), self.inbox_json(inbox));
             }
             // Another session's message (#s79): it opens a turn as a prompt does — the Turns pane
             // and the sticky strip list it, labelled with its sender — but its kind is `peer`, so
@@ -1345,6 +1393,14 @@ impl Emitter<'_> {
                     text
                 };
                 body.push(json!({ "p": "md", "h": md_html(rendered) }));
+            }
+            // #s305: a reply the person cut off mid-stream is drawn as the prose it is, then a
+            // note saying it stopped there — both pages already draw a `note` part, quietly, as
+            // the line under a call.
+            Block::AssistantCutOff(text) => {
+                o.insert("id".into(), json!(self.block_id()));
+                body.push(json!({ "p": "md", "h": md_html(text) }));
+                body.push(json!({ "p": "note", "x": crate::model::CUT_OFF_NOTE }));
             }
             Block::AssistantMessage {
                 text,

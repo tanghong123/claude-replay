@@ -86,6 +86,24 @@ fn assistant_phase(v: &Value, content: &[Value]) -> Option<AssistantPhase> {
     }
 }
 
+/// The content index of a reply the person CUT OFF mid-stream (#s305), if this record is one:
+/// Claude Code 2.1.311 keeps the partial reply when Esc stops it and flags the record
+/// `isAbortedMidStream`. The mark goes on the record's LAST text block, where the reply stopped.
+/// Only an unphased record is read (the one shape measured: `stop_reason` null, text alone); a
+/// flagged record with a stop reason or a call is the census's REVISIT, drawn as before.
+fn cut_off_text(v: &Value, content: &[Value], phase: Option<AssistantPhase>) -> Option<usize> {
+    if phase.is_some() || v.get("isAbortedMidStream").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    content.iter().rposition(|blk| {
+        blk.get("type").and_then(Value::as_str) == Some("text")
+            && blk
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|t| !t.trim().is_empty())
+    })
+}
+
 /// L1 classification of a plain-string `user` message into the **structured** message the
 /// shared fold places — this is where Claude's raw wrappers (`<task-notification>`,
 /// `<command-name>`, `<local-command-*>`, skill bodies, caveats) are parsed, so the fold
@@ -347,6 +365,43 @@ fn task_op(name: &str, id: &str, input: &Value) -> Option<claude_replay_engine::
             tool_use_id: Some(id.to_string()),
         }),
         _ => None,
+    }
+}
+
+/// #s272 mirror of the fold's `UserInbox` arm: pop a queued copy by its text (`queue` is `None`
+/// where the caller already did), then the person's turn for the first message with an id and
+/// the text it is for a later copy.
+#[cfg(test)]
+fn push_inbox(
+    m: Message,
+    out: &mut Vec<Block>,
+    queue: Option<(&mut Vec<QueueItem>, &mut Vec<BlockIndex>)>,
+    inbox_ids: &mut std::collections::HashSet<String>,
+) {
+    let Message::UserInbox {
+        text,
+        words,
+        inbox,
+        images,
+    } = m
+    else {
+        return;
+    };
+    if let Some((queue, suppress)) = queue {
+        if let Some(pos) = queue.iter().position(|q| q.content == text.trim()) {
+            if let Some(mi) = queue.remove(pos).marker_idx {
+                suppress.push(mi);
+            }
+        }
+    }
+    if inbox_ids.insert(inbox.id.clone()) {
+        out.push(Block::UserInbox {
+            text: words,
+            inbox: *inbox,
+        });
+        out.extend(images.into_iter().map(Block::Attachment));
+    } else {
+        out.push(Block::UserText(text));
     }
 }
 
@@ -634,6 +689,15 @@ const RECORD_TYPES_KNOWN: &[&str] = &[
     "pr-link",
     "queue-operation",
     "system",
+    // #s282 (client 2.1.311): `{type, tools, sessionId}`, type first, with no timestamp or uuid —
+    // the session's tool names so far, de-duplicated in first-use order, written again each time
+    // it first calls a tool it had not called (3 to 7 per session). Met 2026-10-27 in all 10
+    // transcripts on this machine that run 2.1.311, every one headless (entrypoint `sdk-cli`).
+    // Nothing is drawn: each call is its own card and the search filter already names a session's
+    // tools, and with no time it cannot date a first use. REVISIT if an interactive session writes
+    // it with something more: a key beyond these three, or a list naming a tool the transcript
+    // never called (it would then count something the page does not show).
+    "tools-used",
     "user",
 ];
 
@@ -940,6 +1004,21 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // finer than the text, is a RENDER question for the owner, queued with the record
             // count and client version, never decided here.
             "streamCutCause",
+            // #s305 (client 2.1.311): the boolean `true` on an assistant record the person cut off
+            // with Esc while it streamed. An ordinary API answer (its own requestId, a real model,
+            // no `isApiErrorMessage`), `stop_reason` null, one text block, and the very next record
+            // is the user's "[Request interrupted by user]" naming it as parent. Met on ONE record
+            // on hong-devserver, measured 2026-10-28; a search of every Claude transcript there
+            // found no unflagged partial reply before an interrupt marker, so older clients seem to
+            // have kept none. Read (`cut_off_text`): the reply is an `AssistantCutOff` block, prose
+            // everywhere but where it is drawn, which ends it with a "cut off" line. Its usage is
+            // the stream's opening figure (8 output tokens against about 166 characters), since no
+            // final usage arrives on an abort, so the cost counts a little too little output;
+            // nothing better is recorded, so nothing corrects it. REVISIT: (1) the flag on a record
+            // holding a `thinking` or `tool_use` block, where a call that never ran would be drawn
+            // as one that did, or on one with a `stop_reason`, which gets a phase and no mark; (2)
+            // a flagged record NOT followed by an interrupt marker; (3) a value other than `true`.
+            "isAbortedMidStream",
             "apiErrorStatus",
             "supersedesUuids",
             "errorDetails",
@@ -1419,6 +1498,20 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "persistent",
     "pin",
     "plan",
+    // #s309, ExitPlanMode (client 2.1.199, one record on this machine, measured 2026-10-29): the
+    // boolean `true` on `{plan, isAgent, filePath, planWasEdited}`, absent when false (a 2.1.211
+    // result has the other three alone). The client's own schema, still in 2.1.312, says it is true
+    // when the person edited the plan (Claude Code's web UI, or Ctrl+G) and decides whether the plan
+    // is echoed back: the result's `plan` is the edited text, which also overwrites the plan file,
+    // and the tool_result text ends "## Approved Plan (edited by user):" and that text, which the
+    // card draws as the call's output. So the edit and its mark are already on the page. In the one
+    // record the call input's `plan` and the result's are byte-identical (6,665 characters). The
+    // plan.md attachment is drawn from the input (#16). REVISIT: a record whose two plans differ,
+    // where the attachment would show the plan from before the edit beside the approved one in the
+    // output, a RENDER question for the owner. The 2.1.312 schema also lists `hasTaskTool`,
+    // `awaitingLeaderApproval` and `requestId` (a teammate's plan sent to its lead), met in no
+    // record yet: they are judged when one carries them.
+    "planWasEdited",
     "projectId",
     "projects",
     "prompt",
@@ -1567,14 +1660,27 @@ const ARTIFACT_CREATE_SHAPE: &[&str] = &[
 /// `path` relative to the call input's `root` and equal, entry for entry, to the keys of the call
 /// input's `files` map. It is that map again, plus a digest per file: the client's own integrity
 /// bookkeeping. REVISIT: a `files_written` that differs from the input's `files` map, since a file
-/// asked for and not written is a failure the card would not show.
+/// asked for and not written is a failure the card would not show. Since client 2.1.310 a publish
+/// from a file also carries `owned` beside `icon` (#s268, one record, measured 2026-10-26), true
+/// as in a create and a typed publish (#s181): a flag the card has no use for, eleven facts
+/// nothing renders. REVISIT: `owned` arriving false. Since client 2.1.312 a publish from a file
+/// whose call input carries `edits` (`[{old_str, new_str}]`, 2 of them) ends with `editsApplied`
+/// beside `icon` (#s308, one record on aries-black, measured 2026-10-29): `2`, every edit sent.
+/// Only the typed shape held it, which has no `icon`, so neither shape fitted and `owned` and
+/// `icon` were reported. It is READ (#s182, `TOOL_RESULT_READ`): the card draws the edit's diff
+/// from the call input and says when fewer edits were applied than sent. That record said `updated`
+/// false with `seq` 1 beside its 2 applied edits. REVISIT: `updated` false beside `editsApplied`
+/// on a later publish, which would say the flag means something other than "the page changed";
+/// the card reads neither `updated` nor `seq`.
 const ARTIFACT_PUBLISH_SHAPE: &[&str] = &[
     "artifact_id",
     "audience",
     "contract",
+    "editsApplied",
     "files_written",
     "icon",
     "liveSubscription",
+    "owned",
     "path",
     "seq",
     "title",
@@ -1602,8 +1708,9 @@ const ARTIFACT_PUBLISH_SHAPE: &[&str] = &[
 /// `preferredContract` and `read` sit inside `stored`, not beside it. One of the 17 ends with
 /// `editsApplied`, an edit of the artifact by `old_str`/`new_str` (client 2.1.303): it is in this
 /// array so that record stays in the shape, and it is READ (#s182, `TOOL_RESULT_READ`): the card
-/// draws the edit's diff and says when fewer edits were applied than sent. REVISIT: `owned` arriving false, or a plain publish from a file
-/// ([`ARTIFACT_PUBLISH_SHAPE`]) reporting `owned` beside `icon`, which no client has written yet.
+/// draws the edit's diff and says when fewer edits were applied than sent. REVISIT: `owned` arriving
+/// false. (A plain publish from a file reporting `owned` beside `icon`, once a REVISIT here, was met
+/// with client 2.1.310 and joined [`ARTIFACT_PUBLISH_SHAPE`], #s268.)
 const ARTIFACT_TYPED_PUBLISH_SHAPE: &[&str] = &[
     "artifact_id",
     "audience",
@@ -1644,6 +1751,44 @@ const ARTIFACT_OPEN_SHAPE: &[&str] = &["artifact_id", "opened", "title", "url"];
 /// carries both whole. REVISIT: a read whose text does not carry the files (a binary or a very
 /// large file), where `saved_to` would be the reader's only handle and the card should offer it.
 const ARTIFACT_READ_SHAPE: &[&str] = &["files_read"];
+
+/// Every key an Artifact `read` by URL alone was met with (#s308; the call input is `{action:
+/// "read", url}` with no `paths`): `{read: {bytes, code, codeText, result, durationMs, url, title},
+/// artifactRead: {slug, ver}, owned}`, integers and strings, `code` 200 and `result` empty in every
+/// one, and `owned` a boolean, true in all. Measured 2026-10-29: 3 records in 3 sessions on
+/// aries-black, client 2.1.312, and 2 in one session on this machine, client 2.1.311. Under client
+/// 2.1.296 the same read was `{read, artifactRead}` with no `owned`, and a read that got a 404 is
+/// `{read}` alone; both of those keys are on the flat ignored list, and `owned` is the one key out
+/// of a shape. It is the flag a create and a publish carry (#s181, #s268), with as little use on the
+/// card, which draws the result TEXT. The sibling of [`ARTIFACT_READ_SHAPE`], the read WITH `paths`.
+/// REVISIT: `owned` arriving false (a read of an artifact the caller does not own), or a read with
+/// `paths` on 2.1.312 or later carrying `owned` beside `files_read`.
+const ARTIFACT_URL_READ_SHAPE: &[&str] = &["artifactRead", "owned", "read"];
+
+/// The whole of an ArtifactComments `watch` result (#s268, client 2.1.310, one record, measured
+/// 2026-10-26; the call input is `{action: "watch", url}`): `{watch: {url, watching, outcome,
+/// task_id, since, token_expires_at, auto_reply}}`, a string url, a boolean, two strings, a short
+/// string id, two integers (epoch milliseconds) and a string. Met as `watching` true, `outcome`
+/// `already_watching` (the publish had started a live subscription) and `auto_reply` `armed`. The
+/// card is the generic tool card, which draws the result TEXT, and the text says the session is
+/// watching the artifact, what the watch tracks and that auto-replies are armed; `task_id`, `since`
+/// and `token_expires_at` are the client's bookkeeping for the connection. REVISIT: `watching`
+/// false, an `outcome` or `auto_reply` whose result text does not say what happened, or a key
+/// beside `watch`.
+const ARTIFACT_COMMENTS_WATCH_SHAPE: &[&str] = &["watch"];
+
+/// The whole of an ArtifactComments watch LISTING (#s283, client 2.1.310, one record, measured
+/// 2026-10-27; the call input is `{action: "watch"}` with NO url, which lists what the session
+/// watches rather than starting a watch): `{watches: [], arms: [{url, state, reason, at}]}`, three
+/// strings and an integer (epoch milliseconds) per arm. Met with `watches` empty and one arm,
+/// `state` "failed" and `reason` "not_found": a pending auto-reply whose artifact was gone, as the
+/// same turn's read of it had found. The card is the generic tool card, which draws the result
+/// TEXT, and the text names the artifact's address, says nothing is watched, that the auto-reply
+/// arm failed because the artifact is gone, and when. It shares no key with the `{watch}` result,
+/// so it is a shape of its own. REVISIT: a `watches` entry (none has been seen, so check then
+/// whether the text states it), an arm whose `state` is not "failed" or whose `reason` is not
+/// "not_found", or a key beside these two.
+const ARTIFACT_COMMENTS_WATCH_LIST_SHAPE: &[&str] = &["arms", "watches"];
 
 /// Every key an Artifact list result was met with (#s62, client 2.1.288, one record): `{artifacts:
 /// array, scope: string, pins_enabled: boolean}`. `pins_enabled` is a service feature flag (whether
@@ -1817,6 +1962,12 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // Artifact's publish result (#325): `icon` is a generic word, so it is known only in the
     // publish's own shape; the adapter takes the word from the call's input, not from here.
     ("icon", ARTIFACT_PUBLISH_SHAPE),
+    // #s268 (client 2.1.310): a publish from a file now carries `owned` beside `icon`, true as in a
+    // create and a typed publish. Known only in this shape; adding it also silences `icon` again,
+    // which came back beside it. #s308 (client 2.1.312): a publish from a file with `edits` ends
+    // with `editsApplied`, which is READ; it is in this shape's array so that record keeps `owned`
+    // and `icon` known, as #s181 put it in the typed shape's.
+    ("owned", ARTIFACT_PUBLISH_SHAPE),
     // #s87 (client 2.1.296): a publish's `files_written` repeats the call input's `files` map with a
     // digest per file, and an open's `opened` is a boolean its result text states. Both are generic
     // enough to mean something else on another tool, so each is known only in its own shape;
@@ -1838,6 +1989,19 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // #s181 (client 2.1.303): an Artifact read's whole result is `{files_read}`, whose text the card
     // draws in full. Known only as the whole result, as CronList's `jobs` is.
     ("files_read", ARTIFACT_READ_SHAPE),
+    // #s308 (clients 2.1.311 and 2.1.312): an Artifact read by URL alone now carries `owned` beside
+    // the flat-known `read` and `artifactRead`, true as in a create and a publish. Known only in
+    // this shape.
+    ("owned", ARTIFACT_URL_READ_SHAPE),
+    // #s268 (client 2.1.310): an ArtifactComments watch's whole result is `{watch}`, connection
+    // bookkeeping beside what the result text already says. `watch` is a generic word, so it is
+    // known only as the whole result, never on the flat ignored list.
+    ("watch", ARTIFACT_COMMENTS_WATCH_SHAPE),
+    // #s283 (client 2.1.310): an ArtifactComments watch listing's whole result is `{watches,
+    // arms}`, which its result text states. Both are generic words, so each is known only as the
+    // whole result, never on the flat ignored list.
+    ("arms", ARTIFACT_COMMENTS_WATCH_LIST_SHAPE),
+    ("watches", ARTIFACT_COMMENTS_WATCH_LIST_SHAPE),
     // Artifact's list result (#s62): `pins_enabled` is an account's feature flag, and a word
     // another tool could use for anything, so it is known only in the list's own shape.
     ("pins_enabled", ARTIFACT_LIST_SHAPE),
@@ -3113,7 +3277,8 @@ pub(crate) fn decode_line_known(
                 return;
             }
             let phase = assistant_phase(&v, content);
-            for blk in content {
+            let cut = cut_off_text(&v, content, phase);
+            for (i, blk) in content.iter().enumerate() {
                 match blk.get("type").and_then(|t| t.as_str()) {
                     Some("text") => {
                         if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
@@ -3124,6 +3289,8 @@ pub(crate) fn decode_line_known(
                                         phase,
                                         inferred: true,
                                     });
+                                } else if cut == Some(i) {
+                                    msgs.push(Message::AssistantCutOff(t.to_string()));
                                 } else {
                                     msgs.push(Message::AssistantText(t.to_string()));
                                 }
@@ -3390,6 +3557,17 @@ pub(crate) fn decode_line_known(
                 });
                 return;
             }
+            // #s272: a relayed message from the person, verified, is the whole prompt.
+            if let Some(m) = (injected == Injected::No && relayable(&v))
+                .then(|| {
+                    let s = content.as_str()?;
+                    inbox_message(s, || fence_pasted(&strip_caveat(s)).into_owned())
+                })
+                .flatten()
+            {
+                msgs.push(m);
+                return;
+            }
             note_reply_drift(&v);
             if let Some(s) = content.as_str() {
                 if let Some(m) = classify_user_string(s, injected) {
@@ -3544,6 +3722,12 @@ pub(crate) fn decode_line_known(
                                 text: peer.body,
                                 queued: Some(fence_pasted(p).into_owned()),
                             });
+                        } else if let Some(m) = (!meta && relayable(&v) && a.is_some_and(relayable))
+                            .then(|| inbox_message(p, || fence_pasted(p).into_owned()))
+                            .flatten()
+                        {
+                            // #s272: picked up mid-turn, which is how most of them arrive.
+                            msgs.push(m);
                         } else {
                             msgs.push(Message::AttachmentPrompt {
                                 text: fence_pasted(p).into_owned(),
@@ -4246,6 +4430,8 @@ pub(crate) fn parse_main<S: AsRef<str>>(
     // for this skill: …"); we nest that body into this block so a skill load reads as
     // ONE collapsible unit named by the skill, instead of a loose result block beside it.
     let mut last_skill: Option<BlockIndex> = None;
+    // #s272 mirror: the ids of the relayed messages already taken as the person's.
+    let mut inbox_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for line in lines {
         let line = line.as_ref().trim();
@@ -4293,7 +4479,9 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     continue;
                 }
                 let phase = assistant_phase(&v, content);
-                for blk in content {
+                // #s305 mirror: a reply the person cut off mid-stream.
+                let cut = cut_off_text(&v, content, phase);
+                for (i, blk) in content.iter().enumerate() {
                     match blk.get("type").and_then(|t| t.as_str()) {
                         Some("text") => {
                             if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
@@ -4304,6 +4492,8 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                             phase,
                                             inferred: true,
                                         });
+                                    } else if cut == Some(i) {
+                                        out.push(Block::AssistantCutOff(t.to_string()));
                                     } else {
                                         out.push(Block::AssistantText(t.to_string()));
                                     }
@@ -4563,6 +4753,22 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     });
                     continue;
                 }
+                // #s272 mirror of the decode's `UserInbox`, and of the fold's first-id rule.
+                if let Some(m) = (injection == Injected::No && relayable(&v))
+                    .then(|| {
+                        let s = content.as_str()?;
+                        inbox_message(s, || fence_pasted(&strip_caveat(s)).into_owned())
+                    })
+                    .flatten()
+                {
+                    push_inbox(
+                        m,
+                        &mut out,
+                        Some((&mut queue, &mut suppress)),
+                        &mut inbox_ids,
+                    );
+                    continue;
+                }
                 note_reply_drift(&v);
                 if let Some(s) = content.as_str() {
                     if injection == Injected::CompactSummary {
@@ -4778,6 +4984,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                 if is_prompt {
                     if let Some(p) = a.and_then(|a| a.get("prompt")).and_then(|p| p.as_str()) {
                         if !p.trim().is_empty() {
+                            let raw = p;
                             // #52 op-less delivery, attachment form (see above). The pickup
                             // ALWAYS renders its turn (kept in lockstep with the streaming
                             // fold's `AttachmentPrompt` arm).
@@ -4798,7 +5005,14 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     mode: peer.mode,
                                     text: peer.body,
                                 }),
-                                None => out.push(Block::UserText(p.into_owned())),
+                                // #s272 mirror: a relayed message picked up mid-turn.
+                                None => match (!meta && relayable(&v) && a.is_some_and(relayable))
+                                    .then(|| inbox_message(raw, || p.to_string()))
+                                    .flatten()
+                                {
+                                    Some(m) => push_inbox(m, &mut out, None, &mut inbox_ids),
+                                    None => out.push(Block::UserText(p.into_owned())),
+                                },
                             }
                         }
                     }
@@ -5444,6 +5658,28 @@ fn summary_description(summary: &str) -> String {
         }
     }
     summary.trim().to_string()
+}
+
+/// Whether a record (a `user` record, or a queued prompt's attachment) can carry a message the
+/// person relayed (#s272): not a sub-agent's (a sidechain), and no origin but a person's.
+fn relayable(v: &Value) -> bool {
+    v.get("isSidechain").and_then(Value::as_bool) != Some(true)
+        && v.get("origin")
+            .is_none_or(|o| o.get("kind").and_then(Value::as_str) == Some("human"))
+}
+
+/// A relayed message from the person (#s272), when `text` is one whose signature verifies: the
+/// prompt the fold makes their turn, carrying the text it would otherwise be — what an ordinary
+/// prompt's text is, and what a queued copy of it was queued under (#52). The fold takes only the
+/// first message with an id as theirs.
+fn inbox_message(raw: &str, text: impl FnOnce() -> String) -> Option<Message> {
+    let v = super::inbox::verified(raw)?;
+    Some(Message::UserInbox {
+        text: text(),
+        words: v.words,
+        inbox: Box::new(v.inbox),
+        images: v.images,
+    })
 }
 
 /// A message from ANOTHER Claude Code session (#s79), read from the record's own `origin`
@@ -6607,6 +6843,114 @@ mod tests {
         );
     }
 
+    /// #s272: a relayed message from the person, verified, is THEIR turn wherever a prompt
+    /// arrives — the user record and the mid-turn pickup, its queued marker consumed — the first
+    /// time its id appears; a later copy, a tampered one, and one inside a tool result or another
+    /// session's message are what they are. Both parse paths agree.
+    #[test]
+    fn a_relayed_message_is_the_persons_turn_once_and_only_where_it_opens_the_turn() {
+        use crate::agents::claude::inbox::tests::{wrapped, zero_key, A, B};
+        crate::agents::claude::inbox::install_key_source(zero_key);
+        // B again under another id, signed: only the rule under test can refuse it.
+        let b_as = |id: &str| {
+            let start = B.find(" sig=\"").unwrap();
+            let unsigned = format!(
+                "{} sig=\"-\"{}",
+                &B[..start],
+                &B[start + " sig=\"\"".len() + 32..]
+            );
+            crate::agents::claude::inbox::sign_for_test(
+                &[0; 32],
+                &unsigned.replace("dash-1&amp;skua", id),
+            )
+        };
+        let user = |at: &str, content: &str| {
+            serde_json::json!({"type": "user", "timestamp": at, "message": {"role": "user", "content": content}}).to_string()
+        };
+        let lines = [
+            user("2026-10-26T08:00:00.000Z", &wrapped(A, "608f")),
+            r#"{"type":"assistant","timestamp":"2026-10-26T08:00:05.000Z","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_i1","name":"Bash","input":{"command":"cat note"}}]}}"#.to_string(),
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-10-26T08:00:06.000Z", "content": wrapped(B, "608f")}).to_string(),
+            serde_json::json!({"type": "user", "timestamp": "2026-10-26T08:00:07.000Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_i1", "content": A}]}}).to_string(),
+            serde_json::json!({"type": "attachment", "timestamp": "2026-10-26T08:00:08.000Z", "attachment": {"type": "queued_command", "commandMode": "prompt", "origin": {"kind": "human"}, "prompt": wrapped(B, "608f")}}).to_string(),
+            r#"{"type":"assistant","timestamp":"2026-10-26T08:00:09.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"relayed"}]}}"#.to_string(),
+            user("2026-10-26T08:01:00.000Z", &wrapped(A, "608f")),
+            user("2026-10-26T08:02:00.000Z", &wrapped(&B.replace("ship it", "drop it"), "608f")),
+            serde_json::json!({"type": "user", "timestamp": "2026-10-26T08:03:00.000Z", "isMeta": true, "origin": {"kind": "peer", "name": "skua-HD", "fromMode": "bypass", "body": A}, "message": {"role": "user", "content": format!("Another Claude session sent a message:\n<cross-session-message from-name=\"skua-HD\">\n{A}\n</cross-session-message>")}}).to_string(),
+            // A sub-agent's prompt, and a pickup whose origin is not a person: never his.
+            serde_json::json!({"type": "user", "timestamp": "2026-10-26T08:04:00.000Z", "isSidechain": true, "message": {"role": "user", "content": wrapped(&b_as("dash-side"), "608f")}}).to_string(),
+            serde_json::json!({"type": "attachment", "timestamp": "2026-10-26T08:05:00.000Z", "attachment": {"type": "queued_command", "commandMode": "prompt", "origin": {"kind": "task-notification"}, "prompt": wrapped(&b_as("dash-note"), "608f")}}).to_string(),
+            serde_json::json!({"type": "attachment", "timestamp": "2026-10-26T08:06:00.000Z", "isSidechain": true, "attachment": {"type": "queued_command", "commandMode": "prompt", "origin": {"kind": "human"}, "prompt": wrapped(&b_as("dash-side-pickup"), "608f")}}).to_string(),
+        ];
+        let jsonl = lines.join("\n");
+        let streamed = parse(&jsonl);
+        let reference = parse_main(lines.iter(), &mut Vec::new());
+        assert_eq!(streamed, reference, "the two parse paths agree");
+
+        let turns: Vec<&Block> = streamed.iter().filter(|b| b.opens_turn()).collect();
+        let ids: Vec<&str> = turns
+            .iter()
+            .filter_map(|b| match b {
+                Block::UserInbox { inbox, .. } => Some(inbox.id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["msgTERN0000000001==", "dash-1&skua"], "{streamed:#?}");
+        match &streamed[..2] {
+            [Block::UserInbox { text, .. }, Block::Attachment(a)] => {
+                assert_eq!(text, "this is the bug, see the **picture**");
+                assert_eq!(
+                    (a.kind, a.path.as_deref()),
+                    (
+                        AttachmentKind::Image,
+                        Some("/tmp/inbox-fixture/uploads/tern.png")
+                    ),
+                    "the picture follows the message"
+                );
+            }
+            other => panic!("the first turn is his, then his picture: {other:?}"),
+        }
+        let texts: Vec<&str> = turns
+            .iter()
+            .filter_map(|b| match b {
+                Block::UserText(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts.len(),
+            5,
+            "the copy, the tampered one, the notification's and both sidechain ones: {turns:#?}"
+        );
+        assert!(texts.iter().all(|t| t.contains("```pasted\n<aries-inbox")));
+        assert!(
+            turns
+                .iter()
+                .any(|b| matches!(b, Block::PeerText { from, .. } if from == "skua-HD")),
+            "inside another session's message it is that session's"
+        );
+        assert!(
+            !streamed
+                .iter()
+                .any(|b| matches!(b, Block::QueueEvent { .. })),
+            "the pickup consumed its marker: {streamed:#?}"
+        );
+        assert_eq!(
+            streamed
+                .iter()
+                .filter(|b| matches!(b, Block::Attachment(_)))
+                .count(),
+            1,
+            "only the verified message offers its picture, never a copy: {streamed:#?}"
+        );
+        let output = |b: &Block| matches!(b, Block::ToolUse { output: Some(o), .. } if o.contains("<aries-inbox"));
+        assert!(
+            streamed.iter().any(|b| output(b)
+                || matches!(b, Block::Thinking { tools, .. } if tools.iter().any(output))),
+            "inside a tool result it is output: {streamed:#?}"
+        );
+    }
+
     /// #s79: a message from another Claude Code session opens a turn of its own, naming its
     /// sender — both where it arrives between turns (an `isMeta` `user` record) and where it is
     /// picked up mid-turn (a `queued_command` attachment) — with the message alone: no
@@ -7275,6 +7619,34 @@ mod tests {
         assert!(seen.is_empty(), "and is not reported as new: {seen:?}");
     }
 
+    /// #s282: Claude Code 2.1.311's `tools-used` record is known bookkeeping. It draws nothing and
+    /// is not reported, while a record type outside the list beside it still is. Removing it from
+    /// `RECORD_TYPES_KNOWN` turns this red.
+    #[test]
+    fn a_tools_used_record_is_known() {
+        let prompt = r#"{"type":"user","version":"2.1.311","sessionId":"s-s282","uuid":"u1","timestamp":"2026-10-27T01:00:00.000Z","message":{"role":"user","content":"write the notes"}}"#;
+        let tools = r#"{"type":"tools-used","tools":["Bash","Write"],"sessionId":"s-s282"}"#;
+        let answer = r#"{"type":"assistant","version":"2.1.311","sessionId":"s-s282","uuid":"a1","parentUuid":"u1","timestamp":"2026-10-27T01:00:03.000Z","requestId":"r1","message":{"id":"m1","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"Written."}],"stop_reason":"end_turn"}}"#;
+        let future = r#"{"type":"a-record-type-nobody-has-met-s282","sessionId":"s-s282"}"#;
+        let blocks = parse(&[prompt, tools, answer].join("\n"));
+        assert_eq!(
+            format!("{blocks:?}"),
+            format!("{:?}", parse(&[prompt, answer].join("\n"))),
+            "the record draws nothing"
+        );
+        let _ = parse(future);
+        let seen: Vec<String> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.at == UnknownAt::RecordType && s.example.as_deref() == Some("s-s282"))
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(
+            seen,
+            vec!["a-record-type-nobody-has-met-s282".to_string()],
+            "tools-used is known; a type nobody has met is still reported"
+        );
+    }
+
     /// #s134: a request-log line is never the conversation to the monitor's raw-line reads. A
     /// blob carries a message as sent with its JSON nested unescaped, so a tool call's input can
     /// hold `"type":"user"`: by substring, that blob read as a user record (the turn moved on) and
@@ -7659,6 +8031,74 @@ mod tests {
                 .iter()
                 .any(|b| matches!(b, Block::AssistantText(_) | Block::AssistantMessage { .. })),
             "the cut is not the assistant speaking: {blocks:?}"
+        );
+    }
+
+    /// #s305: a reply the person cut off with Esc (2.1.311's `isAbortedMidStream`) is the
+    /// assistant's prose with a cut-off mark, on BOTH parse paths: the record's last text block
+    /// becomes `AssistantCutOff`, everything else folds exactly as the same transcript without the
+    /// flag (the interrupt marker after it included), a flagged record that has a phase keeps it
+    /// and gets no mark, and the key is known to the census.
+    #[test]
+    fn a_reply_aborted_mid_stream_is_cut_off_on_both_parse_paths() {
+        unknown_watch_keys(true);
+        let flagged = r##"
+{"type":"user","version":"2.1.311","sessionId":"s-s305","uuid":"u1","timestamp":"2026-10-28T01:00:00.000Z","message":{"role":"user","content":"Where do the skuas nest this year?"}}
+{"type":"assistant","version":"2.1.311","sessionId":"s-s305","uuid":"a1","parentUuid":"u1","requestId":"req_s305","apiBlockIndex":0,"isAbortedMidStream":true,"timestamp":"2026-10-28T01:00:02.000Z","message":{"role":"assistant","model":"claude-opus-5","stop_reason":null,"usage":{"input_tokens":12,"output_tokens":8},"content":[{"type":"text","text":"The skuas moved to the north cliff, above the tern colony, and the"}]}}
+{"type":"user","version":"2.1.311","sessionId":"s-s305","uuid":"u2","parentUuid":"a1","timestamp":"2026-10-28T01:00:03.000Z","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}
+{"type":"user","version":"2.1.311","sessionId":"s-s305","uuid":"u3","timestamp":"2026-10-28T01:00:09.000Z","message":{"role":"user","content":"Just the cliff, thanks."}}
+{"type":"assistant","version":"2.1.311","sessionId":"s-s305","uuid":"a2","isAbortedMidStream":true,"timestamp":"2026-10-28T01:00:10.000Z","message":{"role":"assistant","stop_reason":null,"content":[{"type":"thinking","thinking":"the cliff, then the colony"},{"type":"text","text":"North cliff."},{"type":"text","text":"Above the petrels"},{"type":"text","text":"  "}]}}
+{"type":"assistant","version":"2.1.311","sessionId":"s-s305","uuid":"a3","isAbortedMidStream":true,"timestamp":"2026-10-28T01:00:11.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}
+"##;
+        let messages = tokenize(flagged.lines());
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s305"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| matches!(m, Message::AssistantCutOff(_)))
+                .count(),
+            2,
+            "one mark per cut record: {messages:?}"
+        );
+
+        let mut ut = Vec::new();
+        let via_engine = replay(&messages, &mut ut, &CLAUDE_SHAPING);
+        let mut ut_main = Vec::new();
+        let via_main = parse_main(flagged.lines(), &mut ut_main);
+        assert_eq!(format!("{via_main:?}"), format!("{via_engine:?}"));
+        assert_eq!(ut, ut_main);
+
+        // Unflagged, the same transcript folds as it always did; flagged, only the marked
+        // blocks differ, and only in being marked.
+        let plain = flagged.replace(r#""isAbortedMidStream":true,"#, "");
+        let before = parse_main(plain.lines(), &mut Vec::new());
+        assert_eq!(before.len(), via_main.len(), "{before:?}\n{via_main:?}");
+        let mut marked = Vec::new();
+        for (b, a) in before.iter().zip(&via_main) {
+            match (b, a) {
+                (Block::AssistantText(was), Block::AssistantCutOff(now)) => {
+                    assert_eq!(was, now, "the recorded text is kept");
+                    marked.push(now.as_str());
+                }
+                _ => assert_eq!(format!("{b:?}"), format!("{a:?}")),
+            }
+        }
+        assert_eq!(
+            marked,
+            [
+                "The skuas moved to the north cliff, above the tern colony, and the",
+                "Above the petrels",
+            ],
+            "the last non-blank text block of each unphased cut record, and no other"
+        );
+        assert!(
+            via_main.iter().any(|b| matches!(b,
+                Block::AssistantMessage { text, phase: AssistantPhase::Final, .. } if text == "Done.")),
+            "a flagged record with a phase keeps it, unmarked: {via_main:?}"
         );
     }
 
@@ -8820,6 +9260,79 @@ mod tests {
             vec!["icon", "somethingNew"],
             "outside the publish shape, icon is reported with what it came beside"
         );
+        // #s268: since client 2.1.310 a publish from a file also says it is the caller's own.
+        let mut owned = publish.clone();
+        owned["owned"] = serde_json::json!(true);
+        assert!(
+            unknown_tool_result_keys(&owned).is_empty(),
+            "owned beside icon is known whole: {:?}",
+            unknown_tool_result_keys(&owned)
+        );
+        // #s308: since client 2.1.312 a publish from a file with edits also counts what it applied.
+        let mut edited = owned.clone();
+        edited["editsApplied"] = serde_json::json!(2);
+        assert!(
+            unknown_tool_result_keys(&edited).is_empty(),
+            "owned, icon and editsApplied are known whole: {:?}",
+            unknown_tool_result_keys(&edited)
+        );
+        edited["somethingNew"] = serde_json::json!(1);
+        assert_eq!(
+            unknown_tool_result_keys(&edited),
+            vec!["icon", "owned", "somethingNew"],
+            "beside a key from outside the shape, the shaped names come back with it"
+        );
+    }
+
+    /// #s268: an ArtifactComments `watch` result (client 2.1.310) is known whole, and `watch` beside
+    /// a key from outside its shape is reported.
+    #[test]
+    fn an_artifact_comments_watch_result_is_known_in_its_own_shape() {
+        let watch = serde_json::json!({
+            "watch": {
+                "url": "https://example.test/artifact/x", "watching": true,
+                "outcome": "already_watching", "task_id": "t1", "since": 1_700_000_000_000_u64,
+                "token_expires_at": 1_700_000_900_000_u64, "auto_reply": "armed"
+            }
+        });
+        assert!(
+            unknown_tool_result_keys(&watch).is_empty(),
+            "a whole watch result is known: {:?}",
+            unknown_tool_result_keys(&watch)
+        );
+        assert_eq!(
+            unknown_tool_result_keys(&serde_json::json!({"watch": {}, "stdout": "ok"})),
+            vec!["watch"],
+            "outside its shape, watch is reported"
+        );
+    }
+
+    /// #s283: an ArtifactComments watch listing (`{action: "watch"}` with no url, client 2.1.310)
+    /// is known whole, and `arms` beside a key from outside its shape is reported.
+    #[test]
+    fn an_artifact_comments_watch_list_result_is_known_in_its_own_shape() {
+        let listing = serde_json::json!({
+            "watches": [],
+            "arms": [{
+                "url": "https://example.test/artifact/x", "state": "failed",
+                "reason": "not_found", "at": 1_700_000_000_000_u64
+            }]
+        });
+        assert!(
+            unknown_tool_result_keys(&listing).is_empty(),
+            "a whole watch listing is known: {:?}",
+            unknown_tool_result_keys(&listing)
+        );
+        assert_eq!(
+            unknown_tool_result_keys(&serde_json::json!({"arms": [], "stdout": "ok"})),
+            vec!["arms"],
+            "outside its shape, arms is reported"
+        );
+        assert_eq!(
+            unknown_tool_result_keys(&serde_json::json!({"watches": [], "watch": {}})),
+            vec!["watch", "watches"],
+            "the listing and the watch are two shapes, not one"
+        );
     }
 
     /// #s87: an Artifact `open` result (client 2.1.296) is known whole, and `opened` beside a key
@@ -9057,6 +9570,61 @@ mod tests {
             unknown_tool_result_keys(&serde_json::json!({"files_read": {}, "stdout": "ok"})),
             vec!["files_read"],
             "beside another key, files_read is reported"
+        );
+    }
+
+    /// #s309: an ExitPlanMode result whose plan the person edited (client 2.1.199) carries
+    /// `planWasEdited: true`, known; the card's output is the result text, which marks the plan as
+    /// edited and carries it. Hand-written: no real plan or paths.
+    #[test]
+    fn an_edited_plan_s_flag_is_known_and_its_card_carries_the_edit() {
+        let jsonl = r##"
+{"type":"assistant","version":"2.1.199","sessionId":"s-309","message":{"content":[{"type":"tool_use","id":"ep1","name":"ExitPlanMode","input":{"plan":"# Tern survey\n1. count the nests","planFilePath":"/w/.claude/plans/tern.md","allowedPrompts":[]}}]}}
+{"type":"user","version":"2.1.199","sessionId":"s-309","toolUseResult":{"plan":"# Tern survey\n1. count the nests\n2. ring the chicks","isAgent":false,"filePath":"/w/.claude/plans/tern.md","planWasEdited":true},"message":{"content":[{"type":"tool_result","tool_use_id":"ep1","content":"User has approved your plan. You can now start coding.\n\n## Approved Plan (edited by user):\n# Tern survey\n1. count the nests\n2. ring the chicks"}]}}
+"##;
+        let blocks = parse(jsonl);
+        assert!(
+            !unknown_shapes()
+                .iter()
+                .any(|s| s.example.as_deref() == Some("s-309")),
+            "nothing in an edited plan's result is reported: {:?}",
+            unknown_shapes()
+        );
+        let Block::ToolUse { name, output, .. } = &blocks[0] else {
+            panic!("expected the ExitPlanMode call at 0: {blocks:?}")
+        };
+        assert_eq!(name, "ExitPlanMode");
+        let output = output.as_deref().unwrap_or("");
+        assert!(
+            output.contains("(edited by user)") && output.contains("2. ring the chicks"),
+            "the card's output marks the plan as edited and carries the edit: {output:?}"
+        );
+    }
+
+    /// #s308: an Artifact read by URL alone (clients 2.1.311 and 2.1.312) is `{read, artifactRead,
+    /// owned}`, known whole; `owned` beside a key from outside that shape is reported. Hand-written:
+    /// no real ids, URLs or titles.
+    #[test]
+    fn an_artifact_read_by_url_is_known_with_owned_in_its_own_shape() {
+        let read = serde_json::json!({
+            "read": {
+                "bytes": 2048, "code": 200, "codeText": "OK", "result": "", "durationMs": 310,
+                "url": "https://example.test/artifact/x", "title": "Tern colony notes"
+            },
+            "artifactRead": {"slug": "x", "ver": "v3"},
+            "owned": true
+        });
+        assert!(
+            unknown_tool_result_keys(&read).is_empty(),
+            "a whole read by URL is known: {:?}",
+            unknown_tool_result_keys(&read)
+        );
+        let mut stray = read.clone();
+        stray["somethingNew"] = serde_json::json!(1);
+        assert_eq!(
+            unknown_tool_result_keys(&stray),
+            vec!["owned", "somethingNew"],
+            "beside a key from outside the shape, owned is reported"
         );
     }
 

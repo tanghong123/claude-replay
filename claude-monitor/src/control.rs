@@ -5,7 +5,7 @@
 //! implementations has two behaviours, and `agent-monitor-v2` once ran these same decisions
 //! through it (retired, #s98). Every function takes what it needs, so the tests drive it directly.
 
-use crate::index;
+use crate::{dialog, index};
 use anyhow::{Context, Result};
 use claude_replay_html::HttpResponse;
 use serde_json::json;
@@ -271,8 +271,19 @@ pub fn resume_command(
     }
 }
 
-/// Spawn a resume DETACHED, in the session's cwd, output discarded — the monitor does not
-/// supervise it; the turn's progress shows up as the row going active (its transcript grows).
+/// How long a resume is watched before it is left to run (#s247). Measured on a session the agent
+/// cannot find: Claude Code 2.1.310 exits in 0.7 s, codex 0.164.0 in 1.8–2.0 s. A send that
+/// starts well waits this long for its answer; one that fails says why instead of "Resuming".
+const RESUME_STARTUP_WATCH: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How much of a failed resume's error output reaches the page, from its end.
+const RESUME_ERROR_TAIL: usize = 400;
+
+/// Spawn a resume in the session's cwd and watch it start (#s247): an agent that exits with a
+/// failure within `RESUME_STARTUP_WATCH` is an error carrying the end of what it wrote to
+/// stderr, which the page shows in place of "Resuming the session"; one still running is left to
+/// run, a thread of its own reaping it. The monitor never sends the prompt again, so a resume
+/// whose fate is unknown cannot become two. The turn's progress shows as the row going active.
 ///
 /// Refused before anything runs: a Codex row whose key names no thread id, and a Codex prompt
 /// that is just "-", which codex reads as "take the prompt from standard input" even after `--`
@@ -294,15 +305,116 @@ pub fn spawn_resume(target: &crate::index::SendTarget, prompt: &str) -> Result<(
     let (program, args) = resume_command(target, prompt)
         .ok_or_else(|| anyhow::anyhow!("no resume shape for {}", target.agent.label()))?;
     let mut cmd = std::process::Command::new(program);
-    cmd.args(&args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+    cmd.args(&args);
     if let Some(cwd) = &target.cwd {
         cmd.current_dir(cwd);
     }
-    cmd.spawn().context("spawn the resume")?;
+    watch_resume(cmd, &target.sid, RESUME_STARTUP_WATCH)
+}
+
+/// Run `cmd` with its stderr captured and watch it for `watch` (#s247): `Ok` when it exits
+/// cleanly or is still running at the end, an error naming its exit status and the end of its
+/// stderr when it fails within the watch. stderr is drained by a thread of its own, so a chatty
+/// agent never blocks on a full pipe; a helper the agent leaves behind holding the pipe open is
+/// never waited for past a short grace; and a child still running is reaped when it ends, its
+/// late failure one stderr line here (its status, never its output).
+fn watch_resume(
+    mut cmd: std::process::Command,
+    sid: &str,
+    watch: std::time::Duration,
+) -> Result<()> {
+    use std::io::Read;
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().context("spawn the resume")?;
+    let tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let (drained, drained_rx) = std::sync::mpsc::channel::<()>();
+    if let Some(mut stderr) = child.stderr.take() {
+        let tail = std::sync::Arc::clone(&tail);
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = stderr.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                let mut kept = tail.lock().unwrap();
+                kept.extend_from_slice(&buf[..n]);
+                let over = kept.len().saturating_sub(4 * RESUME_ERROR_TAIL);
+                kept.drain(..over);
+            }
+            let _ = drained.send(());
+        });
+    }
+    let deadline = std::time::Instant::now() + watch;
+    loop {
+        if let Some(status) = child.try_wait().context("watch the resume")? {
+            if status.success() {
+                return Ok(());
+            }
+            let _ = drained_rx.recv_timeout(std::time::Duration::from_millis(200));
+            let said = error_tail(&tail.lock().unwrap());
+            anyhow::bail!(
+                "the resume stopped at once ({status}){}",
+                if said.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {said}")
+                }
+            );
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let sid = sid.to_string();
+    std::thread::spawn(move || {
+        if let Ok(status) = child.wait() {
+            if !status.success() {
+                eprintln!("agent-monitor: the resume of {sid} ended with {status}");
+            }
+        }
+    });
     Ok(())
+}
+
+/// The last words of a failed resume's stderr, as one line: terminal colour codes and other
+/// control characters dropped, blank lines skipped, at most [`RESUME_ERROR_TAIL`] bytes kept
+/// from the end on a character boundary.
+fn error_tail(raw: &[u8]) -> String {
+    let text = String::from_utf8_lossy(raw);
+    let mut clean = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else if c == '\n' || !c.is_control() {
+            clean.push(c);
+        }
+    }
+    let joined = clean
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if joined.len() <= RESUME_ERROR_TAIL {
+        return joined;
+    }
+    let mut start = joined.len() - RESUME_ERROR_TAIL;
+    while !joined.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &joined[start..])
 }
 
 /// Run a tmux subcommand for a target's socket, output discarded, and fail on a non-zero
@@ -608,19 +720,7 @@ pub fn herdr_send_verdict(
     input: InputLine,
     client_wait: bool,
 ) -> Result<(), String> {
-    match agent.session.as_deref() {
-        None => {
-            return Err(format!(
-                "herdr does not say which session runs in pane {pane}: run `herdr integration install claude` on this machine, then send again"
-            ))
-        }
-        Some(other) if other != sid => {
-            return Err(format!(
-                "pane {pane} runs another session ({other}), not this one: nothing was typed"
-            ))
-        }
-        Some(_) => {}
-    }
+    herdr_names(sid, pane, agent)?;
     if agent.status.as_deref() == Some("blocked") || client_wait {
         return Err(
             "a question or a permission prompt is open in the session: answer it there first"
@@ -636,6 +736,20 @@ pub fn herdr_send_verdict(
             "the session's input holds an unsent draft: send or clear it there first".into(),
         ),
         InputLine::Empty => Ok(()),
+    }
+}
+
+/// herdr's own hook says the pane runs THIS session (#s226): the first check of a send, and of
+/// reading or answering a dialog (#s298).
+fn herdr_names(sid: &str, pane: &str, agent: &HerdrAgent) -> Result<(), String> {
+    match agent.session.as_deref() {
+        None => Err(format!(
+            "herdr does not say which session runs in pane {pane}: run `herdr integration install claude` on this machine, then send again"
+        )),
+        Some(other) if other != sid => Err(format!(
+            "pane {pane} runs another session ({other}), not this one: nothing was typed"
+        )),
+        Some(_) => Ok(()),
     }
 }
 
@@ -711,7 +825,14 @@ fn herdr_program() -> std::ffi::OsString {
 
 /// How long one herdr step may take before the send gives up (a hung herdr must not hold the
 /// request, nor the reader's pending send, for ever).
+#[cfg(not(test))]
 const HERDR_STEP: std::time::Duration = std::time::Duration::from_secs(5);
+/// The tests' stand-in herdr is a shell script, and on a loaded machine one answered later than
+/// the 5 s a real herdr gets (#s300: three test processes side by side failed 4 runs of 18, each
+/// "herdr agent get … did not answer within 5s", and CI's Linux runner once). No test measures
+/// the bound, so a test gets more of it.
+#[cfg(test)]
+const HERDR_STEP: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Run `herdr` against the pane's own server and return its stdout. Every step addresses that
 /// one server the same way, by `HERDR_SOCKET_PATH` (as herdr sets it in its panes), so the checks
@@ -1011,15 +1132,7 @@ fn herdr_send_with(
     prompt: &str,
     images: &SentImages,
 ) -> Result<(), HerdrSendError> {
-    if !herdr_pane_id_ok(pane) {
-        return Err(HerdrSendError::Held(format!(
-            "{pane} is not a herdr pane id: nothing was typed"
-        )));
-    }
-    let socket = socket
-        .context("the pane named no herdr server (HERDR_SOCKET_PATH)")
-        .and_then(herdr_socket_ok)
-        .map_err(HerdrSendError::Failed)?;
+    let socket = herdr_pane_socket(socket, pane)?;
     let look = || -> Result<(HerdrAgent, InputLine), HerdrSendError> {
         let agent =
             herdr_cli(program, &socket, &["agent", "get", pane]).map_err(HerdrSendError::Failed)?;
@@ -1118,6 +1231,327 @@ fn herdr_send_with(
     Ok(())
 }
 
+/// The pane's herdr server, checked as a send checks it (#s226): an id as herdr writes one, and a
+/// socket of this user.
+fn herdr_pane_socket(
+    socket: Option<&str>,
+    pane: &str,
+) -> Result<std::path::PathBuf, HerdrSendError> {
+    if !herdr_pane_id_ok(pane) {
+        return Err(HerdrSendError::Held(format!(
+            "{pane} is not a herdr pane id: nothing was typed"
+        )));
+    }
+    socket
+        .context("the pane named no herdr server (HERDR_SOCKET_PATH)")
+        .and_then(herdr_socket_ok)
+        .map_err(HerdrSendError::Failed)
+}
+
+/// The pane's screen as text, for its dialog (#s298). Plain: a dialog is read by its characters,
+/// not its colours.
+fn herdr_screen(
+    program: &std::ffi::OsStr,
+    socket: &std::path::Path,
+    pane: &str,
+) -> Result<String, HerdrSendError> {
+    herdr_cli(
+        program,
+        socket,
+        &["pane", "read", pane, "--source", "visible", "--lines", "80"],
+    )
+    .map_err(HerdrSendError::Failed)
+}
+
+/// What a Claude session's herdr pane holds (#s298).
+pub enum Shown {
+    /// Nothing holds the session: no dialog is open.
+    Nothing,
+    /// Something holds it that this monitor cannot read (a layout it does not know).
+    Unknown,
+    Dialog(dialog::Dialog),
+}
+
+/// The dialog open in a Claude session's herdr pane (#s298), read off its screen once herdr's hook
+/// says the pane runs this session and something holds it there: herdr's `blocked`, or the
+/// client's own wait (#s76).
+fn herdr_dialog(
+    program: &std::ffi::OsStr,
+    socket: &std::path::Path,
+    pane: &str,
+    sid: &str,
+    client_wait: bool,
+) -> Result<Shown, HerdrSendError> {
+    let agent = parse_herdr_agent(
+        &herdr_cli(program, socket, &["agent", "get", pane]).map_err(HerdrSendError::Failed)?,
+    );
+    herdr_names(sid, pane, &agent).map_err(HerdrSendError::Held)?;
+    if agent.status.as_deref() != Some("blocked") && !client_wait {
+        return Ok(Shown::Nothing);
+    }
+    Ok(match dialog::parse(&herdr_screen(program, socket, pane)?) {
+        Some(d) => Shown::Dialog(d),
+        None => Shown::Unknown,
+    })
+}
+
+/// Read the pane, for about a second, until its dialog is still THIS one (`plan`: the plan's text
+/// as it was read for the fingerprint) and `took` says the step before has taken.
+fn herdr_dialog_until(
+    program: &std::ffi::OsStr,
+    socket: &std::path::Path,
+    pane: &str,
+    fingerprint: &str,
+    plan: Option<&str>,
+    took: impl Fn(&dialog::Dialog) -> bool,
+) -> Result<bool, HerdrSendError> {
+    for i in 0..7 {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+        let shown = dialog::parse(&herdr_screen(program, socket, pane)?);
+        if shown.is_some_and(|d| d.fingerprint_with(plan) == fingerprint && took(&d)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The panes an answer is being typed into, each its server and id (#s298's review): one answer at
+/// a time per pane, or a second tap — a phone and a desktop, or a quick repeat — would pass the
+/// fingerprint check before the client redraws and answer the NEXT dialog.
+static ANSWERING: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+struct Answering(String);
+
+impl Answering {
+    fn claim(pane: &str) -> Option<Answering> {
+        let mut busy = ANSWERING.lock().unwrap_or_else(|e| e.into_inner());
+        if busy.iter().any(|p| p == pane) {
+            return None;
+        }
+        busy.push(pane.to_string());
+        Some(Answering(pane.to_string()))
+    }
+}
+
+impl Drop for Answering {
+    fn drop(&mut self) {
+        ANSWERING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|p| p != &self.0);
+    }
+}
+
+/// Answer the dialog in a Claude session's herdr pane (#s298, Hong's Way 1 on #s299): read it
+/// again and refuse if it is not the one the reader saw (its fingerprint, a plan's text included),
+/// then type the answer's steps (`dialog::steps`) through the socket, reading the pane wherever a
+/// step must be seen to have taken before the next, and at the end until that dialog has gone. The
+/// only Enter submits a written answer the pane shows in its choice; a digit picks at once, and an
+/// Enter after one could reach the input box. One answer at a time per pane.
+pub fn herdr_answer(
+    socket: Option<&str>,
+    pane: &str,
+    sid: &str,
+    client_wait: bool,
+    fingerprint: &str,
+    answer: &dialog::Answer,
+) -> Result<(), HerdrSendError> {
+    herdr_answer_with(
+        &herdr_program(),
+        socket,
+        pane,
+        sid,
+        client_wait,
+        fingerprint,
+        answer,
+    )
+}
+
+fn herdr_answer_with(
+    program: &std::ffi::OsStr,
+    socket: Option<&str>,
+    pane: &str,
+    sid: &str,
+    client_wait: bool,
+    fingerprint: &str,
+    answer: &dialog::Answer,
+) -> Result<(), HerdrSendError> {
+    let socket = herdr_pane_socket(socket, pane)?;
+    // Keyed by the server too: two herdr servers' pane ids repeat.
+    let Some(_answering) = Answering::claim(&format!("{}\u{0}{pane}", socket.display())) else {
+        return Err(HerdrSendError::Held(
+            "another answer is being typed into this session: nothing more was typed".into(),
+        ));
+    };
+    let Shown::Dialog(shown) = herdr_dialog(program, &socket, pane, sid, client_wait)? else {
+        return Err(HerdrSendError::Held(
+            "no dialog the monitor can read is open in the session now: nothing was typed".into(),
+        ));
+    };
+    let plan = shown.plan_file.as_deref().and_then(|f| plan_text(sid, f));
+    if shown.fingerprint_with(plan.as_deref()) != fingerprint {
+        return Err(HerdrSendError::Held(
+            "the dialog changed since it was shown: nothing was typed, so look again".into(),
+        ));
+    }
+    let steps = dialog::steps(&shown, answer).map_err(HerdrSendError::Held)?;
+    // Once a key has gone out, a step that fails leaves the dialog part-answered: held, and the
+    // reader told to finish it there.
+    let part_way = |why: String| {
+        HerdrSendError::Held(format!(
+            "the answer stopped part-way ({why}): finish it in the session"
+        ))
+    };
+    let plan = plan.as_deref();
+    let mut typed = false;
+    // The screen just before the last key: the answer has taken once the screen is another, even
+    // where a dialog just like this one stands in its place (two alike permissions in a row).
+    let last = steps.len().saturating_sub(1);
+    let mut before = String::new();
+    for (i, step) in steps.into_iter().enumerate() {
+        if i == last {
+            before = herdr_screen(program, &socket, pane).map_err(|e| match e {
+                HerdrSendError::Failed(e) if typed => part_way(format!("{e:#}")),
+                e => e,
+            })?;
+        }
+        match step {
+            dialog::Step::Type(text) => {
+                herdr_send_text(&socket, pane, &text).map_err(|e| {
+                    if typed {
+                        part_way(format!("{e:#}"))
+                    } else {
+                        HerdrSendError::Failed(e)
+                    }
+                })?;
+                typed = true;
+            }
+            dialog::Step::Key(key) => {
+                herdr_cli(program, &socket, &["pane", "send-keys", pane, key])
+                    .map_err(|e| part_way(format!("{e:#}")))?;
+            }
+            dialog::Step::Cursor(n) => {
+                let open = herdr_dialog_until(program, &socket, pane, fingerprint, plan, |d| {
+                    d.choices.iter().any(|c| c.n == n && c.cursor)
+                })?;
+                if !open {
+                    return Err(part_way("the written answer's field did not open".into()));
+                }
+            }
+            dialog::Step::Label(n, start, before) => {
+                let shows = herdr_dialog_until(program, &socket, pane, fingerprint, plan, |d| {
+                    d.choices
+                        .iter()
+                        .any(|c| c.n == n && c.label != before && c.label.starts_with(&start))
+                })?;
+                if !shows {
+                    return Err(part_way(
+                        "the answer is typed in the dialog but the pane does not show it, so it was not sent".into(),
+                    ));
+                }
+            }
+            dialog::Step::Ticks(want) => {
+                let ticked = herdr_dialog_until(program, &socket, pane, fingerprint, plan, |d| {
+                    let now: Vec<u32> = d
+                        .choices
+                        .iter()
+                        .filter(|c| c.checked == Some(true))
+                        .map(|c| c.n)
+                        .collect();
+                    now == want
+                })?;
+                if !ticked {
+                    return Err(part_way("the ticks did not take".into()));
+                }
+            }
+        }
+    }
+    // The answer is in once the screen has moved on: the dialog gone, or another standing (the
+    // question's next part). The same dialog on the same screen after about three seconds did not
+    // take it. Gone, the input box must hold no draft: a dialog that closed in the moment before the
+    // first key leaves that key in the input, where it would hold every later send.
+    let read = || {
+        herdr_screen(program, &socket, pane).map_err(|e| match e {
+            HerdrSendError::Failed(e) => part_way(format!("{e:#}")),
+            e => e,
+        })
+    };
+    for i in 0..20 {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+        let screen = read()?;
+        let same = screen == before
+            && dialog::parse(&screen).is_some_and(|d| d.fingerprint_with(plan) == fingerprint);
+        if same {
+            continue;
+        }
+        if dialog::parse(&screen).is_none() {
+            let input = herdr_cli(
+                program,
+                &socket,
+                &[
+                    "pane", "read", pane, "--source", "visible", "--lines", "40", "--ansi",
+                ],
+            )
+            .map_err(|e| part_way(format!("{e:#}")))?;
+            if herdr_input_line(&input) == InputLine::Draft {
+                return Err(HerdrSendError::Held(
+                    "the dialog closed as the answer went, and what was typed may be in the session's input: clear it there".into(),
+                ));
+            }
+        }
+        return Ok(());
+    }
+    Err(HerdrSendError::Held(
+        "the answer was typed but the dialog is still showing: look at it in the session".into(),
+    ))
+}
+
+/// A plan's text from the file its dialog names (#s298), read only from the plans of the
+/// session's own client: the screen gives the file's NAME alone, and the folder is the one whose
+/// `sessions/` records this session (Claude Code writes `<home>/sessions/<pid>.json` naming it),
+/// the plans beside it a plain file each. At most 64 KiB.
+pub fn plan_text(sid: &str, shown: &str) -> Option<String> {
+    use std::io::Read;
+    let (folder, name) = shown.rsplit_once('/')?;
+    let name_ok = name.ends_with(".md")
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
+    if !name_ok || !folder.ends_with("/plans") {
+        return None;
+    }
+    let home = match folder.strip_suffix("/plans")?.strip_prefix("~/") {
+        Some(rest) => std::path::Path::new(&std::env::var_os("HOME")?).join(rest),
+        None => std::path::PathBuf::from(folder.strip_suffix("/plans")?),
+    };
+    let records_session = std::fs::read_dir(home.join("sessions"))
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| std::fs::read(e.path()).ok())
+        .filter_map(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .any(|v| v.get("sessionId").and_then(|s| s.as_str()) == Some(sid));
+    if !records_session {
+        return None;
+    }
+    let path = home.join("plans").join(name);
+    if !std::fs::symlink_metadata(&path).ok()?.file_type().is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(&path)
+        .ok()?
+        .take(64 * 1024)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// The live-session send (#133 tmux slice, #s226 herdr): resolve the target as a PROVEN live
 /// pane link, require standing consent for its exact pane/pid, then inject. Returns the
 /// `/api/send` JSON body. Consent is checked against the pid THIS scan just observed, so a
@@ -1145,19 +1579,8 @@ fn send_tmux_checked(
     if !images.is_empty() && !matches!(target.addr, index::PaneAddr::Herdr { .. }) {
         return Ok(json!({"ok": false, "error": IMAGES_HERDR_ONLY}));
     }
-    let store = crate::consent::ConsentStore::open();
-    if !store.consents(
-        target.addr.consent_sock().as_deref(),
-        target.addr.pane(),
-        &target.sid,
-        target.pid,
-        target.addr.grant_follows(target.named),
-    ) {
-        return Ok(json!({
-            "ok": false,
-            "error": crate::index::SendRefusal::NoConsent.as_str(),
-            "code": "no-consent",
-        }));
+    if !granted(&target) {
+        return Ok(no_consent_body());
     }
     Ok(match &target.addr {
         index::PaneAddr::Tmux { sock, pane } => match tmux_send(sock.as_deref(), pane, prompt) {
@@ -1186,6 +1609,26 @@ fn send_tmux_checked(
                 Err(HerdrSendError::Failed(e)) => json!({"ok": false, "error": format!("{e:#}")}),
             }
         }
+    })
+}
+
+/// The reader's standing grant covers this exact pane and process (#133; #s234: or a herdr
+/// restore of it). A send asks it, and so does reading or answering a dialog there (#s298).
+fn granted(target: &index::PaneTarget) -> bool {
+    crate::consent::ConsentStore::open().consents(
+        target.addr.consent_sock().as_deref(),
+        target.addr.pane(),
+        &target.sid,
+        target.pid,
+        target.addr.grant_follows(target.named),
+    )
+}
+
+fn no_consent_body() -> serde_json::Value {
+    json!({
+        "ok": false,
+        "error": crate::index::SendRefusal::NoConsent.as_str(),
+        "code": "no-consent",
     })
 }
 
@@ -1253,6 +1696,112 @@ pub fn send_route(idx: &index::Index, req: &claude_replay_html::Request) -> Http
             }
             Err(reason) => return checked_send_refusal(idx, &sid, reason),
         },
+    };
+    HttpResponse::json(resp.to_string())
+}
+
+/// Where a dialog may be read and answered (#s298): a Claude session in a herdr pane, for now.
+const DIALOGS_HERDR_ONLY: &str =
+    "answering a dialog works only for a Claude session in a herdr pane: answer it in the session";
+
+/// The pane a dialog route acts on: the session's own, resolved and granted as a send's is, and a
+/// herdr pane. `Err` is the route's answer.
+fn dialog_pane(
+    idx: &index::Index,
+    req: &claude_replay_html::Request,
+) -> Result<(String, index::PaneTarget), HttpResponse> {
+    let Some(sid) =
+        claude_replay_html::query_get(req.query, "target").map(crate::index::percent_decode)
+    else {
+        return Err(HttpResponse::json(
+            json!({"ok": false, "error": "no target session"}).to_string(),
+        ));
+    };
+    let target = idx
+        .resolve_pane_send(&sid)
+        .map_err(|reason| checked_send_refusal(idx, &sid, reason))?;
+    if !granted(&target) {
+        return Err(HttpResponse::json(no_consent_body().to_string()));
+    }
+    if !matches!(target.addr, index::PaneAddr::Herdr { .. }) {
+        return Err(HttpResponse::json(
+            json!({"ok": false, "error": DIALOGS_HERDR_ONLY}).to_string(),
+        ));
+    }
+    Ok((sid, target))
+}
+
+fn held_body(e: HerdrSendError) -> serde_json::Value {
+    match e {
+        HerdrSendError::Held(why) => json!({"ok": false, "code": "held", "error": why}),
+        HerdrSendError::Failed(e) => json!({"ok": false, "error": format!("{e:#}")}),
+    }
+}
+
+/// `GET /api/dialog?target=<sid>` (#s298): the dialog a live Claude session's herdr pane shows,
+/// as `{"ok": true, "open": true, "dialog": {…}}`; `"dialog": null` with `open` false when nothing
+/// is open, or true (and `why`) when what is open cannot be read. It reads the reader's pane,
+/// so it asks what a send asks: a paired, same-origin request, a proven link, a quiet project and
+/// the reader's grant for that pane. A plan's text comes from its file (`plan_text`).
+pub fn dialog_route(idx: &index::Index, req: &claude_replay_html::Request) -> HttpResponse {
+    if let Some(deny) = req.deny_mutation("GET") {
+        return deny;
+    }
+    let (sid, target) = match dialog_pane(idx, req) {
+        Ok(found) => found,
+        Err(answer) => return answer,
+    };
+    let index::PaneAddr::Herdr { socket, pane } = &target.addr else {
+        unreachable!("dialog_pane answers a herdr pane only")
+    };
+    let read = herdr_pane_socket(socket.as_deref(), pane)
+        .and_then(|socket| herdr_dialog(&herdr_program(), &socket, pane, &sid, target.client_wait));
+    let resp = match read {
+        Ok(Shown::Dialog(d)) => {
+            let plan = d.plan_file.as_deref().and_then(|f| plan_text(&sid, f));
+            json!({"ok": true, "sid": sid, "open": true, "dialog": d.to_json(plan.as_deref())})
+        }
+        Ok(Shown::Nothing) => json!({"ok": true, "sid": sid, "open": false, "dialog": null}),
+        Ok(Shown::Unknown) => json!({
+            "ok": true,
+            "sid": sid,
+            "open": true,
+            "dialog": null,
+            "why": "something holds the session that the monitor cannot read: answer it there",
+        }),
+        Err(e) => held_body(e),
+    };
+    HttpResponse::json(resp.to_string())
+}
+
+/// `POST /api/answer?target=<sid>` with `{"fingerprint", "choice" | "choices" | "text"}`
+/// (#s298): answer the dialog the reader was shown, through [`herdr_answer`], behind every gate a
+/// send passes. `{"ok": true}`, or held with what to do.
+pub fn answer_route(idx: &index::Index, req: &claude_replay_html::Request) -> HttpResponse {
+    if let Some(deny) = req.deny_write() {
+        return deny;
+    }
+    let (fingerprint, answer) = match dialog::parse_answer(req.body) {
+        Ok(parsed) => parsed,
+        Err(why) => return HttpResponse::json(json!({"ok": false, "error": why}).to_string()),
+    };
+    let (sid, target) = match dialog_pane(idx, req) {
+        Ok(found) => found,
+        Err(answer) => return answer,
+    };
+    let index::PaneAddr::Herdr { socket, pane } = &target.addr else {
+        unreachable!("dialog_pane answers a herdr pane only")
+    };
+    let resp = match herdr_answer(
+        socket.as_deref(),
+        pane,
+        &sid,
+        target.client_wait,
+        &fingerprint,
+        &answer,
+    ) {
+        Ok(()) => json!({"ok": true, "sid": sid, "via": "herdr"}),
+        Err(e) => held_body(e),
     };
     HttpResponse::json(resp.to_string())
 }
@@ -1545,8 +2094,12 @@ mod tests {
     impl HerdrWorld {
         fn new(name: &str) -> HerdrWorld {
             // Short: a Unix socket's path must fit in `SUN_LEN` (104 bytes on macOS), and the
-            // scratch sits deep in the workspace's target.
-            let dir = std::env::temp_dir().join(format!("h{name}{}", std::process::id()));
+            // scratch sits deep in the workspace's target. One directory per WORLD, not per name
+            // (#s300): two tests named theirs "p", ran on parallel threads, and each removed the
+            // other's socket and answers mid-send, which failed one of them on Linux CI.
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!("h{name}{}-{n}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             let socket = dir.join("herdr.sock");
@@ -1565,7 +2118,7 @@ mod tests {
             crate::write_script(
                 &w.fake,
                 &format!(
-                    "#!/bin/sh\necho \"$HERDR_SOCKET_PATH $*\" >> '{log}'\ncase \"$1 $2\" in\n  'agent get') if [ -f '{agent}.later' ] && [ -f '{agent}.seen' ]; then cat '{agent}.later'; else touch '{agent}.seen'; cat '{agent}'; fi ;;\n  'pane read') cat '{screen}' ;;\nesac\n",
+                    "#!/bin/sh\necho \"$HERDR_SOCKET_PATH $*\" >> '{log}'\ncase \"$1 $2\" in\n  'agent get') if [ -f '{agent}.later' ] && [ -f '{agent}.seen' ]; then cat '{agent}.later'; else touch '{agent}.seen'; cat '{agent}'; fi ;;\n  'pane read') cat '{screen}' ;;\n  'pane send-keys') if [ -f '{screen}.keys' ]; then cat '{screen}.keys' > '{screen}'; fi ;;\nesac\n",
                     log = w.log.display(),
                     agent = w.agent.display(),
                     screen = w.screen.display(),
@@ -1653,10 +2206,30 @@ mod tests {
         }
     }
 
+    /// What a send came to, for an assertion's message: `HerdrSendError` is not `Debug`.
+    fn shown(sent: &Result<(), HerdrSendError>) -> String {
+        match sent {
+            Ok(()) => "sent".into(),
+            Err(HerdrSendError::Held(why)) => format!("held: {why}"),
+            Err(HerdrSendError::Failed(e)) => format!("failed: {e:#}"),
+        }
+    }
+
     impl Drop for HerdrWorld {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.dir);
         }
+    }
+
+    /// #s300: two worlds given one name are two worlds. Each used to be `h<name><pid>`, removed
+    /// first, so the two tests that both named theirs "p" deleted each other's socket and answers
+    /// when libtest ran them together.
+    #[test]
+    fn two_herdr_worlds_named_alike_never_share_a_directory() {
+        let a = HerdrWorld::new("t");
+        let b = HerdrWorld::new("t");
+        assert_ne!(a.dir, b.dir);
+        assert!(a.socket.exists() && b.socket.exists(), "both sockets stand");
     }
 
     /// #s226 end to end against a stand-in `herdr` and a stand-in herdr server: every step names
@@ -1670,7 +2243,11 @@ mod tests {
         let idle = format!(r#"{{"agent_status":"idle","agent_session":{{"value":"{SID}"}}}}"#);
         w.set(&idle, &screen("\u{276f}\u{a0}half a thought"));
         let held = w.send("hello");
-        assert!(matches!(held, Err(HerdrSendError::Held(ref why)) if why.contains("draft")));
+        assert!(
+            matches!(held, Err(HerdrSendError::Held(ref why)) if why.contains("draft")),
+            "{}",
+            shown(&held)
+        );
         // An empty input: typed over the socket, seen in the input, then one Enter.
         w.set(
             &idle,
@@ -1833,10 +2410,12 @@ mod tests {
         let idle = format!(r#"{{"agent_status":"idle","agent_session":{{"value":"{SID}"}}}}"#);
         // A draft in the pane: held, and nothing saved.
         w.set(&idle, &screen("\u{276f}\u{a0}half a thought"));
-        assert!(matches!(
-            w.send_images("look", &images_in(&dir, 2)),
-            Err(HerdrSendError::Held(_))
-        ));
+        let held = w.send_images("look", &images_in(&dir, 2));
+        assert!(
+            matches!(held, Err(HerdrSendError::Held(_))),
+            "{}",
+            shown(&held)
+        );
         assert!(!dir.exists(), "a held send writes no image");
         w.set(
             &idle,
@@ -1954,7 +2533,8 @@ mod tests {
             let held = w.send("rm the build");
             assert!(
                 matches!(held, Err(HerdrSendError::Held(ref why)) if why.contains("typed") && why.contains("not sent")),
-                "{name}"
+                "{name}: {}",
+                shown(&held)
             );
             server.join().unwrap();
             assert_eq!(
@@ -1966,12 +2546,15 @@ mod tests {
         }
 
         // Blocked between the first look and the typing: the ask just before typing holds it,
-        // and nothing reaches the socket.
-        let w = HerdrWorld::new("p");
+        // and nothing reaches the socket. Its own tag: two worlds of one name share a socket, and
+        // the second removed the first's while its server waited (#s298).
+        let w = HerdrWorld::new("pb");
         std::fs::write(w.agent.with_extension("json.later"), &blocked).unwrap();
         let held = w.send("rm the build");
         assert!(
-            matches!(held, Err(HerdrSendError::Held(ref why)) if why.contains("permission prompt"))
+            matches!(held, Err(HerdrSendError::Held(ref why)) if why.contains("permission prompt")),
+            "{}",
+            shown(&held)
         );
         assert_eq!(w.calls().matches("agent get").count(), 2, "{}", w.calls());
         assert!(
@@ -2181,5 +2764,385 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&state);
         let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    use std::time::{Duration, Instant};
+
+    fn sh(script: &str) -> std::process::Command {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", script]);
+        cmd
+    }
+
+    /// #s247: an agent that fails as it starts is an error saying why, its colour codes dropped,
+    /// where the page used to say "Resuming the session".
+    #[test]
+    fn a_resume_that_fails_at_once_says_why() {
+        let why = watch_resume(
+            sh("printf '\\033[31mError:\\033[0m thread/resume failed: no rollout found\\n' >&2; exit 1"),
+            "s",
+            Duration::from_secs(3),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(why.contains("exit status: 1"), "{why}");
+        assert!(
+            why.contains("Error: thread/resume failed: no rollout found"),
+            "{why}"
+        );
+        assert!(!why.contains('\u{1b}'), "{why}");
+    }
+
+    /// #s247: a clean exit inside the watch is a send that went, and a child still running at the
+    /// watch's end is left to run without holding the reply back.
+    #[test]
+    fn a_resume_that_starts_is_left_to_run() {
+        assert!(watch_resume(sh("exit 0"), "s", Duration::from_secs(3)).is_ok());
+        let started = Instant::now();
+        assert!(watch_resume(sh("sleep 2"), "s", Duration::from_millis(200)).is_ok());
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// #s247: a resume left to run is reaped when it ends, failure or not: no zombie stays behind.
+    #[test]
+    fn a_resume_left_to_run_is_reaped() {
+        let scratch = std::env::temp_dir().join(format!("cm-resume-reap-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let pidfile = scratch.join("pid");
+        let script = format!("echo $$ > {}; sleep 0.4; exit 3", pidfile.display());
+        assert!(watch_resume(sh(&script), "s", Duration::from_millis(100)).is_ok());
+        let pid = (0..50)
+            .find_map(|_| {
+                std::thread::sleep(Duration::from_millis(20));
+                std::fs::read_to_string(&pidfile)
+                    .ok()
+                    .filter(|p| !p.trim().is_empty())
+            })
+            .expect("the child wrote its pid");
+        let gone = (0..50).any(|_| {
+            std::thread::sleep(Duration::from_millis(50));
+            let out = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", pid.trim()])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().is_empty()
+        });
+        assert!(gone, "pid {} was never reaped", pid.trim());
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    /// #s247: a helper the agent leaves behind holding stderr open must not hold the reply: the
+    /// failure is answered after a short grace with what was written before the exit.
+    #[test]
+    fn a_failed_resume_does_not_wait_for_a_helper_holding_its_stderr() {
+        let started = Instant::now();
+        let why = watch_resume(
+            sh("sleep 3 & echo 'No conversation found' >&2; exit 2"),
+            "s",
+            Duration::from_secs(3),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(why.contains("No conversation found"), "{why}");
+    }
+
+    /// #s247: what of stderr reaches the page is one line, its end kept.
+    #[test]
+    fn a_failed_resumes_error_tail_is_one_short_line() {
+        assert_eq!(
+            error_tail(b"\n  first\n\n\x1b[1msecond\x1b[0m  \n"),
+            "first second"
+        );
+        let long = "x".repeat(RESUME_ERROR_TAIL * 2) + " the end";
+        let tail = error_tail(long.as_bytes());
+        assert!(
+            tail.ends_with(" the end") && tail.starts_with('…'),
+            "{tail}"
+        );
+        assert!(tail.len() <= RESUME_ERROR_TAIL + '…'.len_utf8());
+    }
+
+    fn dialog_fixture(name: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/dialogs")
+            .join(name);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    fn blocked() -> String {
+        format!(r#"{{"agent_status":"blocked","agent_session":{{"value":"{SID}"}}}}"#)
+    }
+
+    impl HerdrWorld {
+        fn answer(&self, fingerprint: &str, answer: dialog::Answer) -> Result<(), HerdrSendError> {
+            herdr_answer_with(
+                self.fake.as_os_str(),
+                self.socket.to_str(),
+                "w1:p2",
+                SID,
+                false,
+                fingerprint,
+                &answer,
+            )
+        }
+        fn shown(&self) -> Option<dialog::Dialog> {
+            match herdr_dialog(self.fake.as_os_str(), &self.socket, "w1:p2", SID, false) {
+                Ok(Shown::Dialog(d)) => Some(d),
+                Ok(_) => None,
+                Err(_) => panic!("the pane could not be read"),
+            }
+        }
+    }
+
+    fn typed(lines: &[String]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| {
+                let v: serde_json::Value = serde_json::from_str(l.trim()).unwrap();
+                assert_eq!(v["method"], "pane.send_text");
+                assert_eq!(v["params"]["pane_id"], "w1:p2");
+                v["params"]["text"].as_str().unwrap().to_string()
+            })
+            .collect()
+    }
+
+    /// #s298: a permission prompt read off the pane once herdr names this session and says it is
+    /// blocked; Yes is its digit over the socket and nothing else — no Enter, ever, after a digit.
+    #[test]
+    fn a_permission_is_answered_by_its_digit_alone() {
+        let w = HerdrWorld::new("ap");
+        w.set(&blocked(), &dialog_fixture("permission-bash.txt"));
+        let d = w.shown().expect("the dialog");
+        assert_eq!(d.kind, dialog::Kind::Permission);
+        let server = w.serve((blocked(), screen("\u{276f}\u{a0}")));
+        assert!(w
+            .answer(&d.fingerprint(), dialog::Answer::Choice(1))
+            .is_ok());
+        assert_eq!(typed(&[server.join().unwrap()]), ["1"]);
+        let calls = w.calls();
+        assert!(
+            !calls.contains("send-keys"),
+            "no key but the digit: {calls}"
+        );
+        assert!(
+            calls
+                .lines()
+                .all(|l| l.starts_with(&format!("{} ", w.socket.display()))),
+            "{calls}"
+        );
+    }
+
+    /// #s298: an answer to a dialog that is not the one shown, a choice not offered, another
+    /// session in the pane, or no dialog open types nothing and says why.
+    #[test]
+    fn an_answer_that_does_not_fit_the_pane_types_nothing() {
+        let w = HerdrWorld::new("aq");
+        w.set(&blocked(), &dialog_fixture("permission-bash.txt"));
+        let fp = w.shown().unwrap().fingerprint();
+        let held = |r: Result<(), HerdrSendError>, says: &str| match r {
+            Err(HerdrSendError::Held(why)) => assert!(why.contains(says), "{why}"),
+            Err(HerdrSendError::Failed(e)) => panic!("failed, not held: {e:#}"),
+            Ok(()) => panic!("answered"),
+        };
+        held(
+            w.answer("0000000000000000", dialog::Answer::Choice(1)),
+            "changed",
+        );
+        held(w.answer(&fp, dialog::Answer::Choice(2)), "not offered");
+        held(
+            w.answer(&fp, dialog::Answer::Text("no".into())),
+            "no written answer",
+        );
+        w.set(
+            r#"{"agent_status":"blocked","agent_session":{"value":"another"}}"#,
+            &dialog_fixture("permission-bash.txt"),
+        );
+        held(w.answer(&fp, dialog::Answer::Choice(1)), "another session");
+        let idle = format!(r#"{{"agent_status":"idle","agent_session":{{"value":"{SID}"}}}}"#);
+        w.set(&idle, &dialog_fixture("permission-bash.txt"));
+        held(w.answer(&fp, dialog::Answer::Choice(1)), "no dialog");
+        w.set(&blocked(), &dialog_fixture("no-dialog.txt"));
+        held(w.answer(&fp, dialog::Answer::Choice(1)), "no dialog");
+        assert!(w.listener.borrow().is_some(), "nothing reached the socket");
+    }
+
+    /// #s298: a written answer picks its choice, waits for the field, types the text, waits to see
+    /// it in the choice, and only then presses Enter, once.
+    #[test]
+    fn a_written_answer_is_seen_in_its_choice_before_enter() {
+        let w = HerdrWorld::new("at");
+        w.set(
+            &blocked(),
+            &dialog_fixture("question-free-chosen.txt")
+                .replace("\u{276f} 3.", "  3.")
+                .replacen("  1. Spring", "\u{276f} 1. Spring", 1),
+        );
+        let fp = w.shown().expect("the dialog").fingerprint();
+        let server = w.serve_each(vec![
+            (blocked(), dialog_fixture("question-free-chosen.txt")),
+            (blocked(), dialog_fixture("question-free-typed.txt")),
+        ]);
+        std::fs::write(
+            w.screen.with_extension("txt.keys"),
+            screen("\u{276f}\u{a0}"),
+        )
+        .unwrap();
+        assert!(w
+            .answer(&fp, dialog::Answer::Text("Petrel watch".into()))
+            .is_ok());
+        assert_eq!(typed(&server.join().unwrap()), ["3", "Petrel watch"]);
+        assert_eq!(w.calls().matches("pane send-keys w1:p2 enter").count(), 1);
+    }
+
+    /// #s298: a written answer the pane never shows is not submitted.
+    #[test]
+    fn a_written_answer_the_pane_does_not_show_is_not_sent() {
+        let w = HerdrWorld::new("au");
+        w.set(&blocked(), &dialog_fixture("question-free-chosen.txt"));
+        let fp = w.shown().unwrap().fingerprint();
+        let server = w.serve_each(vec![
+            (blocked(), dialog_fixture("question-free-chosen.txt")),
+            (blocked(), dialog_fixture("question-free-chosen.txt")),
+        ]);
+        let r = w.answer(&fp, dialog::Answer::Text("Petrel watch".into()));
+        assert!(matches!(r, Err(HerdrSendError::Held(ref why)) if why.contains("part-way")));
+        server.join().unwrap();
+        assert!(!w.calls().contains("send-keys"), "no Enter: {}", w.calls());
+    }
+
+    /// #s298: ticks: only what differs is toggled, the ticks are seen to have taken, then Tab.
+    #[test]
+    fn ticks_are_toggled_seen_and_then_tabbed_past() {
+        let w = HerdrWorld::new("am");
+        w.set(&blocked(), &dialog_fixture("question-multi.txt"));
+        let fp = w.shown().unwrap().fingerprint();
+        let one =
+            dialog_fixture("question-multi.txt").replacen("[ ] Plot A", "[\u{2714}] Plot A", 1);
+        let server = w.serve_each(vec![
+            (blocked(), one),
+            (blocked(), dialog_fixture("question-multi-toggled.txt")),
+        ]);
+        std::fs::write(
+            w.screen.with_extension("txt.keys"),
+            dialog_fixture("question-second-tab.txt"),
+        )
+        .unwrap();
+        assert!(w.answer(&fp, dialog::Answer::Choices(vec![3, 1])).is_ok());
+        assert_eq!(typed(&server.join().unwrap()), ["1", "3"]);
+        let calls = w.calls();
+        assert_eq!(
+            calls.matches("pane send-keys w1:p2 tab").count(),
+            1,
+            "{calls}"
+        );
+        assert!(!calls.contains("enter"), "{calls}");
+    }
+
+    /// #s298: a plan's text is read only from the plans of a client home whose `sessions/` records
+    /// this session, by the file's name alone, and only a plain file there.
+    #[test]
+    fn a_plan_is_read_only_from_the_sessions_own_client_home() {
+        let root = std::env::temp_dir().join(format!("cm-plan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join("claude");
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        std::fs::create_dir_all(home.join("plans")).unwrap();
+        std::fs::write(
+            home.join("sessions/4242.json"),
+            format!(r#"{{"pid":4242,"sessionId":"{SID}"}}"#),
+        )
+        .unwrap();
+        std::fs::write(home.join("plans/tally.md"), "# Tally the nests\n").unwrap();
+        std::fs::write(root.join("elsewhere.md"), "someone else's").unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere.md"), home.join("plans/linked.md"))
+            .unwrap();
+        let at = |name: &str| plan_text(SID, &format!("{}/plans/{name}", home.display()));
+        assert_eq!(at("tally.md").as_deref(), Some("# Tally the nests\n"));
+        assert_eq!(at("linked.md"), None, "a link out of the plans");
+        assert_eq!(at("../elsewhere.md"), None, "a name, not a path");
+        assert_eq!(at("missing.md"), None);
+        assert_eq!(
+            plan_text(
+                "another-session",
+                &format!("{}/plans/tally.md", home.display())
+            ),
+            None,
+            "a home that does not record this session"
+        );
+        assert_eq!(
+            plan_text(SID, &format!("{}/notes/tally.md", home.display())),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #s298's review: one answer at a time per pane.
+    #[test]
+    fn a_pane_takes_one_answer_at_a_time() {
+        let first = Answering::claim("w9:p9").expect("free");
+        assert!(
+            Answering::claim("w9:p9").is_none(),
+            "busy while the first is typed"
+        );
+        assert!(
+            Answering::claim("w9:p8").is_some(),
+            "another pane is not held"
+        );
+        drop(first);
+        assert!(Answering::claim("w9:p9").is_some(), "free again");
+    }
+
+    /// #s298's review: a digit typed while the dialog stays the same did not take: held, and said.
+    #[test]
+    fn an_answer_the_dialog_did_not_take_is_held() {
+        let w = HerdrWorld::new("an");
+        w.set(&blocked(), &dialog_fixture("permission-bash.txt"));
+        let fp = w.shown().unwrap().fingerprint();
+        let server = w.serve((blocked(), dialog_fixture("permission-bash.txt")));
+        let r = w.answer(&fp, dialog::Answer::Choice(1));
+        assert!(matches!(r, Err(HerdrSendError::Held(ref why)) if why.contains("still showing")));
+        server.join().unwrap();
+    }
+
+    /// #s298's second review: a dialog that closed in the moment before the key leaves it in the
+    /// input box; the answer says so rather than that it went.
+    #[test]
+    fn a_key_left_in_the_input_box_is_said() {
+        let w = HerdrWorld::new("ad");
+        w.set(&blocked(), &dialog_fixture("permission-bash.txt"));
+        let fp = w.shown().unwrap().fingerprint();
+        let idle = format!(r#"{{"agent_status":"idle","agent_session":{{"value":"{SID}"}}}}"#);
+        let server = w.serve((idle, screen("\u{276f}\u{a0}1")));
+        let r = w.answer(&fp, dialog::Answer::Choice(1));
+        assert!(
+            matches!(r, Err(HerdrSendError::Held(ref why)) if why.contains("in the session's input"))
+        );
+        server.join().unwrap();
+    }
+
+    /// #s298's second review: a permission just like the one answered, standing in its place, is
+    /// the answer taken, not refused.
+    #[test]
+    fn a_dialog_just_like_the_answered_one_is_the_answer_taken() {
+        let w = HerdrWorld::new("al");
+        w.set(&blocked(), &dialog_fixture("permission-bash.txt"));
+        let fp = w.shown().unwrap().fingerprint();
+        let next = dialog_fixture("permission-bash.txt").replacen(
+            "Count the petrel nests",
+            "Count the petrel nests again",
+            1,
+        );
+        let server = w.serve((blocked(), next));
+        assert!(w.answer(&fp, dialog::Answer::Choice(1)).is_ok());
+        server.join().unwrap();
     }
 }

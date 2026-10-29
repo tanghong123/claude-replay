@@ -3,7 +3,7 @@
 
 use crate::diff::{diff_row_groups, line_diff, DiffKind, LineOp};
 use crate::highlight::{self, Hl};
-use crate::model::{AssistantPhase, Attachment, Block};
+use crate::model::{AssistantPhase, Attachment, AttachmentKind, Block, Inbox};
 use crate::present::{
     display_name, edit_summary, file_edit_summary, not_applied, run_changes, spawn_chip,
     thinking_summary, tool_execution_failed, tool_execution_summary, turn_summary, write_content,
@@ -445,13 +445,18 @@ fn render_diff(
 /// A one-line marker for a surfaced attachment: `▤ <kind>  <name>`. The **name** is
 /// the actionable target — clicking it (or Enter on the focused block) downloads the
 /// embedded content or reveals the path in the file manager — so it's underlined like
-/// a link.
+/// a link. An `edited` one is the client telling the agent a file changed on disk (#s296),
+/// never a file the person edited or attached, so it says that, as both pages do.
 fn attachment_line(a: &Attachment) -> Line<'static> {
     let mark = theme::tool();
     let name = mark.add_modifier(Modifier::UNDERLINED);
+    let kind = match a.kind {
+        AttachmentKind::Edited => "changed on disk",
+        k => k.as_str(),
+    };
     let mut spans = vec![
         Span::styled("▤ ", mark),
-        Span::styled(format!("{} ", a.kind), mark),
+        Span::styled(format!("{kind} "), mark),
         Span::styled(a.name.clone(), name),
     ];
     // The size the transcript recorded (#261): a file put back into context after a compaction
@@ -504,6 +509,64 @@ fn peer_lines(from: &str, text: &str, width: usize) -> Vec<Line<'static>> {
     for mut line in markdown::render(text, width.saturating_sub(2).max(1)) {
         line.spans.insert(0, Span::styled("│ ", theme::peer()));
         out.push(line);
+    }
+    out
+}
+
+/// The head of a relayed message from the person (#s272): who, where from, what kind, what it
+/// is about, a relay's agent and task, and when — the chips a page draws, as one line.
+fn inbox_head(inbox: &Inbox) -> String {
+    let mut parts = vec![inbox.from.clone()];
+    if let Some(v) = &inbox.via {
+        parts.push(format!("via {v}"));
+    }
+    if let Some(k) = &inbox.kind {
+        parts.push(k.clone());
+    }
+    parts.extend(inbox.about.iter().cloned());
+    match (&inbox.to, &inbox.task) {
+        (Some(to), Some(task)) => parts.push(format!("→ {to} {task}")),
+        (Some(to), None) => parts.push(format!("→ {to}")),
+        (None, Some(task)) => parts.push(task.clone()),
+        (None, None) => {}
+    }
+    if let Some(at) = &inbox.at {
+        // `2026-10-26T16:35:20+08:00` → `2026-10-26 16:35`, as the relay wrote it.
+        let at = at.replacen('T', " ", 1);
+        parts.push(at.chars().take(16).collect());
+    }
+    parts.join(" · ")
+}
+
+/// A relayed message from the person (#s272): their `❯` block, headed by what the relay says of
+/// it, then what it replies to behind a rule, and their words; its pictures follow as attachments.
+/// The relay's instructions to the agent are only counted: a page folds them away, and a terminal
+/// block has no fold.
+fn inbox_lines(text: &str, inbox: &Inbox) -> Vec<Line<'static>> {
+    let base = Style::default().fg(theme::user_fg()).bg(theme::user_bg());
+    let mark = base.fg(theme::user_marker());
+    let mut out = vec![Line::from(vec![
+        Span::styled("❯ ", mark),
+        Span::styled(inbox_head(inbox), mark),
+    ])];
+    if let Some(q) = &inbox.reply_to {
+        if let Some(from) = &q.from {
+            out.push(Line::from(Span::styled(format!("  │ {from}:"), mark)));
+        }
+        for l in q.text.lines() {
+            out.push(Line::from(Span::styled(format!("  │ {l}"), mark)));
+        }
+    }
+    for l in text.lines() {
+        out.push(Line::from(Span::styled(format!("  {l}"), base)));
+    }
+    let n = inbox.instructions.lines().count();
+    if n > 0 {
+        let s = if n == 1 { "" } else { "s" };
+        out.push(Line::from(Span::styled(
+            format!("  ⋯ {n} line{s} of instructions to the agent"),
+            mark,
+        )));
     }
     out
 }
@@ -603,6 +666,7 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                 }
             }
         }
+        Block::UserInbox { text, inbox } => out.extend(inbox_lines(text, inbox)),
         Block::PeerText { from, text, .. } => out.extend(peer_lines(from, text, width)),
         Block::QueueEvent { text } => {
             // A dim `⧗ queued: …` marker for a mid-turn prompt still in flight (the
@@ -618,6 +682,14 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
             }
         }
         Block::AssistantText(t) => out.extend(assistant_lines(t, width, None)),
+        // #s305: the reply as it was recorded, then one dim line saying it stopped there.
+        Block::AssistantCutOff(t) => {
+            out.extend(assistant_lines(t, width, None));
+            out.push(Line::from(Span::styled(
+                format!("  ⎿ \u{a0}{}", crate::model::CUT_OFF_NOTE),
+                theme::dim(),
+            )));
+        }
         // An INFERRED phase does not change the drawing: Claude Code marks narration and final
         // answer identically, and deriving the phase from `stop_reason` is not a licence to
         // depart from that. Only a transcript that STATES the phase gets the phased treatment.
@@ -1161,6 +1233,7 @@ fn render_header(b: &Block) -> Line<'static> {
             format!("⧗ queued: {}", text.lines().next().unwrap_or("")),
             Style::default().fg(theme::fold_header()),
         ),
+        Block::UserInbox { text, inbox } => inbox_lines(text, inbox).swap_remove(0),
         Block::PeerText { from, .. } => peer_header(from),
         Block::SubAgent(sa) => agent_header(sa, false),
         Block::AgentDone {
@@ -1171,7 +1244,7 @@ fn render_header(b: &Block) -> Line<'static> {
             ..
         } => agent_done_header(agent_type, description, *status, agent_id, false),
         Block::Attachment(a) => attachment_line(a),
-        Block::AssistantText(t) => Line::from(vec![
+        Block::AssistantText(t) | Block::AssistantCutOff(t) => Line::from(vec![
             Span::styled("⏺", theme::assistant_marker()),
             Span::raw(format!(" {}", t.lines().next().unwrap_or(""))),
         ]),
@@ -1226,6 +1299,7 @@ fn body_len(b: &Block) -> usize {
         | Block::UserText(t)
         | Block::UserReply { text: t, .. }
         | Block::QueueEvent { text: t } => t.lines().count().saturating_sub(1),
+        Block::UserInbox { text, inbox } => inbox_lines(text, inbox).len() - 1,
         Block::Attachment(_) => 0, // one-line marker; not foldable
         Block::SubAgent(sa) => {
             let p = if sa.prompt.trim().is_empty() {
@@ -1241,7 +1315,10 @@ fn body_len(b: &Block) -> usize {
         // A turn collapses to its one-line `✻ Thought for…` summary (handled in
         // `render_collapsed`), so this count isn't consumed; approximate anyway.
         Block::Thinking { text, .. } => text.lines().count().saturating_sub(1),
-        Block::AssistantText(_) | Block::AssistantMessage { .. } | Block::PeerText { .. } => 0, // never collapsed
+        Block::AssistantText(_)
+        | Block::AssistantCutOff(_)
+        | Block::AssistantMessage { .. }
+        | Block::PeerText { .. } => 0, // never collapsed
         // #s83: the message, then the receipt's lines.
         Block::ToolUse {
             sent: Some(text),
@@ -1405,6 +1482,28 @@ mod tests {
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
+    }
+
+    /// #s296: Claude Code's notice that a file changed on disk read "▤ edited CLAUDE.md" under
+    /// the person's prompt, as if they had edited it. It says what happened; the other kinds keep
+    /// their word, and `--json` keeps `edited` (the html crate's `att_kind`).
+    #[test]
+    fn a_changed_on_disk_notice_says_so_and_other_kinds_keep_their_word() {
+        let att = |kind| Attachment {
+            lines: None,
+            kind,
+            name: "CLAUDE.md".into(),
+            path: Some("/w/CLAUDE.md".into()),
+            content: crate::model::AttachmentContent::None,
+        };
+        assert_eq!(
+            texts(&[attachment_line(&att(AttachmentKind::Edited))]),
+            ["▤ changed on disk CLAUDE.md"]
+        );
+        assert_eq!(
+            texts(&[attachment_line(&att(AttachmentKind::Ref))]),
+            ["▤ ref CLAUDE.md"]
+        );
     }
 
     /// The windowing foundation: concatenating [`assemble_one`] over the blocks (threading the
@@ -2428,6 +2527,34 @@ mod tests {
                 "inferred {phase:?} must be indistinguishable from AssistantText"
             );
         }
+    }
+
+    /// #s305: a reply the person cut off mid-stream draws as the prose it is, then one dim `⎿`
+    /// line saying it stopped there; its collapsed header is the prose's, as `AssistantText`'s.
+    #[test]
+    fn a_reply_cut_off_mid_stream_ends_with_a_dim_cut_off_line() {
+        let cut = Block::AssistantCutOff("the skuas moved to the".into());
+        let plain = Block::AssistantText("the skuas moved to the".into());
+        let lines = render_one(&cut, 80, Hl::Styled);
+        let (prose, last) = lines.split_at(lines.len() - 1);
+        assert_eq!(
+            texts(prose),
+            texts(&render_one(&plain, 80, Hl::Styled)),
+            "the prose draws exactly as plain assistant text"
+        );
+        let last = &last[0];
+        assert_eq!(
+            texts(std::slice::from_ref(last)),
+            [format!("  ⎿ \u{a0}{}", crate::model::CUT_OFF_NOTE)]
+        );
+        assert!(
+            last.spans.iter().all(|s| s.style == theme::dim()),
+            "the line is dim: {last:?}"
+        );
+        assert_eq!(
+            texts(&[render_header(&cut)]),
+            texts(&[render_header(&plain)])
+        );
     }
 
     /// A Command block renders `❯ /compact` + a dim `⎿`-prefixed stdout line.

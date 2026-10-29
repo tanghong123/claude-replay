@@ -256,6 +256,55 @@ pub struct Hunk {
     pub file: Option<String>,
 }
 
+/// What a relayed message from the person carries besides their words (#s272,
+/// [`Block::UserInbox`]). Each field is what the relay wrote, unescaped; an attribute it left out
+/// is `None` or empty.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Inbox {
+    /// Who sent it, as the relay names them.
+    pub from: String,
+    /// The message's own id. A session takes the first copy of an id as theirs, and any later
+    /// one as text.
+    pub id: String,
+    /// Where it was written: `dingtalk`, `dashboard` or `card`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    /// `message`, `relay`, `settled` or `reaction`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// When it was sent, as written (ISO 8601).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    /// The issues it is about.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub about: Vec<String>,
+    /// A relay's agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// A relay's task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// Why the relay chose that agent when it was inferred (`repo`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guess: Option<String>,
+    /// What the message replies to or quotes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<InboxQuote>,
+    /// The relay's own instructions to the agent (`<do>`): addressed to the agent, not the reader.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub instructions: String,
+}
+
+/// The words an [`Inbox`] message replies to or quotes, and whose they were.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InboxQuote {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    pub text: String,
+}
+
 /// One render block — the agent-neutral unit of a parsed transcript. A [`Session`](crate::Session)'s
 /// `blocks` is an ordered `Vec<Block>` with tool results already joined onto their calls and
 /// activity coalesced into thinking turns; each variant carries the content a presenter needs.
@@ -267,6 +316,14 @@ pub enum Block {
     /// A quoted human reply. `text` retains the complete native input for ordinary readers;
     /// `context` is additive presentation data, never a replacement for that source.
     UserReply { text: String, context: ReplyContext },
+    /// A message the person sent through a RELAY rather than typed here (#s272): Hong's
+    /// DingTalk messages, dashboard replies and card taps, which aries-inbox types into the Aries
+    /// session as one signed element. Only a message the adapter VERIFIED becomes this block (its
+    /// signature, its place at the start of the turn, its id new to the session); anything else
+    /// stays a `UserText`. It is the person's turn like any prompt. `text` is their words alone;
+    /// `inbox` is everything else the relay wrote. Its pictures follow it as image `Attachment`s,
+    /// as a prompt's pasted images do.
+    UserInbox { text: String, inbox: Inbox },
     /// A message from ANOTHER agent session, delivered into this one (Claude Code's
     /// cross-session messages, #s79). It opens a turn as a prompt does — the agent answers it —
     /// but it is not the human's: it carries who sent it, and every consumer that asks "what did
@@ -289,6 +346,17 @@ pub enum Block {
     QueueEvent { text: String },
     /// Assistant prose (markdown).
     AssistantText(String),
+    /// Assistant prose the person CUT OFF while it streamed (#s305): Claude Code 2.1.311 keeps
+    /// the partial reply when Esc stops it, flagging the record `isAbortedMidStream`, and the
+    /// interrupt marker follows as the next user record. It is prose like `AssistantText` in
+    /// every respect — the same kind, search class and `--json` line (the stream is public, and
+    /// says nothing new) — and differs only where it is DRAWN: the pages and the TUI end it with
+    /// a quiet "cut off" line, so a filtered or jumped-to view, where the marker is not beside
+    /// it, still says the reply stopped there. The recorded text is kept as it is. On the pages the
+    /// line is a `note` part, which their search reads as it reads every note, so "cut off" finds
+    /// the reply there (both pages and the server's matcher alike); the TUI's search counts the
+    /// prose alone.
+    AssistantCutOff(String),
     /// Assistant prose whose turn phase is known. This stays distinct from `AssistantText` so
     /// older/other agent formats do not invent phase information.
     ///
@@ -739,15 +807,21 @@ pub enum BlockKind {
     Compaction,
 }
 
+/// The line that ends a reply the person cut off mid-stream (`Block::AssistantCutOff`, #s305),
+/// on every surface that draws one.
+pub const CUT_OFF_NOTE: &str = "Cut off: interrupted mid-reply";
+
 /// Classify a block. (An `Agent`/`Task` `ToolUse` never reaches here — the tokenizer turns
 /// it into a `SubAgent` — so it maps to the generic `Tool`, harmlessly.)
 pub fn block_kind(b: &Block) -> BlockKind {
     use BlockKind::*;
     match b {
-        Block::UserText(_) | Block::UserReply { .. } => User,
+        Block::UserText(_) | Block::UserReply { .. } | Block::UserInbox { .. } => User,
         Block::PeerText { .. } => Peer,
         Block::QueueEvent { .. } => Queue,
-        Block::AssistantText(_) | Block::AssistantMessage { .. } => Assistant,
+        Block::AssistantText(_) | Block::AssistantCutOff(_) | Block::AssistantMessage { .. } => {
+            Assistant
+        }
         Block::Thinking { tools, .. } => {
             if tools.is_empty() {
                 Think
@@ -844,6 +918,7 @@ impl Block {
             self,
             Block::UserText(_)
                 | Block::UserReply { .. }
+                | Block::UserInbox { .. }
                 | Block::Command { .. }
                 | Block::PeerText { .. }
         )

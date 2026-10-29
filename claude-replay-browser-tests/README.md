@@ -26,7 +26,7 @@ It needs a local Chrome (headless_chrome finds it on PATH). CI runs the same com
 - `tests/browser_follow.rs` — the structural cases: the html server's viewport contract
   (follow/anchor, search stepping, resize, artifacts), the app shell (`the_app_shell_*`,
   ports 2831–2836), the classic rail on v1 (`the_classic_rail_*`, 2837–2838), the v2 splice,
-  the compose affordance (2841–2842).
+  a three-digit turn number's row (2841).
 - `tests/scenarios.rs` — scenarios written once and run against BOTH pages. The classic page
   (the html server's `export.js`) is the reference; the app shell is held to the same
   assertions. Ports 2851 and up.

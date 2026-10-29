@@ -72,6 +72,8 @@ pub enum Message {
     LineStart(Option<EpochSeconds>),
     /// Assistant prose content item (already non-empty).
     AssistantText(String),
+    /// Assistant prose the person cut off mid-stream (#s305, `Block::AssistantCutOff`).
+    AssistantCutOff(String),
     /// Assistant prose with an explicitly persisted phase.
     AssistantMessage {
         text: String,
@@ -119,6 +121,17 @@ pub enum Message {
     UserReply {
         text: String,
         context: crate::model::ReplyContext,
+    },
+    /// A message the person sent through a relay, whose signature the adapter verified (#s272).
+    /// The fold makes it a `UserInbox` block the first time its id is met in the session, and a
+    /// `UserText` of `text` after that. `text` is what the turn would be as ordinary text (it is
+    /// also the content a queued copy is matched by); `words`, `inbox` and `images` are the
+    /// message read whole, its pictures becoming attachments after it.
+    UserInbox {
+        text: String,
+        words: String,
+        inbox: Box<crate::model::Inbox>,
+        images: Vec<Attachment>,
     },
     /// A message from another agent session (#s79): opens a turn like a prompt and becomes a
     /// `PeerText` block, never a `UserText` — the person did not type it. `text` is the message
@@ -258,6 +271,7 @@ impl Message {
             self,
             Message::UserText { .. }
                 | Message::UserReply { .. }
+                | Message::UserInbox { .. }
                 | Message::PeerText { .. }
                 | Message::Command { .. }
                 | Message::CommandStdout { .. }

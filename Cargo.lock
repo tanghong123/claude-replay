@@ -263,7 +263,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "claude-monitor"
-version = "1.422.0"
+version = "1.445.0"
 dependencies = [
  "anyhow",
  "claude-monitor-codex",
@@ -279,7 +279,7 @@ dependencies = [
 
 [[package]]
 name = "claude-monitor-codex"
-version = "1.422.0"
+version = "1.445.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -295,7 +295,7 @@ dependencies = [
 
 [[package]]
 name = "claude-monitor-fleet"
-version = "1.422.0"
+version = "1.445.0"
 dependencies = [
  "anyhow",
  "claude-replay-html",
@@ -305,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay"
-version = "1.422.0"
+version = "1.445.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-agents"
-version = "1.422.0"
+version = "1.445.0"
 dependencies = [
  "anyhow",
  "claude-replay-core",
@@ -327,13 +327,15 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
 name = "claude-replay-browser-tests"
-version = "1.422.0"
+version = "1.445.0"
 dependencies = [
  "clap",
+ "claude-replay-core",
  "claude-replay-html",
  "claude-replay-present",
  "headless_chrome",
@@ -343,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-core"
-version = "1.422.0"
+version = "1.445.0"
 dependencies = [
  "anyhow",
  "claude-replay-agents",
@@ -354,7 +356,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-engine"
-version = "1.422.0"
+version = "1.445.0"
 dependencies = [
  "anyhow",
  "claude-replay-agents",
@@ -365,7 +367,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-html"
-version = "1.422.0"
+version = "1.445.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -373,6 +375,7 @@ dependencies = [
  "claude-replay-present",
  "flate2",
  "pulldown-cmark",
+ "regex-syntax",
  "rusqlite",
  "serde",
  "serde_json",
@@ -381,7 +384,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-present"
-version = "1.422.0"
+version = "1.445.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -394,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "claude-replay-tui"
-version = "1.422.0"
+version = "1.445.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1155,7 +1158,7 @@ dependencies = [
 
 [[package]]
 name = "mdrev"
-version = "1.1.61"
+version = "1.1.66"
 dependencies = [
  "serde_json",
  "sha2",

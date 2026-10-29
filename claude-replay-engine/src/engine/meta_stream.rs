@@ -319,11 +319,19 @@ pub const COMPACT_AFTER: usize = 256;
 /// result's `editsApplied` (`Published::edits_applied`), and its card draws the diff. A v65 stream
 /// holds the publish with no diff.
 ///
+/// v67: #s272 — a relayed message from the person (aries-inbox's signed `<aries-inbox v="1">`),
+/// verified with this Mac's key, is a `UserInbox` block the first time its id appears, and a record
+/// carries the ids committed (`inbox_ids`). A v66 stream holds each as a `UserText` paste.
+///
+/// v68: #s305 — a Claude reply the person cut off mid-stream (Claude Code 2.1.311's
+/// `isAbortedMidStream`) is an `AssistantCutOff` block, drawn with a "cut off" line. A v67 stream
+/// holds it as plain `AssistantText`.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 66;
+pub const FOLD_VERSION: u16 = 68;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
@@ -396,6 +404,10 @@ pub struct MetaRecord {
     /// The task op-log — never the task list, which is a full snapshot.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub task_ops: Vec<TaskOp>,
+    /// The ids of the relayed messages from the person this drain committed (#s272), so a
+    /// resumed fold still takes a later copy of one as text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inbox_ids: Vec<String>,
 
     // ── delta, gauges: last present value wins ──
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -491,6 +503,9 @@ pub struct MaterializedMeta {
     pub tasks: TaskFold,
     pub cwd: String,
     pub span: Option<(EpochSeconds, EpochSeconds)>,
+    /// The ids of the relayed messages from the person already committed (#s272).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub inbox_ids: std::collections::BTreeSet<String>,
 }
 
 impl MaterializedMeta {
@@ -558,6 +573,7 @@ impl MaterializedMeta {
         for (k, n) in &r.extra {
             *self.extra.entry(k.clone()).or_default() += n;
         }
+        self.inbox_ids.extend(r.inbox_ids.iter().cloned());
         for op in &r.task_ops {
             self.tasks.apply_recorded(op);
         }

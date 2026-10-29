@@ -61,9 +61,13 @@ pub struct Frontend {
 }
 
 /// The listener's handler over one backend and one frontend. It also installs the pinned mdrev,
-/// because this is the one constructor the monitor goes through.
+/// and where a relayed message's key is read (#s272), because this is the one constructor the
+/// monitor goes through.
 pub fn handler(backend: Arc<Backend>, front: Frontend) -> RouteHandler {
     install_mdrev(&backend.scratch);
+    claude_replay_core::claude_inbox::install_key_source(
+        claude_replay_core::claude_inbox::key_from_state_dir,
+    );
     Arc::new(move |req: &Request| dispatch(&backend, &front, req))
 }
 
@@ -126,17 +130,21 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
         // stock unpaired binary cannot reach them.
         "api/send" => control::send_route(&backend.idx, req),
         "api/consent" => control::consent_route(&backend.idx, req, &backend.attempts),
+        // #s298: a dialog in a live session's herdr pane — a question, a permission prompt, a
+        // plan's approval — read off the pane, and answered there, behind the send's own gates.
+        "api/dialog" => control::dialog_route(&backend.idx, req),
+        "api/answer" => control::answer_route(&backend.idx, req),
         // The route that remembered the classic view (#s98): a page from before the release
         // that still asks gets a plain 404, not the static fallback's 403.
         "api/ui" => HttpResponse::not_found("the classic view is retired"),
         // The session view the classic hosts framed (#s99): a link saved from before says so in a
         // plain 404, whatever the scratch directory beneath the static fallback holds.
         "session" => HttpResponse::not_found("the /session page is retired; open the session at /"),
-        // Everything else is the session service's own wire surface — /pull, /records,
+        // Everything else is the session service's own wire surface — /pull, /records, /turn-index,
         // /__reveal, static assets (§6.3). A session's feed is asked for by id, and the
         // service must have been shown that id first (#309).
         _ => {
-            if matches!(name, "pull" | "records") {
+            if matches!(name, "pull" | "records" | "turn-index" | "search") {
                 if let Some(id) = query_get(query, "session") {
                     ensure_known(backend, &index::percent_decode(id));
                 }
@@ -184,6 +192,7 @@ mod tests {
             body: b"",
             authenticated: false,
             origin_ok: true,
+            masked: false,
         }
     }
 
@@ -329,6 +338,36 @@ mod tests {
                 .code
                 .starts_with("200")
         );
+        // #s298: a dialog is read and answered only for a paired client, the answer only by POST.
+        for name in ["api/dialog", "api/answer"] {
+            let r = dispatch(&backend, &front, &get(name, "target=s1"));
+            assert!(!r.code.starts_with("200"), "{name}: {}", r.code);
+        }
+        let paired = Request {
+            authenticated: true,
+            ..get("api/answer", "target=s1")
+        };
+        assert_eq!(
+            dispatch(&backend, &front, &paired).code,
+            "405 Method Not Allowed",
+            "an answer is a POST"
+        );
+        // Paired, a session the index cannot resolve to a proven pane is refused before any pane
+        // is read or typed into.
+        let read = Request {
+            authenticated: true,
+            ..get("api/dialog", "target=s1")
+        };
+        let answer = Request {
+            method: "POST",
+            body: br#"{"fingerprint":"ab","choice":1}"#,
+            authenticated: true,
+            ..get("api/answer", "target=s1")
+        };
+        for r in [read, answer] {
+            let reply = body(&dispatch(&backend, &front, &r));
+            assert!(reply.contains("\"ok\":false"), "{}: {reply}", r.name);
+        }
         // `/session` is retired (#s99), under either name the page used for the session.
         for query in ["session=s1", "id=s1&chrome=embed"] {
             let r = dispatch(&backend, &front, &get("session", query));

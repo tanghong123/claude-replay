@@ -19,6 +19,10 @@ sha2 = "0.10"
 # Gzip for a client across a network (#313, `serve.rs` `gzip_for`). Already in this workspace's
 # tree (syntect's dumps), so it adds no new third-party code either.
 flate2 = "1"
+# The Unicode classes of the page's whole-word rule, `[\p{L}\p{N}\p{M}_]`, for search on the
+# server (#s278, `html_export/search_match.rs`). Already in this workspace's tree with these tables
+# (syntect's fancy-regex), so it adds no new third-party code.
+regex-syntax = "0.8"
 
 [dev-dependencies]
 # Tests drive the exporters through the real CLI surface (`Args::parse_from`).

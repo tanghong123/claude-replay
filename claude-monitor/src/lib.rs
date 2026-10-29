@@ -12,6 +12,7 @@ pub mod codex_workspace;
 pub mod consent;
 pub mod control;
 pub mod cost;
+pub mod dialog;
 pub mod index;
 pub mod pair_phone;
 pub mod routes;

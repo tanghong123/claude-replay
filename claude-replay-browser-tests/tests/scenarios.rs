@@ -7626,101 +7626,105 @@ fn app_shell_wide_is_one_click_from_the_header() {
     scenario_wide_is_one_click_from_the_header(&page.tab, Surface::AppShell, &fx);
 }
 
-// ── scenario: an attachment card says WHY the file is there, not just what opens (#171) ──────
+// ── scenario: a file changed on disk is the client's notice, never the person's card (#s296) ──
 
-/// A fixture whose last prompt carries a file the reader had open in their editor. The engine
-/// surfaces it as an `attachment` record right after the user message; both pages hang it off
-/// that prompt. The name deliberately contains no form of "edit", so an assertion looking for
-/// the verb cannot pass on the filename.
-fn fixture_edited_attachment(name: &str, turns: u32) -> Fixture {
+/// A fixture whose last prompt is followed by Claude Code's notice to the model that a file it had
+/// read changed on disk (`edited_text_file`), as Hong's ab-面试 session had after its CLAUDE.md was
+/// rewritten. The name deliberately contains no form of "edit" or "change", so an assertion looking
+/// for the words cannot pass on the filename.
+fn fixture_changed_on_disk(name: &str, turns: u32) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
     let mut jsonl = long_session(turns, Shape::default());
-    jsonl += &harness::user_at("does this read right", "2026-09-08T04:00:00.000Z");
+    jsonl += &harness::user_at("test message, ignore please", "2026-09-08T04:00:00.000Z");
     jsonl += &harness::edited_file_at("/w/notes/crux-on-linux.md", "2026-09-08T04:00:01.000Z");
-    jsonl += &assistant_at("reading it now", "2026-09-08T04:00:05.000Z");
+    jsonl += &assistant_at("Ignored.", "2026-09-08T04:00:05.000Z");
     let path = stores.claude_session(SID, &jsonl);
     Fixture { base, path, turns }
 }
 
-/// #171: the card must name the REASON the file is attached, not only what a click does. The
-/// owner put the two surfaces side by side: the classic page said `edited crux-on-linux.md` —
-/// a verb and a name — and the app shell showed a card with an MD badge, the filename and
-/// "opens in the preview pane", which describes the affordance and leaves the reason unsaid.
-///
-/// The field was there the whole time. `att_kind` holds "edited"; the classic page reads it at
-/// export.js's `.akind`, the shell's OWN renderer-note fallback reads it, and only the prompt
-/// card — the path a previewable file actually takes — dropped it.
-///
-/// The ranking is #166's: what the agent (or the reader) DID outranks what the UI offers. So
-/// the verb sits in the title row beside the name, and the affordance stays one rank below.
-fn scenario_an_attachment_says_why_it_is_there(
+/// #s296 (#171 before it): a record must say WHY a file is named there. #171 read `att_kind:
+/// "edited"` as a file the reader had open in their editor, and gave the prompt's card the verb.
+/// It is not one: it is Claude Code telling the MODEL that a file it had read changed on disk, so
+/// Hong saw "edited CLAUDE.md" under a message he attached nothing to. Both pages now say "changed
+/// on disk" beside the name, on one line. The app shell draws it as a line of its own BELOW the
+/// prompt, from the left (the client speaking), and never as a card inside the person's prompt.
+fn scenario_a_changed_on_disk_notice_says_what_happened(
     tab: &headless_chrome::Tab,
     surface: Surface,
     _fx: &Fixture,
 ) {
     jump_to_end(tab, surface);
     await_tail(tab, surface, "a fresh open to land at the tail");
-    // Classic writes the verb into `.akind` beside `.aname`; the shell into the card's title row.
     let (kind, name) = match surface {
         Surface::Classic => (".amark .akind", ".amark .aname"),
-        Surface::AppShell => (".prompt-file .prompt-file-kind", ".prompt-file strong"),
+        Surface::AppShell => (
+            ".turn.user > .turn-notice",
+            ".turn.user > .turn-notice .turn-notice-file",
+        ),
     };
     until(
         tab,
         &format!("!!document.querySelector('{name}')"),
-        "the attachment to render as a card naming the file",
+        "the notice naming the file",
         Duration::from_secs(20),
-        "document.querySelectorAll('.amark, .prompt-attachment').length + ' attachment cards'",
+        "document.querySelectorAll('.amark, .turn-notice, .prompt-attachment').length + ' attachment marks'",
     );
     let seen = probe(
         tab,
         &format!(
-            "(function(){{ var k = document.querySelector('{kind}'); var n = document.querySelector('{name}');              var kb = k && k.getBoundingClientRect(), nb = n && n.getBoundingClientRect();              return {{ kind: k ? (k.textContent || '').trim() : null,                       width: kb ? kb.width : 0,                       name: n ? (n.textContent || '').trim() : null,                       nameWidth: nb ? nb.width : 0,                       sameLine: !!(kb && nb) && Math.abs(kb.bottom - nb.bottom) < 4 }}; }})()"
+            "(function(){{ var k = document.querySelector('{kind}'); var n = document.querySelector('{name}'); var kb = k && k.getBoundingClientRect(), nb = n && n.getBoundingClientRect(); return {{ kind: k ? (k.textContent || '').trim() : null, name: n ? (n.textContent || '').trim() : null, nameWidth: nb ? nb.width : 0, sameLine: !!(kb && nb) && (nb.top + nb.bottom) / 2 > kb.top && (nb.top + nb.bottom) / 2 < kb.bottom, kindBox: kb ? [Math.round(kb.top), Math.round(kb.bottom)] : null, nameBox: nb ? [Math.round(nb.top), Math.round(nb.bottom)] : null }}; }})()"
         ),
     );
-    assert_eq!(
-        seen["kind"].as_str(),
-        Some("edited"),
-        "{surface:?}: the card must say why the file is there, from att_kind — saw {seen}"
-    );
-    // A `flex: none` label that a cascade collision has collapsed still has text; only its box
-    // says whether the reader can read it (rect-is-not-visibility's cheaper half).
     assert!(
-        seen["width"].as_f64().unwrap_or(0.0) > 0.0,
-        "{surface:?}: the verb must occupy real width, not be collapsed to nothing — saw {seen}"
+        seen["kind"]
+            .as_str()
+            .is_some_and(|k| k.contains("changed on disk")),
+        "{surface:?}: it says what happened to the file — saw {seen}"
     );
     assert_eq!(
         seen["name"].as_str(),
         Some("crux-on-linux.md"),
-        "{surface:?}: and the name stays the thing the reader scans for — saw {seen}"
+        "{surface:?}: and names it — saw {seen}"
     );
-    // The two read as ONE phrase — "edited crux-on-linux.md" — which is the whole point: a verb
-    // stacked above its noun is two facts, a verb beside it is a reason. And the name must keep
-    // most of the room; the verb is `flex: none` precisely so it can never take the name's.
     assert!(
         seen["sameLine"].as_bool().unwrap_or(false)
-            && seen["nameWidth"].as_f64().unwrap_or(0.0) > seen["width"].as_f64().unwrap_or(0.0),
-        "{surface:?}: verb and name must share a line with the name leading it — saw {seen}"
+            && seen["nameWidth"].as_f64().unwrap_or(0.0) > 0.0,
+        "{surface:?}: on one line — saw {seen}"
     );
+    if surface == Surface::AppShell {
+        // Not the person's: no card in the prompt, and the line sits below the bubble, from the
+        // left, as the client's own words do.
+        let layout = probe(
+            tab,
+            "(function(){ var t = document.querySelector('.turn-notice').closest('.turn.user'); var b = t.querySelector('.user-prompt').getBoundingClientRect(), n = t.querySelector('.turn-notice').getBoundingClientRect(), r = t.getBoundingClientRect(); return { cards: t.querySelectorAll('.prompt-attachment').length, below: n.top >= b.bottom - 1, left: n.left - r.left, bubbleLeft: b.left - r.left }; })()",
+        );
+        assert_eq!(layout["cards"], 0, "no card in the prompt — saw {layout}");
+        assert!(
+            layout["below"].as_bool().unwrap_or(false)
+                && layout["left"].as_f64().unwrap_or(99.0) < 2.0
+                && layout["bubbleLeft"].as_f64().unwrap_or(0.0) > 40.0,
+            "the notice is a line below the bubble, from the left — saw {layout}"
+        );
+    }
 }
 
 #[test]
 #[ignore = "needs a local Chrome"]
-fn classic_page_an_attachment_says_why_it_is_there() {
+fn classic_page_a_changed_on_disk_notice_says_what_happened() {
     let _serial = serial();
-    let fx = fixture_edited_attachment("scenario-attkind-classic", 8);
+    let fx = fixture_changed_on_disk("scenario-changed-classic", 8);
     let page = open(Surface::Classic, &fx, 0);
-    scenario_an_attachment_says_why_it_is_there(&page.tab, Surface::Classic, &fx);
+    scenario_a_changed_on_disk_notice_says_what_happened(&page.tab, Surface::Classic, &fx);
 }
 
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
-fn app_shell_an_attachment_says_why_it_is_there() {
+fn app_shell_a_changed_on_disk_notice_says_what_happened() {
     let _serial = serial();
-    let fx = fixture_edited_attachment("scenario-attkind-app", 8);
+    let fx = fixture_changed_on_disk("scenario-changed-app", 8);
     let page = open(Surface::AppShell, &fx, 2925);
-    scenario_an_attachment_says_why_it_is_there(&page.tab, Surface::AppShell, &fx);
+    scenario_a_changed_on_disk_notice_says_what_happened(&page.tab, Surface::AppShell, &fx);
 }
 
 // ── scenario: a converge must not outrank a hand on the wheel (#165) ─────────────────────────
@@ -17981,6 +17985,273 @@ fn app_shell_shows_another_sessions_message_as_its_own_turn() {
     scenario_another_sessions_message_is_its_own_turn(&page.tab, Surface::AppShell, &fx);
 }
 
+// ── scenario: a reply the person cut off mid-stream says so (#s305)
+
+/// Claude Code 2.1.311 keeps a reply the person stopped with Esc, flagging the record
+/// `isAbortedMidStream`, and the interrupt marker follows as the next user record. Both pages
+/// drew the partial reply as ordinary prose, so a view where the marker is not beside it (a
+/// filter, a jump) read it as a whole answer. Now the reply ends with a quiet "cut off" line
+/// inside its own record, after the prose as recorded; an ordinary reply carries none.
+fn scenario_a_reply_cut_off_by_an_interrupt_is_marked_cut_off(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let note = claude_replay_core::model::CUT_OFF_NOTE;
+    let read = format!(
+        "(function(){{ \
+           var notes = [...document.querySelectorAll('.note, .renderer-note')] \
+             .filter(function(n){{ return n.textContent.indexOf({note:?}) >= 0; }}); \
+           var out = notes.map(function(n){{ \
+             var box = n.parentElement; \
+             while (box && box.textContent.indexOf('north cliff, above the tern colony') < 0) box = box.parentElement; \
+             if (!box) return {{ alone: true }}; \
+             var prose = [...box.querySelectorAll('p')].find(function(p){{ return p.textContent.indexOf('north cliff') >= 0; }}); \
+             var r = n.getBoundingClientRect(); \
+             return {{ \
+               after: !!prose && !!(prose.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING), \
+               own: box.textContent.indexOf('Just the cliff') < 0 && box.textContent.indexOf('Request interrupted') < 0, \
+               shown: r.height > 0 && r.width > 0, \
+               prose: prose ? prose.textContent : null \
+             }}; \
+           }}); \
+           var plain = [...document.querySelectorAll('.note, .renderer-note')] \
+             .filter(function(n){{ return n.textContent.indexOf('Cut off') >= 0; }}).length; \
+           return JSON.stringify({{ marks: out, all: plain }}); \
+         }})()"
+    );
+    let mut last = serde_json::Value::Null;
+    for _ in 0..40 {
+        last = serde_json::from_str(eval(tab, &read).as_str().unwrap_or("null"))
+            .unwrap_or(serde_json::Value::Null);
+        if last["marks"].as_array().is_some_and(|m| !m.is_empty()) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let marks = last["marks"].as_array().cloned().unwrap_or_default();
+    assert_eq!(
+        marks.len(),
+        1,
+        "{surface:?}: one cut-off line, for the one reply cut off: {last}"
+    );
+    let mark = &marks[0];
+    assert_eq!(
+        mark["own"], true,
+        "{surface:?}: the line sits inside the cut reply's own record: {mark}"
+    );
+    assert_eq!(
+        mark["after"], true,
+        "{surface:?}: after the prose, as recorded: {mark}"
+    );
+    assert_eq!(mark["shown"], true, "{surface:?}: and it is drawn: {mark}");
+    assert!(
+        mark["prose"]
+            .as_str()
+            .is_some_and(|p| p.ends_with("above the tern colony, and the")),
+        "{surface:?}: the recorded text is kept as it is: {mark}"
+    );
+    assert_eq!(
+        last["all"], 1,
+        "{surface:?}: an ordinary reply carries no such line: {last}"
+    );
+}
+
+/// Twelve turns, then a question whose reply the person cut off with Esc (the flagged record and
+/// the interrupt marker after it, as Claude Code 2.1.311 writes them), then a follow-up answered
+/// whole — #s305.
+fn cut_off_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    let line = |v: serde_json::Value| format!("{v}\n");
+    transcript += &user_at("Where do the skuas nest this year?", &now_minus(60));
+    transcript += &line(serde_json::json!({
+        "type": "assistant", "cwd": "/r", "timestamp": now_minus(58), "requestId": "req_s305",
+        "apiBlockIndex": 0, "isAbortedMidStream": true,
+        "message": {"role": "assistant", "model": "claude-opus-5", "stop_reason": null,
+                    "usage": {"input_tokens": 12, "output_tokens": 8},
+                    "content": [{"type": "text", "text": "The skuas moved to the north cliff, above the tern colony, and the"}]}
+    }));
+    transcript += &line(serde_json::json!({
+        "type": "user", "cwd": "/r", "timestamp": now_minus(57),
+        "message": {"role": "user", "content": [{"type": "text", "text": "[Request interrupted by user]"}]}
+    }));
+    transcript += &user_at("Just the cliff, thanks.", &now_minus(40));
+    transcript += &assistant_at("The north cliff.", &now_minus(30));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 14,
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_marks_a_reply_cut_off_by_an_interrupt() {
+    let _serial = serial();
+    let fx = cut_off_fixture("scenario-cut-off-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_reply_cut_off_by_an_interrupt_is_marked_cut_off(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_marks_a_reply_cut_off_by_an_interrupt() {
+    let _serial = serial();
+    let fx = cut_off_fixture("scenario-cut-off-app");
+    let page = open(Surface::AppShell, &fx, 3088);
+    scenario_a_reply_cut_off_by_an_interrupt_is_marked_cut_off(&page.tab, Surface::AppShell);
+}
+
+/// #s272: Hong's messages that aries-inbox types into the Aries pane arrive as one signed
+/// element, recorded as a whole-turn paste. A verified one is HIS card in its own style: what the
+/// relay says of it as chips (via, kind, the issue, the agent and task, when), the words it answers
+/// quoted, his words, his picture offered as a prompt's is, and the relay's instructions folded
+/// until asked. A later copy of the same id is plain text — the paste it is. Written once, run on
+/// both pages.
+fn scenario_a_relayed_message_is_his_card_and_a_copy_is_text(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let (rows, card, plain, picture) = match surface {
+        Surface::Classic => (
+            "document.querySelectorAll('#turnlist .side-item').length",
+            "#stream .uturn.inbox",
+            "#stream .uturn:not(.inbox)",
+            "#stream .amark .aname",
+        ),
+        Surface::AppShell => (
+            "document.querySelectorAll('#navigatorTurns .outline-turn-row').length",
+            ".turn.user.inbox",
+            ".turn.user:not(.inbox)",
+            ".turn.user.inbox .prompt-attachment",
+        ),
+    };
+    assert_eq!(
+        eval(tab, rows),
+        fx.turns,
+        "{surface:?}: his message and its copy are each a turn"
+    );
+    let json = |js: String| -> serde_json::Value {
+        serde_json::from_str(eval(tab, &js).as_str().unwrap_or("null"))
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let read = format!(
+        "(function(){{ var c = [...document.querySelectorAll('{card}')]; if (c.length !== 1) return JSON.stringify({{n: c.length}}); c = c[0]; \
+         var t = s => {{ var e = c.querySelector(s); return e ? e.textContent : null; }}; \
+         var b = c.querySelector('.inbox-do-b'); \
+         return JSON.stringify({{ n: 1, head: t('.inbox-h, .inbox-head'), quote: t('.inbox-quote'), words: t('.uturn-md, .prompt-copy-shell'), \
+           doLabel: t('.inbox-do-h'), doShown: !!(b && !b.hidden && b.offsetHeight > 0) }}); }})()"
+    );
+    let got = json(read.clone());
+    assert_eq!(
+        got["n"], 1,
+        "{surface:?}: one card of his, the copy is not one: {got}"
+    );
+    let head = got["head"].as_str().unwrap_or("");
+    for want in [
+        "Hong",
+        "via dashboard",
+        "relay",
+        "A13",
+        "→ skua-HD ?",
+        "skua#s3",
+        "sent ",
+    ] {
+        assert!(
+            head.contains(want),
+            "{surface:?}: the head says {want:?}: {head:?}"
+        );
+    }
+    let quote = got["quote"].as_str().unwrap_or("");
+    assert!(
+        quote.contains("Aries") && quote.contains("the skua build stalls at the link step"),
+        "{surface:?}: the words he answers are quoted: {quote:?}"
+    );
+    let words = got["words"].as_str().unwrap_or("");
+    assert!(
+        words.contains("ship it after the review")
+            && !words.contains("aries-inbox")
+            && !words.contains("pasted image"),
+        "{surface:?}: his words alone: {words:?}"
+    );
+    assert_eq!(
+        got["doLabel"], "Instructions for the agent",
+        "{surface:?}: {got}"
+    );
+    assert_eq!(
+        got["doShown"], false,
+        "{surface:?}: the instructions start folded: {got}"
+    );
+    let pictures = eval(
+        tab,
+        &format!(
+            "JSON.stringify([...document.querySelectorAll('{picture}')].map(e => e.textContent))"
+        ),
+    );
+    assert!(
+        pictures.as_str().unwrap_or("").contains("tern.png"),
+        "{surface:?}: his picture is offered after his words: {pictures}"
+    );
+    let opened = eval(
+        tab,
+        &format!("(function(){{ var b = document.querySelector('{card} .inbox-do-h'); if (!b) return false; b.click(); return true; }})()"),
+    );
+    assert_eq!(opened, true, "{surface:?}: the instructions have a control");
+    settle();
+    let got = json(read);
+    assert_eq!(
+        got["doShown"], true,
+        "{surface:?}: one click opens the instructions: {got}"
+    );
+    let text = eval(tab, &format!("(function(){{ var b = document.querySelector('{card} .inbox-do-b'); return b ? b.textContent : ''; }})()"));
+    assert!(
+        text.as_str()
+            .unwrap_or("")
+            .contains("pass his words on to skua-HD"),
+        "{surface:?}: they say what the relay said: {text}"
+    );
+    let copy = eval(
+        tab,
+        &format!("(function(){{ var u = [...document.querySelectorAll('{plain}')].pop(); return u ? u.textContent : ''; }})()"),
+    );
+    let copy = copy.as_str().unwrap_or("");
+    assert!(
+        copy.contains("<aries-inbox") && copy.contains("dash-1-skua"),
+        "{surface:?}: a later copy of the same id is the text it is: {copy:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_shows_a_relayed_message_as_his_card_and_a_copy_as_text() {
+    let _serial = serial();
+    let fx = inbox_fixture("scenario-inbox-classic");
+    // The classic page's server runs in this process: its key source, as `agent-replay`'s.
+    claude_replay_core::claude_inbox::install_key_source(
+        claude_replay_core::claude_inbox::key_from_state_dir,
+    );
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_relayed_message_is_his_card_and_a_copy_is_text(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_shows_a_relayed_message_as_his_card_and_a_copy_as_text() {
+    let _serial = serial();
+    let fx = inbox_fixture("scenario-inbox-app");
+    let page = open(Surface::AppShell, &fx, 3086);
+    scenario_a_relayed_message_is_his_card_and_a_copy_is_text(&page.tab, Surface::AppShell, &fx);
+}
+
 /// #s83: a message the agent SENT to another session shows the message on its card, with the
 /// client's delivery receipt beneath it as a sentence. The owner found the card showing only the
 /// receipt's JSON (`{"success":true,"message":"…"}`), with the message itself nowhere. Written
@@ -18169,6 +18440,51 @@ fn peer_fixture(name: &str) -> Fixture {
         "message": {"role": "user", "content": format!("Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/s.sock\" from-name=\"skua-HD\" from-mode=\"bypass\">\n{body}\n</cross-session-message>\n\nThis came from another Claude session — not typed by your user.")}
     }));
     transcript += &assistant_at("answer peer: pinned", &now_minus(30));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 14,
+    }
+}
+
+/// Twelve turns, then a relay from Hong signed with the format's test key (a quote, a picture
+/// saved beside the fixture, instructions), as Claude Code records the paste aries-inbox types,
+/// then the same message again — #s272.
+fn inbox_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let picture = stores.aries_key().join("tern.png");
+    std::fs::write(
+        &picture,
+        claude_replay_core::diff::base64_decode(harness::TINY_PNG_B64).unwrap(),
+    )
+    .unwrap();
+    let element = claude_replay_core::claude_inbox::sign_for_test(
+        &[0; 32],
+        &format!(
+            "<aries-inbox v=\"1\" from=\"Hong\" via=\"dashboard\" kind=\"relay\" at=\"{}\" id=\"dash-1-skua\" about=\"A13\" to=\"skua-HD\" task=\"skua#s3\" guess=\"repo\" sig=\"-\">\n\
+             <reply-to from=\"Aries\" at=\"{}\">A13: the skua build stalls at the link step</reply-to>\n\
+             <do>pass his words on to skua-HD as a relay, and log it on the task</do>\n\
+             ship it after the review\n\
+             [pasted image: {}]\n\
+             </aries-inbox>",
+            now_minus(61),
+            now_minus(70),
+            picture.display()
+        ),
+    );
+    let paste =
+        format!("\n\n<pasted_content id=\"608f\">\n{element}\n</pasted_content id=\"608f\">\n");
+    let line = |v: serde_json::Value| format!("{v}\n");
+    let mut transcript = long_session(12, Shape::default());
+    for (at, answer) in [(60, 55), (40, 30)] {
+        transcript += &line(serde_json::json!({
+            "type": "user", "cwd": "/r", "timestamp": now_minus(at), "origin": {"kind": "human"},
+            "message": {"role": "user", "content": paste}
+        }));
+        transcript += &assistant_at("relayed to skua-HD", &now_minus(answer));
+    }
     let path = stores.claude_session(SID, &transcript);
     Fixture {
         base,

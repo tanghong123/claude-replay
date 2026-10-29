@@ -57,6 +57,7 @@ pub const SHARED: &[(&str, &str)] = &[
     ("ids", include_str!("../html/shared/ids.js")),
     ("image-view", include_str!("../html/shared/image-view.js")),
     ("mermaid", include_str!("../html/shared/mermaid.js")),
+    ("inbox", include_str!("../html/shared/inbox.js")),
 ];
 
 /// The source of one shared module, for serving it as a module.

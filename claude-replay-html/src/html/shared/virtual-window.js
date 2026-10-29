@@ -213,6 +213,12 @@ function historyWanted(search) {
   return m ? Number(m[2]) : null;
 }
 
+/** The smallest correction `place` writes (#s291). A browser keeps the offset in whole pixels and a
+ *  write rounds to the nearest, so a correction of half a pixel or less cannot be made, and anything
+ *  more can: at a full pixel, the remainders a reader under a run of fills was left with reached
+ *  0.9px. */
+const PLACE_EPSILON = 0.5;
+
 /** The scroll correction that puts an anchored element back where it was: the page measures
  *  `currentTop` and remembers `wantTop`, both relative to the viewport. Below `epsilon` the
  *  correction is noise and scrolling by it would fight the reader. */
@@ -541,8 +547,18 @@ class VirtualWindow {
       const rect = element.getBoundingClientRect();
       return { element, top: rect.top, bottom: rect.bottom, height: rect.height };
     };
-    const child = firstVisible([...this.mount.children].map(rects), viewportTop, viewportBottom, 1, false);
+    const items = [...this.mount.children].map(rects);
+    let child = firstVisible(items, viewportTop, viewportBottom, 1, false);
     if (!child) return null;
+    // A PLACEHOLDER straddling the top (design/slow-links.md §6.2) is no anchor while the item after
+    // it begins on screen (#s291). Its top is out of sight and it has no rows to refine into (below),
+    // and its height is a guess the fill replaces: held by that top, the fill or a moved estimate
+    // resizes it and carries everything the reader can see by the difference (measured: 3.5px when
+    // a piece filled the prompt above the reader's answer). The content below it is what they see.
+    if (child.top < viewportTop - 1 && this.placeholderAt(Number(child.element.dataset.unitIndex))) {
+      const next = items[items.indexOf(child) + 1];
+      if (next && next.top < viewportBottom) child = next;
+    }
     // Alongside the anchor, the model form of the same position (#191), read from the same sums,
     // now — before any rewrite moves them. It is the fallback if the anchor's identity is gone or
     // names another record by the time it is placed (framework I12; #165).
@@ -646,7 +662,7 @@ class VirtualWindow {
     // Against where the offset IS — or, while a smooth write travels, where it is GOING: mid-flight
     // every offset differs from the destination, and comparing against it re-issued the animation
     // on every observer notification of the records the jump had just mounted.
-    const delta = correction(this.inFlight() ? this.wrote.to : this.frame.scrollTop(), want, 1);
+    const delta = correction(this.inFlight() ? this.wrote.to : this.frame.scrollTop(), want, PLACE_EPSILON);
     if (!delta) return true;
     // #372: during a TOUCH glide a write does not stick — iOS carries the glide on from its own
     // offset (#340), the next transaction reads that as the reader somewhere else (I11, I10) and
@@ -766,12 +782,28 @@ class VirtualWindow {
    *  at its index — never through the fallback (a held model form across measures is #191 again)
    *  — so every later transaction places the TARGET where the reader put it, until they move
    *  (`releaseHold`). Its offset is where the write went: the destination of a smooth write still
-   *  in flight. */
-  syncPosition() {
+   *  in flight.
+   *
+   *  `placed` is the anchor the transaction just placed, with no drift of the reader's. A whole-pixel
+   *  offset can leave it up to half a pixel from where `P` said, and `place` writes nothing under
+   *  `PLACE_EPSILON`: that remainder is the engine's, not the reader's, so `P` is read again as if
+   *  the placement had been exact — on whatever anchor the reader now sees first (#s291). Taken as
+   *  read, each remainder became the new `P` and the next was measured from there: a reader under a
+   *  run of fills, each moving the estimates above them by under a pixel, walked 1.3px over ten
+   *  (I1: the engine's own noise never redefines `P`). */
+  syncPosition(placed = null) {
     if (this.following || this.dragging || !this.count) { this.position = null; return; }
     const held = this.position && this.position.commanded ? this.position : null;
     if (held && this.anchorResolves(held)) { held.at = this.inFlight() ? this.wrote.to : this.frame.scrollTop(); return; }
-    this.position = this.captureDomAnchor() || this.modelAnchor();
+    const read = this.captureDomAnchor() || this.modelAnchor();
+    const exact = placed && placed.source === "anchor" && this.anchorResolves(placed) ? this.offsetOf(placed) : null;
+    // How much further down the view is than the placement asked; more than a pixel is a clamp, not
+    // a remainder, and the view as read is the reader's.
+    const left = exact == null ? 0 : this.frame.scrollTop() - exact;
+    if (left && Math.abs(left) <= 1) {
+      if (read.source === "anchor") { read.top += left; read.blockTop += left; } else read.offset -= left;
+    }
+    this.position = read;
   }
 
   /** Does this anchor name a mounted item at its own index? */
@@ -931,7 +963,13 @@ class VirtualWindow {
     this.trace("rest", { tail: this.pendingTail, estimates: this.estimatesPending });
     if (this.estimatesPending) {
       this.estimatesPending = false;
-      this.transact("estimates", { mutate: () => this.applyLate(), range: p0 => this.rangeFor(p0) });
+      // The mounted heights first (#s269): this runs on a timer, and a size change the observer has
+      // not delivered yet — it delivers only in a frame, and a headless tab draws lazily — is in the
+      // DOM but not the sums. The anchor's placement reads its rect and holds the reader, but the
+      // window was then judged by sums that lacked the growth, re-mounted around the raw offset and
+      // lost the anchor (measured: a block above a landed turn grew 2500px at t=843, the first
+      // frame came at 1078, the rest ran at 1040).
+      this.transact("estimates", { mutate: () => { this.measureMounted(); this.applyLate(); }, range: p0 => this.rangeFor(p0) });
     }
     if (this.pendingTail) {
       this.pendingTail = false;
@@ -979,6 +1017,9 @@ class VirtualWindow {
     const changes = this.tracing ? [] : null;
     for (const child of this.mount.children) {
       const index = Number(child.dataset.unitIndex);
+      // A placeholder is sized, never measured (`placeholderAt`): its height is the sums' own, and
+      // what it would teach is the shape of a stand-in, not of the content it stands for.
+      if (this.placeholderAt(index)) continue;
       const height = itemHeight(child);
       if (index >= 0 && index < this.count && heightChanged(this.heightOf(index), height, 1, 0.5)) {
         if (changes && changes.length < 8) changes.push([index, Math.round(this.heightOf(index)), Math.round(height), this.heightFor(index) ? "measured" : "estimate"]);
@@ -1009,6 +1050,34 @@ class VirtualWindow {
    *  to the default. */
   kindOf() { return this.defaultKind; }
 
+  /** Is item `index` a stand-in for content that has not arrived (design/slow-links.md §6.2)? A
+   *  placeholder is SIZED, never measured: the engine draws it at its height in the sums — what was
+   *  measured of it once, or the applied estimate for its kind — so mounting one corrects nothing,
+   *  and it never teaches the estimator, whose means describe real content (a tail-first open's
+   *  pending card used to teach the process mean, #s277). None by default. */
+  placeholderAt() { return false; }
+
+  /** Every mounted placeholder at its height in the sums, margins included (`itemHeight` counts
+   *  them, and the neighbour stamps add some): its border box set, what the margins add read, and
+   *  that taken back — after a mount, and wherever the applied estimate moves (both inside a
+   *  transaction, before the placement). */
+  fitPlaceholders(only = null) {
+    // All the writes, then all the reads, then the corrections: interleaved, each placeholder forced
+    // a layout of its own (a fling into the head mounts dozens). A margin depends on the neighbour
+    // stamps, never on the height, so it is read once against the new heights.
+    const fits = [];
+    for (const child of only || this.mount.children) {
+      const index = Number(child.dataset.unitIndex);
+      if (!(index >= 0 && index < this.count && this.placeholderAt(index))) continue;
+      const want = this.heightOf(index);
+      child.style.boxSizing = "border-box";
+      child.style.height = `${want}px`;
+      fits.push([child, want]);
+    }
+    const margins = fits.map(([child, want]) => itemHeight(child) - want);
+    fits.forEach(([child, want], k) => { if (Math.abs(margins[k]) > 0.25) child.style.height = `${Math.max(0, want - margins[k])}px`; });
+  }
+
   /** Record `index` in the PAGE's vocabulary, for the history (design/viewport-history.md §3): its
    *  kind there, its turn, and the record range the engine's item covers — the shell's process
    *  unit spans records, and `kinds` then lists theirs. The default is the estimator's kind, no
@@ -1031,6 +1100,10 @@ class VirtualWindow {
   applyEstimates() {
     let moved = false;
     for (const guess of this.guesses.values()) if (guess.apply()) moved = true;
+    // A mounted placeholder is drawn at the applied estimate: it follows it here, inside the
+    // transaction that moved it, or the DOM and the sums would disagree until it is redrawn
+    // (design/slow-links.md §6.2; a mount whose range did not change redraws nothing).
+    if (moved) this.fitPlaceholders();
     return moved;
   }
   /** One measured height teaches the record's kind, replacing the share the SAME record taught
@@ -1147,7 +1220,7 @@ class VirtualWindow {
    *  change only appended). One transaction: `P0` is read before the sums move (I1); the window
    *  is the one `P0` asks for (I11) — the last record's while following, so the tail is placed
    *  here by `placeAfter`'s own rule and no second converge follows; a count of zero empties the
-   *  window. A page never names a range, and never changes its records from inside an engine
+   *  window. A page never names the WINDOW (it may name the run it rewrote), and never changes its records from inside an engine
    *  callback: the transaction would be queued and the page would read a model that has not
    *  changed yet. */
   recordsChanged(mutate) {
@@ -1156,7 +1229,12 @@ class VirtualWindow {
     // `{ from, shift }` instead of a bare index. Every item after it keeps its identity and moves
     // by `shift`; the transaction translates `P0` accordingly (`shiftPosition`), because the
     // reader did not move — the index space did.
+    //
+    // A page that rewrote a bounded run of items in place — records filled in where they stand
+    // (design/slow-links.md §6.3), each keeping its index and key — returns `{ from, to }`: only
+    // `[from, to)` is redrawn, and nothing moves in the index space.
     let moved = null;
+    let bounded = null;
     return this.transact("records", {
       mutate: () => {
         // The delta's shape for the history (design/viewport-history.md §2.3): the count and the
@@ -1165,16 +1243,18 @@ class VirtualWindow {
         const count0 = this.count;
         const tail0 = this.tailSnapshot();
         const result = mutate ? mutate() : undefined;
-        const prepend = result != null && typeof result === "object";
-        const from = prepend ? result.from : result;
+        const shaped = result != null && typeof result === "object";
+        const from = shaped ? result.from : result;
         const first = from == null ? Infinity : from;
-        if (prepend && result.shift) moved = { from: first, shift: result.shift };
+        if (shaped && result.shift) moved = { from: first, shift: result.shift, renamed: result.renamed || null };
+        if (shaped && result.to != null && !result.shift) bounded = { from: first, to: Math.max(first, result.to) };
         this.pendingDelta = { count0, count1: this.count, from: Math.min(first, count0), tail0 };
         if (moved) this.pendingDelta.shift = moved.shift;
+        if (bounded) this.pendingDelta.to = bounded.to;
         return first;
       },
-      translate: p0 => (moved ? this.shiftPosition(p0, moved.from, moved.shift) : p0),
-      dirtyFrom: from => from,
+      translate: p0 => (moved ? this.shiftPosition(p0, moved.from, moved.shift, moved.renamed) : p0),
+      dirtyFrom: from => bounded || from,
       range: p0 => this.count ? this.rangeFor(p0) : { lo: 0, hi: 0 },
     });
   }
@@ -1185,12 +1265,19 @@ class VirtualWindow {
    *  pending head's card, which the reader can scroll to) re-anchors on the item that followed
    *  it, read from the DOM the mount has not replaced yet: the content they could see below the
    *  card stays where it was, and what arrived goes above it. */
-  shiftPosition(p, from, shift) {
+  shiftPosition(p, from, shift, renamed = null) {
     if (!p || p.source === "tail" || p.source === "offset") return p;
     const index = p.index;
     if (index == null) return p;
-    if (index <= from) return this.anchorAfter(from, shift) || p;
-    const translated = { ...p, index: index + shift };
+    // The page names the units whose key the landing changed (#s277: the head's records joined the
+    // tail's first group of steps, which is now keyed by its first record, in the head): the same
+    // content under its new key, so the anchor resolves rather than falling back.
+    const rename = key => (renamed && key && renamed[key]) || key;
+    if (index <= from) {
+      const after = this.anchorAfter(from, shift);
+      return after ? { ...after, key: rename(after.key) } : p;
+    }
+    const translated = { ...p, index: index + shift, key: rename(p.key) };
     if (p.fallback) translated.fallback = { ...p.fallback, index: p.fallback.index > from ? p.fallback.index + shift : p.fallback.index };
     return translated;
   }
@@ -1204,14 +1291,20 @@ class VirtualWindow {
   }
 
   /** Mount exactly `[lo, hi)`, reusing what is already right. `dirtyFrom` is the first index
-   *  whose content changed (0 rebuilds everything mounted). The mutation step of a mount
-   *  transaction: it never places — `transact` does, after it. */
+   *  whose content changed (0 rebuilds everything mounted), or a bounded run `{from, to}` whose
+   *  content changed and nothing after it. The mutation step of a mount transaction: it never
+   *  places — `transact` does, after it. */
   mountRange(lo, hi, dirtyFrom = Infinity, p0 = null) {
     // The page can ask for the whole thing (#140 step 4): a small filtered set rendered in FULL
     // has every height real, so the sums are exact and a jump cannot land in a pad.
     if (this.renderAll()) { lo = 0; hi = this.count; }
     ({ lo, hi } = clampRange(lo, hi, this.count));
-    if (dirtyFrom === Infinity && lo === this.lo && hi === this.hi) return null;
+    // A bounded run (design/slow-links.md §6.3): records filled in where they stand rewrite their
+    // own units and no others, so a fill above or below the window redraws nothing — a redraw loses
+    // the reader's selection, focus and the scroll inside a code block, and draws diagrams again.
+    const ranged = dirtyFrom != null && typeof dirtyFrom === "object";
+    const dirty = ranged ? dirtyFrom : { from: dirtyFrom, to: Infinity };
+    if ((dirty.from === Infinity || (ranged && (dirty.from >= hi || dirty.to <= lo))) && lo === this.lo && hi === this.hi) return null;
 
     this.observer.disconnect();
     for (const child of [...this.mount.children]) {
@@ -1230,7 +1323,7 @@ class VirtualWindow {
         cursor = cursor.nextElementSibling;
         stale.remove();
       }
-      const reusable = cursor && Number(cursor.dataset.unitIndex) === index && cursor.dataset.unitKey === this.identityAt(index) && index < dirtyFrom;
+      const reusable = cursor && Number(cursor.dataset.unitIndex) === index && cursor.dataset.unitKey === this.identityAt(index) && (index < dirty.from || index >= dirty.to);
       if (reusable) {
         cursor = cursor.nextElementSibling;
         continue;
@@ -1277,6 +1370,8 @@ class VirtualWindow {
     // while a measure only ever corrects the ones inside it. The trailing call stays because
     // `measureMounted` can still rebuild the sums under them.
     this.updatePads();
+    // A fresh placeholder is drawn at its height in the sums before anything measures (§6.2).
+    this.fitPlaceholders(fresh);
     this.afterMount(fresh);
     this.measureMounted();
     this.updatePads();
@@ -1393,9 +1488,21 @@ class VirtualWindow {
         const again = this.rangeForScroll();
         mounted = this.mountRange(again.lo, again.hi, Infinity, null) || mounted;
       }
+      // A measure the observer delivered after the reader scrolled into a pad and before their
+      // scroll's own transaction ran (the observer reports in a frame, and a lazy tab draws its next
+      // one only when the reader moves, #204 — placeholders resized by a moved estimate made it common,
+      // #s277): their scroll placed them, so the window follows them there without a placement, as for
+      // a yielded correction, and `syncPosition` reads `P` there (I10, I11).
+      if (options.measure && !options.range && placed === "placed" && p0 && p0.source !== "tail" && !this.viewportMounted()) {
+        const again = this.rangeForScroll();
+        mounted = this.mountRange(again.lo, again.hi, Infinity, null) || mounted;
+        // What the remount measured above content still on screen moves it: placed again from `P`
+        // (a no-op when its anchor is not mounted), as the #191 branch above does.
+        placed = this.placeAfter(p0, options, drift, smooth);
+      }
       // A position the reader asked for (§4.10) is `P` from here on; `syncPosition` keeps it.
       if (p0 && p0.commanded) this.position = p0;
-      this.syncPosition();
+      this.syncPosition(placed === "placed" && !drift && !smooth ? p0 : null);
       this.check(cause, p0, placed, mounted, drift, following0);
       summary = Object.assign({ p0: p0 ? p0.source : null, anchor: p0 && p0.key ? p0.key : null, placed }, mounted ? { range: [mounted.lo, mounted.hi], fresh: mounted.fresh } : {}, options.fields || {});
       // Trace only: is the viewport inside the window it left, and how the window was chosen.
@@ -1467,6 +1574,14 @@ class VirtualWindow {
       }
       while (expect < this.hi && this.skipAt(expect)) expect++;
       if (!order || expect !== this.hi) v("shape", { mounted: this.mount.children.length, lo: this.lo, hi: this.hi });
+    }
+    // A placeholder is drawn at its height in the sums (design/slow-links.md §6.2); one drawn at
+    // anything else puts every item below it somewhere the sums do not say.
+    for (const child of this.mount.children) {
+      const index = Number(child.dataset.unitIndex);
+      if (!this.placeholderAt(index)) continue;
+      const drawn = itemHeight(child), sums = this.heightOf(index);
+      if (Math.abs(drawn - sums) > 0.5) v("I3", { placeholder: index, drawn: Math.round(drawn), sums: Math.round(sums) });
     }
     for (const [kind, guess] of this.guesses) if (guess.count !== (this.shareCounts.get(kind) || 0)) v("I5", { kind, samples: guess.count, shares: this.shareCounts.get(kind) || 0 });
     if (this.following !== following0) v("I13", { from: following0, to: this.following });

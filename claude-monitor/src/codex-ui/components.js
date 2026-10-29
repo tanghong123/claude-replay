@@ -3,11 +3,12 @@
 import { attachmentCapability, besideAction, groupPointerRuns, isPointerAttachment, referenceAction, revealHere, revealQuery } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
 import { fleetGroups } from "./shared/fleet.js";
-import { escapeText, literalText, partsHtml, peerHue } from "./view-model.js";
+import { escapeText, literalText, partsHtml, peerHue, placeholderUnit } from "./view-model.js";
 import { rememberCap, resultBodyHtml } from "./shared/parts.js";
 import { interactionHtml } from "./shared/interaction.js";
 import { headStepOf, headStepState, nextHeadStep } from "./shared/tool-head.js";
 import { fmtTime, fmtDur } from "./shared/time.js";
+import { inboxChips, INBOX_DO_LABEL } from "./shared/inbox.js";
 
 const element = html => {
   const template = document.createElement("template");
@@ -297,7 +298,7 @@ function renderProcess(unit, state) {
   // Counted over GROUPS, not raw views (#254): a collapsed run is one event on screen, so
   // "Show N more" must agree with what the reader would actually reveal.
   const hidden = Math.max(0, groups.length - visibleLimit);
-  return `<section class="process-surface process-${tone} ${closed ? "closed" : ""}" data-process-surface data-process-key="${escapeText(key)}" data-process-state="${tone}" data-turn="${escapeText(unit.turn)}" data-turn-label="${escapeText(String(unit.turn).padStart(2, "0"))}" aria-label="Agent process"><div class="process-surface-headbar"><div class="process-surface-summary"><button class="process-section-toggle" type="button" data-process-toggle aria-expanded="${!closed}" title="${closed ? "Expand" : "Collapse"} this section">${svg("chev")}</button><span class="process-surface-label" data-turn-label="${escapeText(String(unit.turn).padStart(2, "0"))}">Agent process</span><span class="process-surface-preview">${escapeText(preview)}</span><span class="process-surface-count">${unit.views.length} events${updates ? ` · ${updates} updates` : ""}</span><button class="process-bulk-toggle" type="button" data-process-bulk aria-pressed="false" title="Expand every detail in this section">${svg("expandStack")}</button></div></div><div class="process-surface-body">${events}${hidden ? `<button class="process-more" type="button" data-process-more aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span>${svg("chev")}</button>` : ""}</div></section>`;
+  return `<section class="process-surface process-${tone} ${closed ? "closed" : ""}" data-process-surface data-process-key="${escapeText(key)}" data-process-state="${tone}" data-turn="${escapeText(unit.turn)}" data-turn-label="${escapeText(String(unit.turn).padStart(2, "0"))}" aria-label="Agent process"><div class="process-surface-headbar"><div class="process-surface-summary"><button class="process-section-toggle" type="button" data-process-toggle aria-expanded="${!closed}" title="${closed ? "Expand" : "Collapse"} this section">${svg("chev")}</button><span class="process-surface-label" data-turn-label="${escapeText(String(unit.turn).padStart(2, "0"))}">Agent process</span><span class="process-surface-preview">${escapeText(preview)}</span><span class="process-surface-count">${unit.views.length} events${updates ? ` · ${updates} updates` : ""}${unit.owed ? ` · ${unit.owed} earlier still loading` : ""}</span><button class="process-bulk-toggle" type="button" data-process-bulk aria-pressed="false" title="Expand every detail in this section">${svg("expandStack")}</button></div></div><div class="process-surface-body">${events}${hidden ? `<button class="process-more" type="button" data-process-more aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span>${svg("chev")}</button>` : ""}</div></section>`;
 }
 
 /** A turn shown as the record the wire carried (parity #8) — the classic `{}` toggle. What the
@@ -335,8 +336,27 @@ function turnTime(unit) {
 
 /** The pending head's words (#314): how much of the earlier turns has arrived, when it is known. */
 export function pendingHeadText(progress) {
-  if (!progress || !progress.total) return "Loading earlier turns…";
-  return `Loading earlier turns — ${Math.min(100, Math.round((progress.got * 100) / progress.total))}%`;
+  if (!progress || !progress.total) return progress?.retrying ? "Loading earlier turns — the connection dropped, trying again" : "Loading earlier turns…";
+  const share = `${Math.min(100, Math.round((progress.got * 100) / progress.total))}%`;
+  return progress.retrying ? `Loading earlier turns — ${share}, the connection dropped, trying again` : `Loading earlier turns — ${share}`;
+}
+
+/** Stage 2 (#s277, design/slow-links.md §6.2): a unit some of whose records have not arrived. The
+ *  engine draws it at its height in the sums (`placeholderAt`), so what is inside only says what is
+ *  coming: a turn's prompt by its number and label from the turn index — a reader who lands here
+ *  knows where they are — and an answer or a group of steps by how much of it has arrived. */
+function renderPlaceholder(unit) {
+  const records = unit.to - unit.from + 1;
+  const words = unit.type === "user"
+    ? `<span class="placeholder-turn">Turn ${escapeText(String(unit.turn))}</span><span class="placeholder-label">${escapeText(unit.label || "")}</span>`
+    : unit.type === "process" && records > 1
+      ? `<span class="placeholder-label">Loading — ${records - unit.owed} of ${records} steps</span>`
+      : `<span class="placeholder-label">Loading…</span>`;
+  const root = element(`<div class="turn unit-placeholder placeholder-${unit.type}" data-kind="placeholder" role="status" aria-busy="true">${words}</div>`);
+  root.dataset.unitKey = unit.key;
+  root.dataset.unitFrom = unit.from;
+  if (unit.type === "user") root.dataset.blockIndex = unit.from;
+  return root;
 }
 
 export function renderUnit(unit, state) {
@@ -349,6 +369,7 @@ export function renderUnit(unit, state) {
     root.dataset.unitFrom = unit.from;
     return root;
   }
+  if (placeholderUnit(unit)) return renderPlaceholder(unit);
   const spot = unit.view?.id
     ? `<button class="spot-link" type="button" data-spot-link="${escapeText(unit.view.id)}" aria-label="Copy a link to here" title="Copy a link to here"><span aria-hidden="true">#</span></button>`
     : "";
@@ -364,17 +385,23 @@ export function renderUnit(unit, state) {
     // reader opens it — the classic page's command fold — with the outputs inside.
     const cmd = unit.view.command;
     const expanded = state.promptExpanded.has(unit.key);
-    html = `<div class="turn user command" data-kind="user" data-record-kind="command" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt command-card"><button class="command-head" type="button" data-prompt-toggle="${escapeText(unit.key)}" aria-expanded="${expanded}" title="${expanded ? "Fold this command" : "Show this command's arguments and output"}"><span class="command-badge">/${escapeText(cmd.name)}</span><span class="command-preview">${escapeText(cmd.preview)}</span>${cmd.lines ? `<span class="command-chip">${escapeText(cmd.lines)}</span>` : ""}<span class="command-chevron" aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>${expanded ? `<div class="prompt-copy-shell expanded">${resultBodyHtml(body, APP_RESULT)}</div>` : ""}${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}${rawToggle}</div>`;
+    html = `<div class="turn user command" data-kind="user" data-record-kind="command" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt command-card"><button class="command-head" type="button" data-prompt-toggle="${escapeText(unit.key)}" aria-expanded="${expanded}" title="${expanded ? "Fold this command" : "Show this command's arguments and output"}"><span class="command-badge">/${escapeText(cmd.name)}</span><span class="command-preview">${escapeText(cmd.preview)}</span>${cmd.lines ? `<span class="command-chip">${escapeText(cmd.lines)}</span>` : ""}<span class="command-chevron" aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>${expanded ? `<div class="prompt-copy-shell expanded">${resultBodyHtml(body, APP_RESULT)}</div>` : ""}${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}${rawToggle}${promptNoticesHtml(unit.attachments)}</div>`;
   }
   else if (unit.type === "user" && unit.view.peer) {
     // Another session's message (#s79, Hong's choice: a card from the left). It counts as a turn,
     // but it is not the person's: no right-hand bubble, no "exactly as typed" raw toggle.
     const peer = unit.view.peer;
-    html = `<div class="turn peer" style="--peer-hue:${peerHue(peer.from)}" data-kind="peer" data-record-kind="peer" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="peer-card"><div class="peer-head"><span class="peer-glyph" aria-hidden="true">⇄</span><span class="peer-from">${escapeText(peer.from)}</span><span class="peer-what">another session</span>${peer.mode ? `<span class="peer-mode" title="The sending session's permission mode">${escapeText(peer.mode)}</span>` : ""}</div><div class="body markdown">${unit.view.html}</div>${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}</div>`;
+    html = `<div class="turn peer" style="--peer-hue:${peerHue(peer.from)}" data-kind="peer" data-record-kind="peer" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="peer-card"><div class="peer-head"><span class="peer-glyph" aria-hidden="true">⇄</span><span class="peer-from">${escapeText(peer.from)}</span><span class="peer-what">another session</span>${peer.mode ? `<span class="peer-mode" title="The sending session's permission mode">${escapeText(peer.mode)}</span>` : ""}</div><div class="body markdown">${unit.view.html}</div>${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}${promptNoticesHtml(unit.attachments)}</div>`;
+  }
+  else if (unit.type === "user" && unit.view.inbox) {
+    // A relayed message from the person, verified (#s272): their bubble, headed by what the relay
+    // says of it, the words it answers quoted above, the relay's instructions folded below.
+    // What was typed is the element, not these words, so it has no raw toggle and is never raw.
+    html = `<div class="turn user inbox" data-kind="user" data-record-kind="user" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt">${inboxHeadHtml(unit.view.inbox)}<div class="prompt-copy-shell" data-prompt-key="${escapeText(unit.key)}"><div class="body markdown">${unit.view.html}</div></div>${renderPromptAttachments(unit.attachments)}${inboxDoHtml(unit, state)}</div>${turnTime(unit)}${spot}${promptNoticesHtml(unit.attachments)}</div>`;
   }
   else if (unit.type === "user") {
     // Drawn whole: whether it collapses is measured once it is mounted (`clampPrompts`, #s139).
-    html = `<div class="turn user" data-kind="user" data-record-kind="user" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt"><div class="prompt-copy-shell" data-prompt-key="${escapeText(unit.key)}"><div class="body markdown">${body}</div></div>${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}${rawToggle}</div>`;
+    html = `<div class="turn user" data-kind="user" data-record-kind="user" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt"><div class="prompt-copy-shell" data-prompt-key="${escapeText(unit.key)}"><div class="body markdown">${body}</div></div>${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}${rawToggle}${promptNoticesHtml(unit.attachments)}</div>`;
   }
   else if (unit.type === "assistant") {
     const final = unit.view.phase === "final";
@@ -429,7 +456,46 @@ export function clampPrompts(roots, state) {
   }
 }
 
+/** #s272: the chips of a relayed message's head, and the words it replies to. */
+function inboxHeadHtml(inbox) {
+  const chips = inboxChips(inbox, fmtTime).map(c => `<span class="inbox-chip" data-chip="${escapeText(c.cls)}" title="${escapeText(c.title)}">${escapeText(c.text)}</span>`).join("");
+  const q = inbox.reply_to;
+  const quote = q && typeof q.text === "string" && q.text
+    ? `<blockquote class="inbox-quote">${q.from ? `<span class="inbox-quote-from">${escapeText(q.from)}</span>` : ""}<span class="inbox-quote-text">${literalText(q.text)}</span></blockquote>`
+    : "";
+  return `<div class="inbox-head"><span class="inbox-from">${escapeText(inbox.from)}</span>${chips}</div>${quote}`;
+}
+
+/** #s272: the relay's instructions to the agent, folded until the reader opens them — the prompt
+ *  toggle's own state (`promptExpanded`), under a key of their own. */
+function inboxDoHtml(unit, state) {
+  const text = unit.view.inbox.do;
+  if (typeof text !== "string" || !text) return "";
+  const key = `${unit.key}#do`, open = state.promptExpanded.has(key);
+  return `<div class="inbox-do${open ? " open" : ""}"><button class="inbox-do-h" type="button" data-prompt-toggle="${escapeText(key)}" aria-expanded="${open}">${escapeText(INBOX_DO_LABEL)}</button>${open ? `<div class="inbox-do-b">${literalText(text)}</div>` : ""}</div>`;
+}
+
+/** #s296: Claude Code's notice to the MODEL that a file it had read changed on disk
+ *  (`edited_text_file`, `att_kind: "edited"`), written on the first turn after the change. It
+ *  lands right after a prompt, so the projection puts it with the prompt's attachments, and it was
+ *  drawn as a card under the person's bubble — "edited CLAUDE.md", a file nobody attached (Hong).
+ *  It is a line of its own below the turn, from the left, the file's name still opening it. */
+export function isChangedNotice(view) {
+  return (view?.attachment?.att_kind || "") === "edited";
+}
+
+export function promptNoticesHtml(attachments = []) {
+  return attachments.filter(isChangedNotice).map(view => {
+    const h = view.attachment || {};
+    const name = h.att_name || String(h.att_path || "a file").split("/").pop();
+    const capability = attachmentCapability(h, { reveal: revealHere() });
+    const file = `<button class="turn-notice-file" type="button" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-name="${escapeText(h.att_name || "")}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}" title="${escapeText(h.att_path || name)}">${escapeText(name)}</button>`;
+    return `<div class="turn-notice" role="note">${file} changed on disk; the agent was shown what changed</div>`;
+  }).join("");
+}
+
 function renderPromptAttachments(attachments = []) {
+  attachments = attachments.filter(view => !isChangedNotice(view));
   if (!attachments.length) return "";
   // #171: the card names WHY the file is here before it names what a click does. `att_kind`
   // ("edited" / "ref" / "plan" / "file") is the reason the transcript recorded, the classic page

@@ -135,6 +135,52 @@ impl Export {
         self.record_index(count1)
     }
 
+    /// #s277: was the open records by turn (`design/slow-links.md` §6)? Its fills are records
+    /// deltas that name the run they rewrote (`to`).
+    pub fn windowed(&self) -> bool {
+        self.deltas
+            .iter()
+            .any(|d| d.get("to").is_some_and(|v| !v.is_null()))
+    }
+
+    /// #s277: the record a records-by-turn open's tail began at: the first record of the first unit
+    /// after the short card, which stands, once the index has laid the head out, `shift` units on
+    /// (`shift + 1` units took the card's place).
+    pub fn tail_start(&self) -> Option<usize> {
+        let shift = self
+            .deltas
+            .iter()
+            .find_map(|d| d["shift"].as_i64().filter(|s| *s > 0))?;
+        Some(self.record_index(shift as usize + 1))
+    }
+
+    /// #s277: the fills a records-by-turn open made after the index laid the head out, as the gap
+    /// before each on the recorded timeline (the first from the landing): one piece of the head
+    /// taken in, each.
+    pub fn fills(&self) -> Vec<Duration> {
+        let Some(mut last) = self
+            .deltas
+            .iter()
+            .find(|d| d["shift"].as_i64().unwrap_or(0) > 0)
+            .and_then(|d| d["t"].as_f64())
+        else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for d in &self.deltas {
+            if !d.get("to").is_some_and(|v| !v.is_null()) {
+                continue;
+            }
+            let t = d["t"].as_f64().unwrap_or(last);
+            if t < last {
+                continue;
+            }
+            out.push(Duration::from_millis((t - last) as u64));
+            last = t;
+        }
+        out
+    }
+
     /// Engine index → record index (the first record of that item; the count past the end).
     pub fn record_index(&self, engine_index: usize) -> usize {
         if let Some(item) = self.items.get(engine_index) {

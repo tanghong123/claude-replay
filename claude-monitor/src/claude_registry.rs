@@ -1,115 +1,140 @@
-//! Claude's live process/session registrations, observed in Claude Code 2.1.309–2.1.310.
-//! These are runtime evidence, not transcript recency: a PID is trusted only while its
-//! owner and OS process-start identity match the registration. No peer credentials are read.
+//! Which session a plain `claude` process is running, from the record Claude Code keeps for it,
+//! `<claude home>/sessions/<pid>.json` (observed on macOS with Claude Code 2.1.309–2.1.310; not a
+//! published format). A plain `claude` names no session in its argv, so without the record a
+//! process that went back to an older session lost its pid to the newest transcript in its
+//! directory. The record names the session (`sessionId`) and the process (`pid`, and `procStart`,
+//! the output of `LC_ALL=C TZ=UTC ps -o lstart= -p <pid>`, which the client runs on every platform).
+//! A record counts only while that pid still has that start, so a record left by an earlier
+//! process with a reused pid names nothing. No peer credential file is read.
 
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+/// The client's own bound on the record it writes (262144 bytes).
+const RECORD_LIMIT: u64 = 256 * 1024;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Identity {
-    /// Older Claude versions and installations without a registration retain legacy discovery.
+    /// No usable record: none written (an older client), or one that could not be verified
+    /// (a pid or start that does not match, a file caught mid-write, a file over the bound).
+    /// Discovery then works as it did before the record was read.
     #[default]
     Missing,
+    /// A record this process wrote, naming the session it runs now.
     Verified(String),
-    /// An existing record could not be validated. It must never authorize a guessed pane.
-    Rejected,
 }
 
 impl Identity {
     pub(crate) fn session(&self) -> Option<&str> {
         match self {
             Self::Verified(session) => Some(session),
-            _ => None,
+            Self::Missing => None,
         }
     }
 
+    /// Whether this process may be the one writing `session`: anything without a record may.
     pub(crate) fn permits(&self, session: &str) -> bool {
-        match self {
-            Self::Missing => true,
-            Self::Verified(registered) => registered == session,
-            Self::Rejected => false,
-        }
+        self.session()
+            .is_none_or(|registered| registered == session)
     }
 }
 
-fn directory() -> PathBuf {
-    if let Some(config) = std::env::var_os("CLAUDE_CONFIG_DIR") {
-        return PathBuf::from(config).join("sessions");
+/// Read the record of each `(pid, sessions directory)` pair, for processes already known to be
+/// Claude. The starts come from one bounded `ps`; a process `ps` does not report reads Missing.
+pub(crate) fn scan(targets: &[(u32, PathBuf)]) -> HashMap<u32, Identity> {
+    if targets.is_empty() {
+        return HashMap::new();
     }
-    // A relocated transcript store, including a test fixture, must not borrow live identities
-    // from the user's ordinary store. Claude's sessions and projects are sibling directories.
-    if let Some(projects) = std::env::var_os("CLAUDE_PROJECTS_DIR") {
-        return PathBuf::from(projects)
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("sessions");
-    }
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".claude/sessions")
-}
-
-/// Read registrations only for already discovered Claude processes. The process table is
-/// queried in UTC/C locale because macOS Claude stores `ps lstart` in that representation.
-pub(crate) fn scan(pids: &[u32]) -> HashMap<u32, Identity> {
-    // SAFETY: geteuid has no preconditions and only reads this process's effective UID.
-    // Registry discovery must not depend on being able to write a temporary probe file.
+    // SAFETY: geteuid has no preconditions and only reads this process's effective UID. It is
+    // `libc`'s, so the UID is known without creating a probe file in a scratch directory.
     let uid = unsafe { libc::geteuid() };
-    let root = directory();
-    let starts = process_starts(pids, uid);
-    pids.iter()
-        .map(|pid| {
-            let identity = read(&root, *pid, uid, starts.get(pid).map(String::as_str));
+    let pids: Vec<u32> = targets.iter().map(|(pid, _)| *pid).collect();
+    let starts = process_starts(&pids, uid);
+    targets
+        .iter()
+        .map(|(pid, dir)| {
+            let identity = read(dir, *pid, uid, starts.get(pid).map(String::as_str))
+                .map_or(Identity::Missing, Identity::Verified);
             (*pid, identity)
         })
         .collect()
 }
 
-fn read(root: &Path, pid: u32, uid: u32, start: Option<&str>) -> Identity {
-    use std::os::unix::fs::MetadataExt;
-    let path = root.join(format!("{pid}.json"));
-    let before = match std::fs::symlink_metadata(&path) {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Identity::Missing,
-        Err(_) => return Identity::Rejected,
-    };
-    if !before.is_file() || before.uid() != uid || before.len() > 64 * 1024 {
-        return Identity::Rejected;
-    }
-    load_record(&path, &before, uid)
-        .and_then(|record| validated_session(&record, pid, start))
-        .map_or(Identity::Rejected, Identity::Verified)
+/// What one look at a record found.
+enum Attempt {
+    /// Nothing usable there: no file, not ours, not a plain file, or over the bound.
+    Unusable,
+    /// Bytes that are not JSON: the client may be rewriting the file in place.
+    Partial,
+    Record(Value),
 }
 
-fn load_record(path: &Path, before: &std::fs::Metadata, uid: u32) -> Option<Value> {
+fn read(dir: &Path, pid: u32, uid: u32, start: Option<&str>) -> Option<String> {
+    let path = dir.join(format!("{pid}.json"));
+    retry_partial(|| attempt(&path, uid)).and_then(|record| validated_session(&record, pid, start))
+}
+
+/// A record caught mid-write is read once more; a second partial read counts as no record.
+fn retry_partial(mut attempt: impl FnMut() -> Attempt) -> Option<Value> {
+    let first = match attempt() {
+        Attempt::Partial => attempt(),
+        other => other,
+    };
+    match first {
+        Attempt::Record(value) => Some(value),
+        Attempt::Unusable | Attempt::Partial => None,
+    }
+}
+
+fn attempt(path: &Path, uid: u32) -> Attempt {
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::OpenOptionsExt;
-    // Metadata inspection cannot prevent a pathname replacement. Refuse symlinks at open,
-    // and do not block if a regular entry was replaced with a FIFO before descriptor checks.
-    let file = std::fs::OpenOptions::new()
+    let Ok(before) = std::fs::symlink_metadata(path) else {
+        return Attempt::Unusable;
+    };
+    if !before.is_file() || before.uid() != uid || before.len() > RECORD_LIMIT {
+        return Attempt::Unusable;
+    }
+    // Metadata inspection cannot prevent a pathname replacement between the look and the open.
+    // O_NOFOLLOW refuses a symlink put there, O_NONBLOCK keeps a FIFO put there from blocking the
+    // scan (it holds the index's lock), and the opened descriptor must be the inode inspected.
+    let Ok(file) = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
-        .ok()?;
-    let opened = file.metadata().ok()?;
+    else {
+        return Attempt::Unusable;
+    };
+    let Ok(opened) = file.metadata() else {
+        return Attempt::Unusable;
+    };
     if !opened.is_file()
         || opened.uid() != uid
         || opened.dev() != before.dev()
         || opened.ino() != before.ino()
     {
-        return None;
+        return Attempt::Unusable;
     }
     let mut bytes = Vec::new();
-    file.take(64 * 1024 + 1).read_to_end(&mut bytes).ok()?;
-    if bytes.len() > 64 * 1024 {
-        return None;
+    if file.take(RECORD_LIMIT + 1).read_to_end(&mut bytes).is_err()
+        || bytes.len() as u64 > RECORD_LIMIT
+    {
+        return Attempt::Unusable;
     }
-    serde_json::from_slice(&bytes).ok()
+    serde_json::from_slice(&bytes).map_or(Attempt::Partial, Attempt::Record)
 }
 
 fn validated_session(record: &Value, pid: u32, start: Option<&str>) -> Option<String> {
-    let start = start.filter(|s| !s.is_empty())?;
-    if record.get("pid")?.as_u64()? != u64::from(pid) || record.get("procStart")?.as_str()? != start
+    let start = start.filter(|s| !s.trim().is_empty())?;
+    // Compared word by word: `ps` pads a single-digit day ("Oct  4"), and the record keeps it.
+    if record.get("pid")?.as_u64()? != u64::from(pid)
+        || !record
+            .get("procStart")?
+            .as_str()?
+            .split_whitespace()
+            .eq(start.split_whitespace())
     {
         return None;
     }
@@ -117,68 +142,34 @@ fn validated_session(record: &Value, pid: u32, start: Option<&str>) -> Option<St
     crate::index::is_uuid(session).then(|| session.to_string())
 }
 
-#[cfg(target_os = "macos")]
+/// Each pid's start as `ps -o lstart=` prints it in the C locale and UTC, the form the client
+/// stores, on macOS and Linux alike. Bounded like every scan probe (`run_bounded`): a `ps` that
+/// does not answer gives no starts, and every record reads Missing for that scan.
 fn process_starts(pids: &[u32], uid: u32) -> HashMap<u32, String> {
     let pids = pids
         .iter()
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(",");
-    if pids.is_empty() {
-        return HashMap::new();
-    }
-    let Ok(output) = std::process::Command::new("ps")
-        .args(["-p", &pids, "-o", "pid=,uid=,lstart="])
-        .env("TZ", "UTC")
-        .env("LC_ALL", "C")
-        .output()
-    else {
-        return HashMap::new();
-    };
-    parse_process_starts(&String::from_utf8_lossy(&output.stdout), uid)
+    let out = crate::index::run_bounded_env(
+        &["ps", "-p", &pids, "-o", "pid=,uid=,lstart="],
+        &[("TZ", "UTC"), ("LC_ALL", "C")],
+        crate::index::SCAN_PROBE_LIMIT,
+    );
+    parse_process_starts(&out, uid)
 }
 
-#[cfg(any(target_os = "macos", test))]
+/// `pid uid lstart` lines → each start of a process this user owns.
 fn parse_process_starts(text: &str, uid: u32) -> HashMap<u32, String> {
     text.lines()
         .filter_map(|line| {
-            let line = line.trim();
-            let at = line.find(char::is_whitespace)?;
-            let pid = line[..at].parse().ok()?;
-            let rest = line[at..].trim_start();
-            let at = rest.find(char::is_whitespace)?;
-            (rest[..at].parse::<u32>().ok()? == uid).then(|| (pid, rest[at..].trim().to_string()))
+            let mut words = line.split_whitespace();
+            let pid = words.next()?.parse().ok()?;
+            let owner = words.next()?.parse::<u32>().ok()?;
+            let start = words.collect::<Vec<_>>().join(" ");
+            (owner == uid && !start.is_empty()).then_some((pid, start))
         })
         .collect()
-}
-
-#[cfg(target_os = "linux")]
-fn process_starts(pids: &[u32], uid: u32) -> HashMap<u32, String> {
-    use std::os::unix::fs::MetadataExt;
-    pids.iter()
-        .filter_map(|pid| {
-            let path = PathBuf::from(format!("/proc/{pid}/stat"));
-            if std::fs::metadata(&path).ok()?.uid() != uid {
-                return None;
-            }
-            let stat = std::fs::read_to_string(path).ok()?;
-            Some((*pid, linux_start(&stat)?.to_string()))
-        })
-        .collect()
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn linux_start(stat: &str) -> Option<&str> {
-    // Field 2 is a parenthesized command name and can itself contain spaces and ')'.
-    let after_name = stat.rsplit_once(')')?.1;
-    let start = after_name.split_whitespace().nth(19)?;
-    start.parse::<u64>().ok()?;
-    Some(start)
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn process_starts(_: &[u32], _: u32) -> HashMap<u32, String> {
-    HashMap::new()
 }
 
 #[cfg(test)]
@@ -187,6 +178,20 @@ mod tests {
     use serde_json::json;
 
     const SID: &str = "11111111-2222-4333-8444-555555555555";
+
+    /// A record as Claude Code 2.1.310 writes it: `procStart` is `ps -o lstart=` output.
+    fn client_record(pid: u32, start: &str) -> String {
+        json!({
+            "pid": pid,
+            "sessionId": SID,
+            "cwd": "/fixture/project",
+            "startedAt": 1_761_387_736_000_u64,
+            "procStart": start,
+            "kind": "interactive",
+            "entrypoint": "cli",
+        })
+        .to_string()
+    }
 
     #[test]
     fn native_record_requires_the_exact_pid_and_process_start() {
@@ -209,6 +214,36 @@ mod tests {
         }
     }
 
+    /// The client stores `ps -o lstart=` text on Linux too; procps and BSD `ps` both print the
+    /// C-locale form, a single-digit day padded with a space.
+    #[test]
+    fn a_client_record_matches_ps_lstart_on_either_platform() {
+        let record: Value =
+            serde_json::from_str(&client_record(42, "Sun Oct  4 03:43:32 2026")).unwrap();
+        let macos = parse_process_starts(" 42   501 Sun Oct  4 03:43:32 2026\n", 501);
+        let linux = parse_process_starts("     42  1000 Sun Oct  4 03:43:32 2026\n", 1000);
+        assert_eq!(
+            validated_session(&record, 42, macos.get(&42).map(String::as_str)),
+            Some(SID.into())
+        );
+        assert_eq!(
+            validated_session(&record, 42, linux.get(&42).map(String::as_str)),
+            Some(SID.into())
+        );
+        // A clock-tick start (what /proc/<pid>/stat holds) never matches the client's text.
+        assert_eq!(validated_session(&record, 42, Some("987654")), None);
+    }
+
+    #[test]
+    fn ps_lines_of_other_users_and_noise_are_ignored() {
+        let starts = parse_process_starts(
+            " 42 501 Sun Oct  4 03:43:32 2026\n43 502 Sun Oct  4 03:43:32 2026\ninvalid\n44 501\n",
+            501,
+        );
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[&42], "Sun Oct 4 03:43:32 2026");
+    }
+
     #[test]
     fn registry_files_are_bounded_owned_regular_files() {
         use std::os::unix::fs::{symlink, MetadataExt};
@@ -216,99 +251,109 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let uid = std::fs::metadata(&root).unwrap().uid();
         let path = root.join("42.json");
-        assert_eq!(read(&root, 42, uid, Some("start")), Identity::Missing);
+        assert_eq!(read(&root, 42, uid, Some("start")), None);
         let bytes = json!({"pid":42,"sessionId":SID,"procStart":"start"}).to_string();
         std::fs::write(&path, &bytes).unwrap();
-        assert_eq!(
-            read(&root, 42, uid, Some("start")),
-            Identity::Verified(SID.into())
-        );
-        assert_eq!(read(&root, 42, uid + 1, Some("start")), Identity::Rejected);
-        assert_eq!(read(&root, 42, uid, Some("other")), Identity::Rejected);
+        assert_eq!(read(&root, 42, uid, Some("start")), Some(SID.into()));
+        assert_eq!(read(&root, 42, uid + 1, Some("start")), None);
+        assert_eq!(read(&root, 42, uid, Some("other")), None);
         std::fs::write(&path, "{").unwrap();
-        assert_eq!(read(&root, 42, uid, Some("start")), Identity::Rejected);
-        std::fs::write(&path, " ".repeat(64 * 1024 + 1)).unwrap();
-        assert_eq!(read(&root, 42, uid, Some("start")), Identity::Rejected);
+        assert_eq!(read(&root, 42, uid, Some("start")), None);
+        // Up to the client's own bound a record is read; past it, it is not.
+        let padded = |len: usize| {
+            let mut record = bytes.clone();
+            record.pop();
+            record.push_str(",\"pad\":\"");
+            let fill = len - record.len() - 2;
+            record.push_str(&"x".repeat(fill));
+            record.push_str("\"}");
+            record
+        };
+        std::fs::write(&path, padded(RECORD_LIMIT as usize)).unwrap();
+        assert_eq!(read(&root, 42, uid, Some("start")), Some(SID.into()));
+        std::fs::write(&path, padded(RECORD_LIMIT as usize + 1)).unwrap();
+        assert_eq!(read(&root, 42, uid, Some("start")), None);
         std::fs::remove_file(&path).unwrap();
         std::fs::write(root.join("real.json"), bytes).unwrap();
         symlink(root.join("real.json"), &path).unwrap();
-        assert_eq!(read(&root, 42, uid, Some("start")), Identity::Rejected);
+        assert_eq!(read(&root, 42, uid, Some("start")), None);
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn platform_start_parsers_keep_exact_identity_and_ignore_other_users() {
-        let starts = parse_process_starts(
-            " 42 501 Sun Oct  4 03:43:32 2026\n43 502 Sun Oct  4 03:43:32 2026\ninvalid\n",
-            501,
+    fn a_record_caught_mid_write_is_read_once_more() {
+        let record = || Attempt::Record(json!({"pid": 42}));
+        let mut seq = vec![Attempt::Partial, record()].into_iter();
+        assert!(retry_partial(|| seq.next().unwrap()).is_some());
+        let mut seq = vec![Attempt::Partial, Attempt::Partial, record()].into_iter();
+        assert!(
+            retry_partial(|| seq.next().unwrap()).is_none(),
+            "a second partial read is no record"
         );
-        assert_eq!(starts.len(), 1);
-        assert_eq!(starts[&42], "Sun Oct  4 03:43:32 2026");
-        let stat = "42 (claude ) worker) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 987654 20";
-        assert_eq!(linux_start(stat), Some("987654"));
-        assert_eq!(linux_start("42 (claude) S 1"), None);
+        let mut calls = 0;
+        assert!(retry_partial(|| {
+            calls += 1;
+            Attempt::Unusable
+        })
+        .is_none());
+        assert_eq!(calls, 1, "only a partial read is retried");
     }
 
     #[test]
-    fn replacing_an_inspected_record_with_a_symlink_is_rejected() {
-        use std::os::unix::fs::{symlink, MetadataExt};
+    fn replacing_an_inspected_record_with_a_symlink_or_fifo_is_refused() {
         let root = std::env::temp_dir().join(format!("cm-registry-swap-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("42.json");
-        std::fs::write(&path, "{}").unwrap();
-        let before = std::fs::symlink_metadata(&path).unwrap();
-        let moved = root.join("moved.json");
-        std::fs::rename(&path, &moved).unwrap();
-        symlink(moved, &path).unwrap();
-        assert!(
-            load_record(&path, &before, before.uid()).is_none(),
-            "an unchanged inode does not authorize following a replacement symlink"
-        );
+        std::fs::write(root.join("moved.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(root.join("moved.json"), &path).unwrap();
+        // SAFETY: geteuid has no preconditions.
+        let uid = unsafe { libc::geteuid() };
+        assert!(matches!(attempt(&path, uid), Attempt::Unusable));
         std::fs::remove_file(&path).unwrap();
         let fifo = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
         // SAFETY: fifo is a valid NUL-terminated path, and this test owns its scratch directory.
         assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
         assert!(
-            load_record(&path, &before, before.uid()).is_none(),
-            "a replacement FIFO is rejected without waiting for a writer"
+            matches!(attempt(&path, uid), Attempt::Unusable),
+            "a FIFO is refused without waiting for a writer"
         );
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// The whole scan against this test process, with a record whose `procStart` comes from the
+    /// client's own command rather than from `process_starts`, and with no writable scratch.
     #[test]
-    fn registry_scan_does_not_require_writable_scratch() {
-        const PROBE: &str = "CM_REGISTRY_NO_SCRATCH_PROBE";
-        if std::env::var_os(PROBE).is_some() {
+    fn registry_scan_verifies_a_record_written_with_the_clients_own_command() {
+        const PROBE: &str = "CM_REGISTRY_SCAN_PROBE";
+        if let Some(root) = std::env::var_os(PROBE) {
+            let root = PathBuf::from(root);
             let pid = std::process::id();
-            assert_eq!(scan(&[pid]).get(&pid), Some(&Identity::Missing));
-            // Verify a present record too: Missing alone would pass even if UID/start
-            // discovery failed before validation. The fixture does not use TMPDIR.
-            let root = directory();
-            std::fs::create_dir_all(&root).unwrap();
-            // SAFETY: geteuid has no preconditions and only reads the child's effective UID.
-            let start = process_starts(&[pid], unsafe { libc::geteuid() });
-            let sid = "11111111-2222-4333-8444-555555555555";
-            let record = serde_json::json!({
-                "pid": pid, "sessionId": sid, "procStart": start[&pid],
-            });
-            std::fs::write(root.join(format!("{pid}.json")), record.to_string()).unwrap();
+            let targets = [(pid, root.clone())];
+            assert_eq!(scan(&targets).get(&pid), Some(&Identity::Missing));
+            let out = std::process::Command::new("ps")
+                .args(["-o", "lstart=", "-p", &pid.to_string()])
+                .env("LC_ALL", "C")
+                .env("TZ", "UTC")
+                .output()
+                .unwrap();
+            let start = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            assert!(!start.is_empty());
+            std::fs::write(root.join(format!("{pid}.json")), client_record(pid, &start)).unwrap();
             assert_eq!(
-                scan(&[pid]).get(&pid),
-                Some(&Identity::Verified(sid.into()))
+                scan(&targets).get(&pid),
+                Some(&Identity::Verified(SID.into()))
             );
             return;
         }
-        let root =
-            std::env::temp_dir().join(format!("cm-registry-no-scratch-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("cm-registry-scan-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        // A fresh child isolates both the environment and the UID helper's cached state.
+        // A fresh child, so the unavailable TMPDIR is its own.
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "claude_registry::tests::registry_scan_does_not_require_writable_scratch",
+                "claude_registry::tests::registry_scan_verifies_a_record_written_with_the_clients_own_command",
             ])
-            .env(PROBE, "1")
-            .env("CLAUDE_CONFIG_DIR", &root)
+            .env(PROBE, &root)
             .env("TMPDIR", root.join("unavailable/scratch"))
             .output()
             .unwrap();
