@@ -367,10 +367,14 @@ started with no session flag names nothing in its argv, so when it went back to 
 newest one and the session it was really running read as finished, with no compose box — seen on
 macOS with Claude Code 2.1.309–2.1.310, beside another live Claude in the same repo. Claude Code
 writes `<claude home>/sessions/<pid>.json` for each process (the home as `apply_session_files`
-finds it) naming `sessionId`, `pid` and `procStart`, the text of `LC_ALL=C TZ=UTC ps -o lstart=`,
-which it runs on Linux too. `claude_registry.rs` believes a record only while that pid has that
+finds it) naming `sessionId`, `pid` and `procStart`, the text of `LC_ALL=C TZ=UTC ps -o lstart=`
+(read from the 2.1.312 client's code, which has no platform branch for it; not yet seen on a Linux
+host). `claude_registry.rs` believes a record only while that pid has that
 start (one bounded `ps`, the scan's 15 s), and then its session wins over the argv, a growth proof
 and the directory rule, including after a switch; the row says `pidSource: "claude-registry"`. A
+growth fence (#s250) is still recorded against the session the argv names while a record names
+another, because a scan that cannot read the record (that `ps` over its bound, a file caught
+mid-write twice) falls back to the argv; a record naming the fenced session lifts it. A
 record that does not verify — a start that differs, a file caught mid-write (read once more), one
 over the client's 256 KiB — is no record, and the argv and directory rules apply as before. A
 session growing in the directory is not proved onto a process whose record names another one, a
@@ -378,21 +382,15 @@ proof is dropped once the record contradicts it, and only a later write proves i
 whose record names a session no row has yet (its transcript not indexed) occupies its project;
 helpers (whose record names a session with no transcript) and a process of unknown cwd do not. A
 send into a pane beside another live session in the project is allowed only for a HERDR pane whose
-process's record names the session (the owner's decision on #s258: herdr checks the pane's session
+process's record names the session (the owner's decision s271: herdr checks the pane's session
 again before typing; a `claude` started through a pty wrapper in tmux inherits its starter's
-`TMUX_PANE`); a tmux pane and background resume keep the one-live-session rule.
-=======
-Recency and ambiguity are selected per agent and exact cwd (#s250); a configured executable
-whose kind is unknown keeps the shared scope. Explicit argv/open-transcript links, retained
-growth proofs and time-paired workers do not compete for the newest unnamed session, and
-their PIDs are reserved from directory matching. Growth cannot borrow another session's
-explicitly owned process. If the only interactive candidate names a different session or
-holds its transcript open, the index retains that contradiction and marks that session's link
-unconfirmed, withholding both sending and restore-consent following even after growth stops.
-The fence clears when that process leaves its cwd or the old session grows again. Like growth
-proofs, these observations stay in the monitor's memory from scan to scan and are lost on a
-restart: no durable session-identity registry.
->>>>>>> origin/main
+`TMUX_PANE`); a tmux pane and background resume keep the one-live-session rule. That check holds
+only while one agent reads the pane: a `claude` an agent starts from its Bash through a pty wrapper
+inherits the herdr pane as well, and herdr's record of the pane then names the child's session. So
+a herdr pane that another interactive agent process is placed in, or whose process runs below
+another agent process (`herdr_pane_shared`), is sent to for neither session, in any directory. The
+send, a grant and a dialog read always rescan the processes rather than use the last tick's, so
+each pays a full probe (the bounded `ps` and `lsof` runs and the record reads) for current evidence.
 **A one-shot (`claude -p`/`--print`) is headless and pairs by TIME** (#s50): knack's coordinator
 starts workers from its Bash, all in one repo, each inheriting the coordinator's `TMUX_PANE`, and the
 directory rule gave a process to the newest session only — so a worker deep in a long command lost
