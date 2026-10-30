@@ -405,7 +405,17 @@ holds another agent process running below no other agent is sent to for neither 
 herdr pane is (#s333): a `claude` suspended with Ctrl-Z while the pane's shell runs `codex` in its
 directory, or `claude` in another, would type into the foreground agent, which the
 one-live-session rule (same agent, same directory) does not see. Unlike herdr, a `claude` below
-another agent is no tmux sibling: the pane's input goes to its starter. The
+another agent is no tmux sibling: the pane's input goes to its starter. **A tmux pane is sent to
+only while its agent holds the pane's foreground** (#s335): an agent suspended with Ctrl-Z, or put
+in the background, leaves the pane to its shell, which would run the prompt as a command, and tmux
+has no screen check as herdr has. The scan reads each agent's `ps -o stat=` (`+` the terminal's
+foreground group, `T` stopped; measured in a tmux pane with Claude Code 2.1.314: `S+` at its prompt
+and while a Bash call runs, `T` suspended, the shell then `Ss+`; codex-cli 0.166.0 the same), and a
+row that has left the foreground is not offered the send (`PaneNotForeground`). Right before typing,
+`control::tmux_pane_held` reads the pid's tty and state again and the pane's `#{pane_tty}`: it types
+nothing unless the process holds the pane's own terminal in the foreground, and nothing when either
+reading fails (a `claude` a pty wrapper started holds a terminal of its own, as does one in
+an editor's terminal inside the pane). The
 send, a grant and a dialog read always rescan the processes rather than use the last tick's, so
 each pays a full probe (the bounded `ps` and `lsof` runs and the record reads) for current evidence.
 **A one-shot (`claude -p`/`--print`) is headless and pairs by TIME** (#s50): knack's coordinator

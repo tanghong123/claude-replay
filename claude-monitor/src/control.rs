@@ -497,6 +497,49 @@ pub fn tmux_send(sock: Option<&str>, pane: &str, prompt: &str) -> Result<()> {
     Ok(())
 }
 
+/// Right before typing into a tmux pane (#s335): the agent must still hold the pane's foreground,
+/// on the pane's own terminal. The scan's reading may be seconds old and lets a state it could not
+/// read through, so both are read again: `ps -o tty=,stat=` for the pid and the pane's
+/// `#{pane_tty}`. A suspended or backgrounded agent leaves the pane to its shell, which would run
+/// the prompt as a command, and a process on another terminal (a `claude` started through a pty
+/// wrapper inherits its starter's `TMUX_PANE`) is not what the pane types into. Either, or a
+/// reading that fails, types nothing.
+fn tmux_pane_held(sock: Option<&str>, pane: &str, pid: u32) -> Result<(), String> {
+    let limit = std::time::Duration::from_secs(5);
+    let pid = pid.to_string();
+    let ps = index::run_bounded_env(&["ps", "-o", "tty=,stat=", "-p", &pid], &[], limit);
+    let mut tmux = vec!["tmux"];
+    if let Some(sock) = sock {
+        tmux.extend(["-L", sock]);
+    }
+    tmux.extend(["display-message", "-p", "-t", pane, "#{pane_tty}"]);
+    let pane_tty = index::run_bounded_env(&tmux, &[], limit);
+    pane_held_verdict(&ps, &pane_tty)
+}
+
+/// [`tmux_pane_held`]'s verdict over what it read: `ps`'s `tty stat` line (`ttys022 S+` on macOS,
+/// `pts/3 Sl+` on Linux) and tmux's `/dev/…` path of the pane's terminal.
+fn pane_held_verdict(ps: &str, pane_tty: &str) -> Result<(), String> {
+    let mut fields = ps.split_whitespace();
+    let (Some(tty), Some(stat)) = (fields.next(), fields.next()) else {
+        return Err("the agent's process could not be read, so nothing was typed".into());
+    };
+    let pane_tty = pane_tty.trim();
+    if pane_tty.is_empty() {
+        return Err("the tmux pane could not be read, so nothing was typed".into());
+    }
+    if pane_tty.strip_prefix("/dev/").unwrap_or(pane_tty) != tty {
+        return Err(
+            "the agent runs on another terminal than its tmux pane, so nothing was typed: send from the pane"
+                .into(),
+        );
+    }
+    if !index::holds_foreground(stat) {
+        return Err(index::SendRefusal::PaneNotForeground.as_str().into());
+    }
+    Ok(())
+}
+
 /// What `herdr agent get <pane>` says, reduced to the two facts a send needs (#s226): the
 /// agent's state (`idle`, `working`, `blocked`, `done`, `unknown`) and the Claude session herdr's
 /// hook reported for the pane (`agent_session.value`). Read at the reply's top level or under
@@ -1583,10 +1626,16 @@ fn send_tmux_checked(
         return Ok(no_consent_body());
     }
     Ok(match &target.addr {
-        index::PaneAddr::Tmux { sock, pane } => match tmux_send(sock.as_deref(), pane, prompt) {
-            Ok(()) => json!({"ok": true, "sid": sid, "via": "tmux"}),
-            Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
-        },
+        index::PaneAddr::Tmux { sock, pane } => {
+            // #s335: nothing is typed unless the agent holds the pane's foreground right now.
+            if let Err(why) = tmux_pane_held(sock.as_deref(), pane, target.pid) {
+                return Ok(json!({"ok": false, "code": "held", "error": why}));
+            }
+            match tmux_send(sock.as_deref(), pane, prompt) {
+                Ok(()) => json!({"ok": true, "sid": sid, "via": "tmux"}),
+                Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
+            }
+        }
         index::PaneAddr::Herdr { socket, pane } => {
             let images = SentImages {
                 items: images,
@@ -2833,6 +2882,24 @@ mod tests {
         });
         assert!(gone, "pid {} was never reaped", pid.trim());
         std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    /// #s335: right before typing into a tmux pane, the agent must hold the pane's foreground on
+    /// the pane's own terminal; a reading that fails types nothing.
+    #[test]
+    fn a_tmux_send_types_only_into_an_agent_holding_its_pane() {
+        assert_eq!(pane_held_verdict("ttys022 S+\n", "/dev/ttys022\n"), Ok(()));
+        assert_eq!(pane_held_verdict("pts/3 Sl+\n", "/dev/pts/3\n"), Ok(()));
+        let refused = |ps: &str, tty: &str| pane_held_verdict(ps, tty).unwrap_err();
+        // Suspended with Ctrl-Z, or in the background: the shell holds the pane.
+        assert!(refused("ttys022 T\n", "/dev/ttys022\n").contains("suspended"));
+        assert!(refused("ttys022 S\n", "/dev/ttys022\n").contains("suspended"));
+        // A `claude` a pty wrapper started holds a terminal of its own (measured: ttys023).
+        assert!(refused("ttys023 Ss+\n", "/dev/ttys022\n").contains("another terminal"));
+        assert!(refused("?? S\n", "/dev/ttys022\n").contains("another terminal"));
+        // Nothing read, nothing typed.
+        assert!(refused("", "/dev/ttys022\n").contains("could not be read"));
+        assert!(refused("ttys022 S+\n", "").contains("could not be read"));
     }
 
     /// #s247: a helper the agent leaves behind holding stderr open must not hold the reply: the

@@ -145,6 +145,9 @@ pub enum SendRefusal {
     /// sibling in the same pane (herdr's own check names whichever session started last; tmux has
     /// none, #s333).
     PaneShared,
+    /// (tmux path) the agent does not hold its pane's foreground (#s335): suspended with Ctrl-Z
+    /// or put in the background, so what is typed would reach the shell or whatever runs there.
+    PaneNotForeground,
 }
 
 /// The pane-injection decision (#133 tmux slice, #s226 herdr), PURE over one scan's link data —
@@ -225,6 +228,9 @@ fn pane_send_target(st: &State, sid: &str) -> Result<(u32, PaneAddr), SendRefusa
     if pane_shared(&st.procs, pid, &addr) {
         return Err(SendRefusal::PaneShared);
     }
+    if tmux_pane_not_held(&st.procs, pid, &addr) {
+        return Err(SendRefusal::PaneNotForeground);
+    }
     if !pane_send_beside_siblings(&st.procs, pid, sid, &addr)
         && (unresolved_registry_writer(&st.procs, agent, cwd, &st.send_links)
             || project_has_other_live(
@@ -264,6 +270,9 @@ impl SendRefusal {
             }
             Self::PaneShared => {
                 "another agent runs in this pane, so a send could reach it instead: send from the pane"
+            }
+            Self::PaneNotForeground => {
+                "the agent is suspended or in the background in its tmux pane, so a send would reach whatever runs there now: bring it back (fg) first"
             }
         }
     }
@@ -532,6 +541,9 @@ struct Proc {
     open_jsonl: Vec<String>,
     /// Controlling tty (`ps -o tty=`); `None` when detached (`??`).
     tty: Option<String>,
+    /// The process state (`ps -o stat=`, like `S+` or `T`), whose `+` and `T` say whether it
+    /// holds its terminal's foreground (`holds_foreground`, #s335); `None` when not read.
+    stat: Option<String>,
     /// `TMUX_PANE=%N` from the process ENVIRONMENT (`ps eww`) — the probe's finding: the
     /// multiplexer is visible nowhere else, and `%N` is the injection target.
     pane: Option<String>,
@@ -2035,6 +2047,8 @@ impl Index {
                     l.confirmed
                         && driven
                         && !pane_shared(&st.procs, l.pid, addr)
+                        // #s335: nor a tmux pane whose agent is suspended or backgrounded.
+                        && !tmux_pane_not_held(&st.procs, l.pid, addr)
                         && (!proj_active || pane_send_beside_siblings(&st.procs, l.pid, sid, addr))
                 }) {
                     j["injectable"] = json!(true);
@@ -3357,7 +3371,7 @@ fn scan_procs() -> Vec<Proc> {
         .map_or(0, |d| d.as_secs());
     apply_tty(
         &mut procs,
-        &run(&["ps", "-o", "pid=,tty=,etime=", "-p", &pids]),
+        &run(&["ps", "-o", "pid=,tty=,etime=,stat=", "-p", &pids]),
         now,
     );
     // The multiplexer is visible ONLY in the environment (§2 of the probe): `ps eww`
@@ -3581,6 +3595,7 @@ fn parse_ps_with(out: &str, is_file: &dyn Fn(&str) -> bool) -> Vec<Proc> {
             cwd: None,
             open_jsonl: Vec::new(),
             tty: None,
+            stat: None,
             pane: None,
             tmux_sock: None,
             screen: None,
@@ -3599,8 +3614,8 @@ fn parse_ps_with(out: &str, is_file: &dyn Fn(&str) -> bool) -> Vec<Proc> {
     procs
 }
 
-/// `pid tty etime` lines → the controlling tty (`??` means detached and stays `None`) and the
-/// start, `now` less the elapsed time.
+/// `pid tty etime stat` lines → the controlling tty (`??` means detached and stays `None`), the
+/// start, `now` less the elapsed time, and the process state (#s335).
 fn apply_tty(procs: &mut [Proc], out: &str, now: u64) {
     for line in out.lines() {
         let mut it = line.split_whitespace();
@@ -3620,7 +3635,31 @@ fn apply_tty(procs: &mut [Proc], out: &str, now: u64) {
             .next()
             .and_then(crate::state::parse_etime)
             .map(|e| now.saturating_sub(e));
+        p.stat = it.next().map(str::to_string);
     }
+}
+
+/// Whether a process in this state (`ps -o stat=`) holds its terminal's foreground (#s335): `+`
+/// says it is in the terminal's foreground process group, and `T` that it is stopped (Ctrl-Z),
+/// on macOS and Linux alike. Measured in a tmux pane on aries-black (Claude Code 2.1.314): `S+`
+/// at its prompt and while a Bash call runs (the call runs in a session of its own, with no
+/// tty), `T` once suspended (the pane's shell then reads `Ss+`), `S+` again after `fg`; codex-cli
+/// 0.166.0 reads the same.
+pub fn holds_foreground(stat: &str) -> bool {
+    stat.contains('+') && !stat.contains('T')
+}
+
+/// A tmux pane's process that does not hold the pane's foreground, as the last scan read it
+/// (#s335): suspended with Ctrl-Z, or put in the background, so what is typed reaches the
+/// shell, or whatever runs there now. A state not read refuses nothing here; the send reads it
+/// again before typing (`control::tmux_pane_held`). herdr reads its pane's screen instead.
+fn tmux_pane_not_held(procs: &[Proc], pid: u32, addr: &PaneAddr) -> bool {
+    matches!(addr, PaneAddr::Tmux { .. })
+        && procs
+            .iter()
+            .find(|p| p.pid == pid)
+            .and_then(|p| p.stat.as_deref())
+            .is_some_and(|stat| !holds_foreground(stat))
 }
 
 /// `ps eww` lines (command + environment, space-separated) → `TMUX_PANE` / `STY` /
@@ -9500,6 +9539,71 @@ n/Users/x/proj
             "1 0 systemd\n50 1 tmux: server\n61 50 bash\n700 61 claude\n",
         );
         assert_eq!(Terminal::of(&procs[0]).kind(), "tmux");
+    }
+
+    /// #s335: a `claude` in a tmux pane suspended with Ctrl-Z (`T`) or put in the background (no
+    /// `+`) leaves the pane to its shell, which would run a send as a command. Its session is not
+    /// offered the send, and a send is refused; in the foreground (`S+`) it sends, and a state the
+    /// scan did not read refuses nothing here (the send reads it again before typing).
+    #[test]
+    fn a_tmux_session_whose_agent_left_the_foreground_takes_no_send() {
+        let scratch = std::env::temp_dir().join(format!("cm-tmux-fg-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let s1 = "11111111-2222-4333-8444-555555555555";
+        for (stat, sends) in [
+            (Some("S+"), true),
+            (Some("T"), false),
+            (Some("S"), false),
+            (Some("Ss+"), true),
+            (None, true),
+        ] {
+            let mut procs = parse_ps("700 claude\n");
+            apply_lsof(&mut procs, "p700\nfcwd\nn/w/harbor\n");
+            apply_env(
+                &mut procs,
+                "700 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%3\n",
+            );
+            apply_nesting(
+                &mut procs,
+                "1 0 launchd\n88 1 tmux\n61 88 zsh\n700 61 claude\n",
+            );
+            let line = match stat {
+                Some(stat) => format!("700 ttys022 01:00 {stat}\n"),
+                None => "700 ttys022 01:00\n".to_string(),
+            };
+            apply_tty(&mut procs, &line, 3600);
+            procs[0].native_session = Identity::Verified(s1.into());
+            let mut st = State {
+                procs,
+                ..State::default()
+            };
+            st.rows.insert(s1.into(), growth_row("/w/harbor", false));
+            idx.prove_by_growth(&mut st);
+            let mut facts = Vec::new();
+            idx.assemble(&st, &mut facts);
+            st.send_links = send_links_of(&facts);
+            let snapshot = idx.assemble(&st, &mut Vec::new());
+            assert_eq!(st.send_links[s1].pid, Some(700), "{stat:?}");
+            assert!(st.send_links[s1].confirmed, "{stat:?}");
+            let injectable = registry_row(&snapshot, s1).get("injectable").is_some();
+            if sends {
+                assert!(
+                    matches!(pane_send_target(&st, s1), Ok((700, PaneAddr::Tmux { .. }))),
+                    "{stat:?}"
+                );
+                assert!(injectable, "{stat:?}");
+            } else {
+                assert_eq!(
+                    pane_send_target(&st, s1),
+                    Err(SendRefusal::PaneNotForeground),
+                    "{stat:?}"
+                );
+                assert!(!injectable, "{stat:?}");
+            }
+        }
+        std::fs::remove_dir_all(scratch).unwrap();
     }
 
     /// The review of #s258: a `claude` in a herdr pane is suspended with Ctrl-Z and the pane's shell
