@@ -9114,46 +9114,60 @@ n/Users/x/proj
         std::fs::remove_dir_all(scratch).unwrap();
     }
 
-    /// The review of #s258: the same pane with the foreground Codex started as `codex -p work`.
-    /// Codex's `-p` is `--profile`, not a one-shot (that is `codex exec`), so it is still the
-    /// pane's sibling and the suspended Claude's session takes no send.
+    /// The review of #s258: the same pane with the foreground Codex started as `codex -p work`,
+    /// and as a `codex exec` the pane's own shell runs. Codex's `-p` is `--profile`, not a
+    /// one-shot (#s326 reads it so); `codex exec` is one by its argv, and it still counts, since
+    /// only a Claude process is passed over as a one-shot. Either is the pane's sibling, and the
+    /// suspended Claude's session takes no send.
     #[test]
     fn a_foreground_profile_codex_beside_a_suspended_claude_takes_no_send() {
-        let scratch = std::env::temp_dir().join(format!("cm-fg-codex-p-{}", std::process::id()));
-        std::fs::create_dir_all(&scratch).unwrap();
-        let _env = StateEnv::set(scratch.join("state"));
-        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
-        let s1 = "11111111-2222-4333-8444-555555555555";
-        let mut procs = parse_ps("700 claude\n900 codex -p work\n");
-        apply_lsof(
-            &mut procs,
-            "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
-        );
-        apply_env(
-            &mut procs,
-            "700 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n\
-             900 codex -p work HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n",
-        );
-        apply_nesting(
-            &mut procs,
-            "1 0 launchd\n60 1 herdr\n61 60 zsh\n700 61 claude\n900 61 codex\n",
-        );
-        assert!(one_shot(&procs[1]), "the argv alone still reads as `-p`");
-        procs[0].native_session = Identity::Verified(s1.into());
-        let mut st = State {
-            procs,
-            ..State::default()
-        };
-        st.rows.insert(s1.into(), growth_row("/w/harbor", false));
-        idx.prove_by_growth(&mut st);
-        let mut facts = Vec::new();
-        idx.assemble(&st, &mut facts);
-        st.send_links = send_links_of(&facts);
-        let snapshot = idx.assemble(&st, &mut Vec::new());
-        assert_eq!(st.send_links[s1].pid, Some(700));
-        assert_eq!(pane_send_target(&st, s1), Err(SendRefusal::HerdrPaneShared));
-        assert!(registry_row(&snapshot, s1).get("injectable").is_none());
-        std::fs::remove_dir_all(scratch).unwrap();
+        for (argv, headless) in [("codex -p work", false), ("codex exec fix", true)] {
+            let scratch =
+                std::env::temp_dir().join(format!("cm-fg-codex-p-{}", std::process::id()));
+            std::fs::create_dir_all(&scratch).unwrap();
+            let _env = StateEnv::set(scratch.join("state"));
+            let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+            let s1 = "11111111-2222-4333-8444-555555555555";
+            let mut procs = parse_ps(&format!("700 claude\n900 {argv}\n"));
+            apply_lsof(
+                &mut procs,
+                "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+            );
+            apply_env(
+                &mut procs,
+                &format!(
+                    "700 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n\
+                     900 {argv} HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n"
+                ),
+            );
+            apply_nesting(
+                &mut procs,
+                "1 0 launchd\n60 1 herdr\n61 60 zsh\n700 61 claude\n900 61 codex\n",
+            );
+            assert_eq!(one_shot(&procs[1]), headless, "{argv}");
+            procs[0].native_session = Identity::Verified(s1.into());
+            let mut st = State {
+                procs,
+                ..State::default()
+            };
+            st.rows.insert(s1.into(), growth_row("/w/harbor", false));
+            idx.prove_by_growth(&mut st);
+            let mut facts = Vec::new();
+            idx.assemble(&st, &mut facts);
+            st.send_links = send_links_of(&facts);
+            let snapshot = idx.assemble(&st, &mut Vec::new());
+            assert_eq!(st.send_links[s1].pid, Some(700), "{argv}");
+            assert_eq!(
+                pane_send_target(&st, s1),
+                Err(SendRefusal::HerdrPaneShared),
+                "{argv}"
+            );
+            assert!(
+                registry_row(&snapshot, s1).get("injectable").is_none(),
+                "{argv}"
+            );
+            std::fs::remove_dir_all(scratch).unwrap();
+        }
     }
 
     /// `ProcTable::holding` is `holds_transcript` looked up by path: every agent process holding a
