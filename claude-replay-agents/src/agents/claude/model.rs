@@ -1004,6 +1004,27 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // finer than the text, is a RENDER question for the owner, queued with the record
             // count and client version, never decided here.
             "streamCutCause",
+            // #s328 (client 2.1.314): a string on the same synthetic API-error record
+            // (`isApiErrorMessage`, model "<synthetic>", zero usage, `error` beside it), the
+            // error's typed kind. Met on 3 records on aries-black, measured 2026-10-30, all
+            // "connection_failed" with `error` "server_error", the text "API Error: Connection
+            // dropped (ECONNRESET). …"; 13 older error records in one of those sessions (2.1.299 to
+            // 2.1.312) carry none. The client's SDK schema calls it the "Typed kind of the API
+            // error when is_api_error_message is true, for consumers that key on the cause instead
+            // of the message text (the text stays the fallback and may change)", one of 34 values
+            // in 2.1.314, an unknown value to be treated as absent. Unread: the record is already
+            // read by its flag and folds to ONE Failure note whose text names the same cause, as
+            // `streamCutCause` above. REVISIT: (1) the first value naming something a PERSON must
+            // act on (usage_limit_reached, stored_login_refused, model_requires_usage_credits,
+            // long_context_credits_required, consent_unanswered, unattended_start_limit,
+            // unattended_start_unconfirmed, the gateway sign-in values): every API-error death
+            // reads alike today (`last_failure`, the Blocked bucket), so telling a transient cause
+            // (connection_failed, computer_slept, stream_idle_timeout) from one that needs the
+            // person is a RENDER question for the owner, queued with the record count and client
+            // version, never decided here; (2) the key on an assistant record NOT flagged
+            // `isApiErrorMessage`, which the page would draw as prose; (3) a record whose text no
+            // longer names the cause the key names, where the Failure note should read the key.
+            "apiError",
             // #s305 (client 2.1.311): the boolean `true` on an assistant record the person cut off
             // with Esc while it streamed. An ordinary API answer (its own requestId, a real model,
             // no `isApiErrorMessage`), `stop_reason` null, one text block, and the very next record
@@ -8036,6 +8057,39 @@ mod tests {
                 .iter()
                 .any(|b| matches!(b, Block::AssistantText(_) | Block::AssistantMessage { .. })),
             "the cut is not the assistant speaking: {blocks:?}"
+        );
+    }
+
+    /// #s328: 2.1.314's typed kind on an API error record is known, not reported while the sweep
+    /// asks, and the record still folds to ONE Failure note, never the assistant's prose. Removing
+    /// the key from the assistant arm of the census turns this red.
+    #[test]
+    fn an_api_error_s_typed_kind_is_known() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.314","sessionId":"s-s328","uuid":"u1","message":{"role":"user","content":"go"}}
+{"type":"assistant","version":"2.1.314","sessionId":"s-s328","uuid":"a1","isApiErrorMessage":true,"error":"server_error","apiError":"connection_failed","message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: Connection dropped (ECONNRESET). Check the proxy set in https_proxy, then try again."}]}}
+"##;
+        let messages = tokenize(jsonl.lines());
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s328"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+        let failures = messages
+            .iter()
+            .filter(|m| {
+                matches!(m, Message::SystemNote { text, kind: NoteKind::Failure }
+                    if text.contains("Connection dropped"))
+            })
+            .count();
+        assert_eq!(failures, 1, "one Failure note: {messages:?}");
+        let blocks = replay(&messages, &mut Vec::new(), &CLAUDE_SHAPING);
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, Block::AssistantText(_) | Block::AssistantMessage { .. })),
+            "the error is not the assistant speaking: {blocks:?}"
         );
     }
 
