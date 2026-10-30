@@ -612,6 +612,45 @@ fn tmux_capture<'a>(sock: Option<&'a str>, pane: &'a str) -> Vec<&'a str> {
     args
 }
 
+/// What a send says when a tmux pane stays in a mode it could not leave (#s339).
+const PANE_IN_MODE: &str = "the tmux pane is in a mode (copy mode, when scrolled back) that could not be left, so nothing was typed: leave it in the pane, then send again";
+
+/// Return a tmux pane the reader scrolled back to its agent before typing (#s339). In copy mode
+/// (measured on tmux 3.7c) a paste still reaches the agent's input, but the Enter only leaves
+/// the mode, so nothing was submitted and the send said it was. `copy-mode -q` leaves any mode
+/// (outside one it does nothing), as a person at the pane would before typing; the mode is read
+/// again after, and a pane still in one (a tmux without `-q`), or one that cannot be read, holds.
+/// The send reads it once more with the screen before its Enter (`tmux_send`'s `shows`), since a
+/// reader may scroll back while it waits for the paste to show. `read` runs a command for its
+/// output, as for [`tmux_before_typing`]; `quit` leaves the mode.
+fn leave_pane_mode(
+    sock: Option<&str>,
+    pane: &str,
+    read: impl Fn(&[&str]) -> String,
+    quit: impl FnOnce() -> Result<()>,
+) -> Result<(), String> {
+    match pane_modes(sock, pane, &read) {
+        Some(0) => return Ok(()),
+        Some(_) => {}
+        None => return Err("the tmux pane could not be read, so nothing was typed".into()),
+    }
+    if quit().is_err() || pane_modes(sock, pane, &read) != Some(0) {
+        return Err(PANE_IN_MODE.into());
+    }
+    Ok(())
+}
+
+/// How many modes a tmux pane is in (`#{pane_in_mode}`, a count: a chooser can be open over copy
+/// mode), or `None` when it cannot be read.
+fn pane_modes(sock: Option<&str>, pane: &str, read: &impl Fn(&[&str]) -> String) -> Option<u32> {
+    let mut args = vec!["tmux"];
+    if let Some(sock) = sock {
+        args.extend(["-L", sock]);
+    }
+    args.extend(["display-message", "-p", "-t", pane, "#{pane_in_mode}"]);
+    read(&args).trim().parse().ok()
+}
+
 /// What the agent's input holds on a tmux pane's screen (#s338): Claude's box as herdr's send
 /// reads it, Codex's composer as [`codex_input_line`] does.
 fn tmux_input_line(agent: claude_replay_core::Agent, screen: &str) -> InputLine {
@@ -1805,8 +1844,25 @@ fn send_tmux_checked(
             if let Err(why) = tmux_before_typing(&target, read) {
                 return Ok(json!({"ok": false, "code": "held", "error": why}));
             }
-            let shows =
-                || tmux_input_line(target.agent, &read(&tmux_capture(sock.as_deref(), pane)));
+            // #s339: a pane the reader scrolled back goes back to its agent first.
+            let quit = || {
+                tmux_cmd(
+                    sock.as_deref(),
+                    &["copy-mode", "-q", "-t", pane],
+                    "copy-mode -q",
+                )
+            };
+            if let Err(why) = leave_pane_mode(sock.as_deref(), pane, read, quit) {
+                return Ok(json!({"ok": false, "code": "held", "error": why}));
+            }
+            // A pane scrolled back while the paste is awaited would take the Enter as leaving
+            // the mode (#s339): no input counts as shown there.
+            let shows = || match pane_modes(sock.as_deref(), pane, &read) {
+                Some(0) => {
+                    tmux_input_line(target.agent, &read(&tmux_capture(sock.as_deref(), pane)))
+                }
+                _ => InputLine::Missing,
+            };
             match tmux_send(sock.as_deref(), pane, prompt, shows) {
                 Ok(()) => json!({"ok": true, "sid": sid, "via": "tmux"}),
                 Err(HerdrSendError::Held(why)) => {
@@ -3245,6 +3301,74 @@ mod tests {
             matches!(outcome, Err(HerdrSendError::Failed(_))) && !entered,
             "the paste failed"
         );
+    }
+
+    /// #s339: a pane the reader scrolled back (copy mode) goes back to its agent before the send
+    /// types, since there the Enter only leaves the mode (measured); a pane that stays in the mode,
+    /// or cannot be read, holds. One outside a mode is left alone.
+    #[test]
+    fn a_tmux_send_leaves_copy_mode_before_typing() {
+        use std::cell::{Cell, RefCell};
+        let run = |modes: &[&str], quits: bool| {
+            let modes = RefCell::new(
+                modes
+                    .iter()
+                    .map(|m| m.to_string())
+                    .collect::<std::collections::VecDeque<_>>(),
+            );
+            let asked = RefCell::new(Vec::new());
+            let quit = Cell::new(false);
+            let outcome = leave_pane_mode(
+                Some("work"),
+                "%3",
+                |args| {
+                    asked.borrow_mut().push(args.join(" "));
+                    modes.borrow_mut().pop_front().unwrap_or_default()
+                },
+                || {
+                    quit.set(true);
+                    if quits {
+                        Ok(())
+                    } else {
+                        Err(anyhow::anyhow!("unknown flag -q"))
+                    }
+                },
+            );
+            (outcome, quit.get(), asked.into_inner())
+        };
+        let (outcome, quit, asked) = run(&["0\n"], true);
+        assert_eq!(
+            (outcome, quit),
+            (Ok(()), false),
+            "not in a mode: left alone"
+        );
+        assert_eq!(
+            asked,
+            ["tmux -L work display-message -p -t %3 #{pane_in_mode}"]
+        );
+        let (outcome, quit, _) = run(&["1\n", "0\n"], true);
+        assert_eq!(
+            (outcome, quit),
+            (Ok(()), true),
+            "copy mode left, then typed"
+        );
+        // The review of 43344643: the value is a count, so a chooser over copy mode reads 2.
+        let (outcome, quit, _) = run(&["2\n", "0\n"], true);
+        assert_eq!(
+            (outcome, quit),
+            (Ok(()), true),
+            "two modes left, then typed"
+        );
+        let (outcome, quit, _) = run(&["1\n", "1\n"], true);
+        assert_eq!(
+            (outcome, quit),
+            (Err(PANE_IN_MODE.into()), true),
+            "still in the mode"
+        );
+        let (outcome, _, _) = run(&["1\n"], false);
+        assert_eq!(outcome, Err(PANE_IN_MODE.into()), "a tmux without -q");
+        let (outcome, quit, _) = run(&[""], true);
+        assert!(outcome.is_err() && !quit, "an unreadable pane");
     }
 
     /// #s247: a helper the agent leaves behind holding stderr open must not hold the reply: the

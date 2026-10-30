@@ -434,7 +434,12 @@ holds it, and so does a draft the reader left; after the paste it presses Enter 
 shows a draft (whether all of it is ours is not read back, as with herdr; read for about two
 seconds), else it holds with the text left there. A Codex `›` line going on with a number and a dot
 is an approval's option only where it is drawn in reverse video or "Press enter to confirm" follows
-(both measured), so a prompt that opens with a numbered list is still a draft. The
+(both measured), so a prompt that opens with a numbered list is still a draft. A pane the reader
+scrolled back is returned to its agent before the paste (#s339, measured on tmux 3.7c): in copy
+mode a paste still reaches the input but the Enter only leaves the mode, so nothing was submitted
+and the send said it was; `copy-mode -q` leaves any mode (outside one it does nothing), and a pane
+still in a mode after it, or one whose mode cannot be read, holds; the mode is read again with the
+screen before the Enter, so a reader who scrolls back meanwhile holds it too. The
 send, a grant and a dialog read always rescan the processes rather than use the last tick's, so
 each pays a full probe (the bounded `ps` and `lsof` runs and the record reads) for current evidence.
 **A one-shot (`claude -p`/`--print`) is headless and pairs by TIME** (#s50): knack's coordinator
