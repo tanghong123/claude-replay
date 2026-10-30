@@ -2371,6 +2371,76 @@ pub fn until_preview_parked(tab: &headless_chrome::Tab) {
     );
 }
 
+/// The tab a page opened (`window.open`) once its address holds `want`, within `timeout`
+/// (#s343). headless_chrome registers a new tab from Chrome's `Target.targetCreated` in its own
+/// event loop, and that loop stops for good when a tab's setup calls fail (each waits up to its
+/// 30 s idle timeout, so a renderer slowed by a full suite can do it) or when Chrome is silent for
+/// 30 s: after that `get_tabs()` is a stale list and polling it cannot find the tab, which read as
+/// "no tab at …" once in a full suite while the case passed alone. So every second the page
+/// targets Chrome itself holds are read, and one holding `want` that the list lacks is registered
+/// (`register_missing_tabs`, which attaches it). On a timeout it says what Chrome had, or that
+/// the connection had closed, so the next miss names its cause.
+pub fn opened_tab(
+    browser: &headless_chrome::Browser,
+    want: &str,
+    timeout: Duration,
+) -> std::sync::Arc<headless_chrome::Tab> {
+    use headless_chrome::protocol::cdp::Target::GetTargets;
+    let deadline = Instant::now() + timeout;
+    let mut checked = Instant::now();
+    loop {
+        let found = browser
+            .get_tabs()
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|t| t.get_url().contains(want))
+            .cloned();
+        if let Some(tab) = found {
+            return tab;
+        }
+        // Chrome's own targets, asked through a tab already open (the browser's own call is
+        // private to headless_chrome).
+        let any_tab = browser.get_tabs().lock().unwrap().first().cloned();
+        let chrome_has = || match any_tab
+            .as_ref()
+            .map(|t| t.call_method(GetTargets { filter: None }))
+        {
+            None => Err("no tab to ask through".to_string()),
+            Some(Err(e)) => Err(format!("{e:#}")),
+            Some(Ok(targets)) => Ok(targets
+                .target_infos
+                .into_iter()
+                .filter(|t| t.Type == "page")
+                .map(|t| (t.url, t.attached))
+                .collect::<Vec<_>>()),
+        };
+        if checked.elapsed() >= Duration::from_secs(1) {
+            checked = Instant::now();
+            if let Ok(pages) = chrome_has() {
+                if pages.iter().any(|(url, _)| url.contains(want)) {
+                    eprintln!("opened_tab: Chrome has a page at {want} the tab list lacks; registering it");
+                    browser.register_missing_tabs();
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            let listed: Vec<String> = browser
+                .get_tabs()
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|t| t.get_url())
+                .collect();
+            panic!(
+                "no tab at {want} within {timeout:?}: the tab list has {listed:?}; Chrome's pages (url, attached): {:?}",
+                chrome_has()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 /// Poll a boolean JS predicate until true, or PANIC with `what`, a diagnostic and the
 /// renderer's verdict — never a vacuous return. `diag` is a JS expression evaluated on timeout
 /// (a string).

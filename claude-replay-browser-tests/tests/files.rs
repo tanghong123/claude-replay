@@ -1029,23 +1029,7 @@ fn an_image_opens_in_a_tab_of_its_own_from_the_pane() {
         Duration::from_secs(30),
         "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
     );
-    let opened = |want: &str| -> std::sync::Arc<headless_chrome::Tab> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        loop {
-            let found = browser
-                .get_tabs()
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|t| t.get_url().contains(want))
-                .cloned();
-            if let Some(t) = found {
-                return t;
-            }
-            assert!(std::time::Instant::now() < deadline, "no tab at {want}");
-            std::thread::sleep(Duration::from_millis(200));
-        }
-    };
+    let opened = |want: &str| harness::opened_tab(&browser, want, Duration::from_secs(20));
     let whole = "(function(){ var s = document.getElementById('stage'); var i = s && s.querySelector('img'); return !!i && !s.classList.contains('unavailable') && i.complete && i.naturalWidth === 1200 && i.getBoundingClientRect().width > 100; })()";
     let what = "(function(){ var s = document.getElementById('stage'); return location.href + ' | ' + (s ? s.className + ' | ' + s.innerText.slice(0, 200) + ' | ' + ((s.querySelector('img') || {}).naturalWidth) : 'no stage'); })()";
 
