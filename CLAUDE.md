@@ -387,11 +387,13 @@ again before typing; a `claude` started through a pty wrapper in tmux inherits i
 `TMUX_PANE`); a tmux pane and background resume keep the one-live-session rule. That check holds
 only while one agent reads the pane: a `claude` an agent starts from its Bash through a pty wrapper
 inherits the herdr pane as well, and herdr's record of the pane then names the child's session. So
-a herdr pane whose process runs below another agent process, or that holds another interactive
-agent process that is a `claude` or runs below no other agent (a `codex` the pane's shell runs
-while its `claude` is suspended; herdr's record still names the suspended session), is sent to for
-neither session, in any directory (`herdr_pane_shared`). A `codex exec` or MCP Codex the agent
-itself starts does not count: only a `claude` rewrites herdr's record of the pane. The
+a herdr pane whose process runs below another agent process, or that holds another agent process
+that is a `claude` or runs below no other agent (a `codex` the pane's shell runs while its `claude`
+is suspended; herdr's record still names the suspended session), is sent to for neither session, in
+any directory (`herdr_pane_shared`). A `codex exec` or MCP Codex the agent itself starts does not
+count: only a `claude` rewrites herdr's record of the pane. Nor does a `claude -p` worker, which
+reads no pane (#s332); but a `codex exec` the pane's own shell runs does, one-shot or not, since
+what is typed waits in the terminal for that shell to run as a command. The
 send, a grant and a dialog read always rescan the processes rather than use the last tick's, so
 each pays a full probe (the bounded `ps` and `lsof` runs and the record reads) for current evidence.
 **A one-shot (`claude -p`/`--print`) is headless and pairs by TIME** (#s50): knack's coordinator

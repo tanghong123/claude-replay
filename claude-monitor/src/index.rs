@@ -617,17 +617,19 @@ fn pane_send_beside_siblings(procs: &[Proc], pid: u32, sid: &str, addr: &PaneAdd
 /// through a pty wrapper (`script -q /dev/null claude`): it inherits the pane's `HERDR_PANE_ID` and
 /// socket, so both processes read as that pane, and herdr's record of the pane then names the
 /// child's session, which `herdr agent get` answers before typing. True when `pid` runs below
-/// another agent process (`Proc::under_agent`), or another interactive agent process (not a
-/// helper or a `claude -p` one-shot, which read no pane) is placed in the same pane of the same
-/// server — in any directory — that is a Claude process or runs below no other agent. A child `claude` counts:
+/// another agent process (`Proc::under_agent`), or another agent process (not a helper or a
+/// `claude -p` one-shot) is placed in the same pane of the same server — in any directory — that
+/// is a Claude process or runs below no other agent. A child `claude` counts:
 /// herdr's hook is installed for Claude alone, so only it rewrites herdr's record of the pane. A
 /// `codex exec` or a Codex MCP server the outer agent's Bash starts inherits the pane as well but
 /// rewrites nothing, and must not take the outer session's send away while it runs. A Codex the
 /// pane's own shell runs (a `claude` suspended with Ctrl-Z, then `codex` in the foreground) does
 /// count: herdr's record still names the suspended session, so the check before typing passes and
 /// the text would reach the Codex. An agent kind the monitor cannot place (an extra pattern) counts
-/// too. Only a Claude process is passed over as a one-shot: Codex's `-p` is `--profile` (its
-/// headless mode is `codex exec`), so a foreground `codex -p work` is interactive and counts.
+/// too. Only a Claude process is passed over as a one-shot: a `claude -p` worker an agent starts
+/// reads no pane (#s53, #s332). A `codex exec` the pane's own shell runs in the foreground counts:
+/// it reads no pane either, but what is typed waits in the terminal for the shell behind it, which
+/// runs it as a command once the exec ends (a `codex -p <profile>` is no one-shot at all, #s326).
 /// Never true for a tmux pane, which keeps the one-live-session rule.
 fn herdr_pane_shared(procs: &[Proc], pid: u32, addr: &PaneAddr) -> bool {
     if !matches!(addr, PaneAddr::Herdr { .. }) {
@@ -8998,6 +9000,53 @@ n/Users/x/proj
         );
         assert!(!procs[0].under_agent && procs[1].under_agent);
         assert_eq!(procs[1].tty, None, "a Bash tool's child has no terminal");
+        procs[0].native_session = Identity::Verified(outer.into());
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        st.rows.insert(outer.into(), growth_row("/w/harbor", false));
+        idx.prove_by_growth(&mut st);
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        st.send_links = send_links_of(&facts);
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert!(matches!(
+            pane_send_target(&st, outer),
+            Ok((700, PaneAddr::Herdr { .. }))
+        ));
+        assert_eq!(registry_row(&snapshot, outer)["injectable"], true);
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// #s332: a coordinator `claude` in a herdr pane whose Bash starts `claude -p` workers (#s53).
+    /// A worker is a Claude process, so the `serves` leg would count it although it runs below the
+    /// coordinator; it is passed over as a one-shot, which reads no pane, and the coordinator keeps
+    /// its send and its compose box while the workers run.
+    #[test]
+    fn a_claude_one_shot_worker_in_a_herdr_pane_leaves_the_coordinator_its_send() {
+        let scratch =
+            std::env::temp_dir().join(format!("cm-oneshot-worker-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let outer = "11111111-2222-4333-8444-555555555555";
+        let mut procs = parse_ps("700 claude\n900 claude -p fix-it\n");
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+        );
+        apply_env(
+            &mut procs,
+            "700 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n\
+             900 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n60 1 herdr\n61 60 zsh\n700 61 claude\n800 700 zsh\n900 800 claude\n",
+        );
+        assert!(!procs[0].under_agent && procs[1].under_agent);
+        assert!(one_shot(&procs[1]) && serves(&procs[1], Agent::CLAUDE));
         procs[0].native_session = Identity::Verified(outer.into());
         let mut st = State {
             procs,
