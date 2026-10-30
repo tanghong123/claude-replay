@@ -1203,5 +1203,14 @@ mod answer_tests {
         );
         after.push(&serde_json::json!({"type": "turn_context", "payload": {"model": "x"}}));
         assert_eq!(after.answer, None, "cleared on every push");
+        let mut unnamed = CodexMetricsAcc::default();
+        unnamed.push(&serde_json::json!({"type": "session_meta", "payload": {
+            "id": "s", "model_provider": ""}}));
+        unnamed.push(&reading("2026-10-30T10:00:03Z", 10, 10));
+        assert_eq!(
+            unnamed.answer.unwrap().provider,
+            None,
+            "an empty name is none"
+        );
     }
 }

@@ -310,14 +310,13 @@ impl MetricsAcc {
     }
 
     /// Fold the line into [`answers`](Self::answers): an assistant line is a part of the answer
-    /// its `message.id` names, a user line (a prompt or a tool result) a request. A sub-agent's
-    /// line in its parent's file (`isSidechain`, written by old clients) belongs to another
-    /// session's answers and is not read; a `<synthetic>` record is the client's own (an API
-    /// error it reports), not an answer.
+    /// its `message.id` names, and every user line a request (a prompt, a tool result, or a meta
+    /// record the client writes with one). A `<synthetic>` record is the client's own (an API
+    /// error it reports), not an answer. A sub-agent's lines are read like any: its own file
+    /// marks every one `isSidechain` (no parent file on this box held such lines among its own,
+    /// 0 of 109, 2026-10-30). The Qoder family bills in credits with its token counts zeroed, so
+    /// an answer whose usage carries `credits` has no output count rather than a false 0.
     fn time_answer(&mut self, v: &Value) {
-        if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
-            return;
-        }
         let ts = v
             .get("timestamp")
             .and_then(Value::as_str)
@@ -332,13 +331,21 @@ impl MetricsAcc {
                 id: id.to_string(),
                 model: model.to_string(),
                 output_tokens: v
-                    .pointer("/message/usage/output_tokens")
+                    .pointer("/message/usage")
+                    .filter(|u| u.get("credits").is_none())
+                    .and_then(|u| u.get("output_tokens"))
                     .and_then(Value::as_u64),
             },
             (Some("user"), _) => AnswerLine::Request,
             _ => AnswerLine::Other,
         };
         self.answers.line(ts, line);
+    }
+
+    /// A line the consumer could not read (the seam's `malformed_line`): it may have been the
+    /// request the next answer answers, so that answer's `sent` is not known.
+    pub(crate) fn malformed_line(&mut self) {
+        self.answers.unread();
     }
 
     /// The seam's `answer`: the answer the most recent push ended.
@@ -1509,7 +1516,7 @@ mod answer_tests {
 
     /// #s341: the answer a push ended is handed out on that push only, and the session's last
     /// answer is open, never ended, until another begins; a `<synthetic>` record (the client's own
-    /// API error) and a sub-agent's line in its parent's file are no answers and end none.
+    /// API error) is no answer and ends none; a part with no time keeps the last time seen.
     #[test]
     fn an_answer_ends_only_when_another_begins() {
         let mut acc = MetricsAcc::default();
@@ -1520,20 +1527,74 @@ mod answer_tests {
         let mut synthetic = part("msg_synth", 0, "2026-10-30T10:00:02Z");
         synthetic["message"]["model"] = "<synthetic>".into();
         acc.push(&synthetic);
-        let mut sidechain = part("msg_01S", 5, "2026-10-30T10:00:03Z");
-        sidechain["isSidechain"] = true.into();
-        acc.push(&sidechain);
+        let mut untimed = part("msg_01A", 12, "");
+        untimed.as_object_mut().unwrap().remove("timestamp");
+        acc.push(&untimed);
         assert_eq!(acc.answer(), None);
-        assert_eq!(acc.open_answer().map(|a| a.lines), Some(1));
+        let a = acc.open_answer().unwrap();
+        assert_eq!((a.lines, a.output_tokens), (2, Some(12)));
+        assert_eq!(
+            a.last,
+            secs("2026-10-30T10:00:01Z"),
+            "an untimed part keeps the last time"
+        );
         acc.push(&part("msg_01B", 10, "2026-10-30T10:00:04Z"));
         assert_eq!(acc.answer().map(|a| a.id).as_deref(), Some("msg_01A"));
         let b = acc.open_answer().unwrap();
         assert_eq!(b.sent, secs("2026-10-30T10:00:00Z"), "the latest request");
-        acc.push(&user("2026-10-30T10:00:05Z"));
+        acc.push(&part("msg_01B", 10, "2026-10-30T10:00:05Z"));
         assert_eq!(
             acc.answer(),
             None,
             "handed out once, on the push that ended it"
+        );
+    }
+
+    /// #s341: a sub-agent's own file marks every line `isSidechain`, and its answers are timed
+    /// like any (the review of #s341: skipping such lines lost every sub-agent's answers).
+    #[test]
+    fn a_sub_agent_s_own_file_is_timed_like_any() {
+        let side = |mut v: Value| {
+            v["isSidechain"] = true.into();
+            v
+        };
+        let got = answers(
+            &mut MetricsAcc::default(),
+            &[
+                side(user("2026-10-30T10:00:00Z")),
+                side(part("msg_01A", 300, "2026-10-30T10:00:03Z")),
+                side(part("msg_01A", 300, "2026-10-30T10:00:04Z")),
+            ],
+        );
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].sent, secs("2026-10-30T10:00:00Z"));
+        assert_eq!(got[0].lines, 2);
+    }
+
+    /// #s341: the Qoder family bills in credits with its token counts zeroed (see `push`), so
+    /// such an answer has no output count, never a false 0.
+    #[test]
+    fn an_answer_billed_in_credits_has_no_output_count() {
+        let mut credited = part("msg_01Q", 0, "2026-10-30T10:00:01Z");
+        credited["message"]["usage"]["credits"] = 2.5.into();
+        let got = answers(&mut MetricsAcc::default(), &[credited]);
+        assert_eq!(got[0].output_tokens, None);
+    }
+
+    /// #s341: a line the consumer could not read may have been the request the next answer
+    /// answers, so that answer's request time is not known; the next request is read again.
+    #[test]
+    fn an_unread_line_leaves_the_next_request_time_unknown() {
+        let mut acc = MetricsAcc::default();
+        acc.push(&user("2026-10-30T10:00:00Z"));
+        acc.malformed_line();
+        acc.push(&part("msg_01A", 10, "2026-10-30T10:00:02Z"));
+        assert_eq!(acc.open_answer().unwrap().sent, None);
+        acc.push(&user("2026-10-30T10:00:03Z"));
+        acc.push(&part("msg_01B", 10, "2026-10-30T10:00:04Z"));
+        assert_eq!(
+            acc.open_answer().unwrap().sent,
+            secs("2026-10-30T10:00:03Z")
         );
     }
 

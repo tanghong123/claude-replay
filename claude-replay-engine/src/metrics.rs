@@ -508,6 +508,13 @@ impl AnswerClock {
         }
     }
 
+    /// A line that could not be read: it may have been a request, so the next answer's `sent`
+    /// is not known.
+    pub fn unread(&mut self) {
+        self.ended = None;
+        self.prev = None;
+    }
+
     /// The answer the latest [`line`](Self::line) ended.
     pub fn ended(&self) -> Option<&AnswerTiming> {
         self.ended.as_ref()

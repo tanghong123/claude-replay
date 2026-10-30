@@ -30,6 +30,10 @@ impl MetricsAccumulator for agents::claude::metrics::MetricsAcc {
     fn push(&mut self, v: &Value) {
         agents::claude::metrics::MetricsAcc::push(self, v)
     }
+    /// Counts nothing; an unread line leaves the next answer's request time unknown (#s341).
+    fn malformed_line(&mut self) {
+        agents::claude::metrics::MetricsAcc::malformed_line(self)
+    }
     /// The class of a request to a model priced by prompt length (#s56).
     fn request_pricing(&self) -> Option<claude_replay_engine::seam::RequestPricing> {
         agents::claude::metrics::MetricsAcc::request_pricing(self)
