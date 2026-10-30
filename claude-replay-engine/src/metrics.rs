@@ -367,6 +367,158 @@ pub enum UsageKind {
     CounterReading,
 }
 
+/// One request to a model — one ANSWER — timed from the transcript (#s341), for a consumer that
+/// measures how fast a model service writes (agent-metrics' generation speed). Handed out by
+/// [`MetricsAccumulator::answer`] once the answer has ended and by
+/// [`MetricsAccumulator::open_answer`] while it may still grow.
+///
+/// Every time is epoch seconds WITH the transcript's sub-second part (a two-second answer needs
+/// it), and `None` where the transcript does not tell it — never a guess.
+///
+/// **Keyed by `id`.** The same answer can be handed out more than once: as `open_answer` at the
+/// end of what was read and later as `answer` once it ended, or again after a consumer re-reads a
+/// transcript. A consumer keeps one record per `id`, the one with the latest `last`.
+///
+/// [`MetricsAccumulator::answer`]: crate::adapter::MetricsAccumulator::answer
+/// [`MetricsAccumulator::open_answer`]: crate::adapter::MetricsAccumulator::open_answer
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AnswerTiming {
+    /// The answer's own id where the agent records one (Claude Code: `message.id`, whose prefix
+    /// names the service: `msg_01` Anthropic's API or a gateway passing its ids through,
+    /// `msg_bdrk_` Bedrock, `msg_vrtx_` Vertex). Codex names no request, so its id is the
+    /// counter reading's, as [`MetricsAccumulator::usage_id`] gives it.
+    ///
+    /// [`MetricsAccumulator::usage_id`]: crate::adapter::MetricsAccumulator::usage_id
+    pub id: String,
+    /// The model that wrote it, as the transcript names it (empty when it names none).
+    pub model: String,
+    /// The service the agent says it reached the model through, where the transcript records it
+    /// (Codex: `session_meta`'s `model_provider`). `None` for Claude Code, whose `id` names it.
+    pub provider: Option<String>,
+    /// When the request went out: the time of the latest REQUEST line before the answer's first
+    /// line (the prompt, or the tool result it answers). `None` where none was read, where that
+    /// line carried no time, or where the agent does not write the answer's parts (Codex).
+    ///
+    /// Not merely the latest timed line: Claude Code writes some records out of time order (its
+    /// attachments, its log of API calls, file history), and in 40 transcripts (2026-10-30) the
+    /// latest timed line came AFTER the answer's own first line for 15,615 of 65,759 answers of
+    /// 200 tokens or more; the latest prompt or tool result never did, and output tokens over
+    /// `last - sent` ran at 41, 73 and 104 a second at the 10th, 50th and 90th percentile.
+    pub sent: Option<f64>,
+    /// The time of the answer's first line. `None` where the agent writes no line per part
+    /// (Codex), or where the answer may have begun before a resumed fold's cursor.
+    ///
+    /// Claude Code writes a line when its content block ENDS, so this is the end of the first
+    /// block (often the whole thinking), not the first token: tokens over `last - first` overstate
+    /// the speed many times (a median of 1,394 a second, measured as above), while `last - sent`
+    /// holds.
+    pub first: Option<f64>,
+    /// The time of the answer's last line read so far.
+    pub last: Option<f64>,
+    /// How many lines carried it (with one, `first == last`).
+    pub lines: u32,
+    /// The tokens the model wrote, thinking and reasoning included: the highest count any of its
+    /// lines reported (Claude Code repeats the answer's count on each line, and a streamed one
+    /// grows). `None` when no line carried a count.
+    pub output_tokens: Option<u64>,
+}
+
+/// What one line is to the answers, as an adapter reads it, for [`AnswerClock::line`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnswerLine {
+    /// A line of the answer `id`.
+    Part {
+        id: String,
+        model: String,
+        output_tokens: Option<u64>,
+    },
+    /// A line that sends the model a request: a prompt, or a tool result.
+    Request,
+    /// Anything else.
+    Other,
+}
+
+/// Times answers from the lines an adapter pushes (#s341): the agent-neutral half of
+/// [`AnswerTiming`], embedded in an accumulator whose agent writes an answer as one or more lines
+/// sharing an id (Claude Code and the Qoder family), and carried in its
+/// [`state`](crate::adapter::MetricsAccumulator::state).
+///
+/// An answer ends when a line of ANOTHER answer arrives, never at a line of another kind:
+/// Claude Code runs a tool while the answer that called it is still being written, so a tool
+/// result sits between two lines of one answer (6,584 of 80,752 answers in 40 transcripts,
+/// 2026-10-30), and no answer's id was seen again once another had begun.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct AnswerClock {
+    /// The time of the latest request line read (`None` if it carried none): the next answer's
+    /// `sent`.
+    #[serde(default)]
+    prev: Option<f64>,
+    /// The answer whose lines are still arriving.
+    #[serde(default)]
+    open: Option<AnswerTiming>,
+    /// The fold was resumed from a state that held no clock, so the answer whose line comes
+    /// next may have begun before the cursor: its `sent` and `first` are not known.
+    #[serde(default)]
+    blind: bool,
+    /// The answer the latest line ended. Transient: never in the state.
+    #[serde(skip)]
+    ended: Option<AnswerTiming>,
+}
+
+impl AnswerClock {
+    /// A clock for a fold resumed from a state written before it existed: see `blind`.
+    pub fn resumed_blind() -> Self {
+        Self {
+            blind: true,
+            ..Self::default()
+        }
+    }
+
+    /// Fold one line: its time, and what it is to the answers.
+    pub fn line(&mut self, ts: Option<f64>, line: AnswerLine) {
+        self.ended = None;
+        match line {
+            AnswerLine::Part {
+                id,
+                model,
+                output_tokens,
+            } => match &mut self.open {
+                Some(open) if open.id == id => {
+                    open.last = ts.or(open.last);
+                    open.lines += 1;
+                    open.output_tokens = open.output_tokens.max(output_tokens);
+                }
+                _ => {
+                    let blind = std::mem::take(&mut self.blind);
+                    let started = AnswerTiming {
+                        id,
+                        model,
+                        provider: None,
+                        sent: if blind { None } else { self.prev },
+                        first: if blind { None } else { ts },
+                        last: ts,
+                        lines: 1,
+                        output_tokens,
+                    };
+                    self.ended = self.open.replace(started);
+                }
+            },
+            AnswerLine::Request => self.prev = ts,
+            AnswerLine::Other => {}
+        }
+    }
+
+    /// The answer the latest [`line`](Self::line) ended.
+    pub fn ended(&self) -> Option<&AnswerTiming> {
+        self.ended.as_ref()
+    }
+
+    /// The answer whose lines are still arriving.
+    pub fn open(&self) -> Option<&AnswerTiming> {
+        self.open.as_ref()
+    }
+}
+
 /// Billing evidence for one request. Missing evidence is never a standard-tier assertion.
 #[derive(
     Debug,

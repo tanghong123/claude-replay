@@ -43,6 +43,13 @@ impl MetricsAccumulator for agents::claude::metrics::MetricsAcc {
     fn usage_kind(&self) -> Option<claude_replay_engine::seam::UsageKind> {
         Some(claude_replay_engine::seam::UsageKind::Call)
     }
+    /// Each answer timed by its `message.id` (#s341).
+    fn answer(&self) -> Option<claude_replay_engine::seam::AnswerTiming> {
+        agents::claude::metrics::MetricsAcc::answer(self)
+    }
+    fn open_answer(&self) -> Option<claude_replay_engine::seam::AnswerTiming> {
+        agents::claude::metrics::MetricsAcc::open_answer(self)
+    }
     fn bump_extra(&mut self, key: &str, n: u64) {
         self.bump(key, n)
     }
@@ -83,6 +90,10 @@ impl MetricsAccumulator for agents::codex::metrics::CodexMetricsAcc {
     /// A reading of the cumulative counter, whose delta a rewrite can change (#316).
     fn usage_kind(&self) -> Option<claude_replay_engine::seam::UsageKind> {
         Some(claude_replay_engine::seam::UsageKind::CounterReading)
+    }
+    /// One answer per reading that moved the counter (#s341); none is ever open.
+    fn answer(&self) -> Option<claude_replay_engine::seam::AnswerTiming> {
+        self.answer.clone()
     }
     fn push(&mut self, v: &Value) {
         agents::codex::metrics::CodexMetricsAcc::push(self, v)
@@ -648,6 +659,38 @@ impl MetricsAccumulator for NoMetrics {
     fn push(&mut self, _v: &Value) {}
     fn finish(&self) -> Metrics {
         Metrics::default()
+    }
+}
+
+#[cfg(test)]
+mod answer_tests {
+    use super::*;
+
+    /// #s341: the timing reaches a consumer through the seam, as agent-metrics drives it: the
+    /// adapter's own accumulator, `answer` after each push and `open_answer` at the end.
+    #[test]
+    fn each_adapter_hands_out_its_answers_through_the_seam() {
+        let line = |s: &str| serde_json::from_str::<Value>(s).unwrap();
+        let mut acc = ClaudeAdapter.metrics_acc();
+        acc.push(&line(
+            r#"{"type":"user","timestamp":"2026-10-30T10:00:00Z"}"#,
+        ));
+        acc.push(&line(
+            r#"{"type":"assistant","timestamp":"2026-10-30T10:00:01Z","message":{"id":"msg_01A","model":"m","usage":{"output_tokens":9}}}"#,
+        ));
+        assert_eq!(acc.answer(), None);
+        acc.push(&line(
+            r#"{"type":"assistant","timestamp":"2026-10-30T10:00:02Z","message":{"id":"msg_01B","model":"m","usage":{"output_tokens":9}}}"#,
+        ));
+        assert_eq!(acc.answer().map(|a| a.id).as_deref(), Some("msg_01A"));
+        assert_eq!(acc.open_answer().map(|a| a.id).as_deref(), Some("msg_01B"));
+
+        let mut acc = CodexAdapter.metrics_acc();
+        acc.push(&line(
+            r#"{"timestamp":"2026-10-30T10:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":7},"total_token_usage":{"input_tokens":1,"output_tokens":7}}}}"#,
+        ));
+        assert_eq!(acc.answer().and_then(|a| a.output_tokens), Some(7));
+        assert_eq!(acc.open_answer(), None);
     }
 }
 

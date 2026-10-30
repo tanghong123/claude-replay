@@ -1,6 +1,6 @@
 use claude_replay_engine::seam::{
-    parse_ts, total_cost, Metrics, MetricsTotals, RateLimitWindow, RateLimits, RequestPricing,
-    RuntimeInfo, ServiceTier, TimeSpan, TokenCounts,
+    epoch_secs, parse_ts, total_cost, AnswerTiming, Metrics, MetricsTotals, RateLimitWindow,
+    RateLimits, RequestPricing, RuntimeInfo, ServiceTier, TimeSpan, TokenCounts,
 };
 use serde_json::Value;
 
@@ -25,6 +25,12 @@ pub(crate) struct CodexMetricsAcc {
     /// share one, and a copied or rewritten rollout keeps the record verbatim. Cleared on every
     /// push; transient, never in the cursor.
     pub(crate) usage_id: Option<String>,
+    /// The answer the most recent push credited (#s341): one per `token_count` reading that
+    /// moved the counter, its id that reading's `usage_id`. Codex writes no line per part of an
+    /// answer, so its `sent` and `first` are not known. Cleared on every push; transient.
+    pub(crate) answer: Option<AnswerTiming>,
+    /// The service the session reaches its model through, `session_meta`'s `model_provider`.
+    provider: Option<String>,
     /// Whether any `token_count` was folded yet. A forked or sub-agent thread's cumulative
     /// counter INHERITS the parent's pre-fork history — its first reading can stand at
     /// hundreds of millions of tokens that live (and are priced) in the PARENT's rollout.
@@ -74,6 +80,15 @@ impl CodexMetricsAcc {
     pub(crate) fn push(&mut self, value: &Value) {
         self.request_pricing = None;
         self.usage_id = None;
+        self.answer = None;
+        if value.get("type").and_then(Value::as_str) == Some("session_meta") {
+            if let Some(p) = value
+                .pointer("/payload/model_provider")
+                .and_then(Value::as_str)
+            {
+                self.provider = Some(p.to_string()).filter(|p| !p.is_empty());
+            }
+        }
         if let Some(timestamp) = value
             .get("timestamp")
             .and_then(Value::as_str)
@@ -298,12 +313,30 @@ impl CodexMetricsAcc {
                 }
             }
             if delta != TokenCounts::default() {
-                self.usage_id = Some(format!(
+                let id = format!(
                     "{}/{}/{}",
                     value.get("timestamp").and_then(Value::as_str).unwrap_or(""),
                     field("input_tokens"),
                     field("output_tokens")
-                ));
+                );
+                // The request's own output is `last_token_usage`'s, reasoning included; the
+                // counter's delta may span several requests, so a rollout without it gives none.
+                self.answer = Some(AnswerTiming {
+                    id: id.clone(),
+                    model: self.model.clone(),
+                    provider: self.provider.clone(),
+                    sent: None,
+                    first: None,
+                    last: value
+                        .get("timestamp")
+                        .and_then(Value::as_str)
+                        .and_then(epoch_secs),
+                    lines: 1,
+                    output_tokens: value
+                        .pointer("/payload/info/last_token_usage/output_tokens")
+                        .and_then(Value::as_u64),
+                });
+                self.usage_id = Some(id);
             }
             let e = self.per_model.entry(self.model.clone()).or_default();
             e.input += now.input.saturating_sub(self.last_total.input);
@@ -342,6 +375,7 @@ impl CodexMetricsAcc {
             "model": self.model,
             "first_model": self.first_model,
             "runtime": self.runtime,
+            "provider": self.provider,
         })
     }
 
@@ -377,6 +411,9 @@ impl CodexMetricsAcc {
         }
         if let Some(m) = state.get("first_model").and_then(Value::as_str) {
             self.first_model = m.to_string();
+        }
+        if let Some(p) = state.get("provider").and_then(Value::as_str) {
+            self.provider = Some(p.to_string());
         }
         if let Some(mut runtime) = state
             .get("runtime")
@@ -1118,5 +1155,53 @@ mod request_pricing_tests {
         assert_eq!(acc.request_pricing, None);
         acc.push(&json!({"type":"turn_context","payload":{"model":"gpt-6-astra"}}));
         assert_eq!(acc.request_pricing, None);
+    }
+}
+
+#[cfg(test)]
+mod answer_tests {
+    use super::*;
+
+    /// #s341: each reading that moves the counter is one answer: the turn's model, the session's
+    /// provider, the reading's own output (`last_token_usage`, reasoning included) and its time.
+    /// Codex writes no line per part, so `sent` and `first` are `None`; a reading that moves
+    /// nothing is no answer; and the provider crosses a resume.
+    #[test]
+    fn each_reading_that_moves_the_counter_is_a_timed_answer() {
+        let reading = |ts: &str, total_out: u64, last_out: u64| {
+            serde_json::json!({"timestamp": ts, "type": "event_msg", "payload": {
+                "type": "token_count", "info": {
+                    "last_token_usage": {"input_tokens": 100, "output_tokens": last_out,
+                        "reasoning_output_tokens": 40},
+                    "total_token_usage": {"input_tokens": 100, "output_tokens": total_out}}}})
+        };
+        let mut acc = CodexMetricsAcc::default();
+        acc.push(&serde_json::json!({"type": "session_meta", "payload": {
+            "id": "s", "model_provider": "openai"}}));
+        acc.push(&serde_json::json!({"type": "turn_context", "payload": {"model": "gpt-5.6-sol"}}));
+        acc.push(&reading("2026-10-30T10:00:03.500Z", 250, 250));
+        let a = acc.answer.clone().expect("an answer");
+        assert_eq!(a.id, acc.usage_id.clone().unwrap(), "the reading's id");
+        assert_eq!(a.model, "gpt-5.6-sol");
+        assert_eq!(a.provider.as_deref(), Some("openai"));
+        assert_eq!((a.sent, a.first), (None, None));
+        assert_eq!(a.last, epoch_secs("2026-10-30T10:00:03.500Z"));
+        assert_eq!((a.lines, a.output_tokens), (1, Some(250)));
+        acc.push(&reading("2026-10-30T10:00:04Z", 250, 250));
+        assert_eq!(acc.answer, None, "a reading that moves nothing");
+        let mut after = CodexMetricsAcc::default();
+        after.restore(&acc.state());
+        // The counter moved 150 over two requests the rollout did not each record; the last one
+        // wrote 120.
+        after.push(&reading("2026-10-30T10:00:09Z", 400, 120));
+        let b = after.answer.clone().expect("an answer");
+        assert_eq!(b.provider.as_deref(), Some("openai"), "across a resume");
+        assert_eq!(
+            b.output_tokens,
+            Some(120),
+            "the request's own, not the counter's"
+        );
+        after.push(&serde_json::json!({"type": "turn_context", "payload": {"model": "x"}}));
+        assert_eq!(after.answer, None, "cleared on every push");
     }
 }
