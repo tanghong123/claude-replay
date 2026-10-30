@@ -834,6 +834,75 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// #s329: a `claude -p` worker that finished (its last turn `end_turn`) and exited reads
+    /// `idle · exited`, though its tail's first whole line is the client's copy of a call whose
+    /// result lies before the window: the blob is written after the result, so it once read as a
+    /// call still running and the worker as `exited-mid-work`. A worker cut off mid-call still
+    /// reads that way.
+    #[test]
+    fn a_finished_one_shot_exited_and_one_cut_off_mid_call_exited_mid_work() {
+        let root = scratch("one-shot");
+        let finished = root.join("s1.jsonl");
+        std::fs::write(&finished, format!(
+            concat!(
+                r#"{{"type":"user","entrypoint":"sdk-cli","message":{{"role":"user","content":"run the brief"}},"timestamp":"2026-10-30T01:00:00Z"}}"#, "\n",
+                r#"{{"type":"assistant","entrypoint":"sdk-cli","message":{{"role":"assistant","model":"m","stop_reason":"tool_use","content":[{{"type":"tool_use","id":"toolu_a","name":"Bash","input":{{"command":"make"}}}}]}},"timestamp":"2026-10-30T01:00:05Z"}}"#, "\n",
+                r#"{{"type":"user","entrypoint":"sdk-cli","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_a","content":"{out}"}}]}},"timestamp":"2026-10-30T01:00:30Z"}}"#, "\n",
+                r#"{{"type":"api-request-blob","sessionId":"s1","hash":"h1","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_a","name":"Bash","input":{{"command":"make"}}}}]}}}}"#, "\n",
+                r#"{{"type":"api-request","sessionId":"s1","id":"q1","keep":2,"tail":["h1"]}}"#, "\n",
+                r#"{{"type":"assistant","entrypoint":"sdk-cli","message":{{"role":"assistant","model":"m","stop_reason":"end_turn","content":[{{"type":"text","text":"worker result: success"}}]}},"timestamp":"2026-10-30T01:00:40Z"}}"#, "\n",
+                r#"{{"type":"last-prompt","sessionId":"s1","lastPrompt":"run the brief"}}"#, "\n",
+            ),
+            // Past the scan's 256 KiB, so the window's edge falls inside the result.
+            out = "x".repeat(300_000),
+        ))
+        .unwrap();
+        let cut_off = root.join("s2.jsonl");
+        std::fs::write(&cut_off, concat!(
+            r#"{"type":"user","entrypoint":"sdk-cli","message":{"role":"user","content":"run the brief"},"timestamp":"2026-10-30T01:00:00Z"}"#, "\n",
+            r#"{"type":"assistant","entrypoint":"sdk-cli","message":{"role":"assistant","model":"m","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_b","name":"Bash","input":{"command":"make"}}]},"timestamp":"2026-10-30T01:00:05Z"}"#, "\n",
+        ))
+        .unwrap();
+
+        let mut tr = StateTracker::default();
+        tr.tick(
+            &root,
+            &[
+                facts("s1", &finished, None, 900),
+                facts("s2", &cut_off, None, 900),
+            ],
+        );
+        let cur: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("state/current.json")).unwrap(),
+        )
+        .unwrap();
+        let row = |sid: &str| -> (String, String, String) {
+            let s = cur["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|s| s["sid"] == sid)
+                .unwrap_or_else(|| panic!("{sid} in the snapshot: {cur}"));
+            let field = |k: &str| s[k].as_str().unwrap_or("?").to_string();
+            (field("state"), field("reason"), field("detail"))
+        };
+        assert_eq!(
+            row("s1"),
+            ("idle".to_string(), "exited".to_string(), String::new()),
+            "a worker that finished and exited died of nothing"
+        );
+        assert_eq!(
+            row("s2"),
+            (
+                "idle".to_string(),
+                "exited-mid-work".to_string(),
+                "exited with Bash pending".to_string()
+            ),
+            "a worker cut off mid-call still needs a look"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The end-to-end pass on a real (fixture) transcript: a pending AskUserQuestion
     /// with a live process publishes `wait · question` IMMEDIATELY; answering it and
     /// ending the turn publishes `idle · ended-question` after one stable tick; the
