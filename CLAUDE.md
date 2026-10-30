@@ -391,14 +391,21 @@ a herdr pane whose process runs below another agent process, or that holds anoth
 that is a `claude` or runs below no other agent (a `codex` the pane's shell runs while its `claude`
 is suspended; herdr's record still names the suspended session), is sent to for neither session, in
 any directory (`pane_shared`). A `codex exec` or MCP Codex the agent itself starts does not
-count: only a `claude` rewrites herdr's record of the pane. Nor does a `claude -p` worker, which
-reads no pane (#s332); but a `codex exec` the pane's own shell runs does, one-shot or not, since
-what is typed waits in the terminal for that shell to run as a command. In a tmux pane too, a
-process that runs below another agent process is never sent to (#s318): a `claude` or `codex` an
-agent's Bash starts through a pty wrapper inherits `TMUX_PANE`, and in another directory, the lone
-agent there, it was linked to its session and offered the send, which typed into its starter's
-input, with no check before typing to stop it. So `apply_nesting` reads the parent chain whenever
-an agent carries a pane marker of either kind; the starter keeps its send. The
+count: only a `claude` rewrites herdr's record of the pane. Nor does a one-shot an agent starts (a
+`claude -p` worker reads no pane, #s332); but one the pane's own shell runs does (a `codex exec`
+or a `claude -p`, #s333 review), since what is typed waits in the terminal for that shell to run as
+a command, and so does an agent the pane's shell runs in the background, for as long as it runs.
+In a tmux pane too, a process that runs below another agent process is never sent to (#s318): a
+`claude` or `codex` an agent's Bash starts through a pty wrapper inherits `TMUX_PANE`, and in
+another directory, the lone agent there, it was linked to its session and offered the send, which
+typed into its starter's input, with no check before typing to stop it. So `apply_nesting` reads
+the parent chain whenever an agent carries a pane marker of either kind; the starter keeps its
+send. And a tmux pane that
+holds another agent process running below no other agent is sent to for neither session, as a
+herdr pane is (#s333): a `claude` suspended with Ctrl-Z while the pane's shell runs `codex` in its
+directory, or `claude` in another, would type into the foreground agent, which the
+one-live-session rule (same agent, same directory) does not see. Unlike herdr, a `claude` below
+another agent is no tmux sibling: the pane's input goes to its starter. The
 send, a grant and a dialog read always rescan the processes rather than use the last tick's, so
 each pays a full probe (the bounded `ps` and `lsof` runs and the record reads) for current evidence.
 **A one-shot (`claude -p`/`--print`) is headless and pairs by TIME** (#s50): knack's coordinator
@@ -466,8 +473,9 @@ that session's Bash starts), and so does a process that started from a pane and 
 its server (an app opened from it, one whose pane shell exited; an editor still running as the
 pane's child reads as the pane, as before). So a scan whose `ps -axo pid=,ppid=,ucomm=` goes over
 its bound places no agent in any pane, tmux or herdr, and offers no pane send for that scan (a
-finished session's resume and Codex native mode's composer need no pane). The row says `term: "herdr"`, `target` the pane, `herdrSession` a named session
-(the attention report reads `term`, agreed with Aries). The send (`PaneAddr`, `resolve_pane_send`)
+finished session's resume and Codex native mode's composer need no pane). The row says
+`term: "herdr"`, `target` the pane, `herdrSession` a named session (the attention report reads
+`term`, agreed with Aries). The send (`PaneAddr`, `resolve_pane_send`)
 requires a proven link and consent keyed to the pane and pid (a herdr key's socket half is
 `herdr:<socket>`, so a tmux grant can never count), and the project's only live session, unless
 the pane's process's own record names the session (#s258, herdr panes only; a record does not

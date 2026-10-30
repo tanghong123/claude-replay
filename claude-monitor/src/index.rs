@@ -141,8 +141,9 @@ pub enum SendRefusal {
     /// proves its pane by that report (#s226), so a Codex session in herdr is not sent to.
     HerdrClaudeOnly,
     /// (pane path) another agent may be reading the pane (`pane_shared`): what is typed there
-    /// could reach that agent — the one whose Bash started this session's process (tmux and herdr,
-    /// #s318), or, in herdr, a sibling, since herdr's own check names whichever session started last.
+    /// could reach that agent — the one whose Bash started this session's process (#s318), or a
+    /// sibling in the same pane (herdr's own check names whichever session started last; tmux has
+    /// none, #s333).
     PaneShared,
 }
 
@@ -623,33 +624,35 @@ fn pane_send_beside_siblings(procs: &[Proc], pid: u32, sid: &str, addr: &PaneAdd
 /// session, confirmed, and offered the send, which typed into its starter's input (#s318); tmux has
 /// no check of the pane's session before typing, so this is the only one.
 ///
-/// A herdr pane is also shared when another agent process (not a helper or a `claude -p` one-shot)
-/// is placed in the same pane of the same server — in any directory — that is a Claude process or
-/// runs below no other agent (#s258 review). herdr's record of the pane names the session that
-/// started last, which `herdr agent get` answers before typing, and a child `claude` counts:
-/// herdr's hook is installed for Claude alone, so only it rewrites herdr's record of the pane. A
-/// `codex exec` or a Codex MCP server the outer agent's Bash starts inherits the pane as well but
-/// rewrites nothing, and must not take the outer session's send away while it runs. A Codex the
-/// pane's own shell runs (a `claude` suspended with Ctrl-Z, then `codex` in the foreground) does
-/// count: herdr's record still names the suspended session, so the check before typing passes and
-/// the text would reach the Codex. An agent kind the monitor cannot place (an extra pattern) counts
-/// too. Only a Claude process is passed over as a one-shot: a `claude -p` worker an agent starts
-/// reads no pane (#s53, #s332). A `codex exec` the pane's own shell runs in the foreground counts:
-/// it reads no pane either, but what is typed waits in the terminal for the shell behind it, which
-/// runs it as a command once the exec ends (a `codex -p <profile>` is no one-shot at all, #s326).
-/// A tmux pane has no such sibling rule (no process's herdr pane is a tmux pane's id): it keeps the
-/// one-live-session rule, and a child below an agent leaves its starter's send alone, since tmux
-/// keeps no record a child could rewrite.
+/// It is also true when another agent process (not a helper) is placed in the same pane of the
+/// same server — in any directory — and runs below no other agent: a `claude` suspended with
+/// Ctrl-Z while the pane's shell runs `codex`, or another `claude`, in the foreground. The text
+/// would reach the foreground agent; in herdr its record still names the suspended session, so the
+/// check before typing passes (#s258 review), and tmux has no check at all (#s333), while the
+/// one-live-session rule counts only the same agent in the same directory (#s59). A one-shot the
+/// pane's shell runs (`codex exec`, `claude -p`) counts as well: it reads no pane, but what is
+/// typed waits in the terminal for the shell behind it, which runs it as a command once the
+/// one-shot ends (a `codex -p <profile>` is no one-shot at all, #s326). So does an agent the
+/// pane's shell runs in the background (`codex exec … &`), for as long as it runs: what counts is
+/// being in the pane, not being in its foreground.
+///
+/// Below another agent, only herdr counts a sibling, and only a Claude process or a kind the
+/// monitor cannot place (an extra pattern) that is no one-shot: herdr's hook is installed for
+/// Claude alone, so a child `claude` rewrites herdr's record of the pane, which `herdr agent get`
+/// answers before typing. In tmux it does not: the pane's input still goes to its starter, and
+/// tmux keeps no record a child could rewrite. A `codex exec` or a Codex MCP server the outer
+/// agent's Bash starts inherits the pane but rewrites nothing, and a `claude -p` worker an agent
+/// starts reads no pane (#s53, #s332): neither takes the outer session's send away while it runs.
 fn pane_shared(procs: &[Proc], pid: u32, addr: &PaneAddr) -> bool {
+    let herdr = matches!(addr, PaneAddr::Herdr { .. });
     procs.iter().any(|p| {
         if p.pid == pid {
             return p.under_agent;
         }
-        p.herdr_pane.as_deref() == Some(addr.pane())
-            && is_agent_exe(&p.exe_base, &p.argv)
-            && (serves(p, Agent::CLAUDE) || !p.under_agent)
+        is_agent_exe(&p.exe_base, &p.argv)
+            && (!p.under_agent || (herdr && serves(p, Agent::CLAUDE)))
             && !is_helper(&p.argv)
-            && !(proc_agent(p) == Some(Agent::CLAUDE) && one_shot(p))
+            && !(p.under_agent && one_shot(p))
             && Terminal::of(p).pane_addr().as_ref() == Some(addr)
     })
 }
@@ -9287,6 +9290,89 @@ n/Users/x/proj
         assert_eq!(procs[1].inner_mux, Some(Mux::Tmux));
     }
 
+    /// #s333: a `claude` in a tmux pane is suspended with Ctrl-Z and the pane's shell runs another
+    /// agent in the foreground — a `codex` in the same directory, or a `claude` in another. The
+    /// one-live-session rule counts neither (another agent; another directory), and tmux has no
+    /// check before typing, so the suspended session's send would type into the foreground agent.
+    /// An agent below no other in the same pane counts as its sibling, and the session takes none.
+    #[test]
+    fn a_tmux_pane_with_a_suspended_session_and_a_foreground_agent_takes_no_send() {
+        for (n, (exe, dir)) in [
+            ("codex", "/w/harbor"),
+            ("claude", "/w/skua"),
+            ("claude -p fix-it", "/w/skua"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let scratch =
+                std::env::temp_dir().join(format!("cm-tmux-suspended-{n}-{}", std::process::id()));
+            std::fs::create_dir_all(&scratch).unwrap();
+            let _env = StateEnv::set(scratch.join("state"));
+            let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+            let s1 = "11111111-2222-4333-8444-555555555555";
+            let mut procs = parse_ps(&format!("700 claude\n900 {exe}\n"));
+            apply_lsof(
+                &mut procs,
+                &format!("p700\nfcwd\nn/w/harbor\np900\nfcwd\nn{dir}\n"),
+            );
+            let pane = "TMUX=/fixture/tmux.sock,50,0 TMUX_PANE=%3";
+            apply_env(
+                &mut procs,
+                &format!("700 claude {pane}\n900 {exe} {pane}\n"),
+            );
+            apply_nesting(
+                &mut procs,
+                &format!("1 0 launchd\n50 1 tmux\n61 50 zsh\n700 61 claude\n900 61 {exe}\n"),
+            );
+            let mut st = State {
+                procs,
+                ..State::default()
+            };
+            let mut row = growth_row("/w/harbor", false);
+            row.tree_mtime = Some(SystemTime::now());
+            st.rows.insert(s1.into(), row);
+            idx.prove_by_growth(&mut st);
+            let mut facts = Vec::new();
+            idx.assemble(&st, &mut facts);
+            st.send_links = send_links_of(&facts);
+            let snapshot = idx.assemble(&st, &mut Vec::new());
+            assert_eq!(st.send_links[s1].pid, Some(700), "{exe}");
+            assert!(st.send_links[s1].confirmed, "{exe}");
+            assert_eq!(registry_row(&snapshot, s1)["target"], "%3", "{exe}");
+            assert_eq!(
+                pane_send_target(&st, s1),
+                Err(SendRefusal::PaneShared),
+                "{exe}"
+            );
+            assert!(
+                registry_row(&snapshot, s1).get("injectable").is_none(),
+                "{exe}"
+            );
+            // The foreground agent gone, the pane is the session's alone again.
+            st.procs.retain(|p| p.pid != 900);
+            assert!(
+                matches!(pane_send_target(&st, s1), Ok((700, PaneAddr::Tmux { .. }))),
+                "{exe}"
+            );
+            std::fs::remove_dir_all(scratch).unwrap();
+        }
+        // The same pane id on another tmux server is another pane: no sibling.
+        let mut procs = parse_ps("700 claude\n900 codex\n");
+        apply_env(
+            &mut procs,
+            "700 claude TMUX=/fixture/harbor.sock,50,0 TMUX_PANE=%0\n\
+             900 codex TMUX=/fixture/skua.sock,51,0 TMUX_PANE=%0\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n50 1 tmux\n61 50 zsh\n700 61 claude\n51 1 tmux\n62 51 zsh\n\
+             900 62 codex\n",
+        );
+        let addr = Terminal::of(&procs[0]).pane_addr().unwrap();
+        assert!(!pane_shared(&procs, 700, &addr));
+    }
+
     /// #s334: a tmux marker names a pane only when tmux is the nearest multiplexer up the chain.
     /// Claude Code's background shape: the attach client sits in pane %3, while the session's
     /// engine (`--bg-pty-host`) runs under `claude daemon run`, which inherits the client's
@@ -9339,6 +9425,9 @@ n/Users/x/proj
         let mut row = growth_row("/w/skua", false);
         row.tree_mtime = Some(SystemTime::now());
         st.rows.insert(child.into(), row);
+        let mut row = growth_row("/w/harbor", false);
+        row.tree_mtime = Some(SystemTime::now());
+        st.rows.insert(outer.into(), row);
         idx.prove_by_growth(&mut st);
         let mut facts = Vec::new();
         idx.assemble(&st, &mut facts);
@@ -9349,6 +9438,14 @@ n/Users/x/proj
         assert_eq!(registry_row(&snapshot, child)["term"], "tty");
         assert!(registry_row(&snapshot, child).get("injectable").is_none());
         assert_eq!(pane_send_target(&st, child), Err(SendRefusal::NotInTmux));
+        // The session keeps its client's pane: the child, carrying %3 below helpers only, is in no
+        // pane, so it is no sibling there (#s333).
+        assert_eq!(st.send_links[outer].pid, Some(800));
+        assert!(matches!(
+            pane_send_target(&st, outer),
+            Ok((800, PaneAddr::Tmux { .. }))
+        ));
+        assert_eq!(registry_row(&snapshot, outer)["injectable"], true);
         std::fs::remove_dir_all(scratch).unwrap();
 
         // Read with tmux nearest, a process is in the pane; read again with no table (its `ps`
@@ -9455,13 +9552,18 @@ n/Users/x/proj
     }
 
     /// The review of #s258: the same pane with the foreground Codex started as `codex -p work`,
-    /// and as a `codex exec` the pane's own shell runs. Codex's `-p` is `--profile`, not a
-    /// one-shot (#s326 reads it so); `codex exec` is one by its argv, and it still counts, since
-    /// only a Claude process is passed over as a one-shot. Either is the pane's sibling, and the
-    /// suspended Claude's session takes no send.
+    /// and as a `codex exec` or a `claude -p` the pane's own shell runs. Codex's `-p` is
+    /// `--profile`, not a one-shot (#s326 reads it so); the other two are one-shots, and they
+    /// still count, since only a one-shot below another agent is passed over (#s333 review): what
+    /// is typed waits for the pane's shell. Each is the pane's sibling, and the suspended Claude's
+    /// session takes no send.
     #[test]
     fn a_foreground_profile_codex_beside_a_suspended_claude_takes_no_send() {
-        for (argv, headless) in [("codex -p work", false), ("codex exec fix", true)] {
+        for (argv, headless) in [
+            ("codex -p work", false),
+            ("codex exec fix", true),
+            ("claude -p fix-it", true),
+        ] {
             let scratch =
                 std::env::temp_dir().join(format!("cm-fg-codex-p-{}", std::process::id()));
             std::fs::create_dir_all(&scratch).unwrap();
