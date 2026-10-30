@@ -390,10 +390,15 @@ inherits the herdr pane as well, and herdr's record of the pane then names the c
 a herdr pane whose process runs below another agent process, or that holds another agent process
 that is a `claude` or runs below no other agent (a `codex` the pane's shell runs while its `claude`
 is suspended; herdr's record still names the suspended session), is sent to for neither session, in
-any directory (`herdr_pane_shared`). A `codex exec` or MCP Codex the agent itself starts does not
+any directory (`pane_shared`). A `codex exec` or MCP Codex the agent itself starts does not
 count: only a `claude` rewrites herdr's record of the pane. Nor does a `claude -p` worker, which
 reads no pane (#s332); but a `codex exec` the pane's own shell runs does, one-shot or not, since
-what is typed waits in the terminal for that shell to run as a command. The
+what is typed waits in the terminal for that shell to run as a command. In a tmux pane too, a
+process that runs below another agent process is never sent to (#s318): a `claude` or `codex` an
+agent's Bash starts through a pty wrapper inherits `TMUX_PANE`, and in another directory, the lone
+agent there, it was linked to its session and offered the send, which typed into its starter's
+input, with no check before typing to stop it. So `apply_nesting` reads the parent chain whenever
+an agent carries a pane marker of either kind; the starter keeps its send. The
 send, a grant and a dialog read always rescan the processes rather than use the last tick's, so
 each pays a full probe (the bounded `ps` and `lsof` runs and the record reads) for current evidence.
 **A one-shot (`claude -p`/`--print`) is headless and pairs by TIME** (#s50): knack's coordinator
@@ -450,10 +455,10 @@ multiplexer inside the other's pane hands its children the OUTER pane's markers 
 directions (herdr started from a tmux pane gives every herdr pane `TMUX_PANE`; tmux started in a herdr
 pane gives every tmux pane `HERDR_PANE_ID`), and typing at the outer pane reaches whatever sits there
 now — so a herdr marker is believed only when herdr IS the nearest multiplexer up the agent's parent
-chain (`apply_nesting`, one `ps -axo pid=,ppid=,ucomm=` when any agent carries a herdr marker: a
-pane's shell is the herdr server's direct child, measured; `ucomm` because `comm` is the start path
-cut at 16 characters). The tmux server is known by the pid in `TMUX`, screen or zellij nearer than
-herdr is a pane we do not drive, and with no answer the agent is in no pane we may drive. The row says `term: "herdr"`, `target` the pane, `herdrSession` a named session
+chain (`apply_nesting`, one `ps -axo pid=,ppid=,ucomm=` when any agent carries a herdr marker, or
+a tmux one since #s318: a pane's shell is the herdr server's direct child, measured; `ucomm` because
+`comm` is the start path cut at 16 characters). The tmux server is known by the pid in `TMUX`,
+screen or zellij nearer than herdr is a pane we do not drive, and with no answer the agent is in no pane we may drive. The row says `term: "herdr"`, `target` the pane, `herdrSession` a named session
 (the attention report reads `term`, agreed with Aries). The send (`PaneAddr`, `resolve_pane_send`)
 requires a proven link and consent keyed to the pane and pid (a herdr key's socket half is
 `herdr:<socket>`, so a tmux grant can never count), and the project's only live session, unless

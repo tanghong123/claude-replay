@@ -140,9 +140,10 @@ pub enum SendRefusal {
     /// (herdr path) herdr's hook reports the session in a pane for Claude only, and the send
     /// proves its pane by that report (#s226), so a Codex session in herdr is not sent to.
     HerdrClaudeOnly,
-    /// (herdr path) another agent may be reading the pane (`herdr_pane_shared`): what is typed
-    /// there could reach that agent, and herdr's own check names whichever session started last.
-    HerdrPaneShared,
+    /// (pane path) another agent may be reading the pane (`pane_shared`): what is typed there
+    /// could reach that agent — the one whose Bash started this session's process (tmux and herdr,
+    /// #s318), or, in herdr, a sibling, since herdr's own check names whichever session started last.
+    PaneShared,
 }
 
 /// The pane-injection decision (#133 tmux slice, #s226 herdr), PURE over one scan's link data —
@@ -220,8 +221,8 @@ fn pane_send_target(st: &State, sid: &str) -> Result<(u32, PaneAddr), SendRefusa
     st.legacy_send_policy.allow_session(agent, sid)?;
     let link = st.send_links.get(sid).cloned().unwrap_or_default();
     let (pid, addr) = pane_target_from(agent, &link)?;
-    if herdr_pane_shared(&st.procs, pid, &addr) {
-        return Err(SendRefusal::HerdrPaneShared);
+    if pane_shared(&st.procs, pid, &addr) {
+        return Err(SendRefusal::PaneShared);
     }
     if !pane_send_beside_siblings(&st.procs, pid, sid, &addr)
         && (unresolved_registry_writer(&st.procs, agent, cwd, &st.send_links)
@@ -260,8 +261,8 @@ impl SendRefusal {
             Self::HerdrClaudeOnly => {
                 "herdr proves which session runs in a pane only for Claude: send to this one from its pane"
             }
-            Self::HerdrPaneShared => {
-                "another agent runs in this herdr pane, so a send could reach it instead: send from the pane"
+            Self::PaneShared => {
+                "another agent runs in this pane, so a send could reach it instead: send from the pane"
             }
         }
     }
@@ -545,9 +546,9 @@ struct Proc {
     /// With a herdr pane in its environment, the NEAREST multiplexer up the process's parent chain
     /// (`apply_nesting`): an outer one's marker is inherited and names a pane this agent is not in.
     inner_mux: Option<Mux>,
-    /// With a herdr pane in its environment, another agent process (not a helper) sits between
-    /// this process and that nearest multiplexer (`apply_nesting`): it was started from that
-    /// agent's Bash, and the pane's input goes to that agent, not to this one.
+    /// With a herdr or tmux pane in its environment, another agent process (not a helper) sits
+    /// between this process and that nearest multiplexer (`apply_nesting`): it was started from
+    /// that agent's Bash, and the pane's input goes to that agent, not to this one.
     under_agent: bool,
     /// The tmux server's pid, the second field of `TMUX=/path,pid,idx`.
     tmux_server_pid: Option<u32>,
@@ -605,21 +606,26 @@ fn registry_identifies(procs: &[Proc], pid: u32, sid: &str) -> bool {
 /// pane whose process's own record names `sid` may (the owner's decision s271): herdr checks the
 /// pane's session again right before typing (`herdr agent get`), and tmux has no such check — a
 /// `claude` started through a pty wrapper inherits its starter's `TMUX_PANE`. That check holds
-/// only while one agent reads the pane, which `herdr_pane_shared` makes sure of first: a `claude`
+/// only while one agent reads the pane, which `pane_shared` makes sure of first: a `claude`
 /// started from an agent's Bash inherits the herdr pane too, and herdr's record of the pane then
 /// names the child's session. Background resume is never covered: it always needs a quiet project.
 fn pane_send_beside_siblings(procs: &[Proc], pid: u32, sid: &str, addr: &PaneAddr) -> bool {
     matches!(addr, PaneAddr::Herdr { .. }) && registry_identifies(procs, pid, sid)
 }
 
-/// Whether another agent may be reading the herdr pane `pid` is placed in, so that what is typed
-/// there could reach it instead (#s258 review). An agent's Bash can start an interactive `claude`
-/// through a pty wrapper (`script -q /dev/null claude`): it inherits the pane's `HERDR_PANE_ID` and
-/// socket, so both processes read as that pane, and herdr's record of the pane then names the
-/// child's session, which `herdr agent get` answers before typing. True when `pid` runs below
-/// another agent process (`Proc::under_agent`), or another agent process (not a helper or a
-/// `claude -p` one-shot) is placed in the same pane of the same server — in any directory — that
-/// is a Claude process or runs below no other agent. A child `claude` counts:
+/// Whether another agent may be reading the pane `pid` is placed in, so that what is typed there
+/// could reach it instead. An agent's Bash can start an interactive `claude` (or `codex`) through a
+/// pty wrapper (`script -q /dev/null claude`): the child inherits the pane's markers, so it reads
+/// as that pane, while the pane's input goes to the agent that started it. So it is true, in a tmux
+/// pane and a herdr pane alike, when `pid` runs below another agent process (`Proc::under_agent`).
+/// In tmux such a child in another directory, the lone agent process there, was linked to its
+/// session, confirmed, and offered the send, which typed into its starter's input (#s318); tmux has
+/// no check of the pane's session before typing, so this is the only one.
+///
+/// A herdr pane is also shared when another agent process (not a helper or a `claude -p` one-shot)
+/// is placed in the same pane of the same server — in any directory — that is a Claude process or
+/// runs below no other agent (#s258 review). herdr's record of the pane names the session that
+/// started last, which `herdr agent get` answers before typing, and a child `claude` counts:
 /// herdr's hook is installed for Claude alone, so only it rewrites herdr's record of the pane. A
 /// `codex exec` or a Codex MCP server the outer agent's Bash starts inherits the pane as well but
 /// rewrites nothing, and must not take the outer session's send away while it runs. A Codex the
@@ -630,11 +636,10 @@ fn pane_send_beside_siblings(procs: &[Proc], pid: u32, sid: &str, addr: &PaneAdd
 /// reads no pane (#s53, #s332). A `codex exec` the pane's own shell runs in the foreground counts:
 /// it reads no pane either, but what is typed waits in the terminal for the shell behind it, which
 /// runs it as a command once the exec ends (a `codex -p <profile>` is no one-shot at all, #s326).
-/// Never true for a tmux pane, which keeps the one-live-session rule.
-fn herdr_pane_shared(procs: &[Proc], pid: u32, addr: &PaneAddr) -> bool {
-    if !matches!(addr, PaneAddr::Herdr { .. }) {
-        return false;
-    }
+/// A tmux pane has no such sibling rule (no process's herdr pane is a tmux pane's id): it keeps the
+/// one-live-session rule, and a child below an agent leaves its starter's send alone, since tmux
+/// keeps no record a child could rewrite.
+fn pane_shared(procs: &[Proc], pid: u32, addr: &PaneAddr) -> bool {
     procs.iter().any(|p| {
         if p.pid == pid {
             return p.under_agent;
@@ -1073,7 +1078,7 @@ impl Index {
     /// PROVEN link (§3.1 — never a cwd guess; injecting into the wrong pane runs your text in a
     /// different agent) that is in a tmux or herdr pane, in a project with no other live session
     /// — unless it is a herdr pane its process's record names (`pane_send_beside_siblings`) — and
-    /// never a herdr pane another agent may be reading (`herdr_pane_shared`). Always refresh
+    /// never a pane another agent may be reading (`pane_shared`). Always refresh
     /// processes: the send, a grant and a dialog read each pay a full probe for current evidence.
     pub fn resolve_pane_send(&self, sid: &str) -> Result<PaneTarget, SendRefusal> {
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -2004,11 +2009,11 @@ impl Index {
                 let pane = l.terminal.pane_addr().filter(|addr| {
                     !matches!(addr, PaneAddr::Herdr { .. }) || row.agent == Agent::CLAUDE
                 });
-                // A herdr pane another agent may be reading is never offered (`herdr_pane_shared`).
+                // A pane another agent may be reading is never offered (`pane_shared`).
                 if let Some(addr) = pane.filter(|addr| {
                     l.confirmed
                         && driven
-                        && !herdr_pane_shared(&st.procs, l.pid, addr)
+                        && !pane_shared(&st.procs, l.pid, addr)
                         && (!proj_active || pane_send_beside_siblings(&st.procs, l.pid, sid, addr))
                 }) {
                     j["injectable"] = json!(true);
@@ -3340,8 +3345,7 @@ fn scan_procs() -> Vec<Proc> {
         &mut procs,
         &run(&["ps", "eww", "-o", "pid=,command=", "-p", &pids]),
     );
-    // #s226: only an agent carrying a herdr marker needs its parent chain.
-    if procs.iter().any(|p| p.herdr_pane.is_some()) {
+    if needs_parent_chain(&procs) {
         // `ucomm`, the executable's own name: `comm` is the path it was started by, which ps
         // cuts at 16 characters (the herdr server runs as `/opt/homebrew/bin/herdr server`, so
         // its `comm` loses the name; measured on aries-black).
@@ -3354,10 +3358,21 @@ fn scan_procs() -> Vec<Proc> {
     procs
 }
 
-/// `pid ppid ucomm` lines → for each agent carrying a herdr marker, the NEAREST multiplexer up its
-/// parent chain (a pane's shell is the child of its server; a daemonized server's own parent is
-/// launchd, so an outer one is never reached first). The tmux server is known by the pid its
-/// `TMUX` variable names (its name is `tmux` on macOS, `tmux: server` on Linux), herdr's by the
+/// Whether the scan must read every process's parent (`apply_nesting`, one `ps -axo
+/// pid=,ppid=,ucomm=`): an agent carries a herdr marker (#s226), or a tmux one (#s318, for
+/// `Proc::under_agent`).
+fn needs_parent_chain(procs: &[Proc]) -> bool {
+    procs
+        .iter()
+        .any(|p| p.herdr_pane.is_some() || p.pane.is_some())
+}
+
+/// `pid ppid ucomm` lines → for each agent carrying a herdr or tmux marker, the NEAREST
+/// multiplexer up its parent chain (a pane's shell is the child of its server; a daemonized
+/// server's own parent is launchd, so an outer one is never reached first), and whether another
+/// agent process sits on the way to it (`Proc::under_agent`; for tmux since #s318). The
+/// multiplexer decides only a herdr marker (`Terminal::of`). The tmux server is known by the pid
+/// its `TMUX` variable names (its name is `tmux` on macOS, `tmux: server` on Linux), herdr's by the
 /// executable `herdr` (the server, a pane shell's DIRECT parent, measured on aries-black), and
 /// screen or zellij count as a multiplexer we do not drive. Bounded; a
 /// cycle or a missing parent leaves it undecided, which drives nothing.
@@ -3378,7 +3393,10 @@ fn apply_nesting(procs: &mut [Proc], table: &str) {
         .filter(|p| is_agent_exe(&p.exe_base, &p.argv) && !is_helper(&p.argv))
         .map(|p| p.pid)
         .collect();
-    for p in procs.iter_mut().filter(|p| p.herdr_pane.is_some()) {
+    for p in procs
+        .iter_mut()
+        .filter(|p| p.herdr_pane.is_some() || p.pane.is_some())
+    {
         let tmux_server = p.tmux_server_pid;
         p.under_agent = false;
         let mut at = parents.get(&p.pid).map(|(ppid, _)| *ppid);
@@ -8958,7 +8976,7 @@ n/Users/x/proj
                 );
                 assert_eq!(
                     pane_send_target(&st, sid),
-                    Err(SendRefusal::HerdrPaneShared),
+                    Err(SendRefusal::PaneShared),
                     "{sid} with the child in {child_cwd}"
                 );
                 assert!(registry_row(&snapshot, sid).get("injectable").is_none());
@@ -9066,7 +9084,7 @@ n/Users/x/proj
         std::fs::remove_dir_all(scratch).unwrap();
     }
 
-    /// The review of #s258: the `under_agent` half of `herdr_pane_shared` on its own. An outer
+    /// The review of #s258: the `under_agent` half of `pane_shared` on its own. An outer
     /// one-shot `claude -p` in a herdr pane starts an interactive `claude` through a pty wrapper; a
     /// one-shot reads no pane and so is no sibling, so only the child's running below another agent
     /// refuses its session, whose pane input reaches the outer agent's terminal.
@@ -9106,12 +9124,105 @@ n/Users/x/proj
         let snapshot = idx.assemble(&st, &mut Vec::new());
         assert_eq!(st.send_links[child].pid, Some(900));
         assert!(st.send_links[child].confirmed);
-        assert_eq!(
-            pane_send_target(&st, child),
-            Err(SendRefusal::HerdrPaneShared)
-        );
+        assert_eq!(pane_send_target(&st, child), Err(SendRefusal::PaneShared));
         assert!(registry_row(&snapshot, child).get("injectable").is_none());
         std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// #s318: an agent in a TMUX pane starts an interactive `claude` (or `codex`) from its Bash
+    /// through a pty wrapper, in another directory. The child inherits `TMUX_PANE` and, the lone
+    /// agent process of its directory, is linked to its session, confirmed; but the pane's input
+    /// goes to its starter, and tmux has no check before typing, so the child's session takes no
+    /// send. The starter keeps its own: tmux keeps no record of the pane a child could rewrite.
+    #[test]
+    fn a_tmux_child_agent_in_another_directory_takes_no_send() {
+        for child_agent in [Agent::CLAUDE, Agent::CODEX] {
+            let exe = if child_agent == Agent::CLAUDE {
+                "claude"
+            } else {
+                "codex"
+            };
+            let scratch =
+                std::env::temp_dir().join(format!("cm-tmux-child-{exe}-{}", std::process::id()));
+            std::fs::create_dir_all(&scratch).unwrap();
+            let _env = StateEnv::set(scratch.join("state"));
+            let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+            let outer = "11111111-2222-4333-8444-555555555555";
+            let child = "22222222-2222-4333-8444-555555555555";
+            let mut procs = parse_ps(&format!("700 claude\n900 {exe}\n"));
+            apply_lsof(&mut procs, "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/skua\n");
+            apply_env(
+                &mut procs,
+                &format!(
+                    "700 claude TMUX=/fixture/tmux.sock,50,0 TMUX_PANE=%3\n\
+                     900 {exe} TMUX=/fixture/tmux.sock,50,0 TMUX_PANE=%3\n"
+                ),
+            );
+            assert!(
+                needs_parent_chain(&procs),
+                "a tmux marker asks for the parents"
+            );
+            apply_nesting(
+                &mut procs,
+                &format!(
+                    "1 0 launchd\n50 1 tmux\n61 50 zsh\n700 61 claude\n750 700 zsh\n\
+                     800 750 script\n900 800 {exe}\n"
+                ),
+            );
+            assert!(!procs[0].under_agent && procs[1].under_agent, "{exe}");
+            let mut st = State {
+                procs,
+                ..State::default()
+            };
+            // Each the newest of its directory, so the directory rule pairs each lone process.
+            let mut row = growth_row("/w/harbor", false);
+            row.tree_mtime = Some(SystemTime::now());
+            st.rows.insert(outer.into(), row);
+            let mut row = growth_row("/w/skua", false);
+            row.agent = child_agent;
+            row.tree_mtime = Some(SystemTime::now());
+            st.rows.insert(child.into(), row);
+            idx.prove_by_growth(&mut st);
+            let mut facts = Vec::new();
+            idx.assemble(&st, &mut facts);
+            st.send_links = send_links_of(&facts);
+            let snapshot = idx.assemble(&st, &mut Vec::new());
+            assert_eq!(st.send_links[child].pid, Some(900), "{exe}");
+            assert!(st.send_links[child].confirmed, "{exe}");
+            assert_eq!(registry_row(&snapshot, child)["target"], "%3", "{exe}");
+            assert_eq!(
+                pane_send_target(&st, child),
+                Err(SendRefusal::PaneShared),
+                "{exe}"
+            );
+            assert!(
+                registry_row(&snapshot, child).get("injectable").is_none(),
+                "{exe}"
+            );
+            assert!(
+                matches!(
+                    pane_send_target(&st, outer),
+                    Ok((700, PaneAddr::Tmux { .. }))
+                ),
+                "{exe}"
+            );
+            assert_eq!(registry_row(&snapshot, outer)["injectable"], true, "{exe}");
+            std::fs::remove_dir_all(scratch).unwrap();
+        }
+        // The walk stops at the pane's multiplexer, here known by the pid `TMUX` names alone: an
+        // agent that started the tmux server itself (one run in the foreground) is above the
+        // pane, not between it and the agent in it.
+        let mut procs = parse_ps("600 claude\n700 claude\n");
+        apply_env(
+            &mut procs,
+            "700 claude TMUX=/fixture/tmux.sock,50,0 TMUX_PANE=%1\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n600 1 claude\n50 600 tmux-next\n61 50 zsh\n700 61 claude\n",
+        );
+        assert!(!procs[1].under_agent);
+        assert_eq!(procs[1].inner_mux, Some(Mux::Tmux));
     }
 
     /// The review of #s258: a `claude` in a herdr pane is suspended with Ctrl-Z and the pane's shell
@@ -9152,7 +9263,7 @@ n/Users/x/proj
         st.send_links = send_links_of(&facts);
         let snapshot = idx.assemble(&st, &mut Vec::new());
         assert_eq!(st.send_links[s1].pid, Some(700));
-        assert_eq!(pane_send_target(&st, s1), Err(SendRefusal::HerdrPaneShared));
+        assert_eq!(pane_send_target(&st, s1), Err(SendRefusal::PaneShared));
         assert!(registry_row(&snapshot, s1).get("injectable").is_none());
         // The Codex gone, the pane is the Claude's alone again.
         st.procs.retain(|p| p.pid != 900);
@@ -9208,7 +9319,7 @@ n/Users/x/proj
             assert_eq!(st.send_links[s1].pid, Some(700), "{argv}");
             assert_eq!(
                 pane_send_target(&st, s1),
-                Err(SendRefusal::HerdrPaneShared),
+                Err(SendRefusal::PaneShared),
                 "{argv}"
             );
             assert!(
