@@ -407,8 +407,8 @@ directory, or `claude` in another, would type into the foreground agent, which t
 one-live-session rule (same agent, same directory) does not see. Unlike herdr, a `claude` below
 another agent is no tmux sibling: the pane's input goes to its starter. **A tmux pane is sent to
 only while its agent holds the pane's foreground** (#s335): an agent suspended with Ctrl-Z, or put
-in the background, leaves the pane to its shell, which would run the prompt as a command, and tmux
-has no screen check as herdr has. The scan reads each agent's `ps -o stat=` (`+` the terminal's
+in the background, leaves the pane to its shell, which would run the prompt as a command. The scan
+reads each agent's `ps -o stat=` (`+` the terminal's
 foreground group, `T` stopped; measured in a tmux pane with Claude Code 2.1.314: `S+` at its prompt
 and while a Bash call runs, `T` suspended, the shell then `Ss+`; codex-cli 0.166.0 the same), and a
 row that has left the foreground is not offered the send (`PaneNotForeground`). Right before typing,
@@ -416,12 +416,25 @@ row that has left the foreground is not offered the send (`PaneNotForeground`). 
 types nothing unless the process holds the pane's own terminal in the foreground, and nothing when
 either reading fails (a `claude` a pty wrapper started holds a terminal of its own, as does one in
 an editor's terminal inside the pane). **Nor is a Claude session in a tmux pane sent to while the
-client waits on a dialog** (#s336): a dialog takes the Enter that submits as its first choice, and
-the tmux send reads nothing of the pane. Measured on Claude Code 2.1.314, the send's own paste and
+client waits on a dialog** (#s336): a dialog takes the Enter that submits as its first choice.
+Measured on Claude Code 2.1.314, the send's own paste and
 Enter into an open permission prompt picked "Yes" and ran the command, the text gone (a question
 opens with its first option selected). So it holds while the client's own record names a wait
 (`client_wait`: `waiting` for input or a permission prompt, a plan's approval included, #s76), with
-herdr's words. A Codex session has no such record. The
+herdr's words. **And the tmux send reads the pane before it types and before its Enter** (#s338),
+as herdr's does: `tmux capture-pane -p -e` shows Claude's input box exactly as herdr's `pane read
+--ansi` does (measured, Claude Code 2.1.314: idle and cleared read empty, a draft a draft, a question
+and a permission prompt no box), so `herdr_input_line` reads it; Codex's composer is the last line
+opening with `›` and a space, a dim placeholder when empty (`codex_input_line`, measured on
+codex-cli 0.166.0, whose approval draws its chosen option `› 1. Yes, proceed (y)` and leaves no
+record of the wait: its rollout shows only a call still running, and the old send's paste and Enter
+approved the command). It types only into an input on screen and empty, so a dialog no record names
+(a Codex approval, a kind of wait not known here, one an older client shows only in its transcript)
+holds it, and so does a draft the reader left; after the paste it presses Enter only once the input
+shows a draft (whether all of it is ours is not read back, as with herdr; read for about two
+seconds), else it holds with the text left there. A Codex `›` line going on with a number and a dot
+is an approval's option only where it is drawn in reverse video or "Press enter to confirm" follows
+(both measured), so a prompt that opens with a numbered list is still a draft. The
 send, a grant and a dialog read always rescan the processes rather than use the last tick's, so
 each pays a full probe (the bounded `ps` and `lsof` runs and the record reads) for current evidence.
 **A one-shot (`claude -p`/`--print`) is headless and pairs by TIME** (#s50): knack's coordinator
@@ -504,7 +517,7 @@ the session in its own argv (`names_exactly`: `--resume <id>` or `--session-id <
 id, an `attach` client, a fork, a one-shot or a directory pairing), and the original expiry has not
 passed (never extended). The carry is worked out on every send and never written back, so a send
 only reads `consent.json`, and the row's `consented` asks the same (`covers`) — and then
-`control::herdr_send` checks what tmux never did, for a CLAUDE session only (herdr's hook reports
+`control::herdr_send` checks more than the tmux send does, for a CLAUDE session only (herdr's hook reports
 Claude's session; a Codex row in herdr is not offered the send, `HerdrClaudeOnly`): the pane id must
 be herdr's shape and the socket a socket of this user (both come from another process's
 environment); every herdr step addresses that one server by `HERDR_SOCKET_PATH` alone (the monitor's

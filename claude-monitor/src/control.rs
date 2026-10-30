@@ -445,10 +445,67 @@ pub fn tmux_cmd(sock: Option<&str>, args: &[&str], what: &str) -> Result<()> {
 ///  2. `paste-buffer -p` pastes it BRACKETED (`-d` deletes the buffer after): a multi-line
 ///     prompt arrives as one pasted block the agent's input treats as text, not as N lines
 ///     each Enter-submitted.
-///  3. a single `send-keys Enter` submits (bracketed paste never submits on its own).
+///  3. a single `send-keys Enter` submits (bracketed paste never submits on its own), once the
+///     pane shows a draft in the agent's input (`shows`, #s338; whether all of it is ours is not
+///     read back, as with herdr): a dialog that opened as it was pasted would take the Enter as
+///     its first choice, so then nothing is submitted (`paste_then_enter`).
 ///  4. `display-message` announces the send on the pane's STATUS LINE (§3.3 — verified NOT
 ///     to enter stdin), so the injection is visible in the target, never silent.
-pub fn tmux_send(sock: Option<&str>, pane: &str, prompt: &str) -> Result<()> {
+pub fn tmux_send(
+    sock: Option<&str>,
+    pane: &str,
+    prompt: &str,
+    shows: impl Fn() -> InputLine,
+) -> Result<(), HerdrSendError> {
+    paste_then_enter(
+        || tmux_paste(sock, pane, prompt),
+        shows,
+        // 3) submit with a single Enter.
+        || tmux_cmd(sock, &["send-keys", "-t", pane, "Enter"], "send-keys Enter"),
+        std::time::Duration::from_millis(150),
+    )?;
+    // 4) announce on the status line — visibility without touching stdin (§3.3).
+    let _ = tmux_cmd(
+        sock,
+        &[
+            "display-message",
+            "-t",
+            pane,
+            "agent-monitor: a prompt was sent from the rail",
+        ],
+        "display-message",
+    );
+    Ok(())
+}
+
+/// Paste, then press Enter only once the input shows a draft (#s338). It is read for about two
+/// seconds (`step` apart), since the agent may not have redrawn the moment tmux pasted and a
+/// capture taken mid-redraw may show no box; anything but a draft by then holds, the text left in
+/// the input. A paste that fails reads nothing and presses nothing.
+fn paste_then_enter(
+    paste: impl FnOnce() -> Result<()>,
+    shows: impl Fn() -> InputLine,
+    enter: impl FnOnce() -> Result<()>,
+    step: std::time::Duration,
+) -> Result<(), HerdrSendError> {
+    paste().map_err(HerdrSendError::Failed)?;
+    let mut seen = shows();
+    for _ in 0..13 {
+        if seen == InputLine::Draft {
+            break;
+        }
+        std::thread::sleep(step);
+        seen = shows();
+    }
+    if seen != InputLine::Draft {
+        return Err(HerdrSendError::Held(TYPED_NOT_SENT.into()));
+    }
+    enter().map_err(HerdrSendError::Failed)
+}
+
+/// Steps 1 and 2 of [`tmux_send`]: the prompt into a named buffer through stdin, then pasted
+/// bracketed into the pane.
+fn tmux_paste(sock: Option<&str>, pane: &str, prompt: &str) -> Result<()> {
     const BUF: &str = "agent-monitor-send";
 
     // 1) prompt → a named tmux buffer, via stdin (never argv).
@@ -480,34 +537,27 @@ pub fn tmux_send(sock: Option<&str>, pane: &str, prompt: &str) -> Result<()> {
         sock,
         &["paste-buffer", "-d", "-p", "-b", BUF, "-t", pane],
         "paste-buffer",
-    )?;
-    // 3) submit with a single Enter.
-    tmux_cmd(sock, &["send-keys", "-t", pane, "Enter"], "send-keys Enter")?;
-    // 4) announce on the status line — visibility without touching stdin (§3.3).
-    let _ = tmux_cmd(
-        sock,
-        &[
-            "display-message",
-            "-t",
-            pane,
-            "agent-monitor: a prompt was sent from the rail",
-        ],
-        "display-message",
-    );
-    Ok(())
+    )
 }
 
 /// What a send says while the client waits on a question or a permission prompt (#s76), in a
 /// herdr pane and a tmux pane alike.
 const DIALOG_OPEN: &str =
     "a question or a permission prompt is open in the session: answer it there first";
+/// What a send says when the agent's input is not on the pane's screen, herdr's or tmux's.
+const INPUT_MISSING: &str =
+    "the session's input box is not on screen (a dialog or a menu may be open): nothing was typed";
+/// What a send says when the agent's input holds a draft the reader has not sent.
+const INPUT_DRAFT: &str = "the session's input holds an unsent draft: send or clear it there first";
+/// What a send says when the pasted text did not show in the input before the Enter.
+const TYPED_NOT_SENT: &str = "the prompt is typed in the session's input but not sent: something opened over it, so send it there";
 
 /// Right before typing into a tmux pane: may this send type at all? `read` runs one command and
 /// gives its output (empty when it failed); the send's is [`index::run_bounded_env`] with a 5 s
 /// bound.
 ///
-/// First, no dialog may be open (#s336): the tmux send reads nothing of the pane, and a dialog
-/// takes the Enter that submits as its first choice. Measured on Claude Code 2.1.314, the send's
+/// First, no dialog may be open (#s336): a dialog takes the Enter that submits as its first
+/// choice. Measured on Claude Code 2.1.314, the send's
 /// own paste and Enter into an open permission prompt picked "Yes" and ran the command, the text
 /// gone (a question's first option is selected as it opens, so it would take the Enter too). The
 /// client's record says it waits (`target.client_wait`, Claude's alone; read as the target
@@ -520,6 +570,11 @@ const DIALOG_OPEN: &str =
 /// agent leaves the pane to its shell, which would run the prompt as a command, and a process on
 /// another terminal (a `claude` started through a pty wrapper inherits its starter's
 /// `TMUX_PANE`) is not what the pane types into. Either, or a reading that fails, types nothing.
+///
+/// Last, the pane's screen must show the agent's input, empty (#s338), as herdr's send reads it:
+/// a dialog the client's record does not name (a Codex approval, which no record shows; a kind
+/// of wait not known here; one an older client shows only in its transcript) replaces it, and a
+/// draft the reader has not sent would be submitted with the prompt.
 fn tmux_before_typing(
     target: &index::PaneTarget,
     read: impl Fn(&[&str]) -> String,
@@ -538,7 +593,33 @@ fn tmux_before_typing(
     }
     tmux.extend(["display-message", "-p", "-t", pane.as_str(), "#{pane_tty}"]);
     let pane_tty = read(&tmux);
-    pane_held_verdict(&ps, &pane_tty)
+    pane_held_verdict(&ps, &pane_tty)?;
+    match tmux_input_line(target.agent, &read(&tmux_capture(sock.as_deref(), pane))) {
+        InputLine::Empty => Ok(()),
+        InputLine::Draft => Err(INPUT_DRAFT.into()),
+        InputLine::Missing => Err(INPUT_MISSING.into()),
+    }
+}
+
+/// The command that reads a tmux pane's visible screen with its SGR codes, as herdr's `pane read
+/// --ansi` gives it (#s338: Claude's input box reads the same off either, measured).
+fn tmux_capture<'a>(sock: Option<&'a str>, pane: &'a str) -> Vec<&'a str> {
+    let mut args = vec!["tmux"];
+    if let Some(sock) = sock {
+        args.extend(["-L", sock]);
+    }
+    args.extend(["capture-pane", "-p", "-e", "-t", pane]);
+    args
+}
+
+/// What the agent's input holds on a tmux pane's screen (#s338): Claude's box as herdr's send
+/// reads it, Codex's composer as [`codex_input_line`] does.
+fn tmux_input_line(agent: claude_replay_core::Agent, screen: &str) -> InputLine {
+    if agent == claude_replay_core::Agent::CODEX {
+        codex_input_line(screen)
+    } else {
+        herdr_input_line(screen)
+    }
 }
 
 /// [`tmux_before_typing`]'s foreground verdict over what it read: `ps`'s `tty stat` line
@@ -647,7 +728,7 @@ pub fn herdr_agent_list(socket: &str) -> Result<Vec<HerdrPane>> {
 /// input shows a DIM suggestion (`ESC[2m`); a typed draft is not dim, and a second line of it
 /// continues below, indented; a permission dialog REPLACES the box. So the box is found by its
 /// rules, everything in it after the prompt counts, and only text drawn wholly dim is empty.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputLine {
     Empty,
     Draft,
@@ -660,12 +741,18 @@ pub enum InputLine {
 /// parameter. Read naively, the `2` in a truecolor code turned dim on, so a draft Claude colours
 /// read as an empty box (the second review of #s226).
 fn sgr_dim(code: &str, dim: &mut bool) {
+    sgr_attr(code, "2", "22", dim);
+}
+
+/// One SGR code's effect on one attribute, set by `set` and cleared by `clear` or a reset, a
+/// colour's sub-parameters skipped whole as [`sgr_dim`] says.
+fn sgr_attr(code: &str, set: &str, clear: &str, on: &mut bool) {
     let params: Vec<&str> = code.split(';').collect();
     let mut i = 0;
     while i < params.len() {
         match params[i] {
-            "2" => *dim = true,
-            "" | "0" | "22" => *dim = false,
+            p if p == set => *on = true,
+            p if p == clear || p.is_empty() || p == "0" => *on = false,
             "38" | "48" | "58" => {
                 i += match params.get(i + 1) {
                     Some(&"5") => 2,
@@ -677,6 +764,31 @@ fn sgr_dim(code: &str, dim: &mut bool) {
         }
         i += 1;
     }
+}
+
+/// Whether a line's first visible character is drawn in reverse video (SGR `7`).
+fn starts_reversed(line: &str) -> bool {
+    let mut reversed = false;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            return reversed;
+        }
+        if chars.next() != Some('[') {
+            continue;
+        }
+        let mut code = String::new();
+        for d in chars.by_ref() {
+            if ('\u{40}'..='\u{7e}').contains(&d) {
+                if d == 'm' {
+                    sgr_attr(&code, "7", "27", &mut reversed);
+                }
+                break;
+            }
+            code.push(d);
+        }
+    }
+    false
 }
 
 /// A line's text with its SGR codes, as `(char, dim)` for every visible character.
@@ -750,6 +862,50 @@ pub fn herdr_input_line(screen: &str) -> InputLine {
     }
 }
 
+/// What Codex's composer holds, read off a pane's visible screen with its SGR codes (#s338).
+/// Measured on codex-cli 0.166.0 in a tmux pane: the composer is the LAST line whose text starts
+/// with the prompt `›` and a space (the person's earlier messages above it start so too); an
+/// empty one shows a DIM placeholder ("Ask Codex to do anything"), a draft is not dim. An
+/// approval ("Would you like to run the following command?") draws its chosen option the same
+/// way, `› 1. Yes, proceed (y)`, below the composer's place, in reverse video and above "Press
+/// enter to confirm or esc to cancel". So a last such line whose text goes on with a number and a
+/// dot, drawn reversed or with that footer below, is a menu: no composer, and nothing may be
+/// typed. A prompt that opens with a numbered list, pasted into the composer, is neither.
+pub fn codex_input_line(screen: &str) -> InputLine {
+    const PROMPT: &str = "\u{203a} ";
+    let text = |line: &str| -> String {
+        visible_cells(line, &mut false)
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect()
+    };
+    let lines: Vec<&str> = screen.lines().collect();
+    let Some(at) = lines.iter().rposition(|l| text(l).starts_with(PROMPT)) else {
+        return InputLine::Missing;
+    };
+    let rest: Vec<(char, bool)> = visible_cells(lines[at], &mut false)
+        .into_iter()
+        .skip(PROMPT.chars().count())
+        .collect();
+    let words: String = rest.iter().map(|(c, _)| *c).collect();
+    let words = words.trim_start();
+    let digits = words.chars().take_while(char::is_ascii_digit).count();
+    let menu = digits > 0
+        && words[digits..].starts_with(". ")
+        && (starts_reversed(lines[at])
+            || lines[at + 1..]
+                .iter()
+                .any(|l| text(l).contains("Press enter to confirm")));
+    if menu {
+        return InputLine::Missing;
+    }
+    if rest.iter().any(|(c, dim)| !c.is_whitespace() && !dim) {
+        InputLine::Draft
+    } else {
+        InputLine::Empty
+    }
+}
+
 /// How many images the Claude pane's input box holds (#s237): each pasted image shows there as
 /// `[Image #N]` (measured, Claude Code 2.1.310), counted in the LAST box on screen, as
 /// `herdr_input_line` finds it. The box was empty before the paste (`herdr_send_verdict`), so
@@ -792,13 +948,8 @@ pub fn herdr_send_verdict(
         return Err(DIALOG_OPEN.into());
     }
     match input {
-        InputLine::Missing => Err(
-            "the session's input box is not on screen (a dialog or a menu may be open): nothing was typed"
-                .into(),
-        ),
-        InputLine::Draft => Err(
-            "the session's input holds an unsent draft: send or clear it there first".into(),
-        ),
+        InputLine::Missing => Err(INPUT_MISSING.into()),
+        InputLine::Draft => Err(INPUT_DRAFT.into()),
         InputLine::Empty => Ok(()),
     }
 }
@@ -1155,8 +1306,8 @@ fn parse_send_body(body: &[u8], with_images: bool) -> Result<(String, Vec<SentIm
     Ok((prompt, images))
 }
 
-/// Why a herdr send did not complete: a check held it (said to the reader as is), or a step
-/// failed.
+/// Why a herdr or tmux send did not complete: a check held it (said to the reader as is), or a
+/// step failed.
 pub enum HerdrSendError {
     Held(String),
     Failed(anyhow::Error),
@@ -1213,7 +1364,7 @@ fn herdr_send_with(
     let (agent, input) = look()?;
     herdr_send_verdict(sid, pane, &agent, input, client_wait).map_err(HerdrSendError::Held)?;
     // Once more right before typing: a dialog that opened since would take the text itself (a
-    // leading digit picks a choice). A window remains, as it does for tmux with no check at all.
+    // leading digit picks a choice). A window remains, as it does for tmux.
     let agent = parse_herdr_agent(
         &herdr_cli(program, &socket, &["agent", "get", pane]).map_err(HerdrSendError::Failed)?,
     );
@@ -1283,9 +1434,7 @@ fn herdr_send_with(
         || agent.status.as_deref() == Some("blocked")
         || input != InputLine::Draft
     {
-        return Err(HerdrSendError::Held(
-            "the prompt is typed in the session's input but not sent: something opened over it, so send it there".into(),
-        ));
+        return Err(HerdrSendError::Held(TYPED_NOT_SENT.into()));
     }
     herdr_cli(program, &socket, &["pane", "send-keys", pane, "enter"]).map_err(|e| {
         HerdrSendError::Failed(
@@ -1656,9 +1805,14 @@ fn send_tmux_checked(
             if let Err(why) = tmux_before_typing(&target, read) {
                 return Ok(json!({"ok": false, "code": "held", "error": why}));
             }
-            match tmux_send(sock.as_deref(), pane, prompt) {
+            let shows =
+                || tmux_input_line(target.agent, &read(&tmux_capture(sock.as_deref(), pane)));
+            match tmux_send(sock.as_deref(), pane, prompt, shows) {
                 Ok(()) => json!({"ok": true, "sid": sid, "via": "tmux"}),
-                Err(e) => json!({"ok": false, "error": format!("{e:#}")}),
+                Err(HerdrSendError::Held(why)) => {
+                    json!({"ok": false, "code": "held", "error": why})
+                }
+                Err(HerdrSendError::Failed(e)) => json!({"ok": false, "error": format!("{e:#}")}),
             }
         }
         index::PaneAddr::Herdr { socket, pane } => {
@@ -2927,40 +3081,169 @@ mod tests {
         assert!(refused("ttys022 S+\n", "").contains("could not be read"));
     }
 
-    /// #s336: a tmux send types nothing while the client waits on a dialog, whose first choice
-    /// the Enter would take (measured: a permission prompt's "Yes" ran the command); nothing is
-    /// even read. With no wait it goes on to the foreground check (#s335), here passing.
-    #[test]
-    fn a_tmux_send_holds_while_a_dialog_is_open() {
-        let target = |client_wait| index::PaneTarget {
+    /// A tmux send's target in a test: pane `%3` of the server `work`, process 700.
+    fn tmux_target(agent: claude_replay_core::Agent, client_wait: bool) -> index::PaneTarget {
+        index::PaneTarget {
             sid: "s".into(),
             pid: 700,
+            agent,
             addr: index::PaneAddr::Tmux {
                 sock: Some("work".into()),
                 pane: "%3".into(),
             },
             client_wait,
             named: false,
-        };
+        }
+    }
+
+    /// What `tmux_before_typing` reads for pane `%3`: the process in the foreground on the pane's
+    /// terminal, and `screen` as the pane shows it.
+    fn pane_reads(screen: &str) -> impl Fn(&[&str]) -> String + '_ {
+        move |args: &[&str]| match (args[0], args.contains(&"capture-pane")) {
+            ("ps", _) => "ttys022 S+\n".into(),
+            (_, true) => screen.to_string(),
+            _ => "/dev/ttys022\n".into(),
+        }
+    }
+
+    /// Claude's input box as a tmux pane shows it (`capture-pane -p -e`, measured on Claude Code
+    /// 2.1.314): rules above and below, `❯` and a no-break space, an empty box's suggestion dim.
+    fn claude_box(input: &str) -> String {
+        let rule = "\u{2500}".repeat(40);
+        format!("some output\n{rule}\n\u{1b}[39m\u{276f}\u{a0}{input}\n{rule}\n  \u{23f8} manual mode on\n")
+    }
+
+    /// #s336: a tmux send types nothing while the client waits on a dialog, whose first choice
+    /// the Enter would take (measured: a permission prompt's "Yes" ran the command); nothing is
+    /// even read. With no wait it goes on to the foreground (#s335) and screen (#s338) checks,
+    /// here passing.
+    #[test]
+    fn a_tmux_send_holds_while_a_dialog_is_open() {
+        let target = |client_wait| tmux_target(claude_replay_core::Agent::CLAUDE, client_wait);
         let held = tmux_before_typing(&target(true), |args| {
             panic!("read {args:?} with a dialog open")
         });
         assert_eq!(held, Err(DIALOG_OPEN.to_string()));
         let asked = std::cell::RefCell::new(Vec::new());
+        let screen = claude_box("\u{1b}[2mTry \"refactor model.rs\"\u{1b}[0m");
+        let reads = pane_reads(&screen);
         let sent = tmux_before_typing(&target(false), |args| {
             asked.borrow_mut().push(args.join(" "));
-            match args[0] {
-                "ps" => "ttys022 S+\n".into(),
-                _ => "/dev/ttys022\n".into(),
-            }
+            reads(args)
         });
         assert_eq!(sent, Ok(()));
         assert_eq!(
             asked.into_inner(),
             [
                 "ps -o tty=,stat= -p 700",
-                "tmux -L work display-message -p -t %3 #{pane_tty}"
+                "tmux -L work display-message -p -t %3 #{pane_tty}",
+                "tmux -L work capture-pane -p -e -t %3"
             ]
+        );
+    }
+
+    /// #s338: a tmux send types only into the agent's input, empty, as the pane's screen shows it.
+    /// A dialog no record names replaces the input: a Codex approval (no record of it exists,
+    /// measured on codex-cli 0.166.0, and the old send's paste and Enter approved the command),
+    /// or a Claude dialog its record does not name. A draft the reader left would go with the
+    /// prompt. The screens are hand-written in the measured shapes.
+    #[test]
+    fn a_tmux_send_types_only_into_an_empty_input_on_screen() {
+        use claude_replay_core::Agent;
+        let check = |agent, screen: &str| {
+            tmux_before_typing(&tmux_target(agent, false), pane_reads(screen))
+        };
+        let dim = |text: &str| format!("\u{1b}[2m{text}\u{1b}[0m");
+        // Claude: an empty box sends; a draft or a dialog in the box's place does not.
+        assert_eq!(check(Agent::CLAUDE, &claude_box(&dim("Try \"x\""))), Ok(()));
+        assert_eq!(
+            check(Agent::CLAUDE, &claude_box("a draft I have not sent")),
+            Err(INPUT_DRAFT.into())
+        );
+        let rule = "\u{2500}".repeat(40);
+        let question = format!(
+            "{rule}\n \u{2610} Fruit\nPick a fruit\n\u{276f} 1. Apple\n  2. Pear\n{rule}\n  4. Chat about this\nEnter to select \u{b7} \u{2191}/\u{2193} to navigate \u{b7} Esc to cancel\n"
+        );
+        assert_eq!(check(Agent::CLAUDE, &question), Err(INPUT_MISSING.into()));
+        // Codex: the composer is the last line opening with `›`; its approval draws the chosen
+        // option the same way.
+        let composer = |input: &str| {
+            format!(
+                "\u{1b}[1;2m\u{203a} \u{1b}[0mearlier message\n\u{2022} Ran ls\n\u{1b}[1m\u{203a}\u{1b}[0m {input}\n  GPT medium \u{b7} ~/w/harbor\n  \u{2190} for agents \u{b7} ? for shortcuts\n"
+            )
+        };
+        assert_eq!(
+            check(Agent::CODEX, &composer(&dim("Ask Codex to do anything"))),
+            Ok(())
+        );
+        assert_eq!(
+            check(Agent::CODEX, &composer("a draft I have not sent")),
+            Err(INPUT_DRAFT.into())
+        );
+        let approval = "\u{1b}[1;2m\u{203a} \u{1b}[0mRun touch x\n  Would you like to run the following command?\n  $ touch x\n\u{1b}[1;7m\u{203a} 1. Yes, proceed (y)\n  2. Yes, and don't ask again (p)\n  3. No, and tell Codex what to do differently (esc)\n  Press enter to confirm or esc to cancel\n";
+        assert_eq!(check(Agent::CODEX, approval), Err(INPUT_MISSING.into()));
+        // The review of 46d65d53: a prompt that opens with a numbered list is a draft once pasted,
+        // not an option; an option is drawn reversed, or has the approval's footer below it.
+        let numbered = composer("1. Fix the flaky test");
+        assert_eq!(codex_input_line(&numbered), InputLine::Draft);
+        assert_eq!(codex_input_line(approval), InputLine::Missing);
+        let unreversed = approval.replace("\u{1b}[1;7m", "\u{1b}[1m");
+        assert_eq!(codex_input_line(&unreversed), InputLine::Missing);
+        let footless = approval.replace("  Press enter to confirm or esc to cancel\n", "");
+        assert_eq!(codex_input_line(&footless), InputLine::Missing);
+        // A Claude screen read as Codex's, or nothing read at all, has no input to type into.
+        assert_eq!(
+            check(Agent::CODEX, &claude_box(&dim("Try"))),
+            Err(INPUT_MISSING.into())
+        );
+        assert_eq!(check(Agent::CLAUDE, ""), Err(INPUT_MISSING.into()));
+    }
+
+    /// #s338: after the paste, Enter goes only once the input shows a draft, read until it does
+    /// (a capture mid-redraw may show no box); a dialog that took the paste holds the send with
+    /// no Enter, and a paste that failed reads and presses nothing.
+    #[test]
+    fn a_tmux_send_presses_enter_only_once_the_input_shows_a_draft() {
+        use std::cell::{Cell, RefCell};
+        let step = std::time::Duration::from_millis(1);
+        let run = |seen: &[InputLine], pasted: Result<()>| {
+            let reads = RefCell::new(
+                seen.iter()
+                    .copied()
+                    .collect::<std::collections::VecDeque<_>>(),
+            );
+            let entered = Cell::new(false);
+            let outcome = paste_then_enter(
+                || pasted,
+                || reads.borrow_mut().pop_front().unwrap_or(InputLine::Missing),
+                || {
+                    entered.set(true);
+                    Ok(())
+                },
+                step,
+            );
+            (outcome, entered.get())
+        };
+        let (outcome, entered) = run(
+            &[InputLine::Empty, InputLine::Missing, InputLine::Draft],
+            Ok(()),
+        );
+        assert!(outcome.is_ok() && entered, "a slow redraw, then the draft");
+        let (outcome, entered) = run(&[InputLine::Missing], Ok(()));
+        assert!(
+            matches!(outcome, Err(HerdrSendError::Held(ref why)) if why == TYPED_NOT_SENT)
+                && !entered,
+            "a dialog took the paste"
+        );
+        let (outcome, entered) = run(&[InputLine::Empty], Ok(()));
+        assert!(
+            matches!(outcome, Err(HerdrSendError::Held(_))) && !entered,
+            "nothing showed"
+        );
+        let (outcome, entered) = run(&[InputLine::Draft], Err(anyhow::anyhow!("no server")));
+        assert!(
+            matches!(outcome, Err(HerdrSendError::Failed(_))) && !entered,
+            "the paste failed"
         );
     }
 

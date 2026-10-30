@@ -105,6 +105,8 @@ pub fn herdr_session(socket: Option<&str>) -> Option<String> {
 pub struct PaneTarget {
     pub sid: String,
     pub pid: u32,
+    /// The session's agent: whose input a tmux send reads off the pane's screen (#s338).
+    pub agent: Agent,
     pub addr: PaneAddr,
     /// What the client says it waits on (#s76: a question, a permission prompt), read as the
     /// target resolved. The herdr and tmux sends hold while it waits (#s336); typing would answer
@@ -1124,6 +1126,7 @@ impl Index {
         Ok(PaneTarget {
             sid: sid.to_string(),
             pid,
+            agent: row.agent,
             named: st.send_links.get(sid).is_some_and(|l| l.named),
             addr,
             client_wait: claude_replay_core::adapter(row.agent)
