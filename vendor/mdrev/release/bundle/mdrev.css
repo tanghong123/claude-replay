@@ -2,7 +2,8 @@
 .mdrev-host *:where(:not(svg, svg *, canvas, .mdv-canvas, .mdv-canvas *)) { all: revert; }
 .mdrev-host.is-contained { contain: layout; }
 .mdrev-host:not(.is-contained) { height: auto; overflow: visible; }
-.mdrev-host .doc {--read-body:1rem;--read-line:1.5;--read-measure:44rem;--read-rhythm:1.25em;--read-serif:ui-serif, "New York", "Iowan Old Style", "Palatino Linotype", Georgia, serif;--read-sans:-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;--read-face:var(--read-serif);--read-head:var(--read-serif);font-family:var(--read-face);font-size:var(--read-body);line-height:var(--read-line);color:var(--ink);font-kerning:normal;text-rendering:optimizelegibility;hanging-punctuation:first last;text-autospace:normal}
+.mdrev-host .doc {--read-body:1rem;--read-line:1.5;--read-measure:44rem;--read-rhythm:1.25em;--read-serif:ui-serif, "New York", "Iowan Old Style", "Palatino Linotype", Georgia, serif;--read-sans:-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;--read-face:var(--read-sans);--read-head:var(--read-serif);font-family:var(--read-face);font-size:var(--read-body);line-height:var(--read-line);color:var(--ink);font-kerning:normal;text-rendering:optimizelegibility;hanging-punctuation:first last;text-autospace:normal}
+.mdrev-host .doc.face-serif {--read-face:var(--read-serif);--read-head:var(--read-serif)}
 .mdrev-host .doc.face-sans {--read-face:var(--read-sans);--read-head:var(--read-sans)}
 .mdrev-host .doc.density-compact {--read-line:1.42;--read-rhythm:1.02em}
 .mdrev-host .doc.size-xxxs {--read-body:.75rem}

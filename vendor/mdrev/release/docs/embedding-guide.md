@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.67/
+mdrev-embed-1.1.68/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -180,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.67`, with two tarballs: `mdrev-1.1.67-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.67.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.68`, with two tarballs: `mdrev-1.1.68-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.68.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.67/mdrev-embed-1.1.67.tar.gz
-tar xzf mdrev-embed-1.1.67.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.67
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.68/mdrev-embed-1.1.68.tar.gz
+tar xzf mdrev-embed-1.1.68.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.68
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.67/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.68/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -196,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.67/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.67.tar.gz
-cd mdrev-embed-1.1.67
+tar xzf mdrev-embed-1.1.68.tar.gz
+cd mdrev-embed-1.1.68
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -302,6 +302,23 @@ mounted.print();
 mounted.unmount();
 ```
 
+When a new user command explicitly requests a range, pass `asked: true` inside
+the range argument to `mounted.open`. As with the mount's `rangeAsked`, this
+shows that requested comparison even if the document was last read clean;
+ordinary tab switching leaves the reader's current mode alone.
+
+For several preserved viewer panes, call `mounted.setActive(false)` on hidden
+panes and `mounted.setActive(true)` on the selected one. Hidden panes release
+their document stream and pause annotation, review-store and file-tree polling,
+including when their iframe retains a layout box. Resuming a working-tree range
+revalidates its document; a range pinned to two revisions stays fixed.
+Activity and keyboard focus are separate: the host decides whether selecting
+a pane should focus its viewer or keep focus on a keyboard-operated tab bar.
+The viewer retains its reading position and note drafts. This also avoids
+spending the browser's per-origin HTTP connections on hidden documents.
+Use `mounted.open(path, undefined, {hash: '#heading'})` to reveal a heading
+through the viewer's ordinary reader-jump path without replacing its range.
+
 The options, all of them:
 
 | Option | Meaning | Default |
@@ -312,6 +329,8 @@ The options, all of them:
 | `rangeAsked` | the reader asked for `range` **just now**, in so many words — a command line, a "what changed since Tuesday" control. mdrev remembers the mode each document was last read in, and that memory outranks the range a page opens with: right for a reload, a bookmark or a shared link, wrong for a range a reader named a second ago, which came up clean and read as "nothing changed". The viewer cannot tell those apart — both arrive as nothing but a range — so this is you saying which you have. Leave it out for a page that is merely showing a range it was holding. Read once, at mount: a move to another document goes back to that document's own preference. Setting it also makes the viewer call your `onNavigate` once at mount, with the very path and range you passed — that is how the claim is spent, so the address you keep no longer carries it into a reload | `false` |
 | `note` | the comment to open at — a shared record's `shr-` id, or a note's `ann-` id — when your address names one (a link from an unread list or a notification). The viewer scrolls to it, opens its card and marks read what that draws. Read once, at mount, never written back: the next move leaves it, so keep it out of the address you write after `onNavigate` | none |
 | `onNavigate(path, range)` | the reader chose another range or document. `range` is `{from, to}`; `to === 'WORKTREE'` is "as it stands", `from === 'EMPTY'` is "before the first revision", `from === null` a plain read. The viewer never touches your URL — this is how you keep it in step | — |
+| `onOpenDocument(path, range, hash?)` | the reader picked another document in the current collection, from the file rail or a document link. A host with document tabs handles the request here, before this viewer moves; keep this mount alive to preserve its reading position and drafts. `hash` is a link's heading fragment, when present. Without this callback, navigation stays inside the viewer as before. Same-document heading links stay inside the viewer either way | — |
+| `hash` | a heading fragment to reveal once the initial document renders; accepts a leading `#` and percent-encoded headings | none |
 | `onOpenOther(root, path, cap)` | the reader picked a document from somewhere else — a recents row, a tree leaf, a link out of this collection. `root` is your own opaque name for the collection, handed back exactly as `/recents` or `/tree` gave it, and `cap` is the capability that row carried, if you minted one. Answer it with `mounted.open(path, undefined, {cap})` when the collection is the one already mounted and `mounted.open(path, undefined, {root, cap})` when it is not — **pass the `cap` either way**: a capability is minted for a (collection, path) pair, so the one that opens a sibling is not the one the mount was given, and a move inside a collection that drops it leaves the viewer asking with the wrong capability or none — **not** by navigating the page: a reload costs the reader everything the viewer was holding, the file tree's open branches included. Left out, the viewer has nowhere to send the click | — |
 | `onOpenPage(page)` | go to a page **you** named: a branch from your optional `/branches`, or a note drawn on another branch from `/notes-elsewhere` (contract.md). The viewer hands back `page` exactly as you gave it and never navigates itself. Left out, the Branch section and those notes are not offered | — |
 | `fileRail` | show the rail beside the document — the files a range touched, and your `/tree` of everything else. Needs `/changed`, and `/tree` or `/documents`, or it has nothing to list. It gives way to the document: where your mount cannot keep a 600px reading column beside it (and beside a pinned outline), the rail is not drawn, and it returns as the reader left it when the mount is wide enough | `false` |
