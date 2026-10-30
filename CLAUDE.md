@@ -398,9 +398,9 @@ a command, and so does an agent the pane's shell runs in the background, for as 
 In a tmux pane too, a process that runs below another agent process is never sent to (#s318): a
 `claude` or `codex` an agent's Bash starts through a pty wrapper inherits `TMUX_PANE`, and in
 another directory, the lone agent there, it was linked to its session and offered the send, which
-typed into its starter's input, with no check before typing to stop it. So `apply_nesting` reads
-the parent chain whenever an agent carries a pane marker of either kind; the starter keeps its
-send. And a tmux pane that
+typed into its starter's input, with no check before typing to stop it. So
+`apply_nesting_ttys` reads the parent chain whenever an agent carries a pane marker of either
+kind; the starter keeps its send. And a tmux pane that
 holds another agent process running below no other agent is sent to for neither session, as a
 herdr pane is (#s333): a `claude` suspended with Ctrl-Z while the pane's shell runs `codex` in its
 directory, or `claude` in another, would type into the foreground agent, which the
@@ -415,7 +415,11 @@ row that has left the foreground is not offered the send (`PaneNotForeground`). 
 `control::tmux_before_typing` reads the pid's tty and state again and the pane's `#{pane_tty}`: it
 types nothing unless the process holds the pane's own terminal in the foreground, and nothing when
 either reading fails (a `claude` a pty wrapper started holds a terminal of its own, as does one in
-an editor's terminal inside the pane). **Nor is a Claude session in a tmux pane sent to while the
+an editor's terminal inside the pane). The scan reads the same mismatch, so such a row is not
+offered the send either (#s337, `PaneOtherTerminal`): its parent table carries each process's tty,
+and the agent's is compared with the pane shell's, the tmux server's direct child on its chain
+(measured: `script -q /dev/null claude` in a pane on ttys022 runs on ttys024).
+**Nor is a Claude session in a tmux pane sent to while the
 client waits on a dialog** (#s336): a dialog takes the Enter that submits as its first choice.
 Measured on Claude Code 2.1.314, the send's own paste and
 Enter into an open permission prompt picked "Yes" and ran the command, the text gone (a question
@@ -496,7 +500,8 @@ multiplexer inside the other's pane hands its children the OUTER pane's markers 
 directions (herdr started from a tmux pane gives every herdr pane `TMUX_PANE`; tmux started in a herdr
 pane gives every tmux pane `HERDR_PANE_ID`), and typing at the outer pane reaches whatever sits there
 now — so a herdr marker is believed only when herdr IS the nearest multiplexer up the agent's parent
-chain (`apply_nesting`, one `ps -axo pid=,ppid=,ucomm=` when any agent carries a herdr marker, or
+chain (`apply_nesting_ttys`, one `ps -axo pid=,ppid=,tty=,ucomm=`
+when any agent carries a herdr marker, or
 a tmux one since #s318: a pane's shell is the herdr server's direct child, measured; `ucomm` because
 `comm` is the start path cut at 16 characters). The tmux server is known by the pid in `TMUX`,
 screen or zellij nearer than herdr is a pane we do not drive, and with no answer the agent is in no

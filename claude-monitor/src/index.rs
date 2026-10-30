@@ -151,6 +151,11 @@ pub enum SendRefusal {
     /// (tmux path) the agent does not hold its pane's foreground (#s335): suspended with Ctrl-Z
     /// or put in the background, so what is typed would reach the shell or whatever runs there.
     PaneNotForeground,
+    /// (tmux path) the agent holds a terminal other than its pane's (#s337): started through a pty
+    /// wrapper (`script`, `asciinema rec`) or in an editor's terminal. What sits between the pane
+    /// and the agent cannot be checked (an editor would take the text), so the check before
+    /// typing refuses it.
+    PaneOtherTerminal,
 }
 
 /// The pane-injection decision (#133 tmux slice, #s226 herdr), PURE over one scan's link data —
@@ -231,8 +236,8 @@ fn pane_send_target(st: &State, sid: &str) -> Result<(u32, PaneAddr), SendRefusa
     if pane_shared(&st.procs, pid, &addr) {
         return Err(SendRefusal::PaneShared);
     }
-    if tmux_pane_not_held(&st.procs, pid, &addr) {
-        return Err(SendRefusal::PaneNotForeground);
+    if let Some(refusal) = tmux_pane_refusal(&st.procs, pid, &addr) {
+        return Err(refusal);
     }
     if !pane_send_beside_siblings(&st.procs, pid, sid, &addr)
         && (unresolved_registry_writer(&st.procs, agent, cwd, &st.send_links)
@@ -276,6 +281,9 @@ impl SendRefusal {
             }
             Self::PaneNotForeground => {
                 "the agent is suspended or in the background in its tmux pane, so a send would reach whatever runs there now: bring it back (fg) first"
+            }
+            Self::PaneOtherTerminal => {
+                "the agent runs on another terminal than its tmux pane (a pty wrapper or an editor's terminal), and what sits between them cannot be checked: send from the pane"
             }
         }
     }
@@ -547,6 +555,10 @@ struct Proc {
     /// The process state (`ps -o stat=`, like `S+` or `T`), whose `+` and `T` say whether it
     /// holds its terminal's foreground (`holds_foreground`, #s335); `None` when not read.
     stat: Option<String>,
+    /// With tmux the nearest multiplexer, the tty of the pane's shell: the tmux server's direct
+    /// child in this process's parent chain, or the process itself as the pane's command (#s337,
+    /// `apply_nesting_ttys`); `None` when not read.
+    pane_tty: Option<String>,
     /// `TMUX_PANE=%N` from the process ENVIRONMENT (`ps eww`) — the probe's finding: the
     /// multiplexer is visible nowhere else, and `%N` is the injection target.
     pane: Option<String>,
@@ -560,11 +572,11 @@ struct Proc {
     /// `HERDR_SOCKET_PATH` — which herdr server the pane belongs to (one per named session).
     herdr_socket: Option<String>,
     /// With a herdr or tmux pane in its environment, the NEAREST multiplexer up the process's
-    /// parent chain (`apply_nesting`): an outer one's marker is inherited and names a pane this
+    /// parent chain (`apply_nesting_ttys`): an outer one's marker is inherited and names a pane this
     /// agent is not in, and a marker with no multiplexer up the chain names no pane at all.
     inner_mux: Option<Mux>,
     /// With a herdr or tmux pane in its environment, another agent process (not a helper) sits
-    /// between this process and that nearest multiplexer (`apply_nesting`): it was started from
+    /// between this process and that nearest multiplexer (`apply_nesting_ttys`): it was started from
     /// that agent's Bash, and the pane's input goes to that agent, not to this one.
     under_agent: bool,
     /// The tmux server's pid, the second field of `TMUX=/path,pid,idx`.
@@ -869,7 +881,7 @@ impl Terminal {
         // no answer, the agent is in no pane we may drive. herdr sets its socket in every pane,
         // so a pane id without one is no herdr pane we can address.
         // So a herdr marker is believed only when herdr IS the nearest multiplexer up the chain
-        // (`apply_nesting`, which also catches screen or zellij inside a herdr pane), and tmux
+        // (`apply_nesting_ttys`, which also catches screen or zellij inside a herdr pane), and tmux
         // inside herdr is tmux only when tmux is the nearest.
         if let Some(pane) = &p.herdr_pane {
             match (p.inner_mux, &p.herdr_socket) {
@@ -2051,8 +2063,9 @@ impl Index {
                     l.confirmed
                         && driven
                         && !pane_shared(&st.procs, l.pid, addr)
-                        // #s335: nor a tmux pane whose agent is suspended or backgrounded.
-                        && !tmux_pane_not_held(&st.procs, l.pid, addr)
+                        // #s335, #s337: nor a tmux pane whose agent is suspended, backgrounded
+                        // or on another terminal than the pane's.
+                        && tmux_pane_refusal(&st.procs, l.pid, addr).is_none()
                         && (!proj_active || pane_send_beside_siblings(&st.procs, l.pid, sid, addr))
                 }) {
                     j["injectable"] = json!(true);
@@ -3388,7 +3401,9 @@ fn scan_procs() -> Vec<Proc> {
         // `ucomm`, the executable's own name: `comm` is the path it was started by, which ps
         // cuts at 16 characters (the herdr server runs as `/opt/homebrew/bin/herdr server`, so
         // its `comm` loses the name; measured on aries-black).
-        apply_nesting(&mut procs, &run(&["ps", "-axo", "pid=,ppid=,ucomm="]));
+        // #s337: with each process's tty, before `ucomm` (which may hold a space, as tmux's
+        // `tmux: server` on Linux), so the pane shell's terminal is known.
+        apply_nesting_ttys(&mut procs, &run(&["ps", "-axo", "pid=,ppid=,tty=,ucomm="]));
     }
     apply_lsof(&mut procs, &run(&lsof_argv(&pids)));
     let home = claude_replay_core::claude_discover::claude_home();
@@ -3397,8 +3412,8 @@ fn scan_procs() -> Vec<Proc> {
     procs
 }
 
-/// Whether the scan must read every process's parent (`apply_nesting`, one `ps -axo
-/// pid=,ppid=,ucomm=`): an agent carries a herdr marker (#s226), or a tmux one (#s318 for
+/// Whether the scan must read every process's parent (`apply_nesting_ttys`, one `ps -axo
+/// pid=,ppid=,tty=,ucomm=`): an agent carries a herdr marker (#s226), or a tmux one (#s318 for
 /// `Proc::under_agent`, #s334 for whether the marker names a pane).
 fn needs_parent_chain(procs: &[Proc]) -> bool {
     procs
@@ -3406,7 +3421,7 @@ fn needs_parent_chain(procs: &[Proc]) -> bool {
         .any(|p| p.herdr_pane.is_some() || p.pane.is_some())
 }
 
-/// `pid ppid ucomm` lines → for each agent carrying a herdr or tmux marker, the NEAREST
+/// `pid ppid tty ucomm` lines → for each agent carrying a herdr or tmux marker, the NEAREST
 /// multiplexer up its parent chain (a pane's shell is the child of its server; a daemonized
 /// server's own parent is launchd, so an outer one is never reached first), and whether another
 /// agent process sits on the way to it (`Proc::under_agent`; for tmux since #s318). The
@@ -3415,19 +3430,40 @@ fn needs_parent_chain(procs: &[Proc]) -> bool {
 /// its `TMUX` variable names (its name is `tmux` on macOS, `tmux: server` on Linux), herdr's by the
 /// executable `herdr` (the server, a pane shell's DIRECT parent, measured on aries-black), and
 /// screen or zellij count as a multiplexer we do not drive. Bounded; a
-/// cycle or a missing parent leaves it undecided, which drives nothing.
+/// cycle or a missing parent leaves it undecided, which drives nothing. With tmux nearest it also
+/// notes the tty of the pane's shell, the server's direct child on the way (#s337,
+/// `Proc::pane_tty`).
+fn apply_nesting_ttys(procs: &mut [Proc], table: &str) {
+    nest(procs, parent_table(table, true));
+}
+
+/// [`apply_nesting_ttys`] over `pid ppid ucomm` lines, with no ttys: the tests' parent tables.
+#[cfg(test)]
 fn apply_nesting(procs: &mut [Proc], table: &str) {
-    let parents: HashMap<u32, (u32, String)> = table
+    nest(procs, parent_table(table, false));
+}
+
+/// One process's parent, executable name and tty (`None` for `??`, Linux's `?`, or not read).
+type ParentRow = (u32, String, Option<String>);
+
+/// A `ps` table of `pid ppid [tty] ucomm` lines by pid.
+fn parent_table(table: &str, ttys: bool) -> HashMap<u32, ParentRow> {
+    table
         .lines()
         .filter_map(|line| {
             let mut it = line.split_whitespace();
             let pid = it.next()?.parse().ok()?;
             let ppid = it.next()?.parse().ok()?;
+            let tty = if ttys { it.next() } else { None };
+            let tty = tty.filter(|t| !t.starts_with('?')).map(str::to_string);
             let comm = it.collect::<Vec<_>>().join(" ");
             let base = comm.rsplit('/').next().unwrap_or(&comm).to_string();
-            Some((pid, (ppid, base)))
+            Some((pid, (ppid, base, tty)))
         })
-        .collect();
+        .collect()
+}
+
+fn nest(procs: &mut [Proc], parents: HashMap<u32, ParentRow>) {
     let agents: HashSet<u32> = procs
         .iter()
         .filter(|p| is_agent_exe(&p.exe_base, &p.argv) && !is_helper(&p.argv))
@@ -3440,10 +3476,13 @@ fn apply_nesting(procs: &mut [Proc], table: &str) {
         let tmux_server = p.tmux_server_pid;
         p.under_agent = false;
         p.inner_mux = None;
-        let mut at = parents.get(&p.pid).map(|(ppid, _)| *ppid);
+        p.pane_tty = None;
+        let mut at = parents.get(&p.pid).map(|(ppid, ..)| *ppid);
+        // The process below `at` in the chain: the pane's shell once `at` is the tmux server.
+        let mut below = p.pid;
         for _ in 0..64 {
             let Some(pid) = at else { break };
-            let Some((ppid, comm)) = parents.get(&pid) else {
+            let Some((ppid, comm, _)) = parents.get(&pid) else {
                 break;
             };
             p.under_agent |= agents.contains(&pid);
@@ -3457,9 +3496,13 @@ fn apply_nesting(procs: &mut [Proc], table: &str) {
             } else {
                 None
             };
+            if p.inner_mux == Some(Mux::Tmux) {
+                p.pane_tty = parents.get(&below).and_then(|(.., tty)| tty.clone());
+            }
             if p.inner_mux.is_some() || *ppid == 0 || *ppid == pid {
                 break;
             }
+            below = pid;
             at = Some(*ppid);
         }
     }
@@ -3600,6 +3643,7 @@ fn parse_ps_with(out: &str, is_file: &dyn Fn(&str) -> bool) -> Vec<Proc> {
             open_jsonl: Vec::new(),
             tty: None,
             stat: None,
+            pane_tty: None,
             pane: None,
             tmux_sock: None,
             screen: None,
@@ -3632,7 +3676,8 @@ fn apply_tty(procs: &mut [Proc], out: &str, now: u64) {
         let Some(p) = procs.iter_mut().find(|p| p.pid == pid) else {
             continue;
         };
-        if tty != "??" {
+        // `??` on macOS, `?` on Linux: no terminal (the review of #s337).
+        if !tty.starts_with('?') {
             p.tty = Some(tty.to_string());
         }
         p.started = it
@@ -3653,17 +3698,28 @@ pub fn holds_foreground(stat: &str) -> bool {
     stat.contains('+') && !stat.contains('T')
 }
 
-/// A tmux pane's process that does not hold the pane's foreground, as the last scan read it
-/// (#s335): suspended with Ctrl-Z, or put in the background, so what is typed reaches the
-/// shell, or whatever runs there now. A state not read refuses nothing here; the send reads it
-/// again before typing (`control::tmux_before_typing`). herdr reads its pane's screen instead.
-fn tmux_pane_not_held(procs: &[Proc], pid: u32, addr: &PaneAddr) -> bool {
-    matches!(addr, PaneAddr::Tmux { .. })
-        && procs
-            .iter()
-            .find(|p| p.pid == pid)
-            .and_then(|p| p.stat.as_deref())
-            .is_some_and(|stat| !holds_foreground(stat))
+/// Why a tmux pane's process, as the last scan read it, would not take what a send types there:
+/// it does not hold the pane's foreground (#s335: suspended with Ctrl-Z, or put in the
+/// background, so what is typed reaches the shell, or whatever runs there now), or it holds a
+/// terminal other than the pane's (#s337: the pane shell's, `apply_nesting_ttys`), so a wrapper
+/// or an editor between them takes it. The check before typing (`control::tmux_before_typing`)
+/// refuses both again, so here they only keep the page from offering a send it would refuse; a
+/// state or a tty not read refuses nothing. herdr reads its pane's screen instead.
+fn tmux_pane_refusal(procs: &[Proc], pid: u32, addr: &PaneAddr) -> Option<SendRefusal> {
+    if !matches!(addr, PaneAddr::Tmux { .. }) {
+        return None;
+    }
+    let p = procs.iter().find(|p| p.pid == pid)?;
+    if p.stat
+        .as_deref()
+        .is_some_and(|stat| !holds_foreground(stat))
+    {
+        return Some(SendRefusal::PaneNotForeground);
+    }
+    match (p.tty.as_deref(), p.pane_tty.as_deref()) {
+        (Some(tty), Some(pane)) if tty != pane => Some(SendRefusal::PaneOtherTerminal),
+        _ => None,
+    }
 }
 
 /// `ps eww` lines (command + environment, space-separated) → `TMUX_PANE` / `STY` /
@@ -5760,6 +5816,9 @@ mod tests {
         apply_tty(&mut procs, "  101 ttys006\n  102 ??\n  103 ttys009\n", 0);
         assert_eq!(procs[0].tty.as_deref(), Some("ttys006"));
         assert!(procs[1].tty.is_none(), "?? is detached");
+        // The review of #s337: Linux's `ps` writes `?` for no terminal.
+        apply_tty(&mut procs, "  104 ?\n", 0);
+        assert!(procs[3].tty.is_none(), "? is detached");
 
         apply_env(
             &mut procs,
@@ -9605,6 +9664,91 @@ n/Users/x/proj
                     "{stat:?}"
                 );
                 assert!(!injectable, "{stat:?}");
+            }
+        }
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// #s337: a `claude` the person runs through a pty wrapper in a tmux pane (`script -q /dev/null
+    /// claude`, measured: the wrapper's child holds a pty of its own, `Ss+`) is not offered the
+    /// send, which the check before typing refuses (the wrapper or an editor between them would
+    /// take the text). A plain `claude` under the pane's shell, and one that is the pane's own
+    /// command, are; and with no ttys read nothing is refused.
+    #[test]
+    fn a_tmux_session_on_another_terminal_than_its_pane_takes_no_send() {
+        let scratch = std::env::temp_dir().join(format!("cm-tmux-tty-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let s1 = "11111111-2222-4333-8444-555555555555";
+        for (table, tty, refusal) in [
+            (
+                "1 0 ?? launchd\n88 1 ?? tmux\n61 88 ttys022 zsh\n650 61 ttys022 script\n700 650 ttys023 claude\n",
+                "ttys023",
+                Some(SendRefusal::PaneOtherTerminal),
+            ),
+            (
+                "1 0 ?? launchd\n88 1 ?? tmux\n61 88 ttys022 zsh\n700 61 ttys022 claude\n",
+                "ttys022",
+                None,
+            ),
+            ("1 0 ?? launchd\n88 1 ?? tmux\n700 88 ttys022 claude\n", "ttys022", None),
+            // The review of f4d9790d: the pane shell's tty counts, not the parent's (a claude
+            // started from a shell a wrapper runs), and Linux's two-word `tmux: server`.
+            (
+                "1 0 ?? launchd\n88 1 ?? tmux\n61 88 ttys022 zsh\n650 61 ttys022 script\n660 650 ttys023 zsh\n700 660 ttys023 claude\n",
+                "ttys023",
+                Some(SendRefusal::PaneOtherTerminal),
+            ),
+            (
+                "1 0 ? systemd\n88 1 ? tmux: server\n61 88 pts/3 bash\n700 61 pts/4 claude\n",
+                "pts/4",
+                Some(SendRefusal::PaneOtherTerminal),
+            ),
+            (
+                "1 0 ? systemd\n88 1 ? tmux: server\n61 88 pts/3 bash\n700 61 pts/3 claude\n",
+                "pts/3",
+                None,
+            ),
+            (
+                "1 0 ?? launchd\n88 1 ?? tmux\n61 88 ?? zsh\n650 61 ?? script\n700 650 ttys023 claude\n",
+                "ttys023",
+                None,
+            ),
+        ] {
+            let mut procs = parse_ps("700 claude\n");
+            apply_lsof(&mut procs, "p700\nfcwd\nn/w/harbor\n");
+            apply_env(
+                &mut procs,
+                "700 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%3\n",
+            );
+            apply_nesting_ttys(&mut procs, table);
+            apply_tty(&mut procs, &format!("700 {tty} 01:00 Ss+\n"), 3600);
+            procs[0].native_session = Identity::Verified(s1.into());
+            let mut st = State {
+                procs,
+                ..State::default()
+            };
+            st.rows.insert(s1.into(), growth_row("/w/harbor", false));
+            idx.prove_by_growth(&mut st);
+            let mut facts = Vec::new();
+            idx.assemble(&st, &mut facts);
+            st.send_links = send_links_of(&facts);
+            let snapshot = idx.assemble(&st, &mut Vec::new());
+            assert_eq!(st.send_links[s1].pid, Some(700), "{table}");
+            let injectable = registry_row(&snapshot, s1).get("injectable").is_some();
+            match refusal {
+                Some(refusal) => {
+                    assert_eq!(pane_send_target(&st, s1), Err(refusal), "{table}");
+                    assert!(!injectable, "{table}");
+                }
+                None => {
+                    assert!(
+                        matches!(pane_send_target(&st, s1), Ok((700, PaneAddr::Tmux { .. }))),
+                        "{table}"
+                    );
+                    assert!(injectable, "{table}");
+                }
             }
         }
         std::fs::remove_dir_all(scratch).unwrap();
