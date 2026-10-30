@@ -663,10 +663,22 @@ const RECORD_TYPES_KNOWN: &[&str] = &[
     // these records hold, the cache breakpoints and what each request carried, would need a
     // per-answer "what the model saw" inspector: a design question for the owner. Every such line
     // puts its type first, which is how `turn_ended` and `local_role` pass it by. Measured on the
-    // four: 20 to 30% of each transcript's bytes, 11 to 31% of its last 512 KiB. REVISIT: an
-    // interactive session writing them or a `querySource` other than "sdk"; an `api-request`
-    // whose answer the transcript lacks (a call the page would not show, which could matter to
-    // the cost); the owner asking for the inspector.
+    // four: 20 to 30% of each transcript's bytes, 11 to 31% of its last 512 KiB.
+    // #s330: interactive sessions write it too, `querySource: "repl_main_thread"`, from client
+    // 2.1.302 (11 of them on aries-black over three days, 16,956 calls, measured 2026-10-30): a
+    // median 20% of their bytes (7 to 35%) and 26% of their last 256 KiB (up to 63%). Still
+    // unread. Every raw reader of a transcript was checked against it: the in-flight scan read a
+    // blob's copy of a call as a call running (#s329; it skips these lines now); every other
+    // reader goes by a parsed top-level field (session id, cwd, entrypoint, permission mode), and
+    // the cost fold's `/message/usage`, read on any record, is on no blob (52,667 over 14 days,
+    // each message `role` and `content`, `output_config` on 552); the activity clock takes an
+    // `api-request`'s own timestamp, the moment the call was made. The rendered record log never
+    // holds them, so a tail-first open is untouched; the fold pays for their bytes (the largest
+    // interactive session, 249 MB, 11% of it log, dumps in 1.95 s against 1.79 s without).
+    // REVISIT: a `querySource` other than these two; a blob whose message carries `usage`,
+    // `model` or `id`, which the cost fold would count; a new raw-text reader of a transcript; an
+    // `api-request` whose answer the transcript lacks (a call the page would not show, which
+    // could matter to the cost); the owner asking for the inspector.
     "api-request",
     "api-request-blob",
     "api-request-shape",
