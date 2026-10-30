@@ -28,7 +28,7 @@ import { agentRecordTargets, currentTurnIndex, peerHue, peerLabelRest, Projectio
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
-import { CALM_SECS, flatFamilies } from "../src/codex-ui/session-list.js";
+import { CALM_SECS, familyHolds, flatFamilies, nestSideSessions } from "../src/codex-ui/session-list.js";
 import { BLOCKED_SUMMARY, BUCKETS, FILTER_BUCKETS, FILTER_LABELS, RECENT_SECS, REASONS, REASON_BUCKETS, denoteState, displayState, needsPerson, sessionBucket, sessionFilterBuckets } from "../../claude-replay-html/src/html/shared/state-labels.js";
 import { composeCapability, consentQuery, grantOutcome, runRevoke, runSend, sendOutcome, sendQuery } from "../../claude-replay-html/src/html/shared/control-protocol.js";
 import { cursorText, freshCursor, parseRecords, pullQuery, recordsQuery, reducePull } from "../../claude-replay-html/src/html/shared/record-stream.js";
@@ -825,6 +825,42 @@ assert.match(appSource, /families\(rows\)/, "the tree clusters fork families thr
   console.log("flat list cases passed");
 }
 assert.match(appSource, /flatFamilies\(agents, Date\.now\(\) \/ 1000\)/, "the flat list orders through the tested function");
+// #s340: a Claude desktop side session nests under the family of the session that started it, in
+// the tree and the flat list; one whose starter is left out stays a family of its own, a loop nests
+// nothing, and a side session of a side session nests under that one.
+{
+  const fam = (id, extra = {}) => ({ key: id, rep: { id, ...extra }, members: [{ id, ...extra }], forks: [] });
+  const fams = [
+    fam("side", { sideOf: "starterFork" }),
+    { key: "starter", rep: { id: "starter" }, members: [{ id: "starter" }, { id: "starterFork", family: "starter", isFork: true }], forks: [{ id: "starterFork" }] },
+    fam("other"),
+    fam("sideOfSide", { sideOf: "side" }),
+    fam("orphan", { sideOf: "filteredAway" }),
+    fam("loopA", { sideOf: "loopB" }),
+    fam("loopB", { sideOf: "loopA" })
+  ];
+  const nested = nestSideSessions(fams);
+  assert.deepEqual(nested.map(f => f.key), ["starter", "other", "orphan", "loopA", "loopB"], "a side session leaves the top level, nothing else moves");
+  const starter = nested.find(f => f.key === "starter");
+  assert.deepEqual(starter.sides.map(f => f.key), ["side"], "nested under the family holding its starter, a fork of it included");
+  assert.deepEqual(starter.sides[0].sides.map(f => f.key), ["sideOfSide"], "a side session of a side session nests under that one");
+  assert.ok(familyHolds(starter, "sideOfSide") && familyHolds(starter, "starterFork") && !familyHolds(starter, "other"));
+  assert.deepEqual(nestSideSessions(fams.filter(f => f.key !== "starter")).map(f => f.key), ["side", "other", "orphan", "loopA", "loopB"], "a starter left out keeps its side session in the list");
+  assert.deepEqual(nestSideSessions([]), []);
+  // The review of #s340: the group takes its earliest member's place, so a side session above its
+  // starter (active, or waiting on the person) lifts the starter with it; a starter in another
+  // project nests nothing; only the representative's own `sideOf` counts.
+  const order = nestSideSessions([fam("busySide", { sideOf: "old" }), fam("mid"), fam("old")]);
+  assert.deepEqual(order.map(f => f.key), ["old", "mid"], "the group sits where its active side session was");
+  assert.deepEqual(order[0].sides.map(f => f.key), ["busySide"]);
+  const inProject = (f, id) => ({ ...f, project: { id } });
+  const apart = nestSideSessions([inProject(fam("s1", { sideOf: "p1" }), "p:/a"), inProject(fam("p1"), "p:/b")]);
+  assert.deepEqual(apart.map(f => [f.key, f.sides.length]), [["s1", 0], ["p1", 0]], "a starter in another project nests nothing");
+  const forked = { key: "fam", rep: { id: "fam" }, members: [{ id: "fam" }, { id: "famFork", sideOf: "other", isFork: true }], forks: [{ id: "famFork" }] };
+  assert.deepEqual(nestSideSessions([forked, fam("other")]).map(f => f.key), ["fam", "other"], "a fork naming a starter does not move its family");
+  assert.equal(fams[1].sides, undefined, "the families given are not changed");
+  console.log("side session cases passed");
+}
 assert.match(appSource, /if \(target && turnsFollow\) revealInPane\(target\);/, "#s207: the Turns pane follows the current turn only while it is locked to the session");
 // #s209 (the owner): the agents' marks are the vendors' own registry marks, drawn in one colour.
 {

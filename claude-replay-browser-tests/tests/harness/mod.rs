@@ -1039,7 +1039,37 @@ impl Stores {
             ("CLAUDE_SCRATCH_ROOT", self.root.join("claude-scratch")),
             // #s272: where a relayed message's key is read, so no case reads this Mac's own.
             ("ARIES_STATE_DIR", self.root.join("aries")),
+            // #s340: the Claude desktop app's session records, so no case reads this Mac's own.
+            (
+                "CLAUDE_DESKTOP_SESSIONS_DIR",
+                self.root.join("claude-desktop"),
+            ),
         ]
+    }
+
+    /// #s340: a Claude desktop app session record (`<store>/<account>/<org>/local_<id>.json`, the
+    /// measured shape, synthetic ids): `desktop` is the app's id, `cli` the transcript's, and
+    /// `starter` the desktop id of the session that started this one, as a side session.
+    pub fn desktop_session(&self, desktop: &str, cli: &str, starter: Option<&str>) {
+        let org = self.root.join("claude-desktop/acct-0000/org-0000");
+        std::fs::create_dir_all(&org).unwrap();
+        let mut record = serde_json::json!({
+            "sessionId": desktop,
+            "cliSessionId": cli,
+            "cwd": "/r",
+            "title": "a desktop session",
+            "isArchived": false,
+        });
+        if let Some(starter) = starter {
+            record["spawnedFrom"] = serde_json::json!({
+                "sessionId": starter,
+                "title": "a side question",
+                "sideSession": true,
+                "btw": true,
+                "userFork": true,
+            });
+        }
+        std::fs::write(org.join(format!("{desktop}.json")), record.to_string()).unwrap();
     }
 
     /// #s272: the inbox key the relayed messages are signed with — the format's test key, 32

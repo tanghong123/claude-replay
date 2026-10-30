@@ -375,6 +375,10 @@ struct State {
     /// running worker's environment (`bank_started_by`) and kept in `<cache_root>/started-by.json`,
     /// because the edge is visible only while the worker runs and its transcript never records it.
     started_by_edges: BTreeMap<String, String>,
+    /// The Claude desktop app's session records (#s340), read on the process clock.
+    desktop: crate::desktop_sessions::DesktopSessions,
+    /// A desktop side session's starter, side session sid → starter sid, from those records.
+    side_of: HashMap<String, String>,
 }
 
 impl State {
@@ -1170,6 +1174,10 @@ impl Index {
         if st.procs_at.is_none_or(|t| t.elapsed() > PROC_REFRESH) {
             st.procs = scan_procs();
             st.procs_at = Some(Instant::now());
+            // #s340: which desktop session started which, on the same clock.
+            st.side_of = st
+                .desktop
+                .links(crate::desktop_sessions::store_root().as_deref());
         }
 
         // Discovery: every agent's machine-wide store (R1).
@@ -2003,6 +2011,14 @@ impl Index {
             j["family"] = json!(root);
             if root != *sid {
                 j["isFork"] = json!(true);
+            }
+            // #s340: a desktop side session whose starter is a row here and not of its own fork
+            // family (a forked side question already draws under its family, once).
+            if let Some(starter) = st.side_of.get(sid).filter(|starter| {
+                st.rows.contains_key(starter.as_str())
+                    && family_root(starter.as_str()) != family_root(sid)
+            }) {
+                j["sideOf"] = json!(starter);
             }
             // #s53: a headless worker this index knows the starter of — the shell lists it in that
             // session's Agents pane instead of the session list.
@@ -9751,6 +9767,57 @@ n/Users/x/proj
                 }
             }
         }
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// #s340: a desktop side session's row names its starter (`sideOf`) when the starter is a row
+    /// here, so the page nests it; never when the starter is not a row, and never when the two are
+    /// one fork family already (a forked side question draws under its family, once).
+    #[test]
+    fn a_desktop_side_session_row_names_its_starter() {
+        let scratch = std::env::temp_dir().join(format!("cm-side-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let (starter, side, fork) = (
+            "11111111-2222-4333-8444-555555555555",
+            "22222222-2222-4333-8444-555555555555",
+            "33333333-2222-4333-8444-555555555555",
+        );
+        let mut st = State::default();
+        for sid in [starter, side, fork] {
+            st.rows.insert(sid.into(), growth_row("/w/harbor", false));
+        }
+        st.rows.get_mut(fork).unwrap().fork_from = Some(starter.into());
+        st.side_of = HashMap::from([
+            (side.to_string(), starter.to_string()),
+            (fork.to_string(), starter.to_string()),
+            (
+                "44444444-2222-4333-8444-555555555555".to_string(),
+                starter.to_string(),
+            ),
+        ]);
+        st.rows.insert(
+            "55555555-2222-4333-8444-555555555555".into(),
+            growth_row("/w/harbor", false),
+        );
+        st.side_of.insert(
+            "55555555-2222-4333-8444-555555555555".into(),
+            "66666666-2222-4333-8444-555555555555".into(),
+        );
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert_eq!(registry_row(&snapshot, side)["sideOf"], starter);
+        assert!(registry_row(&snapshot, starter).get("sideOf").is_none());
+        assert!(
+            registry_row(&snapshot, fork).get("sideOf").is_none(),
+            "a fork of its starter draws in its family"
+        );
+        assert!(
+            registry_row(&snapshot, "55555555-2222-4333-8444-555555555555")
+                .get("sideOf")
+                .is_none(),
+            "a starter that is not a row here"
+        );
         std::fs::remove_dir_all(scratch).unwrap();
     }
 

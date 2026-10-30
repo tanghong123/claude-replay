@@ -481,7 +481,23 @@ carries `startedBy` only when the starter is a row here, and `brief` (the first 
 prompt: a worker's own title is its project's). The app shell leaves such rows out of the tree and
 its counts, lists them in the starter's Agents pane after its sub-agents (`data-worker-session`, the
 same descent, so the parent control leads back; a linked worker falls back to `startedBy`), and the
-send gate does not count a session's own worker as "another active session". A fork's engine (`--fork-session --resume <parent.jsonl>`) is the only marker of a Claude fork
+send gate does not count a session's own worker as "another active session". **A Claude desktop
+side session is listed under the session that started it** (#s340, Hong's yes on #s342): the desktop
+app shows a session started from another (an agent's `start_session`, or a "btw" side question the
+person forks) as its child, and its own store says so, `<store>/<account>/<org>/local_<uuid>.json`
+(measured, desktop 4.4212.0 hosting Claude Code 2.1.309: `sessionId` the desktop's id,
+`cliSessionId` the transcript's, `spawnedFrom.sessionId` the starter's desktop id), while the
+transcript names no starter. `desktop_sessions.rs` reads that store read-only and tolerantly
+(`CLAUDE_DESKTOP_SESSIONS_DIR`, else `~/Library/Application Support/Claude/claude-code-sessions` on
+macOS; a record re-read only when it changes; anything unreadable skipped; on the process clock),
+and a row carries `sideOf` when its starter is a row here and not of its own fork family (a forked
+side question already draws under its family, once). Unlike a worker it stays in the list, a session
+the person writes to: the app shell draws it right under its starter's family, marked ↳ and indented
+by depth, in the tree, the flat list and a phone's drawer (`nestSideSessions` in `session-list.js`),
+the group taking its earliest member's place, so an active side session lifts an old starter rather
+than sinking behind "Show N more"; a starter the session filter leaves out, or one in another
+project, leaves its side session listed on its own
+(`the_app_shell_nests_a_desktop_side_session_under_its_starter`). A fork's engine (`--fork-session --resume <parent.jsonl>`) is the only marker of a Claude fork
 anywhere, and `note_forks_from_argv` is how one joins its #142 family. Diagnose against the
 machine, not the API: `term`/`injectable` describe the process the row was LINKED to, so a false
 link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and `ps -axww` first.

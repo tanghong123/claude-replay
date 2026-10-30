@@ -231,6 +231,10 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
 .tree-forks:hover,.tree-forks[aria-expanded="true"]{color:var(--ink);background:var(--hover)}
 .tree-row.session.is-member{padding-left:62px}
 .tree-row.session.is-member .tree-title{font-weight:400;color:var(--sub)}
+/* #s340: a Claude desktop side session under its starter, marked, indented by how deep it nests;
+   its title keeps a session's own weight and colour. */
+.tree-side{flex:none;margin-right:6px;color:var(--faint);font:12px var(--mono)}
+.tree-row.session.is-side{padding-left:calc(48px + var(--side-depth,1) * 14px)}
 
 /* The flat list (#s206, the owner): one list by activity with no agent or project heads, so each
    row says where it lives — the title, and under it the agent's mark and the project's name — and
@@ -245,6 +249,7 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
 .tree-agent .agent-monogram text{fill:currentColor;stroke:none;font:700 12px var(--sans,system-ui)}
 .tree-project{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #app.sessions-flat .tree-row.session.is-member{padding-left:30px}
+#app.sessions-flat .tree-row.session.is-side{padding-left:calc(16px + var(--side-depth,1) * 14px)}
 #app.sessions-flat .side-head .head-actions>:is(#collapseBtn,#expandBtn){display:none}
 
 /* Reading controls (parity #7): the reference rules size code and the transcript with literals;

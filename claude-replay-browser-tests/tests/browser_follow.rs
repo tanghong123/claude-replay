@@ -14970,6 +14970,173 @@ const FLAT_QW: &str = "f1a7f1a7-0000-4000-8000-000000000006";
 /// and the flat toggle are shown and checked, and the app's mode class.
 const FLAT_LIST_JS: &str = "(function () { var t = document.getElementById('tree'); var shown = function (id) { var el = document.getElementById(id); return !!el && getComputedStyle(el).display !== 'none'; }; var flat = document.querySelector('#sessionFilter [data-flat]'); return { rows: Array.from(t.querySelectorAll('.tree-row.session[data-session]')).map(function (r) { var p = r.querySelector('.tree-project'), a = r.querySelector('.tree-agent'), m = a && a.querySelector('.agent-monogram text'), ink = a && (a.querySelector('.brand-icon [fill]:not([fill=none])') || m); return [r.querySelector('.tree-title').textContent, p ? p.textContent : null, a ? a.getAttribute('aria-label') : null, r.classList.contains('selected'), m ? m.textContent : null, ink ? getComputedStyle(ink).fill : a ? getComputedStyle(a.querySelector('.brand-icon')).stroke : null, a ? getComputedStyle(a).color : null]; }), heads: t.querySelectorAll('.agent-label, .tree-row.project').length, collapse: shown('collapseBtn'), expand: shown('expandBtn'), filter: shown('filterBtn'), toggle: flat ? flat.getAttribute('aria-checked') : 'missing', mode: document.getElementById('app').classList.contains('sessions-flat') }; })()";
 
+/// #s340 (Hong's yes on #s342): a session the Claude desktop app records as started from another
+/// (`spawnedFrom` in its own session store) is drawn under its starter, marked as a side session,
+/// in the tree and in the flat list; a third session is not. With the starter left out by the
+/// session filter (idle eight hours, under the default filter), the side session is still listed,
+/// on its own.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_nests_a_desktop_side_session_under_its_starter() {
+    let _serial = serial();
+    let base = base("appshell-side");
+    let stores = Stores::new(&base);
+    let (starter, side, other) = (
+        "51111111-2222-4333-8444-555555555555",
+        "52222222-2222-4333-8444-555555555555",
+        "53333333-2222-4333-8444-555555555555",
+    );
+    let proj = stores.root.join("claude").join("-r");
+    std::fs::create_dir_all(&proj).unwrap();
+    for (sid, title, secs) in [
+        (starter, "starter session", 8 * 3600),
+        (side, "side question", 60),
+        (other, "other session", 30 * 60),
+    ] {
+        let path = proj.join(format!("{sid}.jsonl"));
+        let body = format!(
+            "{{\"type\":\"ai-title\",\"aiTitle\":\"{title}\",\"sessionId\":\"{sid}\"}}\n{}{}",
+            harness::user_at(title, &harness::rfc3339_secs_ago(secs + 5)),
+            harness::history::assistant_phased_at("Done.", &harness::rfc3339_secs_ago(secs), true)
+        );
+        std::fs::write(&path, body).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(secs))
+            .unwrap();
+    }
+    stores.desktop_session("local_aaaa", starter, None);
+    stores.desktop_session("local_bbbb", side, Some("local_aaaa"));
+    stores.desktop_session("local_cccc", other, None);
+    let _monitor = Monitor::spawn(Kind::V1, 3205, &base, Some(&stores), false);
+    let (_browser, tab) = harness::chrome_tab();
+    let url = "http://127.0.0.1:3205/?ui=app";
+    tab.navigate_to(url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    // Each listed row: its id, whether it is a side session, and whether it wears the mark.
+    let rows = || {
+        eval(
+            &tab,
+            "JSON.stringify(Array.from(document.querySelectorAll('#tree .tree-row.session[data-session]')).map(function (r) { return [r.dataset.session, r.classList.contains('is-side'), !!r.querySelector('.tree-side')]; }))",
+            false,
+        )
+        .as_str()
+        .map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap())
+        .unwrap_or_default()
+    };
+    let wait_for = |want: &dyn Fn(&serde_json::Value) -> bool, what: &str| {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut seen = rows();
+        while !want(&seen) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(300));
+            seen = rows();
+        }
+        assert!(want(&seen), "{what}: {seen}");
+        seen
+    };
+    let ids = |v: &serde_json::Value| -> Vec<String> {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|r| r[0].as_str().unwrap_or("").to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    // 1. The default filter leaves the idle starter out; its side session is listed on its own.
+    let first = wait_for(
+        &|v| ids(v).contains(&side.to_string()) && ids(v).contains(&other.to_string()),
+        "the side session and the other are listed",
+    );
+    assert!(
+        !ids(&first).contains(&starter.to_string()),
+        "the starter is filtered out: {first}"
+    );
+    let at = |v: &serde_json::Value, sid: &str| {
+        v.as_array()
+            .and_then(|a| a.iter().find(|r| r[0] == sid).cloned())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        at(&first, side),
+        serde_json::json!([side, false, false]),
+        "on its own, unmarked: {first}"
+    );
+    // 2. Every session shown: the side session sits right under its starter, marked; the other
+    //    session is not nested.
+    harness::show_every_session(&tab, url);
+    // The group takes its side session's place (the review of #s340): the starter, idle eight
+    // hours, comes before the other session, half an hour old, carried by its side session, a
+    // minute old (inside the list's ten-minute calm window), rather than sinking to its own place.
+    let nested = |v: &serde_json::Value| {
+        let order = ids(v);
+        let (s, c, o) = (
+            order.iter().position(|id| id == starter),
+            order.iter().position(|id| id == side),
+            order.iter().position(|id| id == other),
+        );
+        matches!((s, c, o), (Some(s), Some(c), Some(o)) if c == s + 1 && s < o)
+            && at(v, side) == serde_json::json!([side, true, true])
+            && at(v, other) == serde_json::json!([other, false, false])
+    };
+    wait_for(
+        &nested,
+        "the tree nests the side session under its starter, in its place",
+    );
+    // 3. The same in the flat list.
+    let click = |sel: &str| {
+        let r = eval(&tab, &format!("(function () {{ var el = document.querySelector('{sel}'); if (!el) return 'missing'; el.click(); return 'ok'; }})()"), false);
+        assert_eq!(r.as_str(), Some("ok"), "clicked {sel}");
+    };
+    click("#filterBtn");
+    click("#sessionFilter [data-flat]");
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('sessions-flat')",
+        "the flat list is on",
+        Duration::from_secs(10),
+        "document.getElementById('app').className",
+    );
+    wait_for(
+        &nested,
+        "the flat list nests the side session under its starter",
+    );
+    // 4. On a phone (emulated before its first load), in the drawer: the side session is drawn
+    //    right under its starter inside the drawer, its mark on screen and not covered.
+    let (_phone_browser, phone_tab) = harness::chrome_tab();
+    harness::phone(&phone_tab, 390, 844);
+    phone_tab.navigate_to(url).unwrap();
+    phone_tab.wait_until_navigated().unwrap();
+    harness::show_every_session(&phone_tab, url);
+    if eval(&phone_tab, DRAWER_SHUT, false).as_bool() == Some(true) {
+        phone_tap(&phone_tab, "#drawerHandle");
+    }
+    harness::until(
+        &phone_tab,
+        DRAWER_OPEN,
+        "the drawer is open",
+        Duration::from_secs(10),
+        DRAWER_STATE,
+    );
+    let in_drawer = format!(
+        "(function () {{ var d = document.querySelector('#app > .sidebar').getBoundingClientRect(); var rows = Array.from(document.querySelectorAll('#tree .tree-row.session[data-session]')).map(function (r) {{ return r.dataset.session; }}); var row = document.querySelector('#tree .tree-row.session[data-session=\"{side}\"]'); if (!row) return 'no row'; var m = row.querySelector('.tree-side'); if (!m) return 'no mark'; row.scrollIntoView({{ block: 'center' }}); var r = m.getBoundingClientRect(); var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return JSON.stringify({{ after: rows[rows.indexOf('{side}') - 1] === '{starter}', inside: r.left >= d.left && r.right <= d.right && r.width > 0, seen: hit === m || m.contains(hit) }}); }})()"
+    );
+    let ok =
+        |v: &serde_json::Value| v.as_str() == Some(r#"{"after":true,"inside":true,"seen":true}"#);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut seen = eval(&phone_tab, &in_drawer, false);
+    while !ok(&seen) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(300));
+        seen = eval(&phone_tab, &in_drawer, false);
+    }
+    assert!(
+        ok(&seen),
+        "on a phone the drawer nests the side session, its mark seen: {seen}"
+    );
+}
+
 /// #s206 (the owner): a toggle in the session filter's sheet lists the sessions as ONE list by
 /// activity, with no agent or project heads; each row keeps its project's name and its agent's
 /// mark under the title; Collapse every group and Expand every group go while it is on and come
