@@ -696,6 +696,35 @@ mod answer_tests {
         assert_eq!(acc.answer().and_then(|a| a.output_tokens), Some(7));
         assert_eq!(acc.open_answer(), None);
     }
+
+    /// #s341: a line the consumer could not read (agent-metrics calls `malformed_line` for one
+    /// it drops) may have been the next answer's request or its first line: that answer's `sent`
+    /// and `first` are not known, an answer ended before it is not handed out again, and the
+    /// next request is read again.
+    #[test]
+    fn an_unread_line_leaves_the_next_answer_s_start_unknown() {
+        let line = |s: &str| serde_json::from_str::<Value>(s).unwrap();
+        let part = |id: &str, ts: &str| {
+            line(&format!(
+                r#"{{"type":"assistant","timestamp":"{ts}","message":{{"id":"{id}","model":"m","usage":{{"output_tokens":9}}}}}}"#
+            ))
+        };
+        let user = |ts: &str| line(&format!(r#"{{"type":"user","timestamp":"{ts}"}}"#));
+        let mut acc = ClaudeAdapter.metrics_acc();
+        acc.push(&user("2026-10-30T10:00:00Z"));
+        acc.push(&part("msg_01A", "2026-10-30T10:00:01Z"));
+        acc.push(&part("msg_01B", "2026-10-30T10:00:02Z"));
+        assert!(acc.answer().is_some());
+        acc.malformed_line();
+        assert_eq!(acc.answer(), None, "not handed out again");
+        acc.push(&part("msg_01C", "2026-10-30T10:00:04Z"));
+        let c = acc.open_answer().unwrap();
+        assert_eq!((c.sent, c.first), (None, None));
+        acc.push(&user("2026-10-30T10:00:05Z"));
+        acc.push(&part("msg_01D", "2026-10-30T10:00:06Z"));
+        let d = acc.open_answer().unwrap();
+        assert!(d.sent.is_some() && d.first.is_some());
+    }
 }
 
 #[cfg(test)]

@@ -343,7 +343,8 @@ impl MetricsAcc {
     }
 
     /// A line the consumer could not read (the seam's `malformed_line`): it may have been the
-    /// request the next answer answers, so that answer's `sent` is not known.
+    /// request the next answer answers or that answer's first line, so neither its `sent` nor its
+    /// `first` is known.
     pub(crate) fn malformed_line(&mut self) {
         self.answers.unread();
     }
@@ -1579,23 +1580,6 @@ mod answer_tests {
         credited["message"]["usage"]["credits"] = 2.5.into();
         let got = answers(&mut MetricsAcc::default(), &[credited]);
         assert_eq!(got[0].output_tokens, None);
-    }
-
-    /// #s341: a line the consumer could not read may have been the request the next answer
-    /// answers, so that answer's request time is not known; the next request is read again.
-    #[test]
-    fn an_unread_line_leaves_the_next_request_time_unknown() {
-        let mut acc = MetricsAcc::default();
-        acc.push(&user("2026-10-30T10:00:00Z"));
-        acc.malformed_line();
-        acc.push(&part("msg_01A", 10, "2026-10-30T10:00:02Z"));
-        assert_eq!(acc.open_answer().unwrap().sent, None);
-        acc.push(&user("2026-10-30T10:00:03Z"));
-        acc.push(&part("msg_01B", 10, "2026-10-30T10:00:04Z"));
-        assert_eq!(
-            acc.open_answer().unwrap().sent,
-            secs("2026-10-30T10:00:03Z")
-        );
     }
 
     /// #s341: a fold resumed mid-answer from its state hands out exactly what a whole-file fold

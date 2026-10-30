@@ -406,7 +406,8 @@ pub struct AnswerTiming {
     /// `last - sent` ran at 41, 73 and 104 a second at the 10th, 50th and 90th percentile.
     pub sent: Option<f64>,
     /// The time of the answer's first line. `None` where the agent writes no line per part
-    /// (Codex), or where the answer may have begun before a resumed fold's cursor.
+    /// (Codex), or where the answer may have begun before what was read (a resumed fold's cursor,
+    /// a line the consumer could not read).
     ///
     /// Claude Code writes a line when its content block ENDS, so this is the end of the first
     /// block (often the whole thinking), not the first token: tokens over `last - first` overstate
@@ -456,8 +457,9 @@ pub struct AnswerClock {
     /// The answer whose lines are still arriving.
     #[serde(default)]
     open: Option<AnswerTiming>,
-    /// The fold was resumed from a state that held no clock, so the answer whose line comes
-    /// next may have begun before the cursor: its `sent` and `first` are not known.
+    /// The answer whose line comes next may have begun before what was read (a fold resumed from
+    /// a state that held no clock, or a line that could not be read): its `sent` and `first` are
+    /// not known.
     #[serde(default)]
     blind: bool,
     /// The answer the latest line ended. Transient: never in the state.
@@ -508,11 +510,12 @@ impl AnswerClock {
         }
     }
 
-    /// A line that could not be read: it may have been a request, so the next answer's `sent`
-    /// is not known.
+    /// A line that could not be read: it may have been the request the next answer answers, or
+    /// that answer's first line, so neither its `sent` nor its `first` is known.
     pub fn unread(&mut self) {
         self.ended = None;
         self.prev = None;
+        self.blind = true;
     }
 
     /// The answer the latest [`line`](Self::line) ended.
