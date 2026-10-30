@@ -412,10 +412,16 @@ has no screen check as herdr has. The scan reads each agent's `ps -o stat=` (`+`
 foreground group, `T` stopped; measured in a tmux pane with Claude Code 2.1.314: `S+` at its prompt
 and while a Bash call runs, `T` suspended, the shell then `Ss+`; codex-cli 0.166.0 the same), and a
 row that has left the foreground is not offered the send (`PaneNotForeground`). Right before typing,
-`control::tmux_pane_held` reads the pid's tty and state again and the pane's `#{pane_tty}`: it types
-nothing unless the process holds the pane's own terminal in the foreground, and nothing when either
-reading fails (a `claude` a pty wrapper started holds a terminal of its own, as does one in
-an editor's terminal inside the pane). The
+`control::tmux_before_typing` reads the pid's tty and state again and the pane's `#{pane_tty}`: it
+types nothing unless the process holds the pane's own terminal in the foreground, and nothing when
+either reading fails (a `claude` a pty wrapper started holds a terminal of its own, as does one in
+an editor's terminal inside the pane). **Nor is a Claude session in a tmux pane sent to while the
+client waits on a dialog** (#s336): a dialog takes the Enter that submits as its first choice, and
+the tmux send reads nothing of the pane. Measured on Claude Code 2.1.314, the send's own paste and
+Enter into an open permission prompt picked "Yes" and ran the command, the text gone (a question
+opens with its first option selected). So it holds while the client's own record names a wait
+(`client_wait`: `waiting` for input or a permission prompt, a plan's approval included, #s76), with
+herdr's words. A Codex session has no such record. The
 send, a grant and a dialog read always rescan the processes rather than use the last tick's, so
 each pays a full probe (the bounded `ps` and `lsof` runs and the record reads) for current evidence.
 **A one-shot (`claude -p`/`--print`) is headless and pairs by TIME** (#s50): knack's coordinator

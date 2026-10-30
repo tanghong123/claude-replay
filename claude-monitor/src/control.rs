@@ -497,28 +497,52 @@ pub fn tmux_send(sock: Option<&str>, pane: &str, prompt: &str) -> Result<()> {
     Ok(())
 }
 
-/// Right before typing into a tmux pane (#s335): the agent must still hold the pane's foreground,
-/// on the pane's own terminal. The scan's reading may be seconds old and lets a state it could not
-/// read through, so both are read again: `ps -o tty=,stat=` for the pid and the pane's
-/// `#{pane_tty}`. A suspended or backgrounded agent leaves the pane to its shell, which would run
-/// the prompt as a command, and a process on another terminal (a `claude` started through a pty
-/// wrapper inherits its starter's `TMUX_PANE`) is not what the pane types into. Either, or a
-/// reading that fails, types nothing.
-fn tmux_pane_held(sock: Option<&str>, pane: &str, pid: u32) -> Result<(), String> {
-    let limit = std::time::Duration::from_secs(5);
-    let pid = pid.to_string();
-    let ps = index::run_bounded_env(&["ps", "-o", "tty=,stat=", "-p", &pid], &[], limit);
+/// What a send says while the client waits on a question or a permission prompt (#s76), in a
+/// herdr pane and a tmux pane alike.
+const DIALOG_OPEN: &str =
+    "a question or a permission prompt is open in the session: answer it there first";
+
+/// Right before typing into a tmux pane: may this send type at all? `read` runs one command and
+/// gives its output (empty when it failed); the send's is [`index::run_bounded_env`] with a 5 s
+/// bound.
+///
+/// First, no dialog may be open (#s336): the tmux send reads nothing of the pane, and a dialog
+/// takes the Enter that submits as its first choice. Measured on Claude Code 2.1.314, the send's
+/// own paste and Enter into an open permission prompt picked "Yes" and ran the command, the text
+/// gone (a question's first option is selected as it opens, so it would take the Enter too). The
+/// client's record says it waits (`target.client_wait`, Claude's alone; read as the target
+/// resolved, so a dialog that opens in the moment before the Enter still takes it, as with
+/// herdr), as herdr's send holds on.
+///
+/// Then the agent must still hold the pane's foreground, on the pane's own terminal (#s335). The
+/// scan's reading may be seconds old and lets a state it could not read through, so both are read
+/// again: `ps -o tty=,stat=` for the pid and the pane's `#{pane_tty}`. A suspended or backgrounded
+/// agent leaves the pane to its shell, which would run the prompt as a command, and a process on
+/// another terminal (a `claude` started through a pty wrapper inherits its starter's
+/// `TMUX_PANE`) is not what the pane types into. Either, or a reading that fails, types nothing.
+fn tmux_before_typing(
+    target: &index::PaneTarget,
+    read: impl Fn(&[&str]) -> String,
+) -> Result<(), String> {
+    let index::PaneAddr::Tmux { sock, pane } = &target.addr else {
+        return Err("not a tmux pane, so nothing was typed".into());
+    };
+    if target.client_wait {
+        return Err(DIALOG_OPEN.into());
+    }
+    let pid = target.pid.to_string();
+    let ps = read(&["ps", "-o", "tty=,stat=", "-p", &pid]);
     let mut tmux = vec!["tmux"];
     if let Some(sock) = sock {
-        tmux.extend(["-L", sock]);
+        tmux.extend(["-L", sock.as_str()]);
     }
-    tmux.extend(["display-message", "-p", "-t", pane, "#{pane_tty}"]);
-    let pane_tty = index::run_bounded_env(&tmux, &[], limit);
+    tmux.extend(["display-message", "-p", "-t", pane.as_str(), "#{pane_tty}"]);
+    let pane_tty = read(&tmux);
     pane_held_verdict(&ps, &pane_tty)
 }
 
-/// [`tmux_pane_held`]'s verdict over what it read: `ps`'s `tty stat` line (`ttys022 S+` on macOS,
-/// `pts/3 Sl+` on Linux) and tmux's `/dev/…` path of the pane's terminal.
+/// [`tmux_before_typing`]'s foreground verdict over what it read: `ps`'s `tty stat` line
+/// (`ttys022 S+` on macOS, `pts/3 Sl+` on Linux) and tmux's `/dev/…` path of the pane's terminal.
 fn pane_held_verdict(ps: &str, pane_tty: &str) -> Result<(), String> {
     let mut fields = ps.split_whitespace();
     let (Some(tty), Some(stat)) = (fields.next(), fields.next()) else {
@@ -765,10 +789,7 @@ pub fn herdr_send_verdict(
 ) -> Result<(), String> {
     herdr_names(sid, pane, agent)?;
     if agent.status.as_deref() == Some("blocked") || client_wait {
-        return Err(
-            "a question or a permission prompt is open in the session: answer it there first"
-                .into(),
-        );
+        return Err(DIALOG_OPEN.into());
     }
     match input {
         InputLine::Missing => Err(
@@ -1627,8 +1648,12 @@ fn send_tmux_checked(
     }
     Ok(match &target.addr {
         index::PaneAddr::Tmux { sock, pane } => {
-            // #s335: nothing is typed unless the agent holds the pane's foreground right now.
-            if let Err(why) = tmux_pane_held(sock.as_deref(), pane, target.pid) {
+            // #s336, #s335: nothing is typed while a dialog is open, nor unless the agent holds
+            // the pane's foreground right now.
+            let read = |args: &[&str]| {
+                index::run_bounded_env(args, &[], std::time::Duration::from_secs(5))
+            };
+            if let Err(why) = tmux_before_typing(&target, read) {
                 return Ok(json!({"ok": false, "code": "held", "error": why}));
             }
             match tmux_send(sock.as_deref(), pane, prompt) {
@@ -2900,6 +2925,43 @@ mod tests {
         // Nothing read, nothing typed.
         assert!(refused("", "/dev/ttys022\n").contains("could not be read"));
         assert!(refused("ttys022 S+\n", "").contains("could not be read"));
+    }
+
+    /// #s336: a tmux send types nothing while the client waits on a dialog, whose first choice
+    /// the Enter would take (measured: a permission prompt's "Yes" ran the command); nothing is
+    /// even read. With no wait it goes on to the foreground check (#s335), here passing.
+    #[test]
+    fn a_tmux_send_holds_while_a_dialog_is_open() {
+        let target = |client_wait| index::PaneTarget {
+            sid: "s".into(),
+            pid: 700,
+            addr: index::PaneAddr::Tmux {
+                sock: Some("work".into()),
+                pane: "%3".into(),
+            },
+            client_wait,
+            named: false,
+        };
+        let held = tmux_before_typing(&target(true), |args| {
+            panic!("read {args:?} with a dialog open")
+        });
+        assert_eq!(held, Err(DIALOG_OPEN.to_string()));
+        let asked = std::cell::RefCell::new(Vec::new());
+        let sent = tmux_before_typing(&target(false), |args| {
+            asked.borrow_mut().push(args.join(" "));
+            match args[0] {
+                "ps" => "ttys022 S+\n".into(),
+                _ => "/dev/ttys022\n".into(),
+            }
+        });
+        assert_eq!(sent, Ok(()));
+        assert_eq!(
+            asked.into_inner(),
+            [
+                "ps -o tty=,stat= -p 700",
+                "tmux -L work display-message -p -t %3 #{pane_tty}"
+            ]
+        );
     }
 
     /// #s247: a helper the agent leaves behind holding stderr open must not hold the reply: the

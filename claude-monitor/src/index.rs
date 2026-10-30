@@ -107,7 +107,8 @@ pub struct PaneTarget {
     pub pid: u32,
     pub addr: PaneAddr,
     /// What the client says it waits on (#s76: a question, a permission prompt), read as the
-    /// target resolved. The herdr send holds while it waits; typing would answer the dialog.
+    /// target resolved. The herdr and tmux sends hold while it waits (#s336); typing would answer
+    /// the dialog.
     pub client_wait: bool,
     /// The process names the session exactly in its own argv (#s234): with a herdr pane, a
     /// grant for the same session, pane and server may follow it across a restore.
@@ -3652,7 +3653,7 @@ pub fn holds_foreground(stat: &str) -> bool {
 /// A tmux pane's process that does not hold the pane's foreground, as the last scan read it
 /// (#s335): suspended with Ctrl-Z, or put in the background, so what is typed reaches the
 /// shell, or whatever runs there now. A state not read refuses nothing here; the send reads it
-/// again before typing (`control::tmux_pane_held`). herdr reads its pane's screen instead.
+/// again before typing (`control::tmux_before_typing`). herdr reads its pane's screen instead.
 fn tmux_pane_not_held(procs: &[Proc], pid: u32, addr: &PaneAddr) -> bool {
     matches!(addr, PaneAddr::Tmux { .. })
         && procs
