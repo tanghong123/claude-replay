@@ -458,7 +458,15 @@ now — so a herdr marker is believed only when herdr IS the nearest multiplexer
 chain (`apply_nesting`, one `ps -axo pid=,ppid=,ucomm=` when any agent carries a herdr marker, or
 a tmux one since #s318: a pane's shell is the herdr server's direct child, measured; `ucomm` because
 `comm` is the start path cut at 16 characters). The tmux server is known by the pid in `TMUX`,
-screen or zellij nearer than herdr is a pane we do not drive, and with no answer the agent is in no pane we may drive. The row says `term: "herdr"`, `target` the pane, `herdrSession` a named session
+screen or zellij nearer than herdr is a pane we do not drive, and with no answer the agent is in no
+pane we may drive. **A tmux marker is believed the same way** (#s334): only with tmux nearest up the
+chain, since an agent's own processes carry `TMUX_PANE` outside the pane (Claude Code's
+`--bg-pty-host` engine under `claude daemon run` inherits its attach client's, and so does anything
+that session's Bash starts), and so does a process that started from a pane and is no longer below
+its server (an app opened from it, one whose pane shell exited; an editor still running as the
+pane's child reads as the pane, as before). So a scan whose `ps -axo pid=,ppid=,ucomm=` goes over
+its bound places no agent in any pane, tmux or herdr, and offers no pane send for that scan (a
+finished session's resume and Codex native mode's composer need no pane). The row says `term: "herdr"`, `target` the pane, `herdrSession` a named session
 (the attention report reads `term`, agreed with Aries). The send (`PaneAddr`, `resolve_pane_send`)
 requires a proven link and consent keyed to the pane and pid (a herdr key's socket half is
 `herdr:<socket>`, so a tmux grant can never count), and the project's only live session, unless

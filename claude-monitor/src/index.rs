@@ -543,8 +543,9 @@ struct Proc {
     herdr_pane: Option<String>,
     /// `HERDR_SOCKET_PATH` — which herdr server the pane belongs to (one per named session).
     herdr_socket: Option<String>,
-    /// With a herdr pane in its environment, the NEAREST multiplexer up the process's parent chain
-    /// (`apply_nesting`): an outer one's marker is inherited and names a pane this agent is not in.
+    /// With a herdr or tmux pane in its environment, the NEAREST multiplexer up the process's
+    /// parent chain (`apply_nesting`): an outer one's marker is inherited and names a pane this
+    /// agent is not in, and a marker with no multiplexer up the chain names no pane at all.
     inner_mux: Option<Mux>,
     /// With a herdr or tmux pane in its environment, another agent process (not a helper) sits
     /// between this process and that nearest multiplexer (`apply_nesting`): it was started from
@@ -873,7 +874,24 @@ impl Terminal {
                 }
             }
         }
+        // #s334: a tmux marker is believed the same way, only when tmux IS the nearest
+        // multiplexer up the chain (its server by the pid `TMUX` names, or by name). An agent's
+        // own processes carry `TMUX_PANE` without running in the pane (Claude Code's
+        // `--bg-pty-host` engine under `claude daemon run`, which inherits its attach client's,
+        // and anything such a session's Bash starts), and so does whatever was launched from a
+        // pane and runs outside it (an editor's terminal, a child whose starter exited). A chain
+        // that could not be read (its `ps` over the bound) decides nothing, so no pane.
         match (&p.pane, &p.screen, &p.tty) {
+            (Some(_), Some(sty), _) if p.inner_mux == Some(Mux::Other) => {
+                Terminal::Screen(sty.clone())
+            }
+            (Some(_), _, tty) if p.inner_mux != Some(Mux::Tmux) => {
+                if tty.is_some() {
+                    Terminal::Tty
+                } else {
+                    Terminal::Detached
+                }
+            }
             (Some(pane), _, _) => Terminal::Tmux {
                 pane: pane.clone(),
                 sock: p
@@ -3359,8 +3377,8 @@ fn scan_procs() -> Vec<Proc> {
 }
 
 /// Whether the scan must read every process's parent (`apply_nesting`, one `ps -axo
-/// pid=,ppid=,ucomm=`): an agent carries a herdr marker (#s226), or a tmux one (#s318, for
-/// `Proc::under_agent`).
+/// pid=,ppid=,ucomm=`): an agent carries a herdr marker (#s226), or a tmux one (#s318 for
+/// `Proc::under_agent`, #s334 for whether the marker names a pane).
 fn needs_parent_chain(procs: &[Proc]) -> bool {
     procs
         .iter()
@@ -3371,7 +3389,8 @@ fn needs_parent_chain(procs: &[Proc]) -> bool {
 /// multiplexer up its parent chain (a pane's shell is the child of its server; a daemonized
 /// server's own parent is launchd, so an outer one is never reached first), and whether another
 /// agent process sits on the way to it (`Proc::under_agent`; for tmux since #s318). The
-/// multiplexer decides only a herdr marker (`Terminal::of`). The tmux server is known by the pid
+/// multiplexer decides whether a herdr or a tmux marker names a pane (`Terminal::of`; tmux since
+/// #s334). The tmux server is known by the pid
 /// its `TMUX` variable names (its name is `tmux` on macOS, `tmux: server` on Linux), herdr's by the
 /// executable `herdr` (the server, a pane shell's DIRECT parent, measured on aries-black), and
 /// screen or zellij count as a multiplexer we do not drive. Bounded; a
@@ -3399,6 +3418,7 @@ fn apply_nesting(procs: &mut [Proc], table: &str) {
     {
         let tmux_server = p.tmux_server_pid;
         p.under_agent = false;
+        p.inner_mux = None;
         let mut at = parents.get(&p.pid).map(|(ppid, _)| *ppid);
         for _ in 0..64 {
             let Some(pid) = at else { break };
@@ -5700,6 +5720,7 @@ mod tests {
             "  101 claude TERM=xterm TMUX=/tmp/tmux-501/work,89,0 TMUX_PANE=%7 HOME=/Users/x\n\
              103 claude STY=1234.pts-0.host TERM=screen\n",
         );
+        in_tmux(&mut procs);
         assert_eq!(procs[0].pane.as_deref(), Some("%7"));
         assert_eq!(procs[2].screen.as_deref(), Some("1234.pts-0.host"));
 
@@ -5839,6 +5860,7 @@ mod tests {
             &mut procs,
             "  21496 claude TMUX=/private/tmp/tmux-502/crux-web-c0b3b1,5801,0 TMUX_PANE=%0\n",
         );
+        in_tmux(&mut procs);
         apply_lsof(&mut procs, "p21496\nfcwd\nn/Users/x/code/crux-web\n");
         let cwd = Some("/Users/x/code/crux-web");
         let l = link(
@@ -5886,6 +5908,7 @@ mod tests {
             "  20277 claude TMUX=/private/tmp/tmux-502/claude-replay-d36797,5407,0 TMUX_PANE=%0\n\
              24423 claude TMUX=/private/tmp/tmux-502/mdviewer-28920a,6467,0 TMUX_PANE=%0\n",
         );
+        in_tmux(&mut procs);
         let l = link(
             &procs,
             sid,
@@ -6106,6 +6129,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
+    /// #s334: each of a fixture's processes carrying a tmux marker runs in a shell of its own under
+    /// the tmux server its `TMUX` names (pid 2 where it names none), so the marker is believed, as
+    /// on a machine where tmux is the nearest multiplexer up its chain.
+    fn in_tmux(procs: &mut [Proc]) {
+        let mut table = String::from("1 0 launchd\n2 1 tmux\n");
+        for p in procs.iter().filter(|p| p.pane.is_some()) {
+            let server = p.tmux_server_pid.unwrap_or(2);
+            let shell = 1_000_000 + p.pid;
+            table += &format!(
+                "{server} 1 tmux\n{shell} {server} zsh\n{} {shell} {}\n",
+                p.pid, p.exe_base
+            );
+        }
+        apply_nesting(procs, &table);
+    }
+
     /// #146: growth is the one signal that says WHICH session a no-id agent is driving —
     /// a transcript advances only because its own agent wrote to it. Strict on purpose: a
     /// forced pairing needs exactly one grower AND exactly one candidate, and the record is
@@ -6190,10 +6229,14 @@ mod tests {
             procs[0].native_session = Identity::Verified(live.into());
             procs[1].native_session = Identity::Verified(sibling.into());
             apply_env(&mut procs, env);
-            apply_nesting(
-                &mut procs,
-                "60 1 herdr\n61 60 zsh\n700 61 claude\n701 61 claude\n",
-            );
+            if in_herdr {
+                apply_nesting(
+                    &mut procs,
+                    "60 1 herdr\n61 60 zsh\n700 61 claude\n701 61 claude\n",
+                );
+            } else {
+                in_tmux(&mut procs);
+            }
             let mut st = State {
                 procs,
                 ..Default::default()
@@ -6499,6 +6542,7 @@ mod tests {
             p.pane = Some(format!("%{}", p.pid));
             p.tmux_sock = Some("fixture".into());
         }
+        in_tmux(&mut procs);
         procs[1].native_session = Identity::Verified(native.into());
         let mut st = State {
             procs,
@@ -6621,6 +6665,7 @@ mod tests {
                 p.pane = Some(format!("%{}", p.pid));
                 p.tmux_sock = Some("fixture".into());
             }
+            in_tmux(&mut procs);
             procs[registered].native_session = identity;
             let mut st = State {
                 procs,
@@ -6687,6 +6732,7 @@ mod tests {
             p.pane = Some(format!("%{}", p.pid));
             p.tmux_sock = Some("fixture".into());
         }
+        in_tmux(&mut procs);
         let mut st = State {
             procs,
             ..Default::default()
@@ -6723,6 +6769,7 @@ mod tests {
             let mut procs = parse_ps("700 claude\n");
             procs[0].pane = Some("%0".into());
             procs[0].tmux_sock = Some("fixture".into());
+            in_tmux(&mut procs);
             if !missing_cwd {
                 procs[0].cwd = Some(cwd.into());
             }
@@ -6882,6 +6929,7 @@ mod tests {
             &mut procs,
             "600 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%1\n700 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%2\n",
         );
+        in_tmux(&mut procs);
         procs[1].native_session = Identity::Verified(sid.into());
         let linked = link(
             &procs,
@@ -6918,6 +6966,7 @@ mod tests {
             &mut procs,
             "800 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%3\n",
         );
+        in_tmux(&mut procs);
         let attached = link(
             &procs,
             sid,
@@ -7280,6 +7329,7 @@ n/Users/x/proj
             &mut procs,
             "  900 claude TMUX=/private/tmp/tmux-502/knack-98db47,8436,0 TMUX_PANE=%0\n",
         );
+        in_tmux(&mut procs);
 
         let l = link(
             &procs,
@@ -7393,6 +7443,7 @@ n/Users/x/proj
             &mut procs,
             "  401 claude TMUX=/private/tmp/tmux-501/default,88,0 TMUX_PANE=%0\n",
         );
+        in_tmux(&mut procs);
         let l = link(
             &procs,
             sid,
@@ -7882,6 +7933,7 @@ n/Users/x/proj
             "p900\nfcwd\nn/w/harbor\nf12\nn/w/current.jsonl\n",
         );
         apply_env(&mut procs, "900 codex TMUX_PANE=%1\n");
+        in_tmux(&mut procs);
         let mut st = State {
             procs,
             ..State::default()
@@ -7973,6 +8025,7 @@ n/Users/x/proj
                     apply_nesting(&mut procs, "1 0 launchd\n60 1 herdr\n701 60 claude\n");
                 } else {
                     apply_env(&mut procs, "701 claude TMUX_PANE=%3\n");
+                    in_tmux(&mut procs);
                 }
                 let mut st = State {
                     procs,
@@ -8495,6 +8548,13 @@ n/Users/x/proj
             &mut procs,
             &format!("  100 claude {pane}\n  201 claude {pane}\n  202 claude {pane}\n"),
         );
+        // The coordinator in the pane; its workers below its Bash.
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n88 1 tmux\n90 88 zsh\n100 90 claude\n110 100 zsh\n201 110 claude\n\
+             120 100 zsh\n202 120 claude\n",
+        );
+        assert!(!procs[0].under_agent && procs[1].under_agent && procs[2].under_agent);
         apply_lsof(
             &mut procs,
             "p100\nfcwd\nn/w/knack\np201\nfcwd\nn/w/knack\np202\nfcwd\nn/w/knack\n",
@@ -8750,6 +8810,7 @@ n/Users/x/proj
             "  51668 claude TMUX=/private/tmp/tmux-502/agent-metrics-0b78ae,76226,0 TMUX_PANE=%0\n\
              9807 codex TMUX=/private/tmp/tmux-502/agent-metrics-0b78ae,76226,0 TMUX_PANE=%2\n",
         );
+        in_tmux(&mut procs);
         apply_lsof(
             &mut procs,
             "p51668\nfcwd\nn/Users/x/code/agent-metrics\np9807\nfcwd\nn/Users/x/code/agent-metrics\n",
@@ -8888,6 +8949,7 @@ n/Users/x/proj
             let mut procs = parse_ps(&ps);
             apply_lsof(&mut procs, &lsof);
             apply_env(&mut procs, &env);
+            in_tmux(&mut procs);
             let mut st = State {
                 procs,
                 ..State::default()
@@ -9225,6 +9287,124 @@ n/Users/x/proj
         assert_eq!(procs[1].inner_mux, Some(Mux::Tmux));
     }
 
+    /// #s334: a tmux marker names a pane only when tmux is the nearest multiplexer up the chain.
+    /// Claude Code's background shape: the attach client sits in pane %3, while the session's
+    /// engine (`--bg-pty-host`) runs under `claude daemon run`, which inherits the client's
+    /// `TMUX_PANE`; a `claude` the session's Bash starts through `script` in another directory
+    /// carries it too, with only helpers between it and launchd, so `under_agent` cannot refuse
+    /// it (#s318) and the marker must not be believed: no send, which would type into the client's
+    /// pane. The client keeps its pane. A marker inherited outside tmux (an editor's terminal
+    /// launched from a pane) and one whose chain could not be read (an empty table) name no pane.
+    #[test]
+    fn a_tmux_marker_names_a_pane_only_with_tmux_nearest() {
+        let scratch = std::env::temp_dir().join(format!("cm-tmux-nearest-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let outer = "11111111-2222-4333-8444-555555555555";
+        let child = "22222222-2222-4333-8444-555555555555";
+        let mut procs = parse_ps(&format!(
+            "800 claude attach 11111111\n300 claude daemon run\n\
+             310 claude --bg-pty-host -- claude --session-id {outer}\n900 claude\n"
+        ));
+        apply_tty(&mut procs, "800 ttys003\n300 ??\n310 ??\n900 ttys030\n", 0);
+        apply_lsof(
+            &mut procs,
+            "p800\nfcwd\nn/w/harbor\np310\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/skua\n",
+        );
+        let pane = "TMUX=/fixture/tmux.sock,50,0 TMUX_PANE=%3";
+        apply_env(
+            &mut procs,
+            &format!(
+                "800 claude {pane}\n300 claude {pane}\n310 claude {pane}\n900 claude {pane}\n"
+            ),
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n50 1 tmux\n61 50 zsh\n800 61 claude\n300 1 claude\n310 300 claude\n\
+             320 310 zsh\n330 320 script\n900 330 claude\n",
+        );
+        assert!(!procs[3].under_agent, "only helpers above it");
+        assert_eq!(Terminal::of(&procs[0]).kind(), "tmux");
+        assert_eq!(
+            Terminal::of(&procs[2]).kind(),
+            "detached",
+            "no terminal of its own"
+        );
+        assert_eq!(Terminal::of(&procs[3]).kind(), "tty");
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        let mut row = growth_row("/w/skua", false);
+        row.tree_mtime = Some(SystemTime::now());
+        st.rows.insert(child.into(), row);
+        idx.prove_by_growth(&mut st);
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        st.send_links = send_links_of(&facts);
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert_eq!(st.send_links[child].pid, Some(900));
+        assert!(st.send_links[child].confirmed);
+        assert_eq!(registry_row(&snapshot, child)["term"], "tty");
+        assert!(registry_row(&snapshot, child).get("injectable").is_none());
+        assert_eq!(pane_send_target(&st, child), Err(SendRefusal::NotInTmux));
+        std::fs::remove_dir_all(scratch).unwrap();
+
+        // Read with tmux nearest, a process is in the pane; read again with no table (its `ps`
+        // over the bound), it is in none: the last answer does not stand.
+        let mut procs = parse_ps("700 claude\n");
+        apply_tty(&mut procs, "700 ttys040\n", 0);
+        apply_env(
+            &mut procs,
+            "700 claude TMUX=/fixture/tmux.sock,50,0 TMUX_PANE=%3\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n50 1 tmux\n61 50 zsh\n700 61 claude\n",
+        );
+        assert_eq!(Terminal::of(&procs[0]).kind(), "tmux");
+        apply_nesting(&mut procs, "");
+        assert_eq!(Terminal::of(&procs[0]).kind(), "tty");
+        // An editor's terminal launched from a pane: no tmux above it.
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n40 1 Electron\n41 40 Code Helper\n42 41 zsh\n700 42 claude\n",
+        );
+        assert_eq!(Terminal::of(&procs[0]).kind(), "tty");
+        // screen inside a tmux pane is screen's, which is not driven.
+        let mut procs = parse_ps("700 claude\n");
+        apply_env(
+            &mut procs,
+            "700 claude TMUX=/fixture/tmux.sock,50,0 TMUX_PANE=%3 STY=62.work\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n50 1 tmux\n61 50 zsh\n62 61 screen\n63 62 zsh\n700 63 claude\n",
+        );
+        assert_eq!(Terminal::of(&procs[0]).kind(), "screen");
+        // zellij inside a tmux pane leaves the marker but is nearer: no pane we drive.
+        let mut procs = parse_ps("700 claude\n");
+        apply_tty(&mut procs, "700 ttys041\n", 0);
+        apply_env(
+            &mut procs,
+            "700 claude TMUX=/fixture/tmux.sock,50,0 TMUX_PANE=%3\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n50 1 tmux\n61 50 zsh\n62 61 zellij\n63 62 zsh\n700 63 claude\n",
+        );
+        assert_eq!(Terminal::of(&procs[0]).kind(), "tty");
+        // A marker with no `TMUX` beside it: the server is known by its name, Linux's included.
+        let mut procs = parse_ps("700 claude\n");
+        apply_env(&mut procs, "700 claude TMUX_PANE=%3\n");
+        apply_nesting(
+            &mut procs,
+            "1 0 systemd\n50 1 tmux: server\n61 50 bash\n700 61 claude\n",
+        );
+        assert_eq!(Terminal::of(&procs[0]).kind(), "tmux");
+    }
+
     /// The review of #s258: a `claude` in a herdr pane is suspended with Ctrl-Z and the pane's shell
     /// runs `codex` in the foreground. herdr's hook is Claude's alone, so herdr's record of the pane
     /// still names the suspended session and the check before typing would pass, while the text
@@ -9380,7 +9560,11 @@ n/Users/x/proj
             let mut procs = parse_ps(&format!("701 claude --resume {s1}\n"));
             apply_lsof(&mut procs, "p701\nfcwd\nn/w/harbor\n");
             apply_env(&mut procs, env);
-            apply_nesting(&mut procs, "1 0 launchd\n60 1 herdr\n701 60 claude\n");
+            if procs[0].pane.is_some() {
+                in_tmux(&mut procs);
+            } else {
+                apply_nesting(&mut procs, "1 0 launchd\n60 1 herdr\n701 60 claude\n");
+            }
             procs[0].native_session = Identity::Verified(s2.into());
             let mut st = State {
                 procs,
@@ -9464,6 +9648,7 @@ n/Users/x/proj
             "700 codex TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%3\n\
              701 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%4\n",
         );
+        in_tmux(&mut procs);
         assert!(!one_shot(&procs[0]) && one_shot(&procs[1]));
         assert_eq!(Terminal::of(&procs[0]).kind(), "tmux");
         let l = link(
