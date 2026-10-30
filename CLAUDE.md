@@ -412,7 +412,11 @@ record decides where it exists (`apply_session_files`): Claude Code writes `<cla
 store, `~/.claude` unless `CLAUDE_PROJECTS_DIR` moves it) with `entrypoint`
 `cli` for an interactive launch and `sdk-cli` for `claude -p` (measured, 2.1.312; both say `kind:
 interactive`), believed only when it names the pid and began no earlier than the process. A one-shot
-writes it only once under way, so until then the argv decides, the safe way.
+writes it only once under way, so until then the argv decides, the safe way. A Codex process is a
+one-shot when its subcommand (the first word that is neither an option nor an option's value) is
+`exec`, its alias `e` or `review`, or the word `exec` stands anywhere, and never for a `-p`, which
+is its `--profile` (#s326, codex-cli 0.165.0): `codex -p work` read as one was never linked to its
+pane, and a `codex exec` an agent's Bash starts inherits that agent's pane as a `claude -p` does.
 **A headless worker lives in its starter's Agents pane, not in the session list** (#s53, the owner:
 "keep them under agents outline pane, and don't put them on main session list"). Claude Code exports
 its own session id into every Bash command (`CLAUDE_CODE_SESSION_ID`, with
@@ -539,7 +543,7 @@ PreToolUse hook holds the terminal while it waits.
 static version of mdrev, similar to how agent-monitor depends on crates in claude-replay. Future
 upgrades will be triggered explicitly and manually"). `vendor/mdrev` is a crate holding ONE public
 mdrev release's embedding kit, unmodified (`release/`: `bundle/`, `mdrev-cli.js` + `package.json`,
-`docs/*.md`); its version IS the release's (1.1.65, #s289), `release.sha256` is checked by its tests (never
+`docs/*.md`); its version IS the release's (1.1.67, #s325), `release.sha256` is checked by its tests (never
 hand-edit a vendored file), and its build script embeds `bundle/` as a table. Only `claude-monitor`
 depends on it, and `routes::handler` — the one constructor the monitor goes through — installs it
 into the html crate (`install_mdrev`), so `agent-replay` carries none of it. Nothing installed on
@@ -691,7 +695,11 @@ A served page's file links are **capability-stamped**: the renderer signs each o
 with an HMAC (key at `<state>/file-sig-key`, 0600), and `/file` and `/__reveal` act only on a
 path carrying the stamp for THAT capability. So a route acts only on what was offered, and a
 reveal link cannot be edited into a byte read. `claude-replay-html/src/html_export/sig.rs` is
-the whole story.
+the whole story. Tests never touch the key or the policies on disk: the html crate's own get fixed
+values under `cfg(test)`, and claude-monitor's, which link it without that, get the same through
+its `hermetic-tests` feature, enabled from claude-monitor's dev-dependencies only (#s321: the
+first stamp of a run minted a real key into whichever test's state dir the process-wide variable
+named, racing that test's cleanup). No shipped build enables it; with it every stamp is forgeable.
 
 **Which paths may RENDER is a setting**, `<state>/render-policy.json`:
 `{"mode": "allowlist", "dirs": ["~/personal", "~/code"]}` — `mode` is `never`, `offered` (the
