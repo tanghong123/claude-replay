@@ -684,7 +684,8 @@
         var ac = el("div", "amark blk");
         ac.id = b.id;
         ac.appendChild(el("span", "acaret", "▤"));
-        ac.appendChild(el("span", "akind", (h.att_kind || "file") + " "));
+        // #s296: `edited` is Claude Code telling the model a file changed on disk, not an edit.
+        ac.appendChild(el("span", "akind", (h.att_kind === "edited" ? "changed on disk" : h.att_kind || "file") + " "));
         var an = el("span", "aname", h.att_name || "attachment");
         var text = h.att_text, datauri = h.att_datauri, path = h.att_path, href = h.att_href;
         var sig = h.att_sig;

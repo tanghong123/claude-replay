@@ -112,6 +112,25 @@ pub trait MetricsAccumulator: Send {
         None
     }
 
+    /// The answer the most recent push ENDED (#s341): one request to a model, timed — see
+    /// [`AnswerTiming`](crate::metrics::AnswerTiming). An agent that writes an answer over several
+    /// lines ends it at the first line of the next answer, so the session's last answer is still
+    /// [`open_answer`](Self::open_answer) when the reading stops. `None` for an adapter that times
+    /// nothing. Valid only after a push and cleared on every push, as
+    /// [`usage_id`](Self::usage_id); what it depends on is part of [`state`](Self::state), so a
+    /// resumed fold ends answers as a whole-file fold does.
+    fn answer(&self) -> Option<crate::metrics::AnswerTiming> {
+        None
+    }
+
+    /// The answer whose lines may still be arriving, as far as it has been read (#s341). A
+    /// consumer that stops reading (the end of the file, a byte budget) and wants it now takes it
+    /// from here; the same answer comes back from [`answer`](Self::answer) once it ends, with the
+    /// same id and a `last` at least as late.
+    fn open_answer(&self) -> Option<crate::metrics::AnswerTiming> {
+        None
+    }
+
     /// Fold a machinery-side counter into the accumulating [`Metrics::extra`] bag (#193:
     /// the elision gauges — `elided_lines` / `elided_bytes` / `skipped_lines` — banked by
     /// the read layer, which owns the counts the accumulator cannot see). Default no-op so

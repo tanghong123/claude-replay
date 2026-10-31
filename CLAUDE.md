@@ -98,8 +98,8 @@ keyboard by `--phone-kb` like the find pill, the toolbar, search and the jump st
 sideways it spans the session's column (`a_phone_writes_from_the_dock_and_keeps_the_draft`).
 **The box says where a message goes in ONE line and stays open after a send** (#s236, Hong: "keep the
 entry dialog open", "too much info", and it said tmux for a herdr pane): `composeTargetLine`
-(`control-store.js`) gives "Types into herdr pane w1:p2", "Types into tmux pane %3" or "Resumes this
-session", the desktop's caption (amber for a live pane, beside the session's name alone) and the
+(`control-store.js`) gives "Types into herdr" (no pane id, #s297, Hong: "just show herdr is enough"),
+"Types into tmux pane %3" or "Resumes this session", the desktop's caption (amber for a live pane, beside the session's name alone) and the
 phone's note alike, and the reference shell's "Write to this session ·", static "· writes to live
 tmux" and inert "＋" are hidden in `production.css` (the generated files untouched). A send that goes
 empties the field and keeps the box (and, on the desktop, the focus); one that is refused keeps the
@@ -361,13 +361,108 @@ job's engine is a `bg-spare` naming nothing; the pane process's own `sessions/<p
 old `sessionId` and gains `parkedJobId`, the new session's first eight characters (the engine writes a
 record of its own naming the new session, `kind: bg`). So `Moves::chain` gives a process naming the
 old id to the new session, through a move of the same agent, only when it started no later than the
-move (one started after chose the old id itself) AND its own record names the old id and the job;
-confirmed but not `named`. An `attach` prefix of the old id follows the same way. The old session is
+move (one started after chose the old id itself) AND its own record, verified against PID and process
+start, names the old id and the job; confirmed but not `named`. An `attach` prefix of the old id follows the same way. The old session is
 finished: out of the directory rule and the growth proof (`continued-in` is no activity), and its row
 says `continuedIn`. herdr's Claude hook reports a session only when one STARTS, so it keeps the old id
 for that pane: the send, the dialog read and answer, and the state pass (`herdr_runs`) accept the
 sessions on that process's chain (`continues`, empty for a link made any other way, so a picker
 re-resume of the old id is never typed into as the new session).
+Recency and ambiguity are selected per agent and exact cwd (#s250); a configured executable
+whose kind is unknown keeps the shared scope. Explicit argv/open-transcript links, retained
+growth proofs and time-paired workers do not compete for the newest unnamed session, and
+their PIDs are reserved from directory matching. Growth cannot borrow another session's
+explicitly owned process. If the only interactive candidate names a different session or
+holds its transcript open, the index retains that contradiction and marks that session's link
+unconfirmed, withholding both sending and restore-consent following even after growth stops.
+The fence clears when that process leaves its cwd or the old session grows again. Like growth
+proofs, these observations stay in the monitor's memory from scan to scan and are lost on a
+restart: no durable session-identity registry.
+**A plain `claude` is linked to its session by the process's own record** (#s258): a `claude`
+started with no session flag names nothing in its argv, so when it went back to an older session
+(`/resume`) while newer transcripts sat in its directory, the directory rule gave its pid to the
+newest one and the session it was really running read as finished, with no compose box — seen on
+macOS with Claude Code 2.1.309–2.1.310, beside another live Claude in the same repo. Claude Code
+writes `<claude home>/sessions/<pid>.json` for each process (the home as `apply_session_files`
+finds it) naming `sessionId`, `pid` and `procStart`, the text of `LC_ALL=C TZ=UTC ps -o lstart=`
+(read from the 2.1.312 client's code, which has no platform branch for it; not yet seen on a Linux
+host). `claude_registry.rs` believes a record only while that pid has that
+start (one bounded `ps`, the scan's 15 s), and then its session wins over the argv, a growth proof
+and the directory rule, including after a switch; the row says `pidSource: "claude-registry"`. A
+growth fence (#s250) is still recorded against the session the argv names while a record names
+another, because a scan that cannot read the record (that `ps` over its bound, a file caught
+mid-write twice) falls back to the argv; a record naming the fenced session lifts it. A
+record that does not verify — a start that differs, a file caught mid-write (read once more), one
+over the client's 256 KiB — is no record, and the argv and directory rules apply as before. A
+session growing in the directory is not proved onto a process whose record names another one, a
+proof is dropped once the record contradicts it, and only a later write proves it again. A process
+whose record names a session no row has yet (its transcript not indexed) occupies its project;
+helpers (whose record names a session with no transcript) and a process of unknown cwd do not. A
+send into a pane beside another live session in the project is allowed only for a HERDR pane whose
+process's record names the session (the owner's decision s271: herdr checks the pane's session
+again before typing; a `claude` started through a pty wrapper in tmux inherits its starter's
+`TMUX_PANE`); a tmux pane and background resume keep the one-live-session rule. That check holds
+only while one agent reads the pane: a `claude` an agent starts from its Bash through a pty wrapper
+inherits the herdr pane as well, and herdr's record of the pane then names the child's session. So
+a herdr pane whose process runs below another agent process, or that holds another agent process
+that is a `claude` or runs below no other agent (a `codex` the pane's shell runs while its `claude`
+is suspended; herdr's record still names the suspended session), is sent to for neither session, in
+any directory (`pane_shared`). A `codex exec` or MCP Codex the agent itself starts does not
+count: only a `claude` rewrites herdr's record of the pane. Nor does a one-shot an agent starts (a
+`claude -p` worker reads no pane, #s332); but one the pane's own shell runs does (a `codex exec`
+or a `claude -p`, #s333 review), since what is typed waits in the terminal for that shell to run as
+a command, and so does an agent the pane's shell runs in the background, for as long as it runs.
+In a tmux pane too, a process that runs below another agent process is never sent to (#s318): a
+`claude` or `codex` an agent's Bash starts through a pty wrapper inherits `TMUX_PANE`, and in
+another directory, the lone agent there, it was linked to its session and offered the send, which
+typed into its starter's input, with no check before typing to stop it. So
+`apply_nesting_ttys` reads the parent chain whenever an agent carries a pane marker of either
+kind; the starter keeps its send. And a tmux pane that
+holds another agent process running below no other agent is sent to for neither session, as a
+herdr pane is (#s333): a `claude` suspended with Ctrl-Z while the pane's shell runs `codex` in its
+directory, or `claude` in another, would type into the foreground agent, which the
+one-live-session rule (same agent, same directory) does not see. Unlike herdr, a `claude` below
+another agent is no tmux sibling: the pane's input goes to its starter. **A tmux pane is sent to
+only while its agent holds the pane's foreground** (#s335): an agent suspended with Ctrl-Z, or put
+in the background, leaves the pane to its shell, which would run the prompt as a command. The scan
+reads each agent's `ps -o stat=` (`+` the terminal's
+foreground group, `T` stopped; measured in a tmux pane with Claude Code 2.1.314: `S+` at its prompt
+and while a Bash call runs, `T` suspended, the shell then `Ss+`; codex-cli 0.166.0 the same), and a
+row that has left the foreground is not offered the send (`PaneNotForeground`). Right before typing,
+`control::tmux_before_typing` reads the pid's tty and state again and the pane's `#{pane_tty}`: it
+types nothing unless the process holds the pane's own terminal in the foreground, and nothing when
+either reading fails (a `claude` a pty wrapper started holds a terminal of its own, as does one in
+an editor's terminal inside the pane). The scan reads the same mismatch, so such a row is not
+offered the send either (#s337, `PaneOtherTerminal`): its parent table carries each process's tty,
+and the agent's is compared with the pane shell's, the tmux server's direct child on its chain
+(measured: `script -q /dev/null claude` in a pane on ttys022 runs on ttys024).
+**Nor is a Claude session in a tmux pane sent to while the
+client waits on a dialog** (#s336): a dialog takes the Enter that submits as its first choice.
+Measured on Claude Code 2.1.314, the send's own paste and
+Enter into an open permission prompt picked "Yes" and ran the command, the text gone (a question
+opens with its first option selected). So it holds while the client's own record names a wait
+(`client_wait`: `waiting` for input or a permission prompt, a plan's approval included, #s76), with
+herdr's words. **And the tmux send reads the pane before it types and before its Enter** (#s338),
+as herdr's does: `tmux capture-pane -p -e` shows Claude's input box exactly as herdr's `pane read
+--ansi` does (measured, Claude Code 2.1.314: idle and cleared read empty, a draft a draft, a question
+and a permission prompt no box), so `herdr_input_line` reads it; Codex's composer is the last line
+opening with `›` and a space, a dim placeholder when empty (`codex_input_line`, measured on
+codex-cli 0.166.0, whose approval draws its chosen option `› 1. Yes, proceed (y)` and leaves no
+record of the wait: its rollout shows only a call still running, and the old send's paste and Enter
+approved the command). It types only into an input on screen and empty, so a dialog no record names
+(a Codex approval, a kind of wait not known here, one an older client shows only in its transcript)
+holds it, and so does a draft the reader left; after the paste it presses Enter only once the input
+shows a draft (whether all of it is ours is not read back, as with herdr; read for about two
+seconds), else it holds with the text left there. A Codex `›` line going on with a number and a dot
+is an approval's option only where it is drawn in reverse video or "Press enter to confirm" follows
+(both measured), so a prompt that opens with a numbered list is still a draft. A pane the reader
+scrolled back is returned to its agent before the paste (#s339, measured on tmux 3.7c): in copy
+mode a paste still reaches the input but the Enter only leaves the mode, so nothing was submitted
+and the send said it was; `copy-mode -q` leaves any mode (outside one it does nothing), and a pane
+still in a mode after it, or one whose mode cannot be read, holds; the mode is read again with the
+screen before the Enter, so a reader who scrolls back meanwhile holds it too. The
+send, a grant and a dialog read always rescan the processes rather than use the last tick's, so
+each pays a full probe (the bounded `ps` and `lsof` runs and the record reads) for current evidence.
 **A one-shot (`claude -p`/`--print`) is headless and pairs by TIME** (#s50): knack's coordinator
 starts workers from its Bash, all in one repo, each inheriting the coordinator's `TMUX_PANE`, and the
 directory rule gave a process to the newest session only — so a worker deep in a long command lost
@@ -382,10 +477,15 @@ into the pane it inherited would type into the coordinator. **A `-p` in an inter
 prompt makes no one-shot** (#s301): `ps` joins argv with spaces, so `claude … "… mkdir -p counts …"`
 read as one, and its session was never linked (no liveness, no send, no dialog). The process's own
 record decides where it exists (`apply_session_files`): Claude Code writes `<claude home>/sessions/
-<pid>.json` (the home from the process's `CLAUDE_CONFIG_DIR`, else `~/.claude`) with `entrypoint`
+<pid>.json` (the home from the process's `CLAUDE_CONFIG_DIR`, else the one above the projects
+store, `~/.claude` unless `CLAUDE_PROJECTS_DIR` moves it) with `entrypoint`
 `cli` for an interactive launch and `sdk-cli` for `claude -p` (measured, 2.1.312; both say `kind:
 interactive`), believed only when it names the pid and began no earlier than the process. A one-shot
-writes it only once under way, so until then the argv decides, the safe way.
+writes it only once under way, so until then the argv decides, the safe way. A Codex process is a
+one-shot when its subcommand (the first word that is neither an option nor an option's value) is
+`exec`, its alias `e` or `review`, or the word `exec` stands anywhere, and never for a `-p`, which
+is its `--profile` (#s326, codex-cli 0.165.0): `codex -p work` read as one was never linked to its
+pane, and a `codex exec` an agent's Bash starts inherits that agent's pane as a `claude -p` does.
 **A headless worker lives in its starter's Agents pane, not in the session list** (#s53, the owner:
 "keep them under agents outline pane, and don't put them on main session list"). Claude Code exports
 its own session id into every Bash command (`CLAUDE_CODE_SESSION_ID`, with
@@ -398,7 +498,23 @@ carries `startedBy` only when the starter is a row here, and `brief` (the first 
 prompt: a worker's own title is its project's). The app shell leaves such rows out of the tree and
 its counts, lists them in the starter's Agents pane after its sub-agents (`data-worker-session`, the
 same descent, so the parent control leads back; a linked worker falls back to `startedBy`), and the
-send gate does not count a session's own worker as "another active session". A fork's engine (`--fork-session --resume <parent.jsonl>`) is the only marker of a Claude fork
+send gate does not count a session's own worker as "another active session". **A Claude desktop
+side session is listed under the session that started it** (#s340, Hong's yes on #s342): the desktop
+app shows a session started from another (an agent's `start_session`, or a "btw" side question the
+person forks) as its child, and its own store says so, `<store>/<account>/<org>/local_<uuid>.json`
+(measured, desktop 4.4212.0 hosting Claude Code 2.1.309: `sessionId` the desktop's id,
+`cliSessionId` the transcript's, `spawnedFrom.sessionId` the starter's desktop id), while the
+transcript names no starter. `desktop_sessions.rs` reads that store read-only and tolerantly
+(`CLAUDE_DESKTOP_SESSIONS_DIR`, else `~/Library/Application Support/Claude/claude-code-sessions` on
+macOS; a record re-read only when it changes; anything unreadable skipped; on the process clock),
+and a row carries `sideOf` when its starter is a row here and not of its own fork family (a forked
+side question already draws under its family, once). Unlike a worker it stays in the list, a session
+the person writes to: the app shell draws it right under its starter's family, marked ↳ and indented
+by depth, in the tree, the flat list and a phone's drawer (`nestSideSessions` in `session-list.js`),
+the group taking its earliest member's place, so an active side session lifts an old starter rather
+than sinking behind "Show N more"; a starter the session filter leaves out, or one in another
+project, leaves its side session listed on its own
+(`the_app_shell_nests_a_desktop_side_session_under_its_starter`). A fork's engine (`--fork-session --resume <parent.jsonl>`) is the only marker of a Claude fork
 anywhere, and `note_forks_from_argv` is how one joins its #142 family. Diagnose against the
 machine, not the API: `term`/`injectable` describe the process the row was LINKED to, so a false
 link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and `ps -axww` first.
@@ -417,13 +533,25 @@ multiplexer inside the other's pane hands its children the OUTER pane's markers 
 directions (herdr started from a tmux pane gives every herdr pane `TMUX_PANE`; tmux started in a herdr
 pane gives every tmux pane `HERDR_PANE_ID`), and typing at the outer pane reaches whatever sits there
 now — so a herdr marker is believed only when herdr IS the nearest multiplexer up the agent's parent
-chain (`apply_nesting`, one `ps -axo pid=,ppid=,ucomm=` when any agent carries a herdr marker: a
-pane's shell is the herdr server's direct child, measured; `ucomm` because `comm` is the start path
-cut at 16 characters). The tmux server is known by the pid in `TMUX`, screen or zellij nearer than
-herdr is a pane we do not drive, and with no answer the agent is in no pane we may drive. The row says `term: "herdr"`, `target` the pane, `herdrSession` a named session
-(the attention report reads `term`, agreed with Aries). The send (`PaneAddr`, `resolve_pane_send`)
-keeps every tmux rule — a proven link, the project's only live session, consent keyed to the pane and
-pid (a herdr key's socket half is `herdr:<socket>`, so a tmux grant can never count) — and then
+chain (`apply_nesting_ttys`, one `ps -axo pid=,ppid=,tty=,ucomm=`
+when any agent carries a herdr marker, or
+a tmux one since #s318: a pane's shell is the herdr server's direct child, measured; `ucomm` because
+`comm` is the start path cut at 16 characters). The tmux server is known by the pid in `TMUX`,
+screen or zellij nearer than herdr is a pane we do not drive, and with no answer the agent is in no
+pane we may drive. **A tmux marker is believed the same way** (#s334): only with tmux nearest up the
+chain, since an agent's own processes carry `TMUX_PANE` outside the pane (Claude Code's
+`--bg-pty-host` engine under `claude daemon run` inherits its attach client's, and so does anything
+that session's Bash starts), and so does a process that started from a pane and is no longer below
+its server (an app opened from it, one whose pane shell exited; an editor still running as the
+pane's child reads as the pane, as before). So a scan whose `ps -axo pid=,ppid=,ucomm=` goes over
+its bound places no agent in any pane, tmux or herdr, and offers no pane send for that scan (a
+finished session's resume and Codex native mode's composer need no pane). The row says
+`term: "herdr"`, `target` the pane, `herdrSession` a named session (the attention report reads
+`term`, agreed with Aries). The send (`PaneAddr`, `resolve_pane_send`)
+requires a proven link and consent keyed to the pane and pid (a herdr key's socket half is
+`herdr:<socket>`, so a tmux grant can never count), and the project's only live session, unless
+the pane's process's own record names the session (#s258, herdr panes only; a record does not
+widen the grant carry below, which reads the argv). The herdr path also has
 one rule tmux does not have: **a grant follows a herdr RESTORE of the same session** (#s234, Hong's
 option 1 on #s233; herdr starts it again as `claude --resume <id>`, a new pid): `consent::carried`
 keeps it when only the pid changed, the server and pane (read from the new process's own
@@ -432,7 +560,7 @@ the session in its own argv (`names_exactly`: `--resume <id>` or `--session-id <
 id, an `attach` client, a fork, a one-shot or a directory pairing), and the original expiry has not
 passed (never extended). The carry is worked out on every send and never written back, so a send
 only reads `consent.json`, and the row's `consented` asks the same (`covers`) — and then
-`control::herdr_send` checks what tmux never did, for a CLAUDE session only (herdr's hook reports
+`control::herdr_send` checks more than the tmux send does, for a CLAUDE session only (herdr's hook reports
 Claude's session; a Codex row in herdr is not offered the send, `HerdrClaudeOnly`): the pane id must
 be herdr's shape and the socket a socket of this user (both come from another process's
 environment); every herdr step addresses that one server by `HERDR_SOCKET_PATH` alone (the monitor's
@@ -510,7 +638,7 @@ PreToolUse hook holds the terminal while it waits.
 static version of mdrev, similar to how agent-monitor depends on crates in claude-replay. Future
 upgrades will be triggered explicitly and manually"). `vendor/mdrev` is a crate holding ONE public
 mdrev release's embedding kit, unmodified (`release/`: `bundle/`, `mdrev-cli.js` + `package.json`,
-`docs/*.md`); its version IS the release's (1.1.65, #s289), `release.sha256` is checked by its tests (never
+`docs/*.md`); its version IS the release's (1.1.68, #s345), `release.sha256` is checked by its tests (never
 hand-edit a vendored file), and its build script embeds `bundle/` as a table. Only `claude-monitor`
 depends on it, and `routes::handler` — the one constructor the monitor goes through — installs it
 into the html crate (`install_mdrev`), so `agent-replay` carries none of it. Nothing installed on
@@ -662,7 +790,11 @@ A served page's file links are **capability-stamped**: the renderer signs each o
 with an HMAC (key at `<state>/file-sig-key`, 0600), and `/file` and `/__reveal` act only on a
 path carrying the stamp for THAT capability. So a route acts only on what was offered, and a
 reveal link cannot be edited into a byte read. `claude-replay-html/src/html_export/sig.rs` is
-the whole story.
+the whole story. Tests never touch the key or the policies on disk: the html crate's own get fixed
+values under `cfg(test)`, and claude-monitor's, which link it without that, get the same through
+its `hermetic-tests` feature, enabled from claude-monitor's dev-dependencies only (#s321: the
+first stamp of a run minted a real key into whichever test's state dir the process-wide variable
+named, racing that test's cleanup). No shipped build enables it; with it every stamp is forgeable.
 
 **Which paths may RENDER is a setting**, `<state>/render-policy.json`:
 `{"mode": "allowlist", "dirs": ["~/personal", "~/code"]}` — `mode` is `never`, `offered` (the
@@ -1192,10 +1324,12 @@ risk, approves and lands it under the owner's account without asking, once all t
 3. **Current.** main is merged in (or the branch rebased onto it), and the result is still green.
 
 Then approve, land it fast-forward only under the landing lock, post a note on the change naming the
-reviewed commit and the checks, and close its review task with what landed. Requested changes go to
-the author as findings on the change, never to the owner; the owner hears of a disagreement only
-when a second round still has one. A change that cannot land fast-forward gets main merged into its
-branch first, then lands fast-forward: never a server-side merge commit.
+reviewed commit and the checks, and close its review task with what landed. One review task carries
+the change from first review to landing, every task about it tagged `mr-<n>`: see the taskq skill's
+`references/merge-requests.md`. Requested changes go to the author as findings on the change, never
+to the owner; the owner hears of a disagreement only when a second round still has one. A change
+that cannot land fast-forward gets main merged into its branch first, then lands fast-forward: never
+a server-side merge commit.
 
 **Still the owner's.** Review it, then bring it to the owner in one line instead of landing:
 - releases, version numbers and the Homebrew formulas;

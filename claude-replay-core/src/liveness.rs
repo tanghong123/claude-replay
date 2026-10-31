@@ -88,8 +88,10 @@ const CODEX_TOOL_PATTERNS: &[CodexToolPattern] = &[
 ///
 /// Scans the last `INFLIGHT_TAIL_BYTES` (256 KiB) only; a use whose result predates the window
 /// can't appear dangling (uses are collected from within the window, results may close
-/// them from anywhere in it). Covers sub-agent work too: while a child runs, the parent's
-/// spawning `tool_use` is itself unresolved in the ROOT tail.
+/// them from anywhere in it) — which holds only for the transcript's own records, so a COPY of
+/// a call written after its result (Claude Code's API-call log, #s329) is never read. Covers
+/// sub-agent work too: while a child runs, the parent's spawning `tool_use` is itself
+/// unresolved in the ROOT tail.
 pub fn inflight_tool_in_tail(transcript: &Path) -> bool {
     !inflight_tools_in_tail(transcript).is_empty()
 }
@@ -173,6 +175,17 @@ pub fn inflight_tools_in_tail(transcript: &Path) -> Vec<InflightTool> {
         (!raw.is_empty()).then(|| raw.to_string())
     }
     for line in buf.lines() {
+        // #s329: Claude Code's log of its API calls (#s134) is never a call or a result. An
+        // `api-request-blob` holds an assistant message as sent, its calls' ids included, and is
+        // written just before the request that sends it, so AFTER those calls' results, which are
+        // never blobbed. A window whose edge fell between a result and the blob after it read the
+        // call as running: a finished `claude -p` worker whose process was gone read
+        // `exited-mid-work` (11 of 131 that ended on `end_turn` on aries-black over three days,
+        // measured 2026-10-30), and a live one could read as a permission wait. Each such line
+        // puts its type first.
+        if line.starts_with("{\"type\":\"api-request") {
+            continue;
+        }
         if line.contains("\"type\":\"tool_use\"") {
             // The tool's name rides the same record as its id; take the line's first
             // `name` field as the best-effort label for every use on the line.
@@ -264,6 +277,33 @@ mod tests {
 "#,
         );
         assert!(!inflight_tool_in_tail(&p));
+    }
+
+    /// #s329: the client's copy of a call in its API-call log is not the call. Here the window's
+    /// edge has cut away the call's own record and its result, leaving the blob written after
+    /// them; a call made after it, with no result, is still in flight.
+    #[test]
+    fn a_request_log_copy_of_a_call_is_not_inflight() {
+        let p = fixture("claude-blob");
+        write_tail(
+            &p,
+            concat!(
+                r#"{"type":"api-request-blob","sessionId":"s","hash":"h1","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_old","name":"Bash","input":{}}]}}"#,
+                "\n",
+                r#"{"type":"api-request","sessionId":"s","id":"q1","keep":2,"tail":["h1"]}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_new","name":"Read","input":{}}]}}"#,
+                "\n",
+            ),
+        );
+        let pending = inflight_tools_in_tail(&p);
+        assert_eq!(
+            pending,
+            vec![InflightTool {
+                id: "toolu_new".into(),
+                name: "Read".into()
+            }]
+        );
     }
 
     #[test]

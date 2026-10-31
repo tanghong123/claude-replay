@@ -32,3 +32,50 @@ export function flatFamilies(tree = [], now = Date.now() / 1000) {
     return name(a).localeCompare(name(b)) || (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
   });
 }
+
+/**
+ * Claude desktop side sessions nested under their starter (#s340): a family whose representative
+ * names a starter (`sideOf`, the server's, read from the Claude desktop app's own records) that is
+ * a row of another family in `fams`, in the same project, moves under that family, into its `sides`
+ * in the order given. The merged group takes the place of its earliest member, so a side session
+ * that is active or waits on the person lifts its starter with it rather than sinking to the
+ * starter's place (the review of #s340: behind "Show N more" otherwise). A side session whose
+ * starter is not among `fams` (the session filter or a hide left it out) or is in another project
+ * stays a family of its own, so it is never lost or shown away from its project; a starter named in
+ * a loop nests nothing; a side session of a side session nests under that one.
+ */
+export function nestSideSessions(fams = []) {
+  const owner = new Map();
+  for (const fam of fams) for (const row of fam.members) owner.set(row.id, fam);
+  const starterOf = fam => {
+    const starter = fam.rep.sideOf && owner.get(fam.rep.sideOf);
+    if (!starter || starter === fam) return null;
+    if (starter.project && fam.project && starter.project.id !== fam.project.id) return null;
+    return starter;
+  };
+  // A family nests only where its starters lead to a family that names none; a loop nests nothing.
+  const nests = fam => {
+    const seen = new Set([fam]);
+    for (let at = starterOf(fam); at; at = starterOf(at)) {
+      if (seen.has(at)) return false;
+      seen.add(at);
+    }
+    return Boolean(starterOf(fam));
+  };
+  const out = fams.map(fam => ({ ...fam, sides: [] }));
+  const copy = new Map(fams.map((fam, i) => [fam, out[i]]));
+  const nested = new Set();
+  fams.forEach((fam, i) => {
+    if (!nests(fam)) return;
+    copy.get(starterOf(fam)).sides.push(out[i]);
+    nested.add(out[i]);
+  });
+  const place = new Map(out.map((fam, i) => [fam, i]));
+  const earliest = fam => Math.min(place.get(fam), ...fam.sides.map(earliest));
+  return out.filter(fam => !nested.has(fam)).sort((a, b) => earliest(a) - earliest(b));
+}
+
+/** Whether a family, its forks or a side session under it holds the row `id` (#s340). */
+export function familyHolds(fam, id) {
+  return fam.members.some(row => row.id === id) || (fam.sides || []).some(side => familyHolds(side, id));
+}

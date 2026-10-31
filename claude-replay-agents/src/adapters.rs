@@ -30,6 +30,10 @@ impl MetricsAccumulator for agents::claude::metrics::MetricsAcc {
     fn push(&mut self, v: &Value) {
         agents::claude::metrics::MetricsAcc::push(self, v)
     }
+    /// Counts nothing; an unread line leaves the next answer's request time unknown (#s341).
+    fn malformed_line(&mut self) {
+        agents::claude::metrics::MetricsAcc::malformed_line(self)
+    }
     /// The class of a request to a model priced by prompt length (#s56).
     fn request_pricing(&self) -> Option<claude_replay_engine::seam::RequestPricing> {
         agents::claude::metrics::MetricsAcc::request_pricing(self)
@@ -42,6 +46,13 @@ impl MetricsAccumulator for agents::claude::metrics::MetricsAcc {
     /// An API call, whose usage only grows across its lines (#316).
     fn usage_kind(&self) -> Option<claude_replay_engine::seam::UsageKind> {
         Some(claude_replay_engine::seam::UsageKind::Call)
+    }
+    /// Each answer timed by its `message.id` (#s341).
+    fn answer(&self) -> Option<claude_replay_engine::seam::AnswerTiming> {
+        agents::claude::metrics::MetricsAcc::answer(self)
+    }
+    fn open_answer(&self) -> Option<claude_replay_engine::seam::AnswerTiming> {
+        agents::claude::metrics::MetricsAcc::open_answer(self)
     }
     fn bump_extra(&mut self, key: &str, n: u64) {
         self.bump(key, n)
@@ -83,6 +94,10 @@ impl MetricsAccumulator for agents::codex::metrics::CodexMetricsAcc {
     /// A reading of the cumulative counter, whose delta a rewrite can change (#316).
     fn usage_kind(&self) -> Option<claude_replay_engine::seam::UsageKind> {
         Some(claude_replay_engine::seam::UsageKind::CounterReading)
+    }
+    /// One answer per reading that moved the counter (#s341); none is ever open.
+    fn answer(&self) -> Option<claude_replay_engine::seam::AnswerTiming> {
+        self.answer.clone()
     }
     fn push(&mut self, v: &Value) {
         agents::codex::metrics::CodexMetricsAcc::push(self, v)
@@ -652,6 +667,67 @@ impl MetricsAccumulator for NoMetrics {
     fn push(&mut self, _v: &Value) {}
     fn finish(&self) -> Metrics {
         Metrics::default()
+    }
+}
+
+#[cfg(test)]
+mod answer_tests {
+    use super::*;
+
+    /// #s341: the timing reaches a consumer through the seam, as agent-metrics drives it: the
+    /// adapter's own accumulator, `answer` after each push and `open_answer` at the end.
+    #[test]
+    fn each_adapter_hands_out_its_answers_through_the_seam() {
+        let line = |s: &str| serde_json::from_str::<Value>(s).unwrap();
+        let mut acc = ClaudeAdapter.metrics_acc();
+        acc.push(&line(
+            r#"{"type":"user","timestamp":"2026-10-30T10:00:00Z"}"#,
+        ));
+        acc.push(&line(
+            r#"{"type":"assistant","timestamp":"2026-10-30T10:00:01Z","message":{"id":"msg_01A","model":"m","usage":{"output_tokens":9}}}"#,
+        ));
+        assert_eq!(acc.answer(), None);
+        acc.push(&line(
+            r#"{"type":"assistant","timestamp":"2026-10-30T10:00:02Z","message":{"id":"msg_01B","model":"m","usage":{"output_tokens":9}}}"#,
+        ));
+        assert_eq!(acc.answer().map(|a| a.id).as_deref(), Some("msg_01A"));
+        assert_eq!(acc.open_answer().map(|a| a.id).as_deref(), Some("msg_01B"));
+
+        let mut acc = CodexAdapter.metrics_acc();
+        acc.push(&line(
+            r#"{"timestamp":"2026-10-30T10:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":7},"total_token_usage":{"input_tokens":1,"output_tokens":7}}}}"#,
+        ));
+        assert_eq!(acc.answer().and_then(|a| a.output_tokens), Some(7));
+        assert_eq!(acc.open_answer(), None);
+    }
+
+    /// #s341: a line the consumer could not read (agent-metrics calls `malformed_line` for one
+    /// it drops) may have been the next answer's request or its first line: that answer's `sent`
+    /// and `first` are not known, an answer ended before it is not handed out again, and the
+    /// next request is read again.
+    #[test]
+    fn an_unread_line_leaves_the_next_answer_s_start_unknown() {
+        let line = |s: &str| serde_json::from_str::<Value>(s).unwrap();
+        let part = |id: &str, ts: &str| {
+            line(&format!(
+                r#"{{"type":"assistant","timestamp":"{ts}","message":{{"id":"{id}","model":"m","usage":{{"output_tokens":9}}}}}}"#
+            ))
+        };
+        let user = |ts: &str| line(&format!(r#"{{"type":"user","timestamp":"{ts}"}}"#));
+        let mut acc = ClaudeAdapter.metrics_acc();
+        acc.push(&user("2026-10-30T10:00:00Z"));
+        acc.push(&part("msg_01A", "2026-10-30T10:00:01Z"));
+        acc.push(&part("msg_01B", "2026-10-30T10:00:02Z"));
+        assert!(acc.answer().is_some());
+        acc.malformed_line();
+        assert_eq!(acc.answer(), None, "not handed out again");
+        acc.push(&part("msg_01C", "2026-10-30T10:00:04Z"));
+        let c = acc.open_answer().unwrap();
+        assert_eq!((c.sent, c.first), (None, None));
+        acc.push(&user("2026-10-30T10:00:05Z"));
+        acc.push(&part("msg_01D", "2026-10-30T10:00:06Z"));
+        let d = acc.open_answer().unwrap();
+        assert!(d.sent.is_some() && d.first.is_some());
     }
 }
 

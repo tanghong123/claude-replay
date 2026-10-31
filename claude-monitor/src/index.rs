@@ -9,6 +9,7 @@
 //! durable entry — because cost gated on visits under-reported a project 20× (measured:
 //! $121 shown of $2,421 real).
 
+use crate::claude_registry::Identity;
 use anyhow::Result;
 use claude_replay_core::engine::meta_stream::{MaterializedMeta, FOLD_VERSION};
 use claude_replay_core::liveness::{inflight_tool_in_tail, latest_tree_activity};
@@ -104,9 +105,12 @@ pub fn herdr_session(socket: Option<&str>) -> Option<String> {
 pub struct PaneTarget {
     pub sid: String,
     pub pid: u32,
+    /// The session's agent: whose input a tmux send reads off the pane's screen (#s338).
+    pub agent: Agent,
     pub addr: PaneAddr,
     /// What the client says it waits on (#s76: a question, a permission prompt), read as the
-    /// target resolved. The herdr send holds while it waits; typing would answer the dialog.
+    /// target resolved. The herdr and tmux sends hold while it waits (#s336); typing would answer
+    /// the dialog.
     pub client_wait: bool,
     /// The process names the session exactly in its own argv (#s234): with a herdr pane, a
     /// grant for the same session, pane and server may follow it across a restore.
@@ -142,6 +146,19 @@ pub enum SendRefusal {
     /// (herdr path) herdr's hook reports the session in a pane for Claude only, and the send
     /// proves its pane by that report (#s226), so a Codex session in herdr is not sent to.
     HerdrClaudeOnly,
+    /// (pane path) another agent may be reading the pane (`pane_shared`): what is typed there
+    /// could reach that agent — the one whose Bash started this session's process (#s318), or a
+    /// sibling in the same pane (herdr's own check names whichever session started last; tmux has
+    /// none, #s333).
+    PaneShared,
+    /// (tmux path) the agent does not hold its pane's foreground (#s335): suspended with Ctrl-Z
+    /// or put in the background, so what is typed would reach the shell or whatever runs there.
+    PaneNotForeground,
+    /// (tmux path) the agent holds a terminal other than its pane's (#s337): started through a pty
+    /// wrapper (`script`, `asciinema rec`) or in an editor's terminal. What sits between the pane
+    /// and the agent cannot be checked (an editor would take the text), so the check before
+    /// typing refuses it.
+    PaneOtherTerminal,
 }
 
 /// The pane-injection decision (#133 tmux slice, #s226 herdr), PURE over one scan's link data —
@@ -165,8 +182,9 @@ fn pane_target_from(agent: Agent, link: &SendLink) -> Result<(u32, PaneAddr), Se
 
 /// Does ANOTHER session in the same project (cwd) have a live process? PURE over one scan's
 /// data — the owner's constraint 2: with a live sibling we cannot tell which session drives
-/// the project, so neither a resume (would fork the live work) nor an injection (could hit the
-/// wrong pane) is safe. Both send paths gate on this; `cwd_of` maps a sid to its cwd.
+/// the project, so resuming would fork live work. A pane send uses the same guard, except for a
+/// herdr pane its process's own record names (`pane_send_beside_siblings`). `cwd_of` maps a sid
+/// to its cwd.
 ///
 /// A headless worker the target STARTED is part of it, not another session (#s53, the owner):
 /// a coordinator whose `claude -p` workers run in its repo keeps its compose box. `started_by`
@@ -194,16 +212,55 @@ fn send_liveness_ok(
     sid: &str,
     cwd: Option<&str>,
     links: &HashMap<String, SendLink>,
+    procs: &[Proc],
+    agent: Agent,
     cwd_of: impl Fn(&str) -> Option<String>,
     started_by: impl Fn(&str) -> Option<String>,
 ) -> Result<(), SendRefusal> {
     if links.get(sid).and_then(|l| l.pid).is_some() {
         return Err(SendRefusal::SessionIsLive);
     }
-    if project_has_other_live(sid, cwd, links, cwd_of, started_by) {
+    if unresolved_registry_writer(procs, agent, cwd, links)
+        || project_has_other_live(sid, cwd, links, cwd_of, started_by)
+    {
         return Err(SendRefusal::ProjectHasActiveSession);
     }
     Ok(())
+}
+
+/// The pane-send decision of `resolve_pane_send` over one scan's state, pure: the pid and pane a
+/// send to `sid` may type into, or why it may not.
+fn pane_send_target(st: &State, sid: &str) -> Result<(u32, PaneAddr), SendRefusal> {
+    let row = st.rows.get(sid).ok_or(SendRefusal::NoSuchSession)?;
+    let (agent, cwd) = (row.agent, row.cwd.as_deref());
+    st.legacy_send_policy.allow_session(agent, sid)?;
+    let link = st.send_links.get(sid).cloned().unwrap_or_default();
+    let (pid, addr) = pane_target_from(agent, &link)?;
+    if pane_shared(&st.procs, pid, &addr) {
+        return Err(SendRefusal::PaneShared);
+    }
+    if let Some(refusal) = tmux_pane_refusal(&st.procs, pid, &addr) {
+        return Err(refusal);
+    }
+    if !pane_send_beside_siblings(&st.procs, pid, sid, &addr)
+        && (unresolved_registry_writer(&st.procs, agent, cwd, &st.send_links)
+            || project_has_other_live(
+                sid,
+                cwd,
+                &st.send_links,
+                // #s59: a sibling of another agent drives nothing of this session.
+                |o| {
+                    st.rows
+                        .get(o)
+                        .filter(|r| r.agent == agent)
+                        .and_then(|r| r.cwd.clone())
+                },
+                |o| st.started_by(o).map(str::to_string),
+            ))
+    {
+        return Err(SendRefusal::ProjectHasActiveSession);
+    }
+    Ok((pid, addr))
 }
 
 impl SendRefusal {
@@ -221,6 +278,15 @@ impl SendRefusal {
             Self::NoConsent => "grant consent to send into this session's terminal first",
             Self::HerdrClaudeOnly => {
                 "herdr proves which session runs in a pane only for Claude: send to this one from its pane"
+            }
+            Self::PaneShared => {
+                "another agent runs in this pane, so a send could reach it instead: send from the pane"
+            }
+            Self::PaneNotForeground => {
+                "the agent is suspended or in the background in its tmux pane, so a send would reach whatever runs there now: bring it back (fg) first"
+            }
+            Self::PaneOtherTerminal => {
+                "the agent runs on another terminal than its tmux pane (a pty wrapper or an editor's terminal), and what sits between them cannot be checked: send from the pane"
             }
         }
     }
@@ -304,10 +370,18 @@ struct State {
     /// tmux control address, and whether the link is proven. The send-prompt route reads
     /// this for both transports — idle-resume (no live pid) and tmux (a proven live link).
     send_links: HashMap<String, SendLink>,
+    /// Growth of a different session contradicted this PID's explicit owner. Retain the
+    /// doubt after growth stops; only process departure or newer owner growth clears it.
+    /// Keyed by (pid, owner sid), with the cwd and conflicting growth observation.
+    growth_conflicts: HashMap<(u32, String), (String, Instant)>,
     /// Which session started each headless worker (#s53), worker sid → starter sid: banked from a
     /// running worker's environment (`bank_started_by`) and kept in `<cache_root>/started-by.json`,
     /// because the edge is visible only while the worker runs and its transcript never records it.
     started_by_edges: BTreeMap<String, String>,
+    /// The Claude desktop app's session records (#s340), read on the process clock.
+    desktop: crate::desktop_sessions::DesktopSessions,
+    /// A desktop side session's starter, side session sid → starter sid, from those records.
+    side_of: HashMap<String, String>,
 }
 
 impl State {
@@ -392,17 +466,18 @@ struct Row {
     spawned_by: Option<String>,
     spawn_probed: bool,
     /// The agent process this session was matched to by GROWTH (#146), and that process's
-    /// cwd at the time. Growth is the strongest signal available for a no-id launch — a
-    /// transcript only advances because its own agent wrote to it — so once a session is the
+    /// cwd at the time. For legacy discovery, transcript advancement supplies evidence
+    /// about its writer — current native identity takes precedence. Once a session is the
     /// only grower in its directory the pairing is banked and outlives the growth that
     /// proved it. Dropped as soon as the pid is gone or has moved.
     proved_pid: Option<(u32, String)>,
-    /// The session this conversation was MOVED to (#s294), by the transcript's last record, and
-    /// when. Re-read whenever the transcript changes: a move is only the tail's word, and a
-    /// conversation record after it takes the session back.
+    /// The validated transcript continuation, re-read whenever the transcript changes.
     continued_in: Option<claude_replay_core::Continuation>,
     /// When growth was last OBSERVED (scan clock) — drives the linger.
     grew_at: Option<Instant>,
+    /// This observation was disqualified for PID attribution. Keep its activity visible;
+    /// only a new transcript advancement supplies a different eligible observation.
+    invalidated_growth: Option<Instant>,
     /// Counter fold of the visited entry's meta stream, keyed by the stream's mtime so a
     /// quiet session costs a `stat`, not a re-read.
     counters: Option<(SystemTime, Counters)>,
@@ -475,14 +550,27 @@ struct Counters {
 /// The expensive facts (env, fds, tty) are filled for AGENT processes only.
 struct Proc {
     pid: u32,
+    /// The session this Claude process's own record names, verified against its pid and start
+    /// (`apply_registry`).
+    native_session: Identity,
     argv: String,
     exe_base: String,
+    /// The argv after the executable's whole path ([`exe_path`]), which may hold spaces: where
+    /// `attach` is read, so a client under such a path is still known as one.
+    after_exe: String,
     /// Working directory (`lsof -Fpfn`, the `cwd` fd) — the Claude heuristic link.
     cwd: Option<String>,
     /// Open `.jsonl` paths — Codex holds its rollout open, the probe's exact fd link.
     open_jsonl: Vec<String>,
     /// Controlling tty (`ps -o tty=`); `None` when detached (`??`).
     tty: Option<String>,
+    /// The process state (`ps -o stat=`, like `S+` or `T`), whose `+` and `T` say whether it
+    /// holds its terminal's foreground (`holds_foreground`, #s335); `None` when not read.
+    stat: Option<String>,
+    /// With tmux the nearest multiplexer, the tty of the pane's shell: the tmux server's direct
+    /// child in this process's parent chain, or the process itself as the pane's command (#s337,
+    /// `apply_nesting_ttys`); `None` when not read.
+    pane_tty: Option<String>,
     /// `TMUX_PANE=%N` from the process ENVIRONMENT (`ps eww`) — the probe's finding: the
     /// multiplexer is visible nowhere else, and `%N` is the injection target.
     pane: Option<String>,
@@ -495,9 +583,14 @@ struct Proc {
     herdr_pane: Option<String>,
     /// `HERDR_SOCKET_PATH` — which herdr server the pane belongs to (one per named session).
     herdr_socket: Option<String>,
-    /// With a herdr pane in its environment, the NEAREST multiplexer up the process's parent chain
-    /// (`apply_nesting`): an outer one's marker is inherited and names a pane this agent is not in.
+    /// With a herdr or tmux pane in its environment, the NEAREST multiplexer up the process's
+    /// parent chain (`apply_nesting_ttys`): an outer one's marker is inherited and names a pane this
+    /// agent is not in, and a marker with no multiplexer up the chain names no pane at all.
     inner_mux: Option<Mux>,
+    /// With a herdr or tmux pane in its environment, another agent process (not a helper) sits
+    /// between this process and that nearest multiplexer (`apply_nesting_ttys`): it was started from
+    /// that agent's Bash, and the pane's input goes to that agent, not to this one.
+    under_agent: bool,
     /// The tmux server's pid, the second field of `TMUX=/path,pid,idx`.
     tmux_server_pid: Option<u32>,
     /// When the process started, in epoch seconds (`ps -o etime=`, so to the second) — what pairs a
@@ -535,6 +628,207 @@ struct Parked {
     job: String,
 }
 
+impl Proc {
+    /// The session this process runs: its verified record's, else what its argv names.
+    fn session_ref(&self) -> Option<SessionRef> {
+        self.native_session
+            .session()
+            .map(|session| SessionRef::Exact(session.to_string()))
+            .or_else(|| self.argv_session_ref())
+    }
+
+    /// The session this process's argv names, whatever its record says: what a growth fence is
+    /// recorded against, since a scan whose record cannot be read falls back to it.
+    fn argv_session_ref(&self) -> Option<SessionRef> {
+        session_ref(&self.argv).or_else(|| {
+            (!argv_says_one_shot(&self.argv))
+                .then(|| attach_ref(&self.after_exe.split_whitespace().collect::<Vec<_>>()))
+                .flatten()
+        })
+    }
+
+    /// A pane's client for a background session (`claude attach <prefix>`).
+    fn attach_client(&self) -> bool {
+        self.after_exe.split_whitespace().next() == Some("attach")
+    }
+}
+
+/// Whether `pid`'s own verified record names `sid`.
+fn registry_identifies(procs: &[Proc], pid: u32, sid: &str) -> bool {
+    procs
+        .iter()
+        .any(|p| p.pid == pid && p.native_session.session() == Some(sid))
+}
+
+/// Whether a pane send may go to `pid` beside other live sessions in its project. Only a herdr
+/// pane whose process's own record names `sid` may (the owner's decision s271): herdr checks the
+/// pane's session again right before typing (`herdr agent get`), and tmux has no such check — a
+/// `claude` started through a pty wrapper inherits its starter's `TMUX_PANE`. That check holds
+/// only while one agent reads the pane, which `pane_shared` makes sure of first: a `claude`
+/// started from an agent's Bash inherits the herdr pane too, and herdr's record of the pane then
+/// names the child's session. Background resume is never covered: it always needs a quiet project.
+fn pane_send_beside_siblings(procs: &[Proc], pid: u32, sid: &str, addr: &PaneAddr) -> bool {
+    matches!(addr, PaneAddr::Herdr { .. }) && registry_identifies(procs, pid, sid)
+}
+
+/// Whether another agent may be reading the pane `pid` is placed in, so that what is typed there
+/// could reach it instead. An agent's Bash can start an interactive `claude` (or `codex`) through a
+/// pty wrapper (`script -q /dev/null claude`): the child inherits the pane's markers, so it reads
+/// as that pane, while the pane's input goes to the agent that started it. So it is true, in a tmux
+/// pane and a herdr pane alike, when `pid` runs below another agent process (`Proc::under_agent`).
+/// In tmux such a child in another directory, the lone agent process there, was linked to its
+/// session, confirmed, and offered the send, which typed into its starter's input (#s318); tmux has
+/// no check of the pane's session before typing, so this is the only one.
+///
+/// It is also true when another agent process (not a helper) is placed in the same pane of the
+/// same server — in any directory — and runs below no other agent: a `claude` suspended with
+/// Ctrl-Z while the pane's shell runs `codex`, or another `claude`, in the foreground. The text
+/// would reach the foreground agent; in herdr its record still names the suspended session, so the
+/// check before typing passes (#s258 review), and tmux has no check at all (#s333), while the
+/// one-live-session rule counts only the same agent in the same directory (#s59). A one-shot the
+/// pane's shell runs (`codex exec`, `claude -p`) counts as well: it reads no pane, but what is
+/// typed waits in the terminal for the shell behind it, which runs it as a command once the
+/// one-shot ends (a `codex -p <profile>` is no one-shot at all, #s326). So does an agent the
+/// pane's shell runs in the background (`codex exec … &`), for as long as it runs: what counts is
+/// being in the pane, not being in its foreground.
+///
+/// Below another agent, only herdr counts a sibling, and only a Claude process or a kind the
+/// monitor cannot place (an extra pattern) that is no one-shot: herdr's hook is installed for
+/// Claude alone, so a child `claude` rewrites herdr's record of the pane, which `herdr agent get`
+/// answers before typing. In tmux it does not: the pane's input still goes to its starter, and
+/// tmux keeps no record a child could rewrite. A `codex exec` or a Codex MCP server the outer
+/// agent's Bash starts inherits the pane but rewrites nothing, and a `claude -p` worker an agent
+/// starts reads no pane (#s53, #s332): neither takes the outer session's send away while it runs.
+fn pane_shared(procs: &[Proc], pid: u32, addr: &PaneAddr) -> bool {
+    let herdr = matches!(addr, PaneAddr::Herdr { .. });
+    procs.iter().any(|p| {
+        if p.pid == pid {
+            return p.under_agent;
+        }
+        is_agent_exe(&p.exe_base, &p.argv)
+            && (!p.under_agent || (herdr && serves(p, Agent::CLAUDE)))
+            && !is_helper(&p.argv)
+            && !(p.under_agent && one_shot(p))
+            && Terminal::of(p).pane_addr().as_ref() == Some(addr)
+    })
+}
+
+/// A live Claude process in `cwd` whose verified record names a session no row links to yet (its
+/// transcript not indexed): it occupies the project as a linked session would. Helpers (`daemon`,
+/// `bg-pty-host`, `bg-spare`) record a session that never gets a transcript and drive none, and a
+/// process whose cwd is unknown is not counted in any project.
+fn unresolved_registry_writer(
+    procs: &[Proc],
+    agent: Agent,
+    cwd: Option<&str>,
+    links: &HashMap<String, SendLink>,
+) -> bool {
+    let Some(cwd) = cwd else { return false };
+    agent == Agent::CLAUDE && unresolved_registry_cwds(procs, links).contains(cwd)
+}
+
+/// Every directory `unresolved_registry_writer` holds, found in one pass over the processes so a
+/// snapshot asks once rather than once per row.
+fn unresolved_registry_cwds<'a>(
+    procs: &'a [Proc],
+    links: &HashMap<String, SendLink>,
+) -> HashSet<&'a str> {
+    procs
+        .iter()
+        .filter(|p| {
+            !is_helper(&p.argv)
+                && p.native_session
+                    .session()
+                    .is_some_and(|sid| links.get(sid).and_then(|link| link.pid).is_none())
+        })
+        .filter_map(|p| p.cwd.as_deref())
+        .collect()
+}
+
+/// Each process's session, read once per scan (as #s311 did for the owners map), so a link is a
+/// lookup here rather than a pass over every process for every session.
+struct ProcTable<'a> {
+    procs: &'a [Proc],
+    by_pid: HashMap<u32, &'a Proc>,
+    /// Processes by the session their verified record names (`claude_registry`).
+    recorded: HashMap<&'a str, Vec<&'a Proc>>,
+    /// Processes with a verified record, whatever it names.
+    verified: Vec<&'a Proc>,
+    /// Agent processes by the session they name exactly (`Proc::session_ref`).
+    exact: HashMap<String, Vec<&'a Proc>>,
+    /// Agent processes naming a session by a prefix only (`attach <prefix>`).
+    prefixed: Vec<(String, &'a Proc)>,
+    /// Agent processes by each transcript they hold open, in process order. `Path` hashes as it
+    /// compares, so this is `holds_transcript`'s lexical equality; the test
+    /// `proc_table_holding_matches_holds_transcript` compares the two.
+    holding: HashMap<&'a Path, Vec<&'a Proc>>,
+}
+
+impl<'a> ProcTable<'a> {
+    fn new(procs: &'a [Proc]) -> Self {
+        let mut table = ProcTable {
+            procs,
+            by_pid: HashMap::new(),
+            recorded: HashMap::new(),
+            verified: Vec::new(),
+            exact: HashMap::new(),
+            prefixed: Vec::new(),
+            holding: HashMap::new(),
+        };
+        for p in procs {
+            table.by_pid.insert(p.pid, p);
+            if let Some(sid) = p.native_session.session() {
+                table.recorded.entry(sid).or_default().push(p);
+                table.verified.push(p);
+            }
+            if !is_agent_exe(&p.exe_base, &p.argv) {
+                continue;
+            }
+            match p.session_ref() {
+                Some(SessionRef::Exact(sid)) => table.exact.entry(sid).or_default().push(p),
+                Some(SessionRef::Prefix(prefix)) => table.prefixed.push((prefix, p)),
+                None => {}
+            }
+            for path in &p.open_jsonl {
+                table.holding.entry(Path::new(path)).or_default().push(p);
+            }
+        }
+        table
+    }
+
+    /// Whether `pid`'s own verified record names `sid`.
+    fn records(&self, pid: u32, sid: &str) -> bool {
+        self.by_pid
+            .get(&pid)
+            .is_some_and(|p| p.native_session.session() == Some(sid))
+    }
+
+    /// Whether some process's verified record names `sid`.
+    fn recorded(&self, sid: &str) -> bool {
+        self.recorded.contains_key(sid)
+    }
+
+    /// The agent processes naming `sid` through their record or argv (`process_names_session`).
+    fn naming<'s>(
+        &'s self,
+        sid: &'s str,
+        prefix_unique: &'s dyn Fn(&str) -> bool,
+    ) -> impl Iterator<Item = &'a Proc> + 's {
+        let exact = self.exact.get(sid).into_iter().flatten().copied();
+        let prefixed = self
+            .prefixed
+            .iter()
+            .filter(move |(prefix, _)| sid.starts_with(prefix.as_str()) && prefix_unique(prefix))
+            .map(|(_, p)| *p);
+        exact.chain(prefixed)
+    }
+
+    /// The agent processes holding `transcript` open, in process order.
+    fn holding<'s>(&'s self, transcript: &Path) -> impl Iterator<Item = &'a Proc> + 's {
+        self.holding.get(transcript).into_iter().flatten().copied()
+    }
+}
+
 /// A terminal multiplexer that hosts panes (#s226).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mux {
@@ -553,6 +847,12 @@ struct AgentLink {
     /// `--session-id <id>`): what lets a consent grant follow a herdr restore (#s234).
     named: bool,
     terminal: Terminal,
+}
+
+/// Directory matching is allowed only for the selected history and unclaimed processes.
+enum DirectoryMatch<'a> {
+    Disabled,
+    Unclaimed(&'a HashSet<u32>),
 }
 
 /// Does this argv name `sid` by the flag a launch passes — `--session-id <id>`, or `--resume <id>`
@@ -610,7 +910,7 @@ impl Terminal {
         // no answer, the agent is in no pane we may drive. herdr sets its socket in every pane,
         // so a pane id without one is no herdr pane we can address.
         // So a herdr marker is believed only when herdr IS the nearest multiplexer up the chain
-        // (`apply_nesting`, which also catches screen or zellij inside a herdr pane), and tmux
+        // (`apply_nesting_ttys`, which also catches screen or zellij inside a herdr pane), and tmux
         // inside herdr is tmux only when tmux is the nearest.
         if let Some(pane) = &p.herdr_pane {
             match (p.inner_mux, &p.herdr_socket) {
@@ -633,7 +933,24 @@ impl Terminal {
                 }
             }
         }
+        // #s334: a tmux marker is believed the same way, only when tmux IS the nearest
+        // multiplexer up the chain (its server by the pid `TMUX` names, or by name). An agent's
+        // own processes carry `TMUX_PANE` without running in the pane (Claude Code's
+        // `--bg-pty-host` engine under `claude daemon run`, which inherits its attach client's,
+        // and anything such a session's Bash starts), and so does whatever was launched from a
+        // pane and runs outside it (an editor's terminal, a child whose starter exited). A chain
+        // that could not be read (its `ps` over the bound) decides nothing, so no pane.
         match (&p.pane, &p.screen, &p.tty) {
+            (Some(_), Some(sty), _) if p.inner_mux == Some(Mux::Other) => {
+                Terminal::Screen(sty.clone())
+            }
+            (Some(_), _, tty) if p.inner_mux != Some(Mux::Tmux) => {
+                if tty.is_some() {
+                    Terminal::Tty
+                } else {
+                    Terminal::Detached
+                }
+            }
             (Some(pane), _, _) => Terminal::Tmux {
                 pane: pane.clone(),
                 sock: p
@@ -798,6 +1115,7 @@ impl Index {
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         // Liveness must be current — a session that went live one second ago must not be
         // resumed. Always rescan for a send (it is rare and consequential).
+        st.procs_at = None;
         self.scan(&mut st, &|_| {});
         st.scanned_at = Some(Instant::now());
 
@@ -815,6 +1133,8 @@ impl Index {
             sid,
             cwd.as_deref(),
             &st.send_links,
+            &st.procs,
+            agent,
             // #s59: a sibling of another agent drives nothing of this session.
             |o| {
                 st.rows
@@ -833,47 +1153,30 @@ impl Index {
 
     /// Resolve a LIVE send target (#133 tmux slice, #s226 herdr): the session must be LIVE with a
     /// PROVEN link (§3.1 — never a cwd guess; injecting into the wrong pane runs your text in a
-    /// different agent) that is in a tmux or herdr pane, AND it must be the ONLY live session in
-    /// its project (constraint 2, mirrored from the resume path): with a live sibling we cannot
-    /// tell which session drives the project, so we refuse rather than pick. A fresh scan is
-    /// forced.
+    /// different agent) that is in a tmux or herdr pane, in a project with no other live session
+    /// — unless it is a herdr pane its process's record names (`pane_send_beside_siblings`) — and
+    /// never a pane another agent may be reading (`pane_shared`). Always refresh
+    /// processes: the send, a grant and a dialog read each pay a full probe for current evidence.
     pub fn resolve_pane_send(&self, sid: &str) -> Result<PaneTarget, SendRefusal> {
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.procs_at = None;
         self.scan(&mut st, &|_| {});
         st.scanned_at = Some(Instant::now());
-
-        let (agent, cwd, path) = {
-            let row = st.rows.get(sid).ok_or(SendRefusal::NoSuchSession)?;
-            (row.agent, row.cwd.clone(), row.path.clone())
-        };
-        st.legacy_send_policy.allow_session(agent, sid)?;
-        let link = st.send_links.get(sid).cloned().unwrap_or_default();
-        let (pid, addr) = pane_target_from(agent, &link)?;
-        // The project must have no OTHER live session — else injecting here while another
-        // session drives the same cwd forks divergent work (constraint 2).
-        if project_has_other_live(
-            sid,
-            cwd.as_deref(),
-            &st.send_links,
-            // #s59: a sibling of another agent drives nothing of this session.
-            |o| {
-                st.rows
-                    .get(o)
-                    .filter(|r| r.agent == agent)
-                    .and_then(|r| r.cwd.clone())
-            },
-            |o| st.started_by(o).map(str::to_string),
-        ) {
-            return Err(SendRefusal::ProjectHasActiveSession);
-        }
+        let (pid, addr) = pane_send_target(&st, sid)?;
+        let row = &st.rows[sid];
         Ok(PaneTarget {
             sid: sid.to_string(),
             pid,
-            named: link.named,
-            continues: link.continues.clone(),
+            agent: row.agent,
+            named: st.send_links.get(sid).is_some_and(|l| l.named),
+            continues: st
+                .send_links
+                .get(sid)
+                .map(|l| l.continues.clone())
+                .unwrap_or_default(),
             addr,
-            client_wait: claude_replay_core::adapter(agent)
-                .client_wait(&path)
+            client_wait: claude_replay_core::adapter(row.agent)
+                .client_wait(&row.path)
                 .is_some(),
         })
     }
@@ -901,6 +1204,10 @@ impl Index {
         if st.procs_at.is_none_or(|t| t.elapsed() > PROC_REFRESH) {
             st.procs = scan_procs();
             st.procs_at = Some(Instant::now());
+            // #s340: which desktop session started which, on the same clock.
+            st.side_of = st
+                .desktop
+                .links(crate::desktop_sessions::store_root().as_deref());
         }
 
         // Discovery: every agent's machine-wide store (R1).
@@ -938,6 +1245,7 @@ impl Index {
                     proved_pid: None,
                     continued_in: None,
                     grew_at: None,
+                    invalidated_growth: None,
                     counters: None,
                     title_mtime: None,
                     cost: None,
@@ -1138,7 +1446,7 @@ impl Index {
 
     /// Bank the pairing that GROWTH proves (#146).
     ///
-    /// A no-id launch leaves nothing on disk naming its session — no fd, no argv id — so the
+    /// Without a native registration, a no-id launch has no fd or argv naming its session, so the
     /// directory match alone cannot say WHICH session an agent is driving (#145). Growth can:
     /// a transcript advances only because its own agent wrote to it. So when a directory has
     /// exactly ONE growing session and exactly ONE agent process, the pairing is forced, and
@@ -1189,17 +1497,17 @@ impl Index {
                 .filter(|(_, r)| r.one_shot)
                 .filter_map(|(sid, r)| Some((sid.as_str(), r.cwd.as_deref()?, r.first_event?))),
         );
-        let named =
-            st.procs
-                .iter()
-                .filter(|p| one_shot(p))
-                .filter_map(|p| match session_ref(&p.argv) {
-                    Some(SessionRef::Exact(sid)) => Some((sid, p.pid)),
-                    _ => None,
-                });
+        let named = st
+            .procs
+            .iter()
+            .filter(|p| one_shot(p))
+            .filter_map(|p| match p.session_ref() {
+                Some(SessionRef::Exact(sid)) => Some((sid, p.pid)),
+                _ => None,
+            });
         let found: Vec<(String, u32)> = paired
             .into_iter()
-            .map(|(sid, (pid, _))| (sid, pid))
+            .map(|(sid, pair)| (sid, pair.pid))
             .chain(named)
             .collect();
         let mut fresh = false;
@@ -1227,20 +1535,107 @@ impl Index {
     }
 
     fn prove_by_growth(&self, st: &mut State) {
-        // #s294: a session whose conversation was moved is finished, whatever its tail grew by as
-        // the client moved it (the move's own queue enqueues): it is no grower, and an older proof
-        // of it is dropped — or its proof outranks the move and the old session keeps the pane.
-        let moved: HashSet<String> = Moves::of(&st.rows)
-            .0
-            .keys()
-            .map(|s| s.to_string())
-            .collect();
-        for sid in &moved {
-            if let Some(row) = st.rows.get_mut(sid) {
-                row.proved_pid = None;
+        // A verified parked record still names the old session. Resolve its continuation before
+        // native precedence, growth fences and pane routing consume that identity. Re-derive
+        // from the recorded source even when process probing is cached; nothing is persisted.
+        let moves = Moves::of(&st.rows);
+        for p in &mut st.procs {
+            p.native_session = p
+                .native_session
+                .recorded_session()
+                .map(|session| Identity::Verified(session.to_string()))
+                .unwrap_or_default();
+            let Some(session) = p.parked.as_ref().map(|parked| parked.session.clone()) else {
+                continue;
+            };
+            if p.native_session.session() == Some(session.as_str())
+                && serves(p, Agent::CLAUDE)
+                && !is_helper(&p.argv)
+                && !one_shot(p)
+                && p.tty.is_some()
+            {
+                if let Some(target) = moves
+                    .chain(p, &session)
+                    .last()
+                    .filter(|target| **target != session)
+                {
+                    p.native_session = Identity::Continued {
+                        source: session.clone(),
+                        session: (*target).to_string(),
+                    };
+                    // The prior snapshot may still credit this PID to the old row. Retire that
+                    // hint immediately, so it cannot make the continued row's project busy.
+                    if st
+                        .send_links
+                        .get(&session)
+                        .is_some_and(|link| link.pid == Some(p.pid))
+                    {
+                        st.send_links.remove(&session);
+                    }
+                }
             }
         }
-        let mut growers: HashMap<String, Vec<String>> = HashMap::new();
+        let moved: HashSet<String> = moves.0.keys().map(|sid| sid.to_string()).collect();
+        // Native evidence retires the observed growth from legacy attribution, whether it
+        // owns that write or contradicts a guess. After identity disappears or its owner exits,
+        // only new transcript advancement can supply legacy proof again.
+        let table = ProcTable::new(&st.procs);
+        for (sid, row) in &mut st.rows {
+            if moved.contains(sid) {
+                row.proved_pid = None;
+                row.invalidated_growth = row.grew_at;
+            }
+            let native_owner = row.agent == Agent::CLAUDE && table.recorded(sid);
+            if native_owner {
+                row.proved_pid = None;
+            }
+            // Pending growth has the same lifetime as a banked proof. Even when ambiguity
+            // prevented a proof, an incompatible native sighting refutes using that old write
+            // on a later Missing scan. An unknown cwd cannot rule out this project.
+            let native_observation = row.grew_at.is_some()
+                && row.agent == Agent::CLAUDE
+                && (native_owner
+                    || row.cwd.as_deref().is_some_and(|cwd| {
+                        table.verified.iter().any(|p| {
+                            p.cwd.as_deref().is_none_or(|actual| actual == cwd)
+                                && !p.native_session.permits(sid)
+                        })
+                    }));
+            // Exact native ownership supplies its own link. Its observed write must not
+            // become legacy proof for a different process after the native owner exits.
+            if native_observation {
+                row.invalidated_growth = row.grew_at;
+            }
+            if let Some((pid, cwd)) = &row.proved_pid {
+                let still = table.by_pid.get(pid).is_some_and(|p| {
+                    p.cwd.as_deref() == Some(cwd.as_str()) && p.native_session.permits(sid)
+                });
+                if !still {
+                    row.proved_pid = None;
+                    row.invalidated_growth = row.grew_at;
+                }
+            }
+        }
+        // A verified record counts as an explicit owner here (`Proc::session_ref`), so growth
+        // cannot borrow its process.
+        let owners = explicit_process_owners(&st.procs, &st.rows);
+        let known_sids: Vec<String> = st.rows.keys().cloned().collect();
+        let prefix_unique = |pf: &str| known_sids.iter().filter(|s| s.starts_with(pf)).count() == 1;
+        st.growth_conflicts.retain(|(pid, sid), (cwd, observed)| {
+            table
+                .by_pid
+                .get(pid)
+                .is_some_and(|p| p.cwd.as_ref() == Some(cwd))
+                && st
+                    .rows
+                    .get(sid)
+                    .is_some_and(|row| row.grew_at.is_none_or(|grew| grew <= *observed))
+        });
+        let shared_cwds = unclassified_agent_cwds(&st.procs);
+        // Each lingering write, and whether it may still prove a link: one set aside above (its
+        // proof's process went, or a record contradicted it) only fences.
+        type Write = (String, bool);
+        let mut growers: HashMap<(Option<Agent>, String), Vec<Write>> = HashMap::new();
         for (sid, row) in &st.rows {
             if moved.contains(sid) {
                 continue;
@@ -1254,61 +1649,89 @@ impl Index {
             if row.one_shot {
                 continue;
             }
-            if row.grew_at.is_some_and(|t| t.elapsed() < GROW_LINGER) {
+            if let Some(t) = row.grew_at.filter(|t| t.elapsed() < GROW_LINGER) {
                 if let Some(cwd) = row.cwd.as_deref() {
                     growers
-                        .entry(cwd.to_string())
+                        .entry((
+                            matching_scope(row.agent, cwd, &shared_cwds).0,
+                            cwd.to_string(),
+                        ))
                         .or_default()
-                        .push(sid.clone());
+                        .push((sid.clone(), row.invalidated_growth != Some(t)));
                 }
             }
         }
-        for (cwd, sids) in growers {
-            if sids.len() != 1 {
-                continue; // two sessions writing in one directory prove nothing
+        for ((_, cwd), writes) in growers {
+            // A same-PID /clear or /resume can leave argv naming the OLD session. Do not
+            // guess that the sole candidate changed owners, but do not let that stale name
+            // authorize a send either. Fence all contradictory explicit owners, including a
+            // retained growth proof, through the common facts/send-link boundary below.
+            // The fence is recorded whatever the process's record says (#s258), against the
+            // session its argv names too: a later scan whose record cannot be read (a `ps` over
+            // its bound, a file caught mid-write twice) falls back to that argv, and must find
+            // the doubt there. The session the record itself names is not fenced: the record
+            // says the process runs it now, and the other session's write was set aside above.
+            // A fence on a session the record names later gives way to it (`assemble`).
+            if let [(grower, _)] = writes.as_slice() {
+                let agent = st.rows[grower].agent;
+                if let [p] = growth_candidates(&st.procs, agent, &cwd).as_slice() {
+                    let by_argv = p
+                        .argv_session_ref()
+                        .and_then(|r| resolve_session_ref(r, &st.rows));
+                    let observed = st.rows[grower].grew_at.expect("grower has an observation");
+                    let recorded = p.native_session.session();
+                    let ids = owners.get(&p.pid).into_iter().flatten().chain(by_argv);
+                    for sid in ids.filter(|sid| *sid != grower && Some(sid.as_str()) != recorded) {
+                        st.growth_conflicts
+                            .insert((p.pid, sid.clone()), (cwd.clone(), observed));
+                    }
+                }
             }
-            let Some(agent) = st.rows.get(&sids[0]).map(|r| r.agent) else {
+            let usable: Vec<&String> = writes
+                .iter()
+                .filter(|(_, usable)| *usable)
+                .map(|(sid, _)| sid)
+                .collect();
+            let [grower] = usable.as_slice() else {
+                continue; // several sessions sharing candidate processes prove nothing
+            };
+            let grower = (*grower).clone();
+            let agent = st.rows[&grower].agent;
+            // Keep the existing ownership filter for proof creation: an explicitly owned
+            // sibling does not make the remaining unnamed process ambiguous. The writes this
+            // proves come after any contradicting record was read: a row whose cwd holds a
+            // process whose record names another session had its growth set aside above.
+            let mut cands = growth_candidates(&st.procs, agent, &cwd)
+                .into_iter()
+                .filter(|p| {
+                    (p.session_ref().is_none() || process_names_session(p, &grower, &prefix_unique))
+                        && owners
+                            .get(&p.pid)
+                            .is_none_or(|ids| ids.iter().all(|sid| *sid == grower))
+                });
+            let (Some(p), None) = (cands.next(), cands.next()) else {
                 continue;
             };
-            let mut cands = st.procs.iter().filter(|p| {
-                is_agent_exe(&p.exe_base, &p.argv)
-                    && serves(p, agent)
-                    && !is_helper(&p.argv)
-                    && !one_shot(p)
-                    && p.cwd.as_deref() == Some(cwd.as_str())
-            });
-            let (Some(p), None) = (cands.next(), cands.next()) else {
-                continue; // zero or several candidates — no forced pairing
-            };
+            if !p.native_session.permits(&grower) {
+                continue;
+            }
             let pid = p.pid;
             // #s89: a process writes ONE session at a time, so a fresh proof takes its pid from
             // any other session's older proof (a `/resume` or `/clear` moves it on). Two rows
             // banked on one pid read as two live sessions in one pane.
             for (other, row) in st.rows.iter_mut() {
-                if *other != sids[0]
+                if *other != grower
                     && row
                         .proved_pid
                         .as_ref()
                         .is_some_and(|(q, c)| *q == pid && c == &cwd)
                 {
                     row.proved_pid = None;
+                    row.invalidated_growth = row.grew_at;
                 }
             }
-            if let Some(row) = st.rows.get_mut(&sids[0]) {
+            if let Some(row) = st.rows.get_mut(&grower) {
                 row.proved_pid = Some((pid, cwd.clone()));
-            }
-        }
-        // Forget a proof whose process is gone or has moved on.
-        let alive: Vec<(u32, Option<String>)> =
-            st.procs.iter().map(|p| (p.pid, p.cwd.clone())).collect();
-        for row in st.rows.values_mut() {
-            if let Some((pid, cwd)) = &row.proved_pid {
-                let still = alive
-                    .iter()
-                    .any(|(q, c)| q == pid && c.as_deref() == Some(cwd.as_str()));
-                if !still {
-                    row.proved_pid = None;
-                }
             }
         }
     }
@@ -1384,8 +1807,9 @@ impl Index {
             }
             cur.to_string()
         };
-        // A cwd's NEWEST session is the one allowed to claim a process heuristically — and
-        // `siblings` counts how many sessions that cwd holds, which is the size of the doubt
+        // Each agent's NEWEST session in a cwd may claim its process heuristically. Another
+        // agent's newer transcript cannot drive that process (#s250), just as `serves` filters
+        // the candidates by agent. `siblings` counts that agent's sessions in the cwd: the doubt
         // (#145). One session in the directory means the heuristic has nothing to get wrong;
         // several means the claim is a pick among them.
         //
@@ -1399,30 +1823,86 @@ impl Index {
                 .filter(|(_, r)| r.one_shot)
                 .filter_map(|(sid, r)| Some((sid.as_str(), r.cwd.as_deref()?, r.first_event?))),
         );
-        // #s294: a session whose conversation was moved is finished by its own transcript's word,
-        // so it is not the directory's to pick either — or the directory rule hands it some other
-        // agent in the same repo (measured: an unrelated `claude` in project_H, unconfirmed).
         let moves = Moves::of(&st.rows);
-        let mut newest_by_cwd: HashMap<&str, (&str, SystemTime)> = HashMap::new();
-        let mut siblings: HashMap<&str, usize> = HashMap::new();
+        let table = ProcTable::new(&st.procs);
+        let unresolved_cwds = unresolved_registry_cwds(&st.procs, &st.send_links);
+        // Growth proofs have the same priority here as in link resolution. A newer idle
+        // transcript must not reclaim their process through the directory heuristic.
+        let mut proved_links: HashMap<&str, AgentLink> = st
+            .rows
+            .iter()
+            .filter_map(|(sid, row)| {
+                if moves.0.contains_key(sid.as_str()) {
+                    return None;
+                }
+                let (pid, cwd) = row.proved_pid.as_ref()?;
+                let p = table.by_pid.get(pid).copied().filter(|p| {
+                    p.cwd.as_deref() == Some(cwd.as_str()) && p.native_session.permits(sid)
+                })?;
+                Some((
+                    sid.as_str(),
+                    AgentLink {
+                        pid: p.pid,
+                        confirmed: true,
+                        named: names_exactly(&p.argv, sid),
+                        terminal: Terminal::of(p),
+                    },
+                ))
+            })
+            .collect();
+        // Exact argv/open-transcript links already own a process; they cannot claim an
+        // unnamed sibling just because their transcript was touched later (#s250). Resolve
+        // them once and keep them out of the directory heuristic's recency and ambiguity.
+        let sids: Vec<&str> = st.rows.keys().map(String::as_str).collect();
+        let prefix_unique = |pf: &str| sids.iter().filter(|s| s.starts_with(pf)).count() == 1;
+        let mut explicit_links: HashMap<&str, AgentLink> = st
+            .rows
+            .iter()
+            .filter_map(|(sid, row)| {
+                link_in(
+                    &table,
+                    sid,
+                    row.agent,
+                    &row.path,
+                    row.cwd.as_deref(),
+                    DirectoryMatch::Disabled,
+                    &prefix_unique,
+                )
+                .map(|l| (sid.as_str(), l))
+            })
+            .collect();
+        // Reserve every explicitly owned PID, including an additional process naming the
+        // same session. Reserving only the selected session link would leave another owner
+        // available for an unrelated history to claim.
+        let claimed_pids: HashSet<u32> = explicit_process_owners(&st.procs, &st.rows)
+            .into_keys()
+            .chain(proved_links.values().map(|link| link.pid))
+            .collect();
+        let shared_cwds = unclassified_agent_cwds(&st.procs);
+        let mut newest_by_cwd: HashMap<(Option<Agent>, &str), (&str, SystemTime)> = HashMap::new();
+        let mut siblings: HashMap<(Option<Agent>, &str), usize> = HashMap::new();
         for (sid, row) in &st.rows {
-            if paired.contains_key(sid.as_str()) || moves.0.contains_key(sid.as_str()) {
+            if paired.contains_key(sid.as_str())
+                || explicit_links.contains_key(sid.as_str())
+                || proved_links.contains_key(sid.as_str())
+                || moves.0.contains_key(sid.as_str())
+            {
                 continue;
             }
             if let Some(cwd) = row.cwd.as_deref() {
-                *siblings.entry(cwd).or_insert(0) += 1;
+                *siblings
+                    .entry(matching_scope(row.agent, cwd, &shared_cwds))
+                    .or_insert(0) += 1;
                 if let Some(m) = row.tree_mtime {
-                    let e = newest_by_cwd.entry(cwd).or_insert((sid, m));
+                    let e = newest_by_cwd
+                        .entry(matching_scope(row.agent, cwd, &shared_cwds))
+                        .or_insert((sid, m));
                     if m > e.1 {
                         *e = (sid, m);
                     }
                 }
             }
         }
-        // #269: `claude attach <prefix>` names a session by its first characters; a prefix
-        // links only when exactly one known session starts with it.
-        let sids: Vec<&str> = st.rows.keys().map(String::as_str).collect();
-        let prefix_unique = |pf: &str| sids.iter().filter(|s| s.starts_with(pf)).count() == 1;
         let mut groups: HashMap<String, Group> = HashMap::new();
         for (sid, row) in &st.rows {
             // The group key IS the persisted `p:`/`a:` hide key (#27, #113): compute it in ONE
@@ -1476,62 +1956,69 @@ impl Index {
                 }
             };
 
-            let growing = row.grew_at.is_some_and(|t| t.elapsed() < GROW_LINGER)
-                || (row
-                    .tree_mtime
-                    .and_then(|m| now.duration_since(m).ok())
-                    .is_some_and(|d| d < INFLIGHT_WINDOW)
-                    && inflight_tool_in_tail(&row.path));
+            let growing = !moves.0.contains_key(sid.as_str())
+                && (row.grew_at.is_some_and(|t| t.elapsed() < GROW_LINGER)
+                    || (row
+                        .tree_mtime
+                        .and_then(|m| now.duration_since(m).ok())
+                        .is_some_and(|d| d < INFLIGHT_WINDOW)
+                        && inflight_tool_in_tail(&row.path)));
             // The process link now resolves for EVERY row (#112): growing rows need it as
             // the prerequisite for the controllable-terminal fact, idle rows for the
             // alive/finished split it always drove.
             let heuristic_ok = row
                 .cwd
                 .as_deref()
-                .and_then(|c| newest_by_cwd.get(c))
+                .and_then(|c| newest_by_cwd.get(&matching_scope(row.agent, c, &shared_cwds)))
                 .is_some_and(|(newest, _)| *newest == sid.as_str());
             // A pairing that growth proved (#146) outranks the directory heuristic — it is
             // evidence about THIS session, not a pick among the directory's sessions.
-            let link = row
-                .proved_pid
-                .as_ref()
-                .and_then(|(pid, cwd)| {
-                    st.procs
-                        .iter()
-                        .find(|p| p.pid == *pid && p.cwd.as_deref() == Some(cwd.as_str()))
-                })
-                .map(|p| AgentLink {
-                    pid: p.pid,
-                    confirmed: true,
-                    named: names_exactly(&p.argv, sid),
-                    terminal: Terminal::of(p),
-                })
+            // A current verified record (#s258) outranks retained growth and recency guesses:
+            // the explicit link `link()` found through it goes first.
+            let registry_owned = row.agent == Agent::CLAUDE && table.recorded(sid);
+            let mut link = registry_owned
+                .then(|| explicit_links.remove(sid.as_str()))
+                .flatten()
+                .or_else(|| proved_links.remove(sid.as_str()))
                 .or_else(|| {
-                    let &(pid, rivals) = paired.get(sid.as_str())?;
-                    st.procs.iter().find(|p| p.pid == pid).map(|p| AgentLink {
+                    let pair = paired.get(sid.as_str())?;
+                    table.by_pid.get(&pair.pid).map(|p| AgentLink {
                         pid: p.pid,
-                        confirmed: rivals == 0,
+                        confirmed: pair.evidence.confirmed(),
                         named: names_exactly(&p.argv, sid),
                         terminal: Terminal::Detached,
                     })
                 })
+                .or_else(|| explicit_links.remove(sid.as_str()))
                 .or_else(|| {
-                    link(
-                        &st.procs,
+                    if !heuristic_ok {
+                        return None;
+                    }
+                    link_in(
+                        &table,
                         sid,
                         row.agent,
                         &row.path,
                         row.cwd.as_deref(),
-                        heuristic_ok,
+                        DirectoryMatch::Unclaimed(&claimed_pids),
                         &prefix_unique,
-                        &moves,
                     )
                 });
-            // #s294: the sessions herdr may still name for this row's pane — only where the
-            // linked process itself names a session the conversation moved here from.
+            if let Some(link) = &mut link {
+                // A fence set while the process had no usable record gives way once its record
+                // names this session: the record says which session it runs now.
+                if st.growth_conflicts.contains_key(&(link.pid, sid.clone()))
+                    && !table.records(link.pid, sid)
+                {
+                    link.confirmed = false;
+                    link.named = false;
+                }
+            }
             let continues = link
                 .as_ref()
-                .and_then(|l| st.procs.iter().find(|p| p.pid == l.pid))
+                .filter(|link| link.confirmed)
+                .and_then(|link| table.by_pid.get(&link.pid))
+                .filter(|p| p.native_session.session() == Some(sid.as_str()))
                 .map(|p| moves.continues(p, sid, &prefix_unique))
                 .unwrap_or_default();
             let (state, conf) = if growing {
@@ -1554,11 +2041,15 @@ impl Index {
             let ambiguity = match link.as_ref().filter(|l| !l.confirmed) {
                 Some(_) if paired.contains_key(sid.as_str()) => paired
                     .get(sid.as_str())
-                    .map_or(1, |&(_, rivals)| rivals + 1),
+                    .map_or(1, |pair| pair.evidence.ambiguity()),
                 Some(_) => row
                     .cwd
                     .as_deref()
-                    .and_then(|c| siblings.get(c).copied())
+                    .and_then(|c| {
+                        siblings
+                            .get(&matching_scope(row.agent, c, &shared_cwds))
+                            .copied()
+                    })
                     .unwrap_or(1),
                 None => 1,
             };
@@ -1630,6 +2121,14 @@ impl Index {
             if root != *sid {
                 j["isFork"] = json!(true);
             }
+            // #s340: a desktop side session whose starter is a row here and not of its own fork
+            // family (a forked side question already draws under its family, once).
+            if let Some(starter) = st.side_of.get(sid).filter(|starter| {
+                st.rows.contains_key(starter.as_str())
+                    && family_root(starter.as_str()) != family_root(sid)
+            }) {
+                j["sideOf"] = json!(starter);
+            }
             // #s53: a headless worker this index knows the starter of — the shell lists it in that
             // session's Agents pane instead of the session list.
             if let Some(parent) = st.started_by(sid) {
@@ -1638,15 +2137,22 @@ impl Index {
                     j["brief"] = json!(brief);
                 }
             }
-            // #133 constraint 2: another live session in this project → no send affordance on
-            // this row (the resume path refuses it, the inject path is suppressed). The rail
-            // hides `✎` when `projActive`, so the button and the route's rule agree.
-            let proj_active = proj_has_other_live(sid, row.agent, row.cwd.as_deref());
+            // Another live session prevents background resume. A herdr pane its process's record
+            // names can still be injectable below; the shared composer prioritizes that.
+            let proj_active = proj_has_other_live(sid, row.agent, row.cwd.as_deref())
+                || (row.agent == Agent::CLAUDE
+                    && row
+                        .cwd
+                        .as_deref()
+                        .is_some_and(|c| unresolved_cwds.contains(c)));
             if proj_active {
                 j["projActive"] = json!(true);
             }
             if let Some(l) = &link {
                 j["pid"] = json!(l.pid);
+                if table.records(l.pid, sid) {
+                    j["pidSource"] = json!("claude-registry");
+                }
                 j["term"] = json!(l.terminal.kind());
                 if let Terminal::Tmux {
                     sock: Some(sock), ..
@@ -1667,7 +2173,8 @@ impl Index {
                 }
                 // #133 tmux slice: this row can be INJECTED into iff the link is PROVEN
                 // (§3.1 — never a cwd guess), it is in tmux, the agent has a driven shape
-                // (claude/codex), AND its project has no other live session (constraint 2). The
+                // (claude/codex), AND its project has no other live session or it is a herdr
+                // pane its process's record names (`pane_send_beside_siblings`). The
                 // rail offers the terminal-send affordance only on these rows; `consented` says
                 // whether a standing grant already covers this exact pane/pid (send now) or one
                 // is needed first.
@@ -1676,7 +2183,16 @@ impl Index {
                 let pane = l.terminal.pane_addr().filter(|addr| {
                     !matches!(addr, PaneAddr::Herdr { .. }) || row.agent == Agent::CLAUDE
                 });
-                if let (true, Some(addr)) = (l.confirmed && driven && !proj_active, pane) {
+                // A pane another agent may be reading is never offered (`pane_shared`).
+                if let Some(addr) = pane.filter(|addr| {
+                    l.confirmed
+                        && driven
+                        && !pane_shared(&st.procs, l.pid, addr)
+                        // #s335, #s337: nor a tmux pane whose agent is suspended, backgrounded
+                        // or on another terminal than the pane's.
+                        && tmux_pane_refusal(&st.procs, l.pid, addr).is_none()
+                        && (!proj_active || pane_send_beside_siblings(&st.procs, l.pid, sid, addr))
+                }) {
                     j["injectable"] = json!(true);
                     // #s237: images reach a Claude session in a herdr pane only, pasted as
                     // its path (`control::herdr_send`); a tmux pane has no measured way.
@@ -2164,9 +2680,34 @@ const ONE_SHOT_SLACK_SECS: u64 = 3;
 /// (2026-10-08, three runs of `claude -p`): 0.7–0.9 s; the rest is room for a loaded machine.
 const ONE_SHOT_WINDOW_SECS: u64 = 60;
 
-/// Pair each one-shot process with the session it created (#s50): sid → (pid, rivals).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OneShotPair {
+    pid: u32,
+    evidence: OneShotEvidence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OneShotEvidence {
+    Registered,
+    Timed { rivals: usize },
+}
+
+impl OneShotEvidence {
+    fn confirmed(self) -> bool {
+        matches!(self, Self::Registered | Self::Timed { rivals: 0 })
+    }
+
+    fn ambiguity(self) -> usize {
+        match self {
+            Self::Registered => 1,
+            Self::Timed { rivals } => rivals + 1,
+        }
+    }
+}
+
+/// Pair each one-shot process with the session it created (#s50).
 ///
-/// A no-id launch leaves nothing on disk naming its session (#145), and the directory rule gives
+/// A legacy no-id launch has no native registration (#145), and the directory rule gives
 /// a process to the NEWEST session of its cwd only. So with a coordinator and several `claude -p`
 /// workers in one repo, a worker deep in a long command was not the newest, lost its process, and
 /// read "exited with Bash pending" until its next write — knack on aries-black, 2026-10-07, where
@@ -2180,18 +2721,40 @@ const ONE_SHOT_WINDOW_SECS: u64 = 60;
 fn pair_one_shots<'a>(
     procs: &[Proc],
     sessions: impl IntoIterator<Item = (&'a str, &'a str, u64)>,
-) -> HashMap<String, (u32, usize)> {
-    let mut by_cwd: HashMap<&str, Vec<(u64, &str)>> = HashMap::new();
-    for (sid, cwd, first) in sessions {
-        by_cwd.entry(cwd).or_default().push((first, sid));
-    }
-    let mut shots: HashMap<&str, Vec<(u64, u32)>> = HashMap::new();
-    for p in procs {
-        let headless_new = is_agent_exe(&p.exe_base, &p.argv)
+) -> HashMap<String, OneShotPair> {
+    // Exact native claims reserve their sessions before legacy processes compete by time.
+    // Keep native workers in the result too: assembly excludes every claimed worker from
+    // the directory's newest/sibling candidates, leaving its coordinator eligible.
+    let reserved: HashSet<&str> = procs
+        .iter()
+        .filter(|p| serves(p, Agent::CLAUDE))
+        .filter_map(|p| p.native_session.session())
+        .collect();
+    let one_shot = |p: &Proc| {
+        is_agent_exe(&p.exe_base, &p.argv)
             && serves(p, Agent::CLAUDE)
             && one_shot(p)
             && !is_helper(&p.argv)
-            && session_ref(&p.argv).is_none();
+    };
+    let mut out = HashMap::new();
+    for p in procs.iter().filter(|p| one_shot(p)) {
+        if let Some(sid) = p.native_session.session() {
+            let entry = out.entry(sid.to_string()).or_insert(OneShotPair {
+                pid: p.pid,
+                evidence: OneShotEvidence::Registered,
+            });
+            entry.pid = entry.pid.min(p.pid);
+        }
+    }
+    let mut by_cwd: HashMap<&str, Vec<(u64, &str)>> = HashMap::new();
+    for (sid, cwd, first) in sessions {
+        if !reserved.contains(sid) {
+            by_cwd.entry(cwd).or_default().push((first, sid));
+        }
+    }
+    let mut shots: HashMap<&str, Vec<(u64, u32)>> = HashMap::new();
+    for p in procs {
+        let headless_new = one_shot(p) && p.session_ref().is_none();
         if let (true, Some(cwd), Some(start)) = (headless_new, p.cwd.as_deref(), p.started) {
             shots.entry(cwd).or_default().push((start, p.pid));
         }
@@ -2199,7 +2762,6 @@ fn pair_one_shots<'a>(
     let within = |start: u64, first: u64| {
         first + ONE_SHOT_SLACK_SECS >= start && first <= start + ONE_SHOT_WINDOW_SECS
     };
-    let mut out = HashMap::new();
     for (cwd, mut here) in shots {
         let Some(sessions) = by_cwd.get_mut(cwd) else {
             continue;
@@ -2231,7 +2793,8 @@ fn pair_one_shots<'a>(
                     j != k && within(s, first) && claim.is_none_or(|c| within(start, sessions[c].0))
                 })
                 .count();
-            out.insert(sid.to_string(), (pid, rivals));
+            let evidence = OneShotEvidence::Timed { rivals };
+            out.insert(sid.to_string(), OneShotPair { pid, evidence });
         }
     }
     out
@@ -2316,12 +2879,16 @@ fn head_one_shot(path: &Path) -> Option<String> {
 ///      Agent exes only. When several name the same session (the engine by `--session-id`, the
 ///      pane's client by prefix) the best-HOSTED wins: tmux/screen, then a tty, then detached —
 ///      so the pane, which is where a keystroke can go, beats the engine, which is where the
-///      session merely runs. Exact.
+///      session merely runs. Exact. A Claude process whose own record verifies (#s258) names
+///      the record's session instead of its argv's, and wins over another process's argv.
 ///   2. The session's transcript held OPEN by an agent process — exact (Codex holds its
 ///      rollout `.jsonl` open; Claude appends-and-closes, so this never fires for it).
-///   3. An agent process whose cwd matches the session's and whose argv names no session —
-///      the directory heuristic, for the NEWEST session of that cwd only (`heuristic_ok`),
-///      never a daemon helper. **Confirmed when it is the only such process in the
+///   3. An unclaimed agent process whose cwd matches the session's and whose argv names no
+///      session — the directory heuristic, enabled by `DirectoryMatch::Unclaimed` for that
+///      agent's newest remaining session in the cwd, never a daemon helper. Explicitly linked,
+///      growth-proven and time-paired sessions do not compete for recency or ambiguity; their
+///      processes are reserved. An unclassified agent keeps the shared directory scope.
+///      **Confirmed when it is the only such process in the
 ///      directory** — the owner's rule (2026-09-23): "when there is only one active claude
 ///      process associated with a claude session, we would pair them even if the session id
 ///      is not in argv." With one process there is one pane, and that pane is the injection
@@ -2333,21 +2900,41 @@ fn head_one_shot(path: &Path) -> Option<String> {
 /// Step 3 is the COMMON path, not a fallback: `claude --resume` with no id (the picker) is how
 /// most of these sessions were launched (measured: 9 of 12 live agents here), and Claude never
 /// holds its transcript open, so steps 1–2 cannot fire for them.
-///
-/// Step 1 follows the conversations' [`Moves`] (#s294): a process whose argv names a session that
-/// moved while it ran is linked to the session it moved to (see [`Moves::chain`]), confirmed but
-/// not `named`, and never to the one it left.
-#[allow(clippy::too_many_arguments)]
+/// Assembly downgrades a link contradicted by sole-candidate growth before deriving either
+/// the UI's send affordance or the route's send link, even when argv still names the session.
+#[cfg(test)]
 fn link(
     procs: &[Proc],
     sid: &str,
     agent: Agent,
     transcript: &Path,
     cwd: Option<&str>,
-    heuristic_ok: bool,
+    directory_match: DirectoryMatch<'_>,
     prefix_unique: &dyn Fn(&str) -> bool,
-    moves: &Moves,
 ) -> Option<AgentLink> {
+    link_in(
+        &ProcTable::new(procs),
+        sid,
+        agent,
+        transcript,
+        cwd,
+        directory_match,
+        prefix_unique,
+    )
+}
+
+/// `link` over one scan's `ProcTable`: the named and open-transcript links are lookups, and
+/// only the directory match, asked of a directory's newest session alone, reads every process.
+fn link_in(
+    table: &ProcTable<'_>,
+    sid: &str,
+    agent: Agent,
+    transcript: &Path,
+    cwd: Option<&str>,
+    directory_match: DirectoryMatch<'_>,
+    prefix_unique: &dyn Fn(&str) -> bool,
+) -> Option<AgentLink> {
+    let procs = table.procs;
     let mk = |p: &Proc, confirmed: bool| AgentLink {
         pid: p.pid,
         confirmed,
@@ -2380,29 +2967,38 @@ fn link(
             std::cmp::Reverse(p.pid),
         )
     };
-    let names = |p: &Proc| {
-        let Some(u) = moves.named_session(p, sid, prefix_unique) else {
-            return false;
-        };
-        let chain = moves.chain(p, &u);
-        // A move is followed only for a process of the session's own agent (the review of #s294):
-        // an exact name alone never checked `serves`.
-        chain.last() == Some(&sid) && (chain.len() == 1 || serves(p, agent))
-    };
-    if let Some(p) = procs
+    // Agent processes all (`ProcTable` holds no other), and each names `sid`.
+    let named_candidates: Vec<&Proc> = table
+        .naming(sid, prefix_unique)
+        .filter(|p| serves(p, agent) && p.native_session.permits(sid))
+        .collect();
+    // Current native ownership wins over a different process's stale launch arguments.
+    // A detached native helper may use an explicit attach client, but a legacy --resume
+    // argument on another process can be stale. Otherwise retain the helper's detached link.
+    let recorded = |p: &Proc| p.native_session.session() == Some(sid);
+    let native_helper = named_candidates
         .iter()
-        .filter(|p| is_agent_exe(&p.exe_base, &p.argv) && names(p))
+        .any(|p| recorded(p) && is_helper(&p.argv));
+    let named = named_candidates
+        .iter()
+        .filter(|p| recorded(p) && !is_helper(&p.argv))
         .max_by_key(|p| host(p))
+        .or_else(|| {
+            named_candidates
+                .iter()
+                .filter(|p| !native_helper || recorded(p) || p.attach_client())
+                .max_by_key(|p| host(p))
+        });
+    if let Some(p) = named {
+        return Some(mk(p, true));
+    }
+    if let Some(p) = table
+        .holding(transcript)
+        .find(|p| serves(p, agent) && p.native_session.permits(sid))
     {
         return Some(mk(p, true));
     }
-    let t = transcript.to_string_lossy();
-    if let Some(p) = procs.iter().find(|p| {
-        is_agent_exe(&p.exe_base, &p.argv) && p.open_jsonl.iter().any(|f| f.as_str() == t)
-    }) {
-        return Some(mk(p, true));
-    }
-    if let Some(cwd) = cwd.filter(|_| heuristic_ok) {
+    if let (Some(cwd), DirectoryMatch::Unclaimed(claimed)) = (cwd, directory_match) {
         let cands: Vec<&Proc> = procs
             .iter()
             .filter(|p| {
@@ -2411,7 +3007,8 @@ fn link(
                     && !is_helper(&p.argv)
                     && !one_shot(p)
                     && p.cwd.as_deref() == Some(cwd)
-                    && session_ref(&p.argv).is_none()
+                    && p.session_ref().is_none()
+                    && !claimed.contains(&p.pid)
             })
             .collect();
         if let Some(p) = cands.iter().copied().max_by_key(|p| host(p)) {
@@ -2458,7 +3055,7 @@ impl<'a> Moves<'a> {
         sid: &str,
         prefix_unique: &dyn Fn(&str) -> bool,
     ) -> Option<String> {
-        match session_ref(&p.argv)? {
+        match p.argv_session_ref()? {
             SessionRef::Exact(u) => Some(u),
             SessionRef::Prefix(pf) if !prefix_unique(&pf) => None,
             SessionRef::Prefix(pf) if sid.starts_with(pf.as_str()) => Some(sid.to_string()),
@@ -2583,19 +3180,25 @@ fn session_ref(argv: &str) -> Option<SessionRef> {
     if argv_says_one_shot(argv) {
         return None;
     }
-    if toks.get(1) == Some(&"attach") {
-        if let Some(id) = toks.get(2) {
-            if is_uuid(id) {
-                return Some(SessionRef::Exact(id.to_string()));
-            }
-            if id.len() >= 8 && id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
-                return Some(SessionRef::Prefix(id.to_string()));
-            }
-        }
+    if let Some(found) = attach_ref(toks.get(1..).unwrap_or_default()) {
+        return Some(found);
     }
     toks.iter()
         .find(|t| is_uuid(t))
         .map(|t| SessionRef::Exact(t.to_string()))
+}
+
+/// `attach <hex>` at the head of the words after the executable: the session a pane's client
+/// names, by its first eight characters or whole.
+fn attach_ref(args: &[&str]) -> Option<SessionRef> {
+    let ["attach", id, ..] = args else {
+        return None;
+    };
+    if is_uuid(id) {
+        return Some(SessionRef::Exact(id.to_string()));
+    }
+    (id.len() >= 8 && id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
+        .then(|| SessionRef::Prefix(id.to_string()))
 }
 
 /// Claude Code 2.1.27x's daemon topology, as the process table shows it: `claude daemon run`
@@ -2635,9 +3238,61 @@ fn argv_says_one_shot(argv: &str) -> bool {
 /// put `-p` in an interactive session's argv, and that session was never linked to its process: no
 /// liveness, no send, no dialog. Without the record (a one-shot writes it only once it is under
 /// way) the argv decides, the safe way: a one-shot read as interactive could be sent to through the
-/// pane it inherited, its starter's.
+/// pane it inherited, its starter's. A Codex process is one when it runs Codex headless
+/// (`codex_headless`), and never for a `-p`, which is Codex's `--profile` (#s326, codex-cli
+/// 0.165.0): `codex -p work` read as a one-shot was never linked to its pane, and a `codex exec`
+/// an agent's Bash starts inherits that agent's pane as a `claude -p` does.
 fn one_shot(p: &Proc) -> bool {
-    !p.cli_launch && argv_says_one_shot(&p.argv)
+    match proc_agent(p) {
+        Some(Agent::CODEX) => codex_headless(&p.argv),
+        _ => !p.cli_launch && argv_says_one_shot(&p.argv),
+    }
+}
+
+/// Codex's global options that take a value as the next word (codex-cli 0.165.0 `--help`).
+const CODEX_VALUE_OPTIONS: &[&str] = &[
+    "-c",
+    "--config",
+    "--enable",
+    "--disable",
+    "--remote",
+    "--remote-auth-token-env",
+    "-i",
+    "--image",
+    "-m",
+    "--model",
+    "--local-provider",
+    "-p",
+    "--profile",
+    "-s",
+    "--sandbox",
+    "-C",
+    "--cd",
+    "--add-dir",
+    "-a",
+    "--ask-for-approval",
+];
+
+/// Whether a Codex argv runs headless: its subcommand, the first word that is neither an option
+/// nor an option's value, is `exec` (alias `e`) or `review` (both "non-interactively", codex-cli
+/// 0.165.0), or the word `exec` stands anywhere. `ps` joins argv with spaces, so an interactive start
+/// prompt that begins with "review" or "e", or holds the word "exec", reads as headless too: the safe
+/// way, which costs that session its pane link and never sends into another agent's pane.
+fn codex_headless(argv: &str) -> bool {
+    let mut toks = argv.split_whitespace().skip(1);
+    let mut subcommand = None;
+    while let Some(t) = toks.next() {
+        if t.starts_with('-') {
+            if CODEX_VALUE_OPTIONS.contains(&t) {
+                toks.next();
+            }
+            continue;
+        }
+        subcommand = Some(t);
+        break;
+    }
+    matches!(subcommand, Some("exec" | "e" | "review"))
+        || argv.split_whitespace().skip(1).any(|t| t == "exec")
 }
 
 /// Read the record Claude Code keeps for each of its processes, `<claude home>/sessions/<pid>.json`
@@ -2646,21 +3301,14 @@ fn one_shot(p: &Proc) -> bool {
 /// launch writes `"entrypoint": "cli"`, a `claude -p` writes `"sdk-cli"` (both say `kind:
 /// interactive`). A record is believed only when it names this pid and began no earlier than the
 /// process did: a file left by an earlier process with the same pid does not.
-///
-/// The same record is read for a process whose argv NAMES a session (#s294), for its
-/// `parkedJobId`: what says this process's conversation was moved into a background job
-/// ([`Parked`]).
 fn apply_session_files(procs: &mut [Proc], default_home: Option<&Path>) {
     for p in procs.iter_mut() {
         p.cli_launch = false;
-        p.parked = None;
-        let reads_as_one_shot = argv_says_one_shot(&p.argv);
         // A process with no terminal is never taken for an interactive launch, whatever its record
         // says (the review of #s301): a worker started from an agent's Bash has none, and one that
-        // inherited "cli" would otherwise depend on the client rewriting it. Nor is it a pane a
-        // moved conversation goes on in.
+        // inherited "cli" would otherwise depend on the client rewriting it.
         if proc_agent(p) != Some(Agent::CLAUDE)
-            || !(reads_as_one_shot || session_ref(&p.argv).is_some())
+            || !argv_says_one_shot(&p.argv)
             || p.tty.is_none()
             || p.claude_home_unknown
         {
@@ -2689,27 +3337,37 @@ fn apply_session_files(procs: &mut [Proc], default_home: Option<&Path>) {
             (Some(ms), Some(started)) => ms / 1000 + 5 >= started && ms / 1000 <= started + 60,
             _ => false,
         };
-        if !(own && with_it) {
-            continue;
-        }
-        p.cli_launch =
-            reads_as_one_shot && v.get("entrypoint").and_then(Value::as_str) == Some("cli");
-        let hexish =
-            |s: &&str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-');
-        p.parked = v
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .filter(|s| is_uuid(s))
-            .zip(
-                v.get("parkedJobId")
-                    .and_then(Value::as_str)
-                    .filter(|j| j.len() <= 36)
-                    .filter(hexish),
-            )
+        p.cli_launch = own && with_it && v.get("entrypoint").and_then(Value::as_str) == Some("cli");
+    }
+}
+
+/// Read each Claude process's own record for the session it runs (`claude_registry`), in the home
+/// `apply_session_files` uses: `CLAUDE_CONFIG_DIR` from its environment, else `default_home`. A
+/// process whose home is not known keeps no record, and is found as before.
+fn apply_registry(procs: &mut [Proc], default_home: &Path) {
+    let targets: Vec<(u32, PathBuf)> = procs
+        .iter()
+        .filter(|p| proc_agent(p) == Some(Agent::CLAUDE) && !p.claude_home_unknown)
+        .map(|p| {
+            let home = p
+                .claude_home
+                .as_deref()
+                .map_or_else(|| default_home.to_path_buf(), PathBuf::from);
+            (p.pid, home.join("sessions"))
+        })
+        .collect();
+    let mut found = crate::claude_registry::scan(&targets);
+    for p in procs.iter_mut() {
+        let record = found.remove(&p.pid).unwrap_or_default();
+        p.parked = record
+            .identity
+            .session()
+            .zip(record.parked_job)
             .map(|(session, job)| Parked {
                 session: session.to_string(),
-                job: job.to_string(),
+                job,
             });
+        p.native_session = record.identity;
     }
 }
 
@@ -2732,6 +3390,111 @@ fn proc_agent(p: &Proc) -> Option<Agent> {
 /// link unconfirmed, so the session read as neither attached nor writable.
 fn serves(p: &Proc, agent: Agent) -> bool {
     proc_agent(p).is_none_or(|a| a == agent)
+}
+
+/// Every session named by each process's verified record or argv (`Proc::session_ref`), or by
+/// an open transcript it may be writing. A verified record names the session the process runs
+/// NOW, so a stale `--resume` in its argv names nothing here (#s258). Keep all owners rather
+/// than only the best-hosted link: a second client of one session is already claimed too.
+/// Each process is read once (#s311): its argv names at most one session, found by id or by
+/// its unique prefix, and its open transcripts are looked up by path. Asking every process
+/// about every session, twice a tick, doubled the scan at 4,000 sessions.
+fn explicit_process_owners(
+    procs: &[Proc],
+    rows: &HashMap<String, Row>,
+) -> HashMap<u32, HashSet<String>> {
+    // `Path` hashes as it compares, so this lookup is `holds_transcript`'s lexical equality.
+    let mut by_transcript: HashMap<&Path, Vec<&String>> = HashMap::new();
+    for (sid, row) in rows {
+        by_transcript
+            .entry(row.path.as_path())
+            .or_default()
+            .push(sid);
+    }
+    let mut owners: HashMap<u32, HashSet<String>> = HashMap::new();
+    for p in procs.iter().filter(|p| is_agent_exe(&p.exe_base, &p.argv)) {
+        // `process_names_session`, for the one session it can name.
+        let named = p.session_ref().and_then(|r| resolve_session_ref(r, rows));
+        let held = p
+            .open_jsonl
+            .iter()
+            .filter_map(|path| by_transcript.get(Path::new(path)))
+            .flatten()
+            .copied()
+            .filter(|sid| p.native_session.permits(sid));
+        for sid in named.into_iter().chain(held) {
+            owners.entry(p.pid).or_default().insert(sid.clone());
+        }
+    }
+    owners
+}
+
+/// The row a session reference names: an exact id, or a prefix only one session has.
+fn resolve_session_ref(r: SessionRef, rows: &HashMap<String, Row>) -> Option<&String> {
+    match r {
+        SessionRef::Exact(id) => rows.get_key_value(&id).map(|(sid, _)| sid),
+        SessionRef::Prefix(prefix) => {
+            let mut hits = rows.keys().filter(|sid| sid.starts_with(&prefix));
+            match (hits.next(), hits.next()) {
+                (Some(sid), None) => Some(sid),
+                _ => None,
+            }
+        }
+    }
+}
+
+/// The processes that could have written a growing session of `agent` in `cwd`: interactive
+/// agent processes there, never a helper or a one-shot.
+fn growth_candidates<'a>(procs: &'a [Proc], agent: Agent, cwd: &str) -> Vec<&'a Proc> {
+    procs
+        .iter()
+        .filter(|p| {
+            is_agent_exe(&p.exe_base, &p.argv)
+                && serves(p, agent)
+                && !is_helper(&p.argv)
+                && !one_shot(p)
+                && p.cwd.as_deref() == Some(cwd)
+        })
+        .collect()
+}
+
+/// Use the same lexical path equality for selecting a link and reserving its process.
+/// `Path` treats redundant separators and dot components alike, without filesystem I/O.
+/// `ProcTable::holding` is its lookup form; this is what the tests hold that to.
+#[cfg(test)]
+fn holds_transcript(process: &Proc, transcript: &Path) -> bool {
+    process
+        .open_jsonl
+        .iter()
+        .any(|path| Path::new(path) == transcript)
+}
+
+/// Whether `process` names `sid` through its verified record or its argv (`Proc::session_ref`).
+fn process_names_session(process: &Proc, sid: &str, prefix_unique: &dyn Fn(&str) -> bool) -> bool {
+    match process.session_ref() {
+        Some(SessionRef::Exact(id)) => id == sid,
+        Some(SessionRef::Prefix(prefix)) => sid.starts_with(&prefix) && prefix_unique(&prefix),
+        None => false,
+    }
+}
+
+/// The process scan collects a cwd only for recognized agents. A configured executable
+/// whose agent kind is unknown remains a candidate for every agent (`serves`), so that
+/// directory must retain the shared recency and growth scope instead of proving two owners.
+fn unclassified_agent_cwds(procs: &[Proc]) -> HashSet<&str> {
+    procs
+        .iter()
+        .filter(|p| proc_agent(p).is_none() && !is_helper(&p.argv) && !one_shot(p))
+        .filter_map(|p| p.cwd.as_deref())
+        .collect()
+}
+
+fn matching_scope<'a>(
+    agent: Agent,
+    cwd: &'a str,
+    shared_cwds: &HashSet<&str>,
+) -> (Option<Agent>, &'a str) {
+    ((!shared_cwds.contains(cwd)).then_some(agent), cwd)
 }
 
 /// The one marker of a Claude FORK the machine offers (#269): the engine's argv,
@@ -2765,7 +3528,7 @@ pub(crate) fn trailing_uuid(stem: &str) -> Option<String> {
     is_uuid(tail).then(|| tail.to_string())
 }
 
-fn is_uuid(t: &str) -> bool {
+pub(crate) fn is_uuid(t: &str) -> bool {
     t.len() == 36
         && t.bytes().enumerate().all(|(i, b)| match i {
             8 | 13 | 18 | 23 => b == b'-',
@@ -2871,7 +3634,7 @@ fn scan_procs() -> Vec<Proc> {
         .map_or(0, |d| d.as_secs());
     apply_tty(
         &mut procs,
-        &run(&["ps", "-o", "pid=,tty=,etime=", "-p", &pids]),
+        &run(&["ps", "-o", "pid=,tty=,etime=,stat=", "-p", &pids]),
         now,
     );
     // The multiplexer is visible ONLY in the environment (§2 of the probe): `ps eww`
@@ -2880,46 +3643,95 @@ fn scan_procs() -> Vec<Proc> {
         &mut procs,
         &run(&["ps", "eww", "-o", "pid=,command=", "-p", &pids]),
     );
-    // #s226: only an agent carrying a herdr marker needs its parent chain.
-    if procs.iter().any(|p| p.herdr_pane.is_some()) {
+    if needs_parent_chain(&procs) {
         // `ucomm`, the executable's own name: `comm` is the path it was started by, which ps
         // cuts at 16 characters (the herdr server runs as `/opt/homebrew/bin/herdr server`, so
         // its `comm` loses the name; measured on aries-black).
-        apply_nesting(&mut procs, &run(&["ps", "-axo", "pid=,ppid=,ucomm="]));
+        // #s337: with each process's tty, before `ucomm` (which may hold a space, as tmux's
+        // `tmux: server` on Linux), so the pane shell's terminal is known.
+        apply_nesting_ttys(&mut procs, &run(&["ps", "-axo", "pid=,ppid=,tty=,ucomm="]));
     }
     apply_lsof(&mut procs, &run(&lsof_argv(&pids)));
-    let home = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude"));
-    apply_session_files(&mut procs, home.as_deref());
+    let home = claude_replay_core::claude_discover::claude_home();
+    apply_session_files(&mut procs, Some(&home));
+    apply_registry(&mut procs, &home);
     procs
 }
 
-/// `pid ppid ucomm` lines → for each agent carrying a herdr marker, the NEAREST multiplexer up its
-/// parent chain (a pane's shell is the child of its server; a daemonized server's own parent is
-/// launchd, so an outer one is never reached first). The tmux server is known by the pid its
-/// `TMUX` variable names (its name is `tmux` on macOS, `tmux: server` on Linux), herdr's by the
+/// Whether the scan must read every process's parent (`apply_nesting_ttys`, one `ps -axo
+/// pid=,ppid=,tty=,ucomm=`): an agent carries a herdr marker (#s226), or a tmux one (#s318 for
+/// `Proc::under_agent`, #s334 for whether the marker names a pane).
+fn needs_parent_chain(procs: &[Proc]) -> bool {
+    procs
+        .iter()
+        .any(|p| p.herdr_pane.is_some() || p.pane.is_some())
+}
+
+/// `pid ppid tty ucomm` lines → for each agent carrying a herdr or tmux marker, the NEAREST
+/// multiplexer up its parent chain (a pane's shell is the child of its server; a daemonized
+/// server's own parent is launchd, so an outer one is never reached first), and whether another
+/// agent process sits on the way to it (`Proc::under_agent`; for tmux since #s318). The
+/// multiplexer decides whether a herdr or a tmux marker names a pane (`Terminal::of`; tmux since
+/// #s334). The tmux server is known by the pid
+/// its `TMUX` variable names (its name is `tmux` on macOS, `tmux: server` on Linux), herdr's by the
 /// executable `herdr` (the server, a pane shell's DIRECT parent, measured on aries-black), and
 /// screen or zellij count as a multiplexer we do not drive. Bounded; a
-/// cycle or a missing parent leaves it undecided, which drives nothing.
+/// cycle or a missing parent leaves it undecided, which drives nothing. With tmux nearest it also
+/// notes the tty of the pane's shell, the server's direct child on the way (#s337,
+/// `Proc::pane_tty`).
+fn apply_nesting_ttys(procs: &mut [Proc], table: &str) {
+    nest(procs, parent_table(table, true));
+}
+
+/// [`apply_nesting_ttys`] over `pid ppid ucomm` lines, with no ttys: the tests' parent tables.
+#[cfg(test)]
 fn apply_nesting(procs: &mut [Proc], table: &str) {
-    let parents: HashMap<u32, (u32, String)> = table
+    nest(procs, parent_table(table, false));
+}
+
+/// One process's parent, executable name and tty (`None` for `??`, Linux's `?`, or not read).
+type ParentRow = (u32, String, Option<String>);
+
+/// A `ps` table of `pid ppid [tty] ucomm` lines by pid.
+fn parent_table(table: &str, ttys: bool) -> HashMap<u32, ParentRow> {
+    table
         .lines()
         .filter_map(|line| {
             let mut it = line.split_whitespace();
             let pid = it.next()?.parse().ok()?;
             let ppid = it.next()?.parse().ok()?;
+            let tty = if ttys { it.next() } else { None };
+            let tty = tty.filter(|t| !t.starts_with('?')).map(str::to_string);
             let comm = it.collect::<Vec<_>>().join(" ");
             let base = comm.rsplit('/').next().unwrap_or(&comm).to_string();
-            Some((pid, (ppid, base)))
+            Some((pid, (ppid, base, tty)))
         })
+        .collect()
+}
+
+fn nest(procs: &mut [Proc], parents: HashMap<u32, ParentRow>) {
+    let agents: HashSet<u32> = procs
+        .iter()
+        .filter(|p| is_agent_exe(&p.exe_base, &p.argv) && !is_helper(&p.argv))
+        .map(|p| p.pid)
         .collect();
-    for p in procs.iter_mut().filter(|p| p.herdr_pane.is_some()) {
+    for p in procs
+        .iter_mut()
+        .filter(|p| p.herdr_pane.is_some() || p.pane.is_some())
+    {
         let tmux_server = p.tmux_server_pid;
-        let mut at = parents.get(&p.pid).map(|(ppid, _)| *ppid);
+        p.under_agent = false;
+        p.inner_mux = None;
+        p.pane_tty = None;
+        let mut at = parents.get(&p.pid).map(|(ppid, ..)| *ppid);
+        // The process below `at` in the chain: the pane's shell once `at` is the tmux server.
+        let mut below = p.pid;
         for _ in 0..64 {
             let Some(pid) = at else { break };
-            let Some((ppid, comm)) = parents.get(&pid) else {
+            let Some((ppid, comm, _)) = parents.get(&pid) else {
                 break;
             };
+            p.under_agent |= agents.contains(&pid);
             p.inner_mux = if tmux_server == Some(pid) || comm == "tmux" || comm.starts_with("tmux:")
             {
                 Some(Mux::Tmux)
@@ -2930,9 +3742,13 @@ fn apply_nesting(procs: &mut [Proc], table: &str) {
             } else {
                 None
             };
+            if p.inner_mux == Some(Mux::Tmux) {
+                p.pane_tty = parents.get(&below).and_then(|(.., tty)| tty.clone());
+            }
             if p.inner_mux.is_some() || *ppid == 0 || *ppid == pid {
                 break;
             }
+            below = pid;
             at = Some(*ppid);
         }
     }
@@ -2947,7 +3763,7 @@ fn lsof_argv(pids: &str) -> [&str; 6] {
 }
 
 /// How long one scan subprocess (`ps`, `lsof`) may take before its answer is given up on.
-const SCAN_PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(15);
+pub(crate) const SCAN_PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// The programs whose last probe was given up on and is still running (#s266).
 fn abandoned_probes() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
@@ -2965,6 +3781,16 @@ fn abandoned_probes() -> &'static std::sync::Mutex<std::collections::HashSet<Str
 /// still running (its process not reaped or its output still open) no other probe of that
 /// program is started: each refresh would otherwise leave one more behind.
 fn run_bounded(args: &[&str], limit: std::time::Duration) -> String {
+    run_bounded_env(args, &[], limit)
+}
+
+/// [`run_bounded`] with variables set in the child's environment (the registry's `ps` needs the C
+/// locale and UTC). It shares the abandoned-probe rule: a hung `ps` of either kind holds off both.
+pub(crate) fn run_bounded_env(
+    args: &[&str],
+    env: &[(&str, &str)],
+    limit: std::time::Duration,
+) -> String {
     use std::process::{Command, Stdio};
     let program = args[0].to_string();
     if abandoned_probes().lock().unwrap().contains(&program) {
@@ -2972,6 +3798,7 @@ fn run_bounded(args: &[&str], limit: std::time::Duration) -> String {
     }
     let Ok(mut child) = Command::new(args[0])
         .args(&args[1..])
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -3045,24 +3872,31 @@ fn parse_ps_with(out: &str, is_file: &dyn Fn(&str) -> bool) -> Vec<Proc> {
         let Ok(pid) = pid.parse::<u32>() else {
             continue;
         };
-        let exe_base = exe_path(argv, is_file)
-            .rsplit('/')
-            .next()
-            .unwrap_or("")
+        let exe = exe_path(argv, is_file);
+        let exe_base = exe.rsplit('/').next().unwrap_or("").to_string();
+        let after_exe = argv
+            .trim_start()
+            .strip_prefix(exe)
+            .unwrap_or_default()
             .to_string();
         procs.push(Proc {
             pid,
+            native_session: Identity::Missing,
             argv: argv.to_string(),
             exe_base,
+            after_exe,
             cwd: None,
             open_jsonl: Vec::new(),
             tty: None,
+            stat: None,
+            pane_tty: None,
             pane: None,
             tmux_sock: None,
             screen: None,
             herdr_pane: None,
             herdr_socket: None,
             inner_mux: None,
+            under_agent: false,
             tmux_server_pid: None,
             started: None,
             parent_session: None,
@@ -3075,8 +3909,8 @@ fn parse_ps_with(out: &str, is_file: &dyn Fn(&str) -> bool) -> Vec<Proc> {
     procs
 }
 
-/// `pid tty etime` lines → the controlling tty (`??` means detached and stays `None`) and the
-/// start, `now` less the elapsed time.
+/// `pid tty etime stat` lines → the controlling tty (`??` means detached and stays `None`), the
+/// start, `now` less the elapsed time, and the process state (#s335).
 fn apply_tty(procs: &mut [Proc], out: &str, now: u64) {
     for line in out.lines() {
         let mut it = line.split_whitespace();
@@ -3089,13 +3923,49 @@ fn apply_tty(procs: &mut [Proc], out: &str, now: u64) {
         let Some(p) = procs.iter_mut().find(|p| p.pid == pid) else {
             continue;
         };
-        if tty != "??" {
+        // `??` on macOS, `?` on Linux: no terminal (the review of #s337).
+        if !tty.starts_with('?') {
             p.tty = Some(tty.to_string());
         }
         p.started = it
             .next()
             .and_then(crate::state::parse_etime)
             .map(|e| now.saturating_sub(e));
+        p.stat = it.next().map(str::to_string);
+    }
+}
+
+/// Whether a process in this state (`ps -o stat=`) holds its terminal's foreground (#s335): `+`
+/// says it is in the terminal's foreground process group, and `T` that it is stopped (Ctrl-Z),
+/// on macOS and Linux alike. Measured in a tmux pane on aries-black (Claude Code 2.1.314): `S+`
+/// at its prompt and while a Bash call runs (the call runs in a session of its own, with no
+/// tty), `T` once suspended (the pane's shell then reads `Ss+`), `S+` again after `fg`; codex-cli
+/// 0.166.0 reads the same.
+pub fn holds_foreground(stat: &str) -> bool {
+    stat.contains('+') && !stat.contains('T')
+}
+
+/// Why a tmux pane's process, as the last scan read it, would not take what a send types there:
+/// it does not hold the pane's foreground (#s335: suspended with Ctrl-Z, or put in the
+/// background, so what is typed reaches the shell, or whatever runs there now), or it holds a
+/// terminal other than the pane's (#s337: the pane shell's, `apply_nesting_ttys`), so a wrapper
+/// or an editor between them takes it. The check before typing (`control::tmux_before_typing`)
+/// refuses both again, so here they only keep the page from offering a send it would refuse; a
+/// state or a tty not read refuses nothing. herdr reads its pane's screen instead.
+fn tmux_pane_refusal(procs: &[Proc], pid: u32, addr: &PaneAddr) -> Option<SendRefusal> {
+    if !matches!(addr, PaneAddr::Tmux { .. }) {
+        return None;
+    }
+    let p = procs.iter().find(|p| p.pid == pid)?;
+    if p.stat
+        .as_deref()
+        .is_some_and(|stat| !holds_foreground(stat))
+    {
+        return Some(SendRefusal::PaneNotForeground);
+    }
+    match (p.tty.as_deref(), p.pane_tty.as_deref()) {
+        (Some(tty), Some(pane)) if tty != pane => Some(SendRefusal::PaneOtherTerminal),
+        _ => None,
     }
 }
 
@@ -3555,6 +4425,7 @@ mod tests {
             _ => None,
         };
         let link = |pid: Option<u32>| SendLink {
+            continues: Vec::new(),
             pid,
             ..Default::default()
         };
@@ -3564,23 +4435,57 @@ mod tests {
         live.insert("elsewhere".into(), link(Some(999))); // live, but a DIFFERENT project
 
         // A finished session in a quiet project: OK.
-        assert!(send_liveness_ok("idle-a", Some("/proj"), &live, cwd_of, |_| None).is_ok());
+        assert!(send_liveness_ok(
+            "idle-a",
+            Some("/proj"),
+            &live,
+            &[],
+            Agent::CLAUDE,
+            cwd_of,
+            |_| None
+        )
+        .is_ok());
         // The target itself is live → refuse (tmux path).
         live.insert("idle-a".into(), link(Some(123)));
         assert_eq!(
-            send_liveness_ok("idle-a", Some("/proj"), &live, cwd_of, |_| None),
+            send_liveness_ok(
+                "idle-a",
+                Some("/proj"),
+                &live,
+                &[],
+                Agent::CLAUDE,
+                cwd_of,
+                |_| None
+            ),
             Err(SendRefusal::SessionIsLive)
         );
         // Target finished, but a SIBLING in the same project is live → refuse.
         live.insert("idle-a".into(), link(None));
         live.insert("live-b".into(), link(Some(456)));
         assert_eq!(
-            send_liveness_ok("idle-c", Some("/proj"), &live, cwd_of, |_| None),
+            send_liveness_ok(
+                "idle-c",
+                Some("/proj"),
+                &live,
+                &[],
+                Agent::CLAUDE,
+                cwd_of,
+                |_| None
+            ),
             Err(SendRefusal::ProjectHasActiveSession)
         );
         // A live session in ANOTHER project does not block this one.
         live.remove("live-b");
-        assert!(send_liveness_ok("idle-c", Some("/proj"), &live, cwd_of, |_| None).is_ok());
+        assert!(send_liveness_ok(
+            "idle-c",
+            Some("/proj"),
+            &live,
+            &[],
+            Agent::CLAUDE,
+            cwd_of,
+            |_| None
+        )
+        .is_ok());
     }
 
     #[test]
@@ -3889,6 +4794,7 @@ mod tests {
             _ => None,
         };
         let link = |pid: Option<u32>| SendLink {
+            continues: Vec::new(),
             pid,
             ..Default::default()
         };
@@ -4900,9 +5806,8 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/nope.jsonl"),
             None,
-            false,
+            DirectoryMatch::Disabled,
             &|_| true,
-            &Moves::default(),
         )
         .expect("argv link");
         assert_eq!(
@@ -5164,12 +6069,16 @@ mod tests {
         apply_tty(&mut procs, "  101 ttys006\n  102 ??\n  103 ttys009\n", 0);
         assert_eq!(procs[0].tty.as_deref(), Some("ttys006"));
         assert!(procs[1].tty.is_none(), "?? is detached");
+        // The review of #s337: Linux's `ps` writes `?` for no terminal.
+        apply_tty(&mut procs, "  104 ?\n", 0);
+        assert!(procs[3].tty.is_none(), "? is detached");
 
         apply_env(
             &mut procs,
             "  101 claude TERM=xterm TMUX=/tmp/tmux-501/work,89,0 TMUX_PANE=%7 HOME=/Users/x\n\
              103 claude STY=1234.pts-0.host TERM=screen\n",
         );
+        in_tmux(&mut procs);
         assert_eq!(procs[0].pane.as_deref(), Some("%7"));
         assert_eq!(procs[2].screen.as_deref(), Some("1234.pts-0.host"));
 
@@ -5188,9 +6097,8 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/nope.jsonl"),
             None,
-            false,
+            DirectoryMatch::Disabled,
             &|_| true,
-            &Moves::default(),
         )
         .expect("argv link");
         assert!(l.confirmed);
@@ -5209,9 +6117,8 @@ mod tests {
             Agent::CODEX,
             Path::new("/Users/x/.codex/sessions/2026/08/08/rollout-abc.jsonl"),
             None,
-            false,
+            DirectoryMatch::Disabled,
             &|_| true,
-            &Moves::default(),
         )
         .expect("fd link");
         assert!(l.confirmed);
@@ -5226,9 +6133,8 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             Some("/Users/x/other"),
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
-            &Moves::default(),
         )
         .expect("cwd link");
         assert!(
@@ -5238,9 +6144,8 @@ mod tests {
                 Agent::CLAUDE,
                 Path::new("/n.jsonl"),
                 Some("/Users/x/other"),
-                false,
-                &|_| true,
-                &Moves::default()
+                DirectoryMatch::Disabled,
+                &|_| true
             )
             .is_none(),
             "only the NEWEST session of a cwd may claim a process heuristically"
@@ -5251,16 +6156,28 @@ mod tests {
         );
         assert_eq!(l.pid, 103);
         assert_eq!(l.terminal.target(), Some("1234.pts-0.host"));
-        // 102 (codex, no uuid in argv) heuristically matches its own cwd…
+        // 102 is a `codex exec`, Codex's one-shot (#s326): linked above by the transcript it holds
+        // open, it is no candidate for the newest session of its cwd, as a `claude -p` is none.
+        assert!(link(
+            &procs,
+            "zzz",
+            Agent::CODEX,
+            Path::new("/n.jsonl"),
+            Some("/Users/x/code/repo"),
+            DirectoryMatch::Unclaimed(&HashSet::new()),
+            &|_| true,
+        )
+        .is_none());
+        // An interactive codex there, with no uuid in its argv, matches its own cwd heuristically…
+        procs[1].argv = "/opt/homebrew/bin/codex".into();
         let l = link(
             &procs,
             "zzz",
             Agent::CODEX,
             Path::new("/n.jsonl"),
             Some("/Users/x/code/repo"),
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
-            &Moves::default(),
         )
         .expect("codex cwd heuristic");
         assert!(l.confirmed, "alone in its cwd (#269)");
@@ -5301,6 +6218,7 @@ mod tests {
             &mut procs,
             "  21496 claude TMUX=/private/tmp/tmux-502/crux-web-c0b3b1,5801,0 TMUX_PANE=%0\n",
         );
+        in_tmux(&mut procs);
         apply_lsof(&mut procs, "p21496\nfcwd\nn/Users/x/code/crux-web\n");
         let cwd = Some("/Users/x/code/crux-web");
         let l = link(
@@ -5309,9 +6227,8 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             cwd,
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
-            &Moves::default(),
         )
         .expect("link");
         assert_eq!(
@@ -5329,9 +6246,8 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             cwd,
-            false,
-            &|_| true,
-            &Moves::default()
+            DirectoryMatch::Disabled,
+            &|_| true
         )
         .is_none());
     }
@@ -5350,15 +6266,15 @@ mod tests {
             "  20277 claude TMUX=/private/tmp/tmux-502/claude-replay-d36797,5407,0 TMUX_PANE=%0\n\
              24423 claude TMUX=/private/tmp/tmux-502/mdviewer-28920a,6467,0 TMUX_PANE=%0\n",
         );
+        in_tmux(&mut procs);
         let l = link(
             &procs,
             sid,
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             None,
-            false,
+            DirectoryMatch::Disabled,
             &|pf| pf == "f7e03d40",
-            &Moves::default(),
         )
         .expect("prefix link");
         assert!(l.confirmed);
@@ -5373,9 +6289,8 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             None,
-            false,
-            &|_| false,
-            &Moves::default()
+            DirectoryMatch::Disabled,
+            &|_| false
         )
         .is_none());
         // (d) the shapes, one by one.
@@ -5440,9 +6355,8 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             cwd,
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
-            &Moves::default(),
         )
         .expect("lone");
         assert!(l.confirmed && l.pid == 900);
@@ -5458,9 +6372,8 @@ mod tests {
                 Agent::CLAUDE,
                 Path::new("/n.jsonl"),
                 cwd,
-                true,
-                &|_| true,
-                &Moves::default()
+                DirectoryMatch::Unclaimed(&HashSet::new()),
+                &|_| true
             )
             .unwrap()
             .confirmed
@@ -5477,9 +6390,8 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             cwd,
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
-            &Moves::default(),
         )
         .expect("lone");
         assert!(
@@ -5507,9 +6419,8 @@ mod tests {
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             cwd,
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
-            &Moves::default(),
         )
         .expect("engine");
         assert_eq!(l.pid, 15974);
@@ -5526,9 +6437,8 @@ mod tests {
                 Agent::CLAUDE,
                 Path::new("/n.jsonl"),
                 cwd,
-                true,
-                &|_| true,
-                &Moves::default()
+                DirectoryMatch::Unclaimed(&HashSet::new()),
+                &|_| true
             )
             .is_none(),
             "neither helper is a directory candidate for any other session"
@@ -5577,6 +6487,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
+    /// #s334: each of a fixture's processes carrying a tmux marker runs in a shell of its own under
+    /// the tmux server its `TMUX` names (pid 2 where it names none), so the marker is believed, as
+    /// on a machine where tmux is the nearest multiplexer up its chain.
+    fn in_tmux(procs: &mut [Proc]) {
+        let mut table = String::from("1 0 launchd\n2 1 tmux\n");
+        for p in procs.iter().filter(|p| p.pane.is_some()) {
+            let server = p.tmux_server_pid.unwrap_or(2);
+            let shell = 1_000_000 + p.pid;
+            table += &format!(
+                "{server} 1 tmux\n{shell} {server} zsh\n{} {shell} {}\n",
+                p.pid, p.exe_base
+            );
+        }
+        apply_nesting(procs, &table);
+    }
+
     /// #146: growth is the one signal that says WHICH session a no-id agent is driving —
     /// a transcript advances only because its own agent wrote to it. Strict on purpose: a
     /// forced pairing needs exactly one grower AND exactly one candidate, and the record is
@@ -5604,10 +6530,905 @@ mod tests {
             proved_pid: None,
             continued_in: None,
             grew_at: growing.then(Instant::now),
+            invalidated_growth: None,
             counters: None,
             title_mtime: None,
             cost: None,
         }
+    }
+
+    fn registry_row<'a>(snapshot: &'a Value, sid: &str) -> &'a Value {
+        snapshot["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|group| group["rows"].as_array().unwrap())
+            .find(|row| row["id"] == sid)
+            .expect("registered session in snapshot")
+    }
+
+    fn send_links_of(facts: &[crate::state::RowFacts]) -> HashMap<String, SendLink> {
+        facts
+            .iter()
+            .map(|f| {
+                (
+                    f.sid.clone(),
+                    SendLink {
+                        continues: Vec::new(),
+                        pid: f.pid,
+                        pane: f.pane.clone(),
+                        confirmed: f.confirmed,
+                        named: f.named,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// The owner's decision on #s258: a pane its process's own record names may be sent to beside
+    /// another live session in its project in herdr (which checks the pane's session again before
+    /// typing), never in tmux; and background resume still needs a quiet project.
+    #[test]
+    fn a_registry_named_pane_beside_a_live_sibling_takes_a_send_in_herdr_only() {
+        let scratch =
+            std::env::temp_dir().join(format!("cm-registry-assembly-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let live = "11111111-2222-4333-8444-555555555555";
+        let sibling = "22222222-2222-4333-8444-555555555555";
+        let old = "33333333-2222-4333-8444-555555555555";
+        let cwd = "/fixture/project";
+        let herdr = "700 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n701 claude HERDR_PANE_ID=w1:p4 HERDR_SOCKET_PATH=/fixture/herdr.sock\n";
+        let tmux = "700 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%6\n701 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%4\n";
+        for (env, in_herdr) in [(herdr, true), (tmux, false)] {
+            let mut procs = parse_ps("700 claude\n701 claude\n702 codex\n");
+            for p in &mut procs {
+                p.cwd = Some(cwd.into());
+            }
+            procs[0].native_session = Identity::Verified(live.into());
+            procs[1].native_session = Identity::Verified(sibling.into());
+            apply_env(&mut procs, env);
+            if in_herdr {
+                apply_nesting(
+                    &mut procs,
+                    "60 1 herdr\n61 60 zsh\n700 61 claude\n701 61 claude\n",
+                );
+            } else {
+                in_tmux(&mut procs);
+            }
+            let mut st = State {
+                procs,
+                ..Default::default()
+            };
+            for (sid, age) in [(live, 300), (sibling, 200), (old, 10)] {
+                let mut row = growth_row(cwd, false);
+                row.tree_mtime = Some(SystemTime::now() - Duration::from_secs(age));
+                st.rows.insert(sid.into(), row);
+            }
+            // A proof banked from growth must not keep a pid whose record names another session.
+            st.rows.get_mut(old).unwrap().proved_pid = Some((700, cwd.into()));
+            st.rows.get_mut(live).unwrap().grew_at = Some(Instant::now());
+            st.rows.get_mut(sibling).unwrap().grew_at = Some(Instant::now());
+            idx.prove_by_growth(&mut st);
+            let mut facts = Vec::new();
+            idx.assemble(&st, &mut facts);
+            st.send_links = send_links_of(&facts);
+            let snapshot = idx.assemble(&st, &mut Vec::new());
+            let row = registry_row(&snapshot, live);
+            assert_eq!(row["pid"], 700);
+            assert_eq!(row["pidSource"], "claude-registry");
+            assert_eq!(row["target"], if in_herdr { "w1:p6" } else { "%6" });
+            assert!(st.send_links[live].confirmed);
+            assert_eq!(
+                row["state"], "growing",
+                "identity expiry must preserve actual activity"
+            );
+            assert_eq!(registry_row(&snapshot, sibling)["state"], "growing");
+            assert_eq!(
+                row["projActive"], true,
+                "the resume restriction remains visible"
+            );
+            assert!(
+                registry_row(&snapshot, old).get("pid").is_none(),
+                "a newer history cannot borrow the registered process"
+            );
+            if in_herdr {
+                assert_eq!(row["injectable"], true);
+                assert!(matches!(
+                    pane_send_target(&st, live),
+                    Ok((700, PaneAddr::Herdr { .. }))
+                ));
+            } else {
+                assert_ne!(
+                    row["injectable"], true,
+                    "tmux keeps the one-live-session rule"
+                );
+                assert_eq!(
+                    pane_send_target(&st, live),
+                    Err(SendRefusal::ProjectHasActiveSession)
+                );
+            }
+            assert_eq!(
+                send_liveness_ok(
+                    old,
+                    Some(cwd),
+                    &st.send_links,
+                    &st.procs,
+                    Agent::CLAUDE,
+                    |_| Some(cwd.into()),
+                    |_| None
+                ),
+                Err(SendRefusal::ProjectHasActiveSession)
+            );
+            // Alone in its project, the tmux pane takes the send as before.
+            st.procs.retain(|p| p.pid != 701);
+            st.send_links.remove(sibling);
+            assert!(pane_send_target(&st, live).is_ok());
+        }
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// The registry admits the very process it names. A background session's pane is its
+    /// `claude attach` client, a different pid, so beside a live sibling that pane is refused.
+    #[test]
+    fn an_attach_client_beside_a_live_sibling_is_not_admitted_by_its_engines_record() {
+        let sid = "11111111-2222-4333-8444-555555555555";
+        let sibling = "22222222-2222-4333-8444-555555555555";
+        let cwd = "/fixture/project";
+        let client = "/Applications/Claude Code/claude";
+        let mut procs = parse_ps_with(
+            &format!(
+                "700 claude --bg-pty-host -- claude --session-id {sid}\n800 {client} attach {}\n701 claude\n",
+                &sid[..8]
+            ),
+            &|path| !path.starts_with('/') || path == client,
+        );
+        assert!(
+            procs[1].attach_client(),
+            "the client is read past a spaced path"
+        );
+        assert_eq!(
+            procs[1].session_ref(),
+            Some(SessionRef::Prefix(sid[..8].into()))
+        );
+        for p in &mut procs {
+            p.cwd = Some(cwd.into());
+        }
+        procs[0].native_session = Identity::Verified(sid.into());
+        apply_env(
+            &mut procs,
+            "800 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n701 claude HERDR_PANE_ID=w1:p4 HERDR_SOCKET_PATH=/fixture/herdr.sock\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "60 1 herdr\n61 60 zsh\n800 61 claude\n701 61 claude\n",
+        );
+        let linked = link(
+            &procs,
+            sid,
+            Agent::CLAUDE,
+            Path::new("/fixture/session.jsonl"),
+            Some(cwd),
+            DirectoryMatch::Disabled,
+            &|_| true,
+        )
+        .unwrap();
+        assert_eq!(linked.pid, 800);
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        for s in [sid, sibling] {
+            st.rows.insert(s.into(), growth_row(cwd, false));
+        }
+        st.send_links.insert(
+            sid.into(),
+            SendLink {
+                continues: Vec::new(),
+                pid: Some(800),
+                pane: linked.terminal.pane_addr(),
+                confirmed: linked.confirmed,
+                named: linked.named,
+            },
+        );
+        st.send_links.insert(
+            sibling.into(),
+            SendLink {
+                continues: Vec::new(),
+                pid: Some(701),
+                confirmed: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            pane_send_target(&st, sid),
+            Err(SendRefusal::ProjectHasActiveSession)
+        );
+    }
+
+    /// Helpers record a session that never gets a transcript, and a process whose cwd is unknown
+    /// is in no project: neither keeps a project occupied.
+    #[test]
+    fn helpers_and_processes_of_unknown_cwd_occupy_no_project() {
+        let sid = "11111111-2222-4333-8444-555555555555";
+        let cwd = "/fixture/project";
+        let links = HashMap::new();
+        for argv in [
+            "claude daemon run",
+            "claude --bg-spare",
+            "claude bg-pty-host",
+        ] {
+            let mut procs = parse_ps(&format!("700 {argv}\n"));
+            procs[0].cwd = Some(cwd.into());
+            procs[0].native_session = Identity::Verified(sid.into());
+            assert!(
+                !unresolved_registry_writer(&procs, Agent::CLAUDE, Some(cwd), &links),
+                "{argv}"
+            );
+        }
+        let mut procs = parse_ps("700 claude\n");
+        procs[0].native_session = Identity::Verified(sid.into());
+        assert!(!unresolved_registry_writer(
+            &procs,
+            Agent::CLAUDE,
+            Some(cwd),
+            &links
+        ));
+        procs[0].cwd = Some(cwd.into());
+        assert!(unresolved_registry_writer(
+            &procs,
+            Agent::CLAUDE,
+            Some(cwd),
+            &links
+        ));
+        assert!(!unresolved_registry_writer(
+            &procs,
+            Agent::CLAUDE,
+            Some("/fixture/other"),
+            &links
+        ));
+    }
+
+    #[test]
+    fn native_registry_switches_override_launch_arguments_and_retained_growth() {
+        let old = "11111111-2222-4333-8444-555555555555";
+        let current = "22222222-2222-4333-8444-555555555555";
+        let mut procs = parse_ps(&format!("700 claude --resume {old}\n"));
+        procs[0].native_session = Identity::Verified(current.into());
+        procs[0].cwd = Some("/fixture/project".into());
+        let unique = |_: &str| true;
+        assert!(link(
+            &procs,
+            old,
+            Agent::CLAUDE,
+            Path::new("/old.jsonl"),
+            Some("/fixture/project"),
+            DirectoryMatch::Unclaimed(&HashSet::new()),
+            &unique
+        )
+        .is_none());
+        let linked = link(
+            &procs,
+            current,
+            Agent::CLAUDE,
+            Path::new("/current.jsonl"),
+            Some("/fixture/project"),
+            DirectoryMatch::Disabled,
+            &unique,
+        )
+        .unwrap();
+        assert_eq!(linked.pid, 700);
+        assert!(linked.confirmed);
+        assert!(
+            !linked.named,
+            "registry identity does not expand argv-based grant carryover"
+        );
+        // No usable record (none written, or one that did not verify): the argv's
+        // `--resume <id>` names the session exactly, as before the record was read.
+        procs[0].native_session = Identity::Missing;
+        let named = link(
+            &procs,
+            old,
+            Agent::CLAUDE,
+            Path::new("/old.jsonl"),
+            None,
+            DirectoryMatch::Disabled,
+            &unique,
+        )
+        .unwrap();
+        assert!(named.confirmed && named.named);
+    }
+
+    /// A record that did not verify is no record: the scan reads it as Missing, so the argv rules
+    /// and the directory rule apply exactly as they did before records were read.
+    #[test]
+    fn an_unverified_record_leaves_the_process_to_the_argv_and_directory_rules() {
+        let root =
+            std::env::temp_dir().join(format!("cm-registry-unverified-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("sessions")).unwrap();
+        let pid = std::process::id();
+        // A start no process has: the record names this pid but was not written by it.
+        std::fs::write(
+            root.join("sessions").join(format!("{pid}.json")),
+            json!({"pid": pid, "sessionId": "11111111-2222-4333-8444-555555555555",
+                   "procStart": "Thu Jan  1 00:00:00 1970"})
+            .to_string(),
+        )
+        .unwrap();
+        let mut procs = parse_ps(&format!("{pid} claude\n"));
+        apply_registry(&mut procs, &root);
+        assert_eq!(procs[0].native_session, Identity::Missing);
+        let unique = |_: &str| true;
+        let guessed = link(
+            &procs,
+            "22222222-2222-4333-8444-555555555555",
+            Agent::CLAUDE,
+            Path::new("/newest.jsonl"),
+            Some("/fixture/project"),
+            DirectoryMatch::Unclaimed(&HashSet::new()),
+            &unique,
+        );
+        assert!(guessed.is_none(), "this process has no cwd in the fixture");
+        procs[0].cwd = Some("/fixture/project".into());
+        let guessed = link(
+            &procs,
+            "22222222-2222-4333-8444-555555555555",
+            Agent::CLAUDE,
+            Path::new("/newest.jsonl"),
+            Some("/fixture/project"),
+            DirectoryMatch::Unclaimed(&HashSet::new()),
+            &unique,
+        )
+        .unwrap();
+        assert!(
+            guessed.confirmed,
+            "the lone process in the directory pairs, as on main"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_registry_owner_exit_does_not_transfer_observed_growth() {
+        let scratch =
+            std::env::temp_dir().join(format!("cm-registry-exit-growth-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let native = "11111111-2222-4333-8444-555555555555";
+        let legacy = "22222222-2222-4333-8444-555555555555";
+        let cwd = "/fixture/project";
+        let mut procs = parse_ps("700 claude\n701 claude\n");
+        for p in &mut procs {
+            p.cwd = Some(cwd.into());
+            p.pane = Some(format!("%{}", p.pid));
+            p.tmux_sock = Some("fixture".into());
+        }
+        in_tmux(&mut procs);
+        procs[1].native_session = Identity::Verified(native.into());
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        for (sid, age) in [(native, 10), (legacy, 0)] {
+            let mut row = growth_row(cwd, true);
+            row.tree_mtime = Some(SystemTime::now() - Duration::from_secs(age));
+            st.rows.insert(sid.into(), row);
+        }
+        idx.prove_by_growth(&mut st);
+        let before = idx.assemble(&st, &mut Vec::new());
+        assert_eq!(registry_row(&before, native)["pid"], 701);
+        assert_eq!(registry_row(&before, legacy)["pid"], 700);
+        st.procs.retain(|p| p.pid == 700);
+        for _ in 0..3 {
+            idx.prove_by_growth(&mut st);
+            assert!(st.rows[native].proved_pid.is_none(),
+                "a departed native owner's write cannot prove the surviving process owns its session");
+            let mut facts = Vec::new();
+            let snapshot = idx.assemble(&st, &mut facts);
+            assert!(registry_row(&snapshot, native).get("pid").is_none());
+            assert_eq!(
+                registry_row(&snapshot, native)["state"],
+                "growing",
+                "recent activity remains visible after ownership ends"
+            );
+            assert_eq!(registry_row(&snapshot, legacy)["pid"], 700);
+            assert_eq!(registry_row(&snapshot, legacy)["injectable"], true);
+            st.send_links = facts
+                .iter()
+                .map(|f| {
+                    (
+                        f.sid.clone(),
+                        SendLink {
+                            continues: Vec::new(),
+                            pid: f.pid,
+                            pane: f.pane.clone(),
+                            confirmed: f.confirmed,
+                            named: f.named,
+                        },
+                    )
+                })
+                .collect();
+            assert!(pane_target_from(Agent::CLAUDE, &st.send_links[legacy]).is_ok());
+            assert!(
+                !project_has_other_live(
+                    legacy,
+                    Some(cwd),
+                    &st.send_links,
+                    |_| Some(cwd.into()),
+                    |_| None
+                ),
+                "no departed session remains as a phantom sibling in the pane send guard"
+            );
+            assert!(!unresolved_registry_writer(
+                &st.procs,
+                Agent::CLAUDE,
+                Some(cwd),
+                &st.send_links
+            ));
+        }
+        // New legacy advancement can still establish ownership after native evidence ends.
+        st.rows.get_mut(native).unwrap().grew_at = Some(Instant::now());
+        idx.prove_by_growth(&mut st);
+        assert_eq!(
+            st.rows[native].proved_pid.as_ref().map(|(pid, _)| *pid),
+            Some(700)
+        );
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn native_registry_prevents_growth_from_claiming_a_different_session() {
+        let scratch =
+            std::env::temp_dir().join(format!("cm-registry-growth-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let live = "11111111-2222-4333-8444-555555555555";
+        let old = "22222222-2222-4333-8444-555555555555";
+        let mut procs = parse_ps("700 claude\n");
+        procs[0].native_session = Identity::Verified(live.into());
+        procs[0].cwd = Some("/fixture/project".into());
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        st.rows
+            .insert(live.into(), growth_row("/fixture/project", false));
+        st.rows
+            .insert(old.into(), growth_row("/fixture/project", true));
+        idx.prove_by_growth(&mut st);
+        assert!(st.rows[old].proved_pid.is_none());
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn native_registry_contradiction_discards_growth_before_a_record_disappears() {
+        let scratch =
+            std::env::temp_dir().join(format!("cm-registry-proof-expiry-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let old = "11111111-2222-4333-8444-555555555555";
+        let current = "22222222-2222-4333-8444-555555555555";
+        let cwd = "/fixture/project";
+        for (identity, extra_process, registered) in [
+            (Identity::Verified(current.into()), false, 0),
+            (Identity::Verified(current.into()), true, 0),
+            (Identity::Verified(old.into()), false, 0),
+            (Identity::Verified(old.into()), true, 0),
+            (Identity::Verified(old.into()), true, 1),
+        ] {
+            let mut procs = parse_ps(if extra_process {
+                "700 claude\n701 claude\n"
+            } else {
+                "700 claude\n"
+            });
+            for p in &mut procs {
+                p.cwd = Some(cwd.into());
+                p.pane = Some(format!("%{}", p.pid));
+                p.tmux_sock = Some("fixture".into());
+            }
+            in_tmux(&mut procs);
+            procs[registered].native_session = identity;
+            let mut st = State {
+                procs,
+                ..Default::default()
+            };
+            let mut past = growth_row(cwd, true);
+            past.proved_pid = Some((700, cwd.into()));
+            past.tree_mtime = Some(SystemTime::now() - Duration::from_secs(10));
+            st.rows.insert(old.into(), past);
+            let mut now = growth_row(cwd, false);
+            now.tree_mtime = Some(SystemTime::now());
+            st.rows.insert(current.into(), now);
+            idx.prove_by_growth(&mut st);
+            assert!(
+                st.rows[old].proved_pid.is_none(),
+                "native-superseded proof expires"
+            );
+            let first_snapshot = idx.assemble(&st, &mut Vec::new());
+            let native_owned = st
+                .procs
+                .iter()
+                .any(|p| p.native_session.session() == Some(old));
+            // A process whose record names a session is an explicit owner, so `current` leaves
+            // the directory's recency to `old` and an unnamed process there pairs with it (#s250).
+            let unnamed_left = st
+                .procs
+                .iter()
+                .any(|p| p.native_session.session().is_none());
+            assert_eq!(
+                registry_row(&first_snapshot, old).get("pid").is_some(),
+                native_owned || unnamed_left,
+                "native ownership supplies a current link without retaining the legacy proof"
+            );
+            for p in &mut st.procs {
+                p.native_session = Identity::Missing;
+            }
+            // A production scan runs growth attribution again before assembling the row.
+            idx.prove_by_growth(&mut st);
+            let snapshot = idx.assemble(&st, &mut Vec::new());
+            let old_row = registry_row(&snapshot, old);
+            assert!(
+                old_row.get("pid").is_none(),
+                "missing identity cannot revive old proof"
+            );
+            assert_ne!(old_row["injectable"], true);
+            // New transcript advancement may supply new legacy evidence after the transition.
+            st.rows.get_mut(old).unwrap().grew_at = Some(Instant::now());
+            idx.prove_by_growth(&mut st);
+            assert_eq!(st.rows[old].proved_pid.is_some(), !extra_process);
+        }
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn native_registry_identity_now_does_not_make_earlier_growth_unambiguous() {
+        let scratch =
+            std::env::temp_dir().join(format!("cm-registry-earlier-growth-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let mut procs = parse_ps("700 claude\n701 claude\n");
+        for p in &mut procs {
+            p.cwd = Some("/fixture/project".into());
+            p.pane = Some(format!("%{}", p.pid));
+            p.tmux_sock = Some("fixture".into());
+        }
+        in_tmux(&mut procs);
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        st.rows
+            .insert("growing".into(), growth_row("/fixture/project", true));
+        st.rows.get_mut("growing").unwrap().tree_mtime = Some(SystemTime::now());
+        // A valid different session identifies the writer only NOW. It cannot prove that the
+        // other process wrote during the earlier growth window.
+        st.procs[0].native_session =
+            Identity::Verified("11111111-2222-4333-8444-555555555555".into());
+        idx.prove_by_growth(&mut st);
+        assert!(
+            st.rows["growing"].proved_pid.is_none(),
+            "current identity cannot narrow historical growth ambiguity"
+        );
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn native_registry_unproved_growth_expires_before_identity_disappears() {
+        let scratch =
+            std::env::temp_dir().join(format!("cm-registry-pending-growth-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let old = "11111111-2222-4333-8444-555555555555";
+        let current = "22222222-2222-4333-8444-555555555555";
+        let cwd = "/fixture/project";
+        for (identity, missing_cwd) in [
+            (Identity::Verified(current.into()), false),
+            (Identity::Verified(current.into()), true),
+        ] {
+            let mut procs = parse_ps("700 claude\n");
+            procs[0].pane = Some("%0".into());
+            procs[0].tmux_sock = Some("fixture".into());
+            in_tmux(&mut procs);
+            if !missing_cwd {
+                procs[0].cwd = Some(cwd.into());
+            }
+            procs[0].native_session = identity;
+            let mut st = State {
+                procs,
+                ..Default::default()
+            };
+            let mut past = growth_row(cwd, true);
+            past.tree_mtime = Some(SystemTime::now() - Duration::from_secs(10));
+            st.rows.insert(old.into(), past);
+            let mut now = growth_row(cwd, false);
+            now.tree_mtime = Some(SystemTime::now());
+            st.rows.insert(current.into(), now);
+            idx.prove_by_growth(&mut st);
+            let first = idx.assemble(&st, &mut Vec::new());
+            assert!(registry_row(&first, old).get("pid").is_none());
+            st.procs[0].native_session = Identity::Missing;
+            st.procs[0].cwd = Some(cwd.into());
+            idx.prove_by_growth(&mut st);
+            let mut facts = Vec::new();
+            let next = idx.assemble(&st, &mut facts);
+            assert!(registry_row(&next, old).get("pid").is_none(),
+                "an unproved pre-contradiction write cannot gain authority after identity disappears");
+            st.send_links = facts
+                .iter()
+                .map(|f| {
+                    (
+                        f.sid.clone(),
+                        SendLink {
+                            continues: Vec::new(),
+                            pid: f.pid,
+                            pane: f.pane.clone(),
+                            confirmed: f.confirmed,
+                            named: f.named,
+                        },
+                    )
+                })
+                .collect();
+            assert!(st.send_links[old].pid.is_none());
+            assert_eq!(st.send_links[current].pid, Some(700));
+            assert!(
+                !project_has_other_live(
+                    current,
+                    Some(cwd),
+                    &st.send_links,
+                    |_| Some(cwd.into()),
+                    |_| None
+                ),
+                "no phantom sibling reaches the send guard"
+            );
+            let following = idx.assemble(&st, &mut Vec::new());
+            assert_eq!(registry_row(&following, current)["injectable"], true);
+            st.rows.get_mut(old).unwrap().grew_at = Some(Instant::now());
+            idx.prove_by_growth(&mut st);
+            assert_eq!(
+                st.rows[old].proved_pid.as_ref().map(|(pid, _)| *pid),
+                Some(700)
+            );
+        }
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn native_registry_worker_still_blocks_background_resume() {
+        let scratch =
+            std::env::temp_dir().join(format!("cm-registry-occupied-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let active = "11111111-2222-4333-8444-555555555555";
+        let idle = "22222222-2222-4333-8444-555555555555";
+        let cwd = "/fixture/project";
+        let mut procs = parse_ps(&format!("700 claude -p --resume {active}\n"));
+        procs[0].cwd = Some(cwd.into());
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        let mut worker = growth_row(cwd, false);
+        worker.one_shot = true;
+        st.rows.insert(active.into(), worker);
+        st.rows.insert(idle.into(), growth_row(cwd, false));
+        for identity in [Identity::Verified(active.into()), Identity::Missing] {
+            st.procs[0].native_session = identity;
+            let mut facts = Vec::new();
+            idx.assemble(&st, &mut facts);
+            let links = send_links_of(&facts);
+            for sid in [active, idle] {
+                assert!(
+                    send_liveness_ok(
+                        sid,
+                        Some(cwd),
+                        &links,
+                        &st.procs,
+                        Agent::CLAUDE,
+                        |_| Some(cwd.into()),
+                        |_| None
+                    )
+                    .is_err(),
+                    "a still-running worker must not make its project resumable"
+                );
+            }
+            // Without a record the worker is linked by its argv's `--resume`, as on main.
+            assert_eq!(links[active].pid, Some(700));
+            if st.procs[0].native_session.session().is_some() {
+                assert!(
+                    send_liveness_ok(
+                        idle,
+                        Some(cwd),
+                        &links,
+                        &st.procs,
+                        Agent::CLAUDE,
+                        |_| Some(cwd.into()),
+                        |sid| (sid == active).then(|| idle.into())
+                    )
+                    .is_ok(),
+                    "an identified coordinator's own worker keeps its existing exception"
+                );
+                let worker = st.rows.remove(active).unwrap();
+                let snapshot = idx.assemble(&st, &mut Vec::new());
+                assert_eq!(registry_row(&snapshot, idle)["projActive"], true);
+                assert!(
+                    send_liveness_ok(
+                        idle,
+                        Some(cwd),
+                        &HashMap::new(),
+                        &st.procs,
+                        Agent::CLAUDE,
+                        |_| Some(cwd.into()),
+                        |_| None
+                    )
+                    .is_err(),
+                    "an unindexed native session still occupies its project"
+                );
+                st.rows.insert(active.into(), worker);
+            }
+        }
+        st.procs.clear();
+        assert!(send_liveness_ok(
+            idle,
+            Some(cwd),
+            &HashMap::new(),
+            &st.procs,
+            Agent::CLAUDE,
+            |_| None,
+            |_| None
+        )
+        .is_ok());
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn native_registry_ownership_beats_other_processes_stale_arguments() {
+        let sid = "11111111-2222-4333-8444-555555555555";
+        let mut procs = parse_ps(&format!("600 claude --resume {sid}\n700 claude\n"));
+        apply_env(
+            &mut procs,
+            "600 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%1\n700 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%2\n",
+        );
+        in_tmux(&mut procs);
+        procs[1].native_session = Identity::Verified(sid.into());
+        let linked = link(
+            &procs,
+            sid,
+            Agent::CLAUDE,
+            Path::new("/fixture/session.jsonl"),
+            None,
+            DirectoryMatch::Disabled,
+            &|_| true,
+        )
+        .unwrap();
+        assert_eq!(linked.pid, 700);
+        assert_eq!(linked.terminal.target(), Some("%2"));
+        procs[1].argv = format!("claude --bg-pty-host -- --session-id {sid}");
+        let helper = link(
+            &procs,
+            sid,
+            Agent::CLAUDE,
+            Path::new("/fixture/session.jsonl"),
+            None,
+            DirectoryMatch::Disabled,
+            &|_| true,
+        )
+        .unwrap();
+        assert_eq!(
+            helper.pid, 700,
+            "a native helper cannot borrow a stale resume pane"
+        );
+        assert_eq!(helper.terminal.kind(), "detached");
+        // A native background engine's inherited pane remains unusable, while its actual
+        // attach client can still supply the terminal for this same session.
+        procs.extend(parse_ps(&format!("800 claude attach {}\n", &sid[..8])));
+        apply_env(
+            &mut procs,
+            "800 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%3\n",
+        );
+        in_tmux(&mut procs);
+        let attached = link(
+            &procs,
+            sid,
+            Agent::CLAUDE,
+            Path::new("/fixture/session.jsonl"),
+            None,
+            DirectoryMatch::Disabled,
+            &|_| true,
+        )
+        .unwrap();
+        assert_eq!(attached.pid, 800);
+        assert_eq!(attached.terminal.target(), Some("%3"));
+    }
+
+    #[test]
+    fn native_registry_workers_reserve_sessions_and_bank_exact_parents() {
+        let scratch =
+            std::env::temp_dir().join(format!("cm-registry-workers-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let native = "11111111-2222-4333-8444-555555555555";
+        let legacy = "22222222-2222-4333-8444-555555555555";
+        let parent_a = "33333333-2222-4333-8444-555555555555";
+        let parent_b = "44444444-2222-4333-8444-555555555555";
+        let cwd = "/fixture/project";
+        let mut procs = parse_ps("700 claude -p native\n701 claude -p legacy\n702 claude\n");
+        for p in &mut procs {
+            p.cwd = Some(cwd.into());
+        }
+        procs[0].started = Some(1_000);
+        procs[0].native_session = Identity::Verified(native.into());
+        procs[0].parent_session = Some(parent_a.into());
+        procs[1].started = Some(1_002);
+        procs[1].parent_session = Some(parent_b.into());
+        let sessions = [(native, cwd, 1_001), (legacy, cwd, 1_003)];
+        let pairs = pair_one_shots(&procs, sessions);
+        assert_eq!(
+            pairs[native],
+            OneShotPair {
+                pid: 700,
+                evidence: OneShotEvidence::Registered
+            },
+            "the native owner reserves its session"
+        );
+        assert_eq!(
+            pairs[legacy],
+            OneShotPair {
+                pid: 701,
+                evidence: OneShotEvidence::Timed { rivals: 0 }
+            }
+        );
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        for (sid, _, first) in sessions {
+            let mut row = growth_row(cwd, true);
+            row.one_shot = true;
+            row.first_event = Some(first);
+            row.tree_mtime = Some(SystemTime::now());
+            st.rows.insert(sid.into(), row);
+        }
+        for parent in [parent_a, parent_b] {
+            st.rows.insert(parent.into(), growth_row(cwd, false));
+        }
+        st.rows.get_mut(parent_a).unwrap().tree_mtime =
+            Some(SystemTime::now() - Duration::from_secs(10));
+        idx.prove_by_growth(&mut st);
+        idx.bank_started_by(&mut st);
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert_eq!(registry_row(&snapshot, native)["pid"], 700);
+        assert_eq!(registry_row(&snapshot, legacy)["pid"], 701);
+        assert_eq!(registry_row(&snapshot, native)["state"], "growing");
+        assert_eq!(registry_row(&snapshot, legacy)["state"], "growing");
+        assert_eq!(registry_row(&snapshot, parent_a)["pid"], 702);
+        assert_eq!(st.started_by(native), Some(parent_a));
+        assert_eq!(st.started_by(legacy), Some(parent_b));
+        // A later registry record for the legacy worker preserves both original parent edges.
+        st.procs[1].native_session = Identity::Verified(legacy.into());
+        idx.prove_by_growth(&mut st);
+        idx.bank_started_by(&mut st);
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert_eq!(registry_row(&snapshot, native)["state"], "growing");
+        assert_eq!(registry_row(&snapshot, legacy)["state"], "growing");
+        assert_eq!(st.started_by(native), Some(parent_a));
+        let reloaded = read_started_by(&scratch.join("cache").join(STARTED_BY_FILE));
+        assert_eq!(reloaded[native], parent_a);
+        assert_eq!(reloaded[legacy], parent_b);
+        let again = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        assert_eq!(again.state.lock().unwrap().started_by_edges, reloaded);
+        idx.bank_started_by(&mut st);
+        assert_eq!(
+            st.started_by(native),
+            Some(parent_a),
+            "stable on the next scan"
+        );
+        std::fs::remove_dir_all(scratch).unwrap();
     }
 
     /// Sessions in different SUBDIRS of one repo collapse into a single project group
@@ -5872,6 +7693,7 @@ n/Users/x/proj
             &mut procs,
             "  900 claude TMUX=/private/tmp/tmux-502/knack-98db47,8436,0 TMUX_PANE=%0\n",
         );
+        in_tmux(&mut procs);
 
         let l = link(
             &procs,
@@ -5879,9 +7701,8 @@ n/Users/x/proj
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             Some("/Users/hong/code/knack"),
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
-            &Moves::default(),
         )
         .expect("cwd link");
         assert_eq!(l.pid, 900, "the tmux-hosted process, not the first match");
@@ -5908,9 +7729,8 @@ n/Users/x/proj
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             Some("/Users/hong/code/knack"),
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
-            &Moves::default(),
         )
         .expect("cwd link");
         assert_eq!(
@@ -5987,15 +7807,15 @@ n/Users/x/proj
             &mut procs,
             "  401 claude TMUX=/private/tmp/tmux-501/default,88,0 TMUX_PANE=%0\n",
         );
+        in_tmux(&mut procs);
         let l = link(
             &procs,
             sid,
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             None,
-            false,
+            DirectoryMatch::Disabled,
             &|_| true,
-            &Moves::default(),
         )
         .expect("link");
         assert!(l.confirmed);
@@ -6057,13 +7877,30 @@ n/Users/x/proj
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             Some("/w/petrel"),
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
-            &Moves::default(),
         )
         .expect("linked");
         assert_eq!(l.pid, 601);
         assert!(l.confirmed);
+
+        // The integrated growth matcher must use the same process classification as link:
+        // a start prompt's `-p` cannot exclude an interactive process from growth evidence.
+        let idx = Index::new(home.join("cache"), home.join("state"), Vec::new());
+        let mut st = State {
+            procs: vec![procs.remove(0)],
+            ..State::default()
+        };
+        st.rows
+            .insert("interactive".into(), growth_row("/w/petrel", true));
+        idx.prove_by_growth(&mut st);
+        assert_eq!(
+            st.rows["interactive"]
+                .proved_pid
+                .as_ref()
+                .map(|(pid, _)| *pid),
+            Some(601)
+        );
 
         // The review of #s301: what a `cli` record cannot overrule. Each process below has a
         // record saying `cli`, begun with it, yet stays a one-shot.
@@ -6107,181 +7944,6 @@ n/Users/x/proj
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// #s294: a pane process's own record says its conversation was parked, as Claude Code 2.1.312
-    /// writes it (measured on two moves): the old `sessionId` and the job's `parkedJobId`. Read for
-    /// a process whose argv names a session and that has a terminal, from a record of its own pid
-    /// begun with it; a malformed job id or session id is no answer, and neither is a record for a
-    /// process with no terminal or one whose argv names nothing.
-    #[test]
-    fn a_pane_process_record_says_where_its_conversation_was_parked() {
-        let home = std::env::temp_dir().join(format!("cm-parked-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        std::fs::create_dir_all(home.join("sessions")).unwrap();
-        let a = "aaaaaaaa-0000-4000-8000-000000000294";
-        let record = |pid: u32, session: &str, job: &str| {
-            std::fs::write(
-                home.join("sessions").join(format!("{pid}.json")),
-                format!(r#"{{"pid":{pid},"sessionId":"{session}","entrypoint":"cli","kind":"interactive","startedAt":9992000,"status":"idle","parkedJobId":"{job}"}}"#),
-            )
-            .unwrap();
-        };
-        let mut procs = parse_ps(&format!(
-            "  621 claude --resume {a}\n  622 claude --resume {a}\n  623 claude --resume\n  624 claude --resume {a}\n  625 claude --resume {a}\n"
-        ));
-        apply_tty(
-            &mut procs,
-            // 622 has no terminal.
-            "  621 ttys001 00:10\n  622 ?? 00:10\n  623 ttys003 00:10\n  624 ttys004 00:10\n  625 ttys005 00:10\n",
-            10_000,
-        );
-        let mut env = String::new();
-        for p in &procs {
-            env += &format!("  {} claude CLAUDE_CONFIG_DIR={}\n", p.pid, home.display());
-        }
-        apply_env(&mut procs, &env);
-        record(621, a, "bbbbbbbb");
-        record(622, a, "bbbbbbbb");
-        record(623, a, "bbbbbbbb"); // its argv names no session
-        record(624, a, "bb bb; rm"); // not a job id
-        record(625, "not-a-session", "bbbbbbbb");
-        apply_session_files(&mut procs, None);
-        let parked: Vec<Option<Parked>> = procs.iter().map(|p| p.parked.clone()).collect();
-        assert_eq!(
-            parked,
-            [
-                Some(Parked {
-                    session: a.into(),
-                    job: "bbbbbbbb".into()
-                }),
-                None,
-                None,
-                None,
-                None
-            ]
-        );
-        assert!(
-            !procs[0].cli_launch,
-            "a record is not a one-shot verdict here"
-        );
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    /// #s50: two one-shots started inside each other's window each take a session — both are
-    /// alive — but neither pairing is confirmed.
-    #[test]
-    fn one_shots_started_together_pair_unconfirmed() {
-        let mut procs = parse_ps("  301 claude -p a\n  302 claude -p b\n  303 claude -p c\n");
-        apply_tty(
-            &mut procs,
-            "  301 ?? 10:00\n  302 ?? 09:58\n  303 ?? 01:00\n",
-            10_000,
-        );
-        apply_lsof(
-            &mut procs,
-            "p301\nfcwd\nn/w\np302\nfcwd\nn/w\np303\nfcwd\nn/w\n",
-        );
-        let pairs = pair_one_shots(
-            &procs,
-            [
-                ("s1", "/w", 9_401),
-                ("s2", "/w", 9_403),
-                ("s3", "/w", 9_941),
-            ],
-        );
-        assert_eq!(pairs["s1"], (301, 1));
-        assert_eq!(pairs["s2"], (302, 1));
-        assert_eq!(pairs["s3"], (303, 0), "alone in its window: confirmed");
-        // Two workers started fourteen seconds apart (measured here, 2026-10-08): the second's
-        // session lies in the first's window, but the first holds its own earlier session, which
-        // the second could never have begun. No swap, so both are confirmed.
-        let mut apart = parse_ps("  501 claude -p a\n  502 claude -p b\n");
-        apply_tty(&mut apart, "  501 ?? 01:00\n  502 ?? 00:46\n", 2_060);
-        apply_lsof(&mut apart, "p501\nfcwd\nn/w\np502\nfcwd\nn/w\n");
-        let pairs = pair_one_shots(&apart, [("a", "/w", 2_001), ("b", "/w", 2_015)]);
-        assert_eq!(pairs["a"], (501, 0));
-        assert_eq!(pairs["b"], (502, 0));
-        // A session that began long before any live one-shot is nobody's.
-        let none = pair_one_shots(&procs, [("old", "/w", 2_000)]);
-        assert!(none.is_empty());
-    }
-
-    /// #s226, what the attention report reads (agreed with Aries): a session alone in its directory
-    /// and running in a herdr pane is a row with `term: "herdr"`, its pane as `target`, the named
-    /// session it belongs to as `herdrSession`, and an injectable link — while a grant for the
-    /// same pane id on a tmux server would not count for it.
-    #[test]
-    fn a_herdr_session_s_row_says_herdr_and_offers_the_send() {
-        let scratch = std::env::temp_dir().join(format!("cm-herdr-row-{}", std::process::id()));
-        let _env = StateEnv::set(scratch.join("state"));
-        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
-        let mut procs = parse_ps("  700 claude --resume\n");
-        apply_tty(&mut procs, "  700 ttys004 10:00\n", 1_791_400_000);
-        apply_env(
-            &mut procs,
-            "  700 claude HERDR_ENV=1 HERDR_PANE_ID=w1:p2 HERDR_SOCKET_PATH=/Users/x/.config/herdr/sessions/trial/herdr.sock\n",
-        );
-        apply_nesting(
-            &mut procs,
-            "  1 0 launchd\n  60 1 herdr\n  61 60 zsh\n  700 61 claude\n",
-        );
-        apply_lsof(&mut procs, "p700\nfcwd\nn/w/harbor\n");
-        let mut st = State {
-            procs,
-            ..Default::default()
-        };
-        let now = 1_791_400_000u64;
-        let mut row = growth_row("/w/harbor", false);
-        row.first_event = Some(now - 600);
-        row.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(now - 5));
-        row.last_event = Some(now - 5);
-        st.rows.insert("h1".into(), row);
-        crate::consent::ConsentStore::open()
-            .grant(None, "w1:p2", "h1", 700)
-            .expect("a tmux-keyed grant");
-        let mut facts = Vec::new();
-        let snapshot = idx.assemble(&st, &mut facts);
-        fn find<'a>(v: &'a Value, id: &str) -> Option<&'a Value> {
-            match v {
-                Value::Object(m) if m.get("id").and_then(|i| i.as_str()) == Some(id) => Some(v),
-                Value::Object(m) => m.values().find_map(|c| find(c, id)),
-                Value::Array(a) => a.iter().find_map(|c| find(c, id)),
-                _ => None,
-            }
-        }
-        let row = find(&snapshot, "h1").expect("the row");
-        assert_eq!(row["term"], "herdr", "{row}");
-        assert_eq!(row["target"], "w1:p2");
-        assert_eq!(row["herdrSession"], "trial");
-        assert_eq!(
-            row["injectable"], true,
-            "a lone, proven herdr link can be sent to"
-        );
-        assert_eq!(row["sendsImages"], true, "#s237: and sent images to");
-        assert_eq!(
-            row["consented"], false,
-            "a tmux grant for the same pane id does not count"
-        );
-        assert!(row.get("sock").is_none(), "no tmux socket on a herdr row");
-        assert_eq!(
-            facts[0].pane,
-            Some(PaneAddr::Herdr {
-                socket: Some("/Users/x/.config/herdr/sessions/trial/herdr.sock".into()),
-                pane: "w1:p2".into(),
-            })
-        );
-        crate::consent::ConsentStore::open()
-            .grant(
-                Some("herdr:/Users/x/.config/herdr/sessions/trial/herdr.sock"),
-                "w1:p2",
-                "h1",
-                700,
-            )
-            .expect("the herdr grant");
-        let snapshot = idx.assemble(&st, &mut Vec::new());
-        assert_eq!(find(&snapshot, "h1").expect("the row")["consented"], true);
-        let _ = std::fs::remove_dir_all(&scratch);
-    }
-
     /// #s294, the synthetic repro: an idle `claude --resume A` in a herdr pane, and Claude Code moves
     /// the conversation into a background job as B with nothing typed. A's transcript ends with
     /// `continued-in` B, the job's engine is a `bg-spare` that names nothing, and the pane's process
@@ -6299,6 +7961,7 @@ n/Users/x/proj
         let moved_at = now - 3_600;
         let parked = |procs: &mut Vec<Proc>| {
             for p in procs.iter_mut().filter(|p| p.pid == 700) {
+                p.native_session = Identity::Verified(a.into());
                 p.parked = Some(Parked {
                     session: a.into(),
                     job: "bbbbbbbb".into(),
@@ -6328,6 +7991,11 @@ n/Users/x/proj
                 "p700\nfcwd\nn/w/harbor\np701\nfcwd\nn/w/harbor\n",
             );
             parked(&mut procs);
+            procs
+                .iter_mut()
+                .find(|p| p.pid == 701)
+                .unwrap()
+                .native_session = Identity::Verified(b.into());
             let mut st = State {
                 procs,
                 ..Default::default()
@@ -6356,7 +8024,8 @@ n/Users/x/proj
         }
 
         // The pane's process has run for a day: it is the one that moved the conversation.
-        let st = world("1-00:00:00");
+        let mut st = world("1-00:00:00");
+        idx.prove_by_growth(&mut st);
         let mut facts = Vec::new();
         let snapshot = idx.assemble(&st, &mut facts);
         let row_b = find(&snapshot, b).expect("B's row");
@@ -6383,8 +8052,8 @@ n/Users/x/proj
 
         // The review of #s294, point 1: as the client moves the conversation, A's tail grows (its
         // own enqueues), and then the reader types into B. Neither growth proof may hand A the
-        // pane: A is no grower and its older proof goes; B, the lone grower, is proved on the
-        // pane's process and is still the one herdr's A stands for.
+        // pane: A is no grower and its older proof goes; B keeps the verified native process
+        // and is still the one herdr's A stands for.
         let mut st = world("1-00:00:00");
         st.rows.get_mut(a).unwrap().grew_at = Some(Instant::now());
         st.rows.get_mut(a).unwrap().proved_pid = Some((700, "/w/harbor".into()));
@@ -6396,15 +8065,51 @@ n/Users/x/proj
         assert!(st.rows[b].proved_pid.is_none(), "B has not grown yet");
         st.rows.get_mut(b).unwrap().grew_at = Some(Instant::now());
         idx.prove_by_growth(&mut st);
-        assert_eq!(st.rows[b].proved_pid.as_ref().map(|(p, _)| *p), Some(700));
+        assert!(
+            st.rows[b].proved_pid.is_none(),
+            "native ownership outranks growth"
+        );
         let mut facts = Vec::new();
+        idx.prove_by_growth(&mut st);
         let snapshot = idx.assemble(&st, &mut facts);
         let row_b = find(&snapshot, b).unwrap();
         assert_eq!(row_b["pid"], 700, "{row_b}");
-        assert!(row_b.get("projActive").is_none(), "A is not live: {row_b}");
+        assert_eq!(
+            row_b["injectable"], true,
+            "the native pane remains sendable: {row_b}"
+        );
         assert!(find(&snapshot, a).unwrap().get("pid").is_none());
         let fact_b = facts.iter().find(|f| f.sid == b).unwrap();
         assert_eq!(fact_b.continues, vec![a.to_string()], "proved, and moved");
+
+        // A cached process identity is derived again when the transcript takes A back.
+        st.rows.get_mut(a).unwrap().continued_in = None;
+        idx.prove_by_growth(&mut st);
+        assert_eq!(
+            st.procs
+                .iter()
+                .find(|p| p.pid == 700)
+                .unwrap()
+                .native_session
+                .session(),
+            Some(a)
+        );
+        let mut facts = Vec::new();
+        let snapshot = idx.assemble(&st, &mut facts);
+        assert_eq!(find(&snapshot, a).unwrap()["pid"], 700);
+        assert!(facts.iter().all(|fact| fact.continues.is_empty()));
+
+        // A previous snapshot's link to A must not survive the verified move.
+        let mut stale = world("1-00:00:00");
+        stale.send_links.insert(
+            a.into(),
+            SendLink {
+                pid: Some(700),
+                ..Default::default()
+            },
+        );
+        idx.prove_by_growth(&mut stale);
+        assert!(!stale.send_links.contains_key(a));
 
         // Point 2: the reader quits the pane and picks A again with `claude --resume` (the picker,
         // no id), typing nothing yet. That process names no session, so nothing says herdr's A is
@@ -6434,17 +8139,31 @@ n/Users/x/proj
         for p in &mut st.procs {
             p.parked = None;
         }
+        idx.prove_by_growth(&mut st);
         let snapshot = idx.assemble(&st, &mut Vec::new());
         assert_eq!(find(&snapshot, a).unwrap()["pid"], 700);
-        assert!(find(&snapshot, b).unwrap().get("pid").is_none());
+        assert_ne!(find(&snapshot, b).unwrap()["pid"], 700);
+
+        let mut unverified = world("1-00:00:00");
+        unverified
+            .procs
+            .iter_mut()
+            .find(|p| p.pid == 700)
+            .unwrap()
+            .native_session = Identity::Missing;
+        idx.prove_by_growth(&mut unverified);
+        let mut facts = Vec::new();
+        let snapshot = idx.assemble(&unverified, &mut facts);
+        assert_ne!(find(&snapshot, b).unwrap()["pid"], 700);
+        assert!(facts.iter().all(|fact| fact.continues.is_empty()));
 
         // Without the move, the same machine reads as before the fix: A holds the pane and B
-        // has no process at all — the "Exited abnormally" row.
+        // has only its detached engine, with no pane.
         let mut before = world("1-00:00:00");
         before.rows.get_mut(a).unwrap().continued_in = None;
         let snapshot = idx.assemble(&before, &mut Vec::new());
         assert_eq!(find(&snapshot, a).unwrap()["pid"], 700);
-        assert!(find(&snapshot, b).unwrap().get("pid").is_none());
+        assert_ne!(find(&snapshot, b).unwrap()["pid"], 700);
 
         // The moved session is not the directory's to pick: with its tree touched last and another
         // agent with no session id in the directory, it still holds no process (measured live: an
@@ -6456,16 +8175,18 @@ n/Users/x/proj
         st.procs.extend(other);
         st.rows.get_mut(a).unwrap().tree_mtime =
             Some(SystemTime::UNIX_EPOCH + Duration::from_secs(now - 1));
+        idx.prove_by_growth(&mut st);
         let snapshot = idx.assemble(&st, &mut Vec::new());
         let row_a = find(&snapshot, a).unwrap();
         assert!(row_a.get("pid").is_none(), "{row_a}");
         assert_eq!(find(&snapshot, b).unwrap()["pid"], 700);
 
         // A process started after the move chose A itself: it is A's, and B is not on its pane.
-        let st = world("00:10:00");
+        let mut st = world("00:10:00");
+        idx.prove_by_growth(&mut st);
         let snapshot = idx.assemble(&st, &mut Vec::new());
         assert_eq!(find(&snapshot, a).unwrap()["pid"], 700);
-        assert!(find(&snapshot, b).unwrap().get("pid").is_none());
+        assert_ne!(find(&snapshot, b).unwrap()["pid"], 700);
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
@@ -6559,15 +8280,15 @@ n/Users/x/proj
         let mut two: HashMap<String, Row> = HashMap::new();
         two.insert(a.into(), moved(b, 100));
         two.insert(b.into(), growth_row("/w/h", false));
+        attach.native_session = Identity::Verified(b.into());
         let l = link(
             std::slice::from_ref(&attach),
             b,
             Agent::CLAUDE,
             Path::new("/b.jsonl"),
             None,
-            false,
+            DirectoryMatch::Disabled,
             &only_a,
-            &Moves::of(&two),
         )
         .expect("the attach client drives b");
         assert!(l.confirmed && !l.named);
@@ -6577,9 +8298,8 @@ n/Users/x/proj
             Agent::CLAUDE,
             Path::new("/a.jsonl"),
             None,
-            false,
+            DirectoryMatch::Disabled,
             &only_a,
-            &Moves::of(&two),
         )
         .is_none());
     }
@@ -6600,6 +8320,760 @@ n/Users/x/proj
             "after the file's last write"
         );
         assert!(!move_plausible(now - 60, now, None), "no write time");
+    }
+
+    /// #s50: two one-shots started inside each other's window each take a session — both are
+    /// alive — but neither pairing is confirmed.
+    #[test]
+    fn one_shots_started_together_pair_unconfirmed() {
+        let mut procs = parse_ps("  301 claude -p a\n  302 claude -p b\n  303 claude -p c\n");
+        apply_tty(
+            &mut procs,
+            "  301 ?? 10:00\n  302 ?? 09:58\n  303 ?? 01:00\n",
+            10_000,
+        );
+        apply_lsof(
+            &mut procs,
+            "p301\nfcwd\nn/w\np302\nfcwd\nn/w\np303\nfcwd\nn/w\n",
+        );
+        let pairs = pair_one_shots(
+            &procs,
+            [
+                ("s1", "/w", 9_401),
+                ("s2", "/w", 9_403),
+                ("s3", "/w", 9_941),
+            ],
+        );
+        assert_eq!(
+            pairs["s1"],
+            OneShotPair {
+                pid: 301,
+                evidence: OneShotEvidence::Timed { rivals: 1 }
+            }
+        );
+        assert_eq!(
+            pairs["s2"],
+            OneShotPair {
+                pid: 302,
+                evidence: OneShotEvidence::Timed { rivals: 1 }
+            }
+        );
+        assert_eq!(
+            pairs["s3"],
+            OneShotPair {
+                pid: 303,
+                evidence: OneShotEvidence::Timed { rivals: 0 }
+            },
+            "alone in its window: confirmed"
+        );
+        // Two workers started fourteen seconds apart (measured here, 2026-10-08): the second's
+        // session lies in the first's window, but the first holds its own earlier session, which
+        // the second could never have begun. No swap, so both are confirmed.
+        let mut apart = parse_ps("  501 claude -p a\n  502 claude -p b\n");
+        apply_tty(&mut apart, "  501 ?? 01:00\n  502 ?? 00:46\n", 2_060);
+        apply_lsof(&mut apart, "p501\nfcwd\nn/w\np502\nfcwd\nn/w\n");
+        let pairs = pair_one_shots(&apart, [("a", "/w", 2_001), ("b", "/w", 2_015)]);
+        assert_eq!(
+            pairs["a"],
+            OneShotPair {
+                pid: 501,
+                evidence: OneShotEvidence::Timed { rivals: 0 }
+            }
+        );
+        assert_eq!(
+            pairs["b"],
+            OneShotPair {
+                pid: 502,
+                evidence: OneShotEvidence::Timed { rivals: 0 }
+            }
+        );
+        // A session that began long before any live one-shot is nobody's.
+        let none = pair_one_shots(&procs, [("old", "/w", 2_000)]);
+        assert!(none.is_empty());
+    }
+
+    /// #s226, what the attention report reads (agreed with Aries): a session alone in its directory
+    /// and running in a herdr pane is a row with `term: "herdr"`, its pane as `target`, the named
+    /// session it belongs to as `herdrSession`, and an injectable link — while a grant for the
+    /// same pane id on a tmux server would not count for it.
+    #[test]
+    fn a_herdr_session_s_row_says_herdr_and_offers_the_send() {
+        let scratch = std::env::temp_dir().join(format!("cm-herdr-row-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let mut procs = parse_ps("  700 claude --resume\n");
+        apply_tty(&mut procs, "  700 ttys004 10:00\n", 1_791_400_000);
+        apply_env(
+            &mut procs,
+            "  700 claude HERDR_ENV=1 HERDR_PANE_ID=w1:p2 HERDR_SOCKET_PATH=/Users/x/.config/herdr/sessions/trial/herdr.sock\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "  1 0 launchd\n  60 1 herdr\n  61 60 zsh\n  700 61 claude\n",
+        );
+        apply_lsof(&mut procs, "p700\nfcwd\nn/w/harbor\n");
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        let now = 1_791_400_000u64;
+        let mut row = growth_row("/w/harbor", false);
+        row.first_event = Some(now - 600);
+        row.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(now - 5));
+        row.last_event = Some(now - 5);
+        st.rows.insert("h1".into(), row);
+        crate::consent::ConsentStore::open()
+            .grant(None, "w1:p2", "h1", 700)
+            .expect("a tmux-keyed grant");
+        let mut facts = Vec::new();
+        let snapshot = idx.assemble(&st, &mut facts);
+        fn find<'a>(v: &'a Value, id: &str) -> Option<&'a Value> {
+            match v {
+                Value::Object(m) if m.get("id").and_then(|i| i.as_str()) == Some(id) => Some(v),
+                Value::Object(m) => m.values().find_map(|c| find(c, id)),
+                Value::Array(a) => a.iter().find_map(|c| find(c, id)),
+                _ => None,
+            }
+        }
+        let row = find(&snapshot, "h1").expect("the row");
+        assert_eq!(row["term"], "herdr", "{row}");
+        assert_eq!(row["target"], "w1:p2");
+        assert_eq!(row["herdrSession"], "trial");
+        assert_eq!(
+            row["injectable"], true,
+            "a lone, proven herdr link can be sent to"
+        );
+        assert_eq!(row["sendsImages"], true, "#s237: and sent images to");
+        assert_eq!(
+            row["consented"], false,
+            "a tmux grant for the same pane id does not count"
+        );
+        assert!(row.get("sock").is_none(), "no tmux socket on a herdr row");
+        assert_eq!(
+            facts[0].pane,
+            Some(PaneAddr::Herdr {
+                socket: Some("/Users/x/.config/herdr/sessions/trial/herdr.sock".into()),
+                pane: "w1:p2".into(),
+            })
+        );
+        crate::consent::ConsentStore::open()
+            .grant(
+                Some("herdr:/Users/x/.config/herdr/sessions/trial/herdr.sock"),
+                "w1:p2",
+                "h1",
+                700,
+            )
+            .expect("the herdr grant");
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert_eq!(find(&snapshot, "h1").expect("the row")["consented"], true);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// A newer session from another agent must not take the directory heuristic away from
+    /// an unnamed Claude process in Herdr. A named Claude sibling still blocks writing.
+    #[test]
+    fn a_newer_codex_session_does_not_hide_an_unnamed_herdr_claude() {
+        let scratch =
+            std::env::temp_dir().join(format!("cm-herdr-agent-scope-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let sibling = "11111111-2222-4333-8444-555555555555";
+        let mut procs = parse_ps(&format!(
+            "700 claude\n701 claude --session-id {sibling}\n900 codex\n"
+        ));
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/w/harbor\np701\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+        );
+        apply_env(&mut procs, "700 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/Users/x/.config/herdr/sessions/trial/herdr.sock\n");
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n60 1 herdr\n61 60 zsh\n700 61 claude\n",
+        );
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        for (sid, agent, modified) in [
+            ("older", Agent::CLAUDE, 1),
+            (sibling, Agent::CLAUDE, 5),
+            ("current", Agent::CLAUDE, 3),
+            ("codex", Agent::CODEX, 4),
+        ] {
+            let mut row = growth_row("/w/harbor", false);
+            row.agent = agent;
+            row.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(modified));
+            st.rows.insert(sid.into(), row);
+        }
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        let current = facts.iter().find(|f| f.sid == "current").unwrap();
+        assert_eq!(
+            current.pid,
+            Some(700),
+            "another agent's newer transcript cannot hide Claude"
+        );
+        assert!(current.confirmed);
+        assert!(matches!(&current.pane, Some(PaneAddr::Herdr { pane, .. }) if pane == "w1:p6"));
+        assert_eq!(facts.iter().find(|f| f.sid == "older").unwrap().pid, None);
+        assert_eq!(
+            facts.iter().find(|f| f.sid == "codex").unwrap().pid,
+            Some(900)
+        );
+        st.send_links = facts
+            .iter()
+            .map(|f| {
+                (
+                    f.sid.clone(),
+                    SendLink {
+                        continues: Vec::new(),
+                        pid: f.pid,
+                        pane: f.pane.clone(),
+                        confirmed: f.confirmed,
+                        named: f.named,
+                    },
+                )
+            })
+            .collect();
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        let current = snapshot["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["rows"].as_array().unwrap())
+            .find(|r| r["id"] == "current")
+            .unwrap();
+        assert_eq!(current["target"], "w1:p6");
+        assert_eq!(
+            current["projActive"], true,
+            "the named Claude sibling still blocks sending"
+        );
+        assert!(current.get("injectable").is_none());
+
+        // The Codex session alone cannot suppress the live Claude pane's compose affordance.
+        st.rows.remove(sibling);
+        st.procs.retain(|p| p.pid != 701);
+        st.send_links.remove(sibling);
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        let current = snapshot["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["rows"].as_array().unwrap())
+            .find(|r| r["id"] == "current")
+            .unwrap();
+        assert_eq!(current["injectable"], true);
+        assert!(current.get("projActive").is_none());
+
+        // A second unnamed Claude keeps the link unconfirmed, with only Claude histories
+        // counted as possible owners; the newer Codex history adds no ambiguity.
+        let mut second = parse_ps("702 claude\n");
+        apply_lsof(&mut second, "p702\nfcwd\nn/w/harbor\n");
+        st.procs.extend(second);
+        let mut facts = Vec::new();
+        let snapshot = idx.assemble(&st, &mut facts);
+        assert!(!facts.iter().find(|f| f.sid == "current").unwrap().confirmed);
+        let current = snapshot["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["rows"].as_array().unwrap())
+            .find(|r| r["id"] == "current")
+            .unwrap();
+        assert_eq!(current["ambig"], 2);
+        assert!(current.get("injectable").is_none());
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    /// Growth by another agent in the same directory is not a second possible writer of
+    /// this transcript; two growing sessions of the same agent remain ambiguous.
+    #[test]
+    fn growth_proofs_are_scoped_to_each_agent_in_a_shared_directory() {
+        // The scanner probes cwd only for recognized agents. Configure the extra executable
+        // in an isolated test process, before its once-per-run pattern cache is initialized.
+        const CHILD: &str = "CM_CONFIGURED_GROWTH_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "index::tests::growth_proofs_are_scoped_to_each_agent_in_a_shared_directory",
+                ])
+                .env(CHILD, "1")
+                .env(AGENT_PATTERNS_ENV, "custom-agent")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        let scratch =
+            std::env::temp_dir().join(format!("cm-growth-agent-scope-{}", std::process::id()));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let mut procs = parse_ps("700 claude\n900 codex\n");
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+        );
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        st.rows
+            .insert("claude".into(), growth_row("/w/harbor", true));
+        let mut codex = growth_row("/w/harbor", true);
+        codex.agent = Agent::CODEX;
+        st.rows.insert("codex".into(), codex);
+        idx.prove_by_growth(&mut st);
+        assert_eq!(
+            st.rows["claude"].proved_pid.as_ref().map(|(pid, _)| *pid),
+            Some(700)
+        );
+        assert_eq!(
+            st.rows["codex"].proved_pid.as_ref().map(|(pid, _)| *pid),
+            Some(900)
+        );
+        for row in st.rows.values_mut() {
+            row.proved_pid = None;
+        }
+        st.rows
+            .insert("second-claude".into(), growth_row("/w/harbor", true));
+        idx.prove_by_growth(&mut st);
+        assert!(st.rows["claude"].proved_pid.is_none());
+        assert!(st.rows["second-claude"].proved_pid.is_none());
+        assert_eq!(
+            st.rows["codex"].proved_pid.as_ref().map(|(pid, _)| *pid),
+            Some(900)
+        );
+
+        // An extra recognized process whose kind is unknown may serve either agent. Its cwd
+        // is a shared scope, so neither grower acquires a proof from that ambiguous evidence.
+        let mut unclassified = parse_ps("800 custom-agent\n");
+        assert!(is_agent_exe(
+            &unclassified[0].exe_base,
+            &unclassified[0].argv
+        ));
+        apply_lsof(&mut unclassified, "p800\nfcwd\nn/w/harbor\n");
+        st.procs.extend(unclassified);
+        st.rows.remove("second-claude");
+        for row in st.rows.values_mut() {
+            row.proved_pid = None;
+        }
+        idx.prove_by_growth(&mut st);
+        assert!(st.rows.values().all(|row| row.proved_pid.is_none()));
+    }
+
+    /// An open transcript reserves its process as firmly as an argv identity. Removing
+    /// that session from recency must not give its process to an older history.
+    #[test]
+    fn an_open_transcript_owner_cannot_be_claimed_by_an_older_history() {
+        let scratch = std::env::temp_dir().join(format!("cm-open-owner-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let mut procs = parse_ps("900 codex\n");
+        apply_lsof(
+            &mut procs,
+            "p900\nfcwd\nn/w/harbor\nf12\nn/w/current.jsonl\n",
+        );
+        apply_env(&mut procs, "900 codex TMUX_PANE=%1\n");
+        in_tmux(&mut procs);
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        for (sid, modified) in [("older", 1), ("current", 2)] {
+            let mut row = growth_row("/w/harbor", false);
+            row.agent = Agent::CODEX;
+            row.path = PathBuf::from(if sid == "current" {
+                "/w/./current.jsonl".to_string()
+            } else {
+                format!("/w/{sid}.jsonl")
+            });
+            row.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(modified));
+            st.rows.insert(sid.into(), row);
+        }
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        assert_eq!(
+            facts.iter().find(|f| f.sid == "current").unwrap().pid,
+            Some(900)
+        );
+        assert_eq!(facts.iter().find(|f| f.sid == "older").unwrap().pid, None);
+        st.send_links = facts
+            .iter()
+            .map(|f| {
+                (
+                    f.sid.clone(),
+                    SendLink {
+                        continues: Vec::new(),
+                        pid: f.pid,
+                        pane: f.pane.clone(),
+                        confirmed: f.confirmed,
+                        named: f.named,
+                    },
+                )
+            })
+            .collect();
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        let current = snapshot["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["rows"].as_array().unwrap())
+            .find(|r| r["id"] == "current")
+            .unwrap();
+        assert_eq!(
+            current["injectable"], true,
+            "no phantom live sibling blocks the real owner"
+        );
+        assert!(current.get("projActive").is_none());
+
+        let mut remaining = parse_ps("901 codex\n");
+        apply_lsof(&mut remaining, "p901\nfcwd\nn/w/harbor\n");
+        st.procs.extend(remaining);
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        assert_eq!(
+            facts.iter().find(|f| f.sid == "current").unwrap().pid,
+            Some(900)
+        );
+        assert_eq!(
+            facts.iter().find(|f| f.sid == "older").unwrap().pid,
+            Some(901)
+        );
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    /// A same-PID /clear or /resume leaves argv naming the old session. Conflicting
+    /// growth must fence that old link, including an already consented tmux pane.
+    #[test]
+    fn conflicting_growth_withholds_send_from_a_stale_argv_owner() {
+        let scratch = std::env::temp_dir().join(format!("cm-stale-argv-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let owner = "11111111-2222-4333-8444-555555555555";
+        for argv in [
+            format!("claude --resume {owner}"),
+            format!("claude --session-id {owner}"),
+            "claude attach 11111111".into(),
+        ] {
+            for (herdr, retained) in [(false, false), (false, true), (true, false), (true, true)] {
+                let mut procs = parse_ps(&format!("701 {argv}\n900 codex\n"));
+                apply_lsof(
+                    &mut procs,
+                    "p701\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+                );
+                if herdr {
+                    apply_env(&mut procs, "701 claude HERDR_PANE_ID=w1:p6\n");
+                    apply_nesting(&mut procs, "1 0 launchd\n60 1 herdr\n701 60 claude\n");
+                } else {
+                    apply_env(&mut procs, "701 claude TMUX_PANE=%3\n");
+                    in_tmux(&mut procs);
+                }
+                let mut st = State {
+                    procs,
+                    ..State::default()
+                };
+                let mut old = growth_row("/w/harbor", false);
+                old.proved_pid = retained.then(|| (701, "/w/harbor".into()));
+                st.rows.insert(owner.into(), old);
+                st.rows
+                    .insert("new-session".into(), growth_row("/w/harbor", true));
+                let mut codex = growth_row("/w/harbor", true);
+                codex.agent = Agent::CODEX;
+                st.rows.insert("codex".into(), codex);
+                // A separate unnamed process makes normal ownership unambiguous. Its
+                // departure then leaves exactly the stale named process as the candidate.
+                let mut unnamed = parse_ps("700 claude\n");
+                apply_lsof(&mut unnamed, "p700\nfcwd\nn/w/harbor\n");
+                st.procs.extend(unnamed);
+                idx.prove_by_growth(&mut st);
+                assert_eq!(
+                    st.rows["new-session"]
+                        .proved_pid
+                        .as_ref()
+                        .map(|(pid, _)| *pid),
+                    Some(700)
+                );
+                let mut before = Vec::new();
+                idx.assemble(&st, &mut before);
+                assert!(before.iter().find(|f| f.sid == owner).unwrap().confirmed);
+                st.procs.retain(|p| p.pid != 700);
+                idx.prove_by_growth(&mut st);
+                assert!(
+                    st.rows["new-session"].proved_pid.is_none(),
+                    "do not guess a new owner"
+                );
+                for idle in [false, true] {
+                    if idle {
+                        st.rows.get_mut("new-session").unwrap().grew_at = None;
+                        idx.prove_by_growth(&mut st);
+                    }
+                    let mut facts = Vec::new();
+                    let snapshot = idx.assemble(&st, &mut facts);
+                    let old = facts.iter().find(|f| f.sid == owner).unwrap();
+                    assert_eq!(old.pid, Some(701));
+                    let send = SendLink {
+                        continues: Vec::new(),
+                        pid: old.pid,
+                        pane: old.pane.clone(),
+                        confirmed: old.confirmed,
+                        named: old.named,
+                    };
+                    assert_eq!(
+                        pane_target_from(Agent::CLAUDE, &send),
+                        Err(SendRefusal::UnprovenLink),
+                        "{argv}, herdr={herdr}, idle={idle}"
+                    );
+                    assert!(!old.named, "a stale name cannot carry restore consent");
+                    let row = snapshot["groups"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .flat_map(|g| g["rows"].as_array().unwrap())
+                        .find(|r| r["id"] == owner)
+                        .unwrap();
+                    assert!(row.get("injectable").is_none());
+                }
+                // Fresh growth of the original session is independent recovery evidence.
+                st.rows.get_mut(owner).unwrap().grew_at = Some(Instant::now());
+                idx.prove_by_growth(&mut st);
+                let mut facts = Vec::new();
+                idx.assemble(&st, &mut facts);
+                assert!(facts.iter().find(|f| f.sid == owner).unwrap().confirmed);
+                assert!(facts.iter().find(|f| f.sid == "codex").unwrap().confirmed);
+
+                // A new contradiction fences again. Process exit discards that fence;
+                // the PID can subsequently belong to a new explicit launch.
+                st.rows.get_mut(owner).unwrap().grew_at = None;
+                st.rows.get_mut("new-session").unwrap().grew_at = Some(Instant::now());
+                idx.prove_by_growth(&mut st);
+                let at = st.procs.iter().position(|p| p.pid == 701).unwrap();
+                let process = st.procs.remove(at);
+                idx.prove_by_growth(&mut st);
+                st.rows.get_mut("new-session").unwrap().grew_at = None;
+                st.procs.push(process);
+                idx.prove_by_growth(&mut st);
+                let mut facts = Vec::new();
+                idx.assemble(&st, &mut facts);
+                assert!(facts.iter().find(|f| f.sid == owner).unwrap().confirmed);
+            }
+        }
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    /// #s258 beside #s250: a `claude --resume S1` that `/clear`s to S2 keeps S1 in its argv. With
+    /// a verified record naming S2, the record answers what the growth fence could only doubt:
+    /// S2 is linked to the process and a herdr send may go to it beside a live sibling, and S1 is
+    /// linked to nothing. With no record, the fence holds as on main: S1 is unconfirmed and
+    /// unsendable, and nothing guesses S2's process. The fence needs the stale process to be the
+    /// directory's only candidate, so that case has no sibling process.
+    #[test]
+    fn a_cleared_resume_follows_its_record_and_without_one_is_fenced() {
+        let scratch =
+            std::env::temp_dir().join(format!("cm-cleared-resume-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let s1 = "11111111-2222-4333-8444-555555555555";
+        let s2 = "22222222-2222-4333-8444-555555555555";
+        let s3 = "33333333-2222-4333-8444-555555555555";
+        let cwd = "/w/harbor";
+        for recorded in [true, false] {
+            let ps = if recorded {
+                format!("701 claude --resume {s1}\n702 claude --session-id {s3}\n")
+            } else {
+                format!("701 claude --resume {s1}\n")
+            };
+            let mut procs = parse_ps(&ps);
+            apply_lsof(
+                &mut procs,
+                "p701\nfcwd\nn/w/harbor\np702\nfcwd\nn/w/harbor\n",
+            );
+            apply_env(
+                &mut procs,
+                "701 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n\
+                 702 claude HERDR_PANE_ID=w1:p7 HERDR_SOCKET_PATH=/fixture/herdr.sock\n",
+            );
+            apply_nesting(
+                &mut procs,
+                "1 0 launchd\n60 1 herdr\n701 60 claude\n702 60 claude\n",
+            );
+            if recorded {
+                procs[0].native_session = Identity::Verified(s2.into());
+            }
+            let mut st = State {
+                procs,
+                ..State::default()
+            };
+            st.rows.insert(s1.into(), growth_row(cwd, false));
+            st.rows.insert(s2.into(), growth_row(cwd, true));
+            if recorded {
+                st.rows.insert(s3.into(), growth_row(cwd, false));
+            }
+            idx.prove_by_growth(&mut st);
+            let mut facts = Vec::new();
+            idx.assemble(&st, &mut facts);
+            st.send_links = send_links_of(&facts);
+            let fact = |sid: &str| facts.iter().find(|f| f.sid == sid).unwrap();
+            if recorded {
+                assert_eq!(fact(s2).pid, Some(701));
+                assert!(fact(s2).confirmed);
+                assert_eq!(fact(s3).pid, Some(702), "the sibling is live");
+                assert!(
+                    matches!(pane_send_target(&st, s2), Ok((701, PaneAddr::Herdr { .. }))),
+                    "the record's session takes a herdr send beside a live sibling"
+                );
+                assert_eq!(fact(s1).pid, None, "the stale argv names nothing");
+                assert!(pane_send_target(&st, s1).is_err());
+            } else {
+                let old = fact(s1);
+                assert_eq!(old.pid, Some(701));
+                assert!(!old.confirmed && !old.named, "the growth fence holds");
+                assert_eq!(
+                    pane_send_target(&st, s1).map(|(pid, _)| pid),
+                    Err(SendRefusal::UnprovenLink)
+                );
+                assert_eq!(
+                    fact(s2).pid,
+                    None,
+                    "no owner is guessed for the new session"
+                );
+            }
+        }
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    /// A target that exits during the growth linger cannot borrow a named sibling's
+    /// process, even while a different agent is also growing in the directory.
+    #[test]
+    fn lingering_growth_never_takes_a_siblings_explicit_process() {
+        let scratch =
+            std::env::temp_dir().join(format!("cm-growth-exit-owner-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let sibling = "11111111-2222-4333-8444-555555555555";
+        let mut procs = parse_ps(&format!("701 claude --session-id {sibling}\n900 codex\n"));
+        apply_lsof(
+            &mut procs,
+            "p701\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+        );
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        let mut departed = growth_row("/w/harbor", true);
+        departed.proved_pid = Some((700, "/w/harbor".into()));
+        st.rows.insert("departed".into(), departed);
+        let mut owner = growth_row("/w/harbor", false);
+        owner.proved_pid = Some((701, "/w/harbor".into()));
+        st.rows.insert(sibling.into(), owner);
+        let mut codex = growth_row("/w/harbor", true);
+        codex.agent = Agent::CODEX;
+        st.rows.insert("codex".into(), codex);
+        idx.prove_by_growth(&mut st);
+        assert!(
+            st.rows["departed"].proved_pid.is_none(),
+            "the departed process stays departed"
+        );
+        assert_eq!(
+            st.rows[sibling].proved_pid.as_ref().map(|(pid, _)| *pid),
+            Some(701)
+        );
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        assert_eq!(
+            facts.iter().find(|f| f.sid == "departed").unwrap().pid,
+            None
+        );
+        assert_eq!(
+            facts.iter().find(|f| f.sid == sibling).unwrap().pid,
+            Some(701)
+        );
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    /// A retained growth proof already owns its PID even when an older history receives
+    /// a newer idle-maintenance mtime. The entire facts/send-eligibility chain must agree.
+    #[test]
+    fn a_growth_proven_owner_reserves_its_process_from_newer_idle_history() {
+        let scratch = std::env::temp_dir().join(format!("cm-proof-owner-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let mut procs = parse_ps("700 claude\n900 codex\n");
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+        );
+        apply_env(&mut procs, "700 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/Users/x/.config/herdr/sessions/trial/herdr.sock\n");
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n60 1 herdr\n61 60 zsh\n700 61 claude\n",
+        );
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        for (sid, agent, modified, growing) in [
+            ("current", Agent::CLAUDE, 3, true),
+            ("older", Agent::CLAUDE, 4, false),
+            ("codex", Agent::CODEX, 5, true),
+        ] {
+            let mut row = growth_row("/w/harbor", growing);
+            row.agent = agent;
+            row.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(modified));
+            st.rows.insert(sid.into(), row);
+        }
+        idx.prove_by_growth(&mut st);
+        assert_eq!(
+            st.rows["current"].proved_pid.as_ref().map(|(pid, _)| *pid),
+            Some(700)
+        );
+        for growing in [true, false] {
+            st.rows.get_mut("current").unwrap().grew_at = growing.then(Instant::now);
+            let mut facts = Vec::new();
+            idx.assemble(&st, &mut facts);
+            assert_eq!(
+                facts.iter().find(|f| f.sid == "current").unwrap().pid,
+                Some(700)
+            );
+            assert_eq!(facts.iter().find(|f| f.sid == "older").unwrap().pid, None);
+            st.send_links = facts
+                .iter()
+                .map(|f| {
+                    (
+                        f.sid.clone(),
+                        SendLink {
+                            continues: Vec::new(),
+                            pid: f.pid,
+                            pane: f.pane.clone(),
+                            confirmed: f.confirmed,
+                            named: f.named,
+                        },
+                    )
+                })
+                .collect();
+            let snapshot = idx.assemble(&st, &mut Vec::new());
+            let current = snapshot["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|g| g["rows"].as_array().unwrap())
+                .find(|r| r["id"] == "current")
+                .unwrap();
+            assert_eq!(current["injectable"], true);
+            assert!(current.get("projActive").is_none());
+        }
+        st.procs.retain(|p| p.pid != 700);
+        idx.prove_by_growth(&mut st);
+        assert!(st.rows["current"].proved_pid.is_none());
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        assert_eq!(facts.iter().find(|f| f.sid == "current").unwrap().pid, None);
+        std::fs::remove_dir_all(&scratch).unwrap();
     }
 
     /// #s298: a row says `dialog` — question, permission or plan — only for a session the page can
@@ -6820,6 +9294,13 @@ n/Users/x/proj
             &mut procs,
             &format!("  100 claude {pane}\n  201 claude {pane}\n  202 claude {pane}\n"),
         );
+        // The coordinator in the pane; its workers below its Bash.
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n88 1 tmux\n90 88 zsh\n100 90 claude\n110 100 zsh\n201 110 claude\n\
+             120 100 zsh\n202 120 claude\n",
+        );
+        assert!(!procs[0].under_agent && procs[1].under_agent && procs[2].under_agent);
         apply_lsof(
             &mut procs,
             "p100\nfcwd\nn/w/knack\np201\nfcwd\nn/w/knack\np202\nfcwd\nn/w/knack\n",
@@ -6955,6 +9436,7 @@ n/Users/x/proj
                     (
                         s.to_string(),
                         SendLink {
+                            continues: Vec::new(),
                             pid,
                             ..Default::default()
                         },
@@ -6974,6 +9456,7 @@ n/Users/x/proj
         busy.insert(
             "other".into(),
             SendLink {
+                continues: Vec::new(),
                 pid: Some(300),
                 ..Default::default()
             },
@@ -7075,6 +9558,7 @@ n/Users/x/proj
             "  51668 claude TMUX=/private/tmp/tmux-502/agent-metrics-0b78ae,76226,0 TMUX_PANE=%0\n\
              9807 codex TMUX=/private/tmp/tmux-502/agent-metrics-0b78ae,76226,0 TMUX_PANE=%2\n",
         );
+        in_tmux(&mut procs);
         apply_lsof(
             &mut procs,
             "p51668\nfcwd\nn/Users/x/code/agent-metrics\np9807\nfcwd\nn/Users/x/code/agent-metrics\n",
@@ -7086,9 +9570,8 @@ n/Users/x/proj
             Agent::CLAUDE,
             Path::new("/n.jsonl"),
             cwd,
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
-            &Moves::default(),
         )
         .expect("the Claude session links");
         assert_eq!(claude.pid, 51668, "to the claude process, never codex");
@@ -7103,12 +9586,1142 @@ n/Users/x/proj
             Agent::CODEX,
             Path::new("/r.jsonl"),
             cwd,
-            true,
+            DirectoryMatch::Unclaimed(&HashSet::new()),
             &|_| true,
-            &Moves::default(),
         )
         .expect("the Codex session links");
         assert_eq!((codex.pid, codex.confirmed), (9807, true));
         assert_eq!(codex.terminal.target(), Some("%2"));
+    }
+
+    /// #s311: the owners map reads each process once, and must say exactly what asking every
+    /// process about every session said: an exact id, a prefix only when one session has it,
+    /// an open transcript under any spelling of its path, and nothing a non-agent names.
+    #[test]
+    fn explicit_owners_read_once_agree_with_asking_every_session() {
+        let one = "11111111-2222-4333-8444-555555555555";
+        let twin_a = "abcdef01-2222-4333-8444-000000000001";
+        let twin_b = "abcdef01-2222-4333-8444-000000000002";
+        let held = "99999999-2222-4333-8444-555555555555";
+        let mut procs = parse_ps(&format!(
+            "701 claude --resume {one}\n\
+             702 claude attach 11111111\n\
+             703 claude attach abcdef01\n\
+             704 claude --session-id 00000000-0000-4000-8000-000000000000\n\
+             705 codex\n\
+             706 claude\n\
+             707 vim {one}\n\
+             708 claude --resume {held}\n"
+        ));
+        // #s258: a verified record names the session the process runs now, over its argv.
+        procs[7].native_session = Identity::Verified(one.into());
+        apply_lsof(
+            &mut procs,
+            "p705\nfcwd\nn/w/harbor\nf12\nn/x//proj/./held.jsonl\np706\nfcwd\nn/w/harbor\nf9\nn/x/proj/other.jsonl\n",
+        );
+        let mut rows = HashMap::new();
+        for (sid, path) in [
+            (one, "/x/proj/one.jsonl"),
+            (twin_a, "/x/proj/a.jsonl"),
+            (twin_b, "/x/proj/b.jsonl"),
+            (held, "/x/proj/held.jsonl"),
+        ] {
+            let mut row = growth_row("/w/harbor", false);
+            row.path = PathBuf::from(path);
+            rows.insert(sid.to_string(), row);
+        }
+        let known: Vec<&str> = rows.keys().map(String::as_str).collect();
+        let prefix_unique = |pf: &str| known.iter().filter(|s| s.starts_with(pf)).count() == 1;
+        let mut asked: HashMap<u32, HashSet<String>> = HashMap::new();
+        for p in procs.iter().filter(|p| is_agent_exe(&p.exe_base, &p.argv)) {
+            for (sid, row) in &rows {
+                if process_names_session(p, sid, &prefix_unique)
+                    || (holds_transcript(p, &row.path) && p.native_session.permits(sid))
+                {
+                    asked.entry(p.pid).or_default().insert(sid.clone());
+                }
+            }
+        }
+        let owners = explicit_process_owners(&procs, &rows);
+        assert_eq!(owners, asked);
+        let of = |pid: u32| owners.get(&pid).map(|s| s.len()).unwrap_or(0);
+        assert!(owners[&701].contains(one) && owners[&702].contains(one));
+        assert_eq!(of(703), 0, "a prefix two sessions share names neither");
+        assert_eq!(of(704), 0, "an id no session has names nothing");
+        assert!(
+            owners[&705].contains(held),
+            "a held transcript, however its path is spelled"
+        );
+        assert_eq!(of(706), 0);
+        assert_eq!(of(707), 0, "only an agent process owns a session");
+        assert_eq!(
+            owners.get(&708),
+            Some(&HashSet::from([one.to_string()])),
+            "a verified record outranks a stale --resume"
+        );
+    }
+
+    /// The scan's process-matching cost, as #s311 measured it: 800 processes of which 60 are
+    /// agents, no records (an older client's path), the median of 15 passes of `prove_by_growth`
+    /// and `assemble` at 300, 1,000 and 4,000 sessions. Run with `cargo test --release -p
+    /// claude-monitor --lib scan_cost -- --ignored --nocapture`; it prints, and asserts nothing.
+    #[test]
+    #[ignore]
+    fn scan_cost_with_many_sessions_and_processes() {
+        let scratch = std::env::temp_dir().join(format!("cm-scan-cost-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let sid = |i: usize| format!("{i:08x}-2222-4333-8444-555555555555");
+        let mut ps = String::new();
+        let mut lsof = String::new();
+        let mut env = String::new();
+        for pid in 1000..1800 {
+            let agent = pid % 800 < 60;
+            if !agent {
+                ps.push_str(&format!("{pid} /bin/zsh -l\n"));
+                continue;
+            }
+            // A third name their session in argv, the rest are plain launches.
+            if pid % 3 == 0 {
+                ps.push_str(&format!("{pid} claude --resume {}\n", sid(pid % 300)));
+            } else {
+                ps.push_str(&format!("{pid} claude\n"));
+            }
+            lsof.push_str(&format!("p{pid}\nfcwd\nn/w/p{}\n", pid % 40));
+            env.push_str(&format!(
+                "{pid} claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%{pid}\n"
+            ));
+        }
+        for sessions in [300, 1000, 4000] {
+            let mut procs = parse_ps(&ps);
+            apply_lsof(&mut procs, &lsof);
+            apply_env(&mut procs, &env);
+            in_tmux(&mut procs);
+            let mut st = State {
+                procs,
+                ..State::default()
+            };
+            for i in 0..sessions {
+                let mut row = growth_row(&format!("/w/p{}", i % 100), false);
+                row.path = PathBuf::from(format!("/x/{}.jsonl", sid(i)));
+                row.tree_mtime = Some(SystemTime::now() - Duration::from_secs(86_400 + i as u64));
+                st.rows.insert(sid(i), row);
+            }
+            let mut times = Vec::new();
+            for _ in 0..15 {
+                let t = Instant::now();
+                idx.prove_by_growth(&mut st);
+                let mut facts = Vec::new();
+                idx.assemble(&st, &mut facts);
+                times.push(t.elapsed());
+                st.send_links = facts
+                    .iter()
+                    .map(|f| {
+                        (
+                            f.sid.clone(),
+                            SendLink {
+                                continues: Vec::new(),
+                                pid: f.pid,
+                                pane: f.pane.clone(),
+                                confirmed: f.confirmed,
+                                named: f.named,
+                            },
+                        )
+                    })
+                    .collect();
+            }
+            times.sort();
+            eprintln!("scan cost: {sessions} sessions, median {:?}", times[7]);
+        }
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// The review of #s258: an agent in a herdr pane starts an interactive `claude` from its Bash
+    /// through a pty wrapper. The child inherits the pane's `HERDR_PANE_ID` and socket, its record
+    /// names its own session, and herdr's record of the pane names the child too, so the check
+    /// before typing cannot tell them apart and the text would reach the outer agent's input.
+    /// Neither session is sent to through that pane, in the same directory or another one.
+    #[test]
+    fn a_herdr_pane_shared_with_a_child_agent_takes_no_send() {
+        let scratch = std::env::temp_dir().join(format!("cm-shared-pane-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let outer = "11111111-2222-4333-8444-555555555555";
+        let child = "22222222-2222-4333-8444-555555555555";
+        for child_cwd in ["/w/harbor", "/w/elsewhere"] {
+            let mut procs = parse_ps("700 claude\n900 claude\n");
+            apply_lsof(
+                &mut procs,
+                &format!("p700\nfcwd\nn/w/harbor\np900\nfcwd\nn{child_cwd}\n"),
+            );
+            apply_env(
+                &mut procs,
+                "700 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n\
+                 900 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n",
+            );
+            apply_nesting(
+                &mut procs,
+                "1 0 launchd\n60 1 herdr\n61 60 zsh\n700 61 claude\n800 700 script\n900 800 claude\n",
+            );
+            assert!(!procs[0].under_agent && procs[1].under_agent);
+            procs[0].native_session = Identity::Verified(outer.into());
+            procs[1].native_session = Identity::Verified(child.into());
+            let mut st = State {
+                procs,
+                ..State::default()
+            };
+            st.rows.insert(outer.into(), growth_row("/w/harbor", false));
+            st.rows.insert(child.into(), growth_row(child_cwd, false));
+            idx.prove_by_growth(&mut st);
+            let mut facts = Vec::new();
+            idx.assemble(&st, &mut facts);
+            st.send_links = send_links_of(&facts);
+            let snapshot = idx.assemble(&st, &mut Vec::new());
+            for (sid, pid) in [(outer, 700), (child, 900)] {
+                assert_eq!(st.send_links[sid].pid, Some(pid));
+                assert!(
+                    st.send_links[sid].confirmed,
+                    "each record names its own session"
+                );
+                assert_eq!(
+                    pane_send_target(&st, sid),
+                    Err(SendRefusal::PaneShared),
+                    "{sid} with the child in {child_cwd}"
+                );
+                assert!(registry_row(&snapshot, sid).get("injectable").is_none());
+            }
+            // The child gone, the pane is the outer agent's alone again.
+            st.procs.retain(|p| p.pid != 900);
+            st.send_links.remove(child);
+            assert!(matches!(
+                pane_send_target(&st, outer),
+                Ok((700, PaneAddr::Herdr { .. }))
+            ));
+        }
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// The review of #s258: a `codex exec` (or a Codex MCP server) the outer `claude`'s Bash starts
+    /// inherits the herdr pane, but herdr's hook is Claude's alone, so it never rewrites herdr's
+    /// record of the pane: the outer session keeps its send and its compose box while it runs.
+    #[test]
+    fn a_codex_child_in_a_herdr_pane_leaves_the_outer_send() {
+        let scratch = std::env::temp_dir().join(format!("cm-codex-child-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let outer = "11111111-2222-4333-8444-555555555555";
+        let mut procs = parse_ps("700 claude\n900 codex exec --json fix-it\n");
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+        );
+        apply_env(
+            &mut procs,
+            "700 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n\
+             900 codex HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n60 1 herdr\n61 60 zsh\n700 61 claude\n800 700 zsh\n900 800 codex\n",
+        );
+        assert!(!procs[0].under_agent && procs[1].under_agent);
+        assert_eq!(procs[1].tty, None, "a Bash tool's child has no terminal");
+        procs[0].native_session = Identity::Verified(outer.into());
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        st.rows.insert(outer.into(), growth_row("/w/harbor", false));
+        idx.prove_by_growth(&mut st);
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        st.send_links = send_links_of(&facts);
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert!(matches!(
+            pane_send_target(&st, outer),
+            Ok((700, PaneAddr::Herdr { .. }))
+        ));
+        assert_eq!(registry_row(&snapshot, outer)["injectable"], true);
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// #s332: a coordinator `claude` in a herdr pane whose Bash starts `claude -p` workers (#s53).
+    /// A worker is a Claude process, so the `serves` leg would count it although it runs below the
+    /// coordinator; it is passed over as a one-shot, which reads no pane, and the coordinator keeps
+    /// its send and its compose box while the workers run.
+    #[test]
+    fn a_claude_one_shot_worker_in_a_herdr_pane_leaves_the_coordinator_its_send() {
+        let scratch =
+            std::env::temp_dir().join(format!("cm-oneshot-worker-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let outer = "11111111-2222-4333-8444-555555555555";
+        let mut procs = parse_ps("700 claude\n900 claude -p fix-it\n");
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+        );
+        apply_env(
+            &mut procs,
+            "700 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n\
+             900 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n60 1 herdr\n61 60 zsh\n700 61 claude\n800 700 zsh\n900 800 claude\n",
+        );
+        assert!(!procs[0].under_agent && procs[1].under_agent);
+        assert!(one_shot(&procs[1]) && serves(&procs[1], Agent::CLAUDE));
+        procs[0].native_session = Identity::Verified(outer.into());
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        st.rows.insert(outer.into(), growth_row("/w/harbor", false));
+        idx.prove_by_growth(&mut st);
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        st.send_links = send_links_of(&facts);
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert!(matches!(
+            pane_send_target(&st, outer),
+            Ok((700, PaneAddr::Herdr { .. }))
+        ));
+        assert_eq!(registry_row(&snapshot, outer)["injectable"], true);
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// The review of #s258: the `under_agent` half of `pane_shared` on its own. An outer
+    /// one-shot `claude -p` in a herdr pane starts an interactive `claude` through a pty wrapper; a
+    /// one-shot reads no pane and so is no sibling, so only the child's running below another agent
+    /// refuses its session, whose pane input reaches the outer agent's terminal.
+    #[test]
+    fn a_claude_below_a_one_shot_in_a_herdr_pane_takes_no_send() {
+        let scratch = std::env::temp_dir().join(format!("cm-under-oneshot-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let child = "22222222-2222-4333-8444-555555555555";
+        let mut procs = parse_ps("700 claude -p fix-it\n900 claude\n");
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+        );
+        apply_env(
+            &mut procs,
+            "700 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n\
+             900 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n60 1 herdr\n61 60 zsh\n700 61 claude\n800 700 script\n900 800 claude\n",
+        );
+        assert!(one_shot(&procs[0]));
+        assert!(!procs[0].under_agent && procs[1].under_agent);
+        procs[1].native_session = Identity::Verified(child.into());
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        st.rows.insert(child.into(), growth_row("/w/harbor", false));
+        idx.prove_by_growth(&mut st);
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        st.send_links = send_links_of(&facts);
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert_eq!(st.send_links[child].pid, Some(900));
+        assert!(st.send_links[child].confirmed);
+        assert_eq!(pane_send_target(&st, child), Err(SendRefusal::PaneShared));
+        assert!(registry_row(&snapshot, child).get("injectable").is_none());
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// #s318: an agent in a TMUX pane starts an interactive `claude` (or `codex`) from its Bash
+    /// through a pty wrapper, in another directory. The child inherits `TMUX_PANE` and, the lone
+    /// agent process of its directory, is linked to its session, confirmed; but the pane's input
+    /// goes to its starter, and tmux has no check before typing, so the child's session takes no
+    /// send. The starter keeps its own: tmux keeps no record of the pane a child could rewrite.
+    #[test]
+    fn a_tmux_child_agent_in_another_directory_takes_no_send() {
+        for child_agent in [Agent::CLAUDE, Agent::CODEX] {
+            let exe = if child_agent == Agent::CLAUDE {
+                "claude"
+            } else {
+                "codex"
+            };
+            let scratch =
+                std::env::temp_dir().join(format!("cm-tmux-child-{exe}-{}", std::process::id()));
+            std::fs::create_dir_all(&scratch).unwrap();
+            let _env = StateEnv::set(scratch.join("state"));
+            let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+            let outer = "11111111-2222-4333-8444-555555555555";
+            let child = "22222222-2222-4333-8444-555555555555";
+            let mut procs = parse_ps(&format!("700 claude\n900 {exe}\n"));
+            apply_lsof(&mut procs, "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/skua\n");
+            apply_env(
+                &mut procs,
+                &format!(
+                    "700 claude TMUX=/fixture/tmux.sock,50,0 TMUX_PANE=%3\n\
+                     900 {exe} TMUX=/fixture/tmux.sock,50,0 TMUX_PANE=%3\n"
+                ),
+            );
+            assert!(
+                needs_parent_chain(&procs),
+                "a tmux marker asks for the parents"
+            );
+            apply_nesting(
+                &mut procs,
+                &format!(
+                    "1 0 launchd\n50 1 tmux\n61 50 zsh\n700 61 claude\n750 700 zsh\n\
+                     800 750 script\n900 800 {exe}\n"
+                ),
+            );
+            assert!(!procs[0].under_agent && procs[1].under_agent, "{exe}");
+            let mut st = State {
+                procs,
+                ..State::default()
+            };
+            // Each the newest of its directory, so the directory rule pairs each lone process.
+            let mut row = growth_row("/w/harbor", false);
+            row.tree_mtime = Some(SystemTime::now());
+            st.rows.insert(outer.into(), row);
+            let mut row = growth_row("/w/skua", false);
+            row.agent = child_agent;
+            row.tree_mtime = Some(SystemTime::now());
+            st.rows.insert(child.into(), row);
+            idx.prove_by_growth(&mut st);
+            let mut facts = Vec::new();
+            idx.assemble(&st, &mut facts);
+            st.send_links = send_links_of(&facts);
+            let snapshot = idx.assemble(&st, &mut Vec::new());
+            assert_eq!(st.send_links[child].pid, Some(900), "{exe}");
+            assert!(st.send_links[child].confirmed, "{exe}");
+            assert_eq!(registry_row(&snapshot, child)["target"], "%3", "{exe}");
+            assert_eq!(
+                pane_send_target(&st, child),
+                Err(SendRefusal::PaneShared),
+                "{exe}"
+            );
+            assert!(
+                registry_row(&snapshot, child).get("injectable").is_none(),
+                "{exe}"
+            );
+            assert!(
+                matches!(
+                    pane_send_target(&st, outer),
+                    Ok((700, PaneAddr::Tmux { .. }))
+                ),
+                "{exe}"
+            );
+            assert_eq!(registry_row(&snapshot, outer)["injectable"], true, "{exe}");
+            std::fs::remove_dir_all(scratch).unwrap();
+        }
+        // The walk stops at the pane's multiplexer, here known by the pid `TMUX` names alone: an
+        // agent that started the tmux server itself (one run in the foreground) is above the
+        // pane, not between it and the agent in it.
+        let mut procs = parse_ps("600 claude\n700 claude\n");
+        apply_env(
+            &mut procs,
+            "700 claude TMUX=/fixture/tmux.sock,50,0 TMUX_PANE=%1\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n600 1 claude\n50 600 tmux-next\n61 50 zsh\n700 61 claude\n",
+        );
+        assert!(!procs[1].under_agent);
+        assert_eq!(procs[1].inner_mux, Some(Mux::Tmux));
+    }
+
+    /// #s333: a `claude` in a tmux pane is suspended with Ctrl-Z and the pane's shell runs another
+    /// agent in the foreground — a `codex` in the same directory, or a `claude` in another. The
+    /// one-live-session rule counts neither (another agent; another directory), and tmux has no
+    /// check before typing, so the suspended session's send would type into the foreground agent.
+    /// An agent below no other in the same pane counts as its sibling, and the session takes none.
+    #[test]
+    fn a_tmux_pane_with_a_suspended_session_and_a_foreground_agent_takes_no_send() {
+        for (n, (exe, dir)) in [
+            ("codex", "/w/harbor"),
+            ("claude", "/w/skua"),
+            ("claude -p fix-it", "/w/skua"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let scratch =
+                std::env::temp_dir().join(format!("cm-tmux-suspended-{n}-{}", std::process::id()));
+            std::fs::create_dir_all(&scratch).unwrap();
+            let _env = StateEnv::set(scratch.join("state"));
+            let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+            let s1 = "11111111-2222-4333-8444-555555555555";
+            let mut procs = parse_ps(&format!("700 claude\n900 {exe}\n"));
+            apply_lsof(
+                &mut procs,
+                &format!("p700\nfcwd\nn/w/harbor\np900\nfcwd\nn{dir}\n"),
+            );
+            let pane = "TMUX=/fixture/tmux.sock,50,0 TMUX_PANE=%3";
+            apply_env(
+                &mut procs,
+                &format!("700 claude {pane}\n900 {exe} {pane}\n"),
+            );
+            apply_nesting(
+                &mut procs,
+                &format!("1 0 launchd\n50 1 tmux\n61 50 zsh\n700 61 claude\n900 61 {exe}\n"),
+            );
+            let mut st = State {
+                procs,
+                ..State::default()
+            };
+            let mut row = growth_row("/w/harbor", false);
+            row.tree_mtime = Some(SystemTime::now());
+            st.rows.insert(s1.into(), row);
+            idx.prove_by_growth(&mut st);
+            let mut facts = Vec::new();
+            idx.assemble(&st, &mut facts);
+            st.send_links = send_links_of(&facts);
+            let snapshot = idx.assemble(&st, &mut Vec::new());
+            assert_eq!(st.send_links[s1].pid, Some(700), "{exe}");
+            assert!(st.send_links[s1].confirmed, "{exe}");
+            assert_eq!(registry_row(&snapshot, s1)["target"], "%3", "{exe}");
+            assert_eq!(
+                pane_send_target(&st, s1),
+                Err(SendRefusal::PaneShared),
+                "{exe}"
+            );
+            assert!(
+                registry_row(&snapshot, s1).get("injectable").is_none(),
+                "{exe}"
+            );
+            // The foreground agent gone, the pane is the session's alone again.
+            st.procs.retain(|p| p.pid != 900);
+            assert!(
+                matches!(pane_send_target(&st, s1), Ok((700, PaneAddr::Tmux { .. }))),
+                "{exe}"
+            );
+            std::fs::remove_dir_all(scratch).unwrap();
+        }
+        // The same pane id on another tmux server is another pane: no sibling.
+        let mut procs = parse_ps("700 claude\n900 codex\n");
+        apply_env(
+            &mut procs,
+            "700 claude TMUX=/fixture/harbor.sock,50,0 TMUX_PANE=%0\n\
+             900 codex TMUX=/fixture/skua.sock,51,0 TMUX_PANE=%0\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n50 1 tmux\n61 50 zsh\n700 61 claude\n51 1 tmux\n62 51 zsh\n\
+             900 62 codex\n",
+        );
+        let addr = Terminal::of(&procs[0]).pane_addr().unwrap();
+        assert!(!pane_shared(&procs, 700, &addr));
+    }
+
+    /// #s334: a tmux marker names a pane only when tmux is the nearest multiplexer up the chain.
+    /// Claude Code's background shape: the attach client sits in pane %3, while the session's
+    /// engine (`--bg-pty-host`) runs under `claude daemon run`, which inherits the client's
+    /// `TMUX_PANE`; a `claude` the session's Bash starts through `script` in another directory
+    /// carries it too, with only helpers between it and launchd, so `under_agent` cannot refuse
+    /// it (#s318) and the marker must not be believed: no send, which would type into the client's
+    /// pane. The client keeps its pane. A marker inherited outside tmux (an editor's terminal
+    /// launched from a pane) and one whose chain could not be read (an empty table) name no pane.
+    #[test]
+    fn a_tmux_marker_names_a_pane_only_with_tmux_nearest() {
+        let scratch = std::env::temp_dir().join(format!("cm-tmux-nearest-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let outer = "11111111-2222-4333-8444-555555555555";
+        let child = "22222222-2222-4333-8444-555555555555";
+        let mut procs = parse_ps(&format!(
+            "800 claude attach 11111111\n300 claude daemon run\n\
+             310 claude --bg-pty-host -- claude --session-id {outer}\n900 claude\n"
+        ));
+        apply_tty(&mut procs, "800 ttys003\n300 ??\n310 ??\n900 ttys030\n", 0);
+        apply_lsof(
+            &mut procs,
+            "p800\nfcwd\nn/w/harbor\np310\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/skua\n",
+        );
+        let pane = "TMUX=/fixture/tmux.sock,50,0 TMUX_PANE=%3";
+        apply_env(
+            &mut procs,
+            &format!(
+                "800 claude {pane}\n300 claude {pane}\n310 claude {pane}\n900 claude {pane}\n"
+            ),
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n50 1 tmux\n61 50 zsh\n800 61 claude\n300 1 claude\n310 300 claude\n\
+             320 310 zsh\n330 320 script\n900 330 claude\n",
+        );
+        assert!(!procs[3].under_agent, "only helpers above it");
+        assert_eq!(Terminal::of(&procs[0]).kind(), "tmux");
+        assert_eq!(
+            Terminal::of(&procs[2]).kind(),
+            "detached",
+            "no terminal of its own"
+        );
+        assert_eq!(Terminal::of(&procs[3]).kind(), "tty");
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        let mut row = growth_row("/w/skua", false);
+        row.tree_mtime = Some(SystemTime::now());
+        st.rows.insert(child.into(), row);
+        let mut row = growth_row("/w/harbor", false);
+        row.tree_mtime = Some(SystemTime::now());
+        st.rows.insert(outer.into(), row);
+        idx.prove_by_growth(&mut st);
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        st.send_links = send_links_of(&facts);
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert_eq!(st.send_links[child].pid, Some(900));
+        assert!(st.send_links[child].confirmed);
+        assert_eq!(registry_row(&snapshot, child)["term"], "tty");
+        assert!(registry_row(&snapshot, child).get("injectable").is_none());
+        assert_eq!(pane_send_target(&st, child), Err(SendRefusal::NotInTmux));
+        // The session keeps its client's pane: the child, carrying %3 below helpers only, is in no
+        // pane, so it is no sibling there (#s333).
+        assert_eq!(st.send_links[outer].pid, Some(800));
+        assert!(matches!(
+            pane_send_target(&st, outer),
+            Ok((800, PaneAddr::Tmux { .. }))
+        ));
+        assert_eq!(registry_row(&snapshot, outer)["injectable"], true);
+        std::fs::remove_dir_all(scratch).unwrap();
+
+        // Read with tmux nearest, a process is in the pane; read again with no table (its `ps`
+        // over the bound), it is in none: the last answer does not stand.
+        let mut procs = parse_ps("700 claude\n");
+        apply_tty(&mut procs, "700 ttys040\n", 0);
+        apply_env(
+            &mut procs,
+            "700 claude TMUX=/fixture/tmux.sock,50,0 TMUX_PANE=%3\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n50 1 tmux\n61 50 zsh\n700 61 claude\n",
+        );
+        assert_eq!(Terminal::of(&procs[0]).kind(), "tmux");
+        apply_nesting(&mut procs, "");
+        assert_eq!(Terminal::of(&procs[0]).kind(), "tty");
+        // An editor's terminal launched from a pane: no tmux above it.
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n40 1 Electron\n41 40 Code Helper\n42 41 zsh\n700 42 claude\n",
+        );
+        assert_eq!(Terminal::of(&procs[0]).kind(), "tty");
+        // screen inside a tmux pane is screen's, which is not driven.
+        let mut procs = parse_ps("700 claude\n");
+        apply_env(
+            &mut procs,
+            "700 claude TMUX=/fixture/tmux.sock,50,0 TMUX_PANE=%3 STY=62.work\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n50 1 tmux\n61 50 zsh\n62 61 screen\n63 62 zsh\n700 63 claude\n",
+        );
+        assert_eq!(Terminal::of(&procs[0]).kind(), "screen");
+        // zellij inside a tmux pane leaves the marker but is nearer: no pane we drive.
+        let mut procs = parse_ps("700 claude\n");
+        apply_tty(&mut procs, "700 ttys041\n", 0);
+        apply_env(
+            &mut procs,
+            "700 claude TMUX=/fixture/tmux.sock,50,0 TMUX_PANE=%3\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n50 1 tmux\n61 50 zsh\n62 61 zellij\n63 62 zsh\n700 63 claude\n",
+        );
+        assert_eq!(Terminal::of(&procs[0]).kind(), "tty");
+        // A marker with no `TMUX` beside it: the server is known by its name, Linux's included.
+        let mut procs = parse_ps("700 claude\n");
+        apply_env(&mut procs, "700 claude TMUX_PANE=%3\n");
+        apply_nesting(
+            &mut procs,
+            "1 0 systemd\n50 1 tmux: server\n61 50 bash\n700 61 claude\n",
+        );
+        assert_eq!(Terminal::of(&procs[0]).kind(), "tmux");
+    }
+
+    /// #s335: a `claude` in a tmux pane suspended with Ctrl-Z (`T`) or put in the background (no
+    /// `+`) leaves the pane to its shell, which would run a send as a command. Its session is not
+    /// offered the send, and a send is refused; in the foreground (`S+`) it sends, and a state the
+    /// scan did not read refuses nothing here (the send reads it again before typing).
+    #[test]
+    fn a_tmux_session_whose_agent_left_the_foreground_takes_no_send() {
+        let scratch = std::env::temp_dir().join(format!("cm-tmux-fg-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let s1 = "11111111-2222-4333-8444-555555555555";
+        for (stat, sends) in [
+            (Some("S+"), true),
+            (Some("T"), false),
+            (Some("S"), false),
+            (Some("Ss+"), true),
+            (None, true),
+        ] {
+            let mut procs = parse_ps("700 claude\n");
+            apply_lsof(&mut procs, "p700\nfcwd\nn/w/harbor\n");
+            apply_env(
+                &mut procs,
+                "700 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%3\n",
+            );
+            apply_nesting(
+                &mut procs,
+                "1 0 launchd\n88 1 tmux\n61 88 zsh\n700 61 claude\n",
+            );
+            let line = match stat {
+                Some(stat) => format!("700 ttys022 01:00 {stat}\n"),
+                None => "700 ttys022 01:00\n".to_string(),
+            };
+            apply_tty(&mut procs, &line, 3600);
+            procs[0].native_session = Identity::Verified(s1.into());
+            let mut st = State {
+                procs,
+                ..State::default()
+            };
+            st.rows.insert(s1.into(), growth_row("/w/harbor", false));
+            idx.prove_by_growth(&mut st);
+            let mut facts = Vec::new();
+            idx.assemble(&st, &mut facts);
+            st.send_links = send_links_of(&facts);
+            let snapshot = idx.assemble(&st, &mut Vec::new());
+            assert_eq!(st.send_links[s1].pid, Some(700), "{stat:?}");
+            assert!(st.send_links[s1].confirmed, "{stat:?}");
+            let injectable = registry_row(&snapshot, s1).get("injectable").is_some();
+            if sends {
+                assert!(
+                    matches!(pane_send_target(&st, s1), Ok((700, PaneAddr::Tmux { .. }))),
+                    "{stat:?}"
+                );
+                assert!(injectable, "{stat:?}");
+            } else {
+                assert_eq!(
+                    pane_send_target(&st, s1),
+                    Err(SendRefusal::PaneNotForeground),
+                    "{stat:?}"
+                );
+                assert!(!injectable, "{stat:?}");
+            }
+        }
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// #s337: a `claude` the person runs through a pty wrapper in a tmux pane (`script -q /dev/null
+    /// claude`, measured: the wrapper's child holds a pty of its own, `Ss+`) is not offered the
+    /// send, which the check before typing refuses (the wrapper or an editor between them would
+    /// take the text). A plain `claude` under the pane's shell, and one that is the pane's own
+    /// command, are; and with no ttys read nothing is refused.
+    #[test]
+    fn a_tmux_session_on_another_terminal_than_its_pane_takes_no_send() {
+        let scratch = std::env::temp_dir().join(format!("cm-tmux-tty-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let s1 = "11111111-2222-4333-8444-555555555555";
+        for (table, tty, refusal) in [
+            (
+                "1 0 ?? launchd\n88 1 ?? tmux\n61 88 ttys022 zsh\n650 61 ttys022 script\n700 650 ttys023 claude\n",
+                "ttys023",
+                Some(SendRefusal::PaneOtherTerminal),
+            ),
+            (
+                "1 0 ?? launchd\n88 1 ?? tmux\n61 88 ttys022 zsh\n700 61 ttys022 claude\n",
+                "ttys022",
+                None,
+            ),
+            ("1 0 ?? launchd\n88 1 ?? tmux\n700 88 ttys022 claude\n", "ttys022", None),
+            // The review of f4d9790d: the pane shell's tty counts, not the parent's (a claude
+            // started from a shell a wrapper runs), and Linux's two-word `tmux: server`.
+            (
+                "1 0 ?? launchd\n88 1 ?? tmux\n61 88 ttys022 zsh\n650 61 ttys022 script\n660 650 ttys023 zsh\n700 660 ttys023 claude\n",
+                "ttys023",
+                Some(SendRefusal::PaneOtherTerminal),
+            ),
+            (
+                "1 0 ? systemd\n88 1 ? tmux: server\n61 88 pts/3 bash\n700 61 pts/4 claude\n",
+                "pts/4",
+                Some(SendRefusal::PaneOtherTerminal),
+            ),
+            (
+                "1 0 ? systemd\n88 1 ? tmux: server\n61 88 pts/3 bash\n700 61 pts/3 claude\n",
+                "pts/3",
+                None,
+            ),
+            (
+                "1 0 ?? launchd\n88 1 ?? tmux\n61 88 ?? zsh\n650 61 ?? script\n700 650 ttys023 claude\n",
+                "ttys023",
+                None,
+            ),
+        ] {
+            let mut procs = parse_ps("700 claude\n");
+            apply_lsof(&mut procs, "p700\nfcwd\nn/w/harbor\n");
+            apply_env(
+                &mut procs,
+                "700 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%3\n",
+            );
+            apply_nesting_ttys(&mut procs, table);
+            apply_tty(&mut procs, &format!("700 {tty} 01:00 Ss+\n"), 3600);
+            procs[0].native_session = Identity::Verified(s1.into());
+            let mut st = State {
+                procs,
+                ..State::default()
+            };
+            st.rows.insert(s1.into(), growth_row("/w/harbor", false));
+            idx.prove_by_growth(&mut st);
+            let mut facts = Vec::new();
+            idx.assemble(&st, &mut facts);
+            st.send_links = send_links_of(&facts);
+            let snapshot = idx.assemble(&st, &mut Vec::new());
+            assert_eq!(st.send_links[s1].pid, Some(700), "{table}");
+            let injectable = registry_row(&snapshot, s1).get("injectable").is_some();
+            match refusal {
+                Some(refusal) => {
+                    assert_eq!(pane_send_target(&st, s1), Err(refusal), "{table}");
+                    assert!(!injectable, "{table}");
+                }
+                None => {
+                    assert!(
+                        matches!(pane_send_target(&st, s1), Ok((700, PaneAddr::Tmux { .. }))),
+                        "{table}"
+                    );
+                    assert!(injectable, "{table}");
+                }
+            }
+        }
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// #s340: a desktop side session's row names its starter (`sideOf`) when the starter is a row
+    /// here, so the page nests it; never when the starter is not a row, and never when the two are
+    /// one fork family already (a forked side question draws under its family, once).
+    #[test]
+    fn a_desktop_side_session_row_names_its_starter() {
+        let scratch = std::env::temp_dir().join(format!("cm-side-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let (starter, side, fork) = (
+            "11111111-2222-4333-8444-555555555555",
+            "22222222-2222-4333-8444-555555555555",
+            "33333333-2222-4333-8444-555555555555",
+        );
+        let mut st = State::default();
+        for sid in [starter, side, fork] {
+            st.rows.insert(sid.into(), growth_row("/w/harbor", false));
+        }
+        st.rows.get_mut(fork).unwrap().fork_from = Some(starter.into());
+        st.side_of = HashMap::from([
+            (side.to_string(), starter.to_string()),
+            (fork.to_string(), starter.to_string()),
+            (
+                "44444444-2222-4333-8444-555555555555".to_string(),
+                starter.to_string(),
+            ),
+        ]);
+        st.rows.insert(
+            "55555555-2222-4333-8444-555555555555".into(),
+            growth_row("/w/harbor", false),
+        );
+        st.side_of.insert(
+            "55555555-2222-4333-8444-555555555555".into(),
+            "66666666-2222-4333-8444-555555555555".into(),
+        );
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert_eq!(registry_row(&snapshot, side)["sideOf"], starter);
+        assert!(registry_row(&snapshot, starter).get("sideOf").is_none());
+        assert!(
+            registry_row(&snapshot, fork).get("sideOf").is_none(),
+            "a fork of its starter draws in its family"
+        );
+        assert!(
+            registry_row(&snapshot, "55555555-2222-4333-8444-555555555555")
+                .get("sideOf")
+                .is_none(),
+            "a starter that is not a row here"
+        );
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// The review of #s258: a `claude` in a herdr pane is suspended with Ctrl-Z and the pane's shell
+    /// runs `codex` in the foreground. herdr's hook is Claude's alone, so herdr's record of the pane
+    /// still names the suspended session and the check before typing would pass, while the text
+    /// reaches the Codex. A Codex running below no other agent counts as the pane's sibling.
+    #[test]
+    fn a_foreground_codex_beside_a_suspended_claude_takes_its_send() {
+        let scratch = std::env::temp_dir().join(format!("cm-fg-codex-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let s1 = "11111111-2222-4333-8444-555555555555";
+        let mut procs = parse_ps("700 claude\n900 codex\n");
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+        );
+        apply_env(
+            &mut procs,
+            "700 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n\
+             900 codex HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n",
+        );
+        apply_nesting(
+            &mut procs,
+            "1 0 launchd\n60 1 herdr\n61 60 zsh\n700 61 claude\n900 61 codex\n",
+        );
+        assert!(!procs[0].under_agent && !procs[1].under_agent);
+        procs[0].native_session = Identity::Verified(s1.into());
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        st.rows.insert(s1.into(), growth_row("/w/harbor", false));
+        idx.prove_by_growth(&mut st);
+        let mut facts = Vec::new();
+        idx.assemble(&st, &mut facts);
+        st.send_links = send_links_of(&facts);
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        assert_eq!(st.send_links[s1].pid, Some(700));
+        assert_eq!(pane_send_target(&st, s1), Err(SendRefusal::PaneShared));
+        assert!(registry_row(&snapshot, s1).get("injectable").is_none());
+        // The Codex gone, the pane is the Claude's alone again.
+        st.procs.retain(|p| p.pid != 900);
+        assert!(matches!(
+            pane_send_target(&st, s1),
+            Ok((700, PaneAddr::Herdr { .. }))
+        ));
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    /// The review of #s258: the same pane with the foreground Codex started as `codex -p work`,
+    /// and as a `codex exec` or a `claude -p` the pane's own shell runs. Codex's `-p` is
+    /// `--profile`, not a one-shot (#s326 reads it so); the other two are one-shots, and they
+    /// still count, since only a one-shot below another agent is passed over (#s333 review): what
+    /// is typed waits for the pane's shell. Each is the pane's sibling, and the suspended Claude's
+    /// session takes no send.
+    #[test]
+    fn a_foreground_profile_codex_beside_a_suspended_claude_takes_no_send() {
+        for (argv, headless) in [
+            ("codex -p work", false),
+            ("codex exec fix", true),
+            ("claude -p fix-it", true),
+        ] {
+            let scratch =
+                std::env::temp_dir().join(format!("cm-fg-codex-p-{}", std::process::id()));
+            std::fs::create_dir_all(&scratch).unwrap();
+            let _env = StateEnv::set(scratch.join("state"));
+            let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+            let s1 = "11111111-2222-4333-8444-555555555555";
+            let mut procs = parse_ps(&format!("700 claude\n900 {argv}\n"));
+            apply_lsof(
+                &mut procs,
+                "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+            );
+            apply_env(
+                &mut procs,
+                &format!(
+                    "700 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n\
+                     900 {argv} HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n"
+                ),
+            );
+            apply_nesting(
+                &mut procs,
+                "1 0 launchd\n60 1 herdr\n61 60 zsh\n700 61 claude\n900 61 codex\n",
+            );
+            assert_eq!(one_shot(&procs[1]), headless, "{argv}");
+            procs[0].native_session = Identity::Verified(s1.into());
+            let mut st = State {
+                procs,
+                ..State::default()
+            };
+            st.rows.insert(s1.into(), growth_row("/w/harbor", false));
+            idx.prove_by_growth(&mut st);
+            let mut facts = Vec::new();
+            idx.assemble(&st, &mut facts);
+            st.send_links = send_links_of(&facts);
+            let snapshot = idx.assemble(&st, &mut Vec::new());
+            assert_eq!(st.send_links[s1].pid, Some(700), "{argv}");
+            assert_eq!(
+                pane_send_target(&st, s1),
+                Err(SendRefusal::PaneShared),
+                "{argv}"
+            );
+            assert!(
+                registry_row(&snapshot, s1).get("injectable").is_none(),
+                "{argv}"
+            );
+            std::fs::remove_dir_all(scratch).unwrap();
+        }
+    }
+
+    /// `ProcTable::holding` is `holds_transcript` looked up by path: every agent process holding a
+    /// transcript, however its path is spelled, in process order.
+    #[test]
+    fn proc_table_holding_matches_holds_transcript() {
+        let mut procs = parse_ps("701 claude\n702 codex\n703 claude\n704 vim\n");
+        apply_lsof(
+            &mut procs,
+            "p701\nf9\nn/x/proj/a.jsonl\np702\nf9\nn/x//proj/./a.jsonl\nf10\nn/x/proj/b.jsonl\n\
+             p703\nf9\nn/x/proj/b.jsonl\np704\nf9\nn/x/proj/a.jsonl\n",
+        );
+        let table = ProcTable::new(&procs);
+        for path in ["/x/proj/a.jsonl", "/x/proj/b.jsonl", "/x/proj/c.jsonl"] {
+            let path = Path::new(path);
+            let looked_up: Vec<u32> = table.holding(path).map(|p| p.pid).collect();
+            let asked: Vec<u32> = procs
+                .iter()
+                .filter(|p| is_agent_exe(&p.exe_base, &p.argv) && holds_transcript(p, path))
+                .map(|p| p.pid)
+                .collect();
+            assert_eq!(looked_up, asked, "{}", path.display());
+        }
+        assert_eq!(
+            table.holding(Path::new("/x/proj/a.jsonl")).count(),
+            2,
+            "a path spelled two ways is one transcript; vim holds none"
+        );
+    }
+
+    /// The review of #s258: a growth fence is recorded against the session the argv names even
+    /// while a verified record names another, because a later scan may read no record (a `ps` over
+    /// its bound, a file caught mid-write twice) and fall back to that argv. `claude --resume S1`
+    /// `/clear`s to S2 and S2 grows with the record readable; then the record cannot be read and S2
+    /// has been idle past the linger, so nothing fences afresh: S1 must still be unconfirmed and
+    /// unsendable. Once the record names S1 again (a `/resume` back), the fence gives way to it.
+    #[test]
+    fn a_fence_recorded_beside_a_record_holds_once_the_record_is_lost() {
+        let scratch = std::env::temp_dir().join(format!("cm-lost-record-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let s1 = "11111111-2222-4333-8444-555555555555";
+        let s2 = "22222222-2222-4333-8444-555555555555";
+        let cwd = "/w/harbor";
+        for env in [
+            "701 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%3\n",
+            "701 claude HERDR_PANE_ID=w1:p6 HERDR_SOCKET_PATH=/fixture/herdr.sock\n",
+        ] {
+            let mut procs = parse_ps(&format!("701 claude --resume {s1}\n"));
+            apply_lsof(&mut procs, "p701\nfcwd\nn/w/harbor\n");
+            apply_env(&mut procs, env);
+            if procs[0].pane.is_some() {
+                in_tmux(&mut procs);
+            } else {
+                apply_nesting(&mut procs, "1 0 launchd\n60 1 herdr\n701 60 claude\n");
+            }
+            procs[0].native_session = Identity::Verified(s2.into());
+            let mut st = State {
+                procs,
+                ..State::default()
+            };
+            st.rows.insert(s1.into(), growth_row(cwd, false));
+            st.rows.insert(s2.into(), growth_row(cwd, true));
+            let scan = |st: &mut State| {
+                idx.prove_by_growth(st);
+                let mut facts = Vec::new();
+                idx.assemble(st, &mut facts);
+                st.send_links = send_links_of(&facts);
+            };
+            // Round 1: the record names S2, which grows.
+            scan(&mut st);
+            assert_eq!(st.send_links[s2].pid, Some(701));
+            assert!(st.send_links[s2].confirmed);
+            assert_eq!(
+                st.send_links[s1].pid, None,
+                "the record answers for the process"
+            );
+
+            // Round 2: no record, and S2 quiet for longer than the linger.
+            st.procs[0].native_session = Identity::Missing;
+            st.rows.get_mut(s2).unwrap().grew_at = Some(
+                Instant::now()
+                    .checked_sub(GROW_LINGER + Duration::from_secs(1))
+                    .expect("the clock reaches back past the linger"),
+            );
+            scan(&mut st);
+            let old = &st.send_links[s1];
+            assert_eq!(old.pid, Some(701), "the argv names S1 again");
+            assert!(
+                !old.confirmed && !old.named,
+                "the fence from round 1 holds: {env}"
+            );
+            assert_eq!(pane_send_target(&st, s1), Err(SendRefusal::UnprovenLink));
+
+            // Round 3: the record names S1, which says which session the process runs now.
+            st.procs[0].native_session = Identity::Verified(s1.into());
+            scan(&mut st);
+            assert!(
+                st.send_links[s1].confirmed,
+                "the fence gives way to the record"
+            );
+            assert!(matches!(pane_send_target(&st, s1), Ok((701, _))));
+        }
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    /// #s326: Codex's `-p` is `--profile`, so `codex -p work` is an interactive launch: it is no
+    /// one-shot, keeps the tmux pane it runs in, and is its directory's candidate. Codex's one-shot
+    /// is `codex exec` (alias `e`), Detached whatever pane it inherited, as `claude -p` stays.
+    #[test]
+    fn a_codex_started_with_a_profile_is_no_one_shot() {
+        let mut procs = parse_ps("700 codex -p work\n701 claude -p fix-it\n");
+        for (argv, shot) in [
+            ("codex exec --json fix-it", true),
+            ("codex -p work exec fix-it", true),
+            ("codex e fix-it", true),
+            // The alias after options that take a value, and with one written `--opt=value`.
+            ("codex -p work e fix-it", true),
+            ("codex -m o3 -C /tmp e fix-it", true),
+            ("codex --config=model=o3 -c sandbox=x e fix-it", true),
+            ("codex -p work review", true),
+            ("codex --search exec resume --last", true),
+            ("codex -p work", false),
+            ("codex --no-alt-screen -m o3", false),
+            ("codex fix the review", false),
+            ("codex resume 5a5a5a5a-0000-4000-8000-000000000700", false),
+        ] {
+            let p = &parse_ps(&format!("900 {argv}\n"))[0];
+            assert_eq!(one_shot(p), shot, "{argv}");
+        }
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/w/harbor\np701\nfcwd\nn/w/petrel\n",
+        );
+        apply_env(
+            &mut procs,
+            "700 codex TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%3\n\
+             701 claude TMUX=/fixture/tmux.sock,88,0 TMUX_PANE=%4\n",
+        );
+        in_tmux(&mut procs);
+        assert!(!one_shot(&procs[0]) && one_shot(&procs[1]));
+        assert_eq!(Terminal::of(&procs[0]).kind(), "tmux");
+        let l = link(
+            &procs,
+            "5a5a5a5a-0000-4000-8000-000000000700",
+            Agent::CODEX,
+            Path::new("/c.jsonl"),
+            Some("/w/harbor"),
+            DirectoryMatch::Unclaimed(&HashSet::new()),
+            &|_| true,
+        )
+        .expect("the codex is its directory's process");
+        assert_eq!(l.pid, 700);
+        assert!(l.confirmed);
+        assert_eq!(l.terminal.kind(), "tmux");
+        assert!(link(
+            &procs,
+            "5a5a5a5a-0000-4000-8000-000000000701",
+            Agent::CLAUDE,
+            Path::new("/n.jsonl"),
+            Some("/w/petrel"),
+            DirectoryMatch::Unclaimed(&HashSet::new()),
+            &|_| true,
+        )
+        .is_none_or(|l| l.terminal.kind() == "detached"));
     }
 }

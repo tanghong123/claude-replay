@@ -24,6 +24,12 @@ flate2 = "1"
 # (syntect's fancy-regex), so it adds no new third-party code.
 regex-syntax = "0.8"
 
+[features]
+# For a DEPENDENT's test build only (claude-monitor enables it in its dev-dependencies, #s321): the
+# fixed signing key and the default render and mask policies this crate's own tests get, never the
+# state directory. Never enable it for a binary that ships: every stamp would be forgeable.
+hermetic-tests = []
+
 [dev-dependencies]
 # Tests drive the exporters through the real CLI surface (`Args::parse_from`).
 claude-replay-present = { path = "../claude-replay-present", features = ["cli"] }

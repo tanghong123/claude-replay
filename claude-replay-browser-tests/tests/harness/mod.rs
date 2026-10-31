@@ -205,11 +205,11 @@ pub fn queued_at(t: &str, ts: &str) -> String {
 pub fn compaction_at(ts: &str) -> String {
     format!("{{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"timestamp\":\"{ts}\",\"content\":\"Conversation compacted\",\"compactMetadata\":{{\"trigger\":\"auto\",\"preTokens\":594718,\"postTokens\":8617}}}}\n")
 }
-/// A file the reader had OPEN IN THEIR EDITOR when they sent the prompt — Claude Code records it
-/// as a standalone `attachment` event right after the user message, and both pages hang it off
-/// that prompt. `edited_text_file` is path-only by design (the inline `snippet` is truncated), so
-/// the engine gives it `AttachmentKind::Edited` and no bytes: the card's whole job is to say the
-/// file was edited and offer a way to it.
+/// Claude Code's notice to the model that a file it had read CHANGED ON DISK since (#s296; it was
+/// once taken for a file open in the reader's editor): an `edited_text_file` attachment, written
+/// on the first turn after the change, often right after the prompt. Path-only, so the engine
+/// gives it `AttachmentKind::Edited` and no bytes; the pages draw it as a notice, never as a file
+/// the person attached.
 pub fn edited_file_at(path: &str, ts: &str) -> String {
     format!(
         "{{\"type\":\"attachment\",\"timestamp\":\"{ts}\",\"attachment\":{{\"type\":\"edited_text_file\",\"filename\":\"{path}\",\"snippet\":\"1\\tintro\"}}}}\n"
@@ -1039,7 +1039,37 @@ impl Stores {
             ("CLAUDE_SCRATCH_ROOT", self.root.join("claude-scratch")),
             // #s272: where a relayed message's key is read, so no case reads this Mac's own.
             ("ARIES_STATE_DIR", self.root.join("aries")),
+            // #s340: the Claude desktop app's session records, so no case reads this Mac's own.
+            (
+                "CLAUDE_DESKTOP_SESSIONS_DIR",
+                self.root.join("claude-desktop"),
+            ),
         ]
+    }
+
+    /// #s340: a Claude desktop app session record (`<store>/<account>/<org>/local_<id>.json`, the
+    /// measured shape, synthetic ids): `desktop` is the app's id, `cli` the transcript's, and
+    /// `starter` the desktop id of the session that started this one, as a side session.
+    pub fn desktop_session(&self, desktop: &str, cli: &str, starter: Option<&str>) {
+        let org = self.root.join("claude-desktop/acct-0000/org-0000");
+        std::fs::create_dir_all(&org).unwrap();
+        let mut record = serde_json::json!({
+            "sessionId": desktop,
+            "cliSessionId": cli,
+            "cwd": "/r",
+            "title": "a desktop session",
+            "isArchived": false,
+        });
+        if let Some(starter) = starter {
+            record["spawnedFrom"] = serde_json::json!({
+                "sessionId": starter,
+                "title": "a side question",
+                "sideSession": true,
+                "btw": true,
+                "userFork": true,
+            });
+        }
+        std::fs::write(org.join(format!("{desktop}.json")), record.to_string()).unwrap();
     }
 
     /// #s272: the inbox key the relayed messages are signed with — the format's test key, 32
@@ -2339,6 +2369,76 @@ pub fn until_preview_parked(tab: &headless_chrome::Tab) {
         Duration::from_secs(10),
         "(function(){ var pv = document.querySelector('.preview'); var r = pv && pv.getBoundingClientRect(); return JSON.stringify({ app: document.getElementById('app').className, width: innerWidth, rect: r && [Math.round(r.left), Math.round(r.width)], tf: pv && getComputedStyle(pv).transform }); })()",
     );
+}
+
+/// The tab a page opened (`window.open`) once its address holds `want`, within `timeout`
+/// (#s343). headless_chrome registers a new tab from Chrome's `Target.targetCreated` in its own
+/// event loop, and that loop stops for good when a tab's setup calls fail (each waits up to its
+/// 30 s idle timeout, so a renderer slowed by a full suite can do it) or when Chrome is silent for
+/// 30 s: after that `get_tabs()` is a stale list and polling it cannot find the tab, which read as
+/// "no tab at …" once in a full suite while the case passed alone. So every second the page
+/// targets Chrome itself holds are read, and one holding `want` that the list lacks is registered
+/// (`register_missing_tabs`, which attaches it). On a timeout it says what Chrome had, or that
+/// the connection had closed, so the next miss names its cause.
+pub fn opened_tab(
+    browser: &headless_chrome::Browser,
+    want: &str,
+    timeout: Duration,
+) -> std::sync::Arc<headless_chrome::Tab> {
+    use headless_chrome::protocol::cdp::Target::GetTargets;
+    let deadline = Instant::now() + timeout;
+    let mut checked = Instant::now();
+    loop {
+        let found = browser
+            .get_tabs()
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|t| t.get_url().contains(want))
+            .cloned();
+        if let Some(tab) = found {
+            return tab;
+        }
+        // Chrome's own targets, asked through a tab already open (the browser's own call is
+        // private to headless_chrome).
+        let any_tab = browser.get_tabs().lock().unwrap().first().cloned();
+        let chrome_has = || match any_tab
+            .as_ref()
+            .map(|t| t.call_method(GetTargets { filter: None }))
+        {
+            None => Err("no tab to ask through".to_string()),
+            Some(Err(e)) => Err(format!("{e:#}")),
+            Some(Ok(targets)) => Ok(targets
+                .target_infos
+                .into_iter()
+                .filter(|t| t.Type == "page")
+                .map(|t| (t.url, t.attached))
+                .collect::<Vec<_>>()),
+        };
+        if checked.elapsed() >= Duration::from_secs(1) {
+            checked = Instant::now();
+            if let Ok(pages) = chrome_has() {
+                if pages.iter().any(|(url, _)| url.contains(want)) {
+                    eprintln!("opened_tab: Chrome has a page at {want} the tab list lacks; registering it");
+                    browser.register_missing_tabs();
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            let listed: Vec<String> = browser
+                .get_tabs()
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|t| t.get_url())
+                .collect();
+            panic!(
+                "no tab at {want} within {timeout:?}: the tab list has {listed:?}; Chrome's pages (url, attached): {:?}",
+                chrome_has()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 /// Poll a boolean JS predicate until true, or PANIC with `what`, a diagnostic and the

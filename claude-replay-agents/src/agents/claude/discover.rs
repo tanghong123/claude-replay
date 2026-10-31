@@ -28,6 +28,16 @@ pub fn projects_dir() -> PathBuf {
     Path::new(&home).join(".claude").join("projects")
 }
 
+/// The Claude home holding [`projects_dir`]: its parent, as [`client_wait`] finds a transcript's
+/// home from the store above it. Per-process files such as `sessions/<pid>.json` live here, so a
+/// relocated store (a test's included) never reads the user's ordinary home.
+pub fn claude_home() -> PathBuf {
+    let projects = projects_dir();
+    projects
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+}
+
 /// Root under which Claude Code writes its per-user scratch: `/tmp/claude-<uid>` (#283).
 /// `CLAUDE_SCRATCH_ROOT` points it elsewhere, for tests — the real one is a system directory.
 fn scratch_root(uid: u32) -> PathBuf {

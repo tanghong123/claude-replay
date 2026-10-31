@@ -51,11 +51,11 @@ impl MaskPolicy {
 /// The monitor's policy, read once from `<state>/mask-policy.json`. Tests get `Off` and never read
 /// the disk, as the render policy's do (#153).
 pub fn policy() -> MaskPolicy {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "hermetic-tests"))]
     {
         MaskPolicy::Off
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "hermetic-tests")))]
     {
         static POLICY: std::sync::OnceLock<MaskPolicy> = std::sync::OnceLock::new();
         *POLICY.get_or_init(|| {

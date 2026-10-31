@@ -19,7 +19,7 @@ use std::time::Duration;
 
 mod harness;
 use harness::{
-    at, base, chrome_tab, edited_file_at, eval, read_tool_at, serial, tool_result_at, until,
+    at, base, chrome_tab, eval, read_tool_at, restored_file_at, serial, tool_result_at, until,
     user_at, Kind, Monitor, Stores,
 };
 
@@ -62,7 +62,10 @@ fn fixture(name: &str) -> (PathBuf, Stores, PathBuf) {
         jsonl += &tool_result_at(&format!("t{i}"), &ts);
     }
     jsonl += &user_at("and this draft", &at("00:20"));
-    jsonl += &edited_file_at(&repo.join("draft.md").display().to_string(), &at("00:21"));
+    // A file the prompt brought with it (#s296: an `edited_text_file` is the client's notice, not
+    // an attachment, and draws no card).
+    let draft = repo.join("draft.md").display().to_string();
+    jsonl += &restored_file_at(&draft, "draft.md", 1, &at("00:21"));
     let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(SID, &jsonl);
     (base, stores, repo)
@@ -1026,23 +1029,7 @@ fn an_image_opens_in_a_tab_of_its_own_from_the_pane() {
         Duration::from_secs(30),
         "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
     );
-    let opened = |want: &str| -> std::sync::Arc<headless_chrome::Tab> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        loop {
-            let found = browser
-                .get_tabs()
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|t| t.get_url().contains(want))
-                .cloned();
-            if let Some(t) = found {
-                return t;
-            }
-            assert!(std::time::Instant::now() < deadline, "no tab at {want}");
-            std::thread::sleep(Duration::from_millis(200));
-        }
-    };
+    let opened = |want: &str| harness::opened_tab(&browser, want, Duration::from_secs(20));
     let whole = "(function(){ var s = document.getElementById('stage'); var i = s && s.querySelector('img'); return !!i && !s.classList.contains('unavailable') && i.complete && i.naturalWidth === 1200 && i.getBoundingClientRect().width > 100; })()";
     let what = "(function(){ var s = document.getElementById('stage'); return location.href + ' | ' + (s ? s.className + ' | ' + s.innerText.slice(0, 200) + ' | ' + ((s.querySelector('img') || {}).naturalWidth) : 'no stage'); })()";
 

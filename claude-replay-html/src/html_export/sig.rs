@@ -26,8 +26,9 @@
 
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-// Both uses sit behind `#[cfg(not(test))]` — under test the key and the policy are fixed.
-#[cfg(not(test))]
+// Both uses sit behind the switch below: under test (this crate's, or a dependent's with
+// `hermetic-tests`, #s321) the key and the policy are fixed.
+#[cfg(not(any(test, feature = "hermetic-tests")))]
 use std::sync::OnceLock;
 
 /// HMAC-SHA256 (RFC 2104) — written out rather than pulled in, because `sha2` is already in
@@ -61,13 +62,18 @@ fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
 
 /// Where the monitor keeps its 0600 secrets. Compiled OUT of the test build (#153): with the
 /// key and the policy both fixed under `cfg(test)`, nothing in this crate's tests can reach
-/// the developer's real state directory, and the compiler is what says so.
+/// the developer's real state directory, and the compiler is what says so. A dependent's tests
+/// link this crate WITHOUT `cfg(test)`, so they get the same fixed values through the
+/// `hermetic-tests` feature (#s321): claude-monitor's tests resolve this directory from a
+/// process-wide variable each test redirects in turn, and the first stamp of a run minted a key
+/// file into whichever test's scratch held it, racing that test's cleanup, or read the
+/// developer's own key when none did.
 ///
 /// Resolved by the same rule
 /// `claude_monitor::index::state_dir` uses — deliberately duplicated rather than depended on,
 /// since this crate sits BELOW the monitor and must not reach up. If the two ever disagreed
 /// the signature would simply fail to verify, which fails closed.
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "hermetic-tests")))]
 pub(crate) fn state_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("AGENT_MONITOR_STATE")
         .or_else(|| std::env::var_os("CLAUDE_MONITOR_STATE"))
@@ -99,12 +105,12 @@ fn key() -> Option<&'static [u8; 32]> {
     // Tests get a FIXED key and never touch the disk. A unit test that minted the real key
     // would write into the developer's own state directory, and one that read it would make
     // the suite depend on whether this machine has ever run the monitor.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "hermetic-tests"))]
     {
         static TEST_KEY: [u8; 32] = [7u8; 32];
         Some(&TEST_KEY)
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "hermetic-tests")))]
     {
         static KEY: OnceLock<Option<[u8; 32]>> = OnceLock::new();
         KEY.get_or_init(|| {
@@ -156,6 +162,8 @@ fn key() -> Option<&'static [u8; 32]> {
 /// the policy, not by which page you happened to open. A restriction that applied only to the
 /// v2 front-end would be undone by opening the same session in v1.
 #[derive(Clone, PartialEq)]
+// A dependent's test build (`hermetic-tests`) reads no policy file, so only the default is built.
+#[cfg_attr(feature = "hermetic-tests", allow(dead_code))]
 pub(crate) enum Policy {
     /// No page renders a local file. Paths still reveal.
     Never,
@@ -184,12 +192,12 @@ pub(crate) fn policy() -> &'static Policy {
     // whether this developer had narrowed their own policy: the suite would agree with CI
     // only by coincidence, and a genuine allowlist regression would show up as "passes on
     // CI, fails on my machine" rather than as a failing test.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "hermetic-tests"))]
     {
         static TEST_POLICY: Policy = Policy::Offered;
         &TEST_POLICY
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "hermetic-tests")))]
     {
         static POLICY: OnceLock<Policy> = OnceLock::new();
         POLICY.get_or_init(|| {
@@ -219,7 +227,7 @@ pub(crate) fn policy() -> &'static Policy {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "hermetic-tests")))]
 fn expand_tilde(s: &str) -> PathBuf {
     match s.strip_prefix("~/") {
         Some(rest) => std::env::var_os("HOME")
@@ -403,6 +411,8 @@ fn to_hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+// Only the real key is read back from disk; a `hermetic-tests` build never reads one.
+#[cfg_attr(feature = "hermetic-tests", allow(dead_code))]
 fn from_hex(s: &str) -> Option<[u8; 32]> {
     if s.len() != 64 {
         return None;

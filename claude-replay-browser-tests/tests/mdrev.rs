@@ -466,24 +466,7 @@ fn open_in_a_tab(tab: &headless_chrome::Tab) {
 
 /// The tab the pane opened, once it has its address.
 fn opened_tab(browser: &headless_chrome::Browser) -> std::sync::Arc<headless_chrome::Tab> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    loop {
-        let found = browser
-            .get_tabs()
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|t| t.get_url().contains("/markdown?"))
-            .cloned();
-        if let Some(tab) = found {
-            return tab;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the pane opened no tab at /markdown?"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    harness::opened_tab(browser, "/markdown?", Duration::from_secs(20))
 }
 
 fn own_h1(tab: &headless_chrome::Tab) -> String {

@@ -155,6 +155,8 @@ A path with no capability, or the wrong one, is **403** — including a path tha
 
 The viewer has parsed a document it holds and found what that document points at; the host says which of those this reader may have, in order, `null` for each refusal. `targets` are already root-relative, resolved against the referring document. A refused reference is drawn as refused and never requested; a capability that comes back is also what opens that path as a document, so following a link needs no second conversation. Refuse the whole call with 403 if `from` is not held.
 
+A host may cap how many `targets` one call names, at no fewer than 500, the most the viewer names in one call; mdrev-v2 and the team service take 500, and answer a call past that with 400, whole. The viewer names each path once and asks in calls of at most 500, one after another. A call that fails ends the asking: its references and every later call's are drawn as refused, and the calls before it keep their answers.
+
 ### `GET {prefix}/text?path=&rev=`
 
 The file's text, as `text/plain; charset=utf-8` — a document's Markdown, or, for a host that offers them, a source file's code ([above](#a-path-that-is-not-markdown-is-source-code)). The viewer reads it as UTF-8, and a file that is not decodes with replacement characters rather than failing. `rev` is a revision id the host issued through `/revisions`, or `current` for the document as it stands. A `path` that names nothing at that revision is 404; a `path` that tries to leave the host's document root (`../`) is refused. Send an `ETag` if you can: a viewer without push polls this route with `If-None-Match`, and a `304` costs nothing.

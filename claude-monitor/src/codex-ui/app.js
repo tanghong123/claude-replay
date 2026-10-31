@@ -11,7 +11,7 @@ import { RecordStore } from "./record-store.js";
 import { SessionIndexStore } from "./session-index-store.js";
 import { controlState, indexState, persist, recordState, selectedRow, uiState } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
-import { flatFamilies } from "./session-list.js";
+import { familyHolds, flatFamilies, nestSideSessions } from "./session-list.js";
 import { displayState, denoteState, sessionFilterBuckets, FILTER_BUCKETS, FILTER_LABELS, BLOCKED_SUMMARY } from "./shared/state-labels.js";
 import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
@@ -380,7 +380,7 @@ function treeAction(target, kind) {
 // A row, or a fork family's representative (`fam`): the family's state and age, not just the
 // rep's — a forked conversation is "running" when any fork is — plus a fork count that opens
 // the other members, indented, the way the classic rail's ⑂ chip does (#142).
-function sessionTreeRow(row, fam = null, member = false, context = null) {
+function sessionTreeRow(row, fam = null, member = false, context = null, side = null) {
   const forked = fam && fam.forks.length ? fam : null;
   const denote = forked && forked.growing && stateDenote(row)?.tone !== "busy" ? { label: "A fork is running", tone: "busy" } : stateDenote(row);
   const newest = forked ? forked.members.reduce((a, b) => ((b.activityTs || 0) > (a.activityTs || 0) ? b : a), row) : row;
@@ -389,9 +389,25 @@ function sessionTreeRow(row, fam = null, member = false, context = null) {
   const chip = forked ? `<button class="tree-forks" type="button" data-family-toggle="${escapeText(forked.key)}" aria-expanded="${!!open}" title="${forked.forks.length} fork${forked.forks.length === 1 ? "" : "s"} of this session — forking copies the conversation, so they overlap heavily">⑂ ${forked.forks.length}</button>` : "";
   // #s206: a row of the flat list says where it lives, since no group head does — the project's
   // name under the title, after the agent's mark, which is named for a screen reader and a pointer.
-  const title = `<span class="tree-title">${escapeText(row.name || row.id)}</span>`;
+  // #s340: a Claude desktop side session wears a mark of its own under its starter (the fork
+  // chip means a copied conversation; a side session is a conversation of its own). `side` is
+  // `{ depth, starter }`: how deep it nests, and its starter's title.
+  const sideMark = side ? `<span class="tree-side" role="img" aria-label="Side session" title="${escapeText(`Started from “${side.starter}” in the Claude desktop app`)}">↳</span>` : "";
+  const title = `${sideMark}<span class="tree-title">${escapeText(row.name || row.id)}</span>`;
   const main = context ? `<span class="tree-main">${title}<span class="tree-context"><span class="tree-agent" role="img" aria-label="${escapeText(context.agent.name)}" title="${escapeText(context.agent.name)}">${agentGlyph(context.agent.id, context.agent.name)}</span><span class="tree-project" title="${escapeText(context.project.path || context.project.name)}">${escapeText(context.project.name)}</span></span></span>` : title;
-  return `<div class="tree-row session ${context ? "flat" : ""} ${row.id === indexState.selected ? "selected" : ""} ${row.hidden ? "is-hidden" : ""} ${member ? "is-member" : ""}" role="treeitem" tabindex="0" data-session="${escapeText(row.id)}" title="${escapeText(displayState(row).label)} · ${escapeText(row.stateDetail || "")}">${main}<span class="session-end">${chip}${treeAction(row, "session")}${marker}<span class="session-age">${escapeText(newest.activity || row.activity || "")}</span></span></div>`;
+  return `<div class="tree-row session ${context ? "flat" : ""} ${row.id === indexState.selected ? "selected" : ""} ${row.hidden ? "is-hidden" : ""} ${member ? "is-member" : ""} ${side ? "is-side" : ""}"${side ? ` style="--side-depth:${side.depth}"` : ""} role="treeitem" tabindex="0" data-session="${escapeText(row.id)}" title="${escapeText(displayState(row).label)} · ${escapeText(row.stateDetail || "")}">${main}<span class="session-end">${chip}${treeAction(row, "session")}${marker}<span class="session-age">${escapeText(newest.activity || row.activity || "")}</span></span></div>`;
+}
+
+/** A family as the list draws it: its representative, its forks while open, then the Claude
+ *  desktop side sessions it started (#s340), each with theirs. `context` names the project and
+ *  agent on a flat row; a side session sits under its starter, so it needs none. */
+function familyRowsHtml(fam, context = null, side = null) {
+  let html = sessionTreeRow(fam.rep, fam, false, context, side);
+  const open = fam.forks.length && (indexState.openFamilies.has(fam.key) || fam.forks.some(row => row.id === indexState.selected));
+  if (open) for (const fork of fam.forks) html += sessionTreeRow(fork, null, true);
+  const starter = fam.rep.name || fam.rep.id;
+  for (const sub of fam.sides || []) html += familyRowsHtml(sub, null, { depth: (side ? side.depth : 0) + 1, starter });
+  return html;
 }
 
 /** The flat list (#s206): every family the tree would show, in one list by activity (the shared
@@ -399,17 +415,13 @@ function sessionTreeRow(row, fam = null, member = false, context = null) {
  *  under their family as in the tree. The sidebar and the collapsed rail's flyout both draw it,
  *  as they both draw `agentProjectsHtml` in the tree. `agents` is `visibleTree`'s output. */
 function flatSessionsHtml(agents, overflowKey = "flat") {
-  const fams = flatFamilies(agents, Date.now() / 1000);
+  const fams = nestSideSessions(flatFamilies(agents, Date.now() / 1000));
   const expanded = indexState.expandedProjects.has(overflowKey);
   let shown = expanded ? fams : fams.slice(0, FLAT_SESSION_LIMIT);
-  const selectedFam = fams.find(fam => fam.members.some(row => row.id === indexState.selected));
+  const selectedFam = fams.find(fam => familyHolds(fam, indexState.selected));
   if (!expanded && selectedFam && !shown.includes(selectedFam)) shown = shown.concat(selectedFam);
   let html = "";
-  for (const fam of shown) {
-    html += sessionTreeRow(fam.rep, fam, false, { agent: { id: fam.agent.id, name: agentName(fam.agent.id) }, project: fam.project });
-    const open = fam.forks.length && (indexState.openFamilies.has(fam.key) || fam.forks.some(row => row.id === indexState.selected));
-    if (open) for (const fork of fam.forks) html += sessionTreeRow(fork, null, true);
-  }
+  for (const fam of shown) html += familyRowsHtml(fam, { agent: { id: fam.agent.id, name: agentName(fam.agent.id) }, project: fam.project });
   const hidden = fams.filter(fam => !shown.includes(fam)).length;
   if (fams.length > FLAT_SESSION_LIMIT) html += `<button class="tree-project-more" type="button" data-project-more="${escapeText(overflowKey)}" aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span><span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>`;
   return html;
@@ -427,15 +439,11 @@ function agentProjectsHtml(agent) {
     if (!openProject) continue;
     const overflowKey = `${agent.id}:${project.id}`;
     const expanded = indexState.expandedProjects.has(overflowKey);
-    const fams = families(rows);
+    const fams = nestSideSessions(families(rows));
     let shown = expanded ? fams : fams.slice(0, SIDEBAR_SESSION_LIMIT);
-    const selectedFam = fams.find(fam => fam.members.some(row => row.id === indexState.selected));
+    const selectedFam = fams.find(fam => familyHolds(fam, indexState.selected));
     if (!expanded && selectedFam && !shown.includes(selectedFam)) shown = shown.concat(selectedFam);
-    for (const fam of shown) {
-      html += sessionTreeRow(fam.rep, fam);
-      const open = fam.forks.length && (indexState.openFamilies.has(fam.key) || fam.forks.some(row => row.id === indexState.selected));
-      if (open) for (const fork of fam.forks) html += sessionTreeRow(fork, null, true);
-    }
+    for (const fam of shown) html += familyRowsHtml(fam);
     const hidden = fams.filter(fam => !shown.includes(fam)).length;
     if (fams.length > SIDEBAR_SESSION_LIMIT) html += `<button class="tree-project-more" type="button" data-project-more="${escapeText(overflowKey)}" aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span><span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>`;
   }

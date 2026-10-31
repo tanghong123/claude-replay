@@ -1394,6 +1394,14 @@ impl Emitter<'_> {
                 };
                 body.push(json!({ "p": "md", "h": md_html(rendered) }));
             }
+            // #s305: a reply the person cut off mid-stream is drawn as the prose it is, then a
+            // note saying it stopped there — both pages already draw a `note` part, quietly, as
+            // the line under a call.
+            Block::AssistantCutOff(text) => {
+                o.insert("id".into(), json!(self.block_id()));
+                body.push(json!({ "p": "md", "h": md_html(text) }));
+                body.push(json!({ "p": "note", "x": crate::model::CUT_OFF_NOTE }));
+            }
             Block::AssistantMessage {
                 text,
                 phase,

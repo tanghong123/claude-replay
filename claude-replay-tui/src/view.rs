@@ -2758,6 +2758,7 @@ fn block_occurrences(b: &Block, needle: &str, whole: bool) -> usize {
         Block::UserText(t)
         | Block::UserReply { text: t, .. }
         | Block::AssistantText(t)
+        | Block::AssistantCutOff(t)
         | Block::ToolResult(t) => count(t, needle),
         Block::AssistantMessage { text, .. } => count(text, needle),
         Block::QueueEvent { text } => count(text, needle),

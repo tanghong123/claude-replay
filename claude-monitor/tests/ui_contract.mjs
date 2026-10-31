@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
-import { PROMPT_CLAMP_LINES, PROMPT_MIN_HIDDEN, promptExpanderHtml, promptHiddenLines, rawTurnHtml, rendererStartsClosed, changeBadgeHtml, groupImageRuns, imageRunHtml, imageThumbHtml } from "../../claude-monitor/src/codex-ui/components.js";
+import { PROMPT_CLAMP_LINES, PROMPT_MIN_HIDDEN, promptExpanderHtml, promptHiddenLines, rawTurnHtml, rendererStartsClosed, changeBadgeHtml, groupImageRuns, imageRunHtml, imageThumbHtml, isChangedNotice, promptNoticesHtml } from "../../claude-monitor/src/codex-ui/components.js";
 import { attachmentCapability, canReveal, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
 import { costDisplay, reportedCostDisplay } from "../../claude-replay-html/src/html/shared/cost-display.js";
 import { fleetGroups } from "../../claude-replay-html/src/html/shared/fleet.js";
@@ -28,7 +28,7 @@ import { agentRecordTargets, currentTurnIndex, peerHue, peerLabelRest, Projectio
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
-import { CALM_SECS, flatFamilies } from "../src/codex-ui/session-list.js";
+import { CALM_SECS, familyHolds, flatFamilies, nestSideSessions } from "../src/codex-ui/session-list.js";
 import { BLOCKED_SUMMARY, BUCKETS, FILTER_BUCKETS, FILTER_LABELS, RECENT_SECS, REASONS, REASON_BUCKETS, denoteState, displayState, needsPerson, sessionBucket, sessionFilterBuckets } from "../../claude-replay-html/src/html/shared/state-labels.js";
 import { composeCapability, consentQuery, grantOutcome, runRevoke, runSend, sendOutcome, sendQuery } from "../../claude-replay-html/src/html/shared/control-protocol.js";
 import { cursorText, freshCursor, parseRecords, pullQuery, recordsQuery, reducePull } from "../../claude-replay-html/src/html/shared/record-stream.js";
@@ -624,6 +624,30 @@ assert.equal(richProjection.units[0].attachments.length, 1, "adjacent attachment
 assert.equal(richProjection.units[0].to, 1, "the prompt unit owns its attachment record for stable virtualization");
 assert.equal(richProjection.units[1].view.presentation, "proposed_plan");
 assert.equal(richProjection.units[2].views[0].view.interaction.answers[0].label, "Use v2");
+// #s296: Claude Code's notice to the model that a file changed on disk (`att_kind: "edited"`) lands
+// right after a prompt and joins its attachments, but it is never drawn as the person's card: a
+// line of its own naming the file, which still opens it. Hong saw "edited CLAUDE.md" under a
+// message he attached nothing to.
+{
+  const notice = { id: "changed", attachment: { att_kind: "edited", att_name: "CLAUDE.md", att_path: "/h/CLAUDE.md", att_sig: "reveal-signed" } };
+  const real = { id: "real", attachment: { att_kind: "file", att_name: "notes.md", att_path: "/w/notes.md", att_fsig: "file-signed", att_sig: "reveal-signed" } };
+  assert.equal(isChangedNotice(notice), true);
+  assert.equal(isChangedNotice(real), false, "a file the person attached is not a notice");
+  const line = promptNoticesHtml([real, notice]);
+  assert.match(line, /^<div class="turn-notice" role="note"><button class="turn-notice-file" [^>]*data-attachment="changed"[^>]*>CLAUDE\.md<\/button> changed on disk; the agent was shown what changed<\/div>$/, "one line for the notice, naming the file, and nothing for the real attachment");
+  assert.equal(promptNoticesHtml([real]), "", "no notice, no line");
+  const prompt = new Projection();
+  prompt.rebuild([
+    { kind: "user", id: "p", turn: 1, label: "test", body: [{ p: "md", h: "<p>test</p>" }] },
+    { kind: "attachment", id: "changed", head: { att_kind: "edited", att_name: "CLAUDE.md", att_path: "/h/CLAUDE.md" }, body: [] },
+    { kind: "assistant", id: "a", phase: "final", head: {}, body: [{ p: "md", h: "<p>Ignored.</p>" }] }
+  ], 0);
+  assert.equal(prompt.units[0].attachments.length, 1, "the projection still keeps it with its prompt, as the turn index lays the units out");
+  assert.equal(viewRecord({ kind: "attachment", id: "c", head: { att_kind: "edited", att_name: "x.rs" }, body: [] }).name, "changed on disk", "…and inside a group of steps its row says what it is");
+  const componentsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(componentsSrc, /function renderPromptAttachments\(attachments = \[\]\) \{\n  attachments = attachments\.filter\(view => !isChangedNotice\(view\)\);/, "the prompt's cards leave the notice out");
+  assert.equal((componentsSrc.match(/\$\{promptNoticesHtml\(unit\.attachments\)\}<\/div>`;/g) || []).length, 4, "…and every kind of prompt turn draws its notices last");
+}
 const incrementalPrompt = new Projection();
 const promptRecords = [{ kind: "user", id: "late-prompt", turn: 1, body: [{ p: "md", h: "<p>Prompt</p>" }] }];
 incrementalPrompt.rebuild(promptRecords, 0);
@@ -801,6 +825,42 @@ assert.match(appSource, /families\(rows\)/, "the tree clusters fork families thr
   console.log("flat list cases passed");
 }
 assert.match(appSource, /flatFamilies\(agents, Date\.now\(\) \/ 1000\)/, "the flat list orders through the tested function");
+// #s340: a Claude desktop side session nests under the family of the session that started it, in
+// the tree and the flat list; one whose starter is left out stays a family of its own, a loop nests
+// nothing, and a side session of a side session nests under that one.
+{
+  const fam = (id, extra = {}) => ({ key: id, rep: { id, ...extra }, members: [{ id, ...extra }], forks: [] });
+  const fams = [
+    fam("side", { sideOf: "starterFork" }),
+    { key: "starter", rep: { id: "starter" }, members: [{ id: "starter" }, { id: "starterFork", family: "starter", isFork: true }], forks: [{ id: "starterFork" }] },
+    fam("other"),
+    fam("sideOfSide", { sideOf: "side" }),
+    fam("orphan", { sideOf: "filteredAway" }),
+    fam("loopA", { sideOf: "loopB" }),
+    fam("loopB", { sideOf: "loopA" })
+  ];
+  const nested = nestSideSessions(fams);
+  assert.deepEqual(nested.map(f => f.key), ["starter", "other", "orphan", "loopA", "loopB"], "a side session leaves the top level, nothing else moves");
+  const starter = nested.find(f => f.key === "starter");
+  assert.deepEqual(starter.sides.map(f => f.key), ["side"], "nested under the family holding its starter, a fork of it included");
+  assert.deepEqual(starter.sides[0].sides.map(f => f.key), ["sideOfSide"], "a side session of a side session nests under that one");
+  assert.ok(familyHolds(starter, "sideOfSide") && familyHolds(starter, "starterFork") && !familyHolds(starter, "other"));
+  assert.deepEqual(nestSideSessions(fams.filter(f => f.key !== "starter")).map(f => f.key), ["side", "other", "orphan", "loopA", "loopB"], "a starter left out keeps its side session in the list");
+  assert.deepEqual(nestSideSessions([]), []);
+  // The review of #s340: the group takes its earliest member's place, so a side session above its
+  // starter (active, or waiting on the person) lifts the starter with it; a starter in another
+  // project nests nothing; only the representative's own `sideOf` counts.
+  const order = nestSideSessions([fam("busySide", { sideOf: "old" }), fam("mid"), fam("old")]);
+  assert.deepEqual(order.map(f => f.key), ["old", "mid"], "the group sits where its active side session was");
+  assert.deepEqual(order[0].sides.map(f => f.key), ["busySide"]);
+  const inProject = (f, id) => ({ ...f, project: { id } });
+  const apart = nestSideSessions([inProject(fam("s1", { sideOf: "p1" }), "p:/a"), inProject(fam("p1"), "p:/b")]);
+  assert.deepEqual(apart.map(f => [f.key, f.sides.length]), [["s1", 0], ["p1", 0]], "a starter in another project nests nothing");
+  const forked = { key: "fam", rep: { id: "fam" }, members: [{ id: "fam" }, { id: "famFork", sideOf: "other", isFork: true }], forks: [{ id: "famFork" }] };
+  assert.deepEqual(nestSideSessions([forked, fam("other")]).map(f => f.key), ["fam", "other"], "a fork naming a starter does not move its family");
+  assert.equal(fams[1].sides, undefined, "the families given are not changed");
+  console.log("side session cases passed");
+}
 assert.match(appSource, /if \(target && turnsFollow\) revealInPane\(target\);/, "#s207: the Turns pane follows the current turn only while it is locked to the session");
 // #s209 (the owner): the agents' marks are the vendors' own registry marks, drawn in one colour.
 {
@@ -1560,7 +1620,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(css, /\.renderer-title\{color:var\(--faint\);font-weight:400;min-width:0;overflow-wrap:anywhere\}/, "a head's title wraps at any character, so a path cannot outgrow it");
   assert.match(css, /\.renderer-head\{max-width:100%;min-width:0\}/, "…and the head itself refuses to grow past the record it belongs to");
   const viewModelSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-model.js", import.meta.url), "utf8");
-  assert.match(viewModelSrc, /const view = rendererRecord\(record, "attachment", head\.att_kind \|\| "file"\);/, "…and every attachment takes the KIND as its title, not only a pointer (#254 did half of it, #261 the rest)");
+  assert.match(viewModelSrc, /const view = rendererRecord\(record, "attachment", head\.att_kind === "edited" \? "changed on disk" : head\.att_kind \|\| "file"\);/, "…and every attachment takes the KIND as its title, not only a pointer (#254 did half of it, #261 the rest), an `edited` one saying what it is (#s296)");
   assert.match(appSource, /function chainOffsetLimit\(nav\) \{/, "…with the ceiling enforced against the writers the chain cannot see — `scrollIntoView`, a focus ring, a drag");
   // #262: a hit inside a head's one-line target is unreachable — the span is `nowrap` with
   // `overflow-x:hidden`, measured 572px over a 44,782px command, and nothing writes its
@@ -3761,7 +3821,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const store = readFileSync(new URL("../../claude-monitor/src/codex-ui/control-store.js", import.meta.url), "utf8");
   const src = store.slice(store.indexOf("function composeTargetLine("), store.indexOf("export class ControlStore"));
   const line = new Function(`${src}; return composeTargetLine;`)();
-  assert.equal(line({ term: "herdr", target: "w1:p2" }, "tmux"), "Types into herdr pane w1:p2", "a herdr pane by name");
+  assert.equal(line({ term: "herdr", target: "w1:p2" }, "tmux"), "Types into herdr", "herdr by name alone, no pane id (#s297, Hong: \"just show herdr is enough\")");
+  assert.equal(line({ term: "herdr" }, "tmux"), "Types into herdr", "…with or without one");
   assert.equal(line({ term: "tmux", target: "%3" }, "tmux"), "Types into tmux pane %3", "a tmux pane by name");
   assert.equal(line({ term: "tmux" }, "tmux"), "Types into its tmux pane", "a tmux pane with no id");
   assert.equal(line({ term: "herdr", target: "w1:p2" }, "resume"), "Resumes this session", "an idle session resumes");

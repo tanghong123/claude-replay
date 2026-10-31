@@ -61,7 +61,9 @@ fn describe(b: &Block) -> (&'static str, String) {
             ("user", format!("{} (relayed): {}", inbox.from, clip(text)))
         }
         Block::PeerText { from, text, .. } => ("peer", format!("{from}: {}", clip(text))),
-        Block::AssistantText(t) | Block::AssistantMessage { text: t, .. } => ("assistant", clip(t)),
+        Block::AssistantText(t)
+        | Block::AssistantCutOff(t)
+        | Block::AssistantMessage { text: t, .. } => ("assistant", clip(t)),
         Block::Thinking { text, tools, .. } => (
             "thinking",
             format!("{} tools · {}", tools.len(), clip(text)),

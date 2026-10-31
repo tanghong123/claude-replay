@@ -86,6 +86,24 @@ fn assistant_phase(v: &Value, content: &[Value]) -> Option<AssistantPhase> {
     }
 }
 
+/// The content index of a reply the person CUT OFF mid-stream (#s305), if this record is one:
+/// Claude Code 2.1.311 keeps the partial reply when Esc stops it and flags the record
+/// `isAbortedMidStream`. The mark goes on the record's LAST text block, where the reply stopped.
+/// Only an unphased record is read (the one shape measured: `stop_reason` null, text alone); a
+/// flagged record with a stop reason or a call is the census's REVISIT, drawn as before.
+fn cut_off_text(v: &Value, content: &[Value], phase: Option<AssistantPhase>) -> Option<usize> {
+    if phase.is_some() || v.get("isAbortedMidStream").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    content.iter().rposition(|blk| {
+        blk.get("type").and_then(Value::as_str) == Some("text")
+            && blk
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|t| !t.trim().is_empty())
+    })
+}
+
 /// L1 classification of a plain-string `user` message into the **structured** message the
 /// shared fold places — this is where Claude's raw wrappers (`<task-notification>`,
 /// `<command-name>`, `<local-command-*>`, skill bodies, caveats) are parsed, so the fold
@@ -645,10 +663,22 @@ const RECORD_TYPES_KNOWN: &[&str] = &[
     // these records hold, the cache breakpoints and what each request carried, would need a
     // per-answer "what the model saw" inspector: a design question for the owner. Every such line
     // puts its type first, which is how `turn_ended` and `local_role` pass it by. Measured on the
-    // four: 20 to 30% of each transcript's bytes, 11 to 31% of its last 512 KiB. REVISIT: an
-    // interactive session writing them or a `querySource` other than "sdk"; an `api-request`
-    // whose answer the transcript lacks (a call the page would not show, which could matter to
-    // the cost); the owner asking for the inspector.
+    // four: 20 to 30% of each transcript's bytes, 11 to 31% of its last 512 KiB.
+    // #s330: interactive sessions write it too, `querySource: "repl_main_thread"`, from client
+    // 2.1.302 (11 of them on aries-black over three days, 16,956 calls, measured 2026-10-30): a
+    // median 20% of their bytes (7 to 35%) and 26% of their last 256 KiB (up to 63%). Still
+    // unread. Every raw reader of a transcript was checked against it: the in-flight scan read a
+    // blob's copy of a call as a call running (#s329; it skips these lines now); every other
+    // reader goes by a parsed top-level field (session id, cwd, entrypoint, permission mode), and
+    // the cost fold's `/message/usage`, read on any record, is on no blob (52,667 over 14 days,
+    // each message `role` and `content`, `output_config` on 552); the activity clock takes an
+    // `api-request`'s own timestamp, the moment the call was made. The rendered record log never
+    // holds them, so a tail-first open is untouched; the fold pays for their bytes (the largest
+    // interactive session, 249 MB, 11% of it log, dumps in 1.95 s against 1.79 s without).
+    // REVISIT: a `querySource` other than these two; a blob whose message carries `usage`,
+    // `model` or `id`, which the cost fold would count; a new raw-text reader of a transcript; an
+    // `api-request` whose answer the transcript lacks (a call the page would not show, which
+    // could matter to the cost); the owner asking for the inspector.
     "api-request",
     "api-request-blob",
     "api-request-shape",
@@ -986,6 +1016,42 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // finer than the text, is a RENDER question for the owner, queued with the record
             // count and client version, never decided here.
             "streamCutCause",
+            // #s328 (client 2.1.314): a string on the same synthetic API-error record
+            // (`isApiErrorMessage`, model "<synthetic>", zero usage, `error` beside it), the
+            // error's typed kind. Met on 3 records on aries-black, measured 2026-10-30, all
+            // "connection_failed" with `error` "server_error", the text "API Error: Connection
+            // dropped (ECONNRESET). …"; 13 older error records in one of those sessions (2.1.299 to
+            // 2.1.312) carry none. The client's SDK schema calls it the "Typed kind of the API
+            // error when is_api_error_message is true, for consumers that key on the cause instead
+            // of the message text (the text stays the fallback and may change)", one of 34 values
+            // in 2.1.314, an unknown value to be treated as absent. Unread: the record is already
+            // read by its flag and folds to ONE Failure note whose text names the same cause, as
+            // `streamCutCause` above. REVISIT: (1) the first value naming something a PERSON must
+            // act on (usage_limit_reached, stored_login_refused, model_requires_usage_credits,
+            // long_context_credits_required, consent_unanswered, unattended_start_limit,
+            // unattended_start_unconfirmed, the gateway sign-in values): every API-error death
+            // reads alike today (`last_failure`, the Blocked bucket), so telling a transient cause
+            // (connection_failed, computer_slept, stream_idle_timeout) from one that needs the
+            // person is a RENDER question for the owner, queued with the record count and client
+            // version, never decided here; (2) the key on an assistant record NOT flagged
+            // `isApiErrorMessage`, which the page would draw as prose; (3) a record whose text no
+            // longer names the cause the key names, where the Failure note should read the key.
+            "apiError",
+            // #s305 (client 2.1.311): the boolean `true` on an assistant record the person cut off
+            // with Esc while it streamed. An ordinary API answer (its own requestId, a real model,
+            // no `isApiErrorMessage`), `stop_reason` null, one text block, and the very next record
+            // is the user's "[Request interrupted by user]" naming it as parent. Met on ONE record
+            // on hong-devserver, measured 2026-10-28; a search of every Claude transcript there
+            // found no unflagged partial reply before an interrupt marker, so older clients seem to
+            // have kept none. Read (`cut_off_text`): the reply is an `AssistantCutOff` block, prose
+            // everywhere but where it is drawn, which ends it with a "cut off" line. Its usage is
+            // the stream's opening figure (8 output tokens against about 166 characters), since no
+            // final usage arrives on an abort, so the cost counts a little too little output;
+            // nothing better is recorded, so nothing corrects it. REVISIT: (1) the flag on a record
+            // holding a `thinking` or `tool_use` block, where a call that never ran would be drawn
+            // as one that did, or on one with a `stop_reason`, which gets a phase and no mark; (2)
+            // a flagged record NOT followed by an interrupt marker; (3) a value other than `true`.
+            "isAbortedMidStream",
             "apiErrorStatus",
             "supersedesUuids",
             "errorDetails",
@@ -1465,6 +1531,20 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "persistent",
     "pin",
     "plan",
+    // #s309, ExitPlanMode (client 2.1.199, one record on this machine, measured 2026-10-29): the
+    // boolean `true` on `{plan, isAgent, filePath, planWasEdited}`, absent when false (a 2.1.211
+    // result has the other three alone). The client's own schema, still in 2.1.312, says it is true
+    // when the person edited the plan (Claude Code's web UI, or Ctrl+G) and decides whether the plan
+    // is echoed back: the result's `plan` is the edited text, which also overwrites the plan file,
+    // and the tool_result text ends "## Approved Plan (edited by user):" and that text, which the
+    // card draws as the call's output. So the edit and its mark are already on the page. In the one
+    // record the call input's `plan` and the result's are byte-identical (6,665 characters). The
+    // plan.md attachment is drawn from the input (#16). REVISIT: a record whose two plans differ,
+    // where the attachment would show the plan from before the edit beside the approved one in the
+    // output, a RENDER question for the owner. The 2.1.312 schema also lists `hasTaskTool`,
+    // `awaitingLeaderApproval` and `requestId` (a teammate's plan sent to its lead), met in no
+    // record yet: they are judged when one carries them.
+    "planWasEdited",
     "projectId",
     "projects",
     "prompt",
@@ -1616,11 +1696,20 @@ const ARTIFACT_CREATE_SHAPE: &[&str] = &[
 /// asked for and not written is a failure the card would not show. Since client 2.1.310 a publish
 /// from a file also carries `owned` beside `icon` (#s268, one record, measured 2026-10-26), true
 /// as in a create and a typed publish (#s181): a flag the card has no use for, eleven facts
-/// nothing renders. REVISIT: `owned` arriving false.
+/// nothing renders. REVISIT: `owned` arriving false. Since client 2.1.312 a publish from a file
+/// whose call input carries `edits` (`[{old_str, new_str}]`, 2 of them) ends with `editsApplied`
+/// beside `icon` (#s308, one record on aries-black, measured 2026-10-29): `2`, every edit sent.
+/// Only the typed shape held it, which has no `icon`, so neither shape fitted and `owned` and
+/// `icon` were reported. It is READ (#s182, `TOOL_RESULT_READ`): the card draws the edit's diff
+/// from the call input and says when fewer edits were applied than sent. That record said `updated`
+/// false with `seq` 1 beside its 2 applied edits. REVISIT: `updated` false beside `editsApplied`
+/// on a later publish, which would say the flag means something other than "the page changed";
+/// the card reads neither `updated` nor `seq`.
 const ARTIFACT_PUBLISH_SHAPE: &[&str] = &[
     "artifact_id",
     "audience",
     "contract",
+    "editsApplied",
     "files_written",
     "icon",
     "liveSubscription",
@@ -1683,8 +1772,10 @@ const ARTIFACT_TYPED_PUBLISH_SHAPE: &[&str] = &[
 /// nothing published or changed), and the card draws that text. `opened` is a boolean the text
 /// states. REVISIT: `opened` arriving false. The card's target is the bare action word ("open"),
 /// and this result's `title` is the only place the artifact is named: a label question, not a
-/// shape one.
-const ARTIFACT_OPEN_SHAPE: &[&str] = &["artifact_id", "opened", "title", "url"];
+/// shape one. Client 2.1.312 adds `owned` as its last key (#s319, one record on this machine,
+/// measured 2026-10-30, the same call input): `{opened, url, artifact_id, title, owned}`, `owned`
+/// true, as in a create, a publish and a read by URL. REVISIT: `owned` arriving false.
+const ARTIFACT_OPEN_SHAPE: &[&str] = &["artifact_id", "opened", "owned", "title", "url"];
 
 /// The whole of an Artifact `read` result (#s181, client 2.1.303, one record, measured 2026-10-19;
 /// the call input is `{action: "read", url, paths}` with 2 paths): `{files_read: {url, title, ver,
@@ -1695,6 +1786,19 @@ const ARTIFACT_OPEN_SHAPE: &[&str] = &["artifact_id", "opened", "title", "url"];
 /// carries both whole. REVISIT: a read whose text does not carry the files (a binary or a very
 /// large file), where `saved_to` would be the reader's only handle and the card should offer it.
 const ARTIFACT_READ_SHAPE: &[&str] = &["files_read"];
+
+/// Every key an Artifact `read` by URL alone was met with (#s308; the call input is `{action:
+/// "read", url}` with no `paths`): `{read: {bytes, code, codeText, result, durationMs, url, title},
+/// artifactRead: {slug, ver}, owned}`, integers and strings, `code` 200 and `result` empty in every
+/// one, and `owned` a boolean, true in all. Measured 2026-10-29: 3 records in 3 sessions on
+/// aries-black, client 2.1.312, and 2 in one session on this machine, client 2.1.311. Under client
+/// 2.1.296 the same read was `{read, artifactRead}` with no `owned`, and a read that got a 404 is
+/// `{read}` alone; both of those keys are on the flat ignored list, and `owned` is the one key out
+/// of a shape. It is the flag a create and a publish carry (#s181, #s268), with as little use on the
+/// card, which draws the result TEXT. The sibling of [`ARTIFACT_READ_SHAPE`], the read WITH `paths`.
+/// REVISIT: `owned` arriving false (a read of an artifact the caller does not own), or a read with
+/// `paths` on 2.1.312 or later carrying `owned` beside `files_read`.
+const ARTIFACT_URL_READ_SHAPE: &[&str] = &["artifactRead", "owned", "read"];
 
 /// The whole of an ArtifactComments `watch` result (#s268, client 2.1.310, one record, measured
 /// 2026-10-26; the call input is `{action: "watch", url}`): `{watch: {url, watching, outcome,
@@ -1895,7 +1999,9 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     ("icon", ARTIFACT_PUBLISH_SHAPE),
     // #s268 (client 2.1.310): a publish from a file now carries `owned` beside `icon`, true as in a
     // create and a typed publish. Known only in this shape; adding it also silences `icon` again,
-    // which came back beside it.
+    // which came back beside it. #s308 (client 2.1.312): a publish from a file with `edits` ends
+    // with `editsApplied`, which is READ; it is in this shape's array so that record keeps `owned`
+    // and `icon` known, as #s181 put it in the typed shape's.
     ("owned", ARTIFACT_PUBLISH_SHAPE),
     // #s87 (client 2.1.296): a publish's `files_written` repeats the call input's `files` map with a
     // digest per file, and an open's `opened` is a boolean its result text states. Both are generic
@@ -1903,6 +2009,9 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // `files_written` in the publish shape also silences `icon` again, which came back beside it.
     ("files_written", ARTIFACT_PUBLISH_SHAPE),
     ("opened", ARTIFACT_OPEN_SHAPE),
+    // #s319 (client 2.1.312): an open now carries `owned`, true as in a create and a publish.
+    // Known only in this shape; adding it also silences `opened` again, which came back beside it.
+    ("owned", ARTIFACT_OPEN_SHAPE),
     // #s152 (client 2.1.296): a publish into an artifact made from a type. `files_written` is the
     // call input again with a digest per file, `files_removed` the input's null-valued `files`
     // keys, `own_files` and `type_files` the instance's files and the type's, as in a create. Each
@@ -1918,6 +2027,10 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // #s181 (client 2.1.303): an Artifact read's whole result is `{files_read}`, whose text the card
     // draws in full. Known only as the whole result, as CronList's `jobs` is.
     ("files_read", ARTIFACT_READ_SHAPE),
+    // #s308 (clients 2.1.311 and 2.1.312): an Artifact read by URL alone now carries `owned` beside
+    // the flat-known `read` and `artifactRead`, true as in a create and a publish. Known only in
+    // this shape.
+    ("owned", ARTIFACT_URL_READ_SHAPE),
     // #s268 (client 2.1.310): an ArtifactComments watch's whole result is `{watch}`, connection
     // bookkeeping beside what the result text already says. `watch` is a generic word, so it is
     // known only as the whole result, never on the flat ignored list.
@@ -3202,7 +3315,8 @@ pub(crate) fn decode_line_known(
                 return;
             }
             let phase = assistant_phase(&v, content);
-            for blk in content {
+            let cut = cut_off_text(&v, content, phase);
+            for (i, blk) in content.iter().enumerate() {
                 match blk.get("type").and_then(|t| t.as_str()) {
                     Some("text") => {
                         if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
@@ -3213,6 +3327,8 @@ pub(crate) fn decode_line_known(
                                         phase,
                                         inferred: true,
                                     });
+                                } else if cut == Some(i) {
+                                    msgs.push(Message::AssistantCutOff(t.to_string()));
                                 } else {
                                     msgs.push(Message::AssistantText(t.to_string()));
                                 }
@@ -4401,7 +4517,9 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     continue;
                 }
                 let phase = assistant_phase(&v, content);
-                for blk in content {
+                // #s305 mirror: a reply the person cut off mid-stream.
+                let cut = cut_off_text(&v, content, phase);
+                for (i, blk) in content.iter().enumerate() {
                     match blk.get("type").and_then(|t| t.as_str()) {
                         Some("text") => {
                             if let Some(t) = blk.get("text").and_then(|t| t.as_str()) {
@@ -4412,6 +4530,8 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                             phase,
                                             inferred: true,
                                         });
+                                    } else if cut == Some(i) {
+                                        out.push(Block::AssistantCutOff(t.to_string()));
                                     } else {
                                         out.push(Block::AssistantText(t.to_string()));
                                     }
@@ -7952,6 +8072,107 @@ mod tests {
         );
     }
 
+    /// #s328: 2.1.314's typed kind on an API error record is known, not reported while the sweep
+    /// asks, and the record still folds to ONE Failure note, never the assistant's prose. Removing
+    /// the key from the assistant arm of the census turns this red.
+    #[test]
+    fn an_api_error_s_typed_kind_is_known() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.314","sessionId":"s-s328","uuid":"u1","message":{"role":"user","content":"go"}}
+{"type":"assistant","version":"2.1.314","sessionId":"s-s328","uuid":"a1","isApiErrorMessage":true,"error":"server_error","apiError":"connection_failed","message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: Connection dropped (ECONNRESET). Check the proxy set in https_proxy, then try again."}]}}
+"##;
+        let messages = tokenize(jsonl.lines());
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s328"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+        let failures = messages
+            .iter()
+            .filter(|m| {
+                matches!(m, Message::SystemNote { text, kind: NoteKind::Failure }
+                    if text.contains("Connection dropped"))
+            })
+            .count();
+        assert_eq!(failures, 1, "one Failure note: {messages:?}");
+        let blocks = replay(&messages, &mut Vec::new(), &CLAUDE_SHAPING);
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, Block::AssistantText(_) | Block::AssistantMessage { .. })),
+            "the error is not the assistant speaking: {blocks:?}"
+        );
+    }
+
+    /// #s305: a reply the person cut off with Esc (2.1.311's `isAbortedMidStream`) is the
+    /// assistant's prose with a cut-off mark, on BOTH parse paths: the record's last text block
+    /// becomes `AssistantCutOff`, everything else folds exactly as the same transcript without the
+    /// flag (the interrupt marker after it included), a flagged record that has a phase keeps it
+    /// and gets no mark, and the key is known to the census.
+    #[test]
+    fn a_reply_aborted_mid_stream_is_cut_off_on_both_parse_paths() {
+        unknown_watch_keys(true);
+        let flagged = r##"
+{"type":"user","version":"2.1.311","sessionId":"s-s305","uuid":"u1","timestamp":"2026-10-28T01:00:00.000Z","message":{"role":"user","content":"Where do the skuas nest this year?"}}
+{"type":"assistant","version":"2.1.311","sessionId":"s-s305","uuid":"a1","parentUuid":"u1","requestId":"req_s305","apiBlockIndex":0,"isAbortedMidStream":true,"timestamp":"2026-10-28T01:00:02.000Z","message":{"role":"assistant","model":"claude-opus-5","stop_reason":null,"usage":{"input_tokens":12,"output_tokens":8},"content":[{"type":"text","text":"The skuas moved to the north cliff, above the tern colony, and the"}]}}
+{"type":"user","version":"2.1.311","sessionId":"s-s305","uuid":"u2","parentUuid":"a1","timestamp":"2026-10-28T01:00:03.000Z","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}
+{"type":"user","version":"2.1.311","sessionId":"s-s305","uuid":"u3","timestamp":"2026-10-28T01:00:09.000Z","message":{"role":"user","content":"Just the cliff, thanks."}}
+{"type":"assistant","version":"2.1.311","sessionId":"s-s305","uuid":"a2","isAbortedMidStream":true,"timestamp":"2026-10-28T01:00:10.000Z","message":{"role":"assistant","stop_reason":null,"content":[{"type":"thinking","thinking":"the cliff, then the colony"},{"type":"text","text":"North cliff."},{"type":"text","text":"Above the petrels"},{"type":"text","text":"  "}]}}
+{"type":"assistant","version":"2.1.311","sessionId":"s-s305","uuid":"a3","isAbortedMidStream":true,"timestamp":"2026-10-28T01:00:11.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}
+"##;
+        let messages = tokenize(flagged.lines());
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s305"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| matches!(m, Message::AssistantCutOff(_)))
+                .count(),
+            2,
+            "one mark per cut record: {messages:?}"
+        );
+
+        let mut ut = Vec::new();
+        let via_engine = replay(&messages, &mut ut, &CLAUDE_SHAPING);
+        let mut ut_main = Vec::new();
+        let via_main = parse_main(flagged.lines(), &mut ut_main);
+        assert_eq!(format!("{via_main:?}"), format!("{via_engine:?}"));
+        assert_eq!(ut, ut_main);
+
+        // Unflagged, the same transcript folds as it always did; flagged, only the marked
+        // blocks differ, and only in being marked.
+        let plain = flagged.replace(r#""isAbortedMidStream":true,"#, "");
+        let before = parse_main(plain.lines(), &mut Vec::new());
+        assert_eq!(before.len(), via_main.len(), "{before:?}\n{via_main:?}");
+        let mut marked = Vec::new();
+        for (b, a) in before.iter().zip(&via_main) {
+            match (b, a) {
+                (Block::AssistantText(was), Block::AssistantCutOff(now)) => {
+                    assert_eq!(was, now, "the recorded text is kept");
+                    marked.push(now.as_str());
+                }
+                _ => assert_eq!(format!("{b:?}"), format!("{a:?}")),
+            }
+        }
+        assert_eq!(
+            marked,
+            [
+                "The skuas moved to the north cliff, above the tern colony, and the",
+                "Above the petrels",
+            ],
+            "the last non-blank text block of each unphased cut record, and no other"
+        );
+        assert!(
+            via_main.iter().any(|b| matches!(b,
+                Block::AssistantMessage { text, phase: AssistantPhase::Final, .. } if text == "Done.")),
+            "a flagged record with a phase keeps it, unmarked: {via_main:?}"
+        );
+    }
+
     /// #370: the 2.1.288 placement flag on an attachment is known — not reported while the sweep
     /// asks. Removing it from the attachment arm of the census turns this red.
     #[test]
@@ -9118,6 +9339,20 @@ mod tests {
             "owned beside icon is known whole: {:?}",
             unknown_tool_result_keys(&owned)
         );
+        // #s308: since client 2.1.312 a publish from a file with edits also counts what it applied.
+        let mut edited = owned.clone();
+        edited["editsApplied"] = serde_json::json!(2);
+        assert!(
+            unknown_tool_result_keys(&edited).is_empty(),
+            "owned, icon and editsApplied are known whole: {:?}",
+            unknown_tool_result_keys(&edited)
+        );
+        edited["somethingNew"] = serde_json::json!(1);
+        assert_eq!(
+            unknown_tool_result_keys(&edited),
+            vec!["icon", "owned", "somethingNew"],
+            "beside a key from outside the shape, the shaped names come back with it"
+        );
     }
 
     /// #s268: an ArtifactComments `watch` result (client 2.1.310) is known whole, and `watch` beside
@@ -9171,8 +9406,9 @@ mod tests {
         );
     }
 
-    /// #s87: an Artifact `open` result (client 2.1.296) is known whole, and `opened` beside a key
-    /// from outside its shape is reported.
+    /// #s87: an Artifact `open` result (client 2.1.296) is known whole, and so is client 2.1.312's,
+    /// which ends with `owned` (#s319); `opened` and `owned` beside a key from outside the shape
+    /// are reported.
     #[test]
     fn an_artifact_open_result_is_known_in_its_own_shape() {
         let open = serde_json::json!({
@@ -9183,10 +9419,26 @@ mod tests {
             "a whole open result is known: {:?}",
             unknown_tool_result_keys(&open)
         );
+        let owned = serde_json::json!({
+            "opened": true, "url": "https://example.test/artifact/x", "artifact_id": "x",
+            "title": "X", "owned": true
+        });
+        assert!(
+            unknown_tool_result_keys(&owned).is_empty(),
+            "a 2.1.312 open result is known: {:?}",
+            unknown_tool_result_keys(&owned)
+        );
         assert_eq!(
             unknown_tool_result_keys(&serde_json::json!({"opened": true, "stdout": "ok"})),
             vec!["opened"],
             "outside the open shape, opened is reported"
+        );
+        assert_eq!(
+            unknown_tool_result_keys(
+                &serde_json::json!({"opened": true, "owned": true, "stdout": "ok"})
+            ),
+            vec!["opened", "owned"],
+            "outside the open shape, opened and owned are reported"
         );
     }
 
@@ -9406,6 +9658,61 @@ mod tests {
             unknown_tool_result_keys(&serde_json::json!({"files_read": {}, "stdout": "ok"})),
             vec!["files_read"],
             "beside another key, files_read is reported"
+        );
+    }
+
+    /// #s309: an ExitPlanMode result whose plan the person edited (client 2.1.199) carries
+    /// `planWasEdited: true`, known; the card's output is the result text, which marks the plan as
+    /// edited and carries it. Hand-written: no real plan or paths.
+    #[test]
+    fn an_edited_plan_s_flag_is_known_and_its_card_carries_the_edit() {
+        let jsonl = r##"
+{"type":"assistant","version":"2.1.199","sessionId":"s-309","message":{"content":[{"type":"tool_use","id":"ep1","name":"ExitPlanMode","input":{"plan":"# Tern survey\n1. count the nests","planFilePath":"/w/.claude/plans/tern.md","allowedPrompts":[]}}]}}
+{"type":"user","version":"2.1.199","sessionId":"s-309","toolUseResult":{"plan":"# Tern survey\n1. count the nests\n2. ring the chicks","isAgent":false,"filePath":"/w/.claude/plans/tern.md","planWasEdited":true},"message":{"content":[{"type":"tool_result","tool_use_id":"ep1","content":"User has approved your plan. You can now start coding.\n\n## Approved Plan (edited by user):\n# Tern survey\n1. count the nests\n2. ring the chicks"}]}}
+"##;
+        let blocks = parse(jsonl);
+        assert!(
+            !unknown_shapes()
+                .iter()
+                .any(|s| s.example.as_deref() == Some("s-309")),
+            "nothing in an edited plan's result is reported: {:?}",
+            unknown_shapes()
+        );
+        let Block::ToolUse { name, output, .. } = &blocks[0] else {
+            panic!("expected the ExitPlanMode call at 0: {blocks:?}")
+        };
+        assert_eq!(name, "ExitPlanMode");
+        let output = output.as_deref().unwrap_or("");
+        assert!(
+            output.contains("(edited by user)") && output.contains("2. ring the chicks"),
+            "the card's output marks the plan as edited and carries the edit: {output:?}"
+        );
+    }
+
+    /// #s308: an Artifact read by URL alone (clients 2.1.311 and 2.1.312) is `{read, artifactRead,
+    /// owned}`, known whole; `owned` beside a key from outside that shape is reported. Hand-written:
+    /// no real ids, URLs or titles.
+    #[test]
+    fn an_artifact_read_by_url_is_known_with_owned_in_its_own_shape() {
+        let read = serde_json::json!({
+            "read": {
+                "bytes": 2048, "code": 200, "codeText": "OK", "result": "", "durationMs": 310,
+                "url": "https://example.test/artifact/x", "title": "Tern colony notes"
+            },
+            "artifactRead": {"slug": "x", "ver": "v3"},
+            "owned": true
+        });
+        assert!(
+            unknown_tool_result_keys(&read).is_empty(),
+            "a whole read by URL is known: {:?}",
+            unknown_tool_result_keys(&read)
+        );
+        let mut stray = read.clone();
+        stray["somethingNew"] = serde_json::json!(1);
+        assert_eq!(
+            unknown_tool_result_keys(&stray),
+            vec!["owned", "somethingNew"],
+            "beside a key from outside the shape, owned is reported"
         );
     }
 

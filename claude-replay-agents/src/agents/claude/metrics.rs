@@ -4,8 +4,9 @@
 //! formatting live in [`claude_replay_engine::seam`].
 
 use claude_replay_engine::seam::{
-    credits_cost, long_prompt_over, parse_ts, prices_fast, total_cost, Metrics, ReportedCost,
-    RequestPricing, RuntimeInfo, ServiceTier, TimeSpan, TokenCounts,
+    credits_cost, epoch_secs, long_prompt_over, parse_ts, prices_fast, total_cost, AnswerClock,
+    AnswerLine, AnswerTiming, Metrics, ReportedCost, RequestPricing, RuntimeInfo, ServiceTier,
+    TimeSpan, TokenCounts,
 };
 use serde_json::Value;
 
@@ -64,6 +65,9 @@ pub(crate) struct MetricsAcc {
     reported_through: Option<i64>,
     /// The client flagged a model it could not price itself.
     reported_unknown_model: bool,
+    /// Each answer's timing (#s341): Claude Code writes an answer as one line per content block,
+    /// all naming its `message.id`, so the clock pairs them by that id. In the state.
+    answers: AnswerClock,
 }
 
 impl MetricsAcc {
@@ -302,6 +306,57 @@ impl MetricsAcc {
                 self.span.observe(secs);
             }
         }
+        self.time_answer(v);
+    }
+
+    /// Fold the line into [`answers`](Self::answers): an assistant line is a part of the answer
+    /// its `message.id` names, and every user line a request (a prompt, a tool result, or a meta
+    /// record the client writes with one). A `<synthetic>` record is the client's own (an API
+    /// error it reports), not an answer. A sub-agent's lines are read like any: its own file
+    /// marks every one `isSidechain` (no parent file on this box held such lines among its own,
+    /// 0 of 109, 2026-10-30). The Qoder family bills in credits with its token counts zeroed, so
+    /// an answer whose usage carries `credits` has no output count rather than a false 0.
+    fn time_answer(&mut self, v: &Value) {
+        let ts = v
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(epoch_secs);
+        let model = v
+            .pointer("/message/model")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let id = v.pointer("/message/id").and_then(Value::as_str);
+        let line = match (v.get("type").and_then(Value::as_str), id) {
+            (Some("assistant"), Some(id)) if model != "<synthetic>" => AnswerLine::Part {
+                id: id.to_string(),
+                model: model.to_string(),
+                output_tokens: v
+                    .pointer("/message/usage")
+                    .filter(|u| u.get("credits").is_none())
+                    .and_then(|u| u.get("output_tokens"))
+                    .and_then(Value::as_u64),
+            },
+            (Some("user"), _) => AnswerLine::Request,
+            _ => AnswerLine::Other,
+        };
+        self.answers.line(ts, line);
+    }
+
+    /// A line the consumer could not read (the seam's `malformed_line`): it may have been the
+    /// request the next answer answers or that answer's first line, so neither its `sent` nor its
+    /// `first` is known.
+    pub(crate) fn malformed_line(&mut self) {
+        self.answers.unread();
+    }
+
+    /// The seam's `answer`: the answer the most recent push ended.
+    pub(crate) fn answer(&self) -> Option<AnswerTiming> {
+        self.answers.ended().cloned()
+    }
+
+    /// The seam's `open_answer`: the answer whose lines may still be arriving.
+    pub(crate) fn open_answer(&self) -> Option<AnswerTiming> {
+        self.answers.open().cloned()
     }
 
     /// Running per-model totals, the counter bag and the observed span (#96 §7).
@@ -340,6 +395,7 @@ impl MetricsAcc {
                 .collect::<std::collections::BTreeMap<String, f64>>(),
             "reported_through": self.reported_through,
             "reported_unknown_model": self.reported_unknown_model,
+            "answers": self.answers,
         })
     }
 
@@ -399,6 +455,12 @@ impl MetricsAcc {
             .get("reported_unknown_model")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        // A cursor parked before #s341 holds no clock: the answer whose line comes next may have
+        // begun before it, so that one answer's start is not known.
+        self.answers = state
+            .get("answers")
+            .and_then(|a| serde_json::from_value::<AnswerClock>(a.clone()).ok())
+            .unwrap_or_else(AnswerClock::resumed_blind);
     }
 
     /// Re-seed a resumed accumulator (#96 §7).
@@ -1364,5 +1426,206 @@ mod long_prompt_tests {
         assert!(acc.clone().finish().per_model["claude-opus-4-8"]
             .long_prompt
             .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod answer_tests {
+    use super::*;
+
+    /// A line for the answer clock (#s341): an assistant line of answer `id` at `ts` with `out`
+    /// output tokens, a user line (a prompt or a tool result), or a line with no time.
+    /// Synthetic — never built from a real transcript.
+    fn part(id: &str, out: u64, ts: &str) -> Value {
+        serde_json::json!({"type": "assistant", "timestamp": ts, "message": {
+            "role": "assistant", "id": id, "model": "claude-opus-4-8",
+            "usage": {"input_tokens": 2, "output_tokens": out}}})
+    }
+    fn user(ts: &str) -> Value {
+        serde_json::json!({"type": "user", "timestamp": ts,
+            "message": {"role": "user", "content": "go"}})
+    }
+    /// A record Claude Code writes out of time order: an attachment stamped after the answer's
+    /// first line, though it sits before it.
+    fn late(ts: &str) -> Value {
+        serde_json::json!({"type": "attachment", "timestamp": ts,
+            "attachment": {"type": "total_tokens_reminder"}})
+    }
+
+    /// Every answer the pushes end, then the one still open — what a consumer reading the whole
+    /// file collects.
+    fn answers(acc: &mut MetricsAcc, lines: &[Value]) -> Vec<AnswerTiming> {
+        let mut out = Vec::new();
+        for line in lines {
+            acc.push(line);
+            out.extend(acc.answer());
+        }
+        out.extend(acc.open_answer());
+        out
+    }
+
+    fn secs(ts: &str) -> Option<f64> {
+        epoch_secs(ts)
+    }
+
+    /// #s341: an answer written as several lines, a tool result between two of them, is ONE
+    /// record: sent at the prompt (never at a record written out of time order before it), first
+    /// and last at its first and last line, the highest output count, and it ends only when the
+    /// next answer begins.
+    #[test]
+    fn an_answer_over_several_lines_is_one_timed_record() {
+        let mut acc = MetricsAcc::default();
+        let got = answers(
+            &mut acc,
+            &[
+                user("2026-10-30T10:00:00.250Z"),
+                late("2026-10-30T10:00:03.000Z"),
+                part("msg_01A", 6, "2026-10-30T10:00:02.000Z"),
+                part("msg_01A", 6, "2026-10-30T10:00:05.500Z"),
+                user("2026-10-30T10:00:06.000Z"),
+                part("msg_01A", 478, "2026-10-30T10:00:07.750Z"),
+                user("2026-10-30T10:00:09.000Z"),
+                part("msg_bdrk_01B", 90, "2026-10-30T10:00:12.000Z"),
+            ],
+        );
+        assert_eq!(got.len(), 2, "{got:?}");
+        let a = &got[0];
+        assert_eq!(a.id, "msg_01A");
+        assert_eq!(a.model, "claude-opus-4-8");
+        assert_eq!(a.provider, None);
+        assert_eq!(
+            a.sent,
+            secs("2026-10-30T10:00:00.250Z"),
+            "the prompt, not the late record"
+        );
+        assert_eq!(a.first, secs("2026-10-30T10:00:02.000Z"));
+        assert_eq!(
+            a.last,
+            secs("2026-10-30T10:00:07.750Z"),
+            "the tool result did not end it"
+        );
+        assert_eq!(a.lines, 3);
+        assert_eq!(a.output_tokens, Some(478));
+        let b = &got[1];
+        assert_eq!(b.id, "msg_bdrk_01B");
+        assert_eq!(b.sent, secs("2026-10-30T10:00:09.000Z"));
+        assert_eq!(
+            (b.first, b.last, b.lines),
+            (b.last, secs("2026-10-30T10:00:12.000Z"), 1)
+        );
+    }
+
+    /// #s341: the answer a push ended is handed out on that push only, and the session's last
+    /// answer is open, never ended, until another begins; a `<synthetic>` record (the client's own
+    /// API error) is no answer and ends none; a part with no time keeps the last time seen.
+    #[test]
+    fn an_answer_ends_only_when_another_begins() {
+        let mut acc = MetricsAcc::default();
+        acc.push(&user("2026-10-30T10:00:00Z"));
+        acc.push(&part("msg_01A", 10, "2026-10-30T10:00:01Z"));
+        assert_eq!(acc.answer(), None);
+        assert_eq!(acc.open_answer().map(|a| a.id).as_deref(), Some("msg_01A"));
+        let mut synthetic = part("msg_synth", 0, "2026-10-30T10:00:02Z");
+        synthetic["message"]["model"] = "<synthetic>".into();
+        acc.push(&synthetic);
+        let mut untimed = part("msg_01A", 12, "");
+        untimed.as_object_mut().unwrap().remove("timestamp");
+        acc.push(&untimed);
+        assert_eq!(acc.answer(), None);
+        let a = acc.open_answer().unwrap();
+        assert_eq!((a.lines, a.output_tokens), (2, Some(12)));
+        assert_eq!(
+            a.last,
+            secs("2026-10-30T10:00:01Z"),
+            "an untimed part keeps the last time"
+        );
+        acc.push(&part("msg_01B", 10, "2026-10-30T10:00:04Z"));
+        assert_eq!(acc.answer().map(|a| a.id).as_deref(), Some("msg_01A"));
+        let b = acc.open_answer().unwrap();
+        assert_eq!(b.sent, secs("2026-10-30T10:00:00Z"), "the latest request");
+        acc.push(&part("msg_01B", 10, "2026-10-30T10:00:05Z"));
+        assert_eq!(
+            acc.answer(),
+            None,
+            "handed out once, on the push that ended it"
+        );
+    }
+
+    /// #s341: a sub-agent's own file marks every line `isSidechain`, and its answers are timed
+    /// like any (the review of #s341: skipping such lines lost every sub-agent's answers).
+    #[test]
+    fn a_sub_agent_s_own_file_is_timed_like_any() {
+        let side = |mut v: Value| {
+            v["isSidechain"] = true.into();
+            v
+        };
+        let got = answers(
+            &mut MetricsAcc::default(),
+            &[
+                side(user("2026-10-30T10:00:00Z")),
+                side(part("msg_01A", 300, "2026-10-30T10:00:03Z")),
+                side(part("msg_01A", 300, "2026-10-30T10:00:04Z")),
+            ],
+        );
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].sent, secs("2026-10-30T10:00:00Z"));
+        assert_eq!(got[0].lines, 2);
+    }
+
+    /// #s341: the Qoder family bills in credits with its token counts zeroed (see `push`), so
+    /// such an answer has no output count, never a false 0.
+    #[test]
+    fn an_answer_billed_in_credits_has_no_output_count() {
+        let mut credited = part("msg_01Q", 0, "2026-10-30T10:00:01Z");
+        credited["message"]["usage"]["credits"] = 2.5.into();
+        let got = answers(&mut MetricsAcc::default(), &[credited]);
+        assert_eq!(got[0].output_tokens, None);
+    }
+
+    /// #s341: a fold resumed mid-answer from its state hands out exactly what a whole-file fold
+    /// does, and the timing is in the state.
+    #[test]
+    fn a_resume_mid_answer_times_it_as_a_whole_file_fold() {
+        let lines = [
+            user("2026-10-30T10:00:00.100Z"),
+            part("msg_01A", 30, "2026-10-30T10:00:01.200Z"),
+            part("msg_01A", 300, "2026-10-30T10:00:04.700Z"),
+            user("2026-10-30T10:00:05.000Z"),
+            part("msg_01B", 70, "2026-10-30T10:00:06.300Z"),
+        ];
+        let whole = answers(&mut MetricsAcc::default(), &lines);
+        for cut in 1..lines.len() {
+            let mut before = MetricsAcc::default();
+            let mut got = answers(&mut before, &lines[..cut]);
+            got.retain(|a| a.id != before.open_answer().map(|o| o.id).unwrap_or_default());
+            let parked = serde_json::to_string(&before.state()).unwrap();
+            let mut after = MetricsAcc::default();
+            after.restore(&serde_json::from_str(&parked).unwrap());
+            got.extend(answers(&mut after, &lines[cut..]));
+            assert_eq!(got, whole, "resumed after line {cut}");
+        }
+    }
+
+    /// #s341: a cursor parked before the clock existed cannot tell when the next answer began
+    /// (it may have begun before the cursor): that answer's `sent` and `first` are `None`, and
+    /// the answers after it are timed whole.
+    #[test]
+    fn a_cursor_from_before_the_clock_leaves_the_next_answer_s_start_unknown() {
+        let mut acc = MetricsAcc::default();
+        let mut parked = acc.state();
+        parked.as_object_mut().unwrap().remove("answers");
+        acc.restore(&parked);
+        let got = answers(
+            &mut acc,
+            &[
+                part("msg_01A", 30, "2026-10-30T10:00:01Z"),
+                user("2026-10-30T10:00:02Z"),
+                part("msg_01B", 30, "2026-10-30T10:00:03Z"),
+            ],
+        );
+        assert_eq!((got[0].sent, got[0].first), (None, None));
+        assert_eq!(got[0].last, secs("2026-10-30T10:00:01Z"));
+        assert_eq!(got[1].sent, secs("2026-10-30T10:00:02Z"));
+        assert_eq!(got[1].first, secs("2026-10-30T10:00:03Z"));
     }
 }

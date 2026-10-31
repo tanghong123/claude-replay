@@ -106,7 +106,7 @@ fn granted(
 /// Does an unexpired grant follow a HERDR restore of the same session (#s234, Hong's option 1 on
 /// #s233)? Only when the pid is all that changed: the same herdr server (the grant's socket half
 /// is `herdr:<socket>`) and pane — both read from the new process's OWN environment, and only
-/// when herdr is its nearest multiplexer (`apply_nesting`), since that is the only way a target
+/// when herdr is its nearest multiplexer (`apply_nesting_ttys`), since that is the only way a target
 /// gets a herdr address — and the same session id. `follows` is the caller's word that the target
 /// IS a herdr pane whose process names the session itself (`PaneAddr::grant_follows`: `--resume
 /// <id>` or `--session-id <id>`, never a bare id, a prefix, a fork or a directory pairing); the

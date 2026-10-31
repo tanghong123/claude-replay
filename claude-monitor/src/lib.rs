@@ -6,11 +6,13 @@
 
 #[cfg(feature = "codex-native")]
 pub use claude_monitor_codex as codex_gateway;
+mod claude_registry;
 #[cfg(feature = "codex-native")]
 pub mod codex_workspace;
 pub mod consent;
 pub mod control;
 pub mod cost;
+mod desktop_sessions;
 pub mod dialog;
 pub mod index;
 pub mod pair_phone;
