@@ -366,8 +366,9 @@ start, names the old id and the job; confirmed but not `named`. An `attach` pref
 finished: out of the directory rule and the growth proof (`continued-in` is no activity), and its row
 says `continuedIn`. herdr's Claude hook reports a session only when one STARTS, so it keeps the old id
 for that pane: the send, the dialog read and answer, and the state pass (`herdr_runs`) accept the
-sessions on that process's chain (`continues`, empty for a link made any other way, so a picker
-re-resume of the old id is never typed into as the new session).
+sessions on that process's verified chain (`continues`, empty without a verified parked record
+and validated continuation). The record's source also names the old hook ID for a plain client or
+one whose argv still names a session from before `/resume`; an unverified selector gets no aliases.
 Recency and ambiguity are selected per agent and exact cwd (#s250); a configured executable
 whose kind is unknown keeps the shared scope. Explicit argv/open-transcript links, retained
 growth proofs and time-paired workers do not compete for the newest unnamed session, and

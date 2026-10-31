@@ -2019,7 +2019,7 @@ impl Index {
                 .filter(|link| link.confirmed)
                 .and_then(|link| table.by_pid.get(&link.pid))
                 .filter(|p| p.native_session.session() == Some(sid.as_str()))
-                .map(|p| moves.continues(p, sid, &prefix_unique))
+                .map(|p| moves.continues(p, sid))
                 .unwrap_or_default();
             let (state, conf) = if growing {
                 ("growing", "")
@@ -3045,30 +3045,8 @@ impl<'a> Moves<'a> {
         )
     }
 
-    /// The session `p`'s argv names, when the scan is looking for `sid`'s process: an exact id, or
-    /// an `attach` prefix that exactly one known session starts with (`prefix_unique`). That
-    /// session is `sid` itself, or one a move took the conversation from (the review of #s294: an
-    /// `attach` client of the old session was linked to neither).
-    fn named_session(
-        &self,
-        p: &Proc,
-        sid: &str,
-        prefix_unique: &dyn Fn(&str) -> bool,
-    ) -> Option<String> {
-        match p.argv_session_ref()? {
-            SessionRef::Exact(u) => Some(u),
-            SessionRef::Prefix(pf) if !prefix_unique(&pf) => None,
-            SessionRef::Prefix(pf) if sid.starts_with(pf.as_str()) => Some(sid.to_string()),
-            SessionRef::Prefix(pf) => self
-                .0
-                .keys()
-                .find(|from| from.starts_with(pf.as_str()))
-                .map(|from| from.to_string()),
-        }
-    }
-
-    /// The sessions a process naming `named` in its argv went through: `named` first, then each
-    /// session a move took the conversation to while the process ran, ending at the one it drives.
+    /// The sessions a process's recorded source went through: `named` first, then each session
+    /// a move took the conversation to while the process ran, ending at the one it drives.
     /// A move is followed only when
     ///
     /// * the process started no later than the move (a process started after it chose the old id
@@ -3104,16 +3082,17 @@ impl<'a> Moves<'a> {
         path
     }
 
-    /// The sessions moved into `sid` on the way to `p` driving it — what herdr may still name for
-    /// `p`'s pane, since its Claude hook reports a session only when one STARTS. Empty unless
-    /// `p`'s argv names a session whose [`chain`](Self::chain) ends at `sid`: a process linked any
-    /// other way (the directory rule, a growth proof of a process that names nothing) proves
-    /// nothing about which session herdr's hook saw start in that pane.
-    fn continues(&self, p: &Proc, sid: &str, prefix_unique: &dyn Fn(&str) -> bool) -> Vec<String> {
-        let Some(u) = self.named_session(p, sid, prefix_unique) else {
+    /// Old hook IDs belong to the selected process's verified continuation, whose source
+    /// survives a missing or stale launch argument. A current native record without that
+    /// derived continuation supplies no aliases, even if argv names a predecessor.
+    fn continues(&self, p: &Proc, sid: &str) -> Vec<String> {
+        let Identity::Continued { source, session } = &p.native_session else {
             return Vec::new();
         };
-        let mut chain = self.chain(p, &u);
+        if session != sid {
+            return Vec::new();
+        }
+        let mut chain = self.chain(p, source);
         if chain.last() != Some(&sid) {
             return Vec::new();
         }
@@ -7959,6 +7938,14 @@ n/Users/x/proj
         let b = "bbbbbbbb-0000-4000-8000-000000000294";
         let now = 1_791_400_000u64;
         let moved_at = now - 3_600;
+        let job_dir = scratch.join("jobs/bbbbbbbb");
+        std::fs::create_dir_all(&job_dir).unwrap();
+        std::fs::write(job_dir.join("state.json"), r#"{"backend":"daemon","template":"bg","interactiveLineage":true,"sessionId":"bbbbbbbb-0000-4000-8000-000000000294"}"#).unwrap();
+        let job: Value =
+            serde_json::from_slice(&std::fs::read(job_dir.join("state.json")).unwrap()).unwrap();
+        let job_session = job["sessionId"].as_str().unwrap();
+        assert_eq!(job_session, b);
+        assert_eq!(job["backend"], "daemon");
         let parked = |procs: &mut Vec<Proc>| {
             for p in procs.iter_mut().filter(|p| p.pid == 700) {
                 p.native_session = Identity::Verified(a.into());
@@ -8029,6 +8016,17 @@ n/Users/x/proj
         let mut facts = Vec::new();
         let snapshot = idx.assemble(&st, &mut facts);
         let row_b = find(&snapshot, b).expect("B's row");
+        assert_eq!(row_b["id"], job_session);
+        let native_client = st.procs.iter().find(|p| p.pid == 700).unwrap();
+        let parked_job = native_client.parked.as_ref().unwrap();
+        assert!(job_session.starts_with(&parked_job.job));
+        assert_eq!(
+            st.rows[a].continued_in.as_ref().unwrap().session,
+            job_session
+        );
+        let engine = st.procs.iter().find(|p| p.pid == 701).unwrap();
+        assert_eq!(engine.native_session.session(), Some(job_session));
+        assert!(is_helper(&engine.argv));
         assert_eq!(row_b["pid"], 700, "{row_b}");
         assert_eq!(row_b["term"], "herdr");
         assert_eq!(row_b["target"], "w1:pC");
@@ -8049,6 +8047,48 @@ n/Users/x/proj
         assert_eq!(fact_b.continues, vec![a.to_string()]);
         let fact_a = facts.iter().find(|f| f.sid == a).unwrap();
         assert!(fact_a.continues.is_empty());
+
+        // Native source identity wins for plain clients and stale launch arguments alike.
+        for argv in [
+            "claude".to_string(),
+            "claude --resume eeeeeeee-0000-4000-8000-000000000294".to_string(),
+        ] {
+            let mut st = world("1-00:00:00");
+            let client = st.procs.iter_mut().find(|p| p.pid == 700).unwrap();
+            client.after_exe = argv
+                .strip_prefix("claude")
+                .unwrap()
+                .trim_start()
+                .to_string();
+            client.argv = argv;
+            idx.prove_by_growth(&mut st);
+            let mut facts = Vec::new();
+            let snapshot = idx.assemble(&st, &mut facts);
+            assert_eq!(find(&snapshot, job_session).unwrap()["pid"], 700);
+            assert_eq!(
+                facts
+                    .iter()
+                    .find(|fact| fact.sid == job_session)
+                    .unwrap()
+                    .continues,
+                vec![a]
+            );
+        }
+        let mut mismatch = world("1-00:00:00");
+        mismatch
+            .procs
+            .iter_mut()
+            .find(|p| p.pid == 700)
+            .unwrap()
+            .parked
+            .as_mut()
+            .unwrap()
+            .job = "cccccccc".into();
+        idx.prove_by_growth(&mut mismatch);
+        let mut facts = Vec::new();
+        let snapshot = idx.assemble(&mismatch, &mut facts);
+        assert_ne!(find(&snapshot, job_session).unwrap()["pid"], 700);
+        assert!(facts.iter().all(|fact| fact.continues.is_empty()));
 
         // The review of #s294, point 1: as the client moves the conversation, A's tail grows (its
         // own enqueues), and then the reader types into B. Neither growth proof may hand A the
@@ -8234,10 +8274,14 @@ n/Users/x/proj
             p
         };
         let resume_a = format!("claude --resume {a}");
-        let p = proc_of(&resume_a, Some(50), Some((a, "cccccccc")));
+        let mut p = proc_of(&resume_a, Some(50), Some((a, "cccccccc")));
+        p.native_session = Identity::Continued {
+            source: a.into(),
+            session: c.into(),
+        };
         assert_eq!(moves.chain(&p, a), vec![a, b, c], "alive for both moves");
-        assert_eq!(moves.continues(&p, c, &|_| true), vec![a, b]);
-        assert!(moves.continues(&p, b, &|_| true).is_empty(), "it drives c");
+        assert_eq!(moves.continues(&p, c), vec![a, b]);
+        assert!(moves.continues(&p, b).is_empty(), "it drives c");
         let p = proc_of(&resume_a, Some(50), Some((a, "bbbbbbbb")));
         assert_eq!(
             moves.chain(&p, a),
@@ -8276,11 +8320,14 @@ n/Users/x/proj
         let mut attach = proc_of("claude attach aaaaaaaa", Some(50), Some((a, "bbbbbbbb")));
         attach.tty = Some("ttys004".into());
         let only_a = |pf: &str| pf == "aaaaaaaa";
-        assert_eq!(moves.named_session(&attach, b, &only_a).as_deref(), Some(a));
         let mut two: HashMap<String, Row> = HashMap::new();
         two.insert(a.into(), moved(b, 100));
         two.insert(b.into(), growth_row("/w/h", false));
-        attach.native_session = Identity::Verified(b.into());
+        attach.native_session = Identity::Continued {
+            source: a.into(),
+            session: b.into(),
+        };
+        assert_eq!(Moves::of(&two).continues(&attach, b), vec![a]);
         let l = link(
             std::slice::from_ref(&attach),
             b,

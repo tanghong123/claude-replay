@@ -37,6 +37,7 @@ impl Identity {
         }
     }
 
+    /// The verified file's identity, before applying any in-memory transcript continuation.
     pub(crate) fn recorded_session(&self) -> Option<&str> {
         match self {
             Self::Verified(session) => Some(session),
