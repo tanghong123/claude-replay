@@ -171,8 +171,6 @@ jobs:
 
             def install
               bin.install "agent-replay"
-              # Rename transition (v1.101.0): the old name keeps working as a symlink.
-              bin.install_symlink bin/"agent-replay" => "claude-replay"
             end
 
             test do
@@ -254,7 +252,6 @@ jobs:
 
             def install
               bin.install "agent-monitor"
-              bin.install_symlink bin/"agent-monitor" => "claude-monitor"
             end
 
             test do
@@ -295,7 +292,6 @@ jobs:
 
             def install
               bin.install "agent-monitor-fleet"
-              bin.install_symlink bin/"agent-monitor-fleet" => "claude-monitor-fleet"
             end
 
             test do
@@ -304,26 +300,16 @@ jobs:
           end
           EOF
 
-          # The Homebrew rename protocol: `formula_renames.json` maps the old names, and
-          # the old formula FILES must be gone — brew errors when a renames entry and the
-          # old formula coexist. Existing `brew upgrade claude-replay` installs then
-          # transparently continue as agent-replay.
-          cat > tap/formula_renames.json <<EOF
-          {
-            "claude-replay": "agent-replay",
-            "claude-monitor": "agent-monitor",
-            "claude-monitor-fleet": "agent-monitor-fleet"
-          }
-          EOF
-          rm -f tap/Formula/claude-replay.rb tap/Formula/claude-monitor.rb tap/Formula/claude-monitor-fleet.rb
-
           cd tap
           git config user.name "Hong Tang"
           git config user.email "hong.tang@gmail.com"
+          # The v1.101.0 rename's map of the old `claude-*` formula names is retired (#s15,
+          # Hong): removed once, a no-op on every release after.
+          git rm -q --ignore-unmatch formula_renames.json
           # Stage EVERYTHING the step wrote or removed — a hardcoded file list is how the
           # v1.101.0 rename shipped a tap with the old formulas deleted and the new ones
           # sitting unstaged in the clone (repaired by hand; this line is the fix).
-          git add -A Formula formula_renames.json
+          git add -A Formula
           if git diff --cached --quiet; then
             echo "formulas already at ${ver}; nothing to do"
           else

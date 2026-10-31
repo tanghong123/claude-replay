@@ -2,7 +2,8 @@
 
 A Rust + ratatui terminal UI viewer (**binaries: `agent-replay` / `agent-monitor` /
 `agent-monitor-fleet` since v1.101.0** — crate and repo names keep the `claude-` prefix;
-brew installs symlink the old command names). It is **fully testable headless (no TTY)** —
+the old `claude-*` command names brew kept as symlinks, and the tap's rename map, were retired
+by #s15). It is **fully testable headless (no TTY)** —
 never skip, stub, or defer a feature "because it needs a terminal."
 
 ## Work tracking
