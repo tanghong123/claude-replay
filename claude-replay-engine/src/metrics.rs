@@ -385,8 +385,11 @@ pub enum UsageKind {
 pub struct AnswerTiming {
     /// The answer's own id where the agent records one (Claude Code: `message.id`, whose prefix
     /// names the service: `msg_01` Anthropic's API or a gateway passing its ids through,
-    /// `msg_bdrk_` Bedrock, `msg_vrtx_` Vertex). Codex names no request, so its id is the
-    /// counter reading's, as [`MetricsAccumulator::usage_id`] gives it.
+    /// `msg_bdrk_` Bedrock, `msg_vrtx_` Vertex). The Qoder family records the id of whichever
+    /// service it routed the answer to (`resp_`, `chatcmpl-`, `msg_`, a UUID), which names none
+    /// of its own. Codex's is the counter reading's, as [`MetricsAccumulator::usage_id`] gives
+    /// it: every rollout has the reading that counts an answer, and only one from 0.147 on names
+    /// the response.
     ///
     /// [`MetricsAccumulator::usage_id`]: crate::adapter::MetricsAccumulator::usage_id
     pub id: String,
@@ -396,8 +399,9 @@ pub struct AnswerTiming {
     /// (Codex: `session_meta`'s `model_provider`). `None` for Claude Code, whose `id` names it.
     pub provider: Option<String>,
     /// When the request went out: the time of the latest REQUEST line before the answer's first
-    /// line (the prompt, or the tool result it answers). `None` where none was read, where that
-    /// line carried no time, or where the agent does not write the answer's parts (Codex).
+    /// line (the prompt, or the tool result it answers; for Codex, any line sent to the model,
+    /// a compaction's summary included). `None` where none was read or where that line carried
+    /// no time.
     ///
     /// Not merely the latest timed line: Claude Code writes some records out of time order (its
     /// attachments, its log of API calls, file history), and in 40 transcripts (2026-10-30) the
@@ -405,18 +409,21 @@ pub struct AnswerTiming {
     /// 200 tokens or more; the latest prompt or tool result never did, and output tokens over
     /// `last - sent` ran at 41, 73 and 104 a second at the 10th, 50th and 90th percentile.
     pub sent: Option<f64>,
-    /// The time of the answer's first line. `None` where the agent writes no line per part
-    /// (Codex), or where the answer may have begun before what was read (a resumed fold's cursor,
-    /// a line the consumer could not read).
+    /// The time of the answer's first line. `None` where the answer may have begun before what
+    /// was read (a resumed fold's cursor, a line the consumer could not read).
     ///
     /// Claude Code writes a line when its content block ENDS, so this is the end of the first
     /// block (often the whole thinking), not the first token: tokens over `last - first` overstate
     /// the speed many times (a median of 1,394 a second, measured as above), while `last - sent`
-    /// holds.
+    /// holds. Codex writes each item (reasoning, message, call) when it ends, and the Qoder family
+    /// every part of an answer at once, when it ended.
     pub first: Option<f64>,
-    /// The time of the answer's last line read so far.
+    /// The time of the answer's last line read so far. Codex's is the response's end where its
+    /// rollout records one (`token_usage_record`, 0.147 on), else its last item's: never the
+    /// reading that counts its tokens, which waits for the calls the answer made.
     pub last: Option<f64>,
-    /// How many lines carried it (with one, `first == last`).
+    /// How many lines carried it: its parts, or Codex's items (1 for a reading with none read
+    /// before it).
     pub lines: u32,
     /// The tokens the model wrote, thinking and reasoning included: the highest count any of its
     /// lines reported (Claude Code repeats the answer's count on each line, and a streamed one
