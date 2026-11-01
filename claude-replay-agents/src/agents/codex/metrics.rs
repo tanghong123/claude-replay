@@ -98,6 +98,12 @@ impl CodexMetricsAcc {
             {
                 self.provider = Some(p.to_string()).filter(|p| !p.is_empty());
             }
+            if let Some(version) = value
+                .pointer("/payload/cli_version")
+                .and_then(Value::as_str)
+            {
+                self.clock.items_unseen = super::model::transport_ignored(version);
+            }
         }
         if let Some(timestamp) = value
             .get("timestamp")
@@ -332,21 +338,19 @@ impl CodexMetricsAcc {
                 // The request's own output is `last_token_usage`'s, reasoning included; the
                 // counter's delta may span several requests, so a rollout without it gives none.
                 // Its times are the clock's; with no item read, the reading's alone.
-                let timed = self.clock.take();
+                let at = value
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .and_then(epoch_secs);
+                let (sent, first, last, lines) = self.clock.counted(at);
                 self.answer = Some(AnswerTiming {
                     id: id.clone(),
                     model: self.model.clone(),
                     provider: self.provider.clone(),
-                    sent: timed.as_ref().and_then(|t| t.sent),
-                    first: timed.as_ref().and_then(|t| t.first),
-                    last: match &timed {
-                        Some(t) => t.end.or(t.last),
-                        None => value
-                            .get("timestamp")
-                            .and_then(Value::as_str)
-                            .and_then(epoch_secs),
-                    },
-                    lines: timed.as_ref().map_or(1, |t| t.lines),
+                    sent,
+                    first,
+                    last,
+                    lines,
                     output_tokens: value
                         .pointer("/payload/info/last_token_usage/output_tokens")
                         .and_then(Value::as_u64),
@@ -555,14 +559,21 @@ impl RolloutLine {
 /// writes each item the model sends (its reasoning, a message, a call) as a line when the item
 /// ends, and each line sent with the next request (the prompt, a call's output) as it records
 /// it; from 0.147 (2026-09-03) a `token_usage_record` marks when the response ended; the
-/// `token_count` reading comes after the calls the answer made have run.
+/// `token_count` reading comes after the calls the answer made have run, and the next request
+/// goes out after it.
 ///
 /// So an answer is the items read since the reading before: `sent` is the latest line sent to
-/// the model before its first item, `first` that item's time, and `last` the response's end
-/// where a `token_usage_record` says it, else its last item's. Never the reading's time: it
-/// waits for the answer's calls, 2.5 s after the last item at the median and 60 s at the 99th
-/// percentile, against 0.2 s and 5 s for an answer that made none (163,925 readings that moved
-/// the counter, in 1,445 rollouts on one box, 2026-11-01).
+/// the model, or the latest reading, before its first item; `first` that item's time; and
+/// `last` the response's end where a `token_usage_record` says it, else its last item's where
+/// the fold reads every item. A session Codex 0.147 or later started draws each call from its
+/// mirror and leaves the transport's lines out of the fold (an `exec` or `wait` call and its
+/// receipt, which the preprocessor ignores): there the reading counts as sent, as the outputs
+/// of many calls are not here to say it, and an answer whose end is not recorded has no `last`,
+/// as its last item may be a call the fold never saw (0.147's alphas wrote no
+/// `token_usage_record` before 2026-09-03). Never the reading as the end: it waits for the
+/// answer's calls, 2.5 s after the last item at the median and 60 s at the 99th percentile,
+/// against 0.2 s and 5 s for an answer that made none (163,925 readings that moved the counter,
+/// in 1,445 rollouts on one box, 2026-11-01).
 ///
 /// A forked thread's rollout copies the parent's items, stamped with the time of the fork, and
 /// none of its readings: a prompt that arrives while an answer has not ended drops that answer
@@ -584,6 +595,11 @@ struct ResponseClock {
     /// `first` are not known.
     #[serde(default)]
     blind: bool,
+    /// The session leaves the transport's lines out of the fold
+    /// ([`transport_ignored`](super::model::transport_ignored)), so an answer's last item read
+    /// may not be its last: with no recorded end, its end is not known.
+    #[serde(default)]
+    items_unseen: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -602,10 +618,12 @@ struct OpenAnswer {
 }
 
 impl ResponseClock {
-    /// A clock for a fold resumed from a state written before it existed: see `blind`.
+    /// A clock for a fold resumed from a state written before it existed: see `blind`. The
+    /// session's version was read before the cursor, so whether it hides items is not known.
     fn resumed_blind() -> Self {
         Self {
             blind: true,
+            items_unseen: true,
             ..Self::default()
         }
     }
@@ -657,9 +675,19 @@ impl ResponseClock {
         self.blind = true;
     }
 
-    /// The answer a reading counts: what the clock holds, which it lets go.
-    fn take(&mut self) -> Option<OpenAnswer> {
-        self.open.take()
+    /// A reading that counted an answer, at `ts`: the answer's `sent`, `first`, `last` and
+    /// `lines`, which the clock lets go, or the reading's time alone when no item was read. The
+    /// reading also says when the next request went out, as it comes after every output of the
+    /// calls the answer made, and some of those never reach this fold (see the type).
+    fn counted(&mut self, ts: Option<f64>) -> (Option<f64>, Option<f64>, Option<f64>, u32) {
+        self.prev = ts;
+        match self.open.take() {
+            Some(open) => {
+                let last = open.end.or(open.last.filter(|_| !self.items_unseen));
+                (open.sent, open.first, last, open.lines)
+            }
+            None => (None, None, ts, 1),
+        }
     }
 }
 
@@ -1439,7 +1467,7 @@ mod answer_tests {
 
     /// An answer runs from the line sent before its first item to its response's end, as the
     /// `token_usage_record` says it: never to the reading, written after the calls it made ran.
-    /// The next answer is sent with the last call's output.
+    /// The next answer goes out after that reading, which follows the last call's output.
     #[test]
     fn an_answer_runs_from_its_request_to_its_response_s_end() {
         let got = answers(
@@ -1470,11 +1498,66 @@ mod answer_tests {
         );
         assert_eq!((a.lines, a.output_tokens), (3, Some(500)));
         let b = &got[1];
-        assert_eq!(b.sent, secs("10:00:09.000"), "with the call's output");
+        assert_eq!(b.sent, secs("10:00:09.001"), "after the reading");
         assert_eq!(
             (b.first, b.last, b.lines, b.output_tokens),
             (secs("10:00:12.000"), secs("10:00:13.150"), 2, Some(400))
         );
+    }
+
+    /// From 0.147 the fold never sees the transport's lines (an `exec` call and its receipt,
+    /// which the preprocessor ignores): the reading after the call says when the next request
+    /// went out, not the prompt before it.
+    #[test]
+    fn the_reading_says_when_the_next_request_went_out() {
+        let got = answers(
+            &mut CodexMetricsAcc::default(),
+            &[
+                prompt("10:00:00.000", "user"),
+                item("10:00:02.000", "reasoning"),
+                ended("10:00:03.000"),
+                // The `exec` call ran for 30 s; it and its receipt never reach the fold.
+                reading("10:00:33.000", 300, 300),
+                item("10:00:36.000", "reasoning"),
+                item("10:00:37.000", "message"),
+                ended("10:00:37.500"),
+                reading("10:00:37.600", 700, 400),
+            ],
+        );
+        assert_eq!(got[0].sent, secs("10:00:00.000"));
+        assert_eq!(
+            (got[1].sent, got[1].last),
+            (secs("10:00:33.000"), secs("10:00:37.500")),
+            "the reading, not the prompt"
+        );
+    }
+
+    /// A session Codex 0.147 or later started leaves the transport's calls out of the fold, so
+    /// an answer whose end is not recorded may have ended in a call never read: it has no
+    /// `last`. One whose end is recorded, or any in a session before 0.147, is timed.
+    #[test]
+    fn where_calls_go_unread_an_answer_with_no_recorded_end_has_no_last() {
+        let lines = |version: &str| {
+            vec![
+                serde_json::json!({"type": "session_meta", "payload": {
+                    "id": "s", "model_provider": "openai", "cli_version": version}}),
+                prompt("10:00:00.000", "user"),
+                item("10:00:02.000", "reasoning"),
+                // An `exec` call, never pushed, ended this answer.
+                reading("10:00:20.000", 300, 300),
+                item("10:00:22.000", "reasoning"),
+                ended("10:00:25.000"),
+                reading("10:00:25.100", 700, 400),
+            ]
+        };
+        let unread = answers(&mut CodexMetricsAcc::default(), &lines("0.147.0-alpha.6.5"));
+        assert_eq!(
+            (unread[0].sent, unread[0].last),
+            (secs("10:00:00.000"), None)
+        );
+        assert_eq!(unread[1].last, secs("10:00:25.000"), "its end recorded");
+        let older = answers(&mut CodexMetricsAcc::default(), &lines("0.146.2"));
+        assert_eq!(older[0].last, secs("10:00:02.000"), "every item read");
     }
 
     /// A rollout written before `token_usage_record` ends an answer at its last item: the reading

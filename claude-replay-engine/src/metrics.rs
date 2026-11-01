@@ -419,8 +419,9 @@ pub struct AnswerTiming {
     /// every part of an answer at once, when it ended.
     pub first: Option<f64>,
     /// The time of the answer's last line read so far. Codex's is the response's end where its
-    /// rollout records one (`token_usage_record`, 0.147 on), else its last item's: never the
-    /// reading that counts its tokens, which waits for the calls the answer made.
+    /// rollout records one (`token_usage_record`, 0.147 on), else its last item's where the fold
+    /// reads every item (`None` where the adapter leaves call transport out): never the reading
+    /// that counts its tokens, which waits for the calls the answer made.
     pub last: Option<f64>,
     /// How many lines carried it: its parts, or Codex's items (1 for a reading with none read
     /// before it).
