@@ -793,6 +793,100 @@ mod answer_tests {
             assert_eq!(got, whole, "resumed after line {cut}");
         }
     }
+
+    #[test]
+    fn codex_missing_readings_do_not_reuse_requests_before_unseen_tools() {
+        use claude_replay_engine::adapter::{LinePreprocessor, PreprocessedLine};
+        use claude_replay_engine::seam::{epoch_secs, AnswerTiming};
+        use serde_json::json;
+
+        let fold =
+            |pre: &mut dyn LinePreprocessor, acc: &mut dyn MetricsAccumulator, lines: &[Value]| {
+                let mut out: Vec<AnswerTiming> = Vec::new();
+                for line in lines {
+                    if !matches!(pre.process(&line.to_string()), PreprocessedLine::Ignore) {
+                        acc.push(line);
+                        out.extend(acc.answer());
+                    }
+                }
+                out
+            };
+        for version in ["0.146.0", "0.160.0"] {
+            for reading_before in [false, true] {
+                for double_end in [false, true] {
+                    for intervening_prompt in [false, true] {
+                        let mut lines = vec![
+                            json!({"type": "session_meta", "payload": {"id": "s",
+                                "cli_version": version, "model_provider": "openai"}}),
+                            json!({"type": "response_item", "timestamp": "2026-11-01T10:00:00Z",
+                                "payload": {"type": "message", "role": "user", "content": []}}),
+                            json!({"type": "response_item", "timestamp": "2026-11-01T10:00:01Z",
+                                "payload": {"type": "reasoning"}}),
+                            json!({"type": "response_item", "timestamp": "2026-11-01T10:00:02Z",
+                                "payload": {"type": "custom_tool_call", "name": "exec", "call_id": "c",
+                                    "input": "await tools.exec_command({cmd: 'true'});"}}),
+                            json!({"type": "token_usage_record", "timestamp": "2026-11-01T10:00:02.100Z"}),
+                        ];
+                        if double_end {
+                            lines.push(json!({"type": "token_usage_record", "timestamp": "2026-11-01T10:00:02.200Z"}));
+                        }
+                        if intervening_prompt {
+                            lines.push(json!({"type": "response_item", "timestamp": "2026-11-01T10:00:03Z",
+                                "payload": {"type": "message", "role": "developer", "content": []}}));
+                        }
+                        lines.push(json!({"type": "response_item", "timestamp": "2026-11-01T10:00:10Z",
+                            "payload": {"type": "custom_tool_call_output", "call_id": "c", "output": "ok"}}));
+                        if reading_before {
+                            lines.push(json!({"type": "event_msg", "timestamp": "2026-11-01T10:00:10.050Z",
+                                "payload": {"type": "token_count", "info": {
+                                    "total_token_usage": {"input_tokens": 100, "output_tokens": 300},
+                                    "last_token_usage": {"input_tokens": 100, "output_tokens": 300}}}}));
+                        }
+                        lines.extend([
+                            json!({"type": "response_item", "timestamp": "2026-11-01T10:00:12Z",
+                                "payload": {"type": "reasoning"}}),
+                            json!({"type": "response_item", "timestamp": "2026-11-01T10:00:13Z",
+                                "payload": {"type": "message", "role": "assistant", "content": []}}),
+                            json!({"type": "token_usage_record", "timestamp": "2026-11-01T10:00:13.500Z"}),
+                            json!({"type": "event_msg", "timestamp": "2026-11-01T10:00:13.600Z",
+                                "payload": {"type": "token_count", "info": {
+                                    "total_token_usage": {"input_tokens": 200, "output_tokens": 700},
+                                    "last_token_usage": {"input_tokens": 100, "output_tokens": 400}}}}),
+                        ]);
+                        let whole = fold(
+                            &mut *CodexAdapter.line_preprocessor(),
+                            &mut *CodexAdapter.metrics_acc(),
+                            &lines,
+                        );
+                        let answer = whole.last().unwrap();
+                        assert_eq!(answer.first, epoch_secs("2026-11-01T10:00:12Z"));
+                        assert_eq!(answer.last, epoch_secs("2026-11-01T10:00:13.500Z"));
+                        assert_eq!(answer.output_tokens, Some(400));
+                        let sent = if reading_before {
+                            epoch_secs("2026-11-01T10:00:10.050Z")
+                        } else if version == "0.146.0" {
+                            epoch_secs("2026-11-01T10:00:10Z")
+                        } else {
+                            None
+                        };
+                        assert_eq!(answer.sent, sent,
+                            "version={version}, reading={reading_before}, double_end={double_end}, prompt={intervening_prompt}");
+                        for cut in 1..lines.len() {
+                            let mut pre = CodexAdapter.line_preprocessor();
+                            let mut acc = CodexAdapter.metrics_acc();
+                            let mut got = fold(&mut *pre, &mut *acc, &lines[..cut]);
+                            let mut next_pre = CodexAdapter.line_preprocessor();
+                            let mut next_acc = CodexAdapter.metrics_acc();
+                            next_pre.restore(&pre.state());
+                            next_acc.restore(&acc.state());
+                            got.extend(fold(&mut *next_pre, &mut *next_acc, &lines[cut..]));
+                            assert_eq!(got, whole, "resumed after line {cut}");
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
