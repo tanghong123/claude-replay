@@ -356,19 +356,30 @@ interactive session into a daemon background job under a new id with nothing typ
 transcript with `continued-in` (`continuedInSessionId`, read by the adapter's `continued_in` when no
 `user` or `assistant` record follows it: the move's own `queue-operation` enqueues may, and the index
 believes it only when it is dated no later than now and the file's last write). The pane's process
-keeps `--resume <old>` in its argv and is where the reader types the new session's prompts, while the
-job's engine is a `bg-spare` naming nothing; the pane process's own `sessions/<pid>.json` keeps the
-old `sessionId` and gains `parkedJobId`, the new session's first eight characters (the engine writes a
-record of its own naming the new session, `kind: bg`). So `Moves::chain` gives a process naming the
-old id to the new session, through a move of the same agent, only when it started no later than the
-move (one started after chose the old id itself) AND its own record, verified against PID and process
-start, names the old id and the job; confirmed but not `named`. An `attach` prefix of the old id follows the same way. The old session is
-finished: out of the directory rule and the growth proof (`continued-in` is no activity), and its row
-says `continuedIn`. herdr's Claude hook reports a session only when one STARTS, so it keeps the old id
-for that pane: the send, the dialog read and answer, and the state pass (`herdr_runs`) accept the
-sessions on that process's verified chain (`continues`, empty without a verified parked record
-and validated continuation). The record's source also names the old hook ID for a plain client or
-one whose argv still names a session from before `/resume`; an unverified selector gets no aliases.
+keeps `--resume <old>` in its argv and now shows Claude Code's background-session view (the
+`claude agents` list, the new session's job preselected), while the job's engine is a `bg-spare`
+whose ARGV names nothing (its own `sessions/<pid>.json`, `kind: bg`, names the new session); the pane
+process's own record keeps the old `sessionId` and gains `parkedJobId`, the new session's first eight
+characters. So `Moves::chain` gives a process naming the old id to the new session, through a move of
+the same agent, only when it started no later than the move (one started after chose the old id
+itself) AND its own record, verified against PID and process start, names the old id and the job AND
+that job's `<claude home>/jobs/<parkedJobId>/state.json` names the whole new session (`job_hosts`:
+the prefix alone links nothing); confirmed but not `named`. An `attach` prefix of the old id follows
+the same way. `Moves` is built once per scan (`State::moves`). The old session is finished: out of
+the directory rule and the growth proof (`continued-in` is no activity), its row says `continuedIn`,
+and its resume is refused (`ContinuedElsewhere`, it would fork the conversation off at the move) —
+both read from its OWN `continued-in`, so they hold before the new session is indexed. **A parked pane
+is sent to for no session** (#s294 third review, `pid_parked`, `PaneParked`): in that view the reader
+can go back to the list and open ANOTHER job, and neither the record (which keeps `parkedJobId`) nor
+herdr (which keeps the old id) says which job is open, so a process whose verified record carries
+`parkedJobId` is never `injectable`, offers no pane send and no dialog, whether or not its chain
+could be followed. The new session keeps the process for liveness and state: herdr's Claude hook
+reports a session only when one STARTS, so it keeps the old id for that pane, and the state pass
+(`herdr_runs`) accepts the sessions on that process's verified chain (`continues`, empty without a
+verified parked record and validated continuation). Once the client clears `parkedJobId` (on
+`/resume`, and when the reader leaves the view) the pane is an ordinary one again. The record's
+source also names the old hook ID for a plain client or one whose argv still names a session from
+before `/resume`; an unverified selector gets no aliases.
 Recency and ambiguity are selected per agent and exact cwd (#s250); a configured executable
 whose kind is unknown keeps the shared scope. Explicit argv/open-transcript links, retained
 growth proofs and time-paired workers do not compete for the newest unnamed session, and

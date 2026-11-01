@@ -162,6 +162,10 @@ pub enum SendRefusal {
     /// (resume path) the conversation went on in another session (#s294, `continued-in`): a resume
     /// of this one would fork the conversation off at the move.
     ContinuedElsewhere,
+    /// (pane path) the pane's process parked its conversation in a background job (#s294): the
+    /// pane shows the background-session view, where the reader may have opened another job, and
+    /// nothing says which one is open.
+    PaneParked,
 }
 
 /// The pane-injection decision (#133 tmux slice, #s226 herdr), PURE over one scan's link data —
@@ -239,9 +243,9 @@ fn pane_send_target(st: &State, sid: &str) -> Result<(u32, PaneAddr), SendRefusa
     st.legacy_send_policy.allow_session(agent, sid)?;
     let link = st.send_links.get(sid).cloned().unwrap_or_default();
     let (pid, addr) = pane_target_from(agent, &link)?;
-    // #s294: the pane's process was parked in a job this index could not follow.
-    if pid_parked_astray(&st.procs, pid) {
-        return Err(SendRefusal::UnprovenLink);
+    // #s294: the pane shows the background-session view, which may have another job open.
+    if pid_parked(&st.procs, pid) {
+        return Err(SendRefusal::PaneParked);
     }
     if pane_shared(&st.procs, pid, &addr) {
         return Err(SendRefusal::PaneShared);
@@ -270,11 +274,47 @@ fn pane_send_target(st: &State, sid: &str) -> Result<(u32, PaneAddr), SendRefusa
     Ok((pid, addr))
 }
 
+/// The resume decision of `resolve_send` over one scan's state, pure: the session to resume, or
+/// why it may not be.
+fn resume_target(st: &State, sid: &str) -> Result<SendTarget, SendRefusal> {
+    let row = st.rows.get(sid).ok_or(SendRefusal::NoSuchSession)?;
+    let agent = row.agent;
+    let cwd = row.cwd.clone();
+    st.legacy_send_policy.allow_session(agent, sid)?;
+    // Only claude and codex have a verified headless resume shape (agent-jdi); others
+    // are refused rather than driven with an unverified CLI.
+    if agent != Agent::CLAUDE && agent != Agent::CODEX {
+        return Err(SendRefusal::UnsupportedAgent);
+    }
+    // The target must be finished and its project quiet (pure check, unit-tested).
+    resume_not_moved(st, sid)?;
+    send_liveness_ok(
+        sid,
+        cwd.as_deref(),
+        &st.send_links,
+        &st.procs,
+        agent,
+        // #s59: a sibling of another agent drives nothing of this session.
+        |o| {
+            st.rows
+                .get(o)
+                .filter(|r| r.agent == agent)
+                .and_then(|r| r.cwd.clone())
+        },
+        |o| st.started_by(o).map(str::to_string),
+    )?;
+    Ok(SendTarget {
+        sid: sid.to_string(),
+        agent,
+        cwd,
+    })
+}
+
 /// A resume of a finished session whose conversation went on in another one (#s294) would fork
 /// the conversation off at the move: the row that says `continuedIn` offers no send.
 fn resume_not_moved(st: &State, sid: &str) -> Result<(), SendRefusal> {
     let live = st.send_links.get(sid).and_then(|l| l.pid).is_some();
-    if !live && Moves::of(&st.rows).moved(sid) {
+    if !live && moved_on(&st.rows, sid).is_some() {
         return Err(SendRefusal::ContinuedElsewhere);
     }
     Ok(())
@@ -307,6 +347,9 @@ impl SendRefusal {
             }
             Self::ContinuedElsewhere => {
                 "this conversation went on in another session: send to that one"
+            }
+            Self::PaneParked => {
+                "the pane shows Claude Code's background sessions, which may have another one open: send from the pane"
             }
         }
     }
@@ -402,6 +445,9 @@ struct State {
     desktop: crate::desktop_sessions::DesktopSessions,
     /// A desktop side session's starter, side session sid → starter sid, from those records.
     side_of: HashMap<String, String>,
+    /// The scan's moves (#s294), built once per scan at the start of `prove_by_growth` from the
+    /// rows the scan just read, and read again by `assemble`.
+    moves: Moves,
 }
 
 impl State {
@@ -1140,38 +1186,7 @@ impl Index {
         st.procs_at = None;
         self.scan(&mut st, &|_| {});
         st.scanned_at = Some(Instant::now());
-
-        let row = st.rows.get(sid).ok_or(SendRefusal::NoSuchSession)?;
-        let agent = row.agent;
-        let cwd = row.cwd.clone();
-        st.legacy_send_policy.allow_session(agent, sid)?;
-        // Only claude and codex have a verified headless resume shape (agent-jdi); others
-        // are refused rather than driven with an unverified CLI.
-        if agent != Agent::CLAUDE && agent != Agent::CODEX {
-            return Err(SendRefusal::UnsupportedAgent);
-        }
-        // The target must be finished and its project quiet (pure check, unit-tested).
-        resume_not_moved(&st, sid)?;
-        send_liveness_ok(
-            sid,
-            cwd.as_deref(),
-            &st.send_links,
-            &st.procs,
-            agent,
-            // #s59: a sibling of another agent drives nothing of this session.
-            |o| {
-                st.rows
-                    .get(o)
-                    .filter(|r| r.agent == agent)
-                    .and_then(|r| r.cwd.clone())
-            },
-            |o| st.started_by(o).map(str::to_string),
-        )?;
-        Ok(SendTarget {
-            sid: sid.to_string(),
-            agent,
-            cwd,
-        })
+        resume_target(&st, sid)
     }
 
     /// Resolve a LIVE send target (#133 tmux slice, #s226 herdr): the session must be LIVE with a
@@ -1284,17 +1299,11 @@ impl Index {
                 if row.tree_mtime != now_mtime || row.transcript_len != now_len {
                     let prev_event = row.last_event;
                     row.last_event = last_event_ts(&row.path).or(row.last_event);
-                    let written = std::fs::metadata(&row.path)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|m| m.duration_since(SystemTime::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs());
                     let now_secs = SystemTime::now()
                         .duration_since(SystemTime::UNIX_EPOCH)
                         .map(|d| d.as_secs())
                         .unwrap_or(0);
-                    row.continued_in = discover::continued_in(row.agent, &row.path)
-                        .filter(|c| move_plausible(c.at, now_secs, written));
+                    row.continued_in = read_continuation(row.agent, &row.path, now_secs);
                     if !row.start_probed {
                         row.first_event = first_event_ts(&row.path);
                         row.brief = head_one_shot(&row.path);
@@ -1561,7 +1570,8 @@ impl Index {
         // A verified parked record still names the old session. Resolve its continuation before
         // native precedence, growth fences and pane routing consume that identity. Re-derive
         // from the recorded source even when process probing is cached; nothing is persisted.
-        let moves = Moves::of(&st.rows);
+        st.moves = Moves::of(&st.rows);
+        let moves = &st.moves;
         for p in &mut st.procs {
             p.native_session = p
                 .native_session
@@ -1598,7 +1608,7 @@ impl Index {
                 }
             }
         }
-        let moved: HashSet<String> = moves.0.keys().map(|sid| sid.to_string()).collect();
+        let moved: HashSet<String> = st.moves.0.keys().cloned().collect();
         // Native evidence retires the observed growth from legacy attribution, whether it
         // owns that write or contradicts a guess. After identity disappears or its owner exits,
         // only new transcript advancement can supply legacy proof again.
@@ -1846,7 +1856,7 @@ impl Index {
                 .filter(|(_, r)| r.one_shot)
                 .filter_map(|(sid, r)| Some((sid.as_str(), r.cwd.as_deref()?, r.first_event?))),
         );
-        let moves = Moves::of(&st.rows);
+        let moves = &st.moves;
         let table = ProcTable::new(&st.procs);
         let unresolved_cwds = unresolved_registry_cwds(&st.procs, &st.send_links);
         // Growth proofs have the same priority here as in link resolution. A newer idle
@@ -2046,7 +2056,8 @@ impl Index {
             // #s294: a session whose conversation went on elsewhere and that no process still
             // runs is finished, whatever housekeeping its tail shows. One a process still names
             // (a later `claude --resume <it>`) is that process's, and reads as any other.
-            let moved_away = link.is_none() && moves.moved(sid);
+            let moved_to = moved_on(&st.rows, sid).filter(|_| link.is_none());
+            let moved_away = moved_to.is_some();
             let growing = !moved_away && grew_lately;
             let (state, conf) = if growing {
                 ("growing", "")
@@ -2135,7 +2146,7 @@ impl Index {
                 j["startTs"] = json!(start);
             }
             // #s294: the conversation went on in another session; this one is finished.
-            if let Some((next, ..)) = moves.0.get(sid.as_str()).filter(|_| moved_away) {
+            if let Some(next) = moved_to {
                 j["continuedIn"] = json!(next);
             }
             if ambiguity > 1 {
@@ -2218,8 +2229,8 @@ impl Index {
                         // #s335, #s337: nor a tmux pane whose agent is suspended, backgrounded
                         // or on another terminal than the pane's.
                         && tmux_pane_refusal(&st.procs, l.pid, addr).is_none()
-                        // #s294: nor a pane parked in a job this index could not follow.
-                        && !pid_parked_astray(&st.procs, l.pid)
+                        // #s294: nor a pane showing the background-session view.
+                        && !pid_parked(&st.procs, l.pid)
                         && (!proj_active || pane_send_beside_siblings(&st.procs, l.pid, sid, addr))
                 }) {
                     j["injectable"] = json!(true);
@@ -3061,27 +3072,23 @@ fn link_in(
 /// confirmed: its `<claude home>/jobs/<first eight characters>/state.json` names the target
 /// (`job_hosts`).
 #[derive(Default)]
-struct Moves<'a>(HashMap<&'a str, (&'a str, u64, bool)>);
+struct Moves(HashMap<String, (String, u64, bool)>);
 
-impl<'a> Moves<'a> {
+impl Moves {
     /// Every move in `rows` whose target is itself a row of the same agent. Reads each target's
-    /// job `state.json` (one small file per moved row; few rows ever move).
-    fn of(rows: &'a HashMap<String, Row>) -> Self {
+    /// job `state.json` (one small file per moved row; few rows ever move). Built once per scan
+    /// (`State::moves`).
+    fn of(rows: &HashMap<String, Row>) -> Self {
         Moves(
             rows.iter()
                 .filter_map(|(sid, r)| {
                     let c = r.continued_in.as_ref()?;
                     let (next, target) = rows.get_key_value(c.session.as_str())?;
                     (next != sid && target.agent == r.agent)
-                        .then(|| (sid.as_str(), (next.as_str(), c.at, job_hosts(target, next))))
+                        .then(|| (sid.clone(), (next.clone(), c.at, job_hosts(target, next))))
                 })
                 .collect(),
         )
-    }
-
-    /// Whether `sid`'s conversation went on in another session this index knows.
-    fn moved(&self, sid: &str) -> bool {
-        self.0.contains_key(sid)
     }
 
     /// The sessions a process's recorded source went through: `named` first, then each session
@@ -3109,7 +3116,8 @@ impl<'a> Moves<'a> {
         }
         let mut keep = 1;
         let mut cur = named;
-        while let Some(&(next, at, hosted)) = self.0.get(cur) {
+        while let Some((next, at, hosted)) = self.0.get(cur) {
+            let (next, at, hosted) = (next.as_str(), *at, *hosted);
             if started > at || path.contains(&next) {
                 break;
             }
@@ -3158,18 +3166,31 @@ fn job_hosts(row: &Row, sid: &str) -> bool {
         .any(|dir| dir.ends_with(&job_tmp))
 }
 
-/// A process whose own verified record says its conversation was parked in a background job, but
-/// whose move this index could not follow to that job's session (the second review of #s294): the
-/// transcript's `continued-in` went out of its tail, the job's session is not indexed yet, or the
-/// job's `state.json` does not confirm it. Its record still names the old session, and herdr may
-/// still name it for the pane, but the pane shows the job: it is a send target for neither.
-fn parked_astray(p: &Proc) -> bool {
-    p.parked.is_some() && !matches!(p.native_session, Identity::Continued { .. })
+/// The session `sid`'s conversation went on in, by `sid`'s OWN transcript (#s294): its
+/// `continued-in` record, already held to `move_plausible` when the scan read it. Unlike
+/// [`Moves`] it does not need the target indexed, so a resume of `sid` is refused (and the row
+/// says `continuedIn`) even before the target's transcript is in the index (the third review of
+/// #s294). A target that IS indexed must run the same agent.
+fn moved_on<'r>(rows: &'r HashMap<String, Row>, sid: &str) -> Option<&'r str> {
+    let row = rows.get(sid)?;
+    let c = row.continued_in.as_ref()?;
+    (c.session != sid
+        && rows
+            .get(c.session.as_str())
+            .is_none_or(|target| target.agent == row.agent))
+    .then_some(c.session.as_str())
 }
 
-/// Whether `pid` is a process `parked_astray` holds back.
-fn pid_parked_astray(procs: &[Proc], pid: u32) -> bool {
-    procs.iter().any(|p| p.pid == pid && parked_astray(p))
+/// Whether `pid` is a process whose own verified record says its conversation was parked in a
+/// background job (the third review of #s294). Such a pane shows Claude Code's background-session
+/// view (the `claude agents` list, the parked job preselected), and the reader can go back to the
+/// list and open ANOTHER job there; the record keeps `parkedJobId` and herdr keeps the old session
+/// either way, and nothing on screen or on disk says which job the view has open. So the pane is a
+/// send and dialog target for no session: the session the move continued in keeps the process for
+/// liveness and state, and is offered no pane send (`PaneParked`). Once the client clears the
+/// field (`/resume`, or the reader leaving the view) the pane is an ordinary one again.
+fn pid_parked(procs: &[Proc], pid: u32) -> bool {
+    procs.iter().any(|p| p.pid == pid && p.parked.is_some())
 }
 
 /// Is a move dated `at` believable (the review of #s294)? Not when it is later than now or than the
@@ -3178,6 +3199,22 @@ fn pid_parked_astray(procs: &[Proc], pid: u32) -> bool {
 fn move_plausible(at: u64, now: u64, written: Option<u64>) -> bool {
     const SKEW: u64 = 5;
     at <= now + SKEW && written.is_some_and(|w| at <= w + SKEW)
+}
+
+/// The move a transcript records (#s294), as the scan reads it: the adapter's `continued_in`
+/// over the file's tail, believed only when `move_plausible` against `now` and the file's own
+/// last write.
+fn read_continuation(
+    agent: Agent,
+    path: &Path,
+    now: u64,
+) -> Option<claude_replay_core::Continuation> {
+    let written = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|m| m.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    discover::continued_in(agent, path).filter(|c| move_plausible(c.at, now, written))
 }
 
 /// What a process's argv says about WHICH session it drives (#269) — Claude Code's launch
@@ -8013,9 +8050,11 @@ n/Users/x/proj
 
     /// #s294, the synthetic repro: an idle `claude --resume A` in a herdr pane, and Claude Code moves
     /// the conversation into a background job as B with nothing typed. A's transcript ends with
-    /// `continued-in` B, the job's engine is a `bg-spare` that names nothing, and the pane's process
+    /// `continued-in` B, the job's engine is a `bg-spare` whose argv names nothing (its own
+    /// `kind: bg` record names B), and the pane's process
     /// still names A, and its own record says it was parked in B's job. B is the live row on that
-    /// pane — sendable, herdr's stale A accepted for it — and A is finished. A process started
+    /// pane — herdr's stale A accepted for its state, but no pane send, since the pane shows the
+    /// background-session view — and A is finished, its resume refused. A process started
     /// AFTER the move named A itself and keeps it, and so does one whose record says nothing.
     #[test]
     fn a_conversation_moved_into_a_background_job_keeps_its_pane() {
@@ -8115,7 +8154,11 @@ n/Users/x/proj
         assert_eq!(row_b["pid"], 700, "{row_b}");
         assert_eq!(row_b["term"], "herdr");
         assert_eq!(row_b["target"], "w1:pC");
-        assert_eq!(row_b["injectable"], true, "B is sent to through the pane");
+        // The third review of #s294, point 1: the pane shows the background-session view, where
+        // the reader may have opened another job, so B keeps the pane for liveness and state and
+        // is offered no pane send (and so no dialog: `dialog` rides on `sendsImages`).
+        assert!(row_b.get("injectable").is_none(), "{row_b}");
+        assert!(row_b.get("sendsImages").is_none(), "{row_b}");
         let fact_b = facts.iter().find(|f| f.sid == b).unwrap();
         assert!(fact_b.confirmed, "argv and transcript say so together");
         assert!(
@@ -8140,6 +8183,30 @@ n/Users/x/proj
             Err(SendRefusal::ContinuedElsewhere)
         );
         assert_eq!(resume_not_moved(&st, b), Ok(()));
+        // The resume decision itself refuses A (the third review: removing the check from it
+        // went unnoticed), and B, live in the pane, is refused its pane send as parked.
+        assert_eq!(
+            resume_target(&st, a).err(),
+            Some(SendRefusal::ContinuedElsewhere)
+        );
+        assert_eq!(
+            pane_send_target(&st, b).map(|(pid, _)| pid),
+            Err(SendRefusal::PaneParked)
+        );
+        // B not indexed yet and no process for A: A's own `continued-in` still refuses its
+        // resume, which would fork the conversation off at the move.
+        let mut unindexed = world("1-00:00:00");
+        unindexed.rows.remove(b);
+        unindexed.procs.retain(|p| p.pid != 700);
+        idx.prove_by_growth(&mut unindexed);
+        let mut facts = Vec::new();
+        let snapshot = idx.assemble(&unindexed, &mut facts);
+        assert_eq!(find(&snapshot, a).unwrap()["continuedIn"], b);
+        unindexed.send_links = send_links_of(&facts);
+        assert_eq!(
+            resume_target(&unindexed, a).err(),
+            Some(SendRefusal::ContinuedElsewhere)
+        );
 
         // Native source identity wins for plain clients and stale launch arguments alike.
         for argv in [
@@ -8200,7 +8267,7 @@ n/Users/x/proj
             st.send_links = send_links_of(&facts);
             assert_eq!(
                 pane_send_target(st, a).map(|(pid, _)| pid),
-                Err(SendRefusal::UnprovenLink),
+                Err(SendRefusal::PaneParked),
                 "{why}"
             );
         };
@@ -8255,9 +8322,9 @@ n/Users/x/proj
         let snapshot = idx.assemble(&st, &mut facts);
         let row_b = find(&snapshot, b).unwrap();
         assert_eq!(row_b["pid"], 700, "{row_b}");
-        assert_eq!(
-            row_b["injectable"], true,
-            "the native pane remains sendable: {row_b}"
+        assert!(
+            row_b.get("injectable").is_none(),
+            "the parked pane is not sendable: {row_b}"
         );
         assert!(find(&snapshot, a).unwrap().get("pid").is_none());
         let fact_b = facts.iter().find(|f| f.sid == b).unwrap();
@@ -8374,7 +8441,8 @@ n/Users/x/proj
     /// The second review of #s294: a real `sessions/<pid>.json` goes through `apply_registry`, its
     /// `procStart` verified against this test process by `ps`, then `prove_by_growth` and
     /// `assemble`. Nothing on the process is set by hand. While the record carries
-    /// `parkedJobId` and the job's `state.json` names B, the pane is B's. When the client clears
+    /// `parkedJobId` and the job's `state.json` names B, the pane is B's (for liveness and state,
+    /// never a pane send). When the client clears
     /// the field (it does on `/resume` and when the reader leaves the background view), the pane
     /// is A's again.
     #[test]
@@ -8448,7 +8516,7 @@ n/Users/x/proj
         let mut facts = Vec::new();
         let snapshot = idx.assemble(&st, &mut facts);
         assert_eq!(pid_of(&snapshot, b), Some(json!(me)));
-        assert_eq!(registry_row(&snapshot, b)["injectable"], true);
+        assert!(registry_row(&snapshot, b).get("injectable").is_none());
         assert_eq!(pid_of(&snapshot, a), None);
         assert_eq!(registry_row(&snapshot, a)["continuedIn"], b);
         let fact_b = facts.iter().find(|f| f.sid == b).unwrap();
@@ -8627,6 +8695,80 @@ n/Users/x/proj
             "after the file's last write"
         );
         assert!(!move_plausible(now - 60, now, None), "no write time");
+    }
+
+    /// The third review of #s294: the scan's own read of a move, driven from a transcript in the
+    /// client's format (the shape `continued_in`'s adapter test holds): believed when it is dated
+    /// before now and the file's last write; a future date, or a file last written before the
+    /// move it names, is not; a conversation record after it takes the session back.
+    #[test]
+    fn the_scan_reads_a_move_from_a_real_transcript() {
+        let dir = std::env::temp_dir().join(format!("cm-read-move-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = "aaaaaaaa-0000-4000-8000-000000000296";
+        let b = "bbbbbbbb-0000-4000-8000-000000000296";
+        let user = format!(
+            r#"{{"type":"user","timestamp":"2026-10-27T09:00:00.000Z","sessionId":"{a}","message":{{"role":"user","content":"hi"}}}}"#
+        );
+        let moved = |when: &str| {
+            format!(
+                r#"{{"type":"continued-in","timestamp":"{when}","sessionId":"{a}","continuedInSessionId":"{b}"}}"#
+            )
+        };
+        let enqueue = format!(
+            r#"{{"type":"queue-operation","operation":"enqueue","timestamp":"2026-10-28T02:14:53.261Z","sessionId":"{a}","content":"q"}}"#
+        );
+        let write = |name: &str, lines: &[&str]| {
+            let p = dir.join(name);
+            std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+            p
+        };
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let past = moved("2026-10-28T02:14:53.223Z");
+        let got = read_continuation(
+            Agent::CLAUDE,
+            &write("moved.jsonl", &[&user, &past, &enqueue]),
+            now,
+        );
+        assert_eq!(
+            got,
+            Some(claude_replay_core::Continuation {
+                session: b.into(),
+                at: 1_793_153_693,
+            })
+        );
+        assert_eq!(
+            read_continuation(Agent::CLAUDE, &write("taken.jsonl", &[&past, &user]), now),
+            None,
+            "taken back"
+        );
+        let future = moved("2099-01-01T00:00:00.000Z");
+        assert_eq!(
+            read_continuation(
+                Agent::CLAUDE,
+                &write("future.jsonl", &[&user, &future]),
+                now
+            ),
+            None,
+            "dated in the future"
+        );
+        let stale = write("stale.jsonl", &[&user, &past]);
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_793_000_000))
+            .unwrap();
+        assert_eq!(
+            read_continuation(Agent::CLAUDE, &stale, now),
+            None,
+            "the file was last written before the move it names"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #s50: two one-shots started inside each other's window each take a session — both are
