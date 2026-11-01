@@ -159,6 +159,9 @@ pub enum SendRefusal {
     /// and the agent cannot be checked (an editor would take the text), so the check before
     /// typing refuses it.
     PaneOtherTerminal,
+    /// (resume path) the conversation went on in another session (#s294, `continued-in`): a resume
+    /// of this one would fork the conversation off at the move.
+    ContinuedElsewhere,
 }
 
 /// The pane-injection decision (#133 tmux slice, #s226 herdr), PURE over one scan's link data —
@@ -236,6 +239,10 @@ fn pane_send_target(st: &State, sid: &str) -> Result<(u32, PaneAddr), SendRefusa
     st.legacy_send_policy.allow_session(agent, sid)?;
     let link = st.send_links.get(sid).cloned().unwrap_or_default();
     let (pid, addr) = pane_target_from(agent, &link)?;
+    // #s294: the pane's process was parked in a job this index could not follow.
+    if pid_parked_astray(&st.procs, pid) {
+        return Err(SendRefusal::UnprovenLink);
+    }
     if pane_shared(&st.procs, pid, &addr) {
         return Err(SendRefusal::PaneShared);
     }
@@ -263,6 +270,16 @@ fn pane_send_target(st: &State, sid: &str) -> Result<(u32, PaneAddr), SendRefusa
     Ok((pid, addr))
 }
 
+/// A resume of a finished session whose conversation went on in another one (#s294) would fork
+/// the conversation off at the move: the row that says `continuedIn` offers no send.
+fn resume_not_moved(st: &State, sid: &str) -> Result<(), SendRefusal> {
+    let live = st.send_links.get(sid).and_then(|l| l.pid).is_some();
+    if !live && Moves::of(&st.rows).moved(sid) {
+        return Err(SendRefusal::ContinuedElsewhere);
+    }
+    Ok(())
+}
+
 impl SendRefusal {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -287,6 +304,9 @@ impl SendRefusal {
             }
             Self::PaneOtherTerminal => {
                 "the agent runs on another terminal than its tmux pane (a pty wrapper or an editor's terminal), and what sits between them cannot be checked: send from the pane"
+            }
+            Self::ContinuedElsewhere => {
+                "this conversation went on in another session: send to that one"
             }
         }
     }
@@ -617,9 +637,11 @@ struct Proc {
 
 /// What a process's own record says about a move (#s294). Measured on Claude Code 2.1.312, on
 /// both moves found on this machine: the pane process's `sessions/<pid>.json` keeps the OLD
-/// `sessionId` and gains `parkedJobId`, the job's short id (`jobs/<id>/state.json` names the new
-/// session, which starts with it). The job's engine writes a record of its own that names the new
-/// session (`kind: bg`).
+/// `sessionId` and gains `parkedJobId`, the job's short id. The job's engine writes a record of its
+/// own that names the new session (`kind: bg`). A move is followed only when the job's
+/// `jobs/<id>/state.json` names the whole new session (`job_hosts`), never by the prefix alone. The
+/// client clears `parkedJobId` when the process switches session (`/resume`) and when the reader
+/// returns from the background view (read from the 2.1.316 client's code, not yet seen live).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Parked {
     /// The record's `sessionId`: the session the process was started on.
@@ -1129,6 +1151,7 @@ impl Index {
             return Err(SendRefusal::UnsupportedAgent);
         }
         // The target must be finished and its project quiet (pure check, unit-tested).
+        resume_not_moved(&st, sid)?;
         send_liveness_ok(
             sid,
             cwd.as_deref(),
@@ -1956,13 +1979,12 @@ impl Index {
                 }
             };
 
-            let growing = !moves.0.contains_key(sid.as_str())
-                && (row.grew_at.is_some_and(|t| t.elapsed() < GROW_LINGER)
-                    || (row
-                        .tree_mtime
-                        .and_then(|m| now.duration_since(m).ok())
-                        .is_some_and(|d| d < INFLIGHT_WINDOW)
-                        && inflight_tool_in_tail(&row.path)));
+            let grew_lately = row.grew_at.is_some_and(|t| t.elapsed() < GROW_LINGER)
+                || (row
+                    .tree_mtime
+                    .and_then(|m| now.duration_since(m).ok())
+                    .is_some_and(|d| d < INFLIGHT_WINDOW)
+                    && inflight_tool_in_tail(&row.path));
             // The process link now resolves for EVERY row (#112): growing rows need it as
             // the prerequisite for the controllable-terminal fact, idle rows for the
             // alive/finished split it always drove.
@@ -2021,6 +2043,11 @@ impl Index {
                 .filter(|p| p.native_session.session() == Some(sid.as_str()))
                 .map(|p| moves.continues(p, sid))
                 .unwrap_or_default();
+            // #s294: a session whose conversation went on elsewhere and that no process still
+            // runs is finished, whatever housekeeping its tail shows. One a process still names
+            // (a later `claude --resume <it>`) is that process's, and reads as any other.
+            let moved_away = link.is_none() && moves.moved(sid);
+            let growing = !moved_away && grew_lately;
             let (state, conf) = if growing {
                 ("growing", "")
             } else {
@@ -2108,7 +2135,7 @@ impl Index {
                 j["startTs"] = json!(start);
             }
             // #s294: the conversation went on in another session; this one is finished.
-            if let Some((next, _)) = moves.0.get(sid.as_str()) {
+            if let Some((next, ..)) = moves.0.get(sid.as_str()).filter(|_| moved_away) {
                 j["continuedIn"] = json!(next);
             }
             if ambiguity > 1 {
@@ -2191,6 +2218,8 @@ impl Index {
                         // #s335, #s337: nor a tmux pane whose agent is suspended, backgrounded
                         // or on another terminal than the pane's.
                         && tmux_pane_refusal(&st.procs, l.pid, addr).is_none()
+                        // #s294: nor a pane parked in a job this index could not follow.
+                        && !pid_parked_astray(&st.procs, l.pid)
                         && (!proj_active || pane_send_beside_siblings(&st.procs, l.pid, sid, addr))
                 }) {
                     j["injectable"] = json!(true);
@@ -3027,11 +3056,16 @@ fn link_in(
 /// pane's process keeps `--resume A` in its argv and is where the reader types B's prompts, so a
 /// process named A drives B. A's transcript ends with the `continued-in` record that says so, and
 /// the process's own record says it too ([`Parked`]).
+///
+/// Each entry is the target, the move's date, and whether the target's background job is
+/// confirmed: its `<claude home>/jobs/<first eight characters>/state.json` names the target
+/// (`job_hosts`).
 #[derive(Default)]
-struct Moves<'a>(HashMap<&'a str, (&'a str, u64)>);
+struct Moves<'a>(HashMap<&'a str, (&'a str, u64, bool)>);
 
 impl<'a> Moves<'a> {
-    /// Every move in `rows` whose target is itself a row of the same agent.
+    /// Every move in `rows` whose target is itself a row of the same agent. Reads each target's
+    /// job `state.json` (one small file per moved row; few rows ever move).
     fn of(rows: &'a HashMap<String, Row>) -> Self {
         Moves(
             rows.iter()
@@ -3039,10 +3073,15 @@ impl<'a> Moves<'a> {
                     let c = r.continued_in.as_ref()?;
                     let (next, target) = rows.get_key_value(c.session.as_str())?;
                     (next != sid && target.agent == r.agent)
-                        .then_some((sid.as_str(), (next.as_str(), c.at)))
+                        .then(|| (sid.as_str(), (next.as_str(), c.at, job_hosts(target, next))))
                 })
                 .collect(),
         )
+    }
+
+    /// Whether `sid`'s conversation went on in another session this index knows.
+    fn moved(&self, sid: &str) -> bool {
+        self.0.contains_key(sid)
     }
 
     /// The sessions a process's recorded source went through: `named` first, then each session
@@ -3054,7 +3093,9 @@ impl<'a> Moves<'a> {
     /// * the process's OWN record says its conversation was parked ([`Parked`]): its `sessionId`
     ///   is `named` and its `parkedJobId` starts the session the chain ends at. The transcript's
     ///   `continued-in` is a line any writer of the file can append; the record is the client's
-    ///   word about THIS process.
+    ///   word about THIS process. And
+    /// * the job that id names is that session's: its `jobs/<parkedJobId>/state.json` names the
+    ///   whole session id (`job_hosts`), so an eight-character prefix alone links nothing.
     ///
     /// The walk stops at a session it has already visited, so two transcripts naming each other
     /// end where they began rather than by the parity of a step count.
@@ -3068,12 +3109,12 @@ impl<'a> Moves<'a> {
         }
         let mut keep = 1;
         let mut cur = named;
-        while let Some(&(next, at)) = self.0.get(cur) {
+        while let Some(&(next, at, hosted)) = self.0.get(cur) {
             if started > at || path.contains(&next) {
                 break;
             }
             path.push(next);
-            if next.starts_with(parked.job.as_str()) {
+            if hosted && next.starts_with(parked.job.as_str()) {
                 keep = path.len();
             }
             cur = next;
@@ -3099,6 +3140,36 @@ impl<'a> Moves<'a> {
         chain.pop();
         chain.into_iter().map(str::to_string).collect()
     }
+}
+
+/// Whether `sid`'s background job is confirmed (the second review of #s294): the job directory
+/// Claude Code names by the session's first eight characters, `<claude home>/jobs/<prefix>/`,
+/// holds a `state.json` that names this WHOLE session (`sessionId` or `resumeSessionId`). The
+/// check is the adapter's own, the one that admits a job's `tmp` as the session's scratch
+/// (`TranscriptAdapter::scratch_dirs`, #291), with the home taken from the transcript's path.
+fn job_hosts(row: &Row, sid: &str) -> bool {
+    let Some(prefix) = sid.get(..8) else {
+        return false;
+    };
+    let job_tmp = Path::new("jobs").join(prefix).join("tmp");
+    claude_replay_core::adapter(row.agent)
+        .scratch_dirs(&row.path)
+        .iter()
+        .any(|dir| dir.ends_with(&job_tmp))
+}
+
+/// A process whose own verified record says its conversation was parked in a background job, but
+/// whose move this index could not follow to that job's session (the second review of #s294): the
+/// transcript's `continued-in` went out of its tail, the job's session is not indexed yet, or the
+/// job's `state.json` does not confirm it. Its record still names the old session, and herdr may
+/// still name it for the pane, but the pane shows the job: it is a send target for neither.
+fn parked_astray(p: &Proc) -> bool {
+    p.parked.is_some() && !matches!(p.native_session, Identity::Continued { .. })
+}
+
+/// Whether `pid` is a process `parked_astray` holds back.
+fn pid_parked_astray(procs: &[Proc], pid: u32) -> bool {
+    procs.iter().any(|p| p.pid == pid && parked_astray(p))
 }
 
 /// Is a move dated `at` believable (the review of #s294)? Not when it is later than now or than the
@@ -6516,6 +6587,23 @@ mod tests {
         }
     }
 
+    /// A Claude transcript for `sid` in a store under `home`, and its background job's
+    /// `state.json` (`<home>/jobs/<sid's first eight characters>/`) naming `job_session`: what
+    /// `job_hosts` reads (#s294).
+    fn hosted_transcript(home: &Path, sid: &str, job_session: &str) -> PathBuf {
+        let path = home.join("projects/-w-h").join(format!("{sid}.jsonl"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "").unwrap();
+        let job = home.join("jobs").join(&sid[..8]);
+        std::fs::create_dir_all(&job).unwrap();
+        std::fs::write(
+            job.join("state.json"),
+            json!({"backend": "daemon", "template": "bg", "sessionId": job_session}).to_string(),
+        )
+        .unwrap();
+        path
+    }
+
     fn registry_row<'a>(snapshot: &'a Value, sid: &str) -> &'a Value {
         snapshot["groups"]
             .as_array()
@@ -7938,14 +8026,10 @@ n/Users/x/proj
         let b = "bbbbbbbb-0000-4000-8000-000000000294";
         let now = 1_791_400_000u64;
         let moved_at = now - 3_600;
-        let job_dir = scratch.join("jobs/bbbbbbbb");
-        std::fs::create_dir_all(&job_dir).unwrap();
-        std::fs::write(job_dir.join("state.json"), r#"{"backend":"daemon","template":"bg","interactiveLineage":true,"sessionId":"bbbbbbbb-0000-4000-8000-000000000294"}"#).unwrap();
-        let job: Value =
-            serde_json::from_slice(&std::fs::read(job_dir.join("state.json")).unwrap()).unwrap();
-        let job_session = job["sessionId"].as_str().unwrap();
-        assert_eq!(job_session, b);
-        assert_eq!(job["backend"], "daemon");
+        // B's transcript in a store, and its job's `state.json` naming it: what `job_hosts` reads.
+        let home = scratch.join("home");
+        let b_path = hosted_transcript(&home, b, b);
+        let job_session = b;
         let parked = |procs: &mut Vec<Proc>| {
             for p in procs.iter_mut().filter(|p| p.pid == 700) {
                 p.native_session = Identity::Verified(a.into());
@@ -7996,6 +8080,7 @@ n/Users/x/proj
             });
             st.rows.insert(a.into(), old);
             let mut new = growth_row("/w/harbor", false);
+            new.path = b_path.clone();
             new.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(now - 5));
             new.last_event = Some(now - 5);
             st.rows.insert(b.into(), new);
@@ -8047,6 +8132,14 @@ n/Users/x/proj
         assert_eq!(fact_b.continues, vec![a.to_string()]);
         let fact_a = facts.iter().find(|f| f.sid == a).unwrap();
         assert!(fact_a.continues.is_empty());
+        // The row that says `continuedIn` offers no send: a resume of A would fork the
+        // conversation off at the move (the second review of #s294, point 2).
+        st.send_links = send_links_of(&facts);
+        assert_eq!(
+            resume_not_moved(&st, a),
+            Err(SendRefusal::ContinuedElsewhere)
+        );
+        assert_eq!(resume_not_moved(&st, b), Ok(()));
 
         // Native source identity wins for plain clients and stale launch arguments alike.
         for argv in [
@@ -8089,6 +8182,54 @@ n/Users/x/proj
         let snapshot = idx.assemble(&mismatch, &mut facts);
         assert_ne!(find(&snapshot, job_session).unwrap()["pid"], 700);
         assert!(facts.iter().all(|fact| fact.continues.is_empty()));
+
+        // The second review of #s294, point 2: a pane whose record says it was parked, but whose
+        // move cannot be followed, is a send target for no session. Its record still names A and
+        // herdr may still report A, while the pane shows the job. Three ways the chain fails: the
+        // job's `state.json` names another session (point 3: the prefix alone links nothing), A's
+        // `continued-in` went out of its tail, and B is not indexed yet.
+        let check_astray = |st: &mut State, why: &str| {
+            idx.prove_by_growth(st);
+            let mut facts = Vec::new();
+            let snapshot = idx.assemble(st, &mut facts);
+            assert!(facts.iter().all(|fact| fact.continues.is_empty()), "{why}");
+            let row_a = find(&snapshot, a).unwrap();
+            assert_eq!(row_a["pid"], 700, "{why}: the record names A: {row_a}");
+            assert!(row_a.get("injectable").is_none(), "{why}: {row_a}");
+            assert!(row_a.get("continuedIn").is_none(), "{why}: {row_a}");
+            st.send_links = send_links_of(&facts);
+            assert_eq!(
+                pane_send_target(st, a).map(|(pid, _)| pid),
+                Err(SendRefusal::UnprovenLink),
+                "{why}"
+            );
+        };
+        std::fs::write(
+            home.join("jobs/bbbbbbbb/state.json"),
+            json!({"sessionId": "bbbbbbbb-ffff-4000-8000-000000000294"}).to_string(),
+        )
+        .unwrap();
+        check_astray(&mut world("1-00:00:00"), "the job names another session");
+        hosted_transcript(&home, b, b);
+        let mut out_of_tail = world("1-00:00:00");
+        out_of_tail.rows.get_mut(a).unwrap().continued_in = None;
+        check_astray(&mut out_of_tail, "continued-in out of the tail");
+        let mut unindexed = world("1-00:00:00");
+        unindexed.rows.remove(b);
+        check_astray(&mut unindexed, "B not indexed");
+        // With the record's `parkedJobId` gone (the client clears it on `/resume` and when the
+        // reader leaves the background view), the pane is A's again and sendable.
+        let mut taken_back = world("1-00:00:00");
+        taken_back.rows.get_mut(a).unwrap().continued_in = None;
+        for p in &mut taken_back.procs {
+            p.parked = None;
+        }
+        idx.prove_by_growth(&mut taken_back);
+        let mut facts = Vec::new();
+        let snapshot = idx.assemble(&taken_back, &mut facts);
+        assert_eq!(find(&snapshot, a).unwrap()["injectable"], true);
+        taken_back.send_links = send_links_of(&facts);
+        assert!(matches!(pane_send_target(&taken_back, a), Ok((700, _))));
 
         // The review of #s294, point 1: as the client moves the conversation, A's tail grows (its
         // own enqueues), and then the reader types into B. Neither growth proof may hand A the
@@ -8230,6 +8371,102 @@ n/Users/x/proj
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
+    /// The second review of #s294: a real `sessions/<pid>.json` goes through `apply_registry`, its
+    /// `procStart` verified against this test process by `ps`, then `prove_by_growth` and
+    /// `assemble`. Nothing on the process is set by hand. While the record carries
+    /// `parkedJobId` and the job's `state.json` names B, the pane is B's. When the client clears
+    /// the field (it does on `/resume` and when the reader leaves the background view), the pane
+    /// is A's again.
+    #[test]
+    fn a_parked_record_on_disk_moves_the_pane_end_to_end() {
+        let scratch = std::env::temp_dir().join(format!("cm-moved-e2e-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("state"));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let home = scratch.join("home");
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        let a = "aaaaaaaa-0000-4000-8000-000000000295";
+        let b = "bbbbbbbb-0000-4000-8000-000000000295";
+        let me = std::process::id();
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let moved_at = now - 60;
+        let out = std::process::Command::new("ps")
+            .args(["-o", "lstart=", "-p", &me.to_string()])
+            .env("LC_ALL", "C")
+            .env("TZ", "UTC")
+            .output()
+            .unwrap();
+        let start = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let record = |parked: Option<&str>| {
+            let mut r = json!({"pid": me, "sessionId": a, "procStart": start,
+                "kind": "interactive", "entrypoint": "cli"});
+            if let Some(job) = parked {
+                r["parkedJobId"] = json!(job);
+            }
+            std::fs::write(home.join(format!("sessions/{me}.json")), r.to_string()).unwrap();
+        };
+        let b_path = hosted_transcript(&home, b, b);
+        let world = || {
+            let mut procs = parse_ps(&format!("  {me} claude --resume {a}\n"));
+            apply_tty(&mut procs, &format!("  {me} ttys003 1-00:00:00\n"), now);
+            let herdr =
+                "HERDR_ENV=1 HERDR_PANE_ID=w1:pE HERDR_SOCKET_PATH=/Users/x/.config/herdr/herdr.sock";
+            apply_env(&mut procs, &format!("  {me} claude {herdr}\n"));
+            apply_nesting(
+                &mut procs,
+                &format!("  1 0 launchd\n  60 1 herdr\n  61 60 zsh\n  {me} 61 claude\n"),
+            );
+            apply_lsof(&mut procs, &format!("p{me}\nfcwd\nn/w/e2e\n"));
+            apply_registry(&mut procs, &home);
+            let mut st = State {
+                procs,
+                ..Default::default()
+            };
+            let mut old = growth_row("/w/e2e", false);
+            old.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(moved_at));
+            old.last_event = Some(moved_at);
+            old.continued_in = Some(claude_replay_core::Continuation {
+                session: b.into(),
+                at: moved_at,
+            });
+            st.rows.insert(a.into(), old);
+            let mut new = growth_row("/w/e2e", false);
+            new.path = b_path.clone();
+            new.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(now - 5));
+            new.last_event = Some(now - 5);
+            st.rows.insert(b.into(), new);
+            st
+        };
+        let pid_of = |snapshot: &Value, sid: &str| registry_row(snapshot, sid).get("pid").cloned();
+
+        record(Some("bbbbbbbb"));
+        let mut st = world();
+        assert!(st.procs[0].parked.is_some(), "the record verified");
+        idx.prove_by_growth(&mut st);
+        let mut facts = Vec::new();
+        let snapshot = idx.assemble(&st, &mut facts);
+        assert_eq!(pid_of(&snapshot, b), Some(json!(me)));
+        assert_eq!(registry_row(&snapshot, b)["injectable"], true);
+        assert_eq!(pid_of(&snapshot, a), None);
+        assert_eq!(registry_row(&snapshot, a)["continuedIn"], b);
+        let fact_b = facts.iter().find(|f| f.sid == b).unwrap();
+        assert_eq!(fact_b.continues, vec![a.to_string()]);
+
+        // Cleared by the client: A's again, and sendable.
+        record(None);
+        let mut st = world();
+        st.rows.get_mut(a).unwrap().continued_in = None;
+        idx.prove_by_growth(&mut st);
+        let mut facts = Vec::new();
+        let snapshot = idx.assemble(&st, &mut facts);
+        assert_eq!(pid_of(&snapshot, a), Some(json!(me)));
+        assert_eq!(registry_row(&snapshot, a)["injectable"], true);
+        assert!(facts.iter().all(|f| f.continues.is_empty()));
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
     /// #s294: moves chain. A conversation moved twice reaches the session the process's own record
     /// names, and the sessions before it are what herdr may still name. A move to a session this
     /// index does not know, or of another agent, is not followed; a process started after a move,
@@ -8253,9 +8490,14 @@ n/Users/x/proj
         let x = "eeeeeeee-0000-4000-8000-000000000004";
         let k = "dddddddd-0000-4000-8000-000000000005";
         let y = "ffffffff-0000-4000-8000-000000000006";
+        let home = std::env::temp_dir().join(format!("cm-moves-chain-{}", std::process::id()));
+        let hosted = |row: Row, sid: &str| Row {
+            path: hosted_transcript(&home, sid, sid),
+            ..row
+        };
         rows.insert(a.into(), moved(b, 100));
-        rows.insert(b.into(), moved(c, 200));
-        rows.insert(c.into(), growth_row("/w/h", false));
+        rows.insert(b.into(), hosted(moved(c, 200), b));
+        rows.insert(c.into(), hosted(growth_row("/w/h", false), c));
         rows.insert(x.into(), moved("99999999-0000-4000-8000-000000000000", 100));
         let mut codex = growth_row("/w/h", false);
         codex.agent = Agent::CODEX;
@@ -8306,11 +8548,28 @@ n/Users/x/proj
             vec![a],
             "a job on no session of the chain"
         );
+        // The second review of #s294, point 3: the prefix alone links nothing. b's job directory
+        // holds a `state.json` naming another session with the same eight characters, so the walk
+        // stops before b and goes on to c, whose job is confirmed.
+        hosted_transcript(&home, b, "bbbbbbbb-ffff-4000-8000-000000000002");
+        let shaky = Moves::of(&rows);
+        assert!(!shaky.0[a].2, "b's job does not name b");
+        let p = proc_of(&resume_a, Some(50), Some((a, "bbbbbbbb")));
+        assert_eq!(shaky.chain(&p, a), vec![a], "b's job is not b's");
+        let p = proc_of(&resume_a, Some(50), Some((a, "cccccccc")));
+        assert_eq!(shaky.chain(&p, a), vec![a, b, c], "c's job is c's");
+        hosted_transcript(&home, b, b);
+        // No `state.json` at all: nothing confirms the job.
+        let mut bare: HashMap<String, Row> = HashMap::new();
+        bare.insert(a.into(), moved(b, 100));
+        bare.insert(b.into(), growth_row("/w/h", false));
+        let p = proc_of(&resume_a, Some(50), Some((a, "bbbbbbbb")));
+        assert_eq!(Moves::of(&bare).chain(&p, a), vec![a], "no job file");
 
         // Two transcripts naming each other: the walk stops at a session already visited.
         let mut cyc: HashMap<String, Row> = HashMap::new();
         cyc.insert(a.into(), moved(b, 100));
-        cyc.insert(b.into(), moved(a, 100));
+        cyc.insert(b.into(), hosted(moved(a, 100), b));
         let cycle = Moves::of(&cyc);
         let p = proc_of(&resume_a, Some(50), Some((a, "bbbbbbbb")));
         assert_eq!(cycle.chain(&p, a), vec![a, b]);
@@ -8322,7 +8581,7 @@ n/Users/x/proj
         let only_a = |pf: &str| pf == "aaaaaaaa";
         let mut two: HashMap<String, Row> = HashMap::new();
         two.insert(a.into(), moved(b, 100));
-        two.insert(b.into(), growth_row("/w/h", false));
+        two.insert(b.into(), hosted(growth_row("/w/h", false), b));
         attach.native_session = Identity::Continued {
             source: a.into(),
             session: b.into(),
@@ -8349,6 +8608,7 @@ n/Users/x/proj
             &only_a,
         )
         .is_none());
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// The review of #s294, point 4: a move dated in the future, or after the transcript's last
