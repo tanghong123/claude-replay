@@ -859,16 +859,15 @@ mod answer_tests {
                             &lines,
                         );
                         let answer = whole.last().unwrap();
-                        assert_eq!(answer.first, epoch_secs("2026-11-01T10:00:12Z"));
+                        let first = reading_before
+                            .then(|| epoch_secs("2026-11-01T10:00:12Z"))
+                            .flatten();
+                        assert_eq!(answer.first, first);
                         assert_eq!(answer.last, epoch_secs("2026-11-01T10:00:13.500Z"));
                         assert_eq!(answer.output_tokens, Some(400));
-                        let sent = if reading_before {
-                            epoch_secs("2026-11-01T10:00:10.050Z")
-                        } else if version == "0.146.0" {
-                            epoch_secs("2026-11-01T10:00:10Z")
-                        } else {
-                            None
-                        };
+                        let sent = reading_before
+                            .then(|| epoch_secs("2026-11-01T10:00:10.050Z"))
+                            .flatten();
                         assert_eq!(answer.sent, sent,
                             "version={version}, reading={reading_before}, double_end={double_end}, prompt={intervening_prompt}");
                         for cut in 1..lines.len() {
@@ -882,6 +881,122 @@ mod answer_tests {
                             got.extend(fold(&mut *next_pre, &mut *next_acc, &lines[cut..]));
                             assert_eq!(got, whole, "resumed after line {cut}");
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn codex_late_readings_and_compactions_preserve_safe_timing_through_the_preprocessor() {
+        use claude_replay_engine::adapter::{LinePreprocessor, PreprocessedLine};
+        use claude_replay_engine::seam::{epoch_secs, AnswerTiming};
+        use serde_json::json;
+
+        let fold =
+            |pre: &mut dyn LinePreprocessor, acc: &mut dyn MetricsAccumulator, lines: &[Value]| {
+                let mut out: Vec<AnswerTiming> = Vec::new();
+                for line in lines {
+                    if !matches!(pre.process(&line.to_string()), PreprocessedLine::Ignore) {
+                        acc.push(line);
+                        out.extend(acc.answer());
+                    }
+                }
+                out
+            };
+        let usage = |ts: &str, total: u64, output: u64| {
+            json!({"type": "event_msg", "timestamp": ts, "payload": {"type": "token_count",
+                "info": {"total_token_usage": {"input_tokens": total, "output_tokens": total},
+                    "last_token_usage": {"input_tokens": output, "output_tokens": output}}}})
+        };
+        let message = |ts: &str, role: &str| {
+            json!({"type": "response_item", "timestamp": ts,
+                "payload": {"type": "message", "role": role, "content": []}})
+        };
+        let mut late = vec![
+            json!({"type": "session_meta", "payload": {"id": "s", "cli_version": "0.160.0"}}),
+            message("2026-11-01T10:00:00Z", "user"),
+            json!({"type": "response_item", "timestamp": "2026-11-01T10:00:01Z", "payload": {"type": "reasoning"}}),
+            json!({"type": "token_usage_record", "timestamp": "2026-11-01T10:00:03.100Z"}),
+        ];
+        let mut pre = CodexAdapter.line_preprocessor();
+        let mut acc = CodexAdapter.metrics_acc();
+        fold(&mut *pre, &mut *acc, &late);
+        let mut old = acc.state();
+        old["clock"].as_object_mut().unwrap().remove("items_unseen");
+        old["clock"]
+            .as_object_mut()
+            .unwrap()
+            .remove("awaiting_reading");
+        old["clock"]["open"]
+            .as_object_mut()
+            .unwrap()
+            .remove("uninterrupted");
+        old["clock"]
+            .as_object_mut()
+            .unwrap()
+            .remove("continuation_unknown");
+        let mut resumed_pre = CodexAdapter.line_preprocessor();
+        resumed_pre.restore(&pre.state());
+        let mut resumed = CodexAdapter.metrics_acc();
+        resumed.restore(&old);
+        let tail = [
+            usage("2026-11-01T10:00:04Z", 300, 300),
+            json!({"type": "response_item", "timestamp": "2026-11-01T10:00:05Z", "payload": {"type": "reasoning"}}),
+            json!({"type": "response_item", "timestamp": "2026-11-01T10:00:08Z",
+                "payload": {"type": "custom_tool_call", "name": "exec", "call_id": "c",
+                    "input": "await tools.exec_command({cmd: 'true'});"}}),
+            usage("2026-11-01T10:00:10Z", 900, 600),
+        ];
+        let restored = fold(&mut *resumed_pre, &mut *resumed, &tail);
+        assert_eq!((restored[1].sent, restored[1].first), (None, None));
+        late.extend([
+            message("2026-11-01T10:00:22Z", "assistant"),
+            usage("2026-11-01T10:00:22.500Z", 300, 300),
+            usage("2026-11-01T10:00:22.600Z", 450, 150),
+            message("2026-11-01T10:00:23Z", "assistant"),
+            json!({"type": "token_usage_record", "timestamp": "2026-11-01T10:00:24Z"}),
+            usage("2026-11-01T10:00:24.100Z", 1050, 600),
+        ]);
+        for version in ["0.146.0", "0.160.0"] {
+            for compaction in [
+                json!({"type": "compacted", "timestamp": "2026-11-01T10:00:20Z"}),
+                json!({"type": "response_item", "timestamp": "2026-11-01T10:00:20Z",
+                    "payload": {"type": "compaction"}}),
+            ] {
+                let compacting = vec![
+                    json!({"type": "session_meta", "payload": {"id": "s", "cli_version": version}}),
+                    message("2026-11-01T10:00:03.100Z", "user"),
+                    message("2026-11-01T10:00:10Z", "assistant"),
+                    compaction,
+                    message("2026-11-01T10:00:25Z", "assistant"),
+                    json!({"type": "token_usage_record", "timestamp": "2026-11-01T10:00:26Z"}),
+                    usage("2026-11-01T10:00:26.100Z", 2000, 2000),
+                ];
+                for (lines, is_late) in [(&late, true), (&compacting, false)] {
+                    let whole = fold(
+                        &mut *CodexAdapter.line_preprocessor(),
+                        &mut *CodexAdapter.metrics_acc(),
+                        lines,
+                    );
+                    if is_late {
+                        assert_eq!(whole.len(), 3);
+                        assert!(whole.iter().all(|a| a.sent.is_none() && a.first.is_none()));
+                    } else {
+                        assert_eq!(whole[0].sent, epoch_secs("2026-11-01T10:00:03.100Z"));
+                        assert_eq!(whole[0].first, epoch_secs("2026-11-01T10:00:10Z"));
+                        assert_eq!(whole[0].last, epoch_secs("2026-11-01T10:00:26Z"));
+                    }
+                    for cut in 1..lines.len() {
+                        let mut pre = CodexAdapter.line_preprocessor();
+                        let mut acc = CodexAdapter.metrics_acc();
+                        let mut got = fold(&mut *pre, &mut *acc, &lines[..cut]);
+                        let mut next_pre = CodexAdapter.line_preprocessor();
+                        let mut next_acc = CodexAdapter.metrics_acc();
+                        next_pre.restore(&pre.state());
+                        next_acc.restore(&acc.state());
+                        got.extend(fold(&mut *next_pre, &mut *next_acc, &lines[cut..]));
+                        assert_eq!(got, whole, "resumed after line {cut}");
                     }
                 }
             }
