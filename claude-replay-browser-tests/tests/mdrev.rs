@@ -350,6 +350,15 @@ fn without_node_a_local_markdown_file_keeps_its_history_and_takes_no_notes() {
         Duration::from_secs(30),
         PANE,
     );
+    // mdrev 1.1.70 can draw its toolbar before the document (CI's Linux runner caught the
+    // heading still empty), so wait for the heading as the other cases do before reading it.
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1')",
+        "mdrev to render the guide",
+        Duration::from_secs(30),
+        PANE,
+    );
     assert_eq!(h1(&tab), "The guide");
     eval(
         &tab,
