@@ -283,9 +283,8 @@ impl MetricsAcc {
             if let Some(long) = long {
                 bucket.long_prompt += long.into();
             }
-            // Qoder bills in `credits` with zeroed token counts and an opaque model alias,
-            // so credits are the only honest cost figure. Folded as micro-credits into the
-            // reserved `credits_micro` extra key the shared footer reads. Real Claude usage
+            // Qoder's opaque model aliases cannot be priced from token counts; `credits`
+            // supply its cost independently, as micro-credits in `credits_micro`. Real Claude usage
             // has no such field; current QoderWork usage does, and intentionally shares this
             // path with Qoder CLI.
             // `billable:false` lines are skipped — the published rule is that failed calls
@@ -1626,6 +1625,18 @@ mod answer_tests {
             (a.last, secs("2026-10-30T10:00:13.200Z"))
         );
         assert_eq!(a.lines, 3);
+    }
+
+    #[test]
+    fn an_unbilled_qoder_answer_keeps_tokens_without_charging_credits() {
+        let mut credited = part("resp_01Q", 450, "2026-10-30T10:00:05Z");
+        credited["message"]["usage"]["credits"] = 2.5.into();
+        credited["message"]["usage"]["billable"] = false.into();
+        let mut acc = MetricsAcc::default();
+        let got = answers(&mut acc, &[user("2026-10-30T10:00:00Z"), credited]);
+        assert_eq!(got[0].output_tokens, Some(450));
+        assert_eq!(got[0].sent, secs("2026-10-30T10:00:00Z"));
+        assert!(!acc.finish().extra.contains_key("credits_micro"));
     }
 
     /// #s341: a fold resumed mid-answer from its state hands out exactly what a whole-file fold

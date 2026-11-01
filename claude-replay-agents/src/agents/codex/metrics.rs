@@ -578,9 +578,10 @@ impl RolloutLine {
 /// A forked thread's rollout copies the parent's items, stamped with the time of the fork, and
 /// none of its readings: a prompt that arrives while an answer has not ended drops that answer
 /// (274 of those readings lost theirs). A response that ended with no reading before the next
-/// request's first item is dropped too (33), and so is one that ended twice with no item between,
-/// as which response the reading counts is not told. A rollout written before
-/// `token_usage_record` that misses a reading folds the requests it counts into one answer.
+/// request's first item is dropped too (33), and so is one that ended twice with no item between.
+/// A prompt after the end makes the next reading's response ambiguous, so that reading has no
+/// start. A rollout written before `token_usage_record` that misses a reading folds the requests
+/// it counts into one answer.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 struct ResponseClock {
     /// The time of the latest line sent to the model (`None` if it carried none): the next
@@ -615,6 +616,9 @@ struct OpenAnswer {
     /// When, where that record carried a time.
     #[serde(default)]
     end: Option<f64>,
+    // Old state carries no evidence about intervening prompts.
+    #[serde(default)]
+    uninterrupted: bool,
 }
 
 impl ResponseClock {
@@ -645,14 +649,17 @@ impl ResponseClock {
                         lines: 1,
                         ended: false,
                         end: None,
+                        uninterrupted: true,
                     });
                 }
             },
             RolloutLine::Prompt => {
-                if self.open.as_ref().is_some_and(|open| !open.ended) {
-                    self.open = None;
+                match &mut self.open {
+                    Some(open) if open.ended => open.uninterrupted = false,
+                    _ => self.open = None,
                 }
                 self.prev = ts;
+                self.blind = false;
             }
             RolloutLine::Sent => self.prev = ts,
             RolloutLine::Ended => match &mut self.open {
@@ -681,12 +688,13 @@ impl ResponseClock {
     /// calls the answer made, and some of those never reach this fold (see the type).
     fn counted(&mut self, ts: Option<f64>) -> (Option<f64>, Option<f64>, Option<f64>, u32) {
         self.prev = ts;
+        self.blind = false;
         match self.open.take() {
-            Some(open) => {
+            Some(open) if open.uninterrupted => {
                 let last = open.end.or(open.last.filter(|_| !self.items_unseen));
                 (open.sent, open.first, last, open.lines)
             }
-            None => (None, None, ts, 1),
+            _ => (None, None, ts, 1),
         }
     }
 }
@@ -1753,5 +1761,135 @@ mod answer_tests {
         );
         unread.malformed_line();
         check(answers(&mut unread, &tail));
+    }
+
+    #[test]
+    fn a_prompt_or_reading_recovers_a_blind_clock_before_the_next_item() {
+        for restored in [false, true] {
+            for prefix in [
+                vec![prompt("10:00:01.000", "user")],
+                vec![reading("10:00:01.000", 300, 300)],
+                vec![
+                    reading("10:00:01.000", 300, 300),
+                    prompt("10:00:02.000", "user"),
+                ],
+            ] {
+                let mut acc = CodexMetricsAcc::default();
+                if restored {
+                    let mut parked = acc.state();
+                    parked.as_object_mut().unwrap().remove("clock");
+                    acc.restore(&parked);
+                } else {
+                    acc.malformed_line();
+                }
+                answers(&mut acc, &prefix);
+                let got = answers(
+                    &mut acc,
+                    &[
+                        item("10:00:03.000", "message"),
+                        ended("10:00:04.000"),
+                        reading("10:00:04.100", 600, 300),
+                    ],
+                );
+                assert_eq!(got.len(), 1);
+                assert_eq!(got[0].first, secs("10:00:03.000"));
+                assert_eq!(
+                    got[0].sent,
+                    if prefix.len() == 2 {
+                        secs("10:00:02.000")
+                    } else {
+                        secs("10:00:01.000")
+                    },
+                    "restored={restored}, prefix={prefix:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_reading_after_a_prompt_cannot_claim_an_earlier_completed_answer() {
+        for role in ["user", "developer"] {
+            let lines = [
+                prompt("10:00:00.000", "user"),
+                item("10:00:00.001", "message"),
+                ended("10:00:00.002"),
+                prompt("10:00:01.000", role),
+                reading("10:00:02.000", 300, 300),
+                item("10:00:03.000", "message"),
+                ended("10:00:04.000"),
+                reading("10:00:04.100", 600, 300),
+            ];
+            let whole = answers(&mut CodexMetricsAcc::default(), &lines);
+            assert_eq!(whole.len(), 2);
+            assert_eq!((whole[0].sent, whole[0].first), (None, None));
+            assert_eq!(whole[0].last, secs("10:00:02.000"));
+            assert_eq!(whole[0].output_tokens, Some(300));
+            assert_eq!(whole[1].sent, secs("10:00:02.000"));
+            assert_eq!(whole[1].last, secs("10:00:04.000"));
+            for cut in 1..lines.len() {
+                let mut before = CodexMetricsAcc::default();
+                let mut got = answers(&mut before, &lines[..cut]);
+                let mut after = CodexMetricsAcc::default();
+                after.restore(&before.state());
+                got.extend(answers(&mut after, &lines[cut..]));
+                assert_eq!(got, whole, "role={role}, resumed after line {cut}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_answer_after_a_prompt_uses_its_own_items() {
+        let got = answers(
+            &mut CodexMetricsAcc::default(),
+            &[
+                prompt("10:00:00.000", "user"),
+                item("10:00:01.000", "message"),
+                ended("10:00:02.000"),
+                prompt("10:00:03.000", "user"),
+                item("10:00:04.000", "message"),
+                ended("10:00:05.000"),
+                reading("10:00:05.100", 600, 300),
+            ],
+        );
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].sent, secs("10:00:03.000"));
+        assert_eq!(got[0].first, secs("10:00:04.000"));
+        assert_eq!(got[0].last, secs("10:00:05.000"));
+    }
+
+    #[test]
+    fn an_old_open_answer_without_prompt_evidence_is_not_claimed_on_resume() {
+        for prompt_after_end in [false, true] {
+            let mut before = CodexMetricsAcc::default();
+            answers(
+                &mut before,
+                &[
+                    prompt("10:00:00.000", "user"),
+                    item("10:00:01.000", "message"),
+                    ended("10:00:02.000"),
+                ],
+            );
+            if prompt_after_end {
+                before.push(&prompt("10:00:03.000", "user"));
+            }
+            let mut parked = before.state();
+            let open = parked["clock"]["open"].as_object_mut().unwrap();
+            open.remove("uninterrupted");
+            let mut after = CodexMetricsAcc::default();
+            after.restore(&parked);
+            let got = answers(
+                &mut after,
+                &[
+                    reading("10:00:04.000", 300, 300),
+                    item("10:00:05.000", "message"),
+                    ended("10:00:06.000"),
+                    reading("10:00:06.100", 600, 300),
+                ],
+            );
+            assert_eq!((got[0].sent, got[0].first), (None, None));
+            assert_eq!(got[0].last, secs("10:00:04.000"));
+            assert_eq!(got[1].sent, secs("10:00:04.000"));
+            assert_eq!(got[1].last, secs("10:00:06.000"));
+        }
     }
 }

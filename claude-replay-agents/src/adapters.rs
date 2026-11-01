@@ -726,6 +726,73 @@ mod answer_tests {
         let d = acc.open_answer().unwrap();
         assert!(d.sent.is_some() && d.first.is_some());
     }
+
+    #[test]
+    fn codex_prompt_boundaries_survive_preprocessing_and_cursor_resumes() {
+        use claude_replay_engine::adapter::{LinePreprocessor, PreprocessedLine};
+        use claude_replay_engine::seam::{epoch_secs, AnswerTiming};
+        use serde_json::json;
+
+        let lines = [
+            json!({"type": "session_meta", "payload": {"id": "s",
+                "cli_version": "0.165.0", "model_provider": "openai"}}),
+            json!({"type": "response_item", "timestamp": "2026-11-01T10:00:00Z",
+                "payload": {"type": "message", "role": "user", "content": []}}),
+            json!({"type": "response_item", "timestamp": "2026-11-01T10:00:01Z",
+                "payload": {"type": "reasoning"}}),
+            json!({"type": "response_item", "timestamp": "2026-11-01T10:00:02Z",
+                "payload": {"type": "custom_tool_call", "name": "exec", "call_id": "c",
+                    "input": "await tools.exec_command({cmd: 'true'});"}}),
+            json!({"type": "token_usage_record", "timestamp": "2026-11-01T10:00:03Z"}),
+            json!({"type": "response_item", "timestamp": "2026-11-01T10:00:04Z",
+                "payload": {"type": "message", "role": "developer", "content": []}}),
+            json!({"type": "event_msg", "timestamp": "2026-11-01T10:00:20Z",
+                "payload": {"type": "token_count", "info": {
+                    "total_token_usage": {"input_tokens": 100, "output_tokens": 300},
+                    "last_token_usage": {"input_tokens": 100, "output_tokens": 300}}}}),
+            json!({"type": "response_item", "timestamp": "2026-11-01T10:00:21Z",
+                "payload": {"type": "message", "role": "user", "content": []}}),
+            json!({"type": "response_item", "timestamp": "2026-11-01T10:00:22Z",
+                "payload": {"type": "reasoning"}}),
+            json!({"type": "token_usage_record", "timestamp": "2026-11-01T10:00:24Z"}),
+            json!({"type": "event_msg", "timestamp": "2026-11-01T10:00:24.100Z",
+                "payload": {"type": "token_count", "info": {
+                    "total_token_usage": {"input_tokens": 200, "output_tokens": 700},
+                    "last_token_usage": {"input_tokens": 100, "output_tokens": 400}}}}),
+        ];
+        let fold =
+            |pre: &mut dyn LinePreprocessor, acc: &mut dyn MetricsAccumulator, lines: &[Value]| {
+                let mut out: Vec<AnswerTiming> = Vec::new();
+                for line in lines {
+                    if !matches!(pre.process(&line.to_string()), PreprocessedLine::Ignore) {
+                        acc.push(line);
+                        out.extend(acc.answer());
+                    }
+                }
+                out
+            };
+        let whole = fold(
+            &mut *CodexAdapter.line_preprocessor(),
+            &mut *CodexAdapter.metrics_acc(),
+            &lines,
+        );
+        assert_eq!(whole.len(), 2);
+        assert_eq!((whole[0].sent, whole[0].first), (None, None));
+        assert_eq!(whole[0].last, epoch_secs("2026-11-01T10:00:20Z"));
+        assert_eq!(whole[1].sent, epoch_secs("2026-11-01T10:00:21Z"));
+        assert_eq!(whole[1].last, epoch_secs("2026-11-01T10:00:24Z"));
+        for cut in 1..lines.len() {
+            let mut pre = CodexAdapter.line_preprocessor();
+            let mut acc = CodexAdapter.metrics_acc();
+            let mut got = fold(&mut *pre, &mut *acc, &lines[..cut]);
+            let mut next_pre = CodexAdapter.line_preprocessor();
+            let mut next_acc = CodexAdapter.metrics_acc();
+            next_pre.restore(&pre.state());
+            next_acc.restore(&acc.state());
+            got.extend(fold(&mut *next_pre, &mut *next_acc, &lines[cut..]));
+            assert_eq!(got, whole, "resumed after line {cut}");
+        }
+    }
 }
 
 #[cfg(test)]

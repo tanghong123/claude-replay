@@ -419,10 +419,9 @@ pub struct AnswerTiming {
     /// adapter leaves call transport out the first item read may follow a call never read; the
     /// Qoder family writes every part of an answer at once, when it ended.
     pub first: Option<f64>,
-    /// The time of the answer's last line read so far. Codex's is the response's end where its
-    /// rollout records one (`token_usage_record`, 0.147 on), else its last item's where the fold
-    /// reads every item (`None` where the adapter leaves call transport out): never the reading
-    /// that counts its tokens, which waits for the calls the answer made.
+    /// The time of the answer's last line read so far. Codex uses the recorded response end, or
+    /// its last item where every item is read, not the reading after tools ran. With no reliable
+    /// answer to match, only the reading's time is returned and `sent`/`first` stay unknown.
     pub last: Option<f64>,
     /// How many lines carried it: its parts, or Codex's items (1 for a reading with none read
     /// before it).
