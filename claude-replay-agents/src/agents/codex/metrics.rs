@@ -26,11 +26,13 @@ pub(crate) struct CodexMetricsAcc {
     /// push; transient, never in the cursor.
     pub(crate) usage_id: Option<String>,
     /// The answer the most recent push credited (#s341): one per `token_count` reading that
-    /// moved the counter, its id that reading's `usage_id`. Codex writes no line per part of an
-    /// answer, so its `sent` and `first` are not known. Cleared on every push; transient.
+    /// moved the counter, its id that reading's `usage_id`, timed by [`clock`](Self::clock).
+    /// Cleared on every push; transient.
     pub(crate) answer: Option<AnswerTiming>,
     /// The service the session reaches its model through, `session_meta`'s `model_provider`.
     provider: Option<String>,
+    /// The timing of the answer the next reading credits (#s341). In the state.
+    clock: ResponseClock,
     /// Whether any `token_count` was folded yet. A forked or sub-agent thread's cumulative
     /// counter INHERITS the parent's pre-fork history — its first reading can stand at
     /// hundreds of millions of tokens that live (and are priced) in the PARENT's rollout.
@@ -75,12 +77,20 @@ impl CodexMetricsAcc {
 
     pub(crate) fn malformed_line(&mut self) {
         self.bump("malformed_lines", 1);
+        self.clock.unread();
     }
 
     pub(crate) fn push(&mut self, value: &Value) {
         self.request_pricing = None;
         self.usage_id = None;
         self.answer = None;
+        self.clock.line(
+            value
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(epoch_secs),
+            RolloutLine::of(value),
+        );
         if value.get("type").and_then(Value::as_str) == Some("session_meta") {
             if let Some(p) = value
                 .pointer("/payload/model_provider")
@@ -321,17 +331,22 @@ impl CodexMetricsAcc {
                 );
                 // The request's own output is `last_token_usage`'s, reasoning included; the
                 // counter's delta may span several requests, so a rollout without it gives none.
+                // Its times are the clock's; with no item read, the reading's alone.
+                let timed = self.clock.take();
                 self.answer = Some(AnswerTiming {
                     id: id.clone(),
                     model: self.model.clone(),
                     provider: self.provider.clone(),
-                    sent: None,
-                    first: None,
-                    last: value
-                        .get("timestamp")
-                        .and_then(Value::as_str)
-                        .and_then(epoch_secs),
-                    lines: 1,
+                    sent: timed.as_ref().and_then(|t| t.sent),
+                    first: timed.as_ref().and_then(|t| t.first),
+                    last: match &timed {
+                        Some(t) => t.end.or(t.last),
+                        None => value
+                            .get("timestamp")
+                            .and_then(Value::as_str)
+                            .and_then(epoch_secs),
+                    },
+                    lines: timed.as_ref().map_or(1, |t| t.lines),
                     output_tokens: value
                         .pointer("/payload/info/last_token_usage/output_tokens")
                         .and_then(Value::as_u64),
@@ -376,6 +391,7 @@ impl CodexMetricsAcc {
             "first_model": self.first_model,
             "runtime": self.runtime,
             "provider": self.provider,
+            "clock": self.clock,
         })
     }
 
@@ -415,6 +431,12 @@ impl CodexMetricsAcc {
         if let Some(p) = state.get("provider").and_then(Value::as_str) {
             self.provider = Some(p.to_string());
         }
+        // A cursor parked before the clock existed may sit inside an answer: the next one's
+        // start is not known.
+        self.clock = state
+            .get("clock")
+            .and_then(|v| serde_json::from_value::<ResponseClock>(v.clone()).ok())
+            .unwrap_or_else(ResponseClock::resumed_blind);
         if let Some(mut runtime) = state
             .get("runtime")
             .and_then(|v| serde_json::from_value::<RuntimeInfo>(v.clone()).ok())
@@ -481,6 +503,163 @@ impl CodexMetricsAcc {
         m.extra = self.extra;
         m.runtime = self.runtime;
         m
+    }
+}
+
+/// What one rollout line is to [`ResponseClock`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RolloutLine {
+    /// An item the model sent: its reasoning, a message, a call.
+    Item,
+    /// A message sent to the model that opens a request: the prompt, or the instructions with it.
+    Prompt,
+    /// Anything else the next request carries: a call's output, a compaction's summary, another
+    /// agent's message.
+    Sent,
+    /// A `token_usage_record`: the response ended.
+    Ended,
+    Other,
+}
+
+impl RolloutLine {
+    fn of(value: &Value) -> Self {
+        let payload = |key: &str| value.pointer(&format!("/payload/{key}"))?.as_str();
+        match value.get("type").and_then(Value::as_str) {
+            Some("response_item") => match payload("type") {
+                Some("message") => match payload("role") {
+                    Some("assistant") => Self::Item,
+                    Some(_) => Self::Prompt,
+                    None => Self::Other,
+                },
+                Some(
+                    "reasoning"
+                    | "function_call"
+                    | "custom_tool_call"
+                    | "local_shell_call"
+                    | "web_search_call"
+                    | "tool_search_call"
+                    | "image_generation_call",
+                ) => Self::Item,
+                Some("compaction" | "agent_message") => Self::Sent,
+                Some(kind) if kind.ends_with("_output") => Self::Sent,
+                _ => Self::Other,
+            },
+            Some("compacted") => Self::Sent,
+            Some("token_usage_record") => Self::Ended,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// Times each Codex answer (#s341) from the rollout around the reading that counts it. Codex
+/// writes each item the model sends (its reasoning, a message, a call) as a line when the item
+/// ends, and each line sent with the next request (the prompt, a call's output) as it records
+/// it; from 0.147 (2026-09-03) a `token_usage_record` marks when the response ended; the
+/// `token_count` reading comes after the calls the answer made have run.
+///
+/// So an answer is the items read since the reading before: `sent` is the latest line sent to
+/// the model before its first item, `first` that item's time, and `last` the response's end
+/// where a `token_usage_record` says it, else its last item's. Never the reading's time: it
+/// waits for the answer's calls, 2.5 s after the last item at the median and 60 s at the 99th
+/// percentile, against 0.2 s and 5 s for an answer that made none (163,925 readings that moved
+/// the counter, in 1,445 rollouts on one box, 2026-11-01).
+///
+/// A forked thread's rollout copies the parent's items, stamped with the time of the fork, and
+/// none of its readings: a prompt that arrives while an answer has not ended drops that answer
+/// (274 of those readings lost theirs). A response that ended with no reading before the next
+/// request's first item is dropped too (33), and so is one that ended twice with no item between,
+/// as which response the reading counts is not told. A rollout written before
+/// `token_usage_record` that misses a reading folds the requests it counts into one answer.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+struct ResponseClock {
+    /// The time of the latest line sent to the model (`None` if it carried none): the next
+    /// answer's `sent`.
+    #[serde(default)]
+    prev: Option<f64>,
+    /// The answer whose items were read, and its reading not yet.
+    #[serde(default)]
+    open: Option<OpenAnswer>,
+    /// The answer whose item comes next may have begun before what was read (a fold resumed
+    /// from a state that held no clock, or a line that could not be read): its `sent` and
+    /// `first` are not known.
+    #[serde(default)]
+    blind: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct OpenAnswer {
+    sent: Option<f64>,
+    first: Option<f64>,
+    /// The time of its last item read.
+    last: Option<f64>,
+    lines: u32,
+    /// A `token_usage_record` said its response ended.
+    #[serde(default)]
+    ended: bool,
+    /// When, where that record carried a time.
+    #[serde(default)]
+    end: Option<f64>,
+}
+
+impl ResponseClock {
+    /// A clock for a fold resumed from a state written before it existed: see `blind`.
+    fn resumed_blind() -> Self {
+        Self {
+            blind: true,
+            ..Self::default()
+        }
+    }
+
+    /// Fold one line: its time, and what it is to the answers.
+    fn line(&mut self, ts: Option<f64>, line: RolloutLine) {
+        match line {
+            RolloutLine::Item => match &mut self.open {
+                Some(open) if !open.ended => {
+                    open.last = ts.or(open.last);
+                    open.lines += 1;
+                }
+                _ => {
+                    let blind = std::mem::take(&mut self.blind);
+                    self.open = Some(OpenAnswer {
+                        sent: if blind { None } else { self.prev },
+                        first: if blind { None } else { ts },
+                        last: ts,
+                        lines: 1,
+                        ended: false,
+                        end: None,
+                    });
+                }
+            },
+            RolloutLine::Prompt => {
+                if self.open.as_ref().is_some_and(|open| !open.ended) {
+                    self.open = None;
+                }
+                self.prev = ts;
+            }
+            RolloutLine::Sent => self.prev = ts,
+            RolloutLine::Ended => match &mut self.open {
+                Some(open) if !open.ended => {
+                    open.ended = true;
+                    open.end = ts;
+                }
+                Some(_) => self.open = None,
+                None => {}
+            },
+            RolloutLine::Other => {}
+        }
+    }
+
+    /// A line that could not be read: it may have been an item, the end of a response or a line
+    /// sent to the model, so neither the answer being read nor the next one's start is known.
+    fn unread(&mut self) {
+        self.prev = None;
+        self.open = None;
+        self.blind = true;
+    }
+
+    /// The answer a reading counts: what the clock holds, which it lets go.
+    fn take(&mut self) -> Option<OpenAnswer> {
+        self.open.take()
     }
 }
 
@@ -1164,8 +1343,8 @@ mod answer_tests {
 
     /// #s341: each reading that moves the counter is one answer: the turn's model, the session's
     /// provider, the reading's own output (`last_token_usage`, reasoning included) and its time.
-    /// Codex writes no line per part, so `sent` and `first` are `None`; a reading that moves
-    /// nothing is no answer; and the provider crosses a resume.
+    /// With no item of the model's read before it, `sent` and `first` are `None`; a reading that
+    /// moves nothing is no answer; and the provider crosses a resume.
     #[test]
     fn each_reading_that_moves_the_counter_is_a_timed_answer() {
         let reading = |ts: &str, total_out: u64, last_out: u64| {
@@ -1212,5 +1391,284 @@ mod answer_tests {
             None,
             "an empty name is none"
         );
+    }
+
+    /// Rollout lines for the clock, at `HH:MM:SS.mmm` on one day. Synthetic — never built from a
+    /// real rollout.
+    fn at(hms: &str) -> String {
+        format!("2026-10-30T{hms}Z")
+    }
+    fn secs(hms: &str) -> Option<f64> {
+        epoch_secs(&at(hms))
+    }
+    fn prompt(hms: &str, role: &str) -> Value {
+        serde_json::json!({"timestamp": at(hms), "type": "response_item", "payload": {
+            "type": "message", "role": role, "content": [{"type": "input_text", "text": "go"}]}})
+    }
+    fn item(hms: &str, kind: &str) -> Value {
+        let mut payload = serde_json::json!({"type": kind});
+        if kind == "message" {
+            payload["role"] = "assistant".into();
+        }
+        serde_json::json!({"timestamp": at(hms), "type": "response_item", "payload": payload})
+    }
+    fn output(hms: &str) -> Value {
+        serde_json::json!({"timestamp": at(hms), "type": "response_item", "payload": {
+            "type": "custom_tool_call_output", "call_id": "c", "output": "ok"}})
+    }
+    fn ended(hms: &str) -> Value {
+        serde_json::json!({"timestamp": at(hms), "type": "token_usage_record", "payload": {
+            "response_id": "resp_x", "usage": {"output_tokens": 1}}})
+    }
+    fn reading(hms: &str, total_out: u64, last_out: u64) -> Value {
+        serde_json::json!({"timestamp": at(hms), "type": "event_msg", "payload": {
+            "type": "token_count", "info": {
+                "last_token_usage": {"input_tokens": 100, "output_tokens": last_out},
+                "total_token_usage": {"input_tokens": total_out, "output_tokens": total_out}}}})
+    }
+
+    /// Every answer the pushes hand out, as a consumer reading the whole file collects them.
+    fn answers(acc: &mut CodexMetricsAcc, lines: &[Value]) -> Vec<AnswerTiming> {
+        let mut out = Vec::new();
+        for line in lines {
+            acc.push(line);
+            out.extend(acc.answer.clone());
+        }
+        out
+    }
+
+    /// An answer runs from the line sent before its first item to its response's end, as the
+    /// `token_usage_record` says it: never to the reading, written after the calls it made ran.
+    /// The next answer is sent with the last call's output.
+    #[test]
+    fn an_answer_runs_from_its_request_to_its_response_s_end() {
+        let got = answers(
+            &mut CodexMetricsAcc::default(),
+            &[
+                prompt("10:00:00.000", "user"),
+                item("10:00:04.000", "reasoning"),
+                item("10:00:05.000", "message"),
+                item("10:00:06.000", "custom_tool_call"),
+                ended("10:00:06.200"),
+                output("10:00:09.000"),
+                reading("10:00:09.001", 500, 500),
+                item("10:00:12.000", "reasoning"),
+                item("10:00:13.000", "function_call"),
+                ended("10:00:13.150"),
+                output("10:00:20.000"),
+                reading("10:00:20.001", 900, 400),
+            ],
+        );
+        assert_eq!(got.len(), 2, "{got:?}");
+        let a = &got[0];
+        assert_eq!(a.sent, secs("10:00:00.000"));
+        assert_eq!(a.first, secs("10:00:04.000"));
+        assert_eq!(
+            a.last,
+            secs("10:00:06.200"),
+            "the response's end, not the reading"
+        );
+        assert_eq!((a.lines, a.output_tokens), (3, Some(500)));
+        let b = &got[1];
+        assert_eq!(b.sent, secs("10:00:09.000"), "with the call's output");
+        assert_eq!(
+            (b.first, b.last, b.lines, b.output_tokens),
+            (secs("10:00:12.000"), secs("10:00:13.150"), 2, Some(400))
+        );
+    }
+
+    /// A rollout written before `token_usage_record` ends an answer at its last item: the reading
+    /// came after the call it made ran for 26 seconds.
+    #[test]
+    fn with_no_end_recorded_an_answer_ends_at_its_last_item() {
+        let got = answers(
+            &mut CodexMetricsAcc::default(),
+            &[
+                prompt("10:00:00.000", "user"),
+                item("10:00:03.000", "reasoning"),
+                item("10:00:04.000", "function_call"),
+                output("10:00:30.000"),
+                reading("10:00:30.001", 300, 300),
+            ],
+        );
+        assert_eq!(
+            (got[0].sent, got[0].last),
+            (secs("10:00:00.000"), secs("10:00:04.000"))
+        );
+    }
+
+    /// Every line sent with a request sets when the next went out: a compaction's summary and
+    /// the instructions Codex sends as a developer message as well as a prompt; a web search is
+    /// one of the model's items.
+    #[test]
+    fn each_line_sent_to_the_model_moves_the_next_request_s_time() {
+        let compacted = serde_json::json!({"timestamp": at("10:00:10.000"), "type": "compacted",
+            "payload": {"message": ""}});
+        let got = answers(
+            &mut CodexMetricsAcc::default(),
+            &[
+                prompt("10:00:00.000", "user"),
+                item("10:00:01.000", "message"),
+                reading("10:00:02.000", 300, 300),
+                compacted,
+                item("10:00:12.000", "message"),
+                reading("10:00:13.000", 600, 300),
+                prompt("10:00:20.000", "developer"),
+                item("10:00:21.000", "web_search_call"),
+                item("10:00:22.000", "message"),
+                reading("10:00:23.000", 900, 300),
+            ],
+        );
+        let sent: Vec<_> = got.iter().map(|a| a.sent).collect();
+        assert_eq!(
+            sent,
+            [
+                secs("10:00:00.000"),
+                secs("10:00:10.000"),
+                secs("10:00:20.000")
+            ]
+        );
+        assert_eq!(got[2].lines, 2);
+    }
+
+    /// A forked thread's rollout opens with the parent's items stamped with the fork's time and
+    /// none of its readings: its own prompt drops them, and its first answer is timed from it.
+    #[test]
+    fn a_fork_s_copied_items_are_no_answer() {
+        let got = answers(
+            &mut CodexMetricsAcc::default(),
+            &[
+                prompt("10:00:00.001", "user"),
+                item("10:00:00.002", "reasoning"),
+                item("10:00:00.003", "custom_tool_call"),
+                output("10:00:00.004"),
+                item("10:00:00.005", "message"),
+                prompt("10:00:30.000", "user"),
+                item("10:00:33.000", "reasoning"),
+                item("10:00:35.000", "message"),
+                ended("10:00:35.200"),
+                reading("10:00:35.300", 400, 400),
+            ],
+        );
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            (got[0].sent, got[0].first, got[0].last, got[0].lines),
+            (
+                secs("10:00:30.000"),
+                secs("10:00:33.000"),
+                secs("10:00:35.200"),
+                2
+            )
+        );
+    }
+
+    /// A response that ended with no reading before the next request's first item is dropped,
+    /// and the reading times the request it counts; one that ended twice with no item between
+    /// is not timed, as which response the reading counts is not told.
+    #[test]
+    fn a_response_with_no_reading_is_dropped_and_one_ended_twice_is_not_timed() {
+        let got = answers(
+            &mut CodexMetricsAcc::default(),
+            &[
+                prompt("10:00:00.000", "user"),
+                item("10:00:01.000", "function_call"),
+                ended("10:00:02.000"),
+                output("10:00:03.000"),
+                item("10:00:05.000", "message"),
+                ended("10:00:06.000"),
+                reading("10:00:06.100", 700, 300),
+            ],
+        );
+        assert_eq!(
+            (got[0].sent, got[0].first, got[0].last, got[0].lines),
+            (
+                secs("10:00:03.000"),
+                secs("10:00:05.000"),
+                secs("10:00:06.000"),
+                1
+            )
+        );
+        let twice = answers(
+            &mut CodexMetricsAcc::default(),
+            &[
+                prompt("10:00:00.000", "user"),
+                item("10:00:01.000", "message"),
+                ended("10:00:02.000"),
+                ended("10:00:03.000"),
+                reading("10:00:03.100", 300, 300),
+            ],
+        );
+        assert_eq!((twice[0].sent, twice[0].first), (None, None));
+        assert_eq!(twice[0].last, secs("10:00:03.100"), "the reading's alone");
+    }
+
+    /// A fold resumed from its state anywhere in a rollout hands out exactly what a whole-file
+    /// fold does: the clock is in the state.
+    #[test]
+    fn a_resume_anywhere_times_answers_as_a_whole_file_fold() {
+        let lines = [
+            prompt("10:00:00.100", "user"),
+            item("10:00:01.200", "reasoning"),
+            item("10:00:02.300", "custom_tool_call"),
+            ended("10:00:02.450"),
+            output("10:00:04.000"),
+            reading("10:00:04.001", 300, 300),
+            item("10:00:05.000", "reasoning"),
+            item("10:00:06.000", "message"),
+            ended("10:00:06.700"),
+            reading("10:00:06.800", 700, 400),
+        ];
+        let whole = answers(&mut CodexMetricsAcc::default(), &lines);
+        assert_eq!(whole.len(), 2);
+        assert!(whole.iter().all(|a| a.sent.is_some() && a.first.is_some()));
+        for cut in 1..lines.len() {
+            let mut before = CodexMetricsAcc::default();
+            let mut got = answers(&mut before, &lines[..cut]);
+            let parked = serde_json::to_string(&before.state()).unwrap();
+            let mut after = CodexMetricsAcc::default();
+            after.restore(&serde_json::from_str(&parked).unwrap());
+            got.extend(answers(&mut after, &lines[cut..]));
+            assert_eq!(got, whole, "resumed after line {cut}");
+        }
+    }
+
+    /// A cursor parked before the clock existed may sit inside an answer, and a line that could
+    /// not be read may have been an item or the request: the next answer's `sent` and `first`
+    /// are `None`, and the answers after it are timed whole.
+    #[test]
+    fn a_cursor_from_before_the_clock_or_an_unread_line_leaves_the_next_start_unknown() {
+        let tail = [
+            item("10:00:01.000", "message"),
+            ended("10:00:02.000"),
+            reading("10:00:02.100", 300, 300),
+            prompt("10:00:03.000", "user"),
+            item("10:00:04.000", "message"),
+            ended("10:00:05.000"),
+            reading("10:00:05.100", 600, 300),
+        ];
+        let check = |got: Vec<AnswerTiming>| {
+            assert_eq!((got[0].sent, got[0].first), (None, None));
+            assert_eq!(got[0].last, secs("10:00:02.000"));
+            assert_eq!(
+                (got[1].sent, got[1].first),
+                (secs("10:00:03.000"), secs("10:00:04.000"))
+            );
+        };
+        let mut old = CodexMetricsAcc::default();
+        let mut parked = old.state();
+        parked.as_object_mut().unwrap().remove("clock");
+        old.restore(&parked);
+        check(answers(&mut old, &tail));
+
+        let mut unread = CodexMetricsAcc::default();
+        answers(
+            &mut unread,
+            &[
+                prompt("10:00:00.000", "user"),
+                item("10:00:00.500", "reasoning"),
+            ],
+        );
+        unread.malformed_line();
+        check(answers(&mut unread, &tail));
     }
 }

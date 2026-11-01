@@ -95,7 +95,8 @@ impl MetricsAccumulator for agents::codex::metrics::CodexMetricsAcc {
     fn usage_kind(&self) -> Option<claude_replay_engine::seam::UsageKind> {
         Some(claude_replay_engine::seam::UsageKind::CounterReading)
     }
-    /// One answer per reading that moved the counter (#s341); none is ever open.
+    /// One answer per reading that moved the counter, timed from the rollout's items (#s341).
+    /// None is ever open: an answer's count comes with its reading.
     fn answer(&self) -> Option<claude_replay_engine::seam::AnswerTiming> {
         self.answer.clone()
     }
