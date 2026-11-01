@@ -415,8 +415,9 @@ pub struct AnswerTiming {
     /// Claude Code writes a line when its content block ENDS, so this is the end of the first
     /// block (often the whole thinking), not the first token: tokens over `last - first` overstate
     /// the speed many times (a median of 1,394 a second, measured as above), while `last - sent`
-    /// holds. Codex writes each item (reasoning, message, call) when it ends, and the Qoder family
-    /// every part of an answer at once, when it ended.
+    /// holds. Codex writes each item (reasoning, message, call) when it ends, and where the
+    /// adapter leaves call transport out the first item read may follow a call never read; the
+    /// Qoder family writes every part of an answer at once, when it ended.
     pub first: Option<f64>,
     /// The time of the answer's last line read so far. Codex's is the response's end where its
     /// rollout records one (`token_usage_record`, 0.147 on), else its last item's where the fold
