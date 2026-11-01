@@ -314,8 +314,14 @@ impl MetricsAcc {
     /// record the client writes with one). A `<synthetic>` record is the client's own (an API
     /// error it reports), not an answer. A sub-agent's lines are read like any: its own file
     /// marks every one `isSidechain` (no parent file on this box held such lines among its own,
-    /// 0 of 109, 2026-10-30). The Qoder family bills in credits with its token counts zeroed, so
-    /// an answer whose usage carries `credits` has no output count rather than a false 0.
+    /// 0 of 109, 2026-10-30).
+    ///
+    /// The Qoder family bills in `credits`, and a usage that carries them zeroed its token counts
+    /// for a while but not since: QoderWork 1.1.26's usage beside credits read 0 in every line
+    /// from 2026-08-30 to 2026-09-03 and has held the model's real counts from 2026-09-04, the
+    /// same release throughout (179,405 lines on one box, 2026-11-01); every Qoder 1.1.69-1.1.80
+    /// line beside credits held a real count. So a credited usage's output count is taken when it
+    /// is above 0; a 0 beside credits is no count, never a false 0.
     fn time_answer(&mut self, v: &Value) {
         let ts = v
             .get("timestamp")
@@ -330,11 +336,10 @@ impl MetricsAcc {
             (Some("assistant"), Some(id)) if model != "<synthetic>" => AnswerLine::Part {
                 id: id.to_string(),
                 model: model.to_string(),
-                output_tokens: v
-                    .pointer("/message/usage")
-                    .filter(|u| u.get("credits").is_none())
-                    .and_then(|u| u.get("output_tokens"))
-                    .and_then(Value::as_u64),
+                output_tokens: v.pointer("/message/usage").and_then(|u| {
+                    let n = u.get("output_tokens").and_then(Value::as_u64)?;
+                    (n > 0 || u.get("credits").is_none()).then_some(n)
+                }),
             },
             (Some("user"), _) => AnswerLine::Request,
             _ => AnswerLine::Other,
@@ -1572,14 +1577,55 @@ mod answer_tests {
         assert_eq!(got[0].lines, 2);
     }
 
-    /// #s341: the Qoder family bills in credits with its token counts zeroed (see `push`), so
-    /// such an answer has no output count, never a false 0.
+    /// #s341: a usage billed in credits that zeroed its counts (QoderWork, 2026-08-30 to
+    /// 2026-09-03; see `time_answer`) gives no output count, never a false 0.
     #[test]
-    fn an_answer_billed_in_credits_has_no_output_count() {
+    fn an_answer_billed_in_credits_with_zeroed_counts_has_no_output_count() {
         let mut credited = part("msg_01Q", 0, "2026-10-30T10:00:01Z");
         credited["message"]["usage"]["credits"] = 2.5.into();
         let got = answers(&mut MetricsAcc::default(), &[credited]);
         assert_eq!(got[0].output_tokens, None);
+    }
+
+    /// A Qoder-family answer as current releases write it: every part at the one time the answer
+    /// ended, the usage on its last line only, billed in credits beside the model's real counts.
+    /// It is timed from the request before it, with that count.
+    #[test]
+    fn a_qoder_family_answer_billed_in_credits_keeps_its_real_count() {
+        let qoder = |kind: &str, usage: Option<Value>| {
+            let mut v = serde_json::json!({"type": "assistant",
+                "timestamp": "2026-10-30T10:00:13.200Z", "message": {
+                "role": "assistant", "id": "resp_01q", "model": "ultimate",
+                "content": [{"type": kind}]}});
+            if let Some(u) = usage {
+                v["message"]["usage"] = u;
+            }
+            v
+        };
+        let usage = serde_json::json!({"input_tokens": 54_000, "output_tokens": 650,
+            "credits": 20.9, "original_credits": 20.9, "billable": true});
+        let got = answers(
+            &mut MetricsAcc::default(),
+            &[
+                user("2026-10-30T10:00:00.000Z"),
+                qoder("thinking", None),
+                qoder("text", None),
+                qoder("tool_use", Some(usage)),
+            ],
+        );
+        assert_eq!(got.len(), 1);
+        let a = &got[0];
+        assert_eq!(
+            a.output_tokens,
+            Some(650),
+            "the real count beside the credits"
+        );
+        assert_eq!(a.sent, secs("2026-10-30T10:00:00.000Z"));
+        assert_eq!(
+            (a.first, a.last),
+            (a.last, secs("2026-10-30T10:00:13.200Z"))
+        );
+        assert_eq!(a.lines, 3);
     }
 
     /// #s341: a fold resumed mid-answer from its state hands out exactly what a whole-file fold
