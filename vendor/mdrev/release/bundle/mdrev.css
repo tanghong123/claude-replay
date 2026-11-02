@@ -254,9 +254,14 @@
 .mdrev-host .pick:hover:not(:disabled) {background:var(--bg-soft);color:var(--ink)}
 .mdrev-host .pick.active {background:var(--accent-soft);color:var(--accent);font-weight:600}
 .mdrev-host .pick-history {margin-left:4px}
-.mdrev-host .history {background:var(--bg);border:1px solid var(--rule);width:min(560px,100cqw - 16px);box-shadow:var(--shadow);z-index:50;border-radius:10px;position:absolute;top:calc(100% + 6px);left:8px;overflow:hidden}
+.mdrev-host .pick.pick-history.active {font-weight:inherit}
+.mdrev-host .history {background:var(--bg);border:1px solid var(--rule);width:min(560px,100cqw - 16px);box-shadow:var(--shadow);z-index:50;border-radius:10px;position:absolute;top:calc(100% + 6px);left:8px}
 .mdrev-host .history-hint {color:var(--ink-faint);border-bottom:1px solid var(--rule-soft);background:var(--bg-soft);padding:8px 12px;font-size:11.5px}
 .mdrev-host .history-list {-webkit-user-select:none;user-select:none;max-height:320px;overflow-y:auto}
+.mdrev-host .history {max-height:calc(min(var(--mdv-app-h,100vh), var(--mdrev-viewport-h,100vh)) - var(--mdv-bar-h,0px) - 16px);overscroll-behavior:contain;flex-direction:column;display:flex;overflow:hidden auto}
+.mdrev-host .history>* {flex:none}
+.mdrev-host .history>.history-list {min-height:calc(min(var(--rows,3), 3) * 30px);overscroll-behavior:contain;flex:auto}
+.mdrev-host .app.is-phone .history>.history-list {max-height:none}
 .mdrev-host .history-row {cursor:pointer;border-left:3px solid #0000;align-items:baseline;gap:10px;padding:5px 12px;font-size:12.5px;display:flex}
 .mdrev-host .history-row:hover {background:var(--bg-soft)}
 .mdrev-host .history-row.selecting {background:var(--accent-soft)}
@@ -543,6 +548,13 @@
 .mdrev-host .app.is-phone:not(.phone-measure) .layout-doc .doc, .mdrev-host .app.is-phone:not(.phone-measure):not(.no-annotate) .layout-doc .doc {max-width:none;padding-left:calc(var(--phone-gutter) + var(--phone-inset));padding-right:calc(var(--phone-lane) + var(--phone-inset));margin:0}
 .mdrev-host .app.is-phone:not(.phone-measure) .layout-doc .source-view {max-width:none;margin-left:calc(var(--phone-gutter) + var(--phone-inset) / 2);margin-right:calc(var(--phone-lane) + var(--phone-inset) / 2)}
 .mdrev-host .app.is-phone .main {position:relative}
+.mdrev-host .app.bars-step>.main>.scrollpane {margin-top:calc(-1 * var(--mdv-bar-h,0px));scroll-padding-top:var(--mdv-bar-h,0px)}
+.mdrev-host .app.bars-step .layout-doc {padding-top:var(--mdv-bar-h,0px)}
+.mdrev-host .app.bars-step>.topbar {z-index:65;transition:transform .18s}
+.mdrev-host .app.bars-step>.topbar[data-away]:not(:has(.history)):not(:has(.display-menu)):not(:has(.pick-pop)):not(:has(.switcher)):not(:has(.warn-pop)):not(:has(.outline-overlay)):not(:has([aria-expanded=true])):not(:has(:focus-visible)) {transform:translateY(-100%)}
+@media (prefers-reduced-motion:reduce) {
+.mdrev-host .app.bars-step>.topbar {transition:none}
+}
 .mdrev-host .phone-shift {z-index:30;background:var(--bg);border:1px solid var(--rule);box-shadow:var(--shadow);border-radius:23px;display:flex;position:absolute;bottom:16px;right:12px}
 .mdrev-host .phone-shift.beside-rail {right:34px}
 .mdrev-host .is-hosted-scroll .phone-shift {bottom:calc(16px + env(safe-area-inset-bottom,0px));position:fixed}
@@ -630,7 +642,8 @@
 @media (hover:none) and (pointer:coarse) {
 .mdrev-host .ann-review .ann-composer-row button {min-width:44px;min-height:44px;padding:0 14px}
 .mdrev-host .ann-review .ann-share {min-height:44px;margin:0}
-.mdrev-host .ann-review input:not([type=checkbox]) {min-height:44px;font-size:16px}
+.mdrev-host .ann-review input:not([type=checkbox]) {min-height:44px}
+.mdrev-host input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=hidden]), .mdrev-host textarea, .mdrev-host select {font-size:16px!important}
 }
 .mdrev-host .ann-review-dest code, .mdrev-host .ann-review-panel code {overflow-wrap:anywhere}
 .mdrev-host .ann-review-as {color:var(--ink-soft);margin-bottom:6px}
@@ -866,7 +879,7 @@
 .mdrev-host[data-theme], .mdrev-host:not([data-theme]) {--bg: var(--mdrev-bg, #fff); --bg-soft: var(--mdrev-bg-soft, #f7f8fc); --bg-inset: var(--mdrev-bg-inset, #eef4fc); --ink: var(--mdrev-ink, #202536); --ink-soft: var(--mdrev-ink-soft, #646c80); --ink-faint: var(--mdrev-ink-faint, #69738a); --rule: var(--mdrev-rule, #3e496c1c); --rule-soft: var(--mdrev-rule-soft, #3e496c12); --accent: var(--mdrev-accent, #4758d0); --accent-soft: var(--mdrev-accent-soft, #4758d01f); --on-accent: var(--mdrev-on-accent, #fff); --shared: var(--mdrev-shared, #a8540f); --shared-soft: var(--mdrev-shared-soft, #a8540f1f); --ins-fg: var(--mdrev-ins-fg, #1d7536); --ins-bg: var(--mdrev-ins-bg, #1d75361c); --del-fg: var(--mdrev-del-fg, #bc212e); --del-bg: var(--mdrev-del-bg, #bc212e1a); --mod-fg: var(--mdrev-mod-fg, #363fb6); --mod-bg: var(--mdrev-mod-bg, #363fb61c); --code-bg: var(--mdrev-code-bg, #f7f8fc); --shadow: var(--mdrev-shadow, none); --lightningcss-light: var(--mdrev-lightningcss-light, initial); --lightningcss-dark:; color-scheme:light;}
 .mdrev-host, .mdrev-host .app, .mdrev-host .doc {color:var(--ink)!important;background:#fff!important}
 .mdrev-host, .mdrev-host, .mdrev-host .app, .mdrev-host .main {height:auto!important;min-height:0!important;display:block!important;overflow:visible!important}
-.mdrev-host .scrollpane {height:auto!important;overflow:visible!important}
+.mdrev-host .scrollpane {height:auto!important;margin-top:0!important;scroll-padding-top:0!important;overflow:visible!important}
 .mdrev-host .topbar, .mdrev-host .rail, .mdrev-host .file-rail, .mdrev-host .outline, .mdrev-host .mdv-canvas-bar, .mdrev-host .toast, .mdrev-host .ann-orphans, .mdrev-host .blame-pop, .mdrev-host .ann-invite-group, .mdrev-host .ann-margin, .mdrev-host .gutter-margin, .mdrev-host .find, .mdrev-host .phone-shift, .mdrev-host .note-step, .mdrev-host .print-notice, .mdrev-host .print-wait {display:none!important}
 .mdrev-host .mdv-canvas.is-picked {border-color:var(--rule);outline:none}
 .mdrev-host .doc .mdv-block-ins:not(tr):not(code), .mdrev-host .doc .mdv-block-del:not(tr):not(code), .mdrev-host .doc .mdv-block-mod:not(tr):not(code), .mdrev-host .doc .mdv-block-shape:not(tr):not(code) {border-left:3px solid #0000;margin-left:-10px!important;padding-left:7px!important}
@@ -914,6 +927,19 @@
 .mdrev-host .history-branches {border-bottom:1px solid var(--rule-soft);flex-wrap:wrap;align-items:baseline;gap:6px 10px;padding:8px 12px;display:flex}
 .mdrev-host .history-branches .pick-branch {font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
 .mdrev-host .history-branches .pick-branch.active {cursor:default}
+.mdrev-host .app.is-phone .history-branches {flex-direction:column;align-items:stretch;gap:6px}
+.mdrev-host .app.is-phone .history-branches .picker-group {height:auto;max-height:min(132px, calc(var(--mdv-app-h,100vh) * .15));overscroll-behavior:contain;flex-direction:column;display:flex;overflow:hidden auto}
+.mdrev-host .app.is-phone .history-branches .picker-group .pick {text-align:left;white-space:normal;overflow-wrap:anywhere;border-right:none;border-bottom:1px solid var(--rule);flex:none;height:auto;min-height:30px;padding:6px 10px;line-height:1.35}
+.mdrev-host .app.is-phone .history-branches .picker-group .pick:last-child {border-bottom:none}
+.mdrev-host .app.is-phone .history-branches .pick-branch.active {opacity:1}
+.mdrev-host .app.is-phone .history-branches>.pick-new-branch {align-self:flex-start}
+.mdrev-host .app.is-phone .history-branches .picker-group .pick:focus-visible {outline-offset:-2px}
+.mdrev-host .app:not(.is-phone) .history-branches {grid-template-columns:auto minmax(0,1fr);display:grid}
+.mdrev-host .app:not(.is-phone) .history-branches>:not(.picker-label) {grid-column:2}
+.mdrev-host .app:not(.is-phone) .history-branches>.pick-new-branch {justify-self:start}
+.mdrev-host .app:not(.is-phone) .history-branches .picker-group {overscroll-behavior:contain;border:none;border-radius:0;flex-wrap:wrap;gap:4px;min-width:0;max-width:calc(100% + 6px);height:auto;max-height:134px;margin:-3px;padding:3px;scroll-padding:3px;display:flex;overflow:hidden auto}
+.mdrev-host .app:not(.is-phone) .history-branches .picker-group .pick {border:1px solid var(--rule);white-space:normal;overflow-wrap:anywhere;text-align:left;border-radius:6px;flex:none;max-width:100%;height:auto;min-height:26px;padding:3px 8px;line-height:1.35}
+.mdrev-host .app:not(.is-phone) .history-branches .pick-branch.active {opacity:1}
 .mdrev-host .new-branch {flex-wrap:wrap;flex-basis:100%;align-items:center;gap:6px;display:flex}
 .mdrev-host .new-branch input {min-width:12em;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--rule);border-radius:5px;flex:1;padding:3px 6px;font-size:12.5px}
 .mdrev-host .new-branch-refused {color:var(--ink-soft);flex-basis:100%;font-size:11.5px}

@@ -1106,6 +1106,14 @@ ${staged}`;
    * checkout, and anything .gitignore covers — build output, vendored trees —
    * stays out.
    */
+  /**
+   * The documents in the tree of one commit (#s392): what a listing kept by that tip holds, whatever its branch has
+   * moved on to since it was resolved.
+   */
+  async documentsAt(rev) {
+    const tree = await this.git("ls-tree", "-r", "--name-only", rev);
+    return [...new Set(tree.split("\n").filter((p2) => p2.endsWith(".md")))].sort();
+  }
   async documents() {
     if (this.copyRef) {
       const tree = await this.git("ls-tree", "-r", "--name-only", this.copyRef);
@@ -22576,10 +22584,14 @@ function walkWordDiff(before, after) {
   const steps = [];
   let b = 0;
   let a = 0;
-  const emit = (kind, text9) => {
+  const moves = /* @__PURE__ */ new Map();
+  const emit = (kind, text9, moved2 = false) => {
     if (text9.length === 0)
       return;
-    steps.push({ kind, text: text9, before: b, after: a });
+    const step = { kind, text: text9, before: b, after: a };
+    steps.push(step);
+    if (moved2)
+      moves.set(text9, { ...moves.get(text9), [kind]: step });
     if (kind !== "ins")
       b += text9.length;
     if (kind !== "del")
@@ -22598,18 +22610,52 @@ function walkWordDiff(before, after) {
     removed = "";
     added = "";
   };
-  for (const part of diffLines(before, after)) {
-    if (part.removed)
-      removed += part.value;
-    else if (part.added)
-      added += part.value;
-    else {
+  const parts = diffLines(before, after);
+  const moved = movedParagraphs(parts);
+  for (const part of parts) {
+    if (!part.removed && !part.added) {
       flush2();
       emit("same", part.value);
+      continue;
+    }
+    for (const piece of paragraphs(part.value)) {
+      if (moved.has(piece)) {
+        flush2();
+        emit(part.removed ? "del" : "ins", piece, true);
+      } else if (part.removed)
+        removed += piece;
+      else
+        added += piece;
     }
   }
   flush2();
+  for (const { del: del2, ins: ins2 } of moves.values()) {
+    if (!del2 || !ins2)
+      continue;
+    del2.movedTo = ins2.after;
+    ins2.movedFrom = del2.before;
+  }
   return steps;
+}
+var MOVE_MIN = 16;
+function paragraphs(text9) {
+  return text9.split(/(^\n+|\n(?:[ \t]*\n)+|\n$)/).filter((piece) => piece.length > 0);
+}
+function movedParagraphs(parts) {
+  const count = (want) => {
+    const seen = /* @__PURE__ */ new Map();
+    for (const part of parts) {
+      if (!part[want])
+        continue;
+      for (const piece of paragraphs(part.value))
+        if (piece.replace(/\s/g, "").length >= MOVE_MIN)
+          seen.set(piece, (seen.get(piece) ?? 0) + 1);
+    }
+    return seen;
+  };
+  const gone = count("removed");
+  const come = count("added");
+  return new Set([...gone].filter(([text9, n]) => n === 1 && come.get(text9) === 1).map(([text9]) => text9));
 }
 function textHunks(before, after) {
   const out = [];
@@ -32880,23 +32926,40 @@ function mapAnchor(fromText, toText, given) {
   let startDropped = false;
   let endDropped = false;
   let afterEnd = 0;
+  let startMove = null;
+  let endMove = null;
   for (const step of steps) {
     if (step.kind === "ins") {
       afterEnd = step.after + step.text.length;
       continue;
     }
     const runEnd = step.before + step.text.length;
+    const moved = step.kind === "del" && step.movedTo !== void 0;
     if (mappedStart === null && anchor.start < runEnd) {
-      mappedStart = step.kind === "del" ? step.after : step.after + (anchor.start - step.before);
-      startDropped = step.kind === "del";
+      mappedStart = moved ? step.movedTo + (anchor.start - step.before) : step.kind === "del" ? step.after : step.after + (anchor.start - step.before);
+      startDropped = step.kind === "del" && !moved;
+      if (moved)
+        startMove = step;
     }
     if (mappedEnd === null && anchor.end <= runEnd) {
-      mappedEnd = step.kind === "del" ? step.after : step.after + (anchor.end - step.before);
-      endDropped = step.kind === "del";
+      mappedEnd = moved ? step.movedTo + (anchor.end - step.before) : step.kind === "del" ? step.after : step.after + (anchor.end - step.before);
+      endDropped = step.kind === "del" && !moved;
+      if (moved)
+        endMove = step;
     }
     afterEnd = step.kind === "del" ? step.after : step.after + step.text.length;
     if (mappedStart !== null && mappedEnd !== null)
       break;
+  }
+  if (startMove !== endMove) {
+    if (startMove) {
+      mappedStart = startMove.after;
+      startDropped = true;
+    }
+    if (endMove) {
+      mappedEnd = endMove.after;
+      endDropped = true;
+    }
   }
   if (mappedStart === null)
     mappedStart = afterEnd;
@@ -33124,7 +33187,8 @@ function matches(email, server) {
 function linkedCredential() {
   const user = process.env.MDREV_GIT_USER?.trim();
   const token = process.env.MDREV_GIT_TOKEN;
-  return user && token ? { user, token } : null;
+  const email = process.env.MDREV_GIT_EMAIL?.trim();
+  return user && token ? { user, token, ...email ? { email } : {} } : null;
 }
 function credentialEnv() {
   if (!linkedCredential())
@@ -33209,8 +33273,9 @@ var defaultLookup = async (remote, cwd) => {
   let user = null;
   let via = "";
   const linked = linkedCredential();
-  if (where.kind === "https" && linked)
-    return { user: linked.user, host: where.host, emails: [], via: "the linked credential" };
+  if (where.kind === "https" && linked) {
+    return linked.email ? { user: linked.user, host: where.host, emails: [linked.email], via: "the linked credential, its email from the host" } : { user: linked.user, host: where.host, emails: [], via: "the linked credential" };
+  }
   if (where.kind === "https") {
     const r = await runQuiet("git", ["-C", cwd, "credential", "fill"], { input: `protocol=https
 host=${where.host}
@@ -38939,6 +39004,8 @@ Environment:
   MDREV_GIT_USER, MDREV_GIT_TOKEN   a host acting for a person: the person's code server account and
                   token, which a review store's fetch and push use instead of this machine's git
                   credentials, and the account a pairing is checked against. Never on the command line
+  MDREV_GIT_EMAIL that account's email, as the host acting for the person knows it: a pairing's email is
+                  checked against it, for an account whose name is no part of an email (an employee number)
 
 Exit codes: 0 done \xB7 1 error (message on stderr) \xB7 2 no such note or document
 `;

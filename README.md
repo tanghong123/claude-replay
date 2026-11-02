@@ -198,8 +198,7 @@ continuing or mutating the session.
 brew install tanghong123/tap/agent-replay
 ```
 
-This taps `tanghong123/tap` and puts the `agent-replay` command on your `PATH`
-(with `claude-replay` kept as a symlink through the rename transition), so
+This taps `tanghong123/tap` and puts the `agent-replay` command on your `PATH`, so
 you can run it from anywhere:
 
 ```bash
@@ -209,9 +208,11 @@ agent-replay --version
 
 On macOS and Linux (x86_64 and arm64) this downloads a prebuilt binary — no Rust
 toolchain, no compile. Later, `brew upgrade agent-replay` updates it and
-`brew uninstall agent-replay` removes it — existing installs under the old
-`claude-replay` name upgrade transparently (the tap records the rename).
+`brew uninstall agent-replay` removes it.
 (Equivalent two-step: `brew tap tanghong123/tap` then `brew install agent-replay`.)
+The `claude-replay`, `claude-monitor` and `claude-monitor-fleet` command names from
+before v1.101.0 are no longer installed. An install still under the old formula name
+moves with `brew uninstall claude-replay` then `brew install tanghong123/tap/agent-replay`.
 
 **Prebuilt binary** (no Homebrew, no Rust) — `cargo-binstall` grabs the release
 tarball for your platform:

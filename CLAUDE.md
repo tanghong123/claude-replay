@@ -2,7 +2,8 @@
 
 A Rust + ratatui terminal UI viewer (**binaries: `agent-replay` / `agent-monitor` /
 `agent-monitor-fleet` since v1.101.0** — crate and repo names keep the `claude-` prefix;
-brew installs symlink the old command names). It is **fully testable headless (no TTY)** —
+the old `claude-*` command names brew kept as symlinks, and the tap's rename map, were retired
+by #s15). It is **fully testable headless (no TTY)** —
 never skip, stub, or defer a feature "because it needs a terminal."
 
 ## Work tracking
@@ -650,7 +651,7 @@ PreToolUse hook holds the terminal while it waits.
 static version of mdrev, similar to how agent-monitor depends on crates in claude-replay. Future
 upgrades will be triggered explicitly and manually"). `vendor/mdrev` is a crate holding ONE public
 mdrev release's embedding kit, unmodified (`release/`: `bundle/`, `mdrev-cli.js` + `package.json`,
-`docs/*.md`); its version IS the release's (1.1.68, #s345), `release.sha256` is checked by its tests (never
+`docs/*.md`); its version IS the release's (1.1.70, #s350), `release.sha256` is checked by its tests (never
 hand-edit a vendored file), and its build script embeds `bundle/` as a table. Only `claude-monitor`
 depends on it, and `routes::handler` — the one constructor the monitor goes through — installs it
 into the html crate (`install_mdrev`), so `agent-replay` carries none of it. Nothing installed on

@@ -26,11 +26,13 @@ pub(crate) struct CodexMetricsAcc {
     /// push; transient, never in the cursor.
     pub(crate) usage_id: Option<String>,
     /// The answer the most recent push credited (#s341): one per `token_count` reading that
-    /// moved the counter, its id that reading's `usage_id`. Codex writes no line per part of an
-    /// answer, so its `sent` and `first` are not known. Cleared on every push; transient.
+    /// moved the counter, its id that reading's `usage_id`, timed by [`clock`](Self::clock).
+    /// Cleared on every push; transient.
     pub(crate) answer: Option<AnswerTiming>,
     /// The service the session reaches its model through, `session_meta`'s `model_provider`.
     provider: Option<String>,
+    /// The timing of the answer the next reading credits (#s341). In the state.
+    clock: ResponseClock,
     /// Whether any `token_count` was folded yet. A forked or sub-agent thread's cumulative
     /// counter INHERITS the parent's pre-fork history — its first reading can stand at
     /// hundreds of millions of tokens that live (and are priced) in the PARENT's rollout.
@@ -75,18 +77,32 @@ impl CodexMetricsAcc {
 
     pub(crate) fn malformed_line(&mut self) {
         self.bump("malformed_lines", 1);
+        self.clock.unread();
     }
 
     pub(crate) fn push(&mut self, value: &Value) {
         self.request_pricing = None;
         self.usage_id = None;
         self.answer = None;
+        self.clock.line(
+            value
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(epoch_secs),
+            RolloutLine::of(value),
+        );
         if value.get("type").and_then(Value::as_str) == Some("session_meta") {
             if let Some(p) = value
                 .pointer("/payload/model_provider")
                 .and_then(Value::as_str)
             {
                 self.provider = Some(p.to_string()).filter(|p| !p.is_empty());
+            }
+            if let Some(version) = value
+                .pointer("/payload/cli_version")
+                .and_then(Value::as_str)
+            {
+                self.clock.items_unseen = super::model::transport_ignored(version);
             }
         }
         if let Some(timestamp) = value
@@ -247,7 +263,8 @@ impl CodexMetricsAcc {
                 output: field("output_tokens"),
                 ..Default::default()
             };
-            if !self.seen_usage {
+            let first_reading = !self.seen_usage;
+            if first_reading {
                 self.seen_usage = true;
                 // The FIRST reading of a forked/sub-agent thread inherits the parent's
                 // cumulative counter: banking it from zero would price the parent's whole
@@ -272,6 +289,7 @@ impl CodexMetricsAcc {
                     };
                 }
             }
+            let inherited_history = first_reading && self.last_total != TokenCounts::default();
             // Bank the increment against the CURRENT model. `saturating_sub` because a total
             // that goes backwards (a reset) must contribute nothing, never wrap.
             let delta = TokenCounts {
@@ -285,6 +303,7 @@ impl CodexMetricsAcc {
             };
             // A cumulative jump can cover several unseen requests. Only the last request
             // matching the entire increment establishes a context threshold for this delta.
+            let mut one_request = false;
             if let Some(last) = value.pointer("/payload/info/last_token_usage") {
                 let n = |key: &str| last.get(key).and_then(Value::as_u64).unwrap_or(0);
                 let request = TokenCounts {
@@ -296,7 +315,8 @@ impl CodexMetricsAcc {
                     output: n("output_tokens"),
                     ..Default::default()
                 };
-                if request == delta && delta != TokenCounts::default() {
+                one_request = request == delta && delta != TokenCounts::default();
+                if one_request {
                     self.request_pricing = Some(RequestPricing {
                         tier: self
                             .runtime
@@ -321,17 +341,20 @@ impl CodexMetricsAcc {
                 );
                 // The request's own output is `last_token_usage`'s, reasoning included; the
                 // counter's delta may span several requests, so a rollout without it gives none.
+                // Its times are the clock's; with no item read, the reading's alone.
+                let at = value
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .and_then(epoch_secs);
+                let (sent, first, last, lines) = self.clock.counted(at);
                 self.answer = Some(AnswerTiming {
                     id: id.clone(),
                     model: self.model.clone(),
                     provider: self.provider.clone(),
-                    sent: None,
-                    first: None,
-                    last: value
-                        .get("timestamp")
-                        .and_then(Value::as_str)
-                        .and_then(epoch_secs),
-                    lines: 1,
+                    sent: sent.filter(|_| one_request && !inherited_history),
+                    first: first.filter(|_| one_request && !inherited_history),
+                    last,
+                    lines,
                     output_tokens: value
                         .pointer("/payload/info/last_token_usage/output_tokens")
                         .and_then(Value::as_u64),
@@ -376,6 +399,7 @@ impl CodexMetricsAcc {
             "first_model": self.first_model,
             "runtime": self.runtime,
             "provider": self.provider,
+            "clock": self.clock,
         })
     }
 
@@ -414,6 +438,31 @@ impl CodexMetricsAcc {
         }
         if let Some(p) = state.get("provider").and_then(Value::as_str) {
             self.provider = Some(p.to_string());
+        }
+        // A cursor parked before the clock existed may sit inside an answer: the next one's
+        // start is not known.
+        self.clock = state
+            .get("clock")
+            .and_then(|v| serde_json::from_value::<ResponseClock>(v.clone()).ok())
+            .unwrap_or_else(ResponseClock::resumed_blind);
+        if state.get("clock").is_some() && state.pointer("/clock/awaiting_reading").is_none() {
+            self.clock.awaiting_reading = true;
+            self.clock.prev = None;
+            if let Some(open) = &mut self.clock.open {
+                open.sent = None;
+            }
+        }
+        // Older cursors cannot establish the session's transport visibility.
+        if state.get("clock").is_some() && state.pointer("/clock/items_unseen").is_none() {
+            self.clock.items_unseen = true;
+        }
+        // An older hidden-transport clock may already have consumed a partial answer.
+        if state.get("clock").is_some()
+            && self.clock.items_unseen
+            && state.pointer("/clock/continuation_unknown").is_none()
+        {
+            self.clock.unread();
+            self.clock.continuation_unknown = true;
         }
         if let Some(mut runtime) = state
             .get("runtime")
@@ -481,6 +530,231 @@ impl CodexMetricsAcc {
         m.extra = self.extra;
         m.runtime = self.runtime;
         m
+    }
+}
+
+/// What one rollout line is to [`ResponseClock`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RolloutLine {
+    /// An item the model sent: its reasoning, a message, a call.
+    Item,
+    /// A message sent to the model that opens a request: the prompt, or the instructions with it.
+    Prompt,
+    /// Anything else the next request carries: a call's output, another agent's message.
+    Sent,
+    /// A compaction's summary (`compacted`, or a `compaction` item). The next request carries it,
+    /// but it can land while an answer is still being written, which it does not end; after an
+    /// answer has ended, a reading that follows may count the compaction instead.
+    Compaction,
+    /// A `token_usage_record`: the response ended.
+    Ended,
+    Other,
+}
+
+impl RolloutLine {
+    fn of(value: &Value) -> Self {
+        let payload = |key: &str| value.pointer(&format!("/payload/{key}"))?.as_str();
+        match value.get("type").and_then(Value::as_str) {
+            Some("response_item") => match payload("type") {
+                Some("message") => match payload("role") {
+                    Some("assistant") => Self::Item,
+                    Some(_) => Self::Prompt,
+                    None => Self::Other,
+                },
+                Some(
+                    "reasoning"
+                    | "function_call"
+                    | "custom_tool_call"
+                    | "local_shell_call"
+                    | "web_search_call"
+                    | "tool_search_call"
+                    | "image_generation_call",
+                ) => Self::Item,
+                Some("compaction") => Self::Compaction,
+                Some("agent_message") => Self::Sent,
+                Some(kind) if kind.ends_with("_output") => Self::Sent,
+                _ => Self::Other,
+            },
+            Some("compacted") => Self::Compaction,
+            Some("token_usage_record") => Self::Ended,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// Times each Codex answer (#s341) from the rollout around the reading that counts it. Codex
+/// writes each item the model sends (its reasoning, a message, a call) as a line when the item
+/// ends, and each line sent with the next request (the prompt, a call's output) as it records
+/// it; from 0.147 (2026-09-03) a `token_usage_record` marks when the response ended; the
+/// `token_count` reading comes after the calls the answer made have run, and the next request
+/// goes out after it.
+///
+/// So an answer is the items read since the reading before: `sent` is the latest line sent to
+/// the model, or the latest reading, before its first item; `first` that item's time; and
+/// `last` the response's end where a `token_usage_record` says it, else its last item's where
+/// the fold reads every item. A session Codex 0.147 or later started draws each call from its
+/// mirror and leaves the transport's lines out of the fold (an `exec` or `wait` call and its
+/// receipt, which the preprocessor ignores): there the reading counts as sent, as the outputs
+/// of many calls are not here to say it, and an answer whose end is not recorded has no `last`,
+/// as its last item may be a call the fold never saw (0.147's alphas wrote no
+/// `token_usage_record` before 2026-09-03). A reading alone carries no start, so its time never
+/// establishes a speed: it waits for the answer's calls, 2.5 s after the last item at the median
+/// and 60 s at the 99th percentile,
+/// against 0.2 s and 5 s for an answer that made none (163,925 readings that moved the counter,
+/// in 1,445 rollouts on one box, 2026-11-01).
+///
+/// A forked thread's rollout copies the parent's items, stamped with the time of the fork, and
+/// none of its readings: a prompt that arrives while an answer has not ended drops that answer
+/// (274 of those readings lost theirs). A response that ended with no reading before the next
+/// request's first item is dropped too (33), and so is one that ended twice with no item between.
+/// Without the missing reading, a new answer cannot recover its request time from unseen tool
+/// outputs, even when a developer prompt preceded those outputs. Its `first` is still known.
+/// A prompt or compaction after the end makes the next reading's response ambiguous, so that
+/// reading has no start. Only a reading whose increment matches its request's own usage carries
+/// `sent`/`first`. A first reading with inherited history is untimed: its `total − last` baseline
+/// makes the delta match automatically and cannot establish one request's timing.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+struct ResponseClock {
+    /// The time of the latest line sent to the model (`None` if it carried none): the next
+    /// answer's `sent`.
+    #[serde(default)]
+    prev: Option<f64>,
+    /// The answer whose items were read, and its reading not yet.
+    #[serde(default)]
+    open: Option<OpenAnswer>,
+    /// The answer whose item comes next may have begun before what was read (a fold resumed
+    /// from a state that held no clock, or a line that could not be read): its `sent` and
+    /// `first` are not known.
+    #[serde(default)]
+    blind: bool,
+    /// Further readings cannot establish the beginning of an interrupted answer.
+    #[serde(default)]
+    continuation_unknown: bool,
+    /// The session leaves the transport's lines out of the fold
+    /// ([`transport_ignored`](super::model::transport_ignored)), so an answer's last item read
+    /// may not be its last: with no recorded end, its end is not known. An old cursor that
+    /// lacks the session version stays conservative until session metadata is read again.
+    #[serde(default)]
+    items_unseen: bool,
+    /// A response ended since the last counted reading; unseen tool outputs leave the next
+    /// request's start unknown until another reading establishes it.
+    #[serde(default)]
+    awaiting_reading: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct OpenAnswer {
+    sent: Option<f64>,
+    first: Option<f64>,
+    /// The time of its last item read.
+    last: Option<f64>,
+    lines: u32,
+    /// A `token_usage_record` said its response ended.
+    #[serde(default)]
+    ended: bool,
+    /// When, where that record carried a time.
+    #[serde(default)]
+    end: Option<f64>,
+    /// No prompt or compaction has intervened after the response ended; old state has no such
+    /// evidence and defaults to false.
+    #[serde(default)]
+    uninterrupted: bool,
+}
+
+impl ResponseClock {
+    /// A clock for a fold resumed from a state written before it existed: see `blind`. The
+    /// session's version was read before the cursor, so whether it hides items is not known.
+    fn resumed_blind() -> Self {
+        Self {
+            blind: true,
+            items_unseen: true,
+            ..Self::default()
+        }
+    }
+
+    /// Fold one line: its time, and what it is to the answers.
+    fn line(&mut self, ts: Option<f64>, line: RolloutLine) {
+        match line {
+            RolloutLine::Item => match &mut self.open {
+                Some(open) if !open.ended => {
+                    open.last = ts.or(open.last);
+                    open.lines += 1;
+                }
+                _ => {
+                    let blind = std::mem::take(&mut self.blind);
+                    self.open = Some(OpenAnswer {
+                        sent: if blind || (self.awaiting_reading && self.items_unseen) {
+                            None
+                        } else {
+                            self.prev
+                        },
+                        first: if blind { None } else { ts },
+                        last: ts,
+                        lines: 1,
+                        ended: false,
+                        end: None,
+                        uninterrupted: true,
+                    });
+                }
+            },
+            RolloutLine::Prompt => {
+                match &mut self.open {
+                    Some(open) if open.ended => open.uninterrupted = false,
+                    _ => self.open = None,
+                }
+                self.prev = ts;
+                self.blind = false;
+                self.continuation_unknown = false;
+            }
+            RolloutLine::Sent => self.prev = ts,
+            RolloutLine::Compaction => {
+                if let Some(open) = self.open.as_mut().filter(|open| open.ended) {
+                    open.uninterrupted = false;
+                }
+                self.prev = ts;
+            }
+            RolloutLine::Ended => {
+                self.awaiting_reading = true;
+                self.prev = None;
+                self.continuation_unknown = false;
+                match &mut self.open {
+                    Some(open) if !open.ended => {
+                        open.ended = true;
+                        open.end = ts;
+                    }
+                    Some(_) => self.open = None,
+                    None => {}
+                }
+            }
+            RolloutLine::Other => {}
+        }
+    }
+
+    /// A line that could not be read: it may have been an item, the end of a response or a line
+    /// sent to the model, so neither the answer being read nor the next one's start is known.
+    fn unread(&mut self) {
+        self.prev = None;
+        self.open = None;
+        self.blind = true;
+    }
+
+    /// A reading before a hidden-transport answer ends may belong to an earlier response.
+    fn counted(&mut self, ts: Option<f64>) -> (Option<f64>, Option<f64>, Option<f64>, u32) {
+        self.prev = ts;
+        self.blind = self.continuation_unknown;
+        self.awaiting_reading = false;
+        match self.open.take() {
+            Some(open) if self.items_unseen && !open.ended => {
+                self.blind = true;
+                self.continuation_unknown = true;
+                (None, None, ts, 1)
+            }
+            Some(open) if open.uninterrupted => {
+                let last = open.end.or(open.last.filter(|_| !self.items_unseen));
+                (open.sent, open.first, last, open.lines)
+            }
+            _ => (None, None, ts, 1),
+        }
     }
 }
 
@@ -1164,8 +1438,8 @@ mod answer_tests {
 
     /// #s341: each reading that moves the counter is one answer: the turn's model, the session's
     /// provider, the reading's own output (`last_token_usage`, reasoning included) and its time.
-    /// Codex writes no line per part, so `sent` and `first` are `None`; a reading that moves
-    /// nothing is no answer; and the provider crosses a resume.
+    /// With no item of the model's read before it, `sent` and `first` are `None`; a reading that
+    /// moves nothing is no answer; and the provider crosses a resume.
     #[test]
     fn each_reading_that_moves_the_counter_is_a_timed_answer() {
         let reading = |ts: &str, total_out: u64, last_out: u64| {
@@ -1212,5 +1486,821 @@ mod answer_tests {
             None,
             "an empty name is none"
         );
+    }
+
+    /// Rollout lines for the clock, at `HH:MM:SS.mmm` on one day. Synthetic — never built from a
+    /// real rollout.
+    fn at(hms: &str) -> String {
+        format!("2026-10-30T{hms}Z")
+    }
+    fn secs(hms: &str) -> Option<f64> {
+        epoch_secs(&at(hms))
+    }
+    fn prompt(hms: &str, role: &str) -> Value {
+        serde_json::json!({"timestamp": at(hms), "type": "response_item", "payload": {
+            "type": "message", "role": role, "content": [{"type": "input_text", "text": "go"}]}})
+    }
+    fn item(hms: &str, kind: &str) -> Value {
+        let mut payload = serde_json::json!({"type": kind});
+        if kind == "message" {
+            payload["role"] = "assistant".into();
+        }
+        serde_json::json!({"timestamp": at(hms), "type": "response_item", "payload": payload})
+    }
+    fn output(hms: &str) -> Value {
+        serde_json::json!({"timestamp": at(hms), "type": "response_item", "payload": {
+            "type": "custom_tool_call_output", "call_id": "c", "output": "ok"}})
+    }
+    fn ended(hms: &str) -> Value {
+        serde_json::json!({"timestamp": at(hms), "type": "token_usage_record", "payload": {
+            "response_id": "resp_x", "usage": {"output_tokens": 1}}})
+    }
+    fn reading(hms: &str, total_out: u64, last_out: u64) -> Value {
+        serde_json::json!({"timestamp": at(hms), "type": "event_msg", "payload": {
+            "type": "token_count", "info": {
+                "last_token_usage": {"input_tokens": last_out, "output_tokens": last_out},
+                "total_token_usage": {"input_tokens": total_out, "output_tokens": total_out}}}})
+    }
+
+    /// Every answer the pushes hand out, as a consumer reading the whole file collects them.
+    fn answers(acc: &mut CodexMetricsAcc, lines: &[Value]) -> Vec<AnswerTiming> {
+        let mut out = Vec::new();
+        for line in lines {
+            acc.push(line);
+            out.extend(acc.answer.clone());
+        }
+        out
+    }
+
+    /// An answer runs from the line sent before its first item to its response's end, as the
+    /// `token_usage_record` says it: never to the reading, written after the calls it made ran.
+    /// The next answer goes out after that reading, which follows the last call's output.
+    #[test]
+    fn an_answer_runs_from_its_request_to_its_response_s_end() {
+        let got = answers(
+            &mut CodexMetricsAcc::default(),
+            &[
+                prompt("10:00:00.000", "user"),
+                item("10:00:04.000", "reasoning"),
+                item("10:00:05.000", "message"),
+                item("10:00:06.000", "custom_tool_call"),
+                ended("10:00:06.200"),
+                output("10:00:09.000"),
+                reading("10:00:09.001", 500, 500),
+                item("10:00:12.000", "reasoning"),
+                item("10:00:13.000", "function_call"),
+                ended("10:00:13.150"),
+                output("10:00:20.000"),
+                reading("10:00:20.001", 900, 400),
+            ],
+        );
+        assert_eq!(got.len(), 2, "{got:?}");
+        let a = &got[0];
+        assert_eq!(a.sent, secs("10:00:00.000"));
+        assert_eq!(a.first, secs("10:00:04.000"));
+        assert_eq!(
+            a.last,
+            secs("10:00:06.200"),
+            "the response's end, not the reading"
+        );
+        assert_eq!((a.lines, a.output_tokens), (3, Some(500)));
+        let b = &got[1];
+        assert_eq!(b.sent, secs("10:00:09.001"), "after the reading");
+        assert_eq!(
+            (b.first, b.last, b.lines, b.output_tokens),
+            (secs("10:00:12.000"), secs("10:00:13.150"), 2, Some(400))
+        );
+    }
+
+    /// From 0.147 the fold never sees the transport's lines (an `exec` call and its receipt,
+    /// which the preprocessor ignores): the reading after the call says when the next request
+    /// went out, not the prompt before it.
+    #[test]
+    fn the_reading_says_when_the_next_request_went_out() {
+        let got = answers(
+            &mut CodexMetricsAcc::default(),
+            &[
+                prompt("10:00:00.000", "user"),
+                item("10:00:02.000", "reasoning"),
+                ended("10:00:03.000"),
+                // The `exec` call ran for 30 s; it and its receipt never reach the fold.
+                reading("10:00:33.000", 300, 300),
+                item("10:00:36.000", "reasoning"),
+                item("10:00:37.000", "message"),
+                ended("10:00:37.500"),
+                reading("10:00:37.600", 700, 400),
+            ],
+        );
+        assert_eq!(got[0].sent, secs("10:00:00.000"));
+        assert_eq!(
+            (got[1].sent, got[1].last),
+            (secs("10:00:33.000"), secs("10:00:37.500")),
+            "the reading, not the prompt"
+        );
+    }
+
+    /// Where calls go unread, a reading before an answer's recorded end may belong to a preceding
+    /// response: neither the partial answer nor its continuation is timed. A visible-items
+    /// session can still time its last item.
+    #[test]
+    fn where_calls_go_unread_an_answer_with_no_recorded_end_is_untimed() {
+        let lines = |version: &str| {
+            vec![
+                serde_json::json!({"type": "session_meta", "payload": {
+                    "id": "s", "model_provider": "openai", "cli_version": version}}),
+                prompt("10:00:00.000", "user"),
+                item("10:00:02.000", "reasoning"),
+                // An `exec` call, never pushed, ended this answer.
+                reading("10:00:20.000", 300, 300),
+                item("10:00:22.000", "reasoning"),
+                ended("10:00:25.000"),
+                reading("10:00:25.100", 700, 400),
+            ]
+        };
+        let unread = answers(&mut CodexMetricsAcc::default(), &lines("0.147.0-alpha.6.5"));
+        assert_eq!((unread[0].sent, unread[0].first), (None, None));
+        assert_eq!((unread[1].sent, unread[1].first), (None, None));
+        assert_eq!(unread[1].last, secs("10:00:25.000"), "its end recorded");
+        let older = answers(&mut CodexMetricsAcc::default(), &lines("0.146.2"));
+        assert_eq!(older[0].last, secs("10:00:02.000"), "every item read");
+    }
+
+    /// A rollout written before `token_usage_record` ends an answer at its last item: the reading
+    /// came after the call it made ran for 26 seconds.
+    #[test]
+    fn with_no_end_recorded_an_answer_ends_at_its_last_item() {
+        let got = answers(
+            &mut CodexMetricsAcc::default(),
+            &[
+                prompt("10:00:00.000", "user"),
+                item("10:00:03.000", "reasoning"),
+                item("10:00:04.000", "function_call"),
+                output("10:00:30.000"),
+                reading("10:00:30.001", 300, 300),
+            ],
+        );
+        assert_eq!(
+            (got[0].sent, got[0].last),
+            (secs("10:00:00.000"), secs("10:00:04.000"))
+        );
+    }
+
+    /// Every line sent with a request sets when the next went out: a compaction's summary and
+    /// the instructions Codex sends as a developer message as well as a prompt; a web search is
+    /// one of the model's items.
+    #[test]
+    fn each_line_sent_to_the_model_moves_the_next_request_s_time() {
+        let compacted = serde_json::json!({"timestamp": at("10:00:10.000"), "type": "compacted",
+            "payload": {"message": ""}});
+        let got = answers(
+            &mut CodexMetricsAcc::default(),
+            &[
+                prompt("10:00:00.000", "user"),
+                item("10:00:01.000", "message"),
+                reading("10:00:02.000", 300, 300),
+                compacted,
+                item("10:00:12.000", "message"),
+                reading("10:00:13.000", 600, 300),
+                prompt("10:00:20.000", "developer"),
+                item("10:00:21.000", "web_search_call"),
+                item("10:00:22.000", "message"),
+                reading("10:00:23.000", 900, 300),
+            ],
+        );
+        let sent: Vec<_> = got.iter().map(|a| a.sent).collect();
+        assert_eq!(
+            sent,
+            [
+                secs("10:00:00.000"),
+                secs("10:00:10.000"),
+                secs("10:00:20.000")
+            ]
+        );
+        assert_eq!(got[2].lines, 2);
+    }
+
+    /// A forked thread's rollout opens with the parent's items stamped with the fork's time and
+    /// none of its readings: its own prompt drops them, and its first answer is timed from it.
+    #[test]
+    fn a_fork_s_copied_items_are_no_answer() {
+        let got = answers(
+            &mut CodexMetricsAcc::default(),
+            &[
+                prompt("10:00:00.001", "user"),
+                item("10:00:00.002", "reasoning"),
+                item("10:00:00.003", "custom_tool_call"),
+                output("10:00:00.004"),
+                item("10:00:00.005", "message"),
+                prompt("10:00:30.000", "user"),
+                item("10:00:33.000", "reasoning"),
+                item("10:00:35.000", "message"),
+                ended("10:00:35.200"),
+                reading("10:00:35.300", 400, 400),
+            ],
+        );
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            (got[0].sent, got[0].first, got[0].last, got[0].lines),
+            (
+                secs("10:00:30.000"),
+                secs("10:00:33.000"),
+                secs("10:00:35.200"),
+                2
+            )
+        );
+    }
+
+    /// A response that ended with no reading before the next request's first item is dropped,
+    /// and the reading times the request it counts; one that ended twice with no item between
+    /// is not timed, as which response the reading counts is not told.
+    #[test]
+    fn a_response_with_no_reading_is_dropped_and_one_ended_twice_is_not_timed() {
+        let got = answers(
+            &mut CodexMetricsAcc::default(),
+            &[
+                prompt("10:00:00.000", "user"),
+                item("10:00:01.000", "function_call"),
+                ended("10:00:02.000"),
+                output("10:00:03.000"),
+                item("10:00:05.000", "message"),
+                ended("10:00:06.000"),
+                reading("10:00:06.100", 300, 300),
+            ],
+        );
+        assert_eq!(
+            (got[0].sent, got[0].first, got[0].last, got[0].lines),
+            (
+                secs("10:00:03.000"),
+                secs("10:00:05.000"),
+                secs("10:00:06.000"),
+                1
+            )
+        );
+        let twice = answers(
+            &mut CodexMetricsAcc::default(),
+            &[
+                prompt("10:00:00.000", "user"),
+                item("10:00:01.000", "message"),
+                ended("10:00:02.000"),
+                ended("10:00:03.000"),
+                reading("10:00:03.100", 300, 300),
+            ],
+        );
+        assert_eq!((twice[0].sent, twice[0].first), (None, None));
+        assert_eq!(twice[0].last, secs("10:00:03.100"), "the reading's alone");
+    }
+
+    /// A fold resumed from its state anywhere in a rollout hands out exactly what a whole-file
+    /// fold does: the clock is in the state.
+    #[test]
+    fn a_resume_anywhere_times_answers_as_a_whole_file_fold() {
+        let lines = [
+            prompt("10:00:00.100", "user"),
+            item("10:00:01.200", "reasoning"),
+            item("10:00:02.300", "custom_tool_call"),
+            ended("10:00:02.450"),
+            output("10:00:04.000"),
+            reading("10:00:04.001", 300, 300),
+            item("10:00:05.000", "reasoning"),
+            item("10:00:06.000", "message"),
+            ended("10:00:06.700"),
+            reading("10:00:06.800", 700, 400),
+        ];
+        let whole = answers(&mut CodexMetricsAcc::default(), &lines);
+        assert_eq!(whole.len(), 2);
+        assert!(whole.iter().all(|a| a.sent.is_some() && a.first.is_some()));
+        for cut in 1..lines.len() {
+            let mut before = CodexMetricsAcc::default();
+            let mut got = answers(&mut before, &lines[..cut]);
+            let parked = serde_json::to_string(&before.state()).unwrap();
+            let mut after = CodexMetricsAcc::default();
+            after.restore(&serde_json::from_str(&parked).unwrap());
+            got.extend(answers(&mut after, &lines[cut..]));
+            assert_eq!(got, whole, "resumed after line {cut}");
+        }
+    }
+
+    /// A cursor parked before the clock existed may sit inside an answer, and a line that could
+    /// not be read may have been an item or the request: the next answer's `sent` and `first`
+    /// are `None`, and the answers after it are timed whole.
+    #[test]
+    fn a_cursor_from_before_the_clock_or_an_unread_line_leaves_the_next_start_unknown() {
+        let tail = [
+            item("10:00:01.000", "message"),
+            ended("10:00:02.000"),
+            reading("10:00:02.100", 300, 300),
+            prompt("10:00:03.000", "user"),
+            item("10:00:04.000", "message"),
+            ended("10:00:05.000"),
+            reading("10:00:05.100", 600, 300),
+        ];
+        let check = |got: Vec<AnswerTiming>| {
+            assert_eq!((got[0].sent, got[0].first), (None, None));
+            assert_eq!(got[0].last, secs("10:00:02.000"));
+            assert_eq!(
+                (got[1].sent, got[1].first),
+                (secs("10:00:03.000"), secs("10:00:04.000"))
+            );
+        };
+        let mut old = CodexMetricsAcc::default();
+        let mut parked = old.state();
+        parked.as_object_mut().unwrap().remove("clock");
+        old.restore(&parked);
+        check(answers(&mut old, &tail));
+
+        let mut unread = CodexMetricsAcc::default();
+        answers(
+            &mut unread,
+            &[
+                prompt("10:00:00.000", "user"),
+                item("10:00:00.500", "reasoning"),
+            ],
+        );
+        unread.malformed_line();
+        check(answers(&mut unread, &tail));
+    }
+
+    #[test]
+    fn a_prompt_or_reading_recovers_a_blind_clock_before_the_next_item() {
+        for restored in [false, true] {
+            for (prefix, total) in [
+                (vec![prompt("10:00:01.000", "user")], 300),
+                (vec![reading("10:00:01.000", 300, 300)], 600),
+                (
+                    vec![
+                        reading("10:00:01.000", 300, 300),
+                        prompt("10:00:02.000", "user"),
+                    ],
+                    600,
+                ),
+            ] {
+                let mut acc = CodexMetricsAcc::default();
+                if restored {
+                    let mut parked = acc.state();
+                    parked.as_object_mut().unwrap().remove("clock");
+                    acc.restore(&parked);
+                } else {
+                    acc.malformed_line();
+                }
+                answers(&mut acc, &prefix);
+                let got = answers(
+                    &mut acc,
+                    &[
+                        item("10:00:03.000", "message"),
+                        ended("10:00:04.000"),
+                        reading("10:00:04.100", total, 300),
+                    ],
+                );
+                assert_eq!(got.len(), 1);
+                assert_eq!(got[0].first, secs("10:00:03.000"));
+                assert_eq!(
+                    got[0].sent,
+                    if prefix.len() == 2 {
+                        secs("10:00:02.000")
+                    } else {
+                        secs("10:00:01.000")
+                    },
+                    "restored={restored}, prefix={prefix:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_reading_after_a_prompt_cannot_claim_an_earlier_completed_answer() {
+        for role in ["user", "developer"] {
+            let lines = [
+                prompt("10:00:00.000", "user"),
+                item("10:00:00.001", "message"),
+                ended("10:00:00.002"),
+                prompt("10:00:01.000", role),
+                reading("10:00:02.000", 300, 300),
+                item("10:00:03.000", "message"),
+                ended("10:00:04.000"),
+                reading("10:00:04.100", 600, 300),
+            ];
+            let whole = answers(&mut CodexMetricsAcc::default(), &lines);
+            assert_eq!(whole.len(), 2);
+            assert_eq!((whole[0].sent, whole[0].first), (None, None));
+            assert_eq!(whole[0].last, secs("10:00:02.000"));
+            assert_eq!(whole[0].output_tokens, Some(300));
+            assert_eq!(whole[1].sent, secs("10:00:02.000"));
+            assert_eq!(whole[1].last, secs("10:00:04.000"));
+            for cut in 1..lines.len() {
+                let mut before = CodexMetricsAcc::default();
+                let mut got = answers(&mut before, &lines[..cut]);
+                let mut after = CodexMetricsAcc::default();
+                after.restore(&before.state());
+                got.extend(answers(&mut after, &lines[cut..]));
+                assert_eq!(got, whole, "role={role}, resumed after line {cut}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_answer_after_a_prompt_uses_its_own_items() {
+        let got = answers(
+            &mut CodexMetricsAcc::default(),
+            &[
+                prompt("10:00:00.000", "user"),
+                item("10:00:01.000", "message"),
+                ended("10:00:02.000"),
+                prompt("10:00:03.000", "user"),
+                item("10:00:04.000", "message"),
+                ended("10:00:05.000"),
+                reading("10:00:05.100", 300, 300),
+            ],
+        );
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].sent, secs("10:00:03.000"));
+        assert_eq!(got[0].first, secs("10:00:04.000"));
+        assert_eq!(got[0].last, secs("10:00:05.000"));
+    }
+
+    #[test]
+    fn an_old_open_answer_without_prompt_evidence_is_not_claimed_on_resume() {
+        for prompt_after_end in [false, true] {
+            let mut before = CodexMetricsAcc::default();
+            answers(
+                &mut before,
+                &[
+                    prompt("10:00:00.000", "user"),
+                    item("10:00:01.000", "message"),
+                    ended("10:00:02.000"),
+                ],
+            );
+            if prompt_after_end {
+                before.push(&prompt("10:00:03.000", "user"));
+            }
+            let mut parked = before.state();
+            let open = parked["clock"]["open"].as_object_mut().unwrap();
+            open.remove("uninterrupted");
+            let mut after = CodexMetricsAcc::default();
+            after.restore(&parked);
+            let got = answers(
+                &mut after,
+                &[
+                    reading("10:00:04.000", 300, 300),
+                    item("10:00:05.000", "message"),
+                    ended("10:00:06.000"),
+                    reading("10:00:06.100", 600, 300),
+                ],
+            );
+            assert_eq!((got[0].sent, got[0].first), (None, None));
+            assert_eq!(got[0].last, secs("10:00:04.000"));
+            assert_eq!(got[1].sent, secs("10:00:04.000"));
+            assert_eq!(got[1].last, secs("10:00:06.000"));
+        }
+    }
+
+    #[test]
+    fn a_counter_jump_without_matching_request_usage_is_not_timed() {
+        for recorded_end in [false, true] {
+            let mut acc = CodexMetricsAcc::default();
+            answers(
+                &mut acc,
+                &[
+                    prompt("10:00:00.000", "user"),
+                    item("10:00:01.000", "message"),
+                    reading("10:00:02.000", 300, 300),
+                    item("10:00:03.000", "message"),
+                ],
+            );
+            if recorded_end {
+                acc.push(&ended("10:00:04.000"));
+            }
+            acc.push(&reading("10:00:04.100", 900, 400));
+            let answer = acc.answer.as_ref().unwrap();
+            assert_eq!((answer.sent, answer.first), (None, None));
+            assert_eq!(answer.output_tokens, Some(400));
+            assert_eq!(acc.totals().0.values().map(|t| t.output).sum::<u64>(), 900);
+            let got = answers(
+                &mut acc,
+                &[
+                    item("10:00:05.000", "message"),
+                    ended("10:00:06.000"),
+                    reading("10:00:06.100", 1200, 300),
+                ],
+            );
+            assert_eq!(got[0].sent, secs("10:00:04.100"));
+            assert_eq!(got[0].first, secs("10:00:05.000"));
+        }
+    }
+
+    #[test]
+    fn a_compaction_cannot_claim_an_earlier_completed_answer() {
+        for compacted in [
+            serde_json::json!({"timestamp": at("10:00:03.000"), "type": "compacted"}),
+            serde_json::json!({"timestamp": at("10:00:03.000"), "type": "response_item",
+                "payload": {"type": "compaction"}}),
+        ] {
+            let got = answers(
+                &mut CodexMetricsAcc::default(),
+                &[
+                    prompt("10:00:00.000", "user"),
+                    item("10:00:01.000", "message"),
+                    ended("10:00:02.000"),
+                    compacted,
+                    reading("10:00:04.000", 300, 300),
+                ],
+            );
+            assert_eq!((got[0].sent, got[0].first), (None, None));
+            assert_eq!(got[0].last, secs("10:00:04.000"));
+        }
+    }
+
+    #[test]
+    fn an_old_clock_cannot_start_a_request_from_a_stale_previous_line() {
+        for version in ["0.146.0", "0.160.0"] {
+            let mut before = CodexMetricsAcc::default();
+            before.push(&serde_json::json!({"type": "session_meta", "payload": {
+                "id": "s", "cli_version": version}}));
+            answers(
+                &mut before,
+                &[
+                    prompt("10:00:00.000", "user"),
+                    item("10:00:01.000", "message"),
+                    ended("10:00:02.000"),
+                    prompt("10:00:03.000", "developer"),
+                ],
+            );
+            let mut parked = before.state();
+            parked["clock"]
+                .as_object_mut()
+                .unwrap()
+                .remove("awaiting_reading");
+            let mut after = CodexMetricsAcc::default();
+            after.restore(&parked);
+            let got = answers(
+                &mut after,
+                &[
+                    item("10:00:12.000", "message"),
+                    ended("10:00:13.000"),
+                    reading("10:00:13.100", 400, 400),
+                    item("10:00:14.000", "message"),
+                    ended("10:00:15.000"),
+                    reading("10:00:15.100", 700, 300),
+                ],
+            );
+            assert_eq!(got[0].sent, None);
+            assert_eq!(got[0].first, secs("10:00:12.000"));
+            assert_eq!(got[1].sent, secs("10:00:13.100"));
+        }
+    }
+
+    #[test]
+    fn an_old_clock_cannot_keep_a_stale_start_when_resumed_mid_answer() {
+        let mut before = CodexMetricsAcc::default();
+        before.push(&serde_json::json!({"type": "session_meta", "payload": {
+            "id": "s", "cli_version": "0.160.0"}}));
+        answers(
+            &mut before,
+            &[
+                prompt("10:00:00.000", "user"),
+                item("10:00:01.000", "message"),
+                ended("10:00:02.000"),
+                prompt("10:00:03.000", "developer"),
+                item("10:00:12.000", "message"),
+            ],
+        );
+        let mut parked = before.state();
+        parked["clock"]
+            .as_object_mut()
+            .unwrap()
+            .remove("awaiting_reading");
+        parked["clock"]["open"]["sent"] = secs("10:00:00.000").unwrap().into();
+        let mut after = CodexMetricsAcc::default();
+        after.restore(&parked);
+        let got = answers(
+            &mut after,
+            &[
+                item("10:00:13.000", "message"),
+                ended("10:00:13.500"),
+                reading("10:00:13.600", 400, 400),
+            ],
+        );
+        assert_eq!(got[0].sent, None);
+        assert_eq!(got[0].first, secs("10:00:12.000"));
+        assert_eq!(got[0].last, secs("10:00:13.500"));
+    }
+
+    fn meta(version: &str) -> Value {
+        serde_json::json!({"type": "session_meta", "payload": {
+            "id": "s", "model_provider": "openai", "cli_version": version}})
+    }
+
+    #[test]
+    fn an_old_clock_without_items_unseen_stays_conservative() {
+        let mut before = CodexMetricsAcc::default();
+        answers(
+            &mut before,
+            &[
+                meta("0.160.0"),
+                prompt("10:00:00.000", "user"),
+                item("10:00:01.000", "message"),
+                ended("10:00:03.000"),
+                reading("10:00:04.000", 300, 300),
+            ],
+        );
+        let mut parked = before.state();
+        parked["clock"]
+            .as_object_mut()
+            .unwrap()
+            .remove("items_unseen");
+        let mut after = CodexMetricsAcc::default();
+        after.restore(&parked);
+        assert!(after.clock.items_unseen);
+        // An `exec` call the preprocessor ignored ended this answer, with no end recorded.
+        let got = answers(
+            &mut after,
+            &[
+                item("10:00:05.000", "reasoning"),
+                reading("10:00:09.000", 900, 600),
+            ],
+        );
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].sent, got[0].first), (None, None), "{:?}", got[0]);
+    }
+
+    #[test]
+    fn a_late_reading_cannot_start_the_answer_it_interrupts() {
+        let lines = [
+            meta("0.160.0"),
+            prompt("10:00:00.000", "user"),
+            item("10:00:01.000", "message"),
+            ended("10:00:03.100"),
+            item("10:00:22.000", "reasoning"),
+            reading("10:00:22.500", 300, 300),
+            item("10:00:23.000", "message"),
+            ended("10:00:24.000"),
+            reading("10:00:24.100", 900, 600),
+        ];
+        let whole = answers(&mut CodexMetricsAcc::default(), &lines);
+        assert_eq!(whole.len(), 2);
+        for a in &whole {
+            assert_eq!((a.sent, a.first), (None, None), "{a:?}");
+        }
+        for cut in 1..lines.len() {
+            let mut before = CodexMetricsAcc::default();
+            let mut got = answers(&mut before, &lines[..cut]);
+            let mut after = CodexMetricsAcc::default();
+            after.restore(&before.state());
+            got.extend(answers(&mut after, &lines[cut..]));
+            assert_eq!(got, whole, "resumed after line {cut}");
+        }
+    }
+
+    #[test]
+    fn a_compaction_inside_an_answer_does_not_restart_it() {
+        for version in ["0.146.0", "0.160.0"] {
+            for compaction in [
+                serde_json::json!({"timestamp": at("10:00:20.000"), "type": "compacted"}),
+                serde_json::json!({"timestamp": at("10:00:20.000"), "type": "response_item",
+                    "payload": {"type": "compaction"}}),
+            ] {
+                let lines = [
+                    meta(version),
+                    prompt("10:00:03.100", "user"),
+                    item("10:00:10.000", "reasoning"),
+                    compaction,
+                    item("10:00:25.000", "message"),
+                    ended("10:00:26.000"),
+                    reading("10:00:26.100", 2000, 2000),
+                ];
+                let got = answers(&mut CodexMetricsAcc::default(), &lines);
+                assert_eq!(got.len(), 1);
+                assert_eq!(
+                    (got[0].sent, got[0].first, got[0].last, got[0].lines),
+                    (
+                        secs("10:00:03.100"),
+                        secs("10:00:10.000"),
+                        secs("10:00:26.000"),
+                        2
+                    ),
+                    "version={version}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_first_reading_with_inherited_history_has_no_request_start() {
+        for total in [400, 1000] {
+            let mut acc = CodexMetricsAcc::default();
+            let first = answers(
+                &mut acc,
+                &[
+                    meta("0.160.0"),
+                    prompt("10:00:00.000", "user"),
+                    item("10:00:01.000", "message"),
+                    ended("10:00:02.000"),
+                    reading("10:00:02.100", total, 400),
+                ],
+            );
+            assert_eq!(first[0].output_tokens, Some(400));
+            assert_eq!(acc.totals().0.values().map(|t| t.output).sum::<u64>(), 400);
+            assert!(acc.request_pricing.is_some());
+            if total == 400 {
+                assert_eq!(first[0].sent, secs("10:00:00.000"));
+                assert_eq!(first[0].first, secs("10:00:01.000"));
+            } else {
+                assert_eq!((first[0].sent, first[0].first), (None, None));
+            }
+            let next = answers(
+                &mut acc,
+                &[
+                    item("10:00:03.000", "message"),
+                    ended("10:00:04.000"),
+                    reading("10:00:04.100", total + 300, 300),
+                ],
+            );
+            assert_eq!(next[0].sent, secs("10:00:02.100"));
+            assert_eq!(next[0].first, secs("10:00:03.000"));
+            assert_eq!(acc.totals().0.values().map(|t| t.output).sum::<u64>(), 700);
+        }
+    }
+
+    #[test]
+    fn consecutive_late_readings_do_not_recover_a_partial_answer_start() {
+        let lines = [
+            meta("0.160.0"),
+            prompt("10:00:00.000", "user"),
+            item("10:00:01.000", "message"),
+            ended("10:00:03.100"),
+            item("10:00:22.000", "reasoning"),
+            reading("10:00:22.500", 300, 300),
+            reading("10:00:22.600", 450, 150),
+            item("10:00:23.000", "message"),
+            ended("10:00:24.000"),
+            reading("10:00:24.100", 1050, 600),
+            item("10:00:25.000", "message"),
+            ended("10:00:26.000"),
+            reading("10:00:26.100", 1350, 300),
+        ];
+        let whole = answers(&mut CodexMetricsAcc::default(), &lines);
+        assert_eq!(whole.len(), 4);
+        assert!(whole[..3]
+            .iter()
+            .all(|a| a.sent.is_none() && a.first.is_none()));
+        assert_eq!(whole[3].sent, secs("10:00:24.100"));
+        assert_eq!(whole[3].first, secs("10:00:25.000"));
+        for cut in 1..lines.len() {
+            let mut before = CodexMetricsAcc::default();
+            let mut got = answers(&mut before, &lines[..cut]);
+            let mut after = CodexMetricsAcc::default();
+            after.restore(&before.state());
+            got.extend(answers(&mut after, &lines[cut..]));
+            assert_eq!(got, whole, "resumed after line {cut}");
+        }
+    }
+
+    #[test]
+    fn an_old_hidden_clock_cannot_reuse_a_start_after_consuming_a_partial_answer() {
+        for stopped_after_part in [false, true] {
+            let mut before = CodexMetricsAcc::default();
+            answers(
+                &mut before,
+                &[
+                    meta("0.160.0"),
+                    prompt("10:00:00.000", "user"),
+                    item("10:00:01.000", "message"),
+                    ended("10:00:03.100"),
+                    item("10:00:22.000", "reasoning"),
+                    reading("10:00:22.500", 300, 300),
+                ],
+            );
+            if stopped_after_part {
+                before.push(&item("10:00:23.000", "message"));
+            }
+            let mut parked = before.state();
+            parked["clock"]
+                .as_object_mut()
+                .unwrap()
+                .remove("continuation_unknown");
+            parked["clock"]["blind"] = false.into();
+            if stopped_after_part {
+                parked["clock"]["open"]["sent"] = secs("10:00:22.500").unwrap().into();
+                parked["clock"]["open"]["first"] = secs("10:00:23.000").unwrap().into();
+            }
+            let mut after = CodexMetricsAcc::default();
+            after.restore(&parked);
+            if !stopped_after_part {
+                after.push(&item("10:00:23.000", "message"));
+            }
+            let got = answers(
+                &mut after,
+                &[
+                    ended("10:00:24.000"),
+                    reading("10:00:24.100", 900, 600),
+                    item("10:00:25.000", "message"),
+                    ended("10:00:26.000"),
+                    reading("10:00:26.100", 1200, 300),
+                ],
+            );
+            assert_eq!((got[0].sent, got[0].first), (None, None));
+            assert_eq!(got[0].output_tokens, Some(600));
+            assert_eq!(got[1].sent, secs("10:00:24.100"));
+            assert_eq!(got[1].first, secs("10:00:25.000"));
+        }
     }
 }

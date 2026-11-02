@@ -384,8 +384,15 @@ fn update_preprocessor_session(value: &Value, cwd: &mut String, semantic_exec: &
         .pointer("/payload/cli_version")
         .and_then(Value::as_str)
     {
-        *semantic_exec = codex_version_at_least(version, (0, 147, 0));
+        *semantic_exec = transport_ignored(version);
     }
+}
+
+/// Whether a session Codex `version` started draws each call from its mirror and leaves the
+/// transport's lines (an `exec` or `wait` call and its receipt) out of the fold: 0.147 on. The
+/// preprocessor ignores them, so no accumulator sees them either.
+pub(crate) fn transport_ignored(version: &str) -> bool {
+    codex_version_at_least(version, (0, 147, 0))
 }
 
 fn codex_version_at_least(version: &str, minimum: (u64, u64, u64)) -> bool {
