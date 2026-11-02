@@ -328,8 +328,8 @@ const CONVERSATION_TYPES: &[&str] = &["user", "assistant"];
 /// names A in its argv, so this record is what says the pane now shows B.
 ///
 /// Read from the last 64 KB: the record must be the transcript's last CONVERSATION-level line
-/// ([`CONVERSATION_TYPES`]), and must name a session id. A cut first line in the window, or a
-/// line still being written, is skipped.
+/// (`CONVERSATION_TYPES`: a `user` or `assistant` record), and must name a session id. A cut
+/// first line in the window, or a line still being written, is skipped.
 pub fn continued_in(transcript: &Path) -> Option<claude_replay_engine::seam::Continuation> {
     use std::io::{Read, Seek, SeekFrom};
     const TAIL: u64 = 64 * 1024;
