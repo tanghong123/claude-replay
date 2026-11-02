@@ -341,6 +341,7 @@
 .mdrev-host .mdv-canvas {border:1px solid var(--rule);background:var(--bg);border-radius:8px;margin:1.2em 0;overflow:hidden}
 .mdrev-host .mdv-canvas-stage {overscroll-behavior-x:contain;text-align:center;min-height:3rem;padding:1rem;overflow:auto}
 .mdrev-host .mdv-canvas-stage svg {vertical-align:middle}
+.mdrev-host .mdv-canvas-held {vertical-align:middle;display:inline-block}
 .mdrev-host .doc .mdv-canvas-stage img {vertical-align:middle;border-radius:0;max-width:none;display:inline-block}
 .mdrev-host .mdv-canvas-image .mdv-canvas-ms {display:none}
 .mdrev-host .mdv-canvas:not(.is-drawn) {opacity:.6;border-style:dashed}
@@ -368,9 +369,9 @@
 .mdrev-host .mdv-canvas-full[hidden] {display:none}
 .mdrev-host .mdv-canvas-full {z-index:200;padding:clamp(.75rem, calc(var(--mdv-app-h,100vh) * .03), 2.5rem) clamp(.75rem, calc(var(--mdv-app-w,100vw) * .03), 2.5rem);-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px);background:#0b0b0b8c;place-items:center;display:grid;position:fixed;inset:0}
 .mdrev-host .mdv-canvas-panel {background:var(--bg);border:1px solid var(--rule);width:100%;height:100%;min-height:0;box-shadow:var(--shadow);border-radius:10px;flex-direction:column;display:flex;overflow:hidden}
-.mdrev-host .mdv-canvas-panel>.mdv-canvas-stage {flex:1;place-items:safe center;min-height:0;padding:1.25rem;display:grid;overflow:auto}
+.mdrev-host .mdv-canvas-panel>.mdv-canvas-stage {flex:1;place-content:safe center;place-items:safe center;min-height:0;padding:1.25rem;display:grid;overflow:auto}
 .mdrev-host .mdv-canvas-full .mdv-canvas-bar {border-bottom:1px solid var(--rule);flex-shrink:0;justify-content:flex-end}
-.mdrev-host.mdv-has-overlay {overflow:hidden}
+.mdrev-host .mdv-canvas-full {overscroll-behavior:contain;overflow:hidden}
 .mdrev-host .mdv-hidden {display:none!important}
 .mdrev-host .mdv-pill {width:100%;color:var(--ink-soft);background:var(--bg-soft);border:1px dashed var(--rule);text-align:center;border-radius:8px;margin:12px 0;padding:5px 12px;font-size:12px;display:block}
 .mdrev-host .mdv-pill:hover {color:var(--ink);border-color:var(--ink-faint);background:var(--bg-inset)}
@@ -497,6 +498,16 @@
 }
 .mdrev-host .file-rail-toggle {text-align:left;width:100%;font:inherit;text-transform:uppercase;letter-spacing:.08em;color:var(--ink-faint);cursor:pointer;background:0 0;border:0;border-radius:6px;align-items:center;gap:6px;padding:6px 8px;font-size:11px;display:flex}
 .mdrev-host .file-rail-toggle:hover {background:var(--bg-soft);color:var(--ink-soft)}
+.mdrev-host .file-rail-section-head {align-items:center;gap:2px;display:flex}
+.mdrev-host .file-rail-section-head>.file-rail-toggle {flex:1;min-width:0}
+.mdrev-host .file-rail-follow {width:24px;height:24px;color:var(--ink-faint);cursor:pointer;background:0 0;border:0;border-radius:6px;flex:none;place-items:center;padding:0;display:inline-grid}
+.mdrev-host .file-rail-follow:hover {background:var(--bg-soft);color:var(--ink-soft)}
+.mdrev-host .file-rail-follow.is-on {color:var(--shared)}
+.mdrev-host .file-rail-follow:focus-visible {outline:2px solid var(--accent);outline-offset:-2px}
+@media (pointer:coarse) {
+.mdrev-host .file-rail-follow {width:36px;height:36px}
+}
+.mdrev-host .file-followed {vertical-align:-1px;color:var(--shared);margin-left:4px;display:inline-flex}
 .mdrev-host .file-rail-label {flex:1}
 .mdrev-host .file-rail-notice {background:color-mix(in srgb, var(--del) 12%, transparent);color:var(--ink);border-radius:6px;align-items:flex-start;gap:6px;margin:0 4px 6px;padding:6px 8px;font-size:11.5px;line-height:1.35;display:flex}
 .mdrev-host .file-rail-notice-close {color:var(--ink-faint);cursor:pointer;background:0 0;border:0;flex-shrink:0;padding:0 2px;font-size:13px;line-height:1}
@@ -564,7 +575,7 @@
 .mdrev-host .phone-shift-btn:disabled {opacity:.28;cursor:default}
 .mdrev-host .phone-shift-btn:not(:disabled):active {background:var(--bg-soft)}
 .mdrev-host .phone-shift-btn:focus-visible {outline:2px solid var(--accent);outline-offset:-3px}
-.mdrev-host .note-step {z-index:30;background:var(--bg);border:1px solid var(--rule);box-shadow:var(--shadow);border-radius:21px;align-items:center;display:flex;position:fixed;bottom:16px;left:50%;transform:translate(-50%)}
+.mdrev-host .note-step {left:calc(50% + var(--mdv-pane-x,0px) / 2);z-index:30;background:var(--bg);border:1px solid var(--rule);box-shadow:var(--shadow);border-radius:21px;align-items:center;display:flex;position:fixed;bottom:16px;transform:translate(-50%)}
 .mdrev-host .note-step-btn {width:40px;height:40px;color:var(--ink);cursor:pointer;-webkit-tap-highlight-color:transparent;background:0 0;border:0;border-radius:20px;place-items:center;padding:0;display:grid}
 .mdrev-host .note-step-btn:not(:disabled):active, .mdrev-host .note-step-btn:hover {background:var(--bg-soft)}
 .mdrev-host .note-step-btn:focus-visible {outline:2px solid var(--accent);outline-offset:-3px}
@@ -626,7 +637,8 @@
 .mdrev-host .ann-for-agent-note.is-closed .ann-for-agent-body {color:var(--ink-faint);text-decoration:line-through}
 .mdrev-host .ann-for-agent-status {color:var(--ink-faint);flex:none;font-size:10.5px}
 .mdrev-host .ann-about-link {all:unset;cursor:pointer;font-family:ui-monospace,Menlo,monospace;text-decoration:underline}
-.mdrev-host .ann-review {z-index:30;max-width:min(420px, calc(var(--mdv-app-w,100vw) - 32px));font-size:12.5px;position:fixed;bottom:16px;left:16px}
+.mdrev-host .ann-review {left:calc(16px + var(--mdv-pane-x,0px));z-index:30;max-width:min(420px, calc(var(--mdv-app-w,100vw) - 32px - var(--mdv-pane-x,0px)));font-size:12.5px;position:fixed;bottom:16px}
+.mdrev-host .app:has(.note-step:not(.on-phone)) .ann-review {max-width:min(420px, calc(var(--mdv-app-w,100vw) - 32px - var(--mdv-pane-x,0px)), max(200px, calc(50% - var(--mdv-pane-x,0px) / 2 - 80px - 16px - 8px)))}
 .mdrev-host .ann-review-pill, .mdrev-host .ann-review-panel {background:var(--bg);border:1px solid var(--rule);border-left:3px solid var(--shared);box-shadow:var(--shadow,0 2px 10px #1f232814);border-radius:8px;padding:6px 10px}
 .mdrev-host .ann-review-pill {flex-wrap:wrap;align-items:center;gap:8px;display:flex}
 @keyframes mdv-push-wash-frames {0%,to{background-color:var(--bg)}50%{background-color:color-mix(in srgb, var(--shared) 18%, var(--bg))}}
@@ -850,7 +862,7 @@
 .mdrev-host .switcher-path {text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;font-family:ui-monospace,Menlo,monospace;font-size:12px;overflow:hidden}
 .mdrev-host .switcher-root {color:var(--ink-faint);white-space:nowrap;font-size:11px}
 .mdrev-host .mdv-canvas-raw-note {color:var(--ink-soft);padding:4px 2px 6px;font-size:12px}
-.mdrev-host .mdv-canvas-raw-note+pre {max-height:calc(var(--mdv-app-h,100vh) * .6);margin:0;overflow:auto}
+.mdrev-host .mdv-canvas-raw-note+pre {max-height:calc(var(--mdv-app-h,100vh) * .6);text-align:start;margin:0;overflow:auto}
 .mdrev-host .mdv-pill-row td {text-align:center;color:var(--ink-soft);background:var(--bg-soft);cursor:pointer;padding:4px 12px;font-size:11.5px;border-top:1px dashed var(--rule)!important;border-bottom:1px dashed var(--rule)!important}
 .mdrev-host .mdv-pill-row:hover td {color:var(--accent);background:var(--accent-soft)}
 .mdrev-host .toast {z-index:70;box-shadow:var(--shadow);max-width:min(560px, calc(var(--mdv-app-w,100vw) - 40px));border-radius:999px;padding:6px 16px;font-size:12.5px;position:fixed;bottom:18px;left:50%;transform:translate(-50%)}
