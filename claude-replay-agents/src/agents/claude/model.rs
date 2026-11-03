@@ -700,6 +700,25 @@ const RECORD_TYPES_KNOWN: &[&str] = &[
     "permission-mode",
     "pr-link",
     "queue-operation",
+    // #s353 (client 2.1.317): `{type, accountUuid, organizationUuid, sessionId}`, exactly those
+    // four keys, type first, with no timestamp, uuid, parentUuid or version — the account and the
+    // organisation the session ran under. It is the transcript's FIRST line and is written again
+    // after each later turn's `last-prompt` record, with the same values each time (3 times in a
+    // session of 3 prompt cycles). Met 2026-11-03 in the only three transcripts on hong-devserver
+    // that carry it, every one headless (entrypoint `sdk-cli`); no interactive 2.1.317 session
+    // existed there yet. On aries-black the same day, 236 records in the 9 transcripts of the last
+    // two days that carry one, all headless too: the first line every time, one account each, the
+    // four keys alone. Account bookkeeping, the same class as the `credential_org` attachment
+    // (#277): the ids are opaque to a reader, and the store a transcript lives in already says
+    // which client home ran it. Having no timestamp, it is passed by where the monitor dates a
+    // transcript's head (`first_event_within`). RENDER question for the owner, not decided here:
+    // on a machine running several Claude accounts a session row could say which account it ran
+    // under, but naming the account means reading it from the client's config, which is personal
+    // data. REVISIT if the account or organisation id changes within one session (a login switch
+    // mid-session), a key beyond these four appears, or an interactive session writes it at launch
+    // or resume with no prompt after it: that grows the file with no activity, so look at the
+    // growth proof in claude-monitor's `index.rs` then.
+    "session-owner",
     "system",
     // #s282 (client 2.1.311): `{type, tools, sessionId}`, type first, with no timestamp or uuid —
     // the session's tool names so far, de-duplicated in first-use order, written again each time
@@ -1443,6 +1462,13 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     // 2026-10-09. It tells the model it may continue that sub-agent; the card and the Agents pane
     // already show the launch and the agent. REVISIT if it arrives false, or on any result other
     // than an async launch.
+    // #s353: that REVISIT fired with client 2.1.317, which writes it `true` on a COMPLETED
+    // synchronous result too (`status: "completed"`, beside `toolsUsed`; one result on
+    // hong-devserver, 2026-11-03, and no completed result before 2.1.317 carries it). Looked at and
+    // still ignored: it says the model may go on with a finished sub-agent by SendMessage, which
+    // changes nothing the card or the Agents pane shows of what it did. RENDER question for the
+    // owner, not decided here: should the Agents pane say that a finished sub-agent can still be
+    // continued? REVISIT if it arrives false, or on a result that is neither a launch nor a finish.
     "canContinueAgent",
     "canEdit",
     "canReadOutputFile",
@@ -1596,6 +1622,16 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "timeoutMs",
     "title",
     "toolStats",
+    // #s353, Agent (client 2.1.317): the tool names a finished synchronous sub-agent called,
+    // de-duplicated, an array of strings after `agentType` — the sub-agent's counterpart of the
+    // session-level `tools-used` record (#s282). One result on hong-devserver, 2026-11-03, naming
+    // one tool, as its `toolStats` and `totalToolUseCount` (1) said. The sub-agent's own transcript
+    // draws each call in the Agents pane, and its richer siblings `toolStats` and
+    // `totalToolUseCount` are known and not drawn, so it stays unread. Flat here beside them rather
+    // than in an Agent-result shape: the name is specific to this result, as theirs are, and no
+    // Claude Agent-result shape exists to put it in. REVISIT if it names a tool the sub-agent's
+    // transcript never called (it would then count something the page does not show).
+    "toolsUsed",
     "totalDurationMs",
     // #285, Grep: how many lines a limited search had in all; the text says it was limited.
     "totalLines",
@@ -7682,6 +7718,63 @@ mod tests {
             seen,
             vec!["a-record-type-nobody-has-met-s282".to_string()],
             "tools-used is known; a type nobody has met is still reported"
+        );
+    }
+
+    /// #s353: Claude Code 2.1.317's `session-owner` record is known bookkeeping. Written as the
+    /// transcript's first line and again after a turn's `last-prompt`, it draws nothing and is not
+    /// reported, while a record type outside the list beside it still is. The ids are made up.
+    /// Removing it from `RECORD_TYPES_KNOWN` turns this red.
+    #[test]
+    fn a_session_owner_record_is_known() {
+        let owner = r#"{"type":"session-owner","accountUuid":"00000000-0000-4000-8000-000000000001","organizationUuid":"00000000-0000-4000-8000-000000000002","sessionId":"s-s353"}"#;
+        let prompt = r#"{"type":"user","version":"2.1.317","sessionId":"s-s353","uuid":"u1","timestamp":"2026-11-03T01:00:00.000Z","message":{"role":"user","content":"read the notes"}}"#;
+        let answer = r#"{"type":"assistant","version":"2.1.317","sessionId":"s-s353","uuid":"a1","parentUuid":"u1","timestamp":"2026-11-03T01:00:03.000Z","requestId":"r1","message":{"id":"m1","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"Read."}],"stop_reason":"end_turn"}}"#;
+        let last = r#"{"type":"last-prompt","lastPrompt":"read the notes","sessionId":"s-s353"}"#;
+        let future = r#"{"type":"a-record-type-nobody-has-met-s353","sessionId":"s-s353"}"#;
+        let blocks = parse(&[owner, prompt, answer, last, owner].join("\n"));
+        assert_eq!(
+            format!("{blocks:?}"),
+            format!("{:?}", parse(&[prompt, answer, last].join("\n"))),
+            "the record draws nothing"
+        );
+        let _ = parse(future);
+        let seen: Vec<String> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.at == UnknownAt::RecordType && s.example.as_deref() == Some("s-s353"))
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(
+            seen,
+            vec!["a-record-type-nobody-has-met-s353".to_string()],
+            "session-owner is known; a type nobody has met is still reported"
+        );
+    }
+
+    /// #s353: a finished synchronous Agent result as client 2.1.317 writes it, with `toolsUsed`
+    /// and `canContinueAgent` on a completed status, reports no key; a key nobody has met beside
+    /// them still is. Removing `toolsUsed` from `TOOL_RESULT_KNOWN_IGNORED` turns this red.
+    #[test]
+    fn an_agent_result_tools_used_is_known() {
+        let mut result = serde_json::json!({
+            "status": "completed", "prompt": "look around", "agentId": "a-s353",
+            "agentType": "Explore", "toolsUsed": ["Read"], "harnessNoteCount": 0,
+            "harnessTailCount": 0, "harnessSectionHash": "0123456789abcdef",
+            "canContinueAgent": true,
+            "content": [{"type": "text", "text": "Done."}],
+            "toolStats": {"readCount": 1}, "totalDurationMs": 1200, "totalTokens": 900,
+            "totalToolUseCount": 1,
+        });
+        assert_eq!(
+            unknown_tool_result_keys(&result),
+            Vec::<&str>::new(),
+            "a 2.1.317 Agent result, known: {result}"
+        );
+        result["aKeyFromTheFuture"] = serde_json::json!(1);
+        assert_eq!(
+            unknown_tool_result_keys(&result),
+            vec!["aKeyFromTheFuture"],
+            "a key nobody has met beside them is still reported"
         );
     }
 
