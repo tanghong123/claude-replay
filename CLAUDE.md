@@ -660,7 +660,11 @@ release's `mdrev-embed-<version>.tar.gz`, checked against the digest the release
 < 1.1.6, whose guest ignores the `toolbar`/`review`/`annotate` options), then gates, the full browser
 suite and a commit of its own. mdrev's source repository is private: only its public release may
 enter this repository. The bundle is served from memory at `/mdrev/<version>/` (immutable, since the prefix
-names the version) and the page learns the version from `data-mdrev`. The CLI is written into the
+names the version) and the page learns the version from `data-mdrev`. A page outlives its monitor
+(#s352, Hong saw a Markdown file as raw text): after an upgrade that moved the pin, a page loaded
+before it asks for a bundle the monitor answers 404, so the loader reads the version the monitor
+serves now off `/markdown` (about 700 bytes), loads that bundle, and the pane says once that a reload
+brings the new page (`a_page_older_than_its_monitor_still_shows_markdown_in_mdrev`). The CLI is written into the
 monitor's scratch and run with node ≥ 20 (`MDREV_NODE`, final when set; else `PATH`; else the brew
 prefixes). node gates NOTES only: without it `open` declares `annotate: false` and history comes from
 the name's `git log`. Both modes use mdrev's HTTP contract at `api/mdrev/` (`html_export/mdrev.rs`),

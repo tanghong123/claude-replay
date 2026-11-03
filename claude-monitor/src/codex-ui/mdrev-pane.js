@@ -36,18 +36,60 @@ export const isMarkdownName = name => MARKDOWN.test(String(name || ""));
 export const mdrevVersion = () => document.body?.dataset.mdrev || "";
 
 let loading = null;
-/** The bundle, once per page: its stylesheet (scoped under `.mdrev-host` by mdrev's build, so
- *  nothing in it reaches the shell) and its entry module. A failed load is forgotten, so the next
- *  document tries again instead of inheriting the failure. */
+/** The version this page found the monitor serving in place of the one it was loaded with (#s352),
+ *  until the mount that found it has said so. */
+let updatedTo = "";
+
+/** One release's bundle: its stylesheet (scoped under `.mdrev-host` by mdrev's build, so nothing in
+ *  it reaches the shell) and its entry module. */
+function importBundle(version) {
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = `/mdrev/${version}/mdrev.css`;
+  document.head.appendChild(link);
+  return import(`/mdrev/${version}/mdrev.js`).catch(error => { link.remove(); throw error; });
+}
+
+/** The mdrev version the monitor serves NOW, read off its smallest page (`/markdown`, about 700
+ *  bytes, which carries `data-mdrev` as this page does); "" when it cannot be read. */
+async function servedVersion() {
+  try {
+    const response = await fetch("/markdown", { cache: "no-store" });
+    if (!response.ok) return "";
+    return /data-mdrev="([^"]*)"/.exec(await response.text())?.[1] || "";
+  } catch { return ""; }
+}
+
+/** The bundle, once per page. A failed load is forgotten, so the next document tries again instead
+ *  of inheriting the failure.
+ *
+ *  #s352: a page outlives the monitor that served it. The monitor serves only the release pinned
+ *  into it, so after an upgrade that moved the pin (its LaunchAgent restarts it onto the new build)
+ *  a page loaded before it asks for a bundle the monitor answers 404, and the pane fell back to its
+ *  plain text: Hong saw a Markdown file as raw source. So a failed load asks the monitor which
+ *  version it serves and, when that is another, loads that one. An older shell with a newer bundle
+ *  is the safe way round: what the host passes is mdrev's embedding contract, and the bundle then
+ *  talks to the routes of the monitor that shipped it. */
 function loadMdrev(version) {
   if (!loading) {
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = `/mdrev/${version}/mdrev.css`;
-    document.head.appendChild(link);
-    loading = import(`/mdrev/${version}/mdrev.js`).catch(error => { loading = null; link.remove(); throw error; });
+    loading = importBundle(version).catch(async error => {
+      const now = await servedVersion();
+      if (!now || now === version) throw error;
+      const module = await importBundle(now);
+      document.body.dataset.mdrev = now;
+      updatedTo = now;
+      return module;
+    }).catch(error => { loading = null; throw error; });
   }
   return loading;
+}
+
+/** #s352: the version the monitor was found to serve in place of the page's own, once — the first
+ *  mount after the discovery tells the reader, and later ones do not. */
+function takeUpdate() {
+  const version = updatedTo;
+  updatedTo = "";
+  return version;
 }
 
 const theme = () => (document.documentElement.dataset.theme === "dark" ? "dark" : "light");
@@ -179,6 +221,9 @@ export async function mountMarkdown(el, item, { review = false } = {}) {
     unmount,
     /** Whether the mount shows text the monitor holds rather than the file itself. */
     held,
+    /** #s352: the mdrev version this mount loaded in place of the page's own, because the monitor
+     *  was upgraded while the page was open; "" otherwise, and on every later mount. */
+    updated: takeUpdate(),
     print,
     /** Where a tab of its own finds this document; for held text, first leave the tab its own copy
      *  (`window.open` copies this page's sessionStorage into the tab it makes), so a monitor restart

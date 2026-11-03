@@ -334,6 +334,9 @@ export class Preview {
       // #s30: where mdrev's toolbar offers no print of its own — a held reader (mdrev 1.1.24 prints
       // from its own Aa menu on a phone, #s31).
       this.printBtn.hidden = !isMarkdownName(item.name) || !handle.held;
+      // #s352: the viewer came from a monitor upgraded since this page loaded; the rest of the page
+      // is still the old build, which only a reload replaces.
+      if (handle.updated) this.actions.toast?.("Agent Monitor was updated since this page loaded. Reload to get the new version.");
     }).catch(() => {
       if (this.markdownToken !== token) return;
       this.teardownMarkdown();

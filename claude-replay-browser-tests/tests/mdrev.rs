@@ -8,7 +8,8 @@
 //! Ports 2821–2829. The classic page has no preview pane, so there is no second surface here: the
 //! owner named the right-most pane, which only the app shell has. 2826–2829 are #271: the pane's
 //! document in a tab of its own (`/markdown`). 3070–3071 are #s13:
-//! every text file through mdrev, as source code when it is not Markdown.
+//! every text file through mdrev, as source code when it is not Markdown. 3096 is #s352: a page
+//! older than its monitor.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -1421,6 +1422,74 @@ fn source(tab: &headless_chrome::Tab) -> serde_json::Value {
         .as_str()
         .and_then(|j| serde_json::from_str(j).ok())
         .unwrap_or(serde_json::Value::Null)
+}
+
+/// #s352: a page outlives the monitor that served it. After an upgrade that moved the mdrev pin, a
+/// page loaded before it names a bundle the monitor no longer serves (a 404), and the pane showed a
+/// Markdown file as raw text (Hong's screenshot, 2026-11-03). The page here names a release this
+/// monitor does not carry, as such a page does: the pane still mounts mdrev, the release the monitor
+/// serves now (read off `/markdown`); it says once that the monitor was updated; and the next
+/// document does not say it again.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn a_page_older_than_its_monitor_still_shows_markdown_in_mdrev() {
+    let _serial = serial();
+    drop(mdrev_cli()); // the guide's history runs the pinned CLI under node
+    let (base, stores, repo) = fixture("mdrev-stale-page");
+    let m = Monitor::spawn(Kind::V1, 3096, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    open_shell(&m, &tab);
+    // What a page loaded from an earlier release names: a bundle this monitor answers 404.
+    eval(&tab, "document.body.dataset.mdrev = '0.0.1'; 'ok'");
+    eval(
+        &tab,
+        "window.__toasts = []; new MutationObserver(function () { window.__toasts.push(document.getElementById('toast').textContent); }).observe(document.getElementById('toast'), { childList: true, characterData: true, subtree: true }); 'ok'",
+    );
+    let updated = "window.__toasts.filter(function (t) { return /Agent Monitor was updated/.test(t); }).length";
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1')",
+        "mdrev to render the guide from the release the monitor serves",
+        Duration::from_secs(30),
+        PANE,
+    );
+    assert_eq!(h1(&tab), "The guide");
+    assert_eq!(
+        eval(
+            &tab,
+            "document.querySelectorAll('#previewBody pre.artifact-text').length"
+        )
+        .as_i64(),
+        Some(0),
+        "mdrev's document, not the pane's plain text"
+    );
+    assert_eq!(
+        eval(&tab, "document.body.dataset.mdrev").as_str(),
+        Some(mdrev_pin().as_str()),
+        "the page now names the release the monitor serves"
+    );
+    until(
+        &tab,
+        &format!("{updated} > 0"),
+        "the pane to say the monitor was updated",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__toasts)",
+    );
+    open_notes(&tab);
+    until(
+        &tab,
+        "(document.querySelector('#previewBody .mdrev-host h1') || {}).textContent === 'Field notes'",
+        "mdrev to render the held notes",
+        Duration::from_secs(30),
+        PANE,
+    );
+    assert_eq!(
+        eval(&tab, updated).as_i64(),
+        Some(1),
+        "said once, not on every document: {}",
+        eval(&tab, "JSON.stringify(window.__toasts)")
+    );
 }
 
 /// #s13: a source file on disk opens in mdrev 1.1.21's source view — highlighted, its lines
