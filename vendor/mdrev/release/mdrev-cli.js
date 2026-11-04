@@ -32286,6 +32286,44 @@ function markedLine(pieces, highlighted, struck = "") {
   }
   return out;
 }
+var WIDE = new RegExp("(?![\\uff61-\\uff9f])[\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}\\p{Script=Hangul}\\u3000-\\u303f\\u30fb\\u30fc\\uff01-\\uff60\\uffe0-\\uffe6]|\\p{Extended_Pictographic}|\\p{Regional_Indicator}", "u");
+var graphemes = typeof Intl !== "undefined" && "Segmenter" in Intl ? new Intl.Segmenter(void 0, { granularity: "grapheme" }) : null;
+function columnsOf(word) {
+  let n = 0;
+  for (const g of graphemes ? Array.from(graphemes.segment(word), (x) => x.segment) : [...word])
+    n += WIDE.test(g) ? 2 : 1;
+  return n;
+}
+function floorColumns(table2) {
+  const rows = [];
+  const walk = (el) => {
+    for (const c of el.children)
+      if (c.type === "element")
+        c.tagName === "tr" ? rows.push(c) : walk(c);
+  };
+  walk(table2);
+  const textOf2 = (n) => n.type === "text" ? n.value : n.type === "element" ? n.children.map(textOf2).join("") : n.type === "raw" ? /^<br\b/i.test(n.value) ? " " : "" : "";
+  const cellsOf = (tr2) => tr2.children.filter((c) => c.type === "element" && (c.tagName === "td" || c.tagName === "th"));
+  const floors = [];
+  for (const tr2 of rows) {
+    cellsOf(tr2).forEach((cell, j) => {
+      const longest = Math.max(0, ...textOf2(cell).split(/\s+/).map(columnsOf));
+      floors[j] = Math.max(floors[j] ?? 0, Math.min(10, longest));
+    });
+  }
+  const sum = floors.reduce((a, b) => a + (b ?? 0), 0);
+  if (sum === 0)
+    return;
+  for (const tr2 of rows) {
+    cellsOf(tr2).forEach((cell, j) => {
+      const floor = floors[j] ?? 0;
+      if (floor === 0)
+        return;
+      const cls = cell.properties.className;
+      cell.properties.className = [...Array.isArray(cls) ? cls : [], `mdv-f${floor}`, `mdv-s${Math.max(1, Math.round(floor / sum * 50))}`];
+    });
+  }
+}
 function escapeHtml(s2) {
   return s2.replace(/&/g, "&#x26;").replace(/</g, "&#x3C;");
 }
@@ -32323,6 +32361,12 @@ function makeHandlers(opts, policy2, cleaned) {
       const cls = marked.properties.className;
       marked.properties.className = [...Array.isArray(cls) ? cls : [], "mdv-canvas", "mdv-canvas-image"];
       return marked;
+    },
+    /** A table, its cells carrying their column's floor (floorColumns). */
+    table(state, node2) {
+      const el = handlers.table(state, node2);
+      floorColumns(el);
+      return el;
     },
     mdvDefList: inline("dl"),
     mdvDt: inline("dt"),
