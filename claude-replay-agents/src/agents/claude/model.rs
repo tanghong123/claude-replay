@@ -1056,6 +1056,21 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // `isApiErrorMessage`, which the page would draw as prose; (3) a record whose text no
             // longer names the cause the key names, where the Failure note should read the key.
             "apiError",
+            // #s360 (client 2.1.318): the boolean `true` on the same synthetic API-error record
+            // (`isApiErrorMessage`, model "<synthetic>", zero usage, `apiError` and `error` beside
+            // it). Met on 3 records in 3 sessions on hong-devserver, measured 2026-11-04, written
+            // within 100 seconds of each other: one dropped connection three sessions saw. The
+            // 2.1.318 client stamps it when the failed response held no `tool_use` block and reads
+            // it where it classifies a failed turn: it serves the client's follow-up, not a reader.
+            // Unread: the record is already read by its flag and folds to ONE Failure note, and the
+            // transcript shows the missing call by having no card there. Expected beside it and NOT
+            // yet met in any transcript searched, so not in this census, to be judged as its own
+            // row when one first carries it: `apiErrorCode`, written on such a record by the same
+            // code. REVISIT: (1) the key on an assistant record NOT flagged `isApiErrorMessage`,
+            // which the page would draw as prose; (2) a value other than `true`; (3) many in one
+            // session, where a count of failed turns is a RENDER question for the owner, queued
+            // with the record count and client version, never decided here.
+            "failedResponseHadNoToolCall",
             // #s305 (client 2.1.311): the boolean `true` on an assistant record the person cut off
             // with Esc while it streamed. An ordinary API answer (its own requestId, a real model,
             // no `isApiErrorMessage`), `stop_reason` null, one text block, and the very next record
@@ -8221,6 +8236,39 @@ mod tests {
         let seen: Vec<_> = unknown_shapes()
             .into_iter()
             .filter(|s| s.example.as_deref() == Some("s-s328"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+        let failures = messages
+            .iter()
+            .filter(|m| {
+                matches!(m, Message::SystemNote { text, kind: NoteKind::Failure }
+                    if text.contains("Connection dropped"))
+            })
+            .count();
+        assert_eq!(failures, 1, "one Failure note: {messages:?}");
+        let blocks = replay(&messages, &mut Vec::new(), &CLAUDE_SHAPING);
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, Block::AssistantText(_) | Block::AssistantMessage { .. })),
+            "the error is not the assistant speaking: {blocks:?}"
+        );
+    }
+
+    /// #s360: 2.1.318's flag on an API error record whose response held no tool call is known, not
+    /// reported while the sweep asks, and the record still folds to ONE Failure note, never the
+    /// assistant's prose. Removing the key from the assistant arm of the census turns this red.
+    #[test]
+    fn an_api_error_with_no_tool_call_is_known() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.318","sessionId":"s-s360","uuid":"u1","message":{"role":"user","content":"go"}}
+{"type":"assistant","version":"2.1.318","sessionId":"s-s360","uuid":"a1","isApiErrorMessage":true,"error":"server_error","apiError":"connection_failed","failedResponseHadNoToolCall":true,"message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: Connection dropped (ECONNRESET). Check the proxy set in https_proxy, then try again."}]}}
+"##;
+        let messages = tokenize(jsonl.lines());
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s360"))
             .collect();
         assert!(seen.is_empty(), "nothing reported: {seen:?}");
         let failures = messages
