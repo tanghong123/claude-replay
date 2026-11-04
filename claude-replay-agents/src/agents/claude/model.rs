@@ -1105,6 +1105,19 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // on 115 records 2026-10-16, only in sessions that write the request log beside it
             // (see `RECORD_TYPES_KNOWN`). It joins an answer to that log, which nothing draws.
             "requestRef",
+            // #s359 (client 2.1.318): a string on every real API answer, the cache duration the
+            // client ASKED for: "1h" on main sessions and "5m" on sub-agent transcripts, both met,
+            // and "off" named in the 2.1.318 code, not met. Measured 2026-11-04 on hong-devserver:
+            // 3,986 records in a day's window, 187 of the 188 assistant records in one session (the
+            // other its synthetic API-error record), and no earlier client writes it. The client
+            // falls back to it only for a call that wrote nothing, to time a wait for async
+            // sub-agents: what was BILLED is in `usage.cache_creation`, and on records carrying both
+            // they agree (4,122 lines 1h, 1,863 lines 5m, none asked 5m and billed 1h), so nothing
+            // a reader needs. REVISIT: (1) the value "off", a session running without the cache,
+            // where whether the page says so is a RENDER question for the owner, queued with the
+            // count, never decided here; (2) asked and billed disagreeing on more than the 6
+            // records of one session found so far (asked 1h, billed 5m, unexplained).
+            "promptCacheRequested",
         ],
     ),
     (
