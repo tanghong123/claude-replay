@@ -331,11 +331,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// sender a peer message from that address arrived under, and a peer message its address
 /// (`addr`); a record carries the committed senders (`peer_names`). A v68 stream holds neither.
 ///
+/// v70: #s361 — a Claude call that consulted the advisor credits the advisor's tokens from
+/// `usage.iterations` to the advisor's model. A v69 stream holds the call's own tokens alone, so a
+/// resumed session would keep its old figure.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 69;
+pub const FOLD_VERSION: u16 = 70;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

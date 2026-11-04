@@ -43,6 +43,9 @@ pub(crate) struct MetricsAcc {
     /// growth. Identical repeats add nothing; a streamed/retried group that grows
     /// (`output` 6,6,6,6,6,478) credits 478 in total, never the 508 a sum would give.
     credited: TokenCounts,
+    /// How many advisor entries of `last_usage_key`'s `usage.iterations` are credited (#s361). The
+    /// repeat lines of a call carry the same list, so this keeps an entry from counting twice.
+    credited_advisors: usize,
     /// The API call the most recent push's usage belonged to, as `message.id/requestId` —
     /// the seam's `usage_id`, cleared on every push. Transient: never in the cursor.
     usage_id: Option<String>,
@@ -224,6 +227,7 @@ impl MetricsAcc {
             if !repeat {
                 self.last_usage_key = key;
                 self.last_usage_model = Some(m.clone());
+                self.credited_advisors = 0;
             }
             // A model priced by prompt length (#s47: Claude Haiku 5.5, 5x over 100,000) takes
             // the whole request's tokens into the long subset when its prompt is over the line.
@@ -283,6 +287,7 @@ impl MetricsAcc {
             if let Some(long) = long {
                 bucket.long_prompt += long.into();
             }
+            self.credit_advisors(u);
             // Qoder's opaque model aliases cannot be priced from token counts; `credits`
             // supply its cost independently, as micro-credits in `credits_micro`. Real Claude usage
             // has no such field; current QoderWork usage does, and intentionally shares this
@@ -372,6 +377,46 @@ impl MetricsAcc {
         )
     }
 
+    /// Credit the advisor calls a record's `usage.iterations` carries (#s361). The list has an
+    /// entry per inference inside the call: a `message` entry is the call's own, already in the
+    /// usage around it, and an `advisor_message` entry is another model the agent consulted, on its
+    /// own model and its own tokens, which the usage around it does NOT include. Measured
+    /// 2026-11-05 (Claude Code 2.1.318): priced from these entries, 47 of 50 per-model rows land
+    /// within 1% of the client's own `modelUsage` figure, and a session's main model matches that
+    /// figure to four decimals without them. The repeat lines of a call carried the same list on
+    /// all 11,229 repeats measured; an entry past the count credited so far still counts, should a
+    /// later line add one.
+    /// An entry that names no model cannot be priced and is passed over. A type this fold does not
+    /// know reports to `--unknown` (`note_unknown_record_keys`).
+    fn credit_advisors(&mut self, usage: &Value) {
+        let Some(entries) = usage.get("iterations").and_then(Value::as_array) else {
+            return;
+        };
+        let field = |e: &Value, k: &str| e.get(k).and_then(Value::as_u64).unwrap_or(0);
+        let advisors: Vec<&Value> = entries
+            .iter()
+            .filter(|e| e.get("type").and_then(Value::as_str) == Some("advisor_message"))
+            .collect();
+        for entry in advisors.iter().skip(self.credited_advisors) {
+            let Some(model) = entry.get("model").and_then(Value::as_str) else {
+                continue;
+            };
+            let tokens = TokenCounts {
+                input: field(entry, "input_tokens"),
+                cache_creation: field(entry, "cache_creation_input_tokens"),
+                cache_read: field(entry, "cache_read_input_tokens"),
+                output: field(entry, "output_tokens"),
+                ..Default::default()
+            };
+            let bucket = self.per_model.entry(model.to_string()).or_default();
+            *bucket += tokens;
+            if long_prompt_over(model).is_some_and(|over| tokens.prompt() > over) {
+                bucket.long_prompt += tokens.into();
+            }
+        }
+        self.credited_advisors = self.credited_advisors.max(advisors.len());
+    }
+
     /// The resumable snapshot. Overrides the seam default (which stores bare
     /// [`totals`](Self::totals)) because the repeat-collapsing guard must cross a resume
     /// boundary: park a cursor between lines 2 and 3 of one message's group and a guard
@@ -394,6 +439,7 @@ impl MetricsAcc {
             "last_usage_model": self.last_usage_model,
             "model": self.model,
             "credited": self.credited,
+            "credited_advisors": self.credited_advisors,
             "runtime": self.runtime,
             "reported": self.reported.iter().map(|(k, v)| (k.to_string(), *v))
                 .collect::<std::collections::BTreeMap<String, f64>>(),
@@ -438,6 +484,10 @@ impl MetricsAcc {
             .get("credited")
             .and_then(|x| serde_json::from_value::<TokenCounts>(x.clone()).ok())
             .unwrap_or_default();
+        self.credited_advisors = state
+            .get("credited_advisors")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
         if let Some(mut runtime) = state
             .get("runtime")
             .and_then(|v| serde_json::from_value::<RuntimeInfo>(v.clone()).ok())
@@ -568,6 +618,97 @@ mod tests {
                "timestamp":"2026-08-05T10:00:00Z"}}"#
         ))
         .unwrap()
+    }
+
+    /// One line of a call that consulted the advisor (#s361). Synthetic, the shape measured on
+    /// Claude Code 2.1.318: a `message` entry that repeats the call's own usage, then the advisor's.
+    fn advised_line(id: &str, out: u64) -> Value {
+        serde_json::from_str(&format!(
+            r#"{{"type":"assistant","requestId":"req_{id}","message":{{"role":"assistant",
+               "id":"{id}","model":"claude-opus-5-5","usage":{{"input_tokens":2,
+               "output_tokens":{out},"cache_creation_input_tokens":0,
+               "cache_read_input_tokens":100,"iterations":[
+               {{"type":"message","input_tokens":2,"output_tokens":{out},
+                 "cache_creation_input_tokens":0,"cache_read_input_tokens":100}},
+               {{"type":"advisor_message","model":"claude-fable-5-1","input_tokens":1000000,
+                 "output_tokens":100000,"cache_creation_input_tokens":0,
+                 "cache_read_input_tokens":0}}]}}}},
+               "timestamp":"2026-11-05T10:00:00Z"}}"#
+        ))
+        .unwrap()
+    }
+
+    /// #s361: an advisor call is the advisor model's, once per call, whatever line the call's list
+    /// repeats on; the session's model stays the one it ran on; the cost sums both at their own
+    /// rates; and the `message` entry, which is the call's own usage, adds nothing.
+    #[test]
+    fn an_advisor_call_counts_once_under_its_own_model() {
+        let mut acc = MetricsAcc::default();
+        for line in [advised_line("msg_01", 5), advised_line("msg_01", 40)] {
+            acc.push(&line);
+        }
+        acc.push(&advised_line("msg_02", 7));
+        let m = acc.finish();
+        assert_eq!(
+            m.model, "claude-opus-5-5",
+            "the session's model is unchanged"
+        );
+        let opus = m.per_model["claude-opus-5-5"];
+        assert_eq!((opus.input, opus.cache_read, opus.output), (4, 200, 47));
+        let advisor = m.per_model["claude-fable-5-1"];
+        assert_eq!(
+            (advisor.input, advisor.output),
+            (2_000_000, 200_000),
+            "two calls, each credited once across its repeat lines"
+        );
+        assert!(m.model_label().ends_with("+1"), "{}", m.model_label());
+        // Fable 5.1 is $10 in and $50 out a million, so the advisor's two calls are $30.
+        let want = 30.0 + estimate_cost("claude-opus-5-5", 4, 0, 200, 47).unwrap();
+        assert!(
+            (m.cost_usd.unwrap() - want).abs() < 1e-9,
+            "{:?}",
+            m.cost_usd
+        );
+    }
+
+    /// #s361: a cursor parked between two lines of an advised call keeps the call's advisor
+    /// credit, or the next line would charge it again.
+    #[test]
+    fn a_resume_inside_an_advised_call_does_not_charge_the_advisor_twice() {
+        let mut before = MetricsAcc::default();
+        before.push(&advised_line("msg_01", 5));
+        let parked = before.state();
+        let mut after = MetricsAcc::default();
+        after.restore(&parked);
+        after.push(&advised_line("msg_01", 40));
+        assert_eq!(
+            after.finish().per_model["claude-fable-5-1"].input,
+            1_000_000
+        );
+    }
+
+    /// #s361: a list with no advisor entry changes nothing, and an advisor entry with no model is
+    /// passed over, since it cannot be priced.
+    #[test]
+    fn iterations_without_an_advisor_add_nothing() {
+        let plain = |it: &str| -> Value {
+            serde_json::from_str(&format!(
+                r#"{{"type":"assistant","requestId":"r","message":{{"role":"assistant","id":"m",
+                   "model":"claude-opus-5-5","usage":{{"input_tokens":2,"output_tokens":3,
+                   "iterations":[{it}]}}}}}}"#
+            ))
+            .unwrap()
+        };
+        for entry in [
+            r#"{"type":"message","input_tokens":2,"output_tokens":3}"#,
+            r#"{"type":"advisor_message","input_tokens":9,"output_tokens":9}"#,
+        ] {
+            let mut acc = MetricsAcc::default();
+            acc.push(&plain(entry));
+            let m = acc.finish();
+            assert_eq!(m.per_model.len(), 1, "{entry}");
+            assert_eq!(m.input_tokens, 2, "{entry}");
+        }
     }
 
     /// #u173: the seam's `usage_id` names the call a push's usage belonged to — the same id on

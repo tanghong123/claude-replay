@@ -1233,6 +1233,13 @@ fn unknown_record_keys<'a>(v: &'a Value, ty: &str, also_known: &[&str]) -> Vec<&
         .collect()
 }
 
+/// The entry types of `message.usage.iterations` the cost accounts for (#s361): `message` is the
+/// call's own, already in the usage around it, and `advisor_message` is credited to its model. The
+/// census otherwise stops at a record's top level, which is how advisor calls went unpriced with
+/// nothing reporting them, so a type outside this list is a `record.key` row of its own: it may be
+/// another inference the session paid for and the cost leaves out.
+const USAGE_ITERATION_TYPES: &[&str] = &["message", "advisor_message"];
+
 /// Report each top-level key outside the census (#361), as `<type>.<key>`, while the sweep asks.
 fn note_unknown_record_keys(v: &Value, ty: &str, also_known: &[&str]) {
     for k in unknown_record_keys(v, ty, also_known) {
@@ -1240,6 +1247,23 @@ fn note_unknown_record_keys(v: &Value, ty: &str, also_known: &[&str]) {
             "claude",
             UnknownAt::RecordKey,
             &format!("{ty}.{k}"),
+            v.get("version").and_then(|x| x.as_str()),
+            v.get("sessionId").and_then(|x| x.as_str()),
+        );
+    }
+    let iterations = v
+        .pointer("/message/usage/iterations")
+        .and_then(Value::as_array);
+    for kind in iterations
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.get("type").and_then(Value::as_str))
+        .filter(|t| !USAGE_ITERATION_TYPES.contains(t))
+    {
+        note_unknown(
+            "claude",
+            UnknownAt::RecordKey,
+            &format!("{ty}.usage.iterations.{kind}"),
             v.get("version").and_then(|x| x.as_str()),
             v.get("sessionId").and_then(|x| x.as_str()),
         );
@@ -8285,6 +8309,32 @@ mod tests {
                 .iter()
                 .any(|b| matches!(b, Block::AssistantText(_) | Block::AssistantMessage { .. })),
             "the error is not the assistant speaking: {blocks:?}"
+        );
+    }
+
+    /// #s361: an inference type the cost does not know is a `record.key` row, while the two it
+    /// accounts for are silent, since the census otherwise stops at a record's top level.
+    #[test]
+    fn an_unknown_usage_iteration_reports_and_the_known_ones_do_not() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"assistant","version":"2.1.318","sessionId":"s-s361a","uuid":"a1","message":{"role":"assistant","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":1,"iterations":[{"type":"message"},{"type":"advisor_message","model":"claude-fable-5-1"}]},"content":[{"type":"text","text":"known"}]}}
+{"type":"assistant","version":"2.1.318","sessionId":"s-s361b","uuid":"a2","message":{"role":"assistant","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":1,"iterations":[{"type":"message"},{"type":"reviewer_message","model":"claude-fable-5-1"}]},"content":[{"type":"text","text":"new"}]}}
+"##;
+        tokenize(jsonl.lines());
+        let shapes = unknown_shapes();
+        assert!(
+            !shapes
+                .iter()
+                .any(|s| s.example.as_deref() == Some("s-s361a")),
+            "the two known types report nothing: {shapes:?}"
+        );
+        assert!(
+            shapes
+                .iter()
+                .any(|s| s.example.as_deref() == Some("s-s361b")
+                    && s.name == "assistant.usage.iterations.reviewer_message"),
+            "a new type does: {shapes:?}"
         );
     }
 

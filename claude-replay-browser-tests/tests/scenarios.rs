@@ -12580,6 +12580,83 @@ fn both_shells_show_the_clients_own_cost_with_the_window_it_covers() {
     }
 }
 
+/// One call that consulted the advisor (#s361), on two lines, as the client writes an answer with
+/// two content items: 1,000,000 in and 100,000 out at Fable 5.1 is $15.00, once.
+fn advisor_cost_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("question: what does the advisor make of it", &now_minus(60));
+    for (text, ago) in [("answer: asked it", 59), ("answer: it agrees", 58)] {
+        t += &format!(
+            "{{\"type\":\"assistant\",\"sessionId\":\"{SID}\",\"requestId\":\"req_advised\",\
+             \"timestamp\":\"{ts}\",\"message\":{{\"role\":\"assistant\",\"id\":\"msg_advised\",\
+             \"model\":\"claude-opus-5-5\",\"content\":[{{\"type\":\"text\",\"text\":\"{text}\"}}],\
+             \"usage\":{{\"input_tokens\":2,\"output_tokens\":5,\"iterations\":[\
+             {{\"type\":\"message\",\"input_tokens\":2,\"output_tokens\":5}},\
+             {{\"type\":\"advisor_message\",\"model\":\"claude-fable-5-1\",\
+             \"input_tokens\":1000000,\"output_tokens\":100000}}]}}}}}}\n",
+            ts = now_minus(ago),
+        );
+    }
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// #s361 — BOTH pages count an advisor call: its tokens are in the cost once, however many lines
+/// the call took, and the shell's model row says a second model ran.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn both_shells_count_an_advisor_call_in_the_cost() {
+    let _serial = serial();
+    for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 2767)] {
+        let fx = advisor_cost_fixture(match surface {
+            Surface::Classic => "advisor-cost-classic",
+            _ => "advisor-cost-app",
+        });
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        if surface != Surface::Classic {
+            harness::eval(&page.tab, "var c = document.querySelector('[data-nav-card=\"session\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"session\"]').click(); 'ok'");
+            harness::until(
+                &page.tab,
+                "document.querySelectorAll('#navigatorSession .session-info-row').length > 0",
+                "the session-info rows to render",
+                std::time::Duration::from_secs(10),
+                "document.getElementById('navigatorSession').innerText.slice(0, 200)",
+            );
+        }
+        let js = match surface {
+            Surface::Classic => "document.getElementById('usage').textContent",
+            _ => "document.getElementById('navigatorSession').textContent",
+        };
+        let raw = eval(&page.tab, js);
+        let text = raw
+            .as_str()
+            .unwrap_or("")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            text.contains("$15.00"),
+            "{surface:?} prices the advisor call once at Fable 5.1 ($10 + $5). $30.00 means the \
+             repeat line charged it again, and no dollar figure near that means it was left out. \
+             Got: {text:?}"
+        );
+        // The classic page's usage box has no model row, only the shell's Info does.
+        assert!(
+            surface == Surface::Classic || text.contains("opus5.5+"),
+            "{surface:?} says a second model ran beside the session's own. Got: {text:?}"
+        );
+    }
+}
+
 /// The audit as an ASSERTION: every structure one page renders, the other renders too.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
