@@ -279,6 +279,7 @@ mod tests {
                     asked: None,
                     delivered: Vec::new(),
                     sent: None,
+                    sent_to: None,
                     saved_output: None,
                 }],
             },
@@ -295,6 +296,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                sent_to: None,
                 saved_output: None,
             },
             Block::SubAgent(SubAgent {

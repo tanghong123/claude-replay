@@ -18256,7 +18256,8 @@ fn app_shell_shows_a_relayed_message_as_his_card_and_a_copy_as_text() {
 /// client's delivery receipt beneath it as a sentence. The owner found the card showing only the
 /// receipt's JSON (`{"success":true,"message":"…"}`), with the message itself nowhere. Written
 /// once, run on both pages: the card's head names the summary, and opened, its body carries the
-/// message rendered as Markdown and the receipt's sentence, never its JSON.
+/// message rendered as Markdown and the receipt's sentence, never its JSON. #s355: the head also
+/// says who it went to, by the name a message from that address arrived under.
 fn scenario_a_message_sent_shows_on_its_card(
     tab: &headless_chrome::Tab,
     surface: Surface,
@@ -18319,6 +18320,17 @@ fn scenario_a_message_sent_shows_on_its_card(
         !text.contains("\"success\"") && !text.contains("msg_id"),
         "{surface:?}: the receipt's JSON is not drawn: {card}"
     );
+    // #s355: the head says who it went to — skua-HD, the name its address wrote here under —
+    // ahead of the summary.
+    let head_text = eval(
+        tab,
+        &format!("(function(){{ var h = {find}; return h ? h.textContent : null; }})()"),
+    );
+    let head_text = head_text.as_str().unwrap_or("");
+    assert!(
+        head_text.contains("→ skua-HD · Reply to skua-HD: release out"),
+        "{surface:?}: the head names the recipient: {head_text:?}"
+    );
 }
 
 #[test]
@@ -18378,13 +18390,23 @@ fn app_shell_clips_a_prose_target_at_its_end_and_a_path_at_its_start() {
     );
 }
 
-/// Twelve turns, then a prompt whose answer sends a message to another session — the call and the
-/// receipt as Claude Code 2.1.296 writes them, built by hand.
+/// Twelve turns, a message from skua-HD (#s355: the address it came from is what the reply names),
+/// then a prompt whose answer sends a message back — the call and the receipt as Claude Code 2.1.296
+/// writes them, built by hand.
 fn sent_fixture(name: &str) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
     let mut transcript = long_session(12, Shape::default());
     let line = |v: serde_json::Value| format!("{v}\n");
+    let asked = "skua-HD here: is the release out yet?";
+    transcript += &line(serde_json::json!({
+        "type": "user", "cwd": "/r", "timestamp": now_minus(70), "isMeta": true,
+        "promptSource": "system", "turnOrigin": "peer",
+        "origin": {"kind": "peer", "from": "uds:/tmp/cc-socks/1.sock", "verifiedPeerPid": 1, "msg_id": "p1",
+                   "name": "skua-HD", "fromMode": "bypass", "body": asked},
+        "message": {"role": "user", "content": format!("<cross-session-message from=\"uds:/tmp/cc-socks/1.sock\" from-name=\"skua-HD\" from-mode=\"bypass\">\n{asked}\n</cross-session-message>")}
+    }));
+    transcript += &assistant_at("I will check", &now_minus(65));
     transcript += &line(serde_json::json!({
         "type": "user", "cwd": "/r", "timestamp": now_minus(60), "origin": {"kind": "human"},
         "message": {"role": "user", "content": "tell skua the release is out"}
@@ -18415,7 +18437,7 @@ fn sent_fixture(name: &str) -> Fixture {
     Fixture {
         base,
         path,
-        turns: 13,
+        turns: 14,
     }
 }
 

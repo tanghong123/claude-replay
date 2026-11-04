@@ -133,6 +133,21 @@ pub struct Replayer<'a> {
     /// with one of them is a copy, and folds as text. Persisted through the meta stream
     /// (`MetaRecord::inbox_ids`) so a resumed fold knows the committed ones.
     inbox_ids: std::collections::HashSet<String>,
+    /// The sessions that wrote to this one, by address (#s355): each peer message's `addr` ->
+    /// the name it arrived under, the latest winning. A message this session sends to one of
+    /// those addresses names its recipient from here. Persisted through the meta stream
+    /// (`MetaRecord::peer_names`) so a resumed fold still knows the senders in its committed part.
+    peer_names: HashMap<String, String>,
+}
+
+/// #s355: a sub-agent a message went to, as the reader should read it: `sub-agent a29193b9`, with
+/// its type when it has one beyond the generic (`sub-agent a29193b9 (Explore)`).
+fn sub_agent_label(id: &str, ty: &str) -> String {
+    let short: String = id.chars().take(8).collect();
+    match ty.trim() {
+        "" | "agent" => format!("sub-agent {short}"),
+        ty => format!("sub-agent {short} ({ty})"),
+    }
 }
 
 /// Upsert a `SubAgent` spawn's identity into the running resolution map (keyed by both its
@@ -177,6 +192,7 @@ impl<'a> Replayer<'a> {
             last_skill: None,
             agent_ids: HashMap::new(),
             inbox_ids: std::collections::HashSet::new(),
+            peer_names: HashMap::new(),
         }
     }
 
@@ -246,8 +262,21 @@ impl<'a> Replayer<'a> {
                     input,
                     cwd,
                 } => {
-                    self.out
-                        .push((self.shaping.build_tool)(id, name, input, cwd));
+                    let mut block = (self.shaping.build_tool)(id, name, input, cwd);
+                    // #s355: a message to another session names its recipient by the name that
+                    // session wrote here under, where its `to` is only an address.
+                    if let Block::ToolUse {
+                        sent_to: Some(to), ..
+                    } = &mut block
+                    {
+                        if let Some(who) = self.peer_names.get(to.as_str()) {
+                            *to = who.clone();
+                        } else if let Some((id, ty)) = self.agent_ids.get(to.as_str()) {
+                            // A sub-agent this session spawned, written to by its id.
+                            *to = sub_agent_label(id, ty);
+                        }
+                    }
+                    self.out.push(block);
                     let rel = self.out.len() - 1;
                     let logical = self.base + rel;
                     if let Block::ToolUse { name, .. } = &self.out[rel] {
@@ -333,7 +362,11 @@ impl<'a> Replayer<'a> {
                     mode,
                     text,
                     queued,
+                    addr,
                 } => {
+                    if let Some(a) = addr {
+                        self.peer_names.insert(a.clone(), from.clone());
+                    }
                     // Picked up from the queue mid-turn: pop its item by the raw text it was
                     // queued under (#52's content match). A peer enqueue draws no marker, so
                     // there is nothing to suppress; the pop keeps FIFO and the durability
@@ -350,6 +383,7 @@ impl<'a> Replayer<'a> {
                         from: from.clone(),
                         mode: mode.clone(),
                         text: text.clone(),
+                        addr: addr.clone(),
                     });
                 }
                 Message::SystemNote { text, .. } => {
@@ -814,20 +848,25 @@ impl<'a> Replayer<'a> {
     /// finalized count makes `window_stamped()` exceed `out.len()` and the first `LineStart`
     /// slice out of range. `base`'s absolute value never escapes the replayer, so rebasing is
     /// sound.
+    ///
+    /// The fold state comes from the restored meta `mm` (its spawns, the relayed messages taken,
+    /// the senders by address, the turn times and durations); the clocks from the resume point.
     pub(crate) fn reseed(
         &mut self,
-        agent_ids: HashMap<String, (String, String)>,
-        inbox_ids: std::collections::HashSet<String>,
-        user_times: Vec<Option<EpochSeconds>>,
-        turn_durations: Vec<Option<u64>>,
+        mm: &crate::engine::meta_stream::MaterializedMeta,
         prev_ts: Option<EpochSeconds>,
         pending_ts: Option<EpochSeconds>,
     ) {
-        self.agent_ids = agent_ids;
-        self.inbox_ids = inbox_ids;
-        self.turn_durations = turn_durations;
-        self.turn_durations.resize(user_times.len(), None);
-        self.user_times = user_times;
+        self.agent_ids = mm.agent_ids.clone();
+        self.inbox_ids = mm.inbox_ids.iter().cloned().collect();
+        self.peer_names = mm
+            .peer_names
+            .iter()
+            .map(|(a, n)| (a.clone(), n.clone()))
+            .collect();
+        self.turn_durations = mm.turn_durations.clone();
+        self.turn_durations.resize(mm.user_times.len(), None);
+        self.user_times = mm.user_times.clone();
         self.prev_ts = prev_ts;
         self.pending_ts = pending_ts;
         self.base = 0;

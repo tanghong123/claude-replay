@@ -1207,6 +1207,16 @@ identically to the prompt, its queued attachment and the queue operation so the 
 holds: a labelled verbatim card on both pages, a `┌ pasted` box in the TUI, `[pasted]` in a turn's
 label. Cases: `another_sessions_message_is_its_own_turn_and_pasted_text_a_fence` (both parse
 paths), the `#s79` contract block, `*_shows_another_sessions_message_as_its_own_turn`.
+**A message this session SENDS says who it went to** (#s355, Hong: a reply's head named only its
+summary, its `to` a socket address). A peer message keeps the address it came from
+(`PeerText.addr`, from `origin.from`), and a SendMessage's `to` becomes `ToolUse.sent_to`: the name
+that address last wrote here under, a sub-agent this session spawned as `sub-agent <id8> (<type>)`,
+a plain name as it is; the head reads `→ hd-agentdev · <summary>` on both pages and in the TUI
+(`present::send_head`; an address nothing wrote from is drawn `local session <pid>` or `remote
+session <id8>`). The address book rides the meta stream (`MetaRecord.peer_names`), so a resumed
+fold keeps it; `--json` is unchanged. A message sent to an address before that session ever wrote
+here keeps the short address. Cases: `a_message_to_another_session_names_who_it_went_to`,
+`tests/sent_to.rs` (every resume point), `*_shows_a_message_sent_on_its_card`.
 
 **Hong's messages relayed into the Aries session are his, and shown so, only when signed** (#s272,
 Hong, 2026-10-26: they all read alike, and text that only looks like one must never pass for his).

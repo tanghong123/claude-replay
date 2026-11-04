@@ -89,7 +89,7 @@ fn block_fields(b: &Block, o: &mut Map<String, Value>) {
         Block::QueueEvent { text } => {
             o.insert("text".into(), json!(text));
         }
-        Block::PeerText { from, mode, text } => {
+        Block::PeerText { from, mode, text, .. } => {
             o.insert("text".into(), json!(text));
             o.insert("from".into(), json!(from));
             if let Some(m) = mode {
@@ -340,6 +340,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let mut o = Map::new();
@@ -373,6 +374,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: Some("both are done".into()),
+            sent_to: None,
             saved_output: None,
         };
         let mut o = Map::new();
@@ -402,6 +404,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: Some("/w/tool-results/b1.txt".into()),
         };
         let mut o = Map::new();

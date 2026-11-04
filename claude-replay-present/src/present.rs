@@ -192,6 +192,42 @@ pub fn send_receipt(out: &str) -> String {
         .unwrap_or_else(|| out.trim().to_string())
 }
 
+/// #s355: a SendMessage head as the reader should see it, for the terminal and the pages alike: who
+/// it went to, then its summary — `→ hd-agentdev · where the write-up lives`. The fold has already
+/// put the sender's name in place of an address a peer message came from; an address it could not
+/// name is shortened to what it is. With no summary the call's target IS its `to`, so the head is
+/// the recipient alone.
+pub fn send_head(target: &str, sent_to: &str) -> String {
+    let who = recipient_label(sent_to);
+    let rest = target.trim();
+    if rest.is_empty() || rest == sent_to.trim() {
+        format!("→ {who}")
+    } else {
+        format!("→ {who} · {rest}")
+    }
+}
+
+/// #s355: an address no peer message named, shortened to what it is: a session on this machine by
+/// its process id (`uds:/tmp/cc-socks/16988.sock` → `local session 16988`), a bridged one by the
+/// start of its id (`bridge:session_011PWPuN…` → `remote session 011PWPuN`). A name stays a name.
+pub fn recipient_label(to: &str) -> String {
+    let to = to.trim();
+    if let Some(path) = to.strip_prefix("uds:") {
+        let file = path.rsplit('/').next().unwrap_or(path);
+        let stem = file.strip_suffix(".sock").unwrap_or(file);
+        if !stem.is_empty() && stem.chars().all(|c| c.is_ascii_digit()) {
+            return format!("local session {stem}");
+        }
+        return format!("local session {file}");
+    }
+    if let Some(id) = to.strip_prefix("bridge:") {
+        let id = id.strip_prefix("session_").unwrap_or(id);
+        let short: String = id.chars().take(8).collect();
+        return format!("remote session {short}");
+    }
+    to.to_string()
+}
+
 /// The display name Claude Code shows for a tool — it labels Edit/MultiEdit as
 /// `Update`; everything else keeps its tool name.
 pub fn display_name(name: &str) -> &str {
@@ -340,6 +376,30 @@ pub fn run_changes(tools: &[Block]) -> Option<(usize, usize)> {
 mod tests {
     use super::*;
 
+    /// #s355: who a message went to, as its head names it.
+    #[test]
+    fn a_message_head_names_its_recipient() {
+        assert_eq!(
+            send_head("where the write-up lives", "skua-HD"),
+            "→ skua-HD · where the write-up lives"
+        );
+        assert_eq!(
+            send_head("petrel-HD", "petrel-HD"),
+            "→ petrel-HD",
+            "no summary"
+        );
+        assert_eq!(
+            recipient_label("uds:/tmp/cc-socks/16988.sock"),
+            "local session 16988"
+        );
+        assert_eq!(
+            recipient_label("bridge:session_011PWPuNfsYpysxxMhhL2HkG"),
+            "remote session 011PWPuN"
+        );
+        assert_eq!(recipient_label("uds:/tmp/x/odd"), "local session odd");
+        assert_eq!(recipient_label("aries"), "aries");
+    }
+
     /// #s182: an Artifact edit's card speaks only when the result applied fewer edits than sent.
     #[test]
     fn edits_applied_note_only_when_short() {
@@ -406,6 +466,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let fresh = call("Write", vec![("", "a\nb\nc\n")], None);

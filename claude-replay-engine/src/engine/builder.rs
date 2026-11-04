@@ -73,6 +73,8 @@ pub struct SessionAccumulator<S: BlockStore = InMemoryStore> {
     committed_agents: std::collections::HashMap<String, (crate::model::AgentId, String)>,
     /// The ids of the committed relayed messages (#s272), folded on drain like `committed_agents`.
     committed_inbox: std::collections::BTreeSet<String>,
+    /// The committed senders by address (#s355), folded on drain like `committed_inbox`.
+    committed_peers: std::collections::BTreeMap<String, String>,
     /// Resumable drains since the last checkpoint. Only resumable ones count: a checkpoint must
     /// ride a record that carries a resume payload (§6.6), so a straddling drain does not
     /// advance the clock — it waits for the next qualifying one.
@@ -185,6 +187,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             meta_out: Vec::new(),
             committed_agents: Default::default(),
             committed_inbox: Default::default(),
+            committed_peers: Default::default(),
             since_checkpoint: 0,
             links: Vec::new(),
         }
@@ -220,6 +223,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
         // would claim the session began at the resume point.
         acc.committed_agents = mm.agent_ids.clone();
         acc.committed_inbox = mm.inbox_ids.clone();
+        acc.committed_peers = mm.peer_names.clone();
         acc.committed_meta = mm.session_meta.clone();
         acc.cwd = mm.cwd.clone();
         acc.task_fold = mm.tasks.clone();
@@ -229,14 +233,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
         // `user_times` has length `committed_meta.turns` — its value at `replay_from`, since by
         // the §3 partition every uncommitted `UserText` lies at or above that offset and none
         // has been stamped.
-        acc.replayer.reseed(
-            mm.agent_ids.clone(),
-            mm.inbox_ids.iter().cloned().collect(),
-            mm.user_times.clone(),
-            mm.turn_durations.clone(),
-            resume.prev_ts,
-            resume.pending_ts,
-        );
+        acc.replayer.reseed(&mm, resume.prev_ts, resume.pending_ts);
         acc.preprocessor.restore(&resume.pre);
         // A resumed writer measures its counter deltas from where the last record left off,
         // not from zero — otherwise the next record would re-report the whole session.
@@ -297,6 +294,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             session_meta: self.committed_meta.clone(),
             agent_ids: self.committed_agents.clone(),
             inbox_ids: self.committed_inbox.clone(),
+            peer_names: self.committed_peers.clone(),
             turn_durations: self
                 .replayer
                 .turn_durations()
@@ -444,6 +442,15 @@ impl<S: BlockStore> SessionAccumulator<S> {
                 if let Block::UserInbox { inbox, .. } = b {
                     rec.inbox_ids.push(inbox.id.clone());
                     self.committed_inbox.insert(inbox.id.clone());
+                }
+                if let Block::PeerText {
+                    from,
+                    addr: Some(addr),
+                    ..
+                } = b
+                {
+                    rec.peer_names.push((addr.clone(), from.clone()));
+                    self.committed_peers.insert(addr.clone(), from.clone());
                 }
             }
             let times = self.replayer.user_times().to_vec();
@@ -605,6 +612,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
         self.committed_meta = SessionMeta::default();
         self.committed_agents.clear();
         self.committed_inbox.clear();
+        self.committed_peers.clear();
         self.since_checkpoint = 0;
         self.task_fold = crate::engine::tasks::TaskFold::default();
         // An append-only store (tier-b) discards its backing too — the rebuilt session's

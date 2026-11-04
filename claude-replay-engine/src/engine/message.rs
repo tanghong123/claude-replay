@@ -145,6 +145,10 @@ pub enum Message {
         mode: Option<String>,
         text: String,
         queued: Option<String>,
+        /// The address it came from (`uds:/tmp/cc-socks/<pid>.sock`, `bridge:session_…`), when
+        /// the record says: a reply's `to` names it, and the fold learns the sender's name for it
+        /// (#s355).
+        addr: Option<String>,
     },
     /// Injected/system content that isn't a human turn — a caveat-stripped `isMeta` body, a
     /// `/compact` summary, a task-notification's one-line summary, or an orphan skill body.

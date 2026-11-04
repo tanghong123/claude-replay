@@ -152,7 +152,9 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // v27: saved-output offers with additive quotation metadata and canonical labels.
     // v28: integrate Mermaid with quotation records. The earlier quotation build already
     // wrote v27 caches without diagram hosts; these must rebuild along with v25-v26 caches.
-    const RECORD_SCHEMA: u16 = 28;
+    // v29: #s355 — a SendMessage card's head names who it went to ahead of its summary
+    // (`→ skua-HD · …`).
+    const RECORD_SCHEMA: u16 = 29;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);

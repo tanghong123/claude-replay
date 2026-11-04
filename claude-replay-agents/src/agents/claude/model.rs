@@ -3628,6 +3628,7 @@ pub(crate) fn decode_line_known(
                     mode: p.mode,
                     text: p.body,
                     queued: None,
+                    addr: p.addr,
                 });
                 return;
             }
@@ -3795,6 +3796,7 @@ pub(crate) fn decode_line_known(
                                 mode: peer.mode,
                                 text: peer.body,
                                 queued: Some(fence_pasted(p).into_owned()),
+                                addr: peer.addr,
                             });
                         } else if let Some(m) = (!meta && relayable(&v) && a.is_some_and(relayable))
                             .then(|| inbox_message(p, || fence_pasted(p).into_owned()))
@@ -3987,6 +3989,7 @@ pub(crate) fn claude_build_tool(id: &str, name: &str, input: &Value, cwd: &str) 
             asked: asked_from_input(name, input).map(Box::new),
             delivered: delivered_from_input(name, input),
             sent: sent_from_input(name, input),
+            sent_to: sent_to_from_input(name, input),
             saved_output: None,
         }
     }
@@ -4138,6 +4141,21 @@ fn sent_from_input(name: &str, input: &Value) -> Option<String> {
         .get("message")
         .and_then(Value::as_str)
         .filter(|m| !m.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// #s355: who a `SendMessage` call wrote to, as its `to` (else `recipient`) names it — an address
+/// (`uds:/tmp/cc-socks/<pid>.sock`, `bridge:session_…`) or a name (`aries`). The fold puts the
+/// name a peer message from that address arrived under in its place.
+fn sent_to_from_input(name: &str, input: &Value) -> Option<String> {
+    if name != "SendMessage" {
+        return None;
+    }
+    ["to", "recipient"]
+        .iter()
+        .find_map(|k| input.get(*k).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
         .map(str::to_string)
 }
 
@@ -4620,6 +4638,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                 asked: None,
                                 delivered: Vec::new(),
                                 sent: None,
+                                sent_to: None,
                                 saved_output: None,
                             });
                         }
@@ -4712,6 +4731,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     asked: None,
                                     delivered: Vec::new(),
                                     sent: None,
+                                    sent_to: None,
                                     saved_output: None,
                                 });
                             }
@@ -4824,6 +4844,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                         from: p.from,
                         mode: p.mode,
                         text: p.body,
+                        addr: p.addr,
                     });
                     continue;
                 }
@@ -5078,6 +5099,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     from: peer.from,
                                     mode: peer.mode,
                                     text: peer.body,
+                                    addr: peer.addr,
                                 }),
                                 // #s272 mirror: a relayed message picked up mid-turn.
                                 None => match (!meta && relayable(&v) && a.is_some_and(relayable))
@@ -5767,6 +5789,9 @@ struct Peer {
     from: String,
     mode: Option<String>,
     body: String,
+    /// The address it came from (`origin.from`, else the tag's `from`), which a reply names as
+    /// its `to` (#s355).
+    addr: Option<String>,
 }
 
 fn peer_of(origin: Option<&Value>, text: Option<&str>, meta: bool) -> Option<Peer> {
@@ -5785,7 +5810,8 @@ fn peer_of(origin: Option<&Value>, text: Option<&str>, meta: bool) -> Option<Pee
                 .or_else(|| tagged.as_ref().map(|t| t.from.clone()))
                 .or_else(|| s(o, "from"))
                 .unwrap_or_else(|| "another session".to_string()),
-            mode: s(o, "fromMode").or_else(|| tagged.and_then(|t| t.mode)),
+            mode: s(o, "fromMode").or_else(|| tagged.as_ref().and_then(|t| t.mode.clone())),
+            addr: s(o, "from").or_else(|| tagged.and_then(|t| t.addr)),
             body,
         });
     }
@@ -5816,6 +5842,7 @@ fn peer_from_tags(text: &str) -> Option<Peer> {
             .or_else(|| attr("from"))
             .unwrap_or_else(|| "another session".to_string()),
         mode: attr("from-mode"),
+        addr: attr("from"),
         body: body.to_string(),
     })
 }
@@ -7053,9 +7080,9 @@ mod tests {
         let peers: Vec<(&str, Option<&str>, &str)> = streamed
             .iter()
             .filter_map(|b| match b {
-                Block::PeerText { from, mode, text } => {
-                    Some((from.as_str(), mode.as_deref(), text.as_str()))
-                }
+                Block::PeerText {
+                    from, mode, text, ..
+                } => Some((from.as_str(), mode.as_deref(), text.as_str())),
                 _ => None,
             })
             .collect();
@@ -7138,7 +7165,9 @@ mod tests {
         );
         let bare = r##"{"type":"user","timestamp":"2026-10-10T08:00:00.000Z","isMeta":true,"message":{"role":"user","content":"Another Claude session sent a message:\n<cross-session-message from=\"uds:/x\" from-name=\"skua-HD\" from-mode=\"default\">\nhello\n</cross-session-message>\n\nThis came from another Claude session."}}"##;
         match parse(bare).as_slice() {
-            [Block::PeerText { from, mode, text }] => {
+            [Block::PeerText {
+                from, mode, text, ..
+            }] => {
                 assert_eq!(
                     (from.as_str(), mode.as_deref(), text.as_str()),
                     ("skua-HD", Some("default"), "hello")
@@ -11036,6 +11065,61 @@ mod tests {
         }
         // An empty list is no target at all, not a crash.
         assert_eq!(tool_target(&serde_json::json!({ "files": [] }), "/w"), "");
+    }
+
+    /// #s355 — a message to another session says who it went TO. Hong read a reply whose summary
+    /// named no one and whose `to` was a socket address. A peer message records the address it
+    /// came from beside its sender's name, and a reply copies that address as its `to`, so the fold
+    /// names the recipient from the messages before it; a `to` that is a name stays the name, an
+    /// address nobody wrote from stays the address, and a sub-agent written to by its id is named
+    /// as one.
+    #[test]
+    fn a_message_to_another_session_names_who_it_went_to() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-11-04T08:00:00.000Z","isMeta":true,"promptSource":"system","turnOrigin":"peer","origin":{"kind":"peer","from":"uds:/tmp/cc-socks/101.sock","verifiedPeerPid":101,"msg_id":"p1","name":"skua-HD","fromMode":"bypass","body":"where does the write-up live?"},"message":{"role":"user","content":"<cross-session-message from=\"uds:/tmp/cc-socks/101.sock\" from-name=\"skua-HD\" from-mode=\"bypass\">\nwhere does the write-up live?\n</cross-session-message>"}}
+{"type":"assistant","timestamp":"2026-11-04T08:00:05.000Z","message":{"content":[{"type":"tool_use","id":"m1","name":"SendMessage","input":{"to":"uds:/tmp/cc-socks/101.sock","summary":"where the write-up lives","message":"In the notes repo.","type":"message"}}]}}
+{"type":"user","timestamp":"2026-11-04T08:00:06.000Z","toolUseResult":{"success":true,"message":"sent"},"message":{"content":[{"type":"tool_result","tool_use_id":"m1","content":"{\"success\":true,\"message\":\"sent\"}"}]}}
+{"type":"assistant","timestamp":"2026-11-04T08:00:07.000Z","message":{"content":[{"type":"tool_use","id":"m2","name":"SendMessage","input":{"to":"petrel-HD","message":"Is the deck pushed?","type":"message"}}]}}
+{"type":"assistant","timestamp":"2026-11-04T08:00:08.000Z","message":{"content":[{"type":"tool_use","id":"m3","name":"SendMessage","input":{"to":"uds:/tmp/cc-socks/202.sock","summary":"a first word","message":"hello","type":"message"}}]}}
+{"type":"assistant","timestamp":"2026-11-04T08:00:09.000Z","message":{"content":[{"type":"tool_use","id":"t1","name":"TaskCreate","input":{"subject":"Ship it","to":"not a recipient"}}]}}
+{"type":"assistant","timestamp":"2026-11-04T08:00:10.000Z","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"Explore","description":"child","prompt":"go"}}]}}
+{"type":"user","timestamp":"2026-11-04T08:00:11.000Z","toolUseResult":{"agentId":"a29193b9ff6741c5e","status":"completed"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"done"}]}}
+{"type":"assistant","timestamp":"2026-11-04T08:00:12.000Z","message":{"content":[{"type":"tool_use","id":"m4","name":"SendMessage","input":{"to":"a29193b9ff6741c5e","summary":"continue from section 12","message":"go on","type":"message"}}]}}
+"##;
+        fn tools(blocks: &[Block], out: &mut Vec<(String, Option<String>)>) {
+            for b in blocks {
+                match b {
+                    Block::ToolUse { name, sent_to, .. } => {
+                        out.push((name.clone(), sent_to.clone()))
+                    }
+                    Block::Thinking { tools: t, .. } => tools(t, out),
+                    _ => {}
+                }
+            }
+        }
+        let blocks = parse(jsonl);
+        assert!(
+            blocks.iter().any(|b| matches!(b, Block::PeerText { addr: Some(a), .. } if a == "uds:/tmp/cc-socks/101.sock")),
+            "the peer message keeps its address"
+        );
+        let mut seen = Vec::new();
+        tools(&blocks, &mut seen);
+        assert_eq!(
+            seen,
+            vec![
+                ("SendMessage".to_string(), Some("skua-HD".to_string())),
+                ("SendMessage".to_string(), Some("petrel-HD".to_string())),
+                (
+                    "SendMessage".to_string(),
+                    Some("uds:/tmp/cc-socks/202.sock".to_string())
+                ),
+                ("TaskCreate".to_string(), None),
+                (
+                    "SendMessage".to_string(),
+                    Some("sub-agent a29193b9 (Explore)".to_string())
+                ),
+            ]
+        );
     }
 
     /// #s83 — a message to another agent carries the words it SENT and is named by its summary

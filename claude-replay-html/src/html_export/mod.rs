@@ -1309,7 +1309,9 @@ impl Emitter<'_> {
             // and the sticky strip list it, labelled with its sender — but its kind is `peer`, so
             // nothing that means "what the person typed" (the `u:` class, the right-hand bubble)
             // claims it. The body is the message alone, rendered as Markdown like a reply.
-            Block::PeerText { from, mode, text } => {
+            Block::PeerText {
+                from, mode, text, ..
+            } => {
                 self.turn += 1;
                 let id = format!("t{}", self.turn);
                 self.turns
@@ -1618,6 +1620,7 @@ impl Emitter<'_> {
                 asked,
                 delivered,
                 sent,
+                sent_to,
                 saved_output,
                 ..
             } => {
@@ -1637,7 +1640,14 @@ impl Emitter<'_> {
                     o.insert("run".into(), json!(run));
                 }
                 head.insert("name".into(), json!(display_name(name)));
-                head.insert("target".into(), json!(target));
+                // #s355: a message to another session says who it went to, ahead of its summary.
+                match sent_to.as_deref() {
+                    Some(to) => head.insert(
+                        "target".into(),
+                        json!(crate::present::send_head(target, to)),
+                    ),
+                    None => head.insert("target".into(), json!(target)),
+                };
                 // #237: an AskUserQuestion is an interaction too — the same card Codex's
                 // `request_user_input` gets, rather than a bare head whose first question was
                 // lifted into the target and whose options were dropped.
@@ -3591,6 +3601,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                sent_to: None,
                 saved_output: None,
             },
             Block::UserText("second question".into()),
@@ -3690,6 +3701,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let blocks = vec![
@@ -3795,6 +3807,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         }
     }
@@ -4466,6 +4479,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         }
     }
@@ -4561,6 +4575,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         }
     }
@@ -4589,6 +4604,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let out = stream(
@@ -4640,6 +4656,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let out = stream(
@@ -5320,6 +5337,7 @@ mod tests {
             asked: Some(Box::new(asked.clone())),
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let prose = format!(
@@ -5415,6 +5433,7 @@ mod tests {
                 asked: a.map(Box::new),
                 delivered: Vec::new(),
                 sent: None,
+                sent_to: None,
                 saved_output: None,
             };
             stream(&[block], &FoldPolicy::none())[0]["head"]["interaction"].clone()
@@ -5488,6 +5507,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let out = stream(&[block], &FoldPolicy::none());
@@ -5522,6 +5542,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let out = stream_from(std::slice::from_ref(&bash), &FoldPolicy::none(), None);
@@ -5585,6 +5606,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: saved.map(String::from),
         };
         let out = stream_from(
@@ -5652,6 +5674,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let run = Block::Thinking {
@@ -5730,6 +5753,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                sent_to: None,
                 saved_output: None,
             },
             _ => unreachable!(),
@@ -5815,6 +5839,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let out = stream(&[block], &FoldPolicy::none());
@@ -5936,6 +5961,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let out = stream(&[block], &FoldPolicy::none());
@@ -5998,6 +6024,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                sent_to: None,
                 saved_output: None,
             };
             stream(&[block], &FoldPolicy::none())[0]["head"]["chips"].clone()
@@ -6130,6 +6157,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                sent_to: None,
                 saved_output: None,
             },
             bash("ls -la", "out"),
@@ -6254,6 +6282,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         }];
         let out = stream(&blocks, &FoldPolicy::none());
@@ -6282,12 +6311,52 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         }];
         assert_eq!(
             stream(&odd, &FoldPolicy::none())[0]["head"]["path"],
             json!("/repo/notes +2"),
             "another tool's target is a path in full, spaces and all"
+        );
+    }
+
+    /// #s355: a SendMessage head says who the message went to, ahead of its summary; with no
+    /// summary the recipient alone; an address the fold could not name, shortened.
+    #[test]
+    fn a_message_card_head_names_who_it_went_to() {
+        let msg = |target: &str, to: &str| Block::ToolUse {
+            name: "SendMessage".into(),
+            target: target.into(),
+            diffs: vec![],
+            output: None,
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+            sent: Some("In the notes repo.".into()),
+            sent_to: Some(to.into()),
+            saved_output: None,
+        };
+        let out = stream(
+            &[
+                msg("where the write-up lives", "skua-HD"),
+                msg("petrel-HD", "petrel-HD"),
+                msg("a first word", "uds:/tmp/cc-socks/202.sock"),
+            ],
+            &FoldPolicy::none(),
+        );
+        let heads: Vec<_> = out.iter().map(|r| r["head"]["target"].clone()).collect();
+        assert_eq!(
+            heads,
+            [
+                json!("→ skua-HD · where the write-up lives"),
+                json!("→ petrel-HD"),
+                json!("→ local session 202 · a first word"),
+            ]
         );
     }
 
@@ -6309,6 +6378,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: Some("skua-HD: both are done.\n\n- `s244` closed\n- the review is posted".into()),
+            sent_to: None,
             saved_output: None,
         };
         let out = stream(
@@ -6366,6 +6436,7 @@ mod tests {
             asked: None,
             delivered: delivered.iter().map(|d| d.to_string()).collect(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let out = stream(
@@ -6425,6 +6496,7 @@ mod tests {
             asked: None,
             delivered: vec!["/films/tour.mp4".into(), "/films/tour-zh.mp4".into()],
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let stamps = |b: Block| -> Vec<(String, String)> {
@@ -6475,6 +6547,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let out = stream(&[read], &FoldPolicy::none());
@@ -6503,6 +6576,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                sent_to: None,
                 saved_output: None,
             },
             bash("ls -la", "out"),
@@ -6535,6 +6609,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         // reveal = false (the `--dump-html` shape): the header still names the file

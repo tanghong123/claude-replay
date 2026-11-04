@@ -740,13 +740,18 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
             execution,
             published,
             sent,
+            sent_to,
             ..
         } => {
             // #s83: a message to another agent is the words it sent, then the client's delivery
-            // receipt, dim — the receipt alone used to be all the call showed.
+            // receipt, dim — the receipt alone used to be all the call showed. #s355: its head says
+            // who it went to, ahead of the summary.
             if let Some(text) = sent.as_deref() {
+                let head = sent_to
+                    .as_deref()
+                    .map(|to| crate::present::send_head(target, to));
                 out.push(with_execution(
-                    tool_header(name, target, None),
+                    tool_header(name, head.as_deref().unwrap_or(target), None),
                     execution.as_ref(),
                     None,
                 ));
@@ -1271,16 +1276,23 @@ fn render_header(b: &Block) -> Line<'static> {
             name,
             target,
             execution,
+            sent_to,
             ..
-        } => with_execution(
-            Line::from(vec![
-                Span::styled("⏺ ", theme::tool()),
-                Span::styled(display_name(name).to_string(), theme::tool()),
-                Span::raw(format!("({target})")),
-            ]),
-            execution.as_ref(),
-            None,
-        ),
+        } => {
+            // #s355: a message to another session says who it went to, folded or not.
+            let shown = sent_to
+                .as_deref()
+                .map(|to| crate::present::send_head(target, to));
+            with_execution(
+                Line::from(vec![
+                    Span::styled("⏺ ", theme::tool()),
+                    Span::styled(display_name(name).to_string(), theme::tool()),
+                    Span::raw(format!("({})", shown.as_deref().unwrap_or(target))),
+                ]),
+                execution.as_ref(),
+                None,
+            )
+        }
         Block::ToolResult(t) => Line::styled(
             format!("  ⎿ {}", t.lines().next().unwrap_or("")),
             theme::result(),
@@ -1649,6 +1661,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: Some("skua-HD: both are done.\nThe review is posted.".into()),
+            sent_to: None,
             saved_output: None,
         };
         let lines = render_one(&b, 120, Hl::Styled);
@@ -1669,6 +1682,22 @@ mod tests {
         );
         assert_eq!(t.len(), 4, "{t:?}");
         assert_eq!(body_len(&b), 3, "the lines under the header");
+        // #s355: the head says who it went to, ahead of the summary.
+        let mut to = b.clone();
+        if let Block::ToolUse { sent_to, .. } = &mut to {
+            *sent_to = Some("skua-HD".into());
+        }
+        let t = texts(&render_one(&to, 120, Hl::Styled));
+        assert!(
+            t[0].contains("SendMessage(→ skua-HD · Reply to skua-HD: both done)"),
+            "{t:?}"
+        );
+        let folded = texts(&render_collapsed(&to));
+        assert!(
+            folded[0].contains("SendMessage(→ skua-HD · Reply to skua-HD: both done)")
+                && folded[1].contains("3 folded"),
+            "folded, the same head and the true count: {folded:?}"
+        );
     }
 
     /// A multi-line shell command keeps its line breaks in the `⏺ Bash(...)`
@@ -1688,6 +1717,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let lines = render_one(&b, 200, Hl::Styled);
@@ -1784,6 +1814,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
@@ -1836,6 +1867,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let e = texts(&render_one(&block, 100, Hl::Styled));
@@ -1876,6 +1908,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
 
@@ -1970,6 +2003,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let run = Block::Thinking {
@@ -2016,6 +2050,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let failed = texts(&render_one(
@@ -2071,6 +2106,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
@@ -2126,6 +2162,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);
@@ -2179,6 +2216,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         }
     }
@@ -2211,6 +2249,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let rt = texts(&render_collapsed(&read)).join("\n");
@@ -2354,6 +2393,7 @@ mod tests {
             from: "skua-HD".into(),
             mode: Some("bypass".into()),
             text: "the release is out\n\n- pin it".into(),
+            addr: None,
         };
         let lines = render_one(&peer, 80, Hl::Styled);
         let t = texts(&lines);
@@ -2701,6 +2741,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                sent_to: None,
                 saved_output: None,
             },
             Block::ToolUse {
@@ -2716,6 +2757,7 @@ mod tests {
                 asked: None,
                 delivered: Vec::new(),
                 sent: None,
+                sent_to: None,
                 saved_output: None,
             },
         ];
@@ -2761,6 +2803,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let lines = render_one(&block, 80, Hl::Styled);

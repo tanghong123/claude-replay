@@ -229,6 +229,7 @@ pub fn corpus_for(kind: BlockKind) -> Vec<Block> {
             mode: Some("bypass".into()),
             text: "skua-HD here: the release is out.\n\n- pin it with `vendor.sh`\n- then re-run the gate"
                 .into(),
+            addr: None,
         }],
         Queue => vec![Block::QueueEvent {
             text: "and re-run the gate when that lands".into(),
@@ -454,6 +455,7 @@ fn tool_use(
         asked: None,
         delivered: Vec::new(),
         sent: None,
+        sent_to: None,
         saved_output: None,
     }
 }

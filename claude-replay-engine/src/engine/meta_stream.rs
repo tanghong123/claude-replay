@@ -327,11 +327,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// `isAbortedMidStream`) is an `AssistantCutOff` block, drawn with a "cut off" line. A v67 stream
 /// holds it as plain `AssistantText`.
 ///
+/// v69: #s355 — a `SendMessage` call carries who it went to (`sent_to`), its `to` named by the
+/// sender a peer message from that address arrived under, and a peer message its address
+/// (`addr`); a record carries the committed senders (`peer_names`). A v68 stream holds neither.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 68;
+pub const FOLD_VERSION: u16 = 69;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
@@ -408,6 +412,11 @@ pub struct MetaRecord {
     /// resumed fold still takes a later copy of one as text.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inbox_ids: Vec<String>,
+    /// The sessions that wrote to this one in this drain (#s355): each committed peer message's
+    /// address and the name it arrived under, in order, so a resumed fold still names the
+    /// recipient of a reply to one of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peer_names: Vec<(String, String)>,
 
     // ── delta, gauges: last present value wins ──
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -506,6 +515,9 @@ pub struct MaterializedMeta {
     /// The ids of the relayed messages from the person already committed (#s272).
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub inbox_ids: std::collections::BTreeSet<String>,
+    /// The committed senders by address (#s355), the latest name winning.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub peer_names: BTreeMap<String, String>,
 }
 
 impl MaterializedMeta {
@@ -574,6 +586,9 @@ impl MaterializedMeta {
             *self.extra.entry(k.clone()).or_default() += n;
         }
         self.inbox_ids.extend(r.inbox_ids.iter().cloned());
+        for (addr, name) in &r.peer_names {
+            self.peer_names.insert(addr.clone(), name.clone());
+        }
         for op in &r.task_ops {
             self.tasks.apply_recorded(op);
         }

@@ -330,11 +330,15 @@ pub enum Block {
     /// the person type" (the `u:` search class, "your turns") must leave it out. `text` is the
     /// message alone, Markdown, without the client's wrapper or the instructions it adds for the
     /// model; `from` is the sending session's name as the client recorded it, and `mode` its
-    /// permission mode when the record says (`bypass`, …).
+    /// permission mode when the record says (`bypass`, …). `addr` is the address it came from
+    /// (`uds:/tmp/cc-socks/<pid>.sock`, `bridge:session_…`), which a reply names as its `to`
+    /// (#s355): the fold learns the sender's name for that address from here.
     PeerText {
         from: String,
         mode: Option<String>,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        addr: Option<String>,
     },
     /// A mid-turn prompt the human submitted while the agent was busy — recorded as
     /// a `queue-operation` `enqueue`, shown as a dim `⧗ queued: …` marker at submit
@@ -433,6 +437,13 @@ pub enum Block {
         /// the message itself was nowhere on the card. `None` for every other tool.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sent: Option<String>,
+        /// Who that message went TO (#s355): the call's `to` as written, which the fold replaces
+        /// with the name a peer message from that address arrived under, so a reply to
+        /// `uds:/tmp/cc-socks/<pid>.sock` reads as going to `hd-agentdev`. A `to` that is already
+        /// a name stays as it is; an address no peer message named stays the address. `None` for
+        /// every other tool.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sent_to: Option<String>,
         /// Where the client saved the WHOLE output of a Bash call whose transcript keeps only its
         /// first part (#s114, #s115: Claude Code's `persistedOutputPath`, Qwenwork's
         /// `persistedOutput.path`), as recorded: absolute. `output` opens with a notice saying so;
@@ -1102,6 +1113,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let blocks = vec![
@@ -1145,6 +1157,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let hunk = Hunk {
@@ -1222,6 +1235,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let hunk = Hunk {
@@ -1265,6 +1279,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let img = || {
@@ -1376,6 +1391,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         assert_eq!(fold_key(&mk("Read")), "read");
@@ -1415,6 +1431,7 @@ mod tests {
             asked: None,
             delivered: Vec::new(),
             sent: None,
+            sent_to: None,
             saved_output: None,
         };
         let bare = Block::Thinking {
