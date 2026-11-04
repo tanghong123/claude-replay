@@ -6379,6 +6379,268 @@ fn the_app_shell_panes_open_on_what_is_live() {
     drop(monitor);
 }
 
+/// #s356: a session whose two sub-agents have both finished and whose tasks are all completed
+/// (two titled, one with no title), so each pane's own filter empties it. Served on `port`, the
+/// session open with both drawers open. Returns the monitor, the browser, the tab and the id.
+fn emptied_panes_world(
+    port: u16,
+    case: &str,
+    phone: Option<(u32, u32)>,
+) -> (
+    Monitor,
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+    &'static str,
+) {
+    let sid = "eeeeeeee-0000-4000-8000-000000003560";
+    let base = base(case);
+    let stores = Stores::new(&base);
+    let mut transcript = harness::long_session(12, harness::Shape::default());
+    for (n, (call, child)) in [("call_a", "aOne-s356"), ("call_b", "aTwo-s356")]
+        .into_iter()
+        .enumerate()
+    {
+        let s = 13 + 3 * n as u32;
+        transcript += &harness::agent_spawn(call, "Explore", s);
+        transcript += &harness::agent_result(call, child, "Explore", s + 1);
+        transcript += &harness::agent_finished(child, "look around", s + 2);
+    }
+    transcript += &harness::long_session(4, harness::Shape::default());
+    stores.claude_session(sid, &transcript);
+    for child in ["aOne-s356", "aTwo-s356"] {
+        stores.claude_child(
+            sid,
+            child,
+            &harness::long_session(3, harness::Shape::default()),
+        );
+    }
+    stores.claude_tasks(
+        sid,
+        &[
+            ("1", "one, done", "completed"),
+            ("2", "two, done", "completed"),
+            ("3", "", "completed"),
+        ],
+    );
+    let m = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let (browser, tab) = harness::chrome_tab();
+    match phone {
+        Some((w, h)) => harness::phone(&tab, w, h),
+        // Tall enough that both open panes' lines are on screen: at 900 the Agents pane's sat
+        // below the fold, under the open Tasks pane (measured, y 875 of 757).
+        None => harness::resize(&tab, 1400.0, 1300.0),
+    }
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
+    if phone.is_none() {
+        harness::eval(&tab, "for (const key of ['tasks', 'agents']) { var c = document.querySelector('[data-nav-card=\"' + key + '\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"' + key + '\"]').click(); } 'ok'");
+        // A drawer that is still sliding moves the control between where a click is aimed and
+        // where it lands (measured: the click met the empty line's box, not the control).
+        harness::until_drawers_settle(&tab);
+    }
+    (m, browser, tab, sid)
+}
+
+/// With `CR_S356_SCREENSHOT_DIR` set, the page as it stands in light and in dark, for a person to
+/// look at (#s356): `emptied-<name>-light.png` and `-dark.png`. The theme is put back after.
+fn emptied_pane_shots(tab: &headless_chrome::Tab, name: &str) {
+    use headless_chrome::protocol::cdp::Page;
+    let Some(dir) = std::env::var_os("CR_S356_SCREENSHOT_DIR") else {
+        return;
+    };
+    for theme in ["light", "dark"] {
+        harness::eval(
+            tab,
+            &format!(
+                "document.documentElement.dataset.theme = '{}'; 'ok'",
+                if theme == "dark" { "dark" } else { "" }
+            ),
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        let png = tab
+            .capture_screenshot(Page::CaptureScreenshotFormatOption::Png, None, None, true)
+            .unwrap();
+        std::fs::write(
+            std::path::Path::new(&dir).join(format!("emptied-{name}-{theme}.png")),
+            png,
+        )
+        .unwrap();
+    }
+    harness::eval(tab, "document.documentElement.dataset.theme = ''; 'ok'");
+}
+
+/// #s356, the owner: "the sub agent pane is empty, it says 149 agents finished and hidden, is there
+/// way to show those agents?" The way was the Outline menu's row, which the reader could not find
+/// from the pane. Now the line each pane's filter empties carries a control that undoes it: it
+/// clears the SAME remembered filter the menu row does, so the menu reads the change, and a hint
+/// names that row so the reader can put the filter back. The task with no title stays hidden
+/// (#217) whatever is chosen. Red before #s356: there is no control to press.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn an_emptied_outline_pane_offers_to_show_what_its_filter_hides() {
+    let _serial = serial();
+    let (m, _b, tab, _sid) = emptied_panes_world(2757, "emptied-panes", None);
+    harness::until(
+        &tab,
+        "!!document.querySelector('#navigatorAgents [data-show-filtered=\"agents\"]') && !!document.querySelector('#navigatorWork [data-show-filtered=\"tasks\"]')",
+        "both emptied panes to carry their control",
+        Duration::from_secs(30),
+        "document.getElementById('navigatorAgents').innerText.slice(0, 200) + ' | ' + document.getElementById('navigatorWork').innerText.slice(0, 200)",
+    );
+    let menu = "(function(){ var t = document.getElementById('navigatorPanesTrigger'); t.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true })); var q = function (s) { var e = document.querySelector('#navigatorPanesMenu ' + s); return e ? e.getAttribute('aria-checked') : null; }; var out = { agents: q('[data-live-only=\"agents\"]'), running: q('[data-task-group=\"in_progress\"]'), pending: q('[data-task-group=\"pending\"]'), completed: q('[data-task-group=\"completed\"]') }; t.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true })); return out; })()";
+    let pane = "(function(){ var a = document.querySelector('#navigatorAgents .activity-empty'), w = document.querySelector('#navigatorWork .activity-empty'); var hint = function (e) { var h = e && e.querySelector('.activity-empty-hint'); return h ? h.textContent : ''; }; return { agentsLine: a ? a.querySelector('span').textContent : '', agentsHint: hint(a), tasksLine: w ? w.querySelector('span').textContent : '', tasksHint: hint(w), agents: [...document.querySelectorAll('#navigatorAgents .outline-agent-copy strong')].map(function (e) { return e.textContent.trim(); }), tasks: [...document.querySelectorAll('#navigatorWork .work-task strong')].map(function (e) { return e.textContent.trim(); }), liveOnly: localStorage.getItem('am-prod-live-only'), groups: JSON.parse(localStorage.getItem('am-prod-task-groups') || '[]').length }; })()";
+    let before = harness::probe(&tab, pane);
+    assert_eq!(
+        before["agentsLine"], "None running — 2 finished agents hidden",
+        "the sentence is as it was, the control after it: {before}"
+    );
+    assert!(
+        before["agentsHint"]
+            .as_str()
+            .is_some_and(|h| h.contains("Active only") && h.contains("Outline menu")),
+        "…and the hint names the menu row that puts it back: {before}"
+    );
+    assert_eq!(
+        before["tasksLine"], "Nothing live — 3 finished tasks hidden",
+        "{before}"
+    );
+    assert!(
+        before["tasksHint"]
+            .as_str()
+            .is_some_and(|h| h.contains("Outline menu")),
+        "{before}"
+    );
+    emptied_pane_shots(&tab, "desktop");
+    let seen = read_menu(&tab, menu);
+    assert_eq!(
+        seen["agents"], "true",
+        "the menu row starts checked: {seen}"
+    );
+
+    // Agents. The control must be what a pointer at its centre meets; then it is pressed by
+    // script, as the other desktop cases press theirs (a raw CDP click in this resized window met
+    // `<html>`, measured). The phone case below taps it with a finger.
+    press_hittable(&tab, "#navigatorAgents [data-show-filtered=\"agents\"]");
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorAgents .outline-agent-copy').length === 2",
+        "the finished agents listed",
+        Duration::from_secs(10),
+        "document.getElementById('navigatorAgents').innerText.slice(0, 200)",
+    );
+    let after = harness::probe(&tab, pane);
+    assert!(
+        !after["liveOnly"].as_str().unwrap_or("").contains("agents"),
+        "the remembered filter is the one cleared: {after}"
+    );
+    let seen = read_menu(&tab, menu);
+    assert_eq!(
+        seen["agents"], "false",
+        "…so the menu row reads unchecked: {seen}"
+    );
+
+    // Tasks: every state shown, the menu's rows checked, the untitled one still hidden (#217).
+    press_hittable(&tab, "#navigatorWork [data-show-filtered=\"tasks\"]");
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 2",
+        "the finished tasks listed",
+        Duration::from_secs(10),
+        "document.getElementById('navigatorWork').innerText.slice(0, 200)",
+    );
+    let after = harness::probe(&tab, pane);
+    assert_eq!(
+        after["tasks"],
+        serde_json::json!(["one, done", "two, done"]),
+        "the titled tasks, and not the one with no title: {after}"
+    );
+    assert_eq!(
+        after["groups"], 3,
+        "every state remembered as shown: {after}"
+    );
+    let seen = read_menu(&tab, menu);
+    assert!(
+        seen["running"] == "true" && seen["pending"] == "true" && seen["completed"] == "true",
+        "…and every state's menu row checked: {seen}"
+    );
+    drop(m);
+}
+
+/// Read the Outline menu's rows with `js`, which opens it on the trigger's `pointerenter` and
+/// leaves it on `pointerleave` (#s356); then wait for it to close, 120 ms on, so it is not left
+/// lying over the pane the next step presses.
+fn read_menu(tab: &headless_chrome::Tab, js: &str) -> serde_json::Value {
+    let seen = harness::probe(tab, js);
+    harness::until(
+        tab,
+        "!document.getElementById('navigatorPanesMenu').classList.contains('open')",
+        "the Outline menu to close again",
+        Duration::from_secs(5),
+        "document.getElementById('navigatorPanesMenu').className",
+    );
+    seen
+}
+
+/// Press the control `sel` names once it is what a pointer at its centre meets (#s356): the
+/// hit test is the real check, the press is a script's `click()`.
+fn press_hittable(tab: &headless_chrome::Tab, sel: &str) {
+    let js = format!("(function(){{ var ok = {PHONE_HITTABLE}; var b = document.querySelector('{sel}'); if (!ok(b)) {{ var r = b ? b.getBoundingClientRect() : null; var h = r && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return 'not on top: ' + JSON.stringify(r) + ' meets ' + (h ? (h.id || String(h.className).split(' ')[0] || h.tagName) : 'nothing') + ' in ' + innerWidth + 'x' + innerHeight; }} b.click(); return 'pressed'; }})()");
+    let seen = harness::eval(tab, &js);
+    assert_eq!(
+        seen,
+        serde_json::json!("pressed"),
+        "{sel} is what a pointer at its centre meets"
+    );
+}
+
+/// #s356 on a phone, where the Agents sheet is the only way to the pane and there is no Outline
+/// menu: the control is a finger-sized target that is what the finger meets, it names no menu, and
+/// a tap lists the finished agents in the sheet, which stays open. Agents only: a phone's Tasks
+/// pane shows every state already (#319), so its filter never empties it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_s_emptied_agents_sheet_offers_to_show_the_finished_agents() {
+    let _serial = serial();
+    let (m, _b, tab, _sid) = emptied_panes_world(2758, "emptied-panes-phone", Some((440, 956)));
+    phone_tap(&tab, "#phonePane-agents");
+    harness::until(
+        &tab,
+        "!document.getElementById('phonePaneMenu').hidden && !!document.querySelector('#phonePaneMenu [data-show-filtered=\"agents\"]')",
+        "the Agents sheet with the control",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
+    );
+    let js = format!("(function(){{ var ok = {PHONE_HITTABLE}; var b = document.querySelector('#phonePaneMenu [data-show-filtered=\"agents\"]'); var r = b.getBoundingClientRect(); return {{ w: r.width, h: r.height, hit: ok(b), hint: !!document.querySelector('#phonePaneMenu .activity-empty-hint') }}; }})()");
+    let seen = harness::probe(&tab, &js);
+    assert!(
+        seen["h"].as_f64().unwrap_or(0.0) >= 44.0 && seen["w"].as_f64().unwrap_or(0.0) >= 44.0,
+        "a 44px target: {seen}"
+    );
+    assert_eq!(
+        seen["hit"], true,
+        "…that is what a finger at its centre meets: {seen}"
+    );
+    assert_eq!(
+        seen["hint"], false,
+        "…naming no menu a phone does not have: {seen}"
+    );
+    emptied_pane_shots(&tab, "phone");
+    let (x, y) = phone_point(
+        &tab,
+        "(function(){ var r = document.querySelector('#phonePaneMenu [data-show-filtered=\"agents\"]').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()",
+    );
+    harness::finger_tap(&tab, x, y);
+    harness::until(
+        &tab,
+        "!document.getElementById('phonePaneMenu').hidden && document.querySelectorAll('#phonePaneMenu .outline-agent-copy').length === 2",
+        "the finished agents listed in the sheet, still open",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').hidden + ' ' + document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
+    );
+    drop(m);
+}
+
 /// #203: the app shell's tab has the monitor's icon. The extracted shell declares no
 /// `<link rel="icon">` (the demo is hand-written and stays byte-identical), so when the app
 /// shell became the default the browser's automatic `/favicon.ico` request 404'd and the tab

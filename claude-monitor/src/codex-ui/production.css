@@ -873,6 +873,20 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   content: ""; position: absolute; left: 4px; top: 1.5px; width: 3.5px; height: 7px;
   border: solid var(--primary-soft); border-width: 0 1.6px 1.6px 0; transform: rotate(42deg);
 }
+/* #s356: the line a pane's filter emptied carries the control that undoes it, on its own row
+   under the sentence, and below it the menu row that puts the filter back. Visible at rest: a
+   reader looking at an empty pane is exactly the reader who needs it. */
+.activity-empty .activity-empty-show {
+  display: flex; align-items: center; justify-content: center; margin: 10px auto 0;
+  padding: 4px 14px; border: 1px solid color-mix(in srgb, var(--primary) 26%, var(--line));
+  border-radius: 999px; background: var(--primary-soft); color: var(--primary);
+  font: inherit; font-size: 12px; font-weight: 570; cursor: pointer;
+}
+.activity-empty .activity-empty-show:hover { border-color: color-mix(in srgb, var(--primary) 46%, var(--line)); }
+.activity-empty .activity-empty-show:focus-visible { outline: 2px solid color-mix(in srgb, var(--primary) 48%, transparent); outline-offset: 2px; }
+.activity-empty .activity-empty-hint { display: block; margin-top: 8px; color: var(--faint); font-size: 10.5px; }
+@media(hover:none){#app .activity-empty .activity-empty-show:hover{border-color:color-mix(in srgb,var(--primary) 26%,var(--line))}}
+@media(max-width:760px),(pointer:coarse) and (max-height:500px){.activity-empty .activity-empty-show{min-height:44px;min-width:44px;padding:0 20px;font-size:15px}}
 /* The positioning is spelled out rather than inherited: the demo's own rule is
    `.header-search-cluster>.navigator-options`, a CHILD selector this popover cannot match from
    its own cluster. Without these it laid out as a static flex item — measured at top -40px,

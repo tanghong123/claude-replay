@@ -1734,8 +1734,12 @@ function renderNavigator() {
   // An empty pane must never look like missing data: say that the filter is what emptied it, and
   // how much it is holding, because the reader cannot see what is not there.
   const untitledNote = untitledTasks ? ` · ${untitledTasks} with no recorded title` : "";
+  // #s356, the owner: "the sub agent pane is empty, it says 149 agents finished and hidden, is
+  // there way to show those agents?" The way was the Outline menu's row, which the reader could not
+  // find from the pane they were looking at. So the line the filter empties carries the control
+  // that undoes it, and says where the setting lives so they can put it back.
   const noTasks = liveTasksOnly && hiddenTasks
-    ? `<div class="activity-empty">Nothing live — ${hiddenTasks} finished ${hiddenTasks === 1 ? "task" : "tasks"} hidden${escapeText(untitledNote)}</div>`
+    ? `<div class="activity-empty"><span>Nothing live — ${hiddenTasks} finished ${hiddenTasks === 1 ? "task" : "tasks"} hidden${escapeText(untitledNote)}</span>${showFilteredControl("tasks", hiddenTasks)}</div>`
     : untitledTasks
       ? `<div class="activity-empty">No session tasks${escapeText(untitledNote)}</div>`
       : '<div class="activity-empty">No session tasks</div>';
@@ -1754,7 +1758,7 @@ function renderNavigator() {
   const shownWorkers = liveAgentsOnly ? workers.filter(workerRunning) : workers;
   const hiddenAgents = allAgents - shownAgents.length - shownWorkers.length;
   const noAgents = liveAgentsOnly && hiddenAgents
-    ? `<div class="activity-empty">None running — ${hiddenAgents} finished ${hiddenAgents === 1 ? "agent" : "agents"} hidden</div>`
+    ? `<div class="activity-empty"><span>None running — ${hiddenAgents} finished ${hiddenAgents === 1 ? "agent" : "agents"} hidden</span>${showFilteredControl("agents", hiddenAgents)}</div>`
     : '<div class="activity-empty">No direct children</div>';
   byId("navigatorAgents").innerHTML = shownAgents.map(agent => {
     const target = recordState.agentTargets.get(String(agent.id));
@@ -1777,6 +1781,19 @@ function renderNavigator() {
   stackOutlineHeads();
   document.querySelector(".workspace").classList.toggle("navigator-off", !uiState.navigatorOpen);
   mobileShell?.counts(turnCount, counted.length, allAgents);
+}
+/** The control an emptied pane carries (#s356): it clears the same remembered filter the Outline
+ *  menu's row does, so the menu and the pane cannot disagree. The hint names that row so the reader
+ *  can put the filter back — on a desktop only: a phone has no Outline menu, and its Tasks pane shows
+ *  every state already (#319), so there only Agents ever offers this, one way. */
+function showFilteredControl(pane, hidden) {
+  const what = pane === "agents" ? `${hidden} finished ${hidden === 1 ? "agent" : "agents"}` : `${hidden} finished ${hidden === 1 ? "task" : "tasks"}`;
+  const hint = matchMedia(PHONE_QUERY).matches
+    ? ""
+    : pane === "agents"
+      ? "Active only, in the Outline menu, hides them again"
+      : "The Outline menu's task states hide them again";
+  return `<button class="activity-empty-show" type="button" data-show-filtered="${pane}" aria-label="Show the ${escapeText(what)}">Show them</button>${hint ? `<small class="activity-empty-hint">${escapeText(hint)}</small>` : ""}`;
 }
 const outlineSummary = (active, done, total) => !total ? "0" : `${active ? `<span class="outline-stat-item active"><i class="outline-stat-dot"></i>${active} active</span>` : ""}<span class="outline-stat-item done"><i class="outline-stat-dot"></i>${done}/${total} done</span>`;
 // The info pane (#67, #68): only what the shell does not already show — the title, the agent and
@@ -1897,6 +1914,17 @@ const navigatorClick = event => {
   const open = event.target.closest("[data-task-open]"); if (open) { openTaskPopover(Number(open.dataset.taskOpen), open); return; }
   const task = event.target.closest("[data-task-record]"); if (task) { closeTaskPopover(); jumpOrFetch(Number(task.dataset.taskRecord), "task"); return; }
   const agent = event.target.closest("[data-agent-record]"); if (agent) { jumpOrFetch(Number(agent.dataset.agentRecord), "agent"); return; }
+  // #s356: an emptied pane's "Show them" clears the filter the Outline menu's row holds — Agents'
+  // Active only, or every task state shown — and the menu, if open, redraws to say so.
+  const showFiltered = event.target.closest("[data-show-filtered]");
+  if (showFiltered) {
+    if (showFiltered.dataset.showFiltered === "agents") uiState.liveOnly.delete("agents");
+    else for (const g of TASK_GROUP_ROWS) uiState.taskGroupsShown.add(g.key);
+    persist();
+    renderNavigator();
+    renderPanesMenu();
+    return;
+  }
   const child = event.target.closest("[data-child-outline]"); if (child) { descendTo(child.dataset.childOutline); return; }
   const worker = event.target.closest("[data-worker-session]"); if (worker) { descendTo(worker.dataset.workerSession); return; }
   // A card's head opens and shuts ITS drawer (#74, #139) — the whole head, and nothing else
