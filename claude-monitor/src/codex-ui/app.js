@@ -1760,11 +1760,12 @@ function renderNavigator() {
   const noAgents = liveAgentsOnly && hiddenAgents
     ? `<div class="activity-empty"><span>None running — ${hiddenAgents} finished ${hiddenAgents === 1 ? "agent" : "agents"} hidden</span>${showFilteredControl("agents", hiddenAgents)}</div>`
     : '<div class="activity-empty">No direct children</div>';
-  byId("navigatorAgents").innerHTML = shownAgents.map(agent => {
+  const agentRows = shownAgents.map(agent => {
     const target = recordState.agentTargets.get(String(agent.id));
     const spawn = target == null ? "" : `<button class="outline-agent-spawn" type="button" data-agent-record="${target}" title="Jump to where the parent launched this agent" aria-label="Jump to where the parent launched ${escapeText(agent.title || agent.id)}"><span aria-hidden="true">↳</span></button>`;
     return `<div class="outline-agent-row"><button class="outline-agent" type="button" data-child-outline="${escapeText(agent.id)}" title="Open the sub-agent's transcript"><span class="agent-state ${agent.running ? "running" : "completed"}"></span><span class="outline-agent-copy"><strong>${escapeText(agent.title || agent.description || agent.id)}</strong><small>${escapeText(agent.type || agent.agent_type || "agent")}</small></span><span class="outline-agent-tail"></span></button>${spawn}</div>`;
-  }).concat(shownWorkers.map(workerRow)).join("") || noAgents;
+  }).concat(shownWorkers.map(workerRow)).join("");
+  byId("navigatorAgents").innerHTML = agentRows ? phoneAgentsFilter(liveAgentsOnly, hiddenAgents, allAgents - activeAgents) + agentRows : noAgents;
   // What the filter is holding back, for the menu row that controls it to say so (#215). The head
   // reads "25 active · 253/308 done" either way, so without this the reader has no way to tell a
   // pane that is filtered from a pane that is simply short.
@@ -1784,8 +1785,8 @@ function renderNavigator() {
 }
 /** The control an emptied pane carries (#s356): it clears the same remembered filter the Outline
  *  menu's row does, so the menu and the pane cannot disagree. The hint names that row so the reader
- *  can put the filter back — on a desktop only: a phone has no Outline menu, and its Tasks pane shows
- *  every state already (#319), so there only Agents ever offers this, one way. */
+ *  can put the filter back — on a desktop only: a phone has no Outline menu (its way back is
+ *  `phoneAgentsFilter`), and its Tasks pane shows every state already (#319). */
 function showFilteredControl(pane, hidden) {
   const what = pane === "agents" ? `${hidden} finished ${hidden === 1 ? "agent" : "agents"}` : `${hidden} finished ${hidden === 1 ? "task" : "tasks"}`;
   const hint = matchMedia(PHONE_QUERY).matches
@@ -1794,6 +1795,17 @@ function showFilteredControl(pane, hidden) {
       ? "Active only, in the Outline menu, hides them again"
       : "The Outline menu's task states hide them again";
   return `<button class="activity-empty-show" type="button" data-show-filtered="${pane}" aria-label="Show the ${escapeText(what)}">Show them</button>${hint ? `<small class="activity-empty-hint">${escapeText(hint)}</small>` : ""}`;
+}
+/** A phone's way to the Agents filter (#s358, Hong's choice on #s357): it has no Outline menu, so
+ *  the list carries a row for whichever end applies, on the same remembered filter. Hide finished
+ *  while the filter is off; while it is on, Show them, because with an agent still running the list
+ *  is not empty and the emptied pane's control is not there. At the TOP of the list, which can run to
+ *  149 agents. Every row here is a phone's alone: a desktop keeps the menu. */
+function phoneAgentsFilter(liveOnly, hidden, finished) {
+  if (!matchMedia(PHONE_QUERY).matches) return "";
+  const what = n => `${n} finished ${n === 1 ? "agent" : "agents"}`;
+  if (liveOnly) return hidden ? `<button class="agents-filter-row" type="button" data-show-filtered="agents">Show ${what(hidden)}</button>` : "";
+  return finished ? `<button class="agents-filter-row" type="button" data-hide-finished="agents" aria-label="Hide the ${what(finished)}">Hide finished agents</button>` : "";
 }
 const outlineSummary = (active, done, total) => !total ? "0" : `${active ? `<span class="outline-stat-item active"><i class="outline-stat-dot"></i>${active} active</span>` : ""}<span class="outline-stat-item done"><i class="outline-stat-dot"></i>${done}/${total} done</span>`;
 // The info pane (#67, #68): only what the shell does not already show — the title, the agent and
@@ -1920,6 +1932,14 @@ const navigatorClick = event => {
   if (showFiltered) {
     if (showFiltered.dataset.showFiltered === "agents") uiState.liveOnly.delete("agents");
     else for (const g of TASK_GROUP_ROWS) uiState.taskGroupsShown.add(g.key);
+    persist();
+    renderNavigator();
+    renderPanesMenu();
+    return;
+  }
+  // #s358: a phone's way back, the same remembered filter again (`phoneAgentsFilter`).
+  if (event.target.closest("[data-hide-finished]")) {
+    uiState.liveOnly.add("agents");
     persist();
     renderNavigator();
     renderPanesMenu();

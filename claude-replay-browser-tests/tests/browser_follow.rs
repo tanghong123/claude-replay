@@ -6386,6 +6386,7 @@ fn emptied_panes_world(
     port: u16,
     case: &str,
     phone: Option<(u32, u32)>,
+    running: bool,
 ) -> (
     Monitor,
     headless_chrome::Browser,
@@ -6405,9 +6406,14 @@ fn emptied_panes_world(
         transcript += &harness::agent_result(call, child, "Explore", s + 1);
         transcript += &harness::agent_finished(child, "look around", s + 2);
     }
+    // A spawn with its result and no completion notification is an agent still out (#186's case).
+    if running {
+        transcript += &harness::agent_spawn("call_c", "Explore", 19);
+        transcript += &harness::agent_result("call_c", "aLive-s358", "Explore", 20);
+    }
     transcript += &harness::long_session(4, harness::Shape::default());
     stores.claude_session(sid, &transcript);
-    for child in ["aOne-s356", "aTwo-s356"] {
+    for child in ["aOne-s356", "aTwo-s356", "aLive-s358"] {
         stores.claude_child(
             sid,
             child,
@@ -6480,7 +6486,7 @@ fn emptied_pane_shots(tab: &headless_chrome::Tab, name: &str) {
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn an_emptied_outline_pane_offers_to_show_what_its_filter_hides() {
     let _serial = serial();
-    let (m, _b, tab, _sid) = emptied_panes_world(2757, "emptied-panes", None);
+    let (m, _b, tab, _sid) = emptied_panes_world(2757, "emptied-panes", None, false);
     harness::until(
         &tab,
         "!!document.querySelector('#navigatorAgents [data-show-filtered=\"agents\"]') && !!document.querySelector('#navigatorWork [data-show-filtered=\"tasks\"]')",
@@ -6538,6 +6544,14 @@ fn an_emptied_outline_pane_offers_to_show_what_its_filter_hides() {
     assert_eq!(
         seen["agents"], "false",
         "…so the menu row reads unchecked: {seen}"
+    );
+    assert_eq!(
+        harness::eval(
+            &tab,
+            "document.querySelectorAll('.agents-filter-row').length"
+        ),
+        serde_json::json!(0),
+        "a desktop keeps the menu and draws no row of its own (#s358)"
     );
 
     // Tasks: every state shown, the menu's rows checked, the untitled one still hidden (#217).
@@ -6602,7 +6616,8 @@ fn press_hittable(tab: &headless_chrome::Tab, sel: &str) {
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_s_emptied_agents_sheet_offers_to_show_the_finished_agents() {
     let _serial = serial();
-    let (m, _b, tab, _sid) = emptied_panes_world(2758, "emptied-panes-phone", Some((440, 956)));
+    let (m, _b, tab, _sid) =
+        emptied_panes_world(2758, "emptied-panes-phone", Some((440, 956)), false);
     phone_tap(&tab, "#phonePane-agents");
     harness::until(
         &tab,
@@ -6637,6 +6652,126 @@ fn a_phone_s_emptied_agents_sheet_offers_to_show_the_finished_agents() {
         "the finished agents listed in the sheet, still open",
         Duration::from_secs(10),
         "document.getElementById('phonePaneMenu').hidden + ' ' + document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
+    );
+    drop(m);
+}
+
+/// A finger on the control `sel` names, once it is a 44px target a finger at its centre meets (#s358).
+fn finger_on_filter(tab: &headless_chrome::Tab, sel: &str) {
+    let js = format!("(function(){{ var ok = {PHONE_HITTABLE}; var b = document.querySelector('{sel}'); var r = b ? b.getBoundingClientRect() : {{ height: 0 }}; return {{ h: r.height, hit: ok(b), text: b ? b.textContent : '' }}; }})()");
+    let seen = harness::probe(tab, &js);
+    assert!(
+        seen["h"].as_f64().unwrap_or(0.0) >= 44.0,
+        "{sel} is a 44px target: {seen}"
+    );
+    assert_eq!(seen["hit"], true, "{sel} is what a finger meets: {seen}");
+    let (x, y) = phone_point(
+        tab,
+        &format!("(function(){{ var r = document.querySelector('{sel}').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"),
+    );
+    harness::finger_tap(tab, x, y);
+}
+
+const AGENTS_FILTER_ON: &str =
+    "JSON.parse(localStorage.getItem('am-prod-live-only') || '[]').includes('agents')";
+
+/// #s358, Hong's choice on #s357: a phone has no Outline menu, so its Agents sheet carries both ends
+/// of the same remembered filter. With every agent finished: Show them lists them, the row at the
+/// top hides them again, and the sheet stays open. Red before #s358: Show them was one way.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_hides_finished_agents_again_from_its_agents_sheet() {
+    let _serial = serial();
+    let (m, _b, tab, _sid) =
+        emptied_panes_world(2759, "phone-hide-finished", Some((440, 956)), false);
+    phone_tap(&tab, "#phonePane-agents");
+    let sheet = "!document.getElementById('phonePaneMenu').hidden";
+    harness::until(
+        &tab,
+        &format!(
+            "{sheet} && !!document.querySelector('#phonePaneMenu [data-show-filtered=\"agents\"]')"
+        ),
+        "the Agents sheet with Show them",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
+    );
+    assert_eq!(
+        harness::eval(&tab, AGENTS_FILTER_ON),
+        serde_json::json!(true)
+    );
+    finger_on_filter(&tab, "#phonePaneMenu [data-show-filtered=\"agents\"]");
+    harness::until(
+        &tab,
+        &format!("{sheet} && document.querySelectorAll('#phonePaneMenu .outline-agent-copy').length === 2 && !!document.querySelector('#phonePaneMenu [data-hide-finished]')"),
+        "the finished agents listed, under a row that hides them",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
+    );
+    assert_eq!(
+        harness::eval(&tab, "(function(){ var r = document.querySelector('#phonePaneMenu [data-hide-finished]'), a = document.querySelector('#phonePaneMenu .outline-agent'); return r.getBoundingClientRect().bottom <= a.getBoundingClientRect().top + 1; })()"),
+        serde_json::json!(true),
+        "the row is above the agents, where a long list cannot hide it"
+    );
+    finger_on_filter(&tab, "#phonePaneMenu [data-hide-finished]");
+    harness::until(
+        &tab,
+        &format!("{sheet} && document.querySelectorAll('#phonePaneMenu .outline-agent-copy').length === 0 && !!document.querySelector('#phonePaneMenu [data-show-filtered=\"agents\"]')"),
+        "the agents hidden again, the sheet open, Show them back",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').hidden + ' ' + document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
+    );
+    assert_eq!(
+        harness::eval(&tab, AGENTS_FILTER_ON),
+        serde_json::json!(true),
+        "the same remembered filter the desktop's menu row reads"
+    );
+    drop(m);
+}
+
+/// #s358: with an agent still running the list is not empty, so the emptied pane's Show them is not
+/// there: a phone that hid the finished agents would be stuck the other way. The list's top row
+/// carries whichever end applies. Run where a wide phone keeps the list, the column's Agents tab, so
+/// both homes of the list are held, and no sheet is left to close.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_wide_phone_column_shows_and_hides_finished_agents_with_one_running() {
+    let _serial = serial();
+    let (m, _b, tab, _sid) =
+        emptied_panes_world(2760, "phone-filter-running", Some((956, 440)), true);
+    phone_tap(&tab, "#columnSwitch [data-column-tab=\"agents\"]");
+    let rows = "document.querySelectorAll('#navigatorAgents .outline-agent-copy').length";
+    harness::until(
+        &tab,
+        &format!("{rows} === 1 && /Show 2 finished agents/.test((document.querySelector('#navigatorAgents .agents-filter-row') || {{}}).textContent || '')"),
+        "the running agent, under a row offering the two finished ones",
+        Duration::from_secs(20),
+        "document.getElementById('navigatorAgents').innerText.slice(0, 200)",
+    );
+    finger_on_filter(&tab, "#navigatorAgents .agents-filter-row");
+    harness::until(
+        &tab,
+        &format!(
+            "{rows} === 3 && !!document.querySelector('#navigatorAgents [data-hide-finished]')"
+        ),
+        "all three listed, under a row that hides the finished ones",
+        Duration::from_secs(10),
+        "document.getElementById('navigatorAgents').innerText.slice(0, 200)",
+    );
+    assert_eq!(
+        harness::eval(&tab, AGENTS_FILTER_ON),
+        serde_json::json!(false)
+    );
+    finger_on_filter(&tab, "#navigatorAgents [data-hide-finished]");
+    harness::until(
+        &tab,
+        &format!("{rows} === 1 && !!document.querySelector('#navigatorAgents [data-show-filtered=\"agents\"]')"),
+        "back to the running agent, with the way back on offer",
+        Duration::from_secs(10),
+        "document.getElementById('navigatorAgents').innerText.slice(0, 200)",
+    );
+    assert_eq!(
+        harness::eval(&tab, AGENTS_FILTER_ON),
+        serde_json::json!(true)
     );
     drop(m);
 }

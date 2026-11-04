@@ -1100,7 +1100,14 @@ resizes the others (#159). Six drawer cases catch that in one run.
   (#218) — running and pending checked, and unchecking the last one puts every state back the way
   the session filter does; a state the vocabulary does not cover (`other`) is always shown, since no
   box would ever bring it back. Agents keeps a single "Active only" box, because a sub-agent is
-  running or it is finished. **A task the session recorded no title for is not listed** in that pane
+  running or it is finished. **A pane its filter emptied offers to undo it from where the reader is
+  looking** (#s356, Hong: "is there way to show those agents?"): the empty line carries Show them,
+  which clears the same remembered filter the menu's row does, and on a desktop a hint names that
+  row. A phone has no such menu, so its Agents list (the sheet and a wide phone's column) opens on a
+  row for whichever end applies, Hide finished agents or Show N finished agents (#s358, Hong's choice
+  on #s357; `phoneAgentsFilter`), at the top because the list can be long; with an agent running the
+  list is not empty, so the empty line alone would strand the reader. A phone's Tasks pane shows every
+  state (#319) and needs neither. **A task the session recorded no title for is not listed** in that pane
   at all (#217, the owner: "it is pointless to show those tasks"); the pane says how many it is
   holding, and the classic page's task PANEL still lists it and still opens the card that explains
   the absence (#187/#188), because a board that dropped a task would be lying about what the session
