@@ -926,6 +926,20 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             "queueSkipSlashCommands",
             "isMeta",
             "turnCompanion",
+            // #s368 (clients 2.1.310 and 2.1.318): on the note the client writes to the model
+            // after the safety classifier stopped a reply (`isMeta`, `turnCompanion`, a string
+            // content opening "Your response above was stopped by a safety classifier"), the
+            // `message.id` of that reply. Measured 2026-11-05 on hong-devserver: 6 notes, 3 in
+            // main sessions on 2.1.318 and 3 in sub-agents of one session on 2.1.310, each naming
+            // the assistant record just before it (`stop_reason: "refusal"`, category "cyber" in
+            // all 6), one or two lines up; the agent then goes on in the same turn. The note
+            // already folds to a result line right after the stopped reply, saying it was stopped
+            // and withheld, so the key only links what sits side by side. Unread. Whether the
+            // stopped reply wears a mark of its own, with its category, is a RENDER question for
+            // the owner, asked in #s371. REVISIT: (1) a value naming a message other than the
+            // assistant record just before it (the note would then sit away from what was
+            // stopped); (2) the key on a record that is not `isMeta`, or on another record type.
+            "refusedMessageId",
             "queuePriority",
             "scheduledTaskId",
             "scheduledFireId",
@@ -8259,6 +8273,35 @@ mod tests {
             .filter(|s| s.example.as_deref() == Some("s-wakeup"))
             .collect();
         assert!(seen.is_empty(), "nothing reported: {seen:?}");
+    }
+
+    /// #s368: the note naming a reply the safety classifier stopped is known, not reported while
+    /// the sweep asks, and the stopped reply, the note and the next reply fold exactly as they do
+    /// without the key. Removing the key from the user arm of the census turns this red.
+    #[test]
+    fn a_refusal_note_s_refused_message_id_is_known() {
+        unknown_watch_keys(true);
+        let with_key = r##"
+{"type":"user","version":"2.1.318","sessionId":"s-s368","uuid":"u1","message":{"role":"user","content":"chart the tern colony"}}
+{"type":"assistant","version":"2.1.318","sessionId":"s-s368","uuid":"a1","message":{"id":"msg_s368a","role":"assistant","model":"claude-opus-5-5","stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber","explanation":"This request was flagged."},"content":[{"type":"thinking","thinking":"","signature":"x"}]}}
+{"type":"user","version":"2.1.318","sessionId":"s-s368","uuid":"u2","isMeta":true,"turnCompanion":true,"refusedMessageId":"msg_s368a","message":{"role":"user","content":"Your response above was stopped by a safety classifier — this is not a tool or API error. The rest of it was withheld, and tool calls in it that had not finished did not run. Do not produce that content again, even reworded."}}
+{"type":"assistant","version":"2.1.318","sessionId":"s-s368","uuid":"a2","message":{"id":"msg_s368b","role":"assistant","model":"claude-opus-5-5","stop_reason":"end_turn","content":[{"type":"text","text":"The colony map is in skua-notes.md."}]}}
+"##;
+        let blocks = parse(with_key);
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s368"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+        let without_key = with_key.replace(r#""refusedMessageId":"msg_s368a","#, "");
+        assert_ne!(without_key, with_key, "the fixture carries the key");
+        assert_eq!(blocks, parse(&without_key), "the key changes no block");
+        assert!(
+            blocks.iter().any(
+                |b| matches!(b, Block::ToolResult(t) if t.contains("stopped by a safety classifier"))
+            ),
+            "the note still reads as a result line: {blocks:?}"
+        );
     }
 
     /// #s215: the 2.1.308 sandbox flag on a Bash result — an object result and a failed command's
