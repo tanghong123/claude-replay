@@ -693,6 +693,15 @@ const RECORD_TYPES_KNOWN: &[&str] = &[
     "custom-title",
     "file-history-delta",
     "file-history-snapshot",
+    // #s374: `{type, agentId, parentSessionId, parentLastUuid, contextLength}`, no version and no
+    // timestamp, the first line of a sub-agent transcript the parent spawned with
+    // `subagent_type: "fork"`: the sub-agent starts from the parent's context, up to
+    // `parentLastUuid`, `contextLength` messages long, so its transcript opens on a reply with
+    // no prompt of its own. Measured 2026-11-05 on hong-devserver: 17 sub-agents of 6 sessions,
+    // each naming its own root session and its own agent id, each spawn an `Agent` call of type
+    // fork, which its card already names. Nothing drawn. REVISIT: the record on a sub-agent whose
+    // spawn is not a fork, anywhere but a transcript's first line, or in a main session.
+    "fork-context-ref",
     "frame-link",
     "history-suppression",
     "last-prompt",
@@ -951,6 +960,19 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // assistant record just before it (the note would then sit away from what was
             // stopped); (2) the key on a record that is not `isMeta`, or on another record type.
             "refusedMessageId",
+            // #s374 (clients 2.1.308 to 2.1.318): three parallel lists on a task notification the
+            // client hands a SUB-AGENT (`isMeta`, `origin.kind: "task-notification"`, its text a
+            // `<task-notification>` element): per notice joined into the record, its length, whether
+            // it is this agent's own task, and its run id (null for some). Measured 2026-11-05 on
+            // hong-devserver: 304 of the 3,381 such records in sub-agents, in 116 sub-agent
+            // transcripts of 9 sessions, and none of the 11,001 in main sessions; every list holds
+            // ONE entry and every `own` is true. The notice is drawn from its text, which these
+            // lists only index. REVISIT: a list longer than one (several notices joined into one
+            // record, which the card should then show apart), an `own` false (another agent's task
+            // reaching this one), or the keys in a main session.
+            "joinedNoticeLengths",
+            "joinedNoticeOwn",
+            "joinedNoticeRunIds",
             "queuePriority",
             "scheduledTaskId",
             "scheduledFireId",
@@ -1022,6 +1044,12 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // transcript holds both values yet. The calls the sandbox refused in three other such
             // sub-agents are "Error: Blocked: …" strings that carry no `sandboxed` key at all.
             "sandboxed",
+            // #s374 (client 2.1.318): a list beside `sandboxed: true` on that one Bash result,
+            // empty there (2026-11-05, hong-devserver, the only record carrying it): what the
+            // sandbox stopped while the command ran, none in this case. Unread. REVISIT: the
+            // first non-empty list, which names a write or a connection the sandbox refused;
+            // whether a Bash card says so belongs with the owner's question in #s372.
+            "sandboxViolations",
         ],
     ),
     (
@@ -1554,6 +1582,15 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     // backgrounded Bash card should ever wear a marker of its own (a RENDER question that covers
     // `backgroundedByUser` too, since neither is read).
     "backgroundedToDeliverMessage",
+    // #s374, Bash in a sub-agent (clients 2.1.312 to 2.1.318): the boolean `true` on a result whose
+    // command the client moved to the background under its cap on a sub-agent's foreground
+    // commands, the call itself never asking for it. Measured 2026-11-05 on hong-devserver: 237
+    // results in 128 sub-agent transcripts of 9 sessions, `true` on every one, always beside
+    // `backgroundTaskId`, and in no main session; each result's text says the command went to
+    // the background, which the card shows. A fourth way to the background, beside the three
+    // above, and drawn the same. REVISIT if it arrives false, on another tool's result or in a
+    // main session, or with a text that does not say the command was moved.
+    "subagentCapApplied",
     "bytes",
     // #s77, Agent (client 2.1.296): the boolean `true` on the result of a background launch
     // (`status: "async_launched"`), beside `canReadOutputFile`; 12 of 12 on this machine,
@@ -8339,6 +8376,40 @@ mod tests {
             ),
             "the note still reads as a result line: {blocks:?}"
         );
+    }
+
+    /// #s374: four shapes only sub-agents write, which the format sweep first read with #s370 — a
+    /// forked sub-agent's `fork-context-ref` head, a Bash result the sub-agent cap backgrounded
+    /// (`subagentCapApplied`), a task notification's `joinedNotice*` lists and a sandboxed result's
+    /// `sandboxViolations` — are known, not reported while the sweep asks, and the transcript folds
+    /// exactly as it does without them. Removing any one from its list turns this red.
+    #[test]
+    fn the_shapes_only_sub_agents_write_are_known() {
+        unknown_watch_keys(true);
+        let fork = r#"{"type":"fork-context-ref","agentId":"a374","parentSessionId":"s-s374","parentLastUuid":"p9","contextLength":42}"#;
+        let rest = r###"{"type":"assistant","version":"2.1.318","sessionId":"s-s374","isSidechain":true,"agentId":"a374","uuid":"a1","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_s374a","name":"Bash","input":{"command":"count-nests"}},{"type":"tool_use","id":"toolu_s374b","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","version":"2.1.318","sessionId":"s-s374","isSidechain":true,"agentId":"a374","uuid":"u1","sourceToolAssistantUUID":"a1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_s374a","content":"Command running in background with ID: b374. Output is being written to: /tmp/skua/b374.output"}]},"toolUseResult":{"stdout":"","stderr":"","interrupted":false,"isImage":false,"noOutputExpected":false,"backgroundTaskId":"b374","subagentCapApplied":true}}
+{"type":"user","version":"2.1.318","sessionId":"s-s374","isSidechain":true,"agentId":"a374","uuid":"u2","sourceToolAssistantUUID":"a1","sandboxed":true,"sandboxViolations":[],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_s374b","content":"nests.txt"}]}}
+{"type":"user","version":"2.1.318","sessionId":"s-s374","isSidechain":true,"agentId":"a374","uuid":"u3","isMeta":true,"origin":{"kind":"task-notification","producer":"bash"},"joinedNoticeLengths":[190],"joinedNoticeOwn":[true],"joinedNoticeRunIds":["r374"],"message":{"role":"user","content":"<task-notification>\n<task-id>b374</task-id>\n<tool-use-id>toolu_s374a</tool-use-id>\n<output-file>/tmp/skua/b374.output</output-file>\n<status>completed</status>\n<summary>Background command \"count-nests\" completed (exit code 0)</summary>\n</task-notification>"}}
+"###;
+        let blocks = parse(&format!("{fork}\n{rest}"));
+        // The fork head carries no session id, so its row would have no example: match it by name.
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s374") || s.name == "fork-context-ref")
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+        let mut bare = rest.to_string();
+        for key in [
+            r#","subagentCapApplied":true"#,
+            r#","sandboxViolations":[]"#,
+            r#","joinedNoticeLengths":[190],"joinedNoticeOwn":[true],"joinedNoticeRunIds":["r374"]"#,
+        ] {
+            assert!(bare.contains(key), "the fixture carries {key}");
+            bare = bare.replace(key, "");
+        }
+        assert_eq!(blocks, parse(&bare), "the four change no block");
+        assert!(!blocks.is_empty(), "the sub-agent's calls still draw");
     }
 
     /// #s215: the 2.1.308 sandbox flag on a Bash result — an object result and a failed command's
