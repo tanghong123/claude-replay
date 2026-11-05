@@ -88,10 +88,10 @@ const CODEX_TOOL_PATTERNS: &[CodexToolPattern] = &[
 ///
 /// Scans the last `INFLIGHT_TAIL_BYTES` (256 KiB) only; a use whose result predates the window
 /// can't appear dangling (uses are collected from within the window, results may close
-/// them from anywhere in it) — which holds only for the transcript's own records, so a COPY of
-/// a call written after its result (Claude Code's API-call log, #s329) is never read. Covers
-/// sub-agent work too: while a child runs, the parent's spawning `tool_use` is itself
-/// unresolved in the ROOT tail.
+/// them from anywhere in it) — which holds only for the transcript's own WHOLE records, so a
+/// COPY of a call (Claude Code's API-call log, #s329) and the line the window's edge cuts
+/// (#s365) are never read. Covers sub-agent work too: while a child runs, the parent's spawning
+/// `tool_use` is itself unresolved in the ROOT tail.
 pub fn inflight_tool_in_tail(transcript: &Path) -> bool {
     !inflight_tools_in_tail(transcript).is_empty()
 }
@@ -115,21 +115,36 @@ pub fn inflight_tools_in_tail(transcript: &Path) -> Vec<InflightTool> {
         return Vec::new();
     };
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    let start = len.saturating_sub(INFLIGHT_TAIL_BYTES);
+    // One byte before the window, so a window opening exactly on a line's start keeps that line.
+    let start = len.saturating_sub(INFLIGHT_TAIL_BYTES + 1);
     if f.seek(SeekFrom::Start(start)).is_err() {
         return Vec::new();
     }
-    // LOSSY on purpose. The window starts at a fixed byte offset, so it lands inside a
-    // multi-byte character whenever the transcript is not pure ASCII — measured at 7 of 558
-    // real rollouts (~1.3%), and CJK-heavy sessions are the norm for some users. Decoding
-    // strictly there discards the ENTIRE signal and answers "idle", which is the direction
-    // that gets a working session reaped (#82). A split character now costs one replacement
-    // char in one field, not the whole check.
     let mut raw = Vec::new();
     if f.read_to_end(&mut raw).is_err() {
         return Vec::new();
     }
-    let buf = String::from_utf8_lossy(&raw);
+    // #s365: the window starts at a fixed byte, so its first line is usually the end of a record
+    // whose start lies outside it, and nothing can be said about that record: not its type, so
+    // the blob filter below never sees a cut `api-request-blob`, and not its calls' results, which
+    // lie before the window. Read as a line, it made a finished `claude -p` worker read
+    // `exited-mid-work` (12 of 364 that ended on `end_turn` on aries-black, 6 of 174 on
+    // hong-devserver, measured 2026-11-05; none of those 174 once the line goes). A real call is
+    // lost this way only if its own record reaches past the window, whose `tool_use` head was
+    // then outside it already.
+    let whole: &[u8] = if start == 0 {
+        &raw
+    } else {
+        raw.iter()
+            .position(|&b| b == b'\n')
+            .map_or(&[], |i| &raw[i + 1..])
+    };
+    // LOSSY on purpose. A strict decode that meets one bad byte discards the ENTIRE signal and
+    // answers "idle", which is the direction that gets a working session reaped (#82): the
+    // window's edge did that on 7 of 558 real rollouts (~1.3%) by opening inside a character.
+    // That character now goes with the cut line; whatever else is bad costs one replacement
+    // char in one field, not the whole check.
+    let buf = String::from_utf8_lossy(whole);
     // Insertion-ordered id → name (#194): the order calls were made is the order the
     // consumer wants to report them; a re-seen id keeps its first name.
     let mut uses: Vec<(String, String)> = Vec::new();
@@ -176,13 +191,14 @@ pub fn inflight_tools_in_tail(transcript: &Path) -> Vec<InflightTool> {
     }
     for line in buf.lines() {
         // #s329: Claude Code's log of its API calls (#s134) is never a call or a result. An
-        // `api-request-blob` holds an assistant message as sent, its calls' ids included, and is
-        // written just before the request that sends it, so AFTER those calls' results, which are
-        // never blobbed. A window whose edge fell between a result and the blob after it read the
-        // call as running: a finished `claude -p` worker whose process was gone read
-        // `exited-mid-work` (11 of 131 that ended on `end_turn` on aries-black over three days,
-        // measured 2026-10-30), and a live one could read as a permission wait. Each such line
-        // puts its type first.
+        // `api-request-blob` holds a message as sent, the ids of its calls or results included,
+        // and lands on either side of the record it copies (over 270 transcripts on hong-devserver
+        // on 2026-11-05: 92% of its calls and 38% of its results after the record, the rest
+        // before). A window whose edge fell between a result and a blob after it read the call as
+        // running: a finished `claude -p` worker whose process was gone read `exited-mid-work`
+        // (11 of 131 that ended on `end_turn` on aries-black over three days, measured
+        // 2026-10-30), and a live one could read as a permission wait. Each such line puts its
+        // type first.
         if line.starts_with("{\"type\":\"api-request") {
             continue;
         }
@@ -434,14 +450,108 @@ mod tests {
     #[test]
     fn a_window_opening_mid_character_still_sees_the_dangling_call() {
         let p = fixture("split-char");
-        let mut bytes = "语".as_bytes()[1..].to_vec(); // the tail of a 3-byte char: invalid alone
-        bytes.extend_from_slice(
-            br#"","cwd":"/x"}
-{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"ct-split","name":"Read"}}
-"#,
-        );
+        let call = br#"{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"ct-split","name":"Read"}}
+"#;
+        let mut bytes = br#"{"text":""#.to_vec();
+        bytes.extend_from_slice("语".as_bytes());
+        // Sized so the window opens on the character's last byte.
+        let rest = br#"","cwd":"/x"}
+"#;
+        let keep = INFLIGHT_TAIL_BYTES as usize - rest.len() - call.len();
+        bytes.extend_from_slice(&vec![b'x'; keep - 1]);
+        bytes.extend_from_slice(rest);
+        bytes.extend_from_slice(call);
         std::fs::write(&p, &bytes).unwrap();
-        assert!(String::from_utf8(bytes).is_err(), "fixture must be invalid");
-        assert!(inflight_tool_in_tail(&p));
+        let edge = bytes.len() - INFLIGHT_TAIL_BYTES as usize;
+        assert_eq!(
+            bytes[edge] & 0xC0,
+            0x80,
+            "the edge must open inside the character"
+        );
+        assert_eq!(
+            inflight_tools_in_tail(&p),
+            vec![InflightTool {
+                id: "ct-split".into(),
+                name: "Read".into()
+            }]
+        );
+    }
+
+    /// A blob padded so its head lies before the window and its ids inside it, then `after`, then
+    /// filler text to bring the window's edge inside the blob's padding.
+    fn cut_blob(after: &str) -> String {
+        let head = format!(
+            r#"{{"type":"api-request-blob","sessionId":"s","hash":"h1","message":{{"role":"user","content":[{{"type":"text","text":"{}"}},"#,
+            "x".repeat(1_000)
+        );
+        let ids = r#"{"type":"tool_use","id":"toolu_cut","name":"Bash","input":{}}]}}"#;
+        let filler = r#"{"type":"user","message":{"content":"FILL"}}"#;
+        let room = INFLIGHT_TAIL_BYTES as usize - 500 - ids.len() - after.len() - filler.len();
+        let filler = filler.replace("FILL", &"y".repeat(room));
+        let text = format!("{head}{ids}\n{filler}\n{after}");
+        let edge = text.len() - INFLIGHT_TAIL_BYTES as usize;
+        assert!(
+            edge > 0 && edge < head.len(),
+            "the edge must fall in the blob"
+        );
+        assert!(
+            text.find("toolu_cut").unwrap() > edge,
+            "the ids must lie inside"
+        );
+        text
+    }
+
+    /// #s365: where the window's edge cuts a blob, its head is out of sight, so the blob filter
+    /// cannot know it. The cut piece's ids are no calls; a real one after it still is.
+    #[test]
+    fn a_call_on_the_line_the_window_cuts_is_not_inflight() {
+        let p = fixture("cut-blob");
+        write_tail(&p, &cut_blob(""));
+        assert_eq!(inflight_tools_in_tail(&p), vec![]);
+        write_tail(
+            &p,
+            &cut_blob(concat!(
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_live","name":"Read","input":{}}]}}"#,
+                "\n",
+            )),
+        );
+        assert_eq!(
+            inflight_tools_in_tail(&p),
+            vec![InflightTool {
+                id: "toolu_live".into(),
+                name: "Read".into()
+            }]
+        );
+    }
+
+    /// The first line goes only when it is cut: a window opening exactly on a line's start keeps
+    /// the line, and one byte further on it does not.
+    #[test]
+    fn a_window_opening_on_a_line_s_start_keeps_that_line() {
+        let call = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_edge","name":"Bash","input":{}}]}}"#,
+            "\n",
+        );
+        let filler = format!(
+            "{}\n",
+            "z".repeat(INFLIGHT_TAIL_BYTES as usize - call.len() - 1)
+        );
+        let p = fixture("line-start");
+        write_tail(&p, &format!("before\n{call}{filler}"));
+        assert!(inflight_tool_in_tail(&p), "a whole first line is read");
+        write_tail(&p, &format!("before\n{call}{filler}z"));
+        assert!(!inflight_tool_in_tail(&p), "a cut one is not");
+    }
+
+    /// One record longer than the window leaves no whole line to read.
+    #[test]
+    fn a_window_inside_one_line_reads_nothing() {
+        let p = fixture("one-line");
+        let tail = r#"{"type":"tool_use","id":"toolu_tail","name":"Bash","input":{}}"#;
+        write_tail(
+            &p,
+            &format!("{}{tail}", "x".repeat(INFLIGHT_TAIL_BYTES as usize)),
+        );
+        assert_eq!(inflight_tools_in_tail(&p), vec![]);
     }
 }

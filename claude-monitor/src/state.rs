@@ -844,6 +844,95 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// #s365: the same worker where the scan's window opens inside the blob, so the blob's head
+    /// is out of sight and its ids read as lines of their own. It still died of nothing, and one
+    /// cut off mid-call past such a blob reads as that call alone.
+    #[test]
+    fn a_window_opening_inside_a_blob_leaves_exited_and_exited_mid_work_as_they_are() {
+        let transcript = |last: &str| {
+            let pad = "x".repeat(1_000);
+            let room = "y".repeat(261_000);
+            format!(
+                concat!(
+                    r#"{{"type":"user","entrypoint":"sdk-cli","message":{{"role":"user","content":"run the brief"}},"timestamp":"2026-10-30T01:00:00Z"}}"#,
+                    "\n",
+                    r#"{{"type":"assistant","entrypoint":"sdk-cli","message":{{"role":"assistant","model":"m","stop_reason":"tool_use","content":[{{"type":"tool_use","id":"toolu_a","name":"Bash","input":{{"command":"make"}}}}]}},"timestamp":"2026-10-30T01:00:05Z"}}"#,
+                    "\n",
+                    r#"{{"type":"user","entrypoint":"sdk-cli","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_a","content":"ok"}}]}},"timestamp":"2026-10-30T01:00:30Z"}}"#,
+                    "\n",
+                    r#"{{"type":"api-request-blob","sessionId":"s1","hash":"h1","message":{{"role":"assistant","content":[{{"type":"text","text":"{pad}"}},{{"type":"tool_use","id":"toolu_a","name":"Bash","input":{{"command":"make"}}}}]}}}}"#,
+                    "\n",
+                    r#"{{"type":"user","entrypoint":"sdk-cli","message":{{"role":"user","content":"{room}"}},"timestamp":"2026-10-30T01:00:35Z"}}"#,
+                    "\n",
+                    "{last}\n",
+                ),
+                pad = pad,
+                room = room,
+                last = last,
+            )
+        };
+        let root = scratch("cut-blob");
+        let write = |name: &str, last: &str| {
+            let text = transcript(last);
+            let edge = text.len() - 262_144;
+            let blob = text.find("api-request-blob").unwrap();
+            assert!(blob < edge, "the blob's head lies outside the window");
+            assert!(
+                edge < blob + text[blob..].find("\"toolu_a\"").unwrap(),
+                "the blob's ids lie inside it"
+            );
+            let path = root.join(name);
+            std::fs::write(&path, text).unwrap();
+            path
+        };
+        let finished = write(
+            "s1.jsonl",
+            r#"{"type":"assistant","entrypoint":"sdk-cli","message":{"role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"worker result: success"}]},"timestamp":"2026-10-30T01:00:40Z"}"#,
+        );
+        let cut_off = write(
+            "s2.jsonl",
+            r#"{"type":"assistant","entrypoint":"sdk-cli","message":{"role":"assistant","model":"m","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_b","name":"Read","input":{"file_path":"x"}}]},"timestamp":"2026-10-30T01:00:40Z"}"#,
+        );
+
+        let mut tr = StateTracker::default();
+        tr.tick(
+            &root,
+            &[
+                facts("s1", &finished, None, 900),
+                facts("s2", &cut_off, None, 900),
+            ],
+        );
+        let cur: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("state/current.json")).unwrap(),
+        )
+        .unwrap();
+        let row = |sid: &str| -> (String, String, String) {
+            let s = cur["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|s| s["sid"] == sid)
+                .unwrap_or_else(|| panic!("{sid} in the snapshot: {cur}"));
+            let field = |k: &str| s[k].as_str().unwrap_or("?").to_string();
+            (field("state"), field("reason"), field("detail"))
+        };
+        assert_eq!(
+            row("s1"),
+            ("idle".to_string(), "exited".to_string(), String::new()),
+            "a worker that finished and exited died of nothing"
+        );
+        assert_eq!(
+            row("s2"),
+            (
+                "idle".to_string(),
+                "exited-mid-work".to_string(),
+                "exited with Read pending".to_string()
+            ),
+            "the one call on a whole line, not the blob's"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// #s329: a `claude -p` worker that finished (its last turn `end_turn`) and exited reads
     /// `idle · exited`, though its tail's first whole line is the client's copy of a call whose
     /// result lies before the window: the blob is written after the result, so it once read as a
