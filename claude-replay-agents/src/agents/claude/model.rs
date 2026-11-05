@@ -1271,10 +1271,12 @@ fn note_unknown_record_keys(v: &Value, ty: &str, also_known: &[&str]) {
 }
 
 /// What the cost and the cards depend on (#363), for `--field-coverage`: the assistant record's
-/// `model` (the price), `usage` (the tokens), `message.id` and `requestId` (one API call's usage is
-/// counted once across the records that repeat it); every record's `timestamp`; a user record's
-/// `cwd` (the session's directory, #173); and the structured result on a tool result, which the
-/// cards read (#263 was a field in it). An API failure (#236) carries no usage by nature.
+/// `model` (the price), `usage` (the tokens), a cache write's `usage.cache_creation` (how much of it
+/// cost the 1-hour rate, #s359: without it a write prices at the 5-minute rate and the cost reads
+/// low), `message.id` and `requestId` (one API call's usage is counted once across the records that
+/// repeat it); every record's `timestamp`; a user record's `cwd` (the session's directory, #173);
+/// and the structured result on a tool result, which the cards read (#263 was a field in it). An
+/// API failure (#236) carries no usage by nature.
 pub(crate) const COVERAGE_FIELDS: &[CoverageField] = &[
     CoverageField {
         name: "assistant.message.model",
@@ -1285,6 +1287,11 @@ pub(crate) const COVERAGE_FIELDS: &[CoverageField] = &[
         name: "assistant.message.usage",
         applies: is_answer,
         present: has_usage,
+    },
+    CoverageField {
+        name: "assistant.message.usage.cache_creation",
+        applies: wrote_to_the_cache,
+        present: has_cache_split,
     },
     CoverageField {
         name: "assistant.message.id",
@@ -1345,6 +1352,16 @@ fn has_model(v: &Value) -> bool {
 }
 fn has_usage(v: &Value) -> bool {
     v.pointer("/message/usage").is_some_and(Value::is_object)
+}
+fn wrote_to_the_cache(v: &Value) -> bool {
+    is_answer(v)
+        && v.pointer("/message/usage/cache_creation_input_tokens")
+            .and_then(Value::as_u64)
+            .is_some_and(|n| n > 0)
+}
+fn has_cache_split(v: &Value) -> bool {
+    v.pointer("/message/usage/cache_creation")
+        .is_some_and(Value::is_object)
 }
 fn has_message_id(v: &Value) -> bool {
     v.pointer("/message/id").and_then(Value::as_str).is_some()
@@ -8310,6 +8327,24 @@ mod tests {
                 .any(|b| matches!(b, Block::AssistantText(_) | Block::AssistantMessage { .. })),
             "the error is not the assistant speaking: {blocks:?}"
         );
+    }
+
+    /// #s359: the split is asked of an answer that wrote to the cache and of no other, so a client
+    /// that stops writing it reads as a drop, and a call that wrote nothing is no evidence.
+    #[test]
+    fn coverage_asks_the_cache_split_only_of_a_cache_write() {
+        let split = COVERAGE_FIELDS
+            .iter()
+            .find(|f| f.name == "assistant.message.usage.cache_creation")
+            .unwrap();
+        let answer = |usage: Value| serde_json::json!({"type": "assistant", "message": {"id": "m", "usage": usage}});
+        let wrote = answer(serde_json::json!({"cache_creation_input_tokens": 5}));
+        assert!((split.applies)(&wrote) && !(split.present)(&wrote));
+        let told = answer(serde_json::json!({"cache_creation_input_tokens": 5,
+            "cache_creation": {"ephemeral_1h_input_tokens": 5}}));
+        assert!((split.applies)(&told) && (split.present)(&told));
+        let none = answer(serde_json::json!({"cache_creation_input_tokens": 0}));
+        assert!(!(split.applies)(&none));
     }
 
     /// #s361: an inference type the cost does not know is a `record.key` row, while the two it

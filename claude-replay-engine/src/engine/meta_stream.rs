@@ -335,11 +335,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// `usage.iterations` to the advisor's model. A v69 stream holds the call's own tokens alone, so a
 /// resumed session would keep its old figure.
 ///
+/// v71: #s359 — a Claude call's tokens carry its 1-hour cache writes (`cache_creation_1h`), priced
+/// at their own rate. A v70 stream holds the aggregate alone, every write at the 5-minute rate, so
+/// a resumed session would keep its old figure.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 70;
+pub const FOLD_VERSION: u16 = 71;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

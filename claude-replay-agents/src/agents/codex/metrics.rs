@@ -1032,6 +1032,8 @@ mod tests {
         let m = acc.finish();
         assert_eq!(m.input_tokens, 5_000, "input minus BOTH cache subsets");
         assert_eq!(m.cache_creation_tokens, 1_000, "the write tier is recorded");
+        let tokens = m.per_model.values().next().unwrap();
+        assert_eq!(tokens.cache_creation_1h, 0, "Codex records no duration");
         assert_eq!(m.cache_read_tokens, 4_000);
         assert_eq!(m.output_tokens, 500);
     }

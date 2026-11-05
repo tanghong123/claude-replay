@@ -166,13 +166,7 @@ impl MetricsAcc {
             // cache writes (new content, cached on first sight), and cache reads
             // (the whole context re-read every turn — the dominant number, kept
             // separate so it doesn't drown out genuinely-new input).
-            let seen = TokenCounts {
-                input: field(u, "input_tokens"),
-                cache_creation: field(u, "cache_creation_input_tokens"),
-                cache_read: field(u, "cache_read_input_tokens"),
-                output: field(u, "output_tokens"),
-                ..Default::default()
-            };
+            let seen = usage_tokens(u);
             // One API call may arrive as several lines carrying the same `usage`; credit
             // only what grew since this call was last seen (see `last_usage_key`). A line
             // that names no call at all falls back to the old add-everything behaviour, so
@@ -205,6 +199,9 @@ impl MetricsAcc {
                         .saturating_sub(self.credited.cache_creation),
                     cache_read: seen.cache_read.saturating_sub(self.credited.cache_read),
                     output: seen.output.saturating_sub(self.credited.output),
+                    cache_creation_1h: seen
+                        .cache_creation_1h
+                        .saturating_sub(self.credited.cache_creation_1h),
                     ..Default::default()
                 }
             } else {
@@ -219,6 +216,7 @@ impl MetricsAcc {
                     cache_creation: self.credited.cache_creation.max(seen.cache_creation),
                     cache_read: self.credited.cache_read.max(seen.cache_read),
                     output: self.credited.output.max(seen.output),
+                    cache_creation_1h: self.credited.cache_creation_1h.max(seen.cache_creation_1h),
                     ..Default::default()
                 }
             } else {
@@ -392,7 +390,6 @@ impl MetricsAcc {
         let Some(entries) = usage.get("iterations").and_then(Value::as_array) else {
             return;
         };
-        let field = |e: &Value, k: &str| e.get(k).and_then(Value::as_u64).unwrap_or(0);
         let advisors: Vec<&Value> = entries
             .iter()
             .filter(|e| e.get("type").and_then(Value::as_str) == Some("advisor_message"))
@@ -401,13 +398,7 @@ impl MetricsAcc {
             let Some(model) = entry.get("model").and_then(Value::as_str) else {
                 continue;
             };
-            let tokens = TokenCounts {
-                input: field(entry, "input_tokens"),
-                cache_creation: field(entry, "cache_creation_input_tokens"),
-                cache_read: field(entry, "cache_read_input_tokens"),
-                output: field(entry, "output_tokens"),
-                ..Default::default()
-            };
+            let tokens = usage_tokens(entry);
             let bucket = self.per_model.entry(model.to_string()).or_default();
             *bucket += tokens;
             if long_prompt_over(model).is_some_and(|over| tokens.prompt() > over) {
@@ -564,8 +555,9 @@ impl MetricsAcc {
         m.runtime = self.runtime;
         // The client's own tally (#240). Summed over epochs, never the last record — see
         // `ReportedCost`. Nothing here feeds `cost_usd`: our own per-call sum is the figure
-        // that covers the WHOLE transcript, and this one is a prefix of it. Measured, the two
-        // agree to ~3% where they overlap, which is what makes it worth showing beside ours.
+        // that covers the WHOLE transcript, and this one is a window of it. Measured, the two
+        // agree to 0.01% where it covers the whole transcript (`ReportedCost`), which is what
+        // makes it worth showing beside ours.
         // The window is COMPLETE only if it reaches both ends of the session's own span. The
         // span is in seconds and the client's figures in milliseconds; a minute of slack at
         // each end keeps a tally written moments before the last record from reading as
@@ -587,6 +579,30 @@ impl MetricsAcc {
             unknown_model: self.reported_unknown_model,
         });
         m
+    }
+}
+
+/// The tokens of a usage block, or of an `advisor_message` entry, which has the same keys. The
+/// aggregate `cache_creation_input_tokens` stays the count of what was written; `cache_creation`
+/// says how much of it went to the 1-hour cache (#s359), which costs more. That is what was BILLED,
+/// not `promptCacheRequested`, what the client asked for. Measured 2026-11-05 over 851.4M written:
+/// 428.4M at 1 hour, 413.0M at 5 minutes, summing to the aggregate, and 10.0M on records with no
+/// `cache_creation`, which price at the 5-minute rate as every other family's do. A split larger
+/// than its aggregate, none seen, is held to it, so the count stays a subset.
+fn usage_tokens(usage: &Value) -> TokenCounts {
+    let field = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let cache_creation = field("cache_creation_input_tokens");
+    TokenCounts {
+        input: field("input_tokens"),
+        cache_creation,
+        cache_read: field("cache_read_input_tokens"),
+        output: field("output_tokens"),
+        cache_creation_1h: usage
+            .pointer("/cache_creation/ephemeral_1h_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .min(cache_creation),
+        ..Default::default()
     }
 }
 
@@ -669,6 +685,185 @@ mod tests {
             "{:?}",
             m.cost_usd
         );
+    }
+
+    /// One line of a call that wrote to the cache (#s359). Synthetic, the shape measured on Claude
+    /// Code 2.1.318: the aggregate, and `cache_creation` saying how much of it went where.
+    fn write_line(id: &str, model: &str, one_hour: u64, five_min: u64, out: u64) -> Value {
+        serde_json::from_str(&format!(
+            r#"{{"type":"assistant","requestId":"req_{id}","message":{{"role":"assistant",
+               "id":"{id}","model":"{model}","usage":{{"input_tokens":0,"output_tokens":{out},
+               "cache_read_input_tokens":0,
+               "cache_creation_input_tokens":{all},"cache_creation":{{
+               "ephemeral_1h_input_tokens":{one_hour},
+               "ephemeral_5m_input_tokens":{five_min}}}}}}},
+               "timestamp":"2026-11-05T10:00:00Z"}}"#,
+            all = one_hour + five_min,
+        ))
+        .unwrap()
+    }
+
+    /// #s359: a 1-hour write costs its own rate, and the aggregate still counts every write.
+    #[test]
+    fn a_1_hour_write_is_priced_at_its_own_rate() {
+        let mut acc = MetricsAcc::default();
+        acc.push(&write_line("msg_01", "claude-opus-5-5", 1_000_000, 0, 0));
+        acc.push(&write_line("msg_02", "claude-opus-5-5", 0, 1_000_000, 0));
+        let m = acc.finish();
+        assert_eq!(m.cache_creation_tokens, 2_000_000);
+        assert_eq!(m.per_model["claude-opus-5-5"].cache_creation_1h, 1_000_000);
+        // $8 for the hour, $5 for the five minutes; $10 is both at the 5-minute rate.
+        assert!(
+            (m.cost_usd.unwrap() - 13.0).abs() < 1e-9,
+            "{:?}",
+            m.cost_usd
+        );
+    }
+
+    /// #s359: the client repeats a call's usage on every line of the answer, so the split is
+    /// credited once, also on the third line: a repeat that dropped it from what the call has
+    /// credited would charge it again there.
+    #[test]
+    fn a_call_s_1_hour_write_counts_once_across_its_repeat_lines() {
+        let mut acc = MetricsAcc::default();
+        for out in [5, 6, 40] {
+            acc.push(&write_line("msg_01", "claude-opus-5-5", 1_000_000, 0, out));
+        }
+        let m = acc.finish();
+        let opus = m.per_model["claude-opus-5-5"];
+        assert_eq!(
+            (opus.cache_creation, opus.cache_creation_1h, opus.output),
+            (1_000_000, 1_000_000, 40)
+        );
+        let want = 8.0 + estimate_cost("claude-opus-5-5", 0, 0, 0, 40).unwrap();
+        assert!(
+            (m.cost_usd.unwrap() - want).abs() < 1e-9,
+            "{:?}",
+            m.cost_usd
+        );
+    }
+
+    /// #s359: a repeat adds only what grew, as it does for every other count.
+    #[test]
+    fn a_1_hour_write_that_grows_across_a_call_counts_its_last_figure() {
+        let mut acc = MetricsAcc::default();
+        for one_hour in [100, 300, 300] {
+            acc.push(&write_line("msg_01", "claude-opus-5-5", one_hour, 0, 0));
+        }
+        let opus = acc.finish().per_model["claude-opus-5-5"];
+        assert_eq!((opus.cache_creation, opus.cache_creation_1h), (300, 300));
+    }
+
+    /// #s359: a cursor parked at any line of a call keeps what the call has credited.
+    #[test]
+    fn a_resume_inside_a_call_keeps_its_1_hour_credit() {
+        for parked_after in 1..3 {
+            let mut acc = MetricsAcc::default();
+            for out in [5, 6, 40].into_iter().take(parked_after) {
+                acc.push(&write_line("msg_01", "claude-opus-5-5", 1_000_000, 0, out));
+            }
+            let state = acc.state();
+            let mut after = MetricsAcc::default();
+            after.restore(&state);
+            for out in [5, 6, 40].into_iter().skip(parked_after) {
+                after.push(&write_line("msg_01", "claude-opus-5-5", 1_000_000, 0, out));
+            }
+            let opus = after.finish().per_model["claude-opus-5-5"];
+            assert_eq!(
+                opus.cache_creation_1h, 1_000_000,
+                "parked at {parked_after}"
+            );
+        }
+    }
+
+    /// #s359: a record with no `cache_creation` names no duration, so it keeps the 5-minute rate,
+    /// and a split larger than the aggregate cannot make the count more than a subset.
+    #[test]
+    fn a_write_that_names_no_duration_keeps_the_5_minute_rate() {
+        let mut acc = MetricsAcc::default();
+        acc.push(&msg_line("msg_01", "req_01", 10, 0));
+        let m = acc.finish();
+        assert_eq!(m.per_model["claude-opus-4-8"].cache_creation_1h, 0);
+        let want = estimate_cost("claude-opus-4-8", 2, 945, 0, 10).unwrap();
+        assert!(
+            (m.cost_usd.unwrap() - want).abs() < 1e-9,
+            "{:?}",
+            m.cost_usd
+        );
+
+        let line: Value = serde_json::from_str(
+            r#"{"type":"assistant","message":{"id":"m","model":"claude-opus-5-5","usage":{
+               "cache_creation_input_tokens":10,"cache_creation":{
+               "ephemeral_1h_input_tokens":99}}}}"#,
+        )
+        .unwrap();
+        let mut acc = MetricsAcc::default();
+        acc.push(&line);
+        assert_eq!(
+            acc.finish().per_model["claude-opus-5-5"].cache_creation_1h,
+            10
+        );
+    }
+
+    /// #s359 on #s47's rule: a 1-hour write in a prompt over 100,000 tokens takes the long input
+    /// rate, also when the call's prompt crossed the line on a repeat, which moves its earlier
+    /// credit into the long subset.
+    #[test]
+    fn a_haiku_5_5_prompt_over_the_line_carries_its_1_hour_write_into_the_long_part() {
+        let mut acc = MetricsAcc::default();
+        acc.push(&write_line("msg_01", "claude-haiku-5-5", 200_000, 0, 0));
+        let m = acc.finish();
+        assert_eq!(
+            m.per_model["claude-haiku-5-5"]
+                .long_prompt
+                .cache_creation_1h,
+            200_000
+        );
+        // $1 a million.
+        assert!((m.cost_usd.unwrap() - 0.2).abs() < 1e-9, "{:?}", m.cost_usd);
+
+        let mut acc = MetricsAcc::default();
+        acc.push(&write_line("msg_01", "claude-haiku-5-5", 60_000, 0, 0));
+        acc.push(&write_line("msg_01", "claude-haiku-5-5", 60_000, 60_000, 0));
+        let m = acc.finish();
+        let haiku = m.per_model["claude-haiku-5-5"];
+        assert_eq!(haiku.cache_creation_1h, 60_000);
+        assert_eq!(haiku.long_prompt.cache_creation, 120_000);
+        assert_eq!(haiku.long_prompt.cache_creation_1h, 60_000);
+    }
+
+    /// #s359: the class a fast call credits prices its 1-hour write on top of the fast multiplier,
+    /// the page's $16 a million on Opus 5.5.
+    #[test]
+    fn a_fast_call_s_class_prices_its_1_hour_write() {
+        let mut line = write_line("msg_01", "claude-opus-5-5", 1_000_000, 0, 0);
+        line["message"]["usage"]["speed"] = "fast".into();
+        let mut acc = MetricsAcc::default();
+        acc.push(&line);
+        let class = acc.request_pricing().expect("a fast call has a class");
+        let tokens = acc.finish().per_model["claude-opus-5-5"];
+        let (price, _) = class.price_with(&Default::default(), "claude-opus-5-5", tokens);
+        let usd = price.and_then(|p| p.amount_in("USD")).unwrap();
+        assert!((usd - 16.0).abs() < 1e-9, "{usd}");
+    }
+
+    /// #s359: an advisor entry carries the same `cache_creation` object as the usage around it.
+    /// Every one measured wrote nothing (503 of 503, 2026-11-05), so this holds the reading only.
+    #[test]
+    fn an_advisor_entry_s_1_hour_write_counts_under_the_advisor() {
+        let line: Value = serde_json::from_str(
+            r#"{"type":"assistant","requestId":"r","message":{"id":"m","model":"claude-opus-5-5",
+               "usage":{"input_tokens":1,"output_tokens":1,"iterations":[
+               {"type":"advisor_message","model":"claude-fable-5-1",
+                "cache_creation_input_tokens":1000000,"cache_creation":{
+                "ephemeral_1h_input_tokens":1000000,"ephemeral_5m_input_tokens":0}}]}}}"#,
+        )
+        .unwrap();
+        let mut acc = MetricsAcc::default();
+        acc.push(&line);
+        let m = acc.finish();
+        let advisor = m.per_model["claude-fable-5-1"];
+        assert_eq!(advisor.cache_creation_1h, 1_000_000);
     }
 
     /// #s361: a cursor parked between two lines of an advised call keeps the call's advisor

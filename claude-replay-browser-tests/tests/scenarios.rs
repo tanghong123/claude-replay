@@ -12657,6 +12657,76 @@ fn both_shells_count_an_advisor_call_in_the_cost() {
     }
 }
 
+/// One call that wrote 1,000,000 tokens to the 1-hour cache (#s359), on two lines, as the client
+/// writes an answer with two content items: $8.00 at Opus 5.5, once; $5.00 at the 5-minute rate.
+fn cache_1h_cost_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("question: what goes in the cache", &now_minus(60));
+    for (text, ago) in [("answer: the context", 59), ("answer: for an hour", 58)] {
+        t += &format!(
+            "{{\"type\":\"assistant\",\"sessionId\":\"{SID}\",\"requestId\":\"req_cached\",\
+             \"timestamp\":\"{ts}\",\"message\":{{\"role\":\"assistant\",\"id\":\"msg_cached\",\
+             \"model\":\"claude-opus-5-5\",\"content\":[{{\"type\":\"text\",\"text\":\"{text}\"}}],\
+             \"usage\":{{\"input_tokens\":0,\"output_tokens\":0,\
+             \"cache_creation_input_tokens\":1000000,\"cache_creation\":{{\
+             \"ephemeral_1h_input_tokens\":1000000,\"ephemeral_5m_input_tokens\":0}}}}}}}}\n",
+            ts = now_minus(ago),
+        );
+    }
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// #s359 — BOTH pages price a 1-hour cache write at its own rate, once, however many lines the
+/// call took.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn both_shells_price_a_1_hour_cache_write_at_its_own_rate() {
+    let _serial = serial();
+    for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 2768)] {
+        let fx = cache_1h_cost_fixture(match surface {
+            Surface::Classic => "cache-1h-cost-classic",
+            _ => "cache-1h-cost-app",
+        });
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "a fresh open to land at the tail");
+        settle();
+        if surface != Surface::Classic {
+            harness::eval(&page.tab, "var c = document.querySelector('[data-nav-card=\"session\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"session\"]').click(); 'ok'");
+            harness::until(
+                &page.tab,
+                "document.querySelectorAll('#navigatorSession .session-info-row').length > 0",
+                "the session-info rows to render",
+                std::time::Duration::from_secs(10),
+                "document.getElementById('navigatorSession').innerText.slice(0, 200)",
+            );
+        }
+        let js = match surface {
+            Surface::Classic => "document.getElementById('usage').textContent",
+            _ => "document.getElementById('navigatorSession').textContent",
+        };
+        let raw = eval(&page.tab, js);
+        let text = raw
+            .as_str()
+            .unwrap_or("")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            text.contains("$8.00"),
+            "{surface:?} prices the 1-hour write at 2x input, $8.00 a million at Opus 5.5. $5.00 \
+             is the 5-minute rate, and $16.00 means the repeat line charged it again. Got: {text:?}"
+        );
+    }
+}
+
 /// The audit as an ASSERTION: every structure one page renders, the other renders too.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]

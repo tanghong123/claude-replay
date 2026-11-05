@@ -91,9 +91,10 @@ pub struct RuntimeInfo {
 /// figure without that window is showing a stale partial number as a current total.
 ///
 /// Where the two overlap they AGREE: sliced to the client's own windows, our per-call sums come
-/// to 0.97x and 1.00x of its `cacheReadInputTokens` and 0.90x-0.96x of its `outputTokens`. That
-/// is what makes this worth carrying — it is an independent check on our own pricing, not a
-/// replacement for it.
+/// to 0.97x and 1.00x of its `cacheReadInputTokens` and 0.90x-0.96x of its `outputTokens`; and in
+/// dollars, four sessions whose one epoch covers the whole transcript land within 0.01% of it once
+/// advisor calls (#s361) and 1-hour cache writes (#s359) are priced (2026-11-05). That is what makes
+/// this worth carrying — it is an independent check on our own pricing, not a replacement for it.
 #[derive(Debug, Default, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReportedCost {
     /// Sum over process epochs of each epoch's highest `totalCostUSD`.
@@ -187,6 +188,14 @@ pub struct TokenCounts {
     pub cache_creation: u64,
     pub cache_read: u64,
     pub output: u64,
+    /// Of [`cache_creation`](Self::cache_creation), the tokens written to the 1-hour prompt cache
+    /// (#s359) — a SUBSET, never added on top, so a reader that knows nothing of it still sees
+    /// every token. The rest of the count is 5-minute writes, and a record that names no duration
+    /// is all 5-minute writes. [`price_with`](Self::price_with) prices this part at 2x the model's
+    /// input rate. Absent from the serialized form while zero, so a session with no 1-hour write
+    /// serializes exactly as before.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_creation_1h: u64,
     /// Of the four counts above, the part that came from requests whose PROMPT was over the
     /// model's long-prompt threshold (#s47) — a SUBSET, never added on top, so a reader that
     /// knows nothing of it still sees every token. Claude Haiku 5.5 bills a prompt over 100,000
@@ -198,7 +207,21 @@ pub struct TokenCounts {
     pub long_prompt: LongPrompt,
 }
 
-/// The four token classes of the requests over a model's long-prompt threshold — see
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+/// A 1-hour prompt-cache write as a multiple of the model's input rate (#s359, Hong's choice on
+/// #s362). The vendor's page lists it as 2x base input on every row, and at that rule our figures
+/// land within 0.5% of the client's own per-model tally on 57 of 67 rows measured, and on none at
+/// the 5-minute rate. It is a rule here, not a catalog column, so a host's override of `input`
+/// carries it along; `unknown-review.md` has the daily price check read the page's column against
+/// it. It applies to every model the catalog prices, the claude-3 ids the page no longer lists
+/// among them: no other rate has been published for them, and a record names a 1-hour write only
+/// where the provider billed one.
+const CACHE_WRITE_1H_INPUT_MULTIPLE: u64 = 2;
+
+/// The token classes of the requests over a model's long-prompt threshold — see
 /// [`TokenCounts::long_prompt`].
 #[derive(Debug, Default, PartialEq, Eq, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct LongPrompt {
@@ -206,6 +229,10 @@ pub struct LongPrompt {
     pub cache_creation: u64,
     pub cache_read: u64,
     pub output: u64,
+    /// Of this subset's `cache_creation`, the 1-hour writes — see
+    /// [`TokenCounts::cache_creation_1h`].
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_creation_1h: u64,
 }
 
 impl LongPrompt {
@@ -215,13 +242,14 @@ impl LongPrompt {
 }
 
 impl From<TokenCounts> for LongPrompt {
-    /// A request's four classes, all of them over the threshold.
+    /// A request's classes, all of them over the threshold.
     fn from(t: TokenCounts) -> Self {
         Self {
             input: t.input,
             cache_creation: t.cache_creation,
             cache_read: t.cache_read,
             output: t.output,
+            cache_creation_1h: t.cache_creation_1h,
         }
     }
 }
@@ -232,6 +260,7 @@ impl std::ops::AddAssign for LongPrompt {
         self.cache_creation += o.cache_creation;
         self.cache_read += o.cache_read;
         self.output += o.output;
+        self.cache_creation_1h += o.cache_creation_1h;
     }
 }
 
@@ -241,6 +270,7 @@ impl std::ops::AddAssign for TokenCounts {
         self.cache_creation += o.cache_creation;
         self.cache_read += o.cache_read;
         self.output += o.output;
+        self.cache_creation_1h += o.cache_creation_1h;
         self.long_prompt += o.long_prompt;
     }
 }
@@ -255,11 +285,15 @@ impl TokenCounts {
             cache_creation: self.cache_creation.saturating_sub(before.cache_creation),
             cache_read: self.cache_read.saturating_sub(before.cache_read),
             output: self.output.saturating_sub(before.output),
+            cache_creation_1h: self
+                .cache_creation_1h
+                .saturating_sub(before.cache_creation_1h),
             long_prompt: LongPrompt {
                 input: a.input.saturating_sub(b.input),
                 cache_creation: a.cache_creation.saturating_sub(b.cache_creation),
                 cache_read: a.cache_read.saturating_sub(b.cache_read),
                 output: a.output.saturating_sub(b.output),
+                cache_creation_1h: a.cache_creation_1h.saturating_sub(b.cache_creation_1h),
             },
         }
     }
@@ -270,14 +304,22 @@ impl TokenCounts {
         self.input + self.cache_creation + self.cache_read
     }
 
+    /// The part of [`cache_creation`](Self::cache_creation) priced at the 5-minute rate.
+    fn cache_creation_5m(&self) -> u64 {
+        self.cache_creation.saturating_sub(self.cache_creation_1h)
+    }
+
     /// This model context's exact estimated price, or `None` when it isn't priced.
     pub fn price(&self, model: &ModelContext) -> Option<PriceEstimate> {
         self.price_with(&PriceTable::default(), model)
     }
 
-    /// [`price`](Self::price) against host-supplied rates — see [`PriceTable`]. The
-    /// [`long_prompt`](Self::long_prompt) subset is priced at the model's long factors when its
-    /// catalog policy has a long-context rule, the rest at the standard rates.
+    /// [`price`](Self::price) against host-supplied rates — see [`PriceTable`]. A
+    /// [`cache_creation_1h`](Self::cache_creation_1h) token costs 2x the input rate, and the rest
+    /// of `cache_creation` the catalog's 5-minute rate. The [`long_prompt`](Self::long_prompt)
+    /// subset is priced at the model's long factors when its catalog policy has a long-context
+    /// rule, a 1-hour write taking the input factor since its rate is the input rate; the rest at
+    /// the standard rates.
     pub fn price_with(&self, prices: &PriceTable, model: &ModelContext) -> Option<PriceEstimate> {
         let long = self.long_prompt;
         let factors = (!long.is_empty())
@@ -286,39 +328,46 @@ impl TokenCounts {
             .filter(|policy| policy.long_context)
             .map(RequestPolicy::long_factors);
         let Some(factors) = factors else {
-            return estimate_price_with(
-                prices,
-                model,
-                self.input,
-                self.cache_creation,
-                self.cache_read,
-                self.output,
-            );
+            return standard_price(prices, model, self);
         };
-        let standard = estimate_price_with(
+        let standard = standard_price(
             prices,
             model,
-            self.input.saturating_sub(long.input),
-            self.cache_creation.saturating_sub(long.cache_creation),
-            self.cache_read.saturating_sub(long.cache_read),
-            self.output.saturating_sub(long.output),
+            &TokenCounts {
+                input: self.input.saturating_sub(long.input),
+                cache_creation: self.cache_creation.saturating_sub(long.cache_creation),
+                cache_read: self.cache_read.saturating_sub(long.cache_read),
+                output: self.output.saturating_sub(long.output),
+                cache_creation_1h: self
+                    .cache_creation_1h
+                    .saturating_sub(long.cache_creation_1h),
+                long_prompt: LongPrompt::default(),
+            },
         )?;
         let price = prices.resolve(model)?;
         let den = factors.den();
         let numerator = [
-            (long.input, price.input(), factors.input),
+            (long.input, price.input(), factors.input, 1),
             (
-                long.cache_creation,
+                long.cache_creation.saturating_sub(long.cache_creation_1h),
                 price.cache_write(),
                 factors.cache_write,
+                1,
             ),
-            (long.cache_read, price.cache_read(), factors.cache_read),
-            (long.output, price.output(), factors.output),
+            (
+                long.cache_creation_1h,
+                price.input(),
+                factors.input,
+                CACHE_WRITE_1H_INPUT_MULTIPLE,
+            ),
+            (long.cache_read, price.cache_read(), factors.cache_read, 1),
+            (long.output, price.output(), factors.output, 1),
         ]
         .into_iter()
-        .try_fold(0u128, |sum, (tokens, rate, [n, d])| {
+        .try_fold(0u128, |sum, (tokens, rate, [n, d], multiple)| {
             let component = u128::from(tokens)
                 .checked_mul(u128::from(rate.amount_micros()))?
+                .checked_mul(u128::from(multiple))?
                 .checked_mul(u128::from(n * (den / d)))?;
             sum.checked_add(component)
         })?;
@@ -623,6 +672,8 @@ impl RequestPricing {
     /// <https://developers.openai.com/api/docs/guides/ultrafast-mode>): a request selects it with
     /// `service_tier` "ultrafast"; listed for gpt-6-astra and, since 2026-10-08, gpt-6.1-sol, 6x
     /// Standard short and long.
+    /// A 1-hour cache write costs 2x the input rate (#s359), taking the input's long factor and
+    /// the tier's multiplier as the input does.
     /// The boolean marks an estimate with incomplete billing evidence, not a lower bound.
     pub fn price_with(
         &self,
@@ -650,19 +701,27 @@ impl RequestPricing {
         let factors = policy.map_or(OPENAI_LONG_FACTORS, RequestPolicy::long_factors);
         let den = factors.den();
         let mut numerator = 0u128;
-        for (count, rate, [n, d]) in [
-            (tokens.input, base.input(), factors.input),
+        for (count, rate, [n, d], multiple) in [
+            (tokens.input, base.input(), factors.input, 1),
             (
-                tokens.cache_creation,
+                tokens.cache_creation_5m(),
                 base.cache_write(),
                 factors.cache_write,
+                1,
             ),
-            (tokens.cache_read, base.cache_read(), factors.cache_read),
-            (tokens.output, base.output(), factors.output),
+            (
+                tokens.cache_creation_1h,
+                base.input(),
+                factors.input,
+                CACHE_WRITE_1H_INPUT_MULTIPLE,
+            ),
+            (tokens.cache_read, base.cache_read(), factors.cache_read, 1),
+            (tokens.output, base.output(), factors.output, 1),
         ] {
             let context_num = if long { n * (den / d) } else { den };
             let Some(n) = u128::from(count)
                 .checked_mul(u128::from(rate.amount_micros()))
+                .and_then(|n| n.checked_mul(u128::from(multiple)))
                 .and_then(|n| n.checked_mul(tier_num))
                 .and_then(|n| n.checked_mul(u128::from(context_num)))
                 .and_then(|n| numerator.checked_add(n))
@@ -980,8 +1039,9 @@ impl TokenRate {
 
 /// One model's complete four-tier price estimate.
 ///
-/// `cache_write` is the 5-minute prompt-cache write rate. [`TokenCounts`] retains one aggregate
-/// cache-creation count, even when a source transcript exposes separate 5-minute and 1-hour writes.
+/// `cache_write` is the 5-minute prompt-cache write rate. A 1-hour write has no rate here: it costs
+/// 2x `input` (#s359), which [`TokenCounts::price_with`] applies to
+/// [`TokenCounts::cache_creation_1h`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelPrice {
     input: TokenRate,
@@ -1354,7 +1414,7 @@ fn parse_pricing_catalog(json: &str) -> Result<BTreeMap<String, ModelPrice>, Str
         ));
     }
     if catalog.cache_write_basis != "5m" {
-        return Err("aggregate cache writes must use the documented 5m rate".into());
+        return Err("cache_write must be the documented 5m rate".into());
     }
     if catalog.sources.is_empty() {
         return Err("pricing catalog needs sources".into());
@@ -1499,8 +1559,9 @@ pub fn estimate_price(
     )
 }
 
-/// [`estimate_price`] against host-supplied rates. Each tier uses its explicit exact rate;
-/// `cache_creation` is aggregate and therefore uses the catalog's documented 5-minute rate.
+/// [`estimate_price`] against host-supplied rates. Each tier uses its explicit exact rate; these
+/// counts name no cache duration, so `cache_creation` is priced at the catalog's documented
+/// 5-minute rate. A count that knows its 1-hour writes goes through [`TokenCounts::price_with`].
 pub fn estimate_price_with(
     prices: &PriceTable,
     model: &ModelContext,
@@ -1509,16 +1570,43 @@ pub fn estimate_price_with(
     cache_read: u64,
     output: u64,
 ) -> Option<PriceEstimate> {
+    standard_price(
+        prices,
+        model,
+        &TokenCounts {
+            input,
+            cache_creation,
+            cache_read,
+            output,
+            ..TokenCounts::default()
+        },
+    )
+}
+
+/// `tokens` at the model's standard rates, its 1-hour writes at theirs. Its
+/// [`long_prompt`](TokenCounts::long_prompt) subset is not read: that is the caller's.
+fn standard_price(
+    prices: &PriceTable,
+    model: &ModelContext,
+    tokens: &TokenCounts,
+) -> Option<PriceEstimate> {
     let price = prices.resolve(model)?;
     let numerator = [
-        (input, price.input()),
-        (cache_creation, price.cache_write()),
-        (cache_read, price.cache_read()),
-        (output, price.output()),
+        (tokens.input, price.input(), 1),
+        (tokens.cache_creation_5m(), price.cache_write(), 1),
+        (
+            tokens.cache_creation_1h,
+            price.input(),
+            CACHE_WRITE_1H_INPUT_MULTIPLE,
+        ),
+        (tokens.cache_read, price.cache_read(), 1),
+        (tokens.output, price.output(), 1),
     ]
     .into_iter()
-    .try_fold(0u128, |sum, (tokens, rate)| {
-        let component = u128::from(tokens).checked_mul(u128::from(rate.amount_micros()))?;
+    .try_fold(0u128, |sum, (tokens, rate, multiple)| {
+        let component = u128::from(tokens)
+            .checked_mul(u128::from(rate.amount_micros()))?
+            .checked_mul(u128::from(multiple))?;
         sum.checked_add(component)
     })?;
     let denominator =
@@ -2702,11 +2790,13 @@ mod long_prompt_tests {
         cache_creation: 1_000_000,
         cache_read: 1_000_000,
         output: 1_000_000,
+        cache_creation_1h: 0,
         long_prompt: LongPrompt {
             input: 0,
             cache_creation: 0,
             cache_read: 0,
             output: 0,
+            cache_creation_1h: 0,
         },
     };
 
@@ -2870,5 +2960,230 @@ mod long_prompt_tests {
         assert!(err.contains("positive"), "{err}");
         let err = with(&|p| p["long_factors"]["output"] = serde_json::json!([5, 0])).unwrap_err();
         assert!(err.contains("factors"), "{err}");
+    }
+}
+
+/// #s359: a write to the 1-hour prompt cache costs 2x the input rate, a column of its own on the
+/// pricing page, and the rest of a cache write keeps the 5-minute rate. The figures are the page's,
+/// read 2026-11-04, and the fold's side of it is in the Claude adapter's tests.
+#[cfg(test)]
+mod cache_1h_tests {
+    use super::*;
+
+    const MILLION: u64 = 1_000_000;
+
+    fn written_1h(tokens: u64) -> TokenCounts {
+        TokenCounts {
+            cache_creation: tokens,
+            cache_creation_1h: tokens,
+            ..Default::default()
+        }
+    }
+
+    fn usd(tokens: TokenCounts, model: &str) -> f64 {
+        tokens
+            .price(&ModelContext::new(model))
+            .and_then(|price| price.amount_in("USD"))
+            .expect("priced")
+    }
+
+    fn class_usd(class: RequestPricing, tokens: TokenCounts, model: &str) -> f64 {
+        class
+            .price_with(&PriceTable::default(), model, tokens)
+            .0
+            .and_then(|price| price.amount_in("USD"))
+            .expect("priced")
+    }
+
+    fn close(got: f64, want: f64) -> bool {
+        (got - want).abs() < 1e-9
+    }
+
+    #[test]
+    fn a_1_hour_write_costs_the_page_s_rate_on_every_row() {
+        for (models, per_million) in [
+            (
+                &[
+                    "claude-fable-5-1",
+                    "claude-mythos-5-1",
+                    "claude-fable-5",
+                    "claude-mythos-5",
+                ][..],
+                20.0,
+            ),
+            (&["claude-opus-5-5"], 8.0),
+            (
+                &[
+                    "claude-opus-5",
+                    "claude-opus-4-8",
+                    "claude-opus-4-7",
+                    "claude-opus-4-6",
+                    "claude-opus-4-5",
+                ],
+                10.0,
+            ),
+            (&["claude-opus-4-1", "claude-opus-4"], 30.0),
+            (&["claude-sonnet-5-5", "claude-sonnet-5"], 4.0),
+            (
+                &["claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4"],
+                6.0,
+            ),
+            (&["claude-haiku-5-5"], 0.20),
+            (&["claude-haiku-4-5"], 2.0),
+            (&["claude-haiku-3-5"], 1.60),
+        ] {
+            for model in models {
+                let got = usd(written_1h(MILLION), model);
+                assert!(close(got, per_million), "{model}: {got}");
+            }
+        }
+    }
+
+    /// The ids the page no longer lists take the same rule: see `CACHE_WRITE_1H_INPUT_MULTIPLE`.
+    #[test]
+    fn the_ids_the_page_no_longer_lists_take_the_same_rule() {
+        for (model, per_million) in [
+            ("claude-3-opus", 30.0),
+            ("claude-3-7-sonnet", 6.0),
+            ("claude-3-5-sonnet", 6.0),
+            ("claude-3-5-haiku", 1.60),
+            ("claude-3-haiku", 0.50),
+        ] {
+            let got = usd(written_1h(MILLION), model);
+            assert!(close(got, per_million), "{model}: {got}");
+        }
+    }
+
+    #[test]
+    fn only_the_1_hour_part_of_a_write_leaves_the_5_minute_rate() {
+        // 300,000 at $8 and 700,000 at $5.
+        let mixed = TokenCounts {
+            cache_creation: MILLION,
+            cache_creation_1h: 300_000,
+            ..Default::default()
+        };
+        assert!(close(usd(mixed, "claude-opus-5-5"), 5.9));
+        // No 1-hour count is the old figure to the digit, whichever way it is asked.
+        let plain = TokenCounts {
+            cache_creation: MILLION,
+            ..Default::default()
+        };
+        assert!(close(usd(plain, "claude-opus-5-5"), 5.0));
+        assert_eq!(
+            estimate_cost("claude-opus-5-5", 0, MILLION, 0, 0),
+            Some(5.0)
+        );
+    }
+
+    #[test]
+    fn a_prompt_too_long_for_haiku_5_5_pays_its_long_input_rate_on_a_1_hour_write() {
+        let over = TokenCounts {
+            long_prompt: written_1h(MILLION).into(),
+            ..written_1h(MILLION)
+        };
+        assert!(close(usd(over, "claude-haiku-5-5"), 1.0));
+        // A session holding both: half at $0.20, half at $1.
+        let mixed = TokenCounts {
+            long_prompt: written_1h(MILLION / 2).into(),
+            ..written_1h(MILLION)
+        };
+        assert!(close(usd(mixed, "claude-haiku-5-5"), 0.6));
+        // A long prompt's 5-minute writes keep their own factor beside it: 500,000 at $1, 500,000
+        // at $0.625.
+        let both = TokenCounts {
+            cache_creation: MILLION,
+            cache_creation_1h: MILLION / 2,
+            long_prompt: LongPrompt {
+                cache_creation: MILLION,
+                cache_creation_1h: MILLION / 2,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(close(usd(both, "claude-haiku-5-5"), 0.8125));
+    }
+
+    #[test]
+    fn a_request_s_class_multiplies_a_1_hour_write() {
+        let fast = RequestPricing {
+            tier: ServiceTier::Fast,
+            long_context: None,
+            tier_confirmed: true,
+        };
+        let got = class_usd(fast, written_1h(MILLION), "claude-opus-5-5");
+        assert!(close(got, 16.0), "{got}");
+        let long = RequestPricing {
+            tier: ServiceTier::Standard,
+            long_context: Some(true),
+            tier_confirmed: true,
+        };
+        let got = class_usd(long, written_1h(MILLION), "claude-haiku-5-5");
+        assert!(close(got, 1.0), "{got}");
+    }
+
+    #[test]
+    fn both_pricing_paths_agree_on_one_set_of_tokens() {
+        let tokens = TokenCounts {
+            input: 1_234,
+            cache_creation: 900_000,
+            cache_creation_1h: 400_000,
+            cache_read: 5_000_000,
+            output: 67_890,
+            ..Default::default()
+        };
+        let class = RequestPricing {
+            tier: ServiceTier::Standard,
+            long_context: None,
+            tier_confirmed: true,
+        };
+        for model in ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"] {
+            assert!(close(usd(tokens, model), class_usd(class, tokens, model)));
+        }
+    }
+
+    /// The rule reads the rate a host set, so an override of `input` needs nothing else.
+    #[test]
+    fn a_host_s_input_rate_carries_the_1_hour_rate() {
+        let unit = TokenRateUnit::usd_per_million_tokens();
+        let mut table = PriceTable::new();
+        table.set(
+            &ModelContext::new("claude-opus-5-5"),
+            ModelPrice::from_micros(unit, [1_000_000, 1_250_000, 100_000, 5_000_000]),
+        );
+        let got = written_1h(MILLION)
+            .cost_with(&table, "claude-opus-5-5")
+            .unwrap();
+        assert!(close(got, 2.0), "{got}");
+    }
+
+    #[test]
+    fn a_session_with_no_1_hour_write_serializes_as_before() {
+        let plain = r#"{"input":1,"cache_creation":2,"cache_read":3,"output":4}"#;
+        let t: TokenCounts = serde_json::from_str(plain).unwrap();
+        assert_eq!(t.cache_creation_1h, 0);
+        assert_eq!(serde_json::to_string(&t).unwrap(), plain);
+        let one_hour = TokenCounts {
+            cache_creation_1h: 2,
+            ..t
+        };
+        let round: TokenCounts =
+            serde_json::from_str(&serde_json::to_string(&one_hour).unwrap()).unwrap();
+        assert_eq!(round, one_hour);
+    }
+
+    #[test]
+    fn a_sum_and_a_difference_carry_the_count_and_its_long_part() {
+        let long = TokenCounts {
+            long_prompt: written_1h(40).into(),
+            ..written_1h(100)
+        };
+        let mut total = long;
+        total += long;
+        assert_eq!(total.cache_creation_1h, 200);
+        assert_eq!(total.long_prompt.cache_creation_1h, 80);
+        let delta = total.saturating_sub(&long);
+        assert_eq!(delta.cache_creation_1h, 100);
+        assert_eq!(delta.long_prompt.cache_creation_1h, 40);
+        assert_eq!(total.prompt(), 200, "the prompt counts the aggregate once");
     }
 }
