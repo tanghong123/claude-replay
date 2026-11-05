@@ -120,7 +120,15 @@ jobs:
           ver="${tag#v}"
           base="https://github.com/tanghong123/claude-replay/releases/download/${tag}"
 
-          sha() { curl -fsSL "${base}/$1-$2.tar.gz" | sha256sum | awk '{print $1}'; }
+          # To a file, so a retry starts it over: one after a partial body down a pipe would add to
+          # what sha256sum had already read, and publish a wrong digest. `|| return` because bash
+          # drops `set -e` inside `x=$(sha ...)`: a failed download would go on with no digest.
+          sha() {
+            local f="${RUNNER_TEMP}/$1-$2.tar.gz"
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$f" "${base}/$1-$2.tar.gz" || return
+            sha256sum "$f" | awk '{print $1}'
+            rm -f "$f"
+          }
           mac_arm=$(sha agent-replay aarch64-apple-darwin)
           mac_x86=$(sha agent-replay x86_64-apple-darwin)
           lin_arm=$(sha agent-replay aarch64-unknown-linux-musl)
