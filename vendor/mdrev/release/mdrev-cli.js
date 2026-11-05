@@ -393,14 +393,6 @@ var require_format = __commonJS({
   }
 });
 
-// packages/cli/dist/cli.js
-import { homedir as homedir4, hostname as hostname5, userInfo as userInfo4 } from "node:os";
-import { readFileSync as readFileSync8 } from "node:fs";
-import { join as join12 } from "node:path";
-import { createInterface } from "node:readline/promises";
-import { timingSafeEqual } from "node:crypto";
-import { resolve as resolvePath2 } from "node:path";
-
 // packages/core/dist/git.js
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
@@ -1278,8 +1270,11 @@ ${staged}`;
    * reaching no more than a week in that direction. A row is a document, not a
    * commit — its newest touch on that side is when it counts as having
    * changed — so a document edited every day appears once.
+   *
+   * `all` keeps every document of the week at the tip, newest first, for a list that is counted rather than glanced at:
+   * the service's Home counts the last 24 hours and its Document updates page lists them all (#s581).
    */
-  async recentlyChanged(atRev) {
+  async recentlyChanged(atRev, opts = {}) {
     const now = Math.floor(Date.now() / 1e3);
     const pinned = atRev && atRev !== WORKTREE2 && atRev !== EMPTY ? this.standing(atRev) : null;
     let anchor = now;
@@ -1335,7 +1330,7 @@ ${staged}`;
     const rows = [...seen.values()];
     const before = rows.filter((r) => r.side === "before").sort((a, b) => b.at - a.at || a.path.localeCompare(b.path));
     const after = rows.filter((r) => r.side === "after").sort((a, b) => a.at - b.at || a.path.localeCompare(b.path)).slice(0, RECENT_EACH_SIDE).reverse();
-    return { files: [...after, ...before.slice(0, pinned ? RECENT_EACH_SIDE : RECENT_AT_TIP)] };
+    return { files: [...after, ...before.slice(0, pinned ? RECENT_EACH_SIDE : opts.all ? before.length : RECENT_AT_TIP)] };
   }
   /**
    * When each document last changed inside the range.
@@ -1502,8 +1497,8 @@ ${staged}`;
       const rel2 = absOrRelPath.replace(/^(\.\/)+/, "");
       if (rel2.length === 0 || rel2.startsWith("/") || rel2.split("/").includes(".."))
         throw new GitError(`'${absOrRelPath}' is not a path in the repository`);
-      const there = await this.git("--literal-pathspecs", "ls-tree", this.copyRef, "--", rel2).then((out2) => out2.trim().length > 0, () => false);
-      if (!there)
+      const there2 = await this.git("--literal-pathspecs", "ls-tree", this.copyRef, "--", rel2).then((out2) => out2.trim().length > 0, () => false);
+      if (!there2)
         throw new GitError(`'${rel2}' does not exist on ${this.copyRef.replace(/^refs\/heads\//, "")}`);
       return rel2;
     }
@@ -32296,16 +32291,15 @@ function columnsOf(word) {
 }
 function floorColumns(table2) {
   const rows = [];
-  const walk = (el) => {
+  const walk = (el, head2) => {
     for (const c of el.children)
       if (c.type === "element")
-        c.tagName === "tr" ? rows.push(c) : walk(c);
+        c.tagName === "tr" ? rows.push({ tr: c, head: head2 }) : walk(c, head2 || c.tagName === "thead");
   };
-  walk(table2);
-  const textOf2 = (n) => n.type === "text" ? n.value : n.type === "element" ? n.children.map(textOf2).join("") : n.type === "raw" ? /^<br\b/i.test(n.value) ? " " : "" : "";
+  walk(table2, false);
   const cellsOf = (tr2) => tr2.children.filter((c) => c.type === "element" && (c.tagName === "td" || c.tagName === "th"));
   const floors = [];
-  for (const tr2 of rows) {
+  for (const { tr: tr2 } of rows) {
     cellsOf(tr2).forEach((cell, j) => {
       const longest = Math.max(0, ...textOf2(cell).split(/\s+/).map(columnsOf));
       floors[j] = Math.max(floors[j] ?? 0, Math.min(10, longest));
@@ -32314,7 +32308,7 @@ function floorColumns(table2) {
   const sum = floors.reduce((a, b) => a + (b ?? 0), 0);
   if (sum === 0)
     return;
-  for (const tr2 of rows) {
+  for (const { tr: tr2 } of rows) {
     cellsOf(tr2).forEach((cell, j) => {
       const floor = floors[j] ?? 0;
       if (floor === 0)
@@ -32323,6 +32317,145 @@ function floorColumns(table2) {
       cell.properties.className = [...Array.isArray(cls) ? cls : [], `mdv-f${floor}`, `mdv-s${Math.max(1, Math.round(floor / sum * 50))}`];
     });
   }
+  keepWhereThereIsRoom(table2, rows, cellsOf);
+}
+function textOf2(n, without) {
+  return n.type === "text" ? n.value : n.type === "element" ? n.tagName === without ? "" : n.children.map((c) => textOf2(c, without)).join("") : n.type === "raw" ? /^<br\b/i.test(n.value) ? " " : "" : "";
+}
+var OPAQUE2 = /* @__PURE__ */ new Set(["img", "svg", "math", "picture", "video", "audio", "iframe", "object", "embed", "canvas", "input", "button", "select", "textarea", "table"]);
+function opaque(n) {
+  if (n.type === "raw")
+    return !/^<br\b/i.test(n.value);
+  if (n.type !== "element")
+    return false;
+  const cls = n.properties.className;
+  if (OPAQUE2.has(n.tagName) || Array.isArray(cls) && cls.some((k) => /^mdv-(math|canvas)/.test(String(k))))
+    return true;
+  return n.children.some(opaque);
+}
+var MARK = "\uE000";
+var CUT = "\uE001";
+function drawnOf(n, folded) {
+  if (n.type !== "element")
+    return textOf2(n);
+  const inner = n.children.map((c) => drawnOf(c, folded)).join("");
+  if (n.tagName === "ins")
+    return `${MARK}${inner}`;
+  if (n.tagName === "del")
+    return folded ? `${inner.replace(/\S/g, "")}${CUT}` : `${MARK}${inner}`;
+  return inner;
+}
+var wordsIn = (text9) => text9.split(/[^\S\u00a0\u2007\u202f]+/).filter((w) => w && !/^[\u00a0\u2007\u202f]+$/.test(w));
+var longestIn = (text9) => Math.min(10, Math.max(0, ...wordsIn(text9).map(columnsOf)));
+var asLetters = (drawn) => drawn.replaceAll(MARK, "x").replaceAll(CUT, "xxx");
+function keptIn(drawn) {
+  let kept = { chars: 0, cuts: 0 };
+  for (const w of wordsIn(drawn)) {
+    const letters = columnsOf(w.replaceAll(MARK, "").replaceAll(CUT, ""));
+    const marks = w.split(MARK).length - 1;
+    const cuts = w.split(CUT).length - 1;
+    const k = letters > 10 ? { chars: 10, cuts: 0 } : { chars: Math.min(10, letters + Math.ceil(marks / 2)), cuts: Math.min(3, cuts) };
+    if (k.chars + 2.5 * k.cuts > kept.chars + 2.5 * kept.cuts)
+      kept = k;
+  }
+  return kept;
+}
+function keepWhereThereIsRoom(table2, rows, cellsOf) {
+  if (!rows.some((r) => !r.head))
+    return;
+  if (rows.some(({ tr: tr2 }) => cellsOf(tr2).some(opaque)))
+    return;
+  const header = [];
+  const headerWord = [];
+  const shown = [];
+  const folded = [];
+  const letters = [];
+  const amount = [];
+  const text9 = [];
+  const worded = [];
+  let columns = 0;
+  for (const { tr: tr2, head: head2 } of rows) {
+    const cells2 = cellsOf(tr2);
+    columns = Math.max(columns, cells2.length);
+    cells2.forEach((cell, j) => {
+      const plain = textOf2(cell);
+      const drawn = [drawnOf(cell, false), drawnOf(cell, true)];
+      if (head2) {
+        header[j] = Math.max(header[j] ?? 0, ...drawn.map((d) => columnsOf(wordsIn(asLetters(d)).join(" "))));
+        headerWord[j] = Math.max(headerWord[j] ?? 0, ...drawn.map((d) => longestIn(asLetters(d))));
+        return;
+      }
+      const s2 = keptIn(drawn[0]);
+      const f = keptIn(drawn[1]);
+      shown[j] = Math.max(shown[j] ?? 0, s2.chars);
+      if (!folded[j] || f.chars + 2.5 * f.cuts > folded[j].chars + 2.5 * folded[j].cuts)
+        folded[j] = f;
+      letters[j] = Math.max(letters[j] ?? 0, longestIn(plain));
+      amount[j] = (amount[j] ?? 0) + columnsOf(wordsIn(plain).join(""));
+      for (const side of ["ins", "del"]) {
+        const words = wordsIn(textOf2(cell, side));
+        if (words.length)
+          worded[j] = true;
+        if (words.length > 1 || words.some((w) => columnsOf(w) > 10))
+          text9[j] = true;
+      }
+    });
+  }
+  const ids = (j) => !!worded[j] && !text9[j] && (letters[j] ?? 0) > 0;
+  const wide = (k) => k.chars + 2.5 * k.cuts;
+  let widest = 0;
+  let widestFolded = { chars: 0, cuts: 0 };
+  let idText = 0;
+  for (let j = 0; j < columns; j++) {
+    if (!ids(j))
+      continue;
+    widest = Math.max(widest, shown[j] ?? 0);
+    const f = folded[j] ?? { chars: 0, cuts: 0 };
+    if (wide(f) > wide(widestFolded))
+      widestFolded = f;
+    idText = Math.max(idText, amount[j] ?? 0);
+  }
+  if (!widest)
+    return;
+  const roomy = (j) => !!text9[j] && (amount[j] ?? 0) > idText;
+  const keepShown = (j) => Math.max(shown[j] ?? 0, roomy(j) ? widest : 0);
+  const keepFolded = (j) => {
+    const own12 = folded[j] ?? { chars: 0, cuts: 0 };
+    return roomy(j) && wide(widestFolded) > wide(own12) ? widestFolded : own12;
+  };
+  let need2 = 0;
+  let needFolded = 0;
+  let cutsFolded = 0;
+  for (let j = 0; j < columns; j++) {
+    need2 += Math.max(keepShown(j), header[j] ?? 0);
+    const f = keepFolded(j);
+    if ((header[j] ?? 0) >= wide(f))
+      needFolded += header[j] ?? 0;
+    else
+      needFolded += f.chars, cutsFolded += f.cuts;
+  }
+  if (need2 >= 200 || needFolded >= 200 || cutsFolded > 30 || columns > 24)
+    return;
+  const differs = needFolded !== need2 || cutsFolded > 0;
+  for (const { tr: tr2, head: head2 } of rows) {
+    cellsOf(tr2).forEach((cell, j) => {
+      const k = head2 ? headerWord[j] ?? 0 : keepShown(j);
+      const f = head2 ? { chars: k, cuts: 0 } : keepFolded(j);
+      if (k === 0)
+        return;
+      const own12 = [`mdv-keep${k}`, ...f.chars !== k ? [`mdv-fkeep${f.chars}`] : [], ...f.cuts > 0 ? [`mdv-cut${f.cuts}`] : []];
+      const cls2 = cell.properties.className;
+      cell.properties.className = [...Array.isArray(cls2) ? cls2 : [], ...own12];
+    });
+  }
+  const cls = table2.properties.className;
+  table2.properties.className = [
+    ...Array.isArray(cls) ? cls : [],
+    `mdv-nt${Math.floor(need2 / 10)}`,
+    `mdv-nu${need2 % 10}`,
+    `mdv-c${columns}`,
+    ...differs ? [`mdv-fnt${Math.floor(needFolded / 10)}`, `mdv-fnu${needFolded % 10}`, ...cutsFolded > 0 ? [`mdv-cuts${cutsFolded}`] : []] : []
+  ];
 }
 function escapeHtml(s2) {
   return s2.replace(/&/g, "&#x26;").replace(/</g, "&#x3C;");
@@ -33975,8 +34108,8 @@ async function sync(mode, o = {}) {
   }
 }
 async function recordChange(mode, path2, before, after) {
-  const stamped = (after ?? before)?.personal;
-  if (!stamped)
+  const stamped2 = (after ?? before)?.personal;
+  if (!stamped2)
     return [];
   const ops = opsFor(path2, before, after);
   enqueue(mode.repo.id, ops);
@@ -34117,6 +34250,16 @@ var SCRUB = [
   // the viewer's key proves a person to mdrev-cli and goes no further — not to credential helpers, not to hooks
   "MDREV_VIEWER_KEY"
 ];
+var runningGit = /* @__PURE__ */ new Set();
+function killGitGroups() {
+  for (const pid of runningGit) {
+    try {
+      process.kill(-pid, "SIGTERM");
+    } catch {
+    }
+  }
+  runningGit.clear();
+}
 function git(args, o = {}) {
   const env2 = { ...process.env };
   for (const k of SCRUB)
@@ -34125,6 +34268,9 @@ function git(args, o = {}) {
   const argv = [...o.gitDir ? [`--git-dir=${o.gitDir}`] : [], "-c", "core.quotePath=false", ...args];
   return new Promise((done) => {
     const child = spawn5("git", argv, { cwd: o.cwd, env: env2, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+    const pid = child.pid;
+    if (pid)
+      runningGit.add(pid);
     const out = [];
     const err = [];
     let timedOut = false;
@@ -34141,11 +34287,15 @@ function git(args, o = {}) {
     child.on("error", (e) => {
       if (timer)
         clearTimeout(timer);
+      if (pid)
+        runningGit.delete(pid);
       done({ code: 127, out: "", err: String(e), timedOut });
     });
     child.on("close", (code4) => {
       if (timer)
         clearTimeout(timer);
+      if (pid)
+        runningGit.delete(pid);
       done({ code: code4 ?? 1, out: Buffer.concat(out).toString("utf8"), err: Buffer.concat(err).toString("utf8"), timedOut });
     });
     child.stdin.on("error", () => void 0);
@@ -34737,6 +34887,13 @@ var SharedStore = class {
       return;
     writeAtomic(join8(this.dir, "pairing.json"), JSON.stringify({ ...p2, root: root5 }, null, 2));
   }
+  /** Keep the project's first commit with this machine's pairing (#s610). */
+  rememberSource(source) {
+    const p2 = this.pairing();
+    if (!p2 || p2.source === source)
+      return;
+    writeAtomic(join8(this.dir, "pairing.json"), JSON.stringify({ ...p2, source }, null, 2));
+  }
   /** Pair this machine with the store, as this person (E3). The CLI asks; this records. */
   pair(identity, extra = {}) {
     this.ensureDirs();
@@ -34749,6 +34906,7 @@ var SharedStore = class {
       host: hostname2(),
       machine: machineId(),
       ...extra.project ? { project: extra.project } : {},
+      ...extra.source ? { source: extra.source } : {},
       ...extra.server ? { server: extra.server } : {},
       ...extra.inTheOpen ? { inTheOpen: true } : {},
       ...extra.by === "agent" ? { by: "agent" } : {},
@@ -35569,6 +35727,29 @@ async function probeStore(p2) {
     rmSync3(dir, { recursive: true, force: true });
   }
 }
+function mountsDrives(dir) {
+  return ["/Volumes", "/mnt", "/media", "/run/media"].includes(dir) || /^\/(run\/)?media\/[^/]+$/.test(dir);
+}
+function there(path2) {
+  try {
+    return statSync4(path2, { throwIfNoEntry: false }) !== void 0;
+  } catch {
+    return true;
+  }
+}
+function checkoutGone(path2, drives = mountsDrives) {
+  try {
+    statSync4(path2);
+    return false;
+  } catch (e) {
+    if (e.code !== "ENOENT")
+      return false;
+  }
+  let dir = dirname4(path2);
+  while (dir !== dirname4(dir) && !there(dir))
+    dir = dirname4(dir);
+  return !drives(dir);
+}
 async function projectPairings(root5, except) {
   const home = join8(stateHome(), "review");
   let names;
@@ -35578,6 +35759,8 @@ async function projectPairings(root5, except) {
     return [];
   }
   const project2 = await commonDir(root5);
+  if (!project2)
+    return [];
   const out = [];
   for (const n of names) {
     const dir = join8(home, n);
@@ -35585,8 +35768,15 @@ async function projectPairings(root5, except) {
       continue;
     try {
       const p2 = JSON.parse(readFileSync5(join8(dir, "pairing.json"), "utf8"));
-      if (p2.email && p2.project && p2.project === project2)
-        out.push({ dir, pairing: p2 });
+      if (!p2.email || !p2.project)
+        continue;
+      const adopted = p2.project !== project2;
+      if (adopted && !checkoutGone(p2.project))
+        continue;
+      const storeRoot = p2.root ?? await rootOf(join8(dir, "store.git"), TIP);
+      if (adopted && !storeRoot)
+        continue;
+      out.push({ dir, pairing: p2, root: storeRoot, adopted });
     } catch {
     }
   }
@@ -35613,13 +35803,46 @@ async function followMoved(root5, store, opts = {}) {
 async function follow(root5, store, opts = {}) {
   const mine = store.pairing();
   if (mine)
-    return { pairing: mine };
+    return { pairing: await claimed(root5, store, mine) };
   let p2 = following.get(store.dir);
   if (!p2) {
     p2 = carryMoved(root5, store, opts.fresh === true).catch(() => ({ pairing: null })).finally(() => following.delete(store.dir));
     following.set(store.dir, p2);
   }
   return p2;
+}
+async function claimed(root5, store, p2) {
+  if (!p2.project)
+    return p2;
+  if (!checkoutGone(p2.project))
+    return p2.source ? p2 : stamped(root5, store, p2);
+  const project2 = await commonDir(root5);
+  if (!project2 || project2 === p2.project || checkoutGone(project2))
+    return p2;
+  const held = (await sourcesHere(root5, [p2.source])).get(p2.source ?? "");
+  if (!(held ?? (await checkoutRemotes(root5)).has(sameRepository(store.pointer.remote))))
+    return p2;
+  const source = p2.source ?? await sourceOf(root5);
+  const next2 = { ...p2, project: project2, ...source ? { source } : {} };
+  try {
+    writeAtomic(join8(store.dir, "pairing.json"), JSON.stringify(next2, null, 2));
+  } catch {
+    return p2;
+  }
+  return next2;
+}
+async function stamped(root5, store, p2) {
+  if (await commonDir(root5) !== p2.project)
+    return p2;
+  const source = await sourceOf(root5);
+  if (!source)
+    return p2;
+  try {
+    store.rememberSource(source);
+  } catch {
+    return p2;
+  }
+  return { ...p2, source };
 }
 var PROBE_KEPT = { root: 36e5, absent: 3e5, unreachable: 6e4 };
 async function probeKept(p2, fresh) {
@@ -35642,35 +35865,41 @@ async function probeKept(p2, fresh) {
   return now;
 }
 async function carryMoved(root5, store, fresh) {
-  const candidates = await projectPairings(root5, store.dir);
+  const found = await projectPairings(root5, store.dir);
+  if (found.length === 0)
+    return { pairing: null };
+  const remotes = await checkoutRemotes(root5);
+  const ownRepository = remotes.has(sameRepository(store.pointer.remote));
+  const here = await sourcesHere(root5, found.filter((x) => x.adopted).map((x) => x.pairing.source));
+  const candidates = found.filter((x) => !x.adopted || (here.get(x.pairing.source ?? "") ?? ownRepository));
   if (candidates.length === 0)
     return { pairing: null };
   const probe = await probeKept(store.pointer, fresh);
   if (probe.kind === "unreachable")
     return { pairing: null };
-  const roots = await Promise.all(candidates.map(async (c2) => c2.pairing.root ?? await rootOf(join8(c2.dir, "store.git"), TIP)));
-  let pick3 = -1;
+  let c;
   if (probe.kind === "root") {
-    pick3 = roots.indexOf(probe.root);
+    const same2 = candidates.filter((x) => x.root === probe.root);
+    c = same2.find((x) => !x.adopted) ?? same2[0];
   } else {
-    const remotes = await checkoutRemotes(root5);
-    const ownRepository = remotes.has(sameRepository(store.pointer.remote));
+    const own12 = candidates.filter((x) => !x.adopted);
+    if (own12.length === 0)
+      return { pairing: null };
     if (!ownRepository) {
-      const old2 = candidates.map((c2) => remotes.get(sameRepository(c2.pairing.remote))).find(Boolean);
+      const old2 = own12.map((x) => remotes.get(sameRepository(x.pairing.remote))).find(Boolean);
       return { pairing: null, repoint: { remote: old2 ?? "origin", to: store.pointer.remote } };
     }
-    pick3 = roots.indexOf(null);
-    if (pick3 < 0) {
-      const had = roots.findIndex((r) => r !== null);
-      const c2 = candidates[had];
-      if (c2)
-        return { pairing: null, leftBehind: { from: c2.pairing.remote, branch: c2.pairing.branch, copy: join8(c2.dir, "store.git") } };
+    c = own12.find((x) => x.root === null);
+    if (!c) {
+      const had = own12.find((x) => x.root !== null);
+      if (had)
+        return { pairing: null, leftBehind: { from: had.pairing.remote, branch: had.pairing.branch, copy: join8(had.dir, "store.git") } };
       return { pairing: null };
     }
   }
-  if (pick3 < 0)
+  if (!c)
     return { pairing: null };
-  const c = candidates[pick3];
+  const project2 = await commonDir(root5);
   if (statSync4(store.dir, { throwIfNoEntry: false })) {
     if (store.outbox().length > 0)
       return { pairing: null };
@@ -35691,7 +35920,7 @@ async function carryMoved(root5, store, fresh) {
       server = check.result === "matched" ? { check: "matched", user: check.user, ...check.emails?.length ? { emails: check.emails } : {}, ...check.via ? { via: check.via } : {} } : { check: "unconfirmed", ...check.why ? { why: check.why } : {} };
   }
   const { root: _was, ...kept } = old;
-  const next2 = { ...kept, remote: now.remote, branch: now.branch, ...probe.kind === "root" ? { root: probe.root } : {}, moved: [...old.moved ?? [], { from: old.remote, branch: old.branch, at: (/* @__PURE__ */ new Date()).toISOString() }], ...server ? { server } : {} };
+  const next2 = { ...kept, ...project2 ? { project: project2 } : {}, remote: now.remote, branch: now.branch, ...probe.kind === "root" ? { root: probe.root } : {}, moved: [...old.moved ?? [], { from: old.remote, branch: old.branch, at: (/* @__PURE__ */ new Date()).toISOString() }], ...server ? { server } : {} };
   writeAtomic(join8(store.dir, "store.json"), JSON.stringify({ remote: now.remote, branch: now.branch }));
   if (why) {
     writeAtomic(join8(store.dir, "pairing.moved.json"), JSON.stringify({ ...next2, why }, null, 2));
@@ -35809,7 +36038,7 @@ async function pairStore(root5, identity, who, opts = {}) {
     logEvent("review.pair-mismatch", { store: store.pointer.remote, email, serverUser: check.user });
     throw new StoreError(check.message, "mismatch");
   }
-  return store.pair(identity, { server: serverField(check), project: await commonDir(root5) ?? void 0, inTheOpen });
+  return store.pair(identity, { server: serverField(check), project: await commonDir(root5) ?? void 0, source: await sourceOf(root5), inTheOpen });
 }
 function serverField(check) {
   return check.result === "unknown" ? { check: "unconfirmed", ...check.why ? { why: check.why } : {} } : { check: check.result === "matched" ? "matched" : "overridden", user: check.user, ...check.emails?.length ? { emails: check.emails } : {}, ...check.via ? { via: check.via } : {} };
@@ -35853,7 +36082,7 @@ async function joinOrAsk(root5, identity) {
     return ask2(check.message ?? "the server says this machine pushes as another account");
   if (check.result === "unknown")
     return ask2(`the server could not say whose account this machine pushes as${check.why ? ` (${check.why})` : ""}`);
-  const paired = store.pair(identity, { server: serverField(check), project: await commonDir(root5) ?? void 0, by: "agent" });
+  const paired = store.pair(identity, { server: serverField(check), project: await commonDir(root5) ?? void 0, source: await sourceOf(root5), by: "agent" });
   return { paired, check };
 }
 function defaultDisplayName(gitName) {
@@ -36540,6 +36769,31 @@ async function reviewStatus(source, opts = {}) {
       return n ? createHint(n) : null;
     })() } } : {}
   };
+}
+async function sourceOf(root5) {
+  const shallow = await git(["rev-parse", "--is-shallow-repository"], { cwd: root5 });
+  if (shallow.code !== 0 || shallow.out.trim() !== "false")
+    return null;
+  const r = await git(["rev-list", "--max-parents=0", "HEAD"], { cwd: root5 });
+  return r.code === 0 ? r.out.trim().split("\n").pop() || null : null;
+}
+var SOURCE_WAIT_MS = 2e3;
+async function sourcesHere(root5, sources) {
+  const out = /* @__PURE__ */ new Map();
+  const asked = [...new Set(sources.filter((x) => !!x))];
+  if (asked.length === 0)
+    return out;
+  const o = { cwd: root5, env: { GIT_NO_LAZY_FETCH: "1" }, timeoutMs: SOURCE_WAIT_MS };
+  const shallow = await git(["rev-parse", "--is-shallow-repository"], o);
+  if (shallow.code !== 0 || shallow.out.trim() !== "false")
+    return out;
+  const r = await git(["cat-file", "--batch-check"], { ...o, input: `${asked.join("\n")}
+` });
+  const lines = r.out.trim().split("\n");
+  if (r.code !== 0 || lines.length !== asked.length)
+    return out;
+  asked.forEach((sha, i) => out.set(sha, lines[i].split(" ")[1] === "commit"));
+  return out;
 }
 async function commonDir(root5) {
   const r = await git(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root5 });
@@ -37298,8 +37552,8 @@ async function consolidateNotes(source, opts = {}) {
     }
   }
   for (const m of plan) {
-    const there = await listAnnotations(root5, m.to);
-    if (!there.some((x) => x.id === m.note.id)) {
+    const there2 = await listAnnotations(root5, m.to);
+    if (!there2.some((x) => x.id === m.note.id)) {
       const { from: _from, leftFor: _leftFor, ...record } = m.note;
       await placeAnnotation(root5, m.to, { ...record, path: m.to, movedFrom: [...m.note.movedFrom ?? [], m.stamp] });
     }
@@ -37319,7 +37573,7 @@ async function upgradeAnchors(source, path2, annotations) {
   if (stale.length === 0)
     return annotations;
   const texts = /* @__PURE__ */ new Map();
-  const textOf2 = async (a) => {
+  const textOf3 = async (a) => {
     const key2 = a.blob ?? "";
     if (!texts.has(key2)) {
       let text9 = null;
@@ -37336,7 +37590,7 @@ async function upgradeAnchors(source, path2, annotations) {
   };
   const upgraded = /* @__PURE__ */ new Map();
   for (const ann of stale) {
-    const src = await textOf2(ann);
+    const src = await textOf3(ann);
     if (src === null)
       continue;
     const at = src.indexOf(ann.anchor.exact);
@@ -38170,6 +38424,14 @@ async function canonicalAnchor(source, blob, anchor) {
     return null;
   }
 }
+
+// packages/cli/dist/cli.js
+import { homedir as homedir4, hostname as hostname5, userInfo as userInfo4 } from "node:os";
+import { readFileSync as readFileSync8 } from "node:fs";
+import { join as join12 } from "node:path";
+import { createInterface } from "node:readline/promises";
+import { timingSafeEqual } from "node:crypto";
+import { resolve as resolvePath2 } from "node:path";
 
 // packages/cli/dist/conform.js
 import { stat as stat3 } from "node:fs/promises";
@@ -39971,6 +40233,13 @@ function followSignals() {
 }
 
 // packages/cli/dist/cli-bin.js
+process.on("SIGTERM", function stopGit() {
+  killGitGroups();
+  if (process.listenerCount("SIGTERM") > 1)
+    return;
+  process.removeListener("SIGTERM", stopGit);
+  process.kill(process.pid, "SIGTERM");
+});
 var leave = (code4) => {
   process.stdout.write("", () => process.exit(code4));
 };

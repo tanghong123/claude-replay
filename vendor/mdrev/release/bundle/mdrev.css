@@ -76,6 +76,8 @@
 .mdrev-host .doc th, .mdrev-host .doc td {border:1px solid var(--rule-soft);vertical-align:top;overflow-wrap:anywhere;padding:.4em .75em}
 .mdrev-host .doc table {container-type:inline-size}
 .mdrev-host .doc th[class*=mdv-f], .mdrev-host .doc td[class*=mdv-f] {min-width:min(calc(var(--mdv-floor) * 1.15ch + 1.5em + 1px), calc(var(--mdv-share) * 1cqi))}
+.mdrev-host .doc th[class*=mdv-keep], .mdrev-host .doc td[class*=mdv-keep] {--mdv-keep-width:calc(var(--mdv-keep) * 1.15ch + 1.5em + 1px);--mdv-past:calc(((var(--mdv-need-tens,99) * 10 + var(--mdv-need-units,0)) * 1.15ch + var(--mdv-columns,99) * (1.5em + 1px) + 1px - 100cqi) * 1000);min-width:max(min(calc(var(--mdv-floor,0) * 1.15ch + 1.5em + 1px), calc(var(--mdv-share,0) * 1cqi)), min(var(--mdv-keep-width), calc(var(--mdv-keep-width) - var(--mdv-past))))}
+.mdrev-host .is-cuts-folded .doc th[class*=mdv-keep], .mdrev-host .is-cuts-folded .doc td[class*=mdv-keep] {--mdv-keep-width:calc(var(--mdv-fkeep,var(--mdv-keep)) * 1.15ch + var(--mdv-cut,0) * 24px + 1.5em + 1px);--mdv-past:calc(((var(--mdv-fneed-tens,var(--mdv-need-tens,99)) * 10 + var(--mdv-fneed-units,var(--mdv-need-units,0))) * 1.15ch + var(--mdv-cuts,0) * 24px + var(--mdv-columns,99) * (1.5em + 1px) + 1px - 100cqi) * 1000)}
 .mdrev-host .mdv-f1 {--mdv-floor:1}
 .mdrev-host .mdv-f2 {--mdv-floor:2}
 .mdrev-host .mdv-f3 {--mdv-floor:3}
@@ -136,6 +138,144 @@
 .mdrev-host .mdv-s48 {--mdv-share:48}
 .mdrev-host .mdv-s49 {--mdv-share:49}
 .mdrev-host .mdv-s50 {--mdv-share:50}
+.mdrev-host .mdv-nt0 {--mdv-need-tens:0}
+.mdrev-host .mdv-nt1 {--mdv-need-tens:1}
+.mdrev-host .mdv-nt2 {--mdv-need-tens:2}
+.mdrev-host .mdv-nt3 {--mdv-need-tens:3}
+.mdrev-host .mdv-nt4 {--mdv-need-tens:4}
+.mdrev-host .mdv-nt5 {--mdv-need-tens:5}
+.mdrev-host .mdv-nt6 {--mdv-need-tens:6}
+.mdrev-host .mdv-nt7 {--mdv-need-tens:7}
+.mdrev-host .mdv-nt8 {--mdv-need-tens:8}
+.mdrev-host .mdv-nt9 {--mdv-need-tens:9}
+.mdrev-host .mdv-nt10 {--mdv-need-tens:10}
+.mdrev-host .mdv-nt11 {--mdv-need-tens:11}
+.mdrev-host .mdv-nt12 {--mdv-need-tens:12}
+.mdrev-host .mdv-nt13 {--mdv-need-tens:13}
+.mdrev-host .mdv-nt14 {--mdv-need-tens:14}
+.mdrev-host .mdv-nt15 {--mdv-need-tens:15}
+.mdrev-host .mdv-nt16 {--mdv-need-tens:16}
+.mdrev-host .mdv-nt17 {--mdv-need-tens:17}
+.mdrev-host .mdv-nt18 {--mdv-need-tens:18}
+.mdrev-host .mdv-nt19 {--mdv-need-tens:19}
+.mdrev-host .mdv-nu0 {--mdv-need-units:0}
+.mdrev-host .mdv-nu1 {--mdv-need-units:1}
+.mdrev-host .mdv-nu2 {--mdv-need-units:2}
+.mdrev-host .mdv-nu3 {--mdv-need-units:3}
+.mdrev-host .mdv-nu4 {--mdv-need-units:4}
+.mdrev-host .mdv-nu5 {--mdv-need-units:5}
+.mdrev-host .mdv-nu6 {--mdv-need-units:6}
+.mdrev-host .mdv-nu7 {--mdv-need-units:7}
+.mdrev-host .mdv-nu8 {--mdv-need-units:8}
+.mdrev-host .mdv-nu9 {--mdv-need-units:9}
+.mdrev-host .mdv-c1 {--mdv-columns:1}
+.mdrev-host .mdv-c2 {--mdv-columns:2}
+.mdrev-host .mdv-c3 {--mdv-columns:3}
+.mdrev-host .mdv-c4 {--mdv-columns:4}
+.mdrev-host .mdv-c5 {--mdv-columns:5}
+.mdrev-host .mdv-c6 {--mdv-columns:6}
+.mdrev-host .mdv-c7 {--mdv-columns:7}
+.mdrev-host .mdv-c8 {--mdv-columns:8}
+.mdrev-host .mdv-c9 {--mdv-columns:9}
+.mdrev-host .mdv-c10 {--mdv-columns:10}
+.mdrev-host .mdv-c11 {--mdv-columns:11}
+.mdrev-host .mdv-c12 {--mdv-columns:12}
+.mdrev-host .mdv-c13 {--mdv-columns:13}
+.mdrev-host .mdv-c14 {--mdv-columns:14}
+.mdrev-host .mdv-c15 {--mdv-columns:15}
+.mdrev-host .mdv-c16 {--mdv-columns:16}
+.mdrev-host .mdv-c17 {--mdv-columns:17}
+.mdrev-host .mdv-c18 {--mdv-columns:18}
+.mdrev-host .mdv-c19 {--mdv-columns:19}
+.mdrev-host .mdv-c20 {--mdv-columns:20}
+.mdrev-host .mdv-c21 {--mdv-columns:21}
+.mdrev-host .mdv-c22 {--mdv-columns:22}
+.mdrev-host .mdv-c23 {--mdv-columns:23}
+.mdrev-host .mdv-c24 {--mdv-columns:24}
+.mdrev-host .mdv-keep1 {--mdv-keep:1}
+.mdrev-host .mdv-keep2 {--mdv-keep:2}
+.mdrev-host .mdv-keep3 {--mdv-keep:3}
+.mdrev-host .mdv-keep4 {--mdv-keep:4}
+.mdrev-host .mdv-keep5 {--mdv-keep:5}
+.mdrev-host .mdv-keep6 {--mdv-keep:6}
+.mdrev-host .mdv-keep7 {--mdv-keep:7}
+.mdrev-host .mdv-keep8 {--mdv-keep:8}
+.mdrev-host .mdv-keep9 {--mdv-keep:9}
+.mdrev-host .mdv-keep10 {--mdv-keep:10}
+.mdrev-host .mdv-fkeep0 {--mdv-fkeep:0}
+.mdrev-host .mdv-fkeep1 {--mdv-fkeep:1}
+.mdrev-host .mdv-fkeep2 {--mdv-fkeep:2}
+.mdrev-host .mdv-fkeep3 {--mdv-fkeep:3}
+.mdrev-host .mdv-fkeep4 {--mdv-fkeep:4}
+.mdrev-host .mdv-fkeep5 {--mdv-fkeep:5}
+.mdrev-host .mdv-fkeep6 {--mdv-fkeep:6}
+.mdrev-host .mdv-fkeep7 {--mdv-fkeep:7}
+.mdrev-host .mdv-fkeep8 {--mdv-fkeep:8}
+.mdrev-host .mdv-fkeep9 {--mdv-fkeep:9}
+.mdrev-host .mdv-fkeep10 {--mdv-fkeep:10}
+.mdrev-host .mdv-cut1 {--mdv-cut:1}
+.mdrev-host .mdv-cut2 {--mdv-cut:2}
+.mdrev-host .mdv-cut3 {--mdv-cut:3}
+.mdrev-host .mdv-fnu0 {--mdv-fneed-units:0}
+.mdrev-host .mdv-fnu1 {--mdv-fneed-units:1}
+.mdrev-host .mdv-fnu2 {--mdv-fneed-units:2}
+.mdrev-host .mdv-fnu3 {--mdv-fneed-units:3}
+.mdrev-host .mdv-fnu4 {--mdv-fneed-units:4}
+.mdrev-host .mdv-fnu5 {--mdv-fneed-units:5}
+.mdrev-host .mdv-fnu6 {--mdv-fneed-units:6}
+.mdrev-host .mdv-fnu7 {--mdv-fneed-units:7}
+.mdrev-host .mdv-fnu8 {--mdv-fneed-units:8}
+.mdrev-host .mdv-fnu9 {--mdv-fneed-units:9}
+.mdrev-host .mdv-fnt0 {--mdv-fneed-tens:0}
+.mdrev-host .mdv-fnt1 {--mdv-fneed-tens:1}
+.mdrev-host .mdv-fnt2 {--mdv-fneed-tens:2}
+.mdrev-host .mdv-fnt3 {--mdv-fneed-tens:3}
+.mdrev-host .mdv-fnt4 {--mdv-fneed-tens:4}
+.mdrev-host .mdv-fnt5 {--mdv-fneed-tens:5}
+.mdrev-host .mdv-fnt6 {--mdv-fneed-tens:6}
+.mdrev-host .mdv-fnt7 {--mdv-fneed-tens:7}
+.mdrev-host .mdv-fnt8 {--mdv-fneed-tens:8}
+.mdrev-host .mdv-fnt9 {--mdv-fneed-tens:9}
+.mdrev-host .mdv-fnt10 {--mdv-fneed-tens:10}
+.mdrev-host .mdv-fnt11 {--mdv-fneed-tens:11}
+.mdrev-host .mdv-fnt12 {--mdv-fneed-tens:12}
+.mdrev-host .mdv-fnt13 {--mdv-fneed-tens:13}
+.mdrev-host .mdv-fnt14 {--mdv-fneed-tens:14}
+.mdrev-host .mdv-fnt15 {--mdv-fneed-tens:15}
+.mdrev-host .mdv-fnt16 {--mdv-fneed-tens:16}
+.mdrev-host .mdv-fnt17 {--mdv-fneed-tens:17}
+.mdrev-host .mdv-fnt18 {--mdv-fneed-tens:18}
+.mdrev-host .mdv-fnt19 {--mdv-fneed-tens:19}
+.mdrev-host .mdv-cuts1 {--mdv-cuts:1}
+.mdrev-host .mdv-cuts2 {--mdv-cuts:2}
+.mdrev-host .mdv-cuts3 {--mdv-cuts:3}
+.mdrev-host .mdv-cuts4 {--mdv-cuts:4}
+.mdrev-host .mdv-cuts5 {--mdv-cuts:5}
+.mdrev-host .mdv-cuts6 {--mdv-cuts:6}
+.mdrev-host .mdv-cuts7 {--mdv-cuts:7}
+.mdrev-host .mdv-cuts8 {--mdv-cuts:8}
+.mdrev-host .mdv-cuts9 {--mdv-cuts:9}
+.mdrev-host .mdv-cuts10 {--mdv-cuts:10}
+.mdrev-host .mdv-cuts11 {--mdv-cuts:11}
+.mdrev-host .mdv-cuts12 {--mdv-cuts:12}
+.mdrev-host .mdv-cuts13 {--mdv-cuts:13}
+.mdrev-host .mdv-cuts14 {--mdv-cuts:14}
+.mdrev-host .mdv-cuts15 {--mdv-cuts:15}
+.mdrev-host .mdv-cuts16 {--mdv-cuts:16}
+.mdrev-host .mdv-cuts17 {--mdv-cuts:17}
+.mdrev-host .mdv-cuts18 {--mdv-cuts:18}
+.mdrev-host .mdv-cuts19 {--mdv-cuts:19}
+.mdrev-host .mdv-cuts20 {--mdv-cuts:20}
+.mdrev-host .mdv-cuts21 {--mdv-cuts:21}
+.mdrev-host .mdv-cuts22 {--mdv-cuts:22}
+.mdrev-host .mdv-cuts23 {--mdv-cuts:23}
+.mdrev-host .mdv-cuts24 {--mdv-cuts:24}
+.mdrev-host .mdv-cuts25 {--mdv-cuts:25}
+.mdrev-host .mdv-cuts26 {--mdv-cuts:26}
+.mdrev-host .mdv-cuts27 {--mdv-cuts:27}
+.mdrev-host .mdv-cuts28 {--mdv-cuts:28}
+.mdrev-host .mdv-cuts29 {--mdv-cuts:29}
+.mdrev-host .mdv-cuts30 {--mdv-cuts:30}
 .mdrev-host .doc th {z-index:1;background:var(--bg-soft);text-align:left;white-space:nowrap;font-weight:620;position:sticky;top:0}
 .mdrev-host .doc tbody tr:nth-child(2n) td {background:color-mix(in srgb, var(--bg-soft) 40%, transparent)}
 .mdrev-host .doc a {color:var(--accent);text-underline-offset:.15em;text-decoration:underline;text-decoration-thickness:.06em;-webkit-text-decoration-color:color-mix(in srgb, var(--accent) 40%, transparent);text-decoration-color:color-mix(in srgb, var(--accent) 40%, transparent)}
@@ -625,6 +765,7 @@
 .mdrev-host .app.is-phone .main {position:relative}
 .mdrev-host .app.bars-step>.main>.scrollpane {margin-top:calc(-1 * var(--mdv-bar-h,0px));scroll-padding-top:var(--mdv-bar-h,0px)}
 .mdrev-host .app.bars-step .layout-doc {padding-top:var(--mdv-bar-h,0px)}
+.mdrev-host .app.bars-step>.main>.rail {margin-top:calc(-1 * var(--mdv-bar-h,0px));border-top:var(--mdv-bar-h,0px) solid transparent;background:linear-gradient(var(--rule-soft), var(--rule-soft)) 0 0 / 1px 100% no-repeat border-box, var(--bg-soft);border-left-color:#0000}
 .mdrev-host .app.bars-step>.topbar {z-index:65;transition:transform .18s}
 .mdrev-host .app.bars-step>.topbar[data-away]:not(:has(.history)):not(:has(.display-menu)):not(:has(.pick-pop)):not(:has(.switcher)):not(:has(.warn-pop)):not(:has(.outline-overlay)):not(:has([aria-expanded=true])):not(:has(:focus-visible)) {transform:translateY(-100%)}
 @media (prefers-reduced-motion:reduce) {

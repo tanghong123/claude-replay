@@ -717,6 +717,34 @@ another, mdrev asks whether they are one store:
   `git remote set-url` that lets the pairing follow, beside "the store
   changed".
 
+A checkout whose folder was renamed or moved is still the same checkout. A
+pairing names the checkout it was made from by its path (its git common
+dir), so once nothing is at that path the pairing can be this checkout's.
+A root commit says which store it is, never which checkout. What says which
+checkout is the project's first commit, which the pairing keeps on this
+machine: it survives a moved folder and a moved address, and a full clone of
+the project has it (#s610; Hong's choice, #s611). So the pairing follows a store holding
+its root commit when this checkout has that first commit, whether the store
+is in the project's own repository or a separate `<repo>-notes`, which is no
+remote of the project. A pairing that cannot say, because it was made from a
+shallow clone or this checkout is one, or was made before this and has not
+been used since, follows only a store among this checkout's own remotes
+(#s584; Hong's decision, #s594); a pairing made before this learns the first
+commit the next time its own checkout uses it. A checkout without that commit,
+such as a single-branch clone that lacks it, pairs again. Another project
+pointing at a copy of the store does not take a pairing that knows its project,
+and that copy is not read for it.
+A full copy of the project has the same first commit and passes; that is
+accepted, since nobody is expected to make one to take a pairing (#s607). From
+then on the pairing names the checkout where it is now, and so does a new
+clone of the project that uses the pairing where it is. While the checkout it was
+made from is still there, cannot be read now, or is on a drive that is not
+mounted (its path stops at the folder drives are mounted in: `/Volumes` on
+macOS; `/mnt`, `/media` or `/run/media` on Linux), only that checkout carries
+it to a new home, as before. A drive mounted at a fixed folder of its own,
+such as `/mnt/nas`, leaves that folder there, empty, when it is not mounted,
+so a checkout on it reads as gone.
+
 When they are one store, the machine's copy — the pairing, the bare copy,
 the cache and every unpushed record — becomes the new home's, and the
 pairing records where it came from. On the same server, that is all: nothing
@@ -750,7 +778,7 @@ and worktree of the project shares it:
 
 ```
 ~/.mdrev/review/<host>-<path>-<branch>-<hash>/
-  pairing.json      the pairing: store, email, display name, when
+  pairing.json      the pairing: store, email, display name, when, the store's root commit, the project's first commit
   pair-request.json a pairing an agent asked for, until its person confirms it
   store.git/        a bare clone, written only by mdrev
   outbox/<id>.json  unpushed records
@@ -823,7 +851,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.73",
+  "mdrev": "1.1.74",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
