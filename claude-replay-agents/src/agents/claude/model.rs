@@ -1733,6 +1733,16 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
 /// before any head_limit cut, which the text states as "Found N files" and a pagination line when
 /// a limit cut it). The page draws the result TEXT, which shows the lines or states the counts and
 /// the limit.
+///
+/// `timedOut` (#s367, client 2.1.318): a search that stopped at its time limit. Met on 2 Grep
+/// results, both count mode with a head_limit of 1, in one session written 2026-11-05, `true` in
+/// both and the only tool results in the store that carried it. Nothing more is drawn for it: the
+/// result text the card shows already opens with the client's notice that the search stopped
+/// before it finished and its results are incomplete, then states the counts. REVISIT if (1) a
+/// Grep with `timedOut: true` comes whose text does not say the search stopped, where the card
+/// would show partial counts as whole (a RENDER question for the owner); (2) the key turns up on a
+/// Glob or any other tool's result (`GLOB_SHAPE` would need its own look); (3) it arrives `false`,
+/// which would mean every Grep now carries it.
 const GREP_SHAPE: &[&str] = &[
     "appliedLimit",
     "appliedOffset",
@@ -1742,6 +1752,7 @@ const GREP_SHAPE: &[&str] = &[
     "numFiles",
     "numLines",
     "numMatches",
+    "timedOut",
     "totalFiles",
     "totalLines",
 ];
@@ -2091,6 +2102,10 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // reported with them beside it.
     ("mode", GREP_SHAPE),
     ("totalFiles", GREP_SHAPE),
+    // #s367 (client 2.1.318): a Grep stopped at its time limit, which its text states. A generic
+    // word (a hook's cancel carries one too, and Bash's `timedOutAfterMs` is another), so known
+    // only in Grep's shape; adding it also silences `mode` again, which came back beside it.
+    ("timedOut", GREP_SHAPE),
     // Glob (#349): `totalMatches` is the matching files before the hundred-file cut, which the
     // text states when it cut ("Showing 100 of 348…") and lists when it did not; `countIsComplete`
     // says that total is exact — true in every result met so far. Both are generic enough to mean
@@ -7955,6 +7970,41 @@ mod tests {
                 "{name} is a known shape"
             );
         }
+    }
+
+    /// #s367: a count-mode Grep that stopped at its time limit, as client 2.1.318 writes it.
+    #[test]
+    fn a_timed_out_grep_result_is_known() {
+        let unknown = |v: &Value| -> Vec<String> {
+            unknown_tool_result_keys(v)
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        };
+        let timed_out = serde_json::json!({"mode": "count", "numFiles": 2, "filenames": [],
+            "content": "a.rs:3\nb.rs:1", "numMatches": 4, "appliedLimit": 1, "timedOut": true});
+        assert_eq!(
+            unknown(&timed_out),
+            Vec::<String>::new(),
+            "a timed-out Grep, known: {timed_out}"
+        );
+        assert_eq!(
+            unknown(
+                &serde_json::json!({"mode": "count", "numMatches": 4, "timedOut": true,
+                "aKeyFromTheFuture": 1})
+            ),
+            vec![
+                "aKeyFromTheFuture".to_string(),
+                "mode".to_string(),
+                "timedOut".to_string()
+            ],
+            "a Grep key nobody has met brings `mode` and `timedOut` back with it"
+        );
+        assert_eq!(
+            unknown(&serde_json::json!({"timedOut": true, "stdout": "ok"})),
+            vec!["timedOut".to_string()],
+            "`timedOut` is known only in Grep's shape, never from another tool"
+        );
     }
 
     #[test]
