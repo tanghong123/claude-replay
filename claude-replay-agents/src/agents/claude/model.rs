@@ -806,6 +806,17 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     "queued_command",
     "read_truncation_notice",
     "remote_session_change",
+    // #s369 (client 2.1.318): `{type, content}` with a `rendered` system reminder, the client
+    // telling the MODEL how its Bash sandbox works (a Markdown section headed "## Bash command
+    // sandbox", about 8,400 characters). Written once, among the opening attachments right after
+    // the first prompt, and once more at the head of each sub-agent's own transcript. Met
+    // 2026-11-05 on hong-devserver in 8 transcripts, once in each: four test sessions run with the
+    // sandbox on and their sub-agents, no ordinary session. Addressed to the model, like
+    // `instructions`, `mcp_instructions_delta` and `environment`, so nothing is drawn. Whether the
+    // page says a session ran sandboxed is the owner's question in #s372. REVISIT: the first
+    // transcript holding it more than once (a mid-session change of the sandbox's settings, which a
+    // reader might want named).
+    "sandbox_instructions",
     "session_context",
     // #s93 (client 2.1.296): `{type, tasks: [{id, cron, prompt, createdAt, recurring}]}`, the
     // session-only cron jobs the client carries across a compaction, written in the run of
@@ -1005,7 +1016,11 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // excluded command), where a refused network call or a write outside the workspace
             // reads differently — whether the Bash card says so is a RENDER question for the owner,
             // queued with the record count and client version, never decided here; (2) the key on
-            // another tool's result, or a value that is not a boolean.
+            // another tool's result, or a value that is not a boolean. (1) was met on 2026-11-05
+            // (#s369): one `true`, on a Bash call that succeeded, in a sub-agent of a test session
+            // run with the sandbox on (client 2.1.318), the owner's question in #s372. No
+            // transcript holds both values yet. The calls the sandbox refused in three other such
+            // sub-agents are "Error: Blocked: …" strings that carry no `sandboxed` key at all.
             "sandboxed",
         ],
     ),
@@ -7766,6 +7781,28 @@ mod tests {
         let seen: Vec<_> = unknown_shapes()
             .into_iter()
             .filter(|s| s.example.as_deref() == Some("s-368"))
+            .collect();
+        assert!(seen.is_empty(), "and is not reported as new: {seen:?}");
+    }
+
+    /// #s369: the 2.1.318 attachment `sandbox_instructions`, the client telling the model how its
+    /// Bash sandbox works, is known — neither reported as unknown nor drawn. The prompt it follows
+    /// is drawn as ever. Removing it from `ATTACHMENT_TYPES_KNOWN` turns this red.
+    #[test]
+    fn a_sandbox_instructions_attachment_is_known() {
+        let jsonl = r###"
+{"type":"user","version":"2.1.318","sessionId":"s-s369","uuid":"u1","timestamp":"2026-11-05T01:00:00.000Z","message":{"role":"user","content":"count the petrel nests"}}
+{"type":"attachment","version":"2.1.318","sessionId":"s-s369","uuid":"m1","parentUuid":"u1","timestamp":"2026-11-05T01:00:00.000Z","attachment":{"type":"sandbox_instructions","content":"## Bash command sandbox\n\nCommands run inside a sandbox that limits writes to the workspace."},"rendered":[{"content":"<system-reminder>## Bash command sandbox</system-reminder>"}],"renderedRole":"system"}
+"###;
+        let blocks = parse(jsonl);
+        assert_eq!(blocks.len(), 1, "only the prompt is drawn: {blocks:?}");
+        assert!(
+            matches!(&blocks[0], Block::UserText(t) if t == "count the petrel nests"),
+            "{blocks:?}"
+        );
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s369"))
             .collect();
         assert!(seen.is_empty(), "and is not reported as new: {seen:?}");
     }
