@@ -60,9 +60,9 @@ pub(crate) struct RowFacts {
     pub confirmed: bool,
     /// The process names the session exactly in its own argv (#s234).
     pub named: bool,
-    /// The sessions whose conversation was moved into this one on the way to the linked process
-    /// (#s294): herdr's hook may still name one of them for the pane, and that pane runs this one.
-    pub continues: Vec<String>,
+    /// The linked process is parked (#s294, `index::pid_parked`): its pane draws Claude Code's
+    /// background sessions, so herdr's status for that pane says nothing of this session (#s349).
+    pub parked: bool,
     /// The tree mtime — the cache key for the content-derived facts.
     pub tree_mtime: Option<SystemTime>,
 }
@@ -170,7 +170,11 @@ impl StateTracker {
             // herdr's status for this session, when it sits in a live herdr pane, herdr names it
             // as that pane's session, and herdr looked after the transcript last moved: a pane
             // whose agent was replaced or never reported, or an answer older than the newest
-            // write, is left to the derivation.
+            // write, is left to the derivation. So is a parked pane, whichever id herdr names for
+            // it (#s349): herdr reads the screen, which there is the job list's own input (idle
+            // with the session working) or whichever job the reader opened (blocked by another
+            // job's dialog), and nothing says which job that is. The session's own wait is in its
+            // engine's record, and the derivation reads that.
             let herdr_status = match (&f.pane, f.pid) {
                 (
                     Some(crate::index::PaneAddr::Herdr {
@@ -178,20 +182,14 @@ impl StateTracker {
                         pane,
                     }),
                     Some(_),
-                ) => herdr_answers
+                ) if !f.parked => herdr_answers
                     .entry(socket.clone())
                     .or_insert_with(|| self.herdr.answer(socket))
                     .as_ref()
                     .filter(|a| f.tree_mtime.is_none_or(|m| m <= a.asked_at))
                     .and_then(|a| {
-                        // #s294: or names a session moved into this one, as the send's check reads it.
                         a.panes.iter().find(|p| {
-                            &p.pane == pane
-                                && crate::control::herdr_runs(
-                                    p.session.as_deref(),
-                                    &f.sid,
-                                    &f.continues,
-                                )
+                            &p.pane == pane && p.session.as_deref() == Some(f.sid.as_str())
                         })
                     })
                     .map(|p| p.status.clone()),
@@ -753,7 +751,7 @@ mod tests {
             pane: None,
             confirmed: false,
             named: false,
-            continues: Vec::new(),
+            parked: false,
             tree_mtime: std::fs::metadata(path).and_then(|m| m.modified()).ok(),
         }
     }
@@ -1536,7 +1534,6 @@ mod tests {
                     Ok(vec![
                         pane("w1:p1", "s1", status),
                         pane("w1:p2", "other", "blocked"),
-                        pane("w1:p3", "old", "working"),
                     ])
                 }),
                 ms(30),
@@ -1548,18 +1545,7 @@ mod tests {
         assert!(heard(&tr.herdr, "/s/herdr.sock", |_| true).is_some());
 
         // The transcript says the turn ended; herdr sees the agent working.
-        // #s294: herdr's hook still names `old` in w1:p3, whose conversation the scan found moved
-        // into s3 on the way to that pane's process; s4 in the same pane has no such move.
-        let moved = RowFacts {
-            continues: vec!["old".into()],
-            ..in_pane("s3", &t, "w1:p3")
-        };
-        let rows = [
-            in_pane("s1", &t, "w1:p1"),
-            in_pane("s2", &t, "w1:p2"),
-            moved,
-            in_pane("s4", &t, "w1:p3"),
-        ];
+        let rows = [in_pane("s1", &t, "w1:p1"), in_pane("s2", &t, "w1:p2")];
         tr.tick(&root, &rows);
         tr.tick(&root, &rows);
         assert_eq!(
@@ -1571,16 +1557,6 @@ mod tests {
             (AgentState::Idle, StateReason::Done, false),
             "herdr names another session in that pane: the derivation stands"
         );
-        assert_eq!(
-            now_is(&tr, "s3"),
-            (AgentState::Busy, StateReason::Thinking, true),
-            "herdr's old id for a moved session's pane is that session's status"
-        );
-        assert_eq!(
-            now_is(&tr, "s4"),
-            (AgentState::Idle, StateReason::Done, false),
-            "the old id with no move into this session is another session"
-        );
 
         // herdr sees a dialog: the wait publishes on the first tick that hears it.
         *status.lock().unwrap() = "blocked";
@@ -1591,6 +1567,83 @@ mod tests {
         assert_eq!(
             now_is(&tr, "s1"),
             (AgentState::Wait, StateReason::Permission, true)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #s349, measured on Claude Code 2.1.318 with a scratch home and herdr server: a parked pane
+    /// draws the job list, whose own input herdr reads as idle while the session works, or whichever
+    /// job the reader opened, whose dialog herdr reads as blocked while the session sits idle. herdr
+    /// names the old session there, which matches nothing, until the job's engine restarts and
+    /// names the moved one, which these rows hold: the id does not help, and the record never says
+    /// which job is open. So herdr decides nothing for a parked pane, whatever it reads, while the
+    /// same answers still decide for a pane that is not parked.
+    #[test]
+    fn a_parked_panes_herdr_status_decides_nothing() {
+        let (root, ended) = herdr_world("herdr-parked");
+        // A prompt and nothing after it: the derivation reads this session as working.
+        let working = root.join("working.jsonl");
+        std::fs::write(&working, concat!(
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"go"}]},"timestamp":"2026-08-14T10:00:00Z"}"#, "\n",
+        )).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&working)
+            .unwrap()
+            .set_modified(SystemTime::now() - std::time::Duration::from_secs(60))
+            .unwrap();
+        let mut tr = StateTracker {
+            herdr: HerdrReader::timed(
+                Arc::new(|_: &str| {
+                    Ok(vec![
+                        pane("w1:p1", "busy", "idle"),
+                        pane("w1:p2", "done", "blocked"),
+                        pane("w1:p3", "opened", "working"),
+                        pane("w1:p4", "free", "idle"),
+                        pane("w1:p5", "plain", "blocked"),
+                    ])
+                }),
+                ms(30),
+                std::time::Duration::from_secs(10),
+                std::time::Duration::from_secs(10),
+            ),
+            ..StateTracker::default()
+        };
+        assert!(heard(&tr.herdr, "/s/herdr.sock", |_| true).is_some());
+        let parked = |f: RowFacts| RowFacts { parked: true, ..f };
+        let rows = [
+            parked(in_pane("busy", &working, "w1:p1")),
+            parked(in_pane("done", &ended, "w1:p2")),
+            parked(in_pane("opened", &ended, "w1:p3")),
+            in_pane("free", &working, "w1:p4"),
+            in_pane("plain", &ended, "w1:p5"),
+        ];
+        tr.tick(&root, &rows);
+        tr.tick(&root, &rows);
+        assert_eq!(
+            now_is(&tr, "busy"),
+            (AgentState::Busy, StateReason::Starting, false),
+            "the job list's own input is idle to herdr: the session is still working"
+        );
+        assert_eq!(
+            now_is(&tr, "done"),
+            (AgentState::Idle, StateReason::Done, false),
+            "another job's dialog is open in the pane: this session asks nothing"
+        );
+        assert_eq!(
+            now_is(&tr, "opened"),
+            (AgentState::Idle, StateReason::Done, false),
+            "another job working in the pane: this session has ended its turn"
+        );
+        assert_eq!(
+            now_is(&tr, "free"),
+            (AgentState::Idle, StateReason::Done, true),
+            "the same answer for a pane that is not parked decides, as ever"
+        );
+        assert_eq!(
+            now_is(&tr, "plain"),
+            (AgentState::Wait, StateReason::Permission, true),
+            "as does a dialog in a pane that is not parked"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

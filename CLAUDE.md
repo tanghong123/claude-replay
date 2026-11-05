@@ -314,7 +314,7 @@ reliable, since the agent's process runs inside it"): herdr reads each pane's ag
 it draws, by the rules of its detection manifest (the title's spinner is `working`, a dialog's form
 `blocked`; `herdr agent explain <pane>` names the rule that matched), and its Claude hook only names
 the session, at SessionStart. For a live session in a herdr pane that `herdr agent list` names as that pane's
-session, its status sets the STATE over the derivation's inferences, and the derivation keeps only
+session, unless the pane is parked (#s349, below), its status sets the STATE over the derivation's inferences, and the derivation keeps only
 the reason and detail that agree (`herdr_decides` in `state.rs`: a tool stays a tool; a derived
 stall under herdr's idle is done; a workflow fleet stays busy, since its members run off herdr's
 screen). A wait the derivation OBSERVED (a pending question or plan, the client's own wait, #s76)
@@ -372,15 +372,28 @@ and its resume is refused (`ContinuedElsewhere`, it would fork the conversation 
 both read from its OWN `continued-in`, so they hold before the new session is indexed. **A parked pane
 is sent to for no session** (#s294 third review, `pid_parked`, `PaneParked`): in that view the reader
 can go back to the list and open ANOTHER job, and neither the record (which keeps `parkedJobId`) nor
-herdr (which keeps the old id) says which job is open, so a process whose verified record carries
-`parkedJobId` is never `injectable`, offers no pane send and no dialog, whether or not its chain
-could be followed. The new session keeps the process for liveness and state: herdr's Claude hook
-reports a session only when one STARTS, so it keeps the old id for that pane, and the state pass
-(`herdr_runs`) accepts the sessions on that process's verified chain (`continues`, empty without a
-verified parked record and validated continuation). Once the client clears `parkedJobId` (on
-`/resume`, and when the reader leaves the view) the pane is an ordinary one again. The record's
-source also names the old hook ID for a plain client or one whose argv still names a session from
-before `/resume`; an unverified selector gets no aliases.
+herdr says which job is open, so while its record verifies a process carrying `parkedJobId` is never
+`injectable`, offers no pane send and no dialog, whether or not its chain could be followed (a record
+that does not verify is no record, its `parkedJobId` included, and the argv and directory rules apply
+as before). **Nor does herdr's status decide any session's state there** (#s349): the new session
+keeps the process for liveness alone, and a parked pane's rows are left to the derivation. Measured
+on Claude Code 2.1.318 with herdr 0.9.5, the real client in a scratch home and herdr server against
+a fake API on the loopback: herdr reads the screen, and the job list draws an input of its own, which
+it reads as idle (`live_prompt_box`) with the session working or waiting, so the shipped monitor
+showed a busy session as idle by herdr; a job opened from the list shows THAT job, so a dialog of
+another job read `blocked` with the session idle. Which id herdr names does not help: its Claude hook
+reports a session only when one STARTS, so it keeps the old id, until a restart of the job's engine,
+which inherited the pane's markers, reports the new one directly. The session's own wait is in its
+engine's record (`kind: bg`, `status: waiting`), which the derivation reads, so a question behind the
+list still reads as one; a turn's end reads about a minute late (`GROW_LINGER`), as it does for any
+session herdr does not decide. **`parkedJobId` lasts as
+long as the process**: Esc back to the conversation (typing there reaches the job's transcript),
+opening a job, `/resume` and `/exit` there (each runs in the job's engine) and stopping or deleting
+the job all left it set, and only the process's exit removed the record. So such a pane looks like any
+other and stays unsendable until then. The client's code also clears the field when `claude agents`
+returns as a child process and when the process itself switches session; neither was measured (the
+child path sits behind a flag, on in-process by default, that needs a login to change). A record
+without the field is an ordinary pane.
 Recency and ambiguity are selected per agent and exact cwd (#s250); a configured executable
 whose kind is unknown keeps the shared scope. Explicit argv/open-transcript links, retained
 growth proofs and time-paired workers do not compete for the newest unnamed session, and

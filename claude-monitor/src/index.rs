@@ -115,9 +115,6 @@ pub struct PaneTarget {
     /// The process names the session exactly in its own argv (#s234): with a herdr pane, a
     /// grant for the same session, pane and server may follow it across a restore.
     pub named: bool,
-    /// The sessions whose conversation was moved into this one (#s294): herdr may still name one
-    /// of them for the pane, and that pane runs this session.
-    pub continues: Vec<String>,
 }
 
 /// Why a send-prompt was refused — each a distinct, reportable fact (mirrors the §3.1/§4
@@ -477,9 +474,6 @@ struct SendLink {
     confirmed: bool,
     /// The process names the session exactly in its own argv (#s234).
     named: bool,
-    /// The sessions moved into this one on the way to the linked process (#s294,
-    /// `Moves::continues`).
-    continues: Vec<String>,
 }
 
 /// Per-session scan state, persistent across cycles — the "previous scan" half of §5's diff.
@@ -685,9 +679,11 @@ struct Proc {
 /// both moves found on this machine: the pane process's `sessions/<pid>.json` keeps the OLD
 /// `sessionId` and gains `parkedJobId`, the job's short id. The job's engine writes a record of its
 /// own that names the new session (`kind: bg`). A move is followed only when the job's
-/// `jobs/<id>/state.json` names the whole new session (`job_hosts`), never by the prefix alone. The
-/// client clears `parkedJobId` when the process switches session (`/resume`) and when the reader
-/// returns from the background view (read from the 2.1.316 client's code, not yet seen live).
+/// `jobs/<id>/state.json` names the whole new session (`job_hosts`), never by the prefix alone.
+/// `parkedJobId` lasts as long as the process (#s349, measured on 2.1.318 in a scratch home): nothing
+/// the reader did from the job list cleared it, Esc back to the conversation included, and it went
+/// only with the process. The client's code also clears it when `claude agents` returns as a child
+/// process, a path off by default, and when the process itself switches session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Parked {
     /// The record's `sessionId`: the session the process was started on.
@@ -1207,11 +1203,6 @@ impl Index {
             pid,
             agent: row.agent,
             named: st.send_links.get(sid).is_some_and(|l| l.named),
-            continues: st
-                .send_links
-                .get(sid)
-                .map(|l| l.continues.clone())
-                .unwrap_or_default(),
             addr,
             client_wait: claude_replay_core::adapter(row.agent)
                 .client_wait(&row.path)
@@ -1464,7 +1455,6 @@ impl Index {
                         pane: f.pane.clone(),
                         confirmed: f.confirmed,
                         named: f.named,
-                        continues: f.continues.clone(),
                     },
                 )
             })
@@ -2046,13 +2036,6 @@ impl Index {
                     link.named = false;
                 }
             }
-            let continues = link
-                .as_ref()
-                .filter(|link| link.confirmed)
-                .and_then(|link| table.by_pid.get(&link.pid))
-                .filter(|p| p.native_session.session() == Some(sid.as_str()))
-                .map(|p| moves.continues(p, sid))
-                .unwrap_or_default();
             // #s294: a session whose conversation went on elsewhere and that no process still
             // runs is finished, whatever housekeeping its tail shows. One a process still names
             // (a later `claude --resume <it>`) is that process's, and reads as any other.
@@ -2120,7 +2103,7 @@ impl Index {
                 pane: link.as_ref().and_then(|l| l.terminal.pane_addr()),
                 confirmed: link.as_ref().map(|l| l.confirmed).unwrap_or(false),
                 named: link.as_ref().is_some_and(|l| l.named),
-                continues,
+                parked: link.as_ref().is_some_and(|l| pid_parked(&st.procs, l.pid)),
                 tree_mtime: row.tree_mtime,
             });
             // #113: a row is hidden if its OWN key is on the list, or its whole group is.
@@ -3130,24 +3113,6 @@ impl Moves {
         path.truncate(keep);
         path
     }
-
-    /// Old hook IDs belong to the selected process's verified continuation, whose source
-    /// survives a missing or stale launch argument. A current native record without that
-    /// derived continuation supplies no aliases, even if argv names a predecessor.
-    fn continues(&self, p: &Proc, sid: &str) -> Vec<String> {
-        let Identity::Continued { source, session } = &p.native_session else {
-            return Vec::new();
-        };
-        if session != sid {
-            return Vec::new();
-        }
-        let mut chain = self.chain(p, source);
-        if chain.last() != Some(&sid) {
-            return Vec::new();
-        }
-        chain.pop();
-        chain.into_iter().map(str::to_string).collect()
-    }
 }
 
 /// Whether `sid`'s background job is confirmed (the second review of #s294): the job directory
@@ -3186,9 +3151,10 @@ fn moved_on<'r>(rows: &'r HashMap<String, Row>, sid: &str) -> Option<&'r str> {
 /// view (the `claude agents` list, the parked job preselected), and the reader can go back to the
 /// list and open ANOTHER job there; the record keeps `parkedJobId` and herdr keeps the old session
 /// either way, and nothing on screen or on disk says which job the view has open. So the pane is a
-/// send and dialog target for no session: the session the move continued in keeps the process for
-/// liveness and state, and is offered no pane send (`PaneParked`). Once the client clears the
-/// field (`/resume`, or the reader leaving the view) the pane is an ordinary one again.
+/// send and dialog target for no session, and herdr's status for it, read off that screen, decides
+/// no session's state (#s349): the session the move continued in keeps the process for liveness
+/// alone. That holds with the conversation back in the pane, since Esc leaves the field set
+/// ([`Parked`]) and such a pane looks like any other; only a record without the field is ordinary.
 fn pid_parked(procs: &[Proc], pid: u32) -> bool {
     procs.iter().any(|p| p.pid == pid && p.parked.is_some())
 }
@@ -4512,7 +4478,6 @@ mod tests {
             _ => None,
         };
         let link = |pid: Option<u32>| SendLink {
-            continues: Vec::new(),
             pid,
             ..Default::default()
         };
@@ -4840,7 +4805,6 @@ mod tests {
             }),
             confirmed,
             named: false,
-            continues: Vec::new(),
         };
 
         // The happy path: live + proven + in tmux + a driven agent.
@@ -4881,7 +4845,6 @@ mod tests {
             _ => None,
         };
         let link = |pid: Option<u32>| SendLink {
-            continues: Vec::new(),
             pid,
             ..Default::default()
         };
@@ -5975,7 +5938,6 @@ mod tests {
             pane: Some(herdr.clone()),
             confirmed: true,
             named: true,
-            continues: Vec::new(),
         };
         assert_eq!(pane_target_from(Agent::CLAUDE, &send), Ok((201, herdr)));
         // herdr's hook proves the pane's session for Claude only.
@@ -6658,7 +6620,6 @@ mod tests {
                 (
                     f.sid.clone(),
                     SendLink {
-                        continues: Vec::new(),
                         pid: f.pid,
                         pane: f.pane.clone(),
                         confirmed: f.confirmed,
@@ -6829,7 +6790,6 @@ mod tests {
         st.send_links.insert(
             sid.into(),
             SendLink {
-                continues: Vec::new(),
                 pid: Some(800),
                 pane: linked.terminal.pane_addr(),
                 confirmed: linked.confirmed,
@@ -6839,7 +6799,6 @@ mod tests {
         st.send_links.insert(
             sibling.into(),
             SendLink {
-                continues: Vec::new(),
                 pid: Some(701),
                 confirmed: true,
                 ..Default::default()
@@ -7044,7 +7003,6 @@ mod tests {
                     (
                         f.sid.clone(),
                         SendLink {
-                            continues: Vec::new(),
                             pid: f.pid,
                             pane: f.pane.clone(),
                             confirmed: f.confirmed,
@@ -7267,7 +7225,6 @@ mod tests {
                     (
                         f.sid.clone(),
                         SendLink {
-                            continues: Vec::new(),
                             pid: f.pid,
                             pane: f.pane.clone(),
                             confirmed: f.confirmed,
@@ -8053,8 +8010,8 @@ n/Users/x/proj
     /// `continued-in` B, the job's engine is a `bg-spare` whose argv names nothing (its own
     /// `kind: bg` record names B), and the pane's process
     /// still names A, and its own record says it was parked in B's job. B is the live row on that
-    /// pane — herdr's stale A accepted for its state, but no pane send, since the pane shows the
-    /// background-session view — and A is finished, its resume refused. A process started
+    /// pane for liveness, but no pane send and no word from herdr, since the pane shows the
+    /// background-session view; and A is finished, its resume refused. A process started
     /// AFTER the move named A itself and keeps it, and so does one whose record says nothing.
     #[test]
     fn a_conversation_moved_into_a_background_job_keeps_its_pane() {
@@ -8172,9 +8129,9 @@ n/Users/x/proj
         );
         assert_eq!(row_a["state"], "finished");
         assert_eq!(row_a["continuedIn"], b);
-        assert_eq!(fact_b.continues, vec![a.to_string()]);
+        assert!(fact_b.parked, "herdr's word for that pane is not B's");
         let fact_a = facts.iter().find(|f| f.sid == a).unwrap();
-        assert!(fact_a.continues.is_empty());
+        assert!(!fact_a.parked, "A holds no process");
         // The row that says `continuedIn` offers no send: a resume of A would fork the
         // conversation off at the move (the second review of #s294, point 2).
         st.send_links = send_links_of(&facts);
@@ -8225,13 +8182,12 @@ n/Users/x/proj
             let mut facts = Vec::new();
             let snapshot = idx.assemble(&st, &mut facts);
             assert_eq!(find(&snapshot, job_session).unwrap()["pid"], 700);
-            assert_eq!(
+            assert!(
                 facts
                     .iter()
                     .find(|fact| fact.sid == job_session)
                     .unwrap()
-                    .continues,
-                vec![a]
+                    .parked
             );
         }
         let mut mismatch = world("1-00:00:00");
@@ -8248,7 +8204,7 @@ n/Users/x/proj
         let mut facts = Vec::new();
         let snapshot = idx.assemble(&mismatch, &mut facts);
         assert_ne!(find(&snapshot, job_session).unwrap()["pid"], 700);
-        assert!(facts.iter().all(|fact| fact.continues.is_empty()));
+        assert!(facts.iter().all(|f| f.parked == (f.pid == Some(700))));
 
         // The second review of #s294, point 2: a pane whose record says it was parked, but whose
         // move cannot be followed, is a send target for no session. Its record still names A and
@@ -8259,7 +8215,10 @@ n/Users/x/proj
             idx.prove_by_growth(st);
             let mut facts = Vec::new();
             let snapshot = idx.assemble(st, &mut facts);
-            assert!(facts.iter().all(|fact| fact.continues.is_empty()), "{why}");
+            assert!(
+                facts.iter().all(|f| f.parked == (f.pid == Some(700))),
+                "{why}: a row is parked exactly when it holds the parked process"
+            );
             let row_a = find(&snapshot, a).unwrap();
             assert_eq!(row_a["pid"], 700, "{why}: the record names A: {row_a}");
             assert!(row_a.get("injectable").is_none(), "{why}: {row_a}");
@@ -8284,8 +8243,8 @@ n/Users/x/proj
         let mut unindexed = world("1-00:00:00");
         unindexed.rows.remove(b);
         check_astray(&mut unindexed, "B not indexed");
-        // With the record's `parkedJobId` gone (the client clears it on `/resume` and when the
-        // reader leaves the background view), the pane is A's again and sendable.
+        // With the record's `parkedJobId` gone (a process that switched session, or a `claude
+        // agents` child that returned), the pane is A's again and sendable.
         let mut taken_back = world("1-00:00:00");
         taken_back.rows.get_mut(a).unwrap().continued_in = None;
         for p in &mut taken_back.procs {
@@ -8328,7 +8287,7 @@ n/Users/x/proj
         );
         assert!(find(&snapshot, a).unwrap().get("pid").is_none());
         let fact_b = facts.iter().find(|f| f.sid == b).unwrap();
-        assert_eq!(fact_b.continues, vec![a.to_string()], "proved, and moved");
+        assert!(fact_b.parked, "proved, and moved");
 
         // A cached process identity is derived again when the transcript takes A back.
         st.rows.get_mut(a).unwrap().continued_in = None;
@@ -8345,7 +8304,10 @@ n/Users/x/proj
         let mut facts = Vec::new();
         let snapshot = idx.assemble(&st, &mut facts);
         assert_eq!(find(&snapshot, a).unwrap()["pid"], 700);
-        assert!(facts.iter().all(|fact| fact.continues.is_empty()));
+        assert!(
+            facts.iter().find(|f| f.sid == a).unwrap().parked,
+            "the record still says parked: the pane draws the job list, whoever it links to"
+        );
 
         // A previous snapshot's link to A must not survive the verified move.
         let mut stale = world("1-00:00:00");
@@ -8361,7 +8323,7 @@ n/Users/x/proj
 
         // Point 2: the reader quits the pane and picks A again with `claude --resume` (the picker,
         // no id), typing nothing yet. That process names no session, so nothing says herdr's A is
-        // B: whatever the directory rule links it to, it carries no `continues`.
+        // B: whatever the directory rule links it to, its pane is an ordinary one.
         let mut st = world("1-00:00:00");
         st.procs.retain(|p| p.pid != 700);
         let mut picker = parse_ps("  703 claude --resume\n");
@@ -8377,9 +8339,7 @@ n/Users/x/proj
         st.procs.extend(picker);
         let mut facts = Vec::new();
         idx.assemble(&st, &mut facts);
-        for f in &facts {
-            assert!(f.continues.is_empty(), "{}: {:?}", f.sid, f.continues);
-        }
+        assert!(facts.iter().all(|f| !f.parked));
 
         // The process's own record does not say it was parked: the transcript alone moves nothing,
         // and A keeps its process.
@@ -8392,18 +8352,27 @@ n/Users/x/proj
         assert_eq!(find(&snapshot, a).unwrap()["pid"], 700);
         assert_ne!(find(&snapshot, b).unwrap()["pid"], 700);
 
+        // A record that does not verify is no record, for its `parkedJobId` too
+        // (`a_parked_job_requires_the_same_verified_process_record`): nothing then says the pane
+        // was parked, so the argv links A, the pane is sent to as any pane is, and only the live
+        // session beside it refuses the send (#s349, the review of MR !27).
         let mut unverified = world("1-00:00:00");
-        unverified
-            .procs
-            .iter_mut()
-            .find(|p| p.pid == 700)
-            .unwrap()
-            .native_session = Identity::Missing;
+        let client = unverified.procs.iter_mut().find(|p| p.pid == 700).unwrap();
+        client.native_session = Identity::Missing;
+        client.parked = None;
         idx.prove_by_growth(&mut unverified);
         let mut facts = Vec::new();
         let snapshot = idx.assemble(&unverified, &mut facts);
+        let row_a = find(&snapshot, a).unwrap();
+        assert_eq!(row_a["pid"], 700, "{row_a}");
+        assert_eq!(row_a["injectable"], true, "{row_a}");
         assert_ne!(find(&snapshot, b).unwrap()["pid"], 700);
-        assert!(facts.iter().all(|fact| fact.continues.is_empty()));
+        assert!(facts.iter().all(|f| !f.parked));
+        unverified.send_links = send_links_of(&facts);
+        assert_eq!(
+            pane_send_target(&unverified, a).map(|(pid, _)| pid),
+            Err(SendRefusal::ProjectHasActiveSession)
+        );
 
         // Without the move, the same machine reads as before the fix: A holds the pane and B
         // has only its detached engine, with no pane.
@@ -8441,10 +8410,9 @@ n/Users/x/proj
     /// The second review of #s294: a real `sessions/<pid>.json` goes through `apply_registry`, its
     /// `procStart` verified against this test process by `ps`, then `prove_by_growth` and
     /// `assemble`. Nothing on the process is set by hand. While the record carries
-    /// `parkedJobId` and the job's `state.json` names B, the pane is B's (for liveness and state,
-    /// never a pane send). When the client clears
-    /// the field (it does on `/resume` and when the reader leaves the background view), the pane
-    /// is A's again.
+    /// `parkedJobId` and the job's `state.json` names B, the pane is B's (for liveness alone,
+    /// never a pane send). A record without the field (the process switched session, or the
+    /// client's `claude agents` child returned) gives the pane back to A.
     #[test]
     fn a_parked_record_on_disk_moves_the_pane_end_to_end() {
         let scratch = std::env::temp_dir().join(format!("cm-moved-e2e-{}", std::process::id()));
@@ -8520,7 +8488,7 @@ n/Users/x/proj
         assert_eq!(pid_of(&snapshot, a), None);
         assert_eq!(registry_row(&snapshot, a)["continuedIn"], b);
         let fact_b = facts.iter().find(|f| f.sid == b).unwrap();
-        assert_eq!(fact_b.continues, vec![a.to_string()]);
+        assert!(fact_b.parked);
 
         // Cleared by the client: A's again, and sendable.
         record(None);
@@ -8531,7 +8499,7 @@ n/Users/x/proj
         let snapshot = idx.assemble(&st, &mut facts);
         assert_eq!(pid_of(&snapshot, a), Some(json!(me)));
         assert_eq!(registry_row(&snapshot, a)["injectable"], true);
-        assert!(facts.iter().all(|f| f.continues.is_empty()));
+        assert!(facts.iter().all(|f| !f.parked));
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
@@ -8584,14 +8552,8 @@ n/Users/x/proj
             p
         };
         let resume_a = format!("claude --resume {a}");
-        let mut p = proc_of(&resume_a, Some(50), Some((a, "cccccccc")));
-        p.native_session = Identity::Continued {
-            source: a.into(),
-            session: c.into(),
-        };
+        let p = proc_of(&resume_a, Some(50), Some((a, "cccccccc")));
         assert_eq!(moves.chain(&p, a), vec![a, b, c], "alive for both moves");
-        assert_eq!(moves.continues(&p, c), vec![a, b]);
-        assert!(moves.continues(&p, b).is_empty(), "it drives c");
         let p = proc_of(&resume_a, Some(50), Some((a, "bbbbbbbb")));
         assert_eq!(
             moves.chain(&p, a),
@@ -8654,7 +8616,7 @@ n/Users/x/proj
             source: a.into(),
             session: b.into(),
         };
-        assert_eq!(Moves::of(&two).continues(&attach, b), vec![a]);
+        assert_eq!(Moves::of(&two).chain(&attach, a), vec![a, b]);
         let l = link(
             std::slice::from_ref(&attach),
             b,
@@ -8976,7 +8938,6 @@ n/Users/x/proj
                 (
                     f.sid.clone(),
                     SendLink {
-                        continues: Vec::new(),
                         pid: f.pid,
                         pane: f.pane.clone(),
                         confirmed: f.confirmed,
@@ -9154,7 +9115,6 @@ n/Users/x/proj
                 (
                     f.sid.clone(),
                     SendLink {
-                        continues: Vec::new(),
                         pid: f.pid,
                         pane: f.pane.clone(),
                         confirmed: f.confirmed,
@@ -9264,7 +9224,6 @@ n/Users/x/proj
                     let old = facts.iter().find(|f| f.sid == owner).unwrap();
                     assert_eq!(old.pid, Some(701));
                     let send = SendLink {
-                        continues: Vec::new(),
                         pid: old.pid,
                         pane: old.pane.clone(),
                         confirmed: old.confirmed,
@@ -9496,7 +9455,6 @@ n/Users/x/proj
                     (
                         f.sid.clone(),
                         SendLink {
-                            continues: Vec::new(),
                             pid: f.pid,
                             pane: f.pane.clone(),
                             confirmed: f.confirmed,
@@ -9885,7 +9843,6 @@ n/Users/x/proj
                     (
                         s.to_string(),
                         SendLink {
-                            continues: Vec::new(),
                             pid,
                             ..Default::default()
                         },
@@ -9905,7 +9862,6 @@ n/Users/x/proj
         busy.insert(
             "other".into(),
             SendLink {
-                continues: Vec::new(),
                 pid: Some(300),
                 ..Default::default()
             },
@@ -10170,7 +10126,6 @@ n/Users/x/proj
                         (
                             f.sid.clone(),
                             SendLink {
-                                continues: Vec::new(),
                                 pid: f.pid,
                                 pane: f.pane.clone(),
                                 confirmed: f.confirmed,
