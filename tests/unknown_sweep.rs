@@ -279,3 +279,63 @@ fn a_model_with_no_price_counts_a_session_and_its_sub_agents_once() {
     assert_eq!(unpriced[0]["count"], 1, "one session: {out}");
     assert_eq!(unpriced[0]["example"], SID);
 }
+
+/// #s373: the QoderWork family's sub-agent transcripts are swept too. The family wrote them as
+/// Claude Code does, `<project>/<session>/subagents/agent-*.jsonl`, but listed none, so a shape
+/// only a Qwenwork or QoderWork sub-agent carried went unreported (aries-black held 42 such
+/// Qwenwork files and 412 QoderWork ones). A symlinked project dir pointing at the same workspace
+/// is a duplicate the family's walk skips, so the one sub-agent is read once, not twice. The
+/// session's own transcript is under the family's size floor, so the sub-agent is all there is.
+#[test]
+fn a_shape_only_a_qwenwork_sub_agent_writes_is_reported_once() {
+    let root = scratch("qwenwork-sub");
+    let project = root
+        .join("qwenwork")
+        .join("-Users-someone--qwenwork-workspace-tern");
+    let subs = project.join(SID).join("subagents");
+    std::fs::create_dir_all(&subs).unwrap();
+    std::fs::write(
+        project.join(format!("{SID}.jsonl")),
+        concat!(
+            r#"{"type":"user","cwd":"/work/tern","sessionId":"0f0e0d0c-0000-4000-8000-000000000276","version":"1.1.71","message":{"role":"user","content":[{"type":"text","text":"count the terns"}]},"timestamp":"2026-09-25T00:00:00Z"}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        subs.join("agent-a1.jsonl"),
+        concat!(
+            r#"{"type":"user","cwd":"/work/tern","sessionId":"0f0e0d0c-0000-4000-8000-000000000276","isSidechain":true,"agentId":"a1","version":"1.1.71","message":{"role":"user","content":[{"type":"text","text":"count the north colony"}]},"timestamp":"2026-09-25T00:00:01Z"}"#,
+            "\n",
+            r#"{"type":"a_record_only_family_sub_agents_write","sessionId":"0f0e0d0c-0000-4000-8000-000000000276","isSidechain":true,"agentId":"a1","version":"1.1.71","timestamp":"2026-09-25T00:00:02Z"}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        &project,
+        root.join("qwenwork")
+            .join("-Users-someone--qwenwork-workspace-tern2"),
+    )
+    .unwrap();
+    let (out, err, ok) = run(&root, &root, &["--unknown", "--json"]);
+    assert!(ok, "{err}");
+    assert!(
+        err.contains("scanning 1 transcript"),
+        "the sub-agent alone, once: {err}"
+    );
+    let rows = rows(&out);
+    assert_eq!(rows.len(), 1, "{out}");
+    assert_eq!(
+        rows[0]["agent"], "claude",
+        "the family decodes with Claude's decoder, which is what dropped it"
+    );
+    assert_eq!(rows[0]["where"], "record.type");
+    assert_eq!(rows[0]["name"], "a_record_only_family_sub_agents_write");
+    assert_eq!(rows[0]["count"], 1);
+    assert_eq!(
+        rows[0]["example"], SID,
+        "the root session to go and look in"
+    );
+}

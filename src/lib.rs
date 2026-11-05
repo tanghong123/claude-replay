@@ -199,8 +199,8 @@ impl<W: std::io::Write> std::io::Write for Counted<W> {
 /// sub-agents call, a record a sub-agent harness writes) lives in no main session, and
 /// `store_transcripts` leaves sub-agents out on purpose, since the viewer, the picker and the
 /// monitor's index list sessions; the families that keep sub-agents apart list them through
-/// `store_subagent_transcripts` (Claude Code and Qoder: `<project>/<session>/subagents/`; Codex:
-/// a sub-agent rollout whose head names its parent). Measured 2026-11-05 on hong-devserver: 3 of
+/// `store_subagent_transcripts` (Claude Code, Qoder and the QoderWork family, #s373:
+/// `<project>/<session>/subagents/`; Codex: a sub-agent rollout whose head names its parent). Measured 2026-11-05 on hong-devserver: 3 of
 /// 6 `user.refusedMessageId` records and 4 of 8 `sandbox_instructions` attachments were in
 /// sub-agents only, and a 2.1.310 shape had gone unreported for two weeks. A sub-agent's Claude
 /// records carry the ROOT session's id, which is then a row's example, and opens the session

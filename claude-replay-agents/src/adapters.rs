@@ -512,6 +512,11 @@ macro_rules! qwork_family_adapter {
             ) -> Option<Vec<std::path::PathBuf>> {
                 Some(agents::qoderwork::discover::store_transcripts_in(root))
             }
+            // #s373: the family files spawns as Claude Code does, but walks past its own
+            // duplicate project dirs, which Claude's walk would list twice.
+            fn store_subagent_transcripts(&self) -> Vec<(std::path::PathBuf, String, String)> {
+                agents::qoderwork::discover::subagent_transcripts_for(&$home)
+            }
 
             fn agent(&self) -> Agent {
                 $home.agent

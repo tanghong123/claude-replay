@@ -183,19 +183,13 @@ pub(crate) fn store_transcripts_in(root: &std::path::Path) -> Vec<PathBuf> {
     let home = home_slug();
     for proj in projects.flatten() {
         let slug = proj.file_name().to_string_lossy().to_string();
-        if is_mount_slug(&slug) {
+        let dir = proj.path();
+        if duplicates_a_project(&slug, &dir) {
             continue;
         }
         // Sessions that ran outside any workspace — automation, not conversations (#151).
         if home.as_deref() == Some(slug.as_str()) {
             continue;
-        }
-        let dir = proj.path();
-        if std::fs::symlink_metadata(&dir)
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false)
-        {
-            continue; // a symlinked project dir duplicates a real one
         }
         let Ok(files) = std::fs::read_dir(&dir) else {
             continue;
@@ -213,6 +207,56 @@ pub(crate) fn store_transcripts_in(root: &std::path::Path) -> Vec<PathBuf> {
                 out.push(path);
             }
         }
+    }
+    out
+}
+
+/// Whether a project dir re-walks another one (#111): a mount slug ([`is_mount_slug`]), or any
+/// dir that is a symlink — QoderWork writes its mount slugs as symlinks into the real workspace
+/// dirs, and following one lists everything below that workspace a second time.
+fn duplicates_a_project(slug: &str, dir: &Path) -> bool {
+    is_mount_slug(slug)
+        || std::fs::symlink_metadata(dir)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+}
+
+/// Every SUB-AGENT transcript in a family store, with its lineage `(path, own id, parent session
+/// id)` (#s373): what the monitor banks onto its root session's cost and what the format sweeps
+/// read (#s370). The family files each spawn as Claude Code does,
+/// `<project>/<sid>/subagents/agent-<id>.jsonl`, so the lineage is the path's
+/// ([`subagent_transcripts_of_project`](crate::agents::claude::discover::subagent_transcripts_of_project)),
+/// but the walk keeps the family's own rule for DUPLICATE project dirs
+/// ([`duplicates_a_project`]). Claude's walk follows a symlinked dir, which here would list each
+/// sub-agent below it twice and bank its spend twice.
+///
+/// Measured 2026-11-05 on aries-black before this was listed: QoderWork's sub-agents carried
+/// 1,018.68 credits beside their main transcripts' 695.21 (62 sessions, 412 sub-agent files), and
+/// none of their records was in a main transcript (0 of 10,482 message ids, 0 of 41,711 uuids),
+/// so nothing listed here is counted already. Qwenwork's (11 sessions, 42 files, clients 1.1.59
+/// and 1.1.71) wrote no usage at all, in sub-agents or mains. The store held 1 symlinked project
+/// dir in Qwenwork and 3 in QoderWork, each pointing inside the store.
+///
+/// Only the duplicate rule applies. The home-slug skip and the size floor decide which MAIN
+/// transcripts are rows; a sub-agent whose main is no row has no root to land on in the monitor,
+/// so its cost is not banked anyway, and the sweep reads it, which is the point of listing it.
+pub(crate) fn subagent_transcripts_for(home: &Home) -> Vec<(PathBuf, String, String)> {
+    subagent_transcripts_in(&projects_dir_for(home))
+}
+
+/// [`subagent_transcripts_for`] rooted at an explicit projects dir.
+pub(crate) fn subagent_transcripts_in(root: &Path) -> Vec<(PathBuf, String, String)> {
+    let mut out = Vec::new();
+    let Ok(projects) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for proj in projects.flatten() {
+        let slug = proj.file_name().to_string_lossy().to_string();
+        let dir = proj.path();
+        if duplicates_a_project(&slug, &dir) {
+            continue;
+        }
+        crate::agents::claude::discover::subagent_transcripts_of_project(&dir, &mut out);
     }
     out
 }
@@ -660,6 +704,68 @@ mod tests {
         assert!(got[0].ends_with("real.jsonl"));
 
         std::env::remove_var("QODERWORK_PROJECTS_DIR");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #s373: the family lists each sub-agent transcript ONCE, with the session dir it sits in as
+    /// its parent, past the duplicate project dirs its main walk skips: a symlinked mount slug and
+    /// a plain symlink to the same workspace. Claude's walk follows both, so reusing it, as Qoder
+    /// does, listed the one sub-agent three times and the monitor would have banked its spend
+    /// three times. A sub-agent of a session the main walk shows no row for (the home slug's) is
+    /// still listed, for the format sweeps. Both agents of the family answer from their own store.
+    #[test]
+    fn the_family_lists_each_sub_agent_once_past_duplicate_project_dirs() {
+        let _env = STORE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("qw-subs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let ws = root.join("-Users-hong--qoderwork-workspace-abc");
+        let subs = ws.join("s1").join("subagents");
+        std::fs::create_dir_all(&subs).unwrap();
+        std::fs::write(ws.join("s1.jsonl"), b"{}\n").unwrap();
+        std::fs::write(subs.join("agent-a1.jsonl"), b"{}\n").unwrap();
+        std::fs::write(subs.join("agent-a1.meta.json"), b"{}").unwrap();
+        std::fs::create_dir_all(ws.join("s2")).unwrap(); // a session dir with no spawns
+        let elsewhere = root.join("-Users-hong");
+        let elsewhere_subs = elsewhere.join("s3").join("subagents");
+        std::fs::create_dir_all(&elsewhere_subs).unwrap();
+        std::fs::write(elsewhere_subs.join("agent-b1.jsonl"), b"{}\n").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&ws, root.join("-sessions-cafe-mnt")).unwrap();
+            std::os::unix::fs::symlink(&ws, root.join("-Users-hong--qoderwork-workspace-abc2"))
+                .unwrap();
+        }
+
+        let mut got = subagent_transcripts_in(&root);
+        got.sort();
+        let mut want = vec![
+            (
+                elsewhere_subs.join("agent-b1.jsonl"),
+                "agent-b1".to_string(),
+                "s3".to_string(),
+            ),
+            (
+                subs.join("agent-a1.jsonl"),
+                "agent-a1".to_string(),
+                "s1".to_string(),
+            ),
+        ];
+        want.sort();
+        assert_eq!(got, want, "each sub-agent once, its session its parent");
+        #[cfg(unix)]
+        assert_eq!(
+            crate::agents::claude::discover::subagent_transcripts_in(&root).len(),
+            4,
+            "Claude's walk follows both links, the trap this walk keeps out"
+        );
+
+        for home in [&QODERWORK, &QWENWORK] {
+            std::env::set_var(home.projects_env, &root);
+            let mut listed = subagent_transcripts_for(home);
+            std::env::remove_var(home.projects_env);
+            listed.sort();
+            assert_eq!(listed, want, "{} lists its own store", home.app);
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

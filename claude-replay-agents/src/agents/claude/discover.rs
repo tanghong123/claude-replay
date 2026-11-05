@@ -544,30 +544,40 @@ pub(crate) fn subagent_transcripts_in(root: &Path) -> Vec<(PathBuf, String, Stri
         return out;
     };
     for p in projects.flatten() {
-        let Ok(sids) = std::fs::read_dir(p.path()) else {
-            continue;
+        subagent_transcripts_of_project(&p.path(), &mut out);
+    }
+    out
+}
+
+/// One project dir's share of [`subagent_transcripts_in`]: each `<sid>/subagents/agent-*.jsonl`
+/// below `project`, its parent the `<sid>` directory's name. A store that has to choose which
+/// project dirs to walk (the QoderWork family's skips duplicates, #s373) calls this per dir.
+pub(crate) fn subagent_transcripts_of_project(
+    project: &Path,
+    out: &mut Vec<(PathBuf, String, String)>,
+) {
+    let Ok(sids) = std::fs::read_dir(project) else {
+        return;
+    };
+    for sid in sids.flatten() {
+        let dir = sid.path().join("subagents");
+        let Ok(files) = std::fs::read_dir(&dir) else {
+            continue; // a `<sid>.jsonl` file, or a session dir without spawns
         };
-        for sid in sids.flatten() {
-            let dir = sid.path().join("subagents");
-            let Ok(files) = std::fs::read_dir(&dir) else {
-                continue; // a `<sid>.jsonl` file, or a session dir without spawns
+        let parent = sid.file_name().to_string_lossy().into_owned();
+        for f in files.flatten() {
+            let path = f.path();
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
             };
-            let parent = sid.file_name().to_string_lossy().into_owned();
-            for f in files.flatten() {
-                let path = f.path();
-                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                    continue;
-                };
-                if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
-                    && stem.starts_with("agent-")
-                    && path.is_file()
-                {
-                    out.push((path.clone(), stem.to_string(), parent.clone()));
-                }
+            if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                && stem.starts_with("agent-")
+                && path.is_file()
+            {
+                out.push((path.clone(), stem.to_string(), parent.clone()));
             }
         }
     }
-    out
 }
 
 /// The newest Claude transcript for `cwd` **or its nearest ancestor that has one**:
