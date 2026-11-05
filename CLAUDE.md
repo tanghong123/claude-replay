@@ -1295,7 +1295,10 @@ locator, safe to paste into an issue.
 **It sweeps every store, whatever directory it runs from** (#276 — it used the viewer's cwd-scoped
 discovery and scanned nothing from `/tmp`): the newest 200 transcripts machine-wide, or with
 `--since 1d` every one modified in that window, and `--json` gives one object per row
-(`agent, count, where, name, version, example`). It also names every MODEL that produced tokens
+(`agent, count, where, name, version, example`). Sub-agent transcripts are swept beside the
+sessions (#s370; `--field-coverage` too): half the refusal notes and sandbox attachments one
+machine held were in sub-agents alone, where a 2.1.310 shape went unreported for two weeks. A
+Claude sub-agent's row names its ROOT session as the example. It also names every MODEL that produced tokens
 with no price in `claude-replay-engine/pricing.json` (`where: model.unpriced`, counted in sessions):
 that session's cost silently becomes a lower bound.
 

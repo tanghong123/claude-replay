@@ -194,6 +194,60 @@ impl<W: std::io::Write> std::io::Write for Counted<W> {
     }
 }
 
+/// The transcripts a format sweep reads, newest first (#276, #s370): every agent's MAIN sessions
+/// and its SUB-AGENT transcripts, machine-wide. A shape only a sub-agent writes (a tool only
+/// sub-agents call, a record a sub-agent harness writes) lives in no main session, and
+/// `store_transcripts` leaves sub-agents out on purpose, since the viewer, the picker and the
+/// monitor's index list sessions; the families that keep sub-agents apart list them through
+/// `store_subagent_transcripts` (Claude Code and Qoder: `<project>/<session>/subagents/`; Codex:
+/// a sub-agent rollout whose head names its parent). Measured 2026-11-05 on hong-devserver: 3 of
+/// 6 `user.refusedMessageId` records and 4 of 8 `sandbox_instructions` attachments were in
+/// sub-agents only, and a 2.1.310 shape had gone unreported for two weeks. A sub-agent's Claude
+/// records carry the ROOT session's id, which is then a row's example, and opens the session
+/// whose Agents pane holds it. `--since` keeps what changed inside the window, every file of it;
+/// without one, the `newest` files of both kinds together, since the cap bounds how much is read.
+fn sweep_transcripts(
+    only: Option<claude_replay_core::Agent>,
+    since: Option<&str>,
+    newest: usize,
+) -> anyhow::Result<Vec<discover::StoreEntry>> {
+    let cutoff = since.map(window_cutoff).transpose()?;
+    let mut all = discover::store_all(only);
+    for a in claude_replay_core::adapters() {
+        if only.is_some_and(|w| w != a.agent()) {
+            continue;
+        }
+        for (path, _own, _parent) in a.store_subagent_transcripts() {
+            // A file that vanished between the listing and the stat is skipped, as in `store_all`.
+            let Ok(md) = std::fs::metadata(&path) else {
+                continue;
+            };
+            let mtime = md
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
+            all.push(discover::StoreEntry {
+                agent: a.agent(),
+                path,
+                mtime,
+            });
+        }
+    }
+    all.retain(|e| cutoff.is_none_or(|c| e.mtime >= c));
+    all.sort_by(|x, y| {
+        y.mtime
+            .total_cmp(&x.mtime)
+            .then_with(|| x.path.cmp(&y.path))
+    });
+    all.dedup_by(|x, y| x.path == y.path);
+    if cutoff.is_none() {
+        all.truncate(newest);
+    }
+    Ok(all)
+}
+
 /// `--unknown` (#264): parse transcripts and print every shape the adapters did not recognise.
 ///
 /// Silence is the good answer — it means the format has not moved since the adapters' known
@@ -209,21 +263,15 @@ fn print_field_coverage(args: &Args) -> anyhow::Result<()> {
     /// How many of the newest transcripts a sweep with no window reads.
     const NEWEST: usize = 200;
     // With an explicit target, that transcript alone (#364: the version canary's one session,
-    // read without touching the stores); otherwise the newest across every agent's store.
+    // read without touching the stores); otherwise the newest across every agent's store, its
+    // sub-agents' transcripts included (#s370).
     let entries: Vec<(claude_replay_core::Agent, std::path::PathBuf)> =
         if args.target.is_some() || args.latest {
             let path = discover::resolve_any(args.agent, args.target.as_deref(), args.latest)?;
             vec![(discover::detect_agent(&path), path)]
         } else {
-            let cutoff = args.since.as_deref().map(window_cutoff).transpose()?;
-            let mut all: Vec<_> = discover::store_all(args.agent)
+            sweep_transcripts(args.agent, args.since.as_deref(), NEWEST)?
                 .into_iter()
-                .filter(|e| cutoff.is_none_or(|c| e.mtime >= c))
-                .collect();
-            all.sort_by(|a, b| b.mtime.total_cmp(&a.mtime));
-            let take = if cutoff.is_some() { all.len() } else { NEWEST };
-            all.into_iter()
-                .take(take)
                 .map(|e| (e.agent, e.path))
                 .collect()
         };
@@ -326,23 +374,23 @@ fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
         // Every agent's STORE, machine-wide (#276): the format moves under all of them, not
         // under the directory this happens to run from. `candidates_all` answered that question
         // — the viewer's, cwd-scoped — and from `/tmp` it swept nothing at all. `--since` trims
-        // on mtime before a byte is read; without a window, the newest NEWEST.
-        let cutoff = args.since.as_deref().map(window_cutoff).transpose()?;
-        let mut all: Vec<_> = discover::store_all(args.agent)
+        // on mtime before a byte is read; without a window, the newest NEWEST. Sub-agent
+        // transcripts are swept too (#s370).
+        sweep_transcripts(args.agent, args.since.as_deref(), NEWEST)?
             .into_iter()
-            .filter(|e| cutoff.is_none_or(|c| e.mtime >= c))
-            .collect();
-        all.sort_by(|a, b| b.mtime.total_cmp(&a.mtime));
-        let take = if cutoff.is_some() { all.len() } else { NEWEST };
-        all.into_iter().take(take).map(|e| e.path).collect()
+            .map(|e| e.path)
+            .collect()
     };
     eprintln!("scanning {} transcript(s)…", paths.len());
     // The per-record key census (#361) is this sweep's alone: an ordinary parse skips it.
     claude_replay_core::unknown::watch_keys(true);
     // The pricing half of "what the adapters did not know about" (#276): a model that produced
     // tokens and has no price in `pricing.json` — its cost is DROPPED, and the session's figure
-    // becomes a lower bound. Keyed by family and model; the count is sessions.
-    let mut unpriced: std::collections::BTreeMap<(&'static str, String), (u64, Option<String>)> =
+    // becomes a lower bound. Keyed by family and model; the count is SESSIONS, so a session whose
+    // sub-agents used the model too counts once (#s370): each transcript is keyed by the session
+    // id it states (a Claude sub-agent states its root's), else by its own path.
+    type Sessions = (std::collections::BTreeSet<String>, Option<String>);
+    let mut unpriced: std::collections::BTreeMap<(&'static str, String), Sessions> =
         std::collections::BTreeMap::new();
     for path in &paths {
         // A transcript that will not parse says nothing about the FORMAT moving, and one bad
@@ -366,10 +414,13 @@ fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
             if tokens == 0 || priced {
                 continue;
             }
+            let sid = discover::session_id(path);
+            let key = sid.clone().unwrap_or_else(|| path.display().to_string());
             unpriced
                 .entry((session.agent.label(), model.clone()))
-                .or_insert_with(|| (0, discover::session_id(path)))
-                .0 += 1;
+                .or_insert_with(|| (Default::default(), sid))
+                .0
+                .insert(key);
         }
     }
     let seen = claude_replay_core::unknown::snapshot();
@@ -393,7 +444,7 @@ fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
                 "{}",
                 serde_json::json!({
                     "agent": agent,
-                    "count": sessions,
+                    "count": sessions.len(),
                     "where": "model.unpriced",
                     "name": model,
                     "version": null,
@@ -425,7 +476,7 @@ fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
     for ((agent, model), (sessions, example)) in &unpriced {
         println!(
             "{:>8}  {:<10} {:<18} {:<28} {:<10} {}",
-            sessions,
+            sessions.len(),
             agent,
             "model.unpriced",
             model,

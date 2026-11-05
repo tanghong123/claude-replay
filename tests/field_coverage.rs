@@ -112,3 +112,77 @@ fn the_mode_takes_since_and_json_and_refuses_unknown_beside_it() {
     let (_, _, ok) = run(&root, &["--field-coverage", "--unknown"]);
     assert!(!ok, "one sweep at a time");
 }
+
+fn rows(out: &str) -> Vec<serde_json::Value> {
+    out.lines()
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}")))
+        .collect()
+}
+
+/// #s370: a sub-agent's records are counted with its session's. A Claude sub-agent lives in its
+/// session's `subagents/` dir, and the sweep read main sessions alone, so a field only sub-agents
+/// stopped writing went unseen.
+#[test]
+fn a_sub_agent_s_records_are_counted() {
+    let root = scratch("sub-agent");
+    let sid = "0f0e0d0c-0000-4000-8000-000000000370";
+    session(&root, sid, "2.1.3", 3, true);
+    let subs = root
+        .join("claude")
+        .join("-work-coverage")
+        .join(sid)
+        .join("subagents");
+    std::fs::create_dir_all(&subs).unwrap();
+    let mut sub = String::new();
+    for i in 0..4 {
+        sub += &format!(
+            r#"{{"type":"assistant","cwd":"/work","sessionId":"{sid}","isSidechain":true,"agentId":"a1","version":"2.1.3","requestId":"s{i}","timestamp":"2026-09-25T00:01:{i:02}Z","message":{{"id":"sm{i}","model":"claude-sonnet-5","role":"assistant","content":[{{"type":"text","text":"ok"}}],"usage":{{"input_tokens":3,"output_tokens":5}}}}}}"#
+        );
+        sub.push('\n');
+    }
+    std::fs::write(subs.join("agent-a1.jsonl"), sub).unwrap();
+    let (out, err, ok) = run(&root, &["--field-coverage", "--json"]);
+    assert!(ok, "{err}");
+    assert!(err.contains("read 2 transcript"), "{err}");
+    let usage = rows(&out)
+        .into_iter()
+        .find(|r| r["field"] == "assistant.message.usage" && r["version"] == "2.1.3")
+        .unwrap_or_else(|| panic!("no usage row: {out}"));
+    assert_eq!(
+        usage["records"], 7,
+        "3 replies in the session, 4 in its sub-agent: {usage}"
+    );
+}
+
+/// #s370: Codex keeps a sub-agent in a rollout of its own, which its head marks; it is counted too.
+#[test]
+fn a_codex_sub_agent_rollout_is_counted() {
+    let root = scratch("codex-sub-agent");
+    let day = root.join("codex").join("sessions").join("2026/09/25");
+    std::fs::create_dir_all(&day).unwrap();
+    let head = |id: &str, lineage: &str| {
+        format!(
+            r#"{{"timestamp":"2026-09-25T00:00:00Z","type":"session_meta","payload":{{"id":"{id}","cwd":"/work/skua",{lineage}"originator":"codex_cli_rs","cli_version":"0.170.0"}}}}"#
+        ) + "\n"
+    };
+    std::fs::write(day.join("rollout-m370.jsonl"), head("m370", "")).unwrap();
+    std::fs::write(
+        day.join("rollout-s370.jsonl"),
+        head(
+            "s370",
+            r#""session_id":"m370","thread_source":"subagent","parent_thread_id":"m370","#,
+        ),
+    )
+    .unwrap();
+    let (out, err, ok) = run(&root, &["--field-coverage", "--json", "--agent", "codex"]);
+    assert!(ok, "{err}");
+    assert!(
+        err.contains("read 2 transcript"),
+        "the main rollout and its sub-agent's: {err}"
+    );
+    let cwd = rows(&out)
+        .into_iter()
+        .find(|r| r["agent"] == "codex" && r["field"] == "session_meta.cwd")
+        .unwrap_or_else(|| panic!("no cwd row: {out}"));
+    assert_eq!(cwd["records"], 2, "{cwd}");
+}

@@ -187,3 +187,95 @@ fn a_model_with_no_price_is_reported_and_a_priced_one_is_not() {
     assert_eq!(unpriced[0]["count"], 1, "sessions");
     assert_eq!(unpriced[0]["example"], SID);
 }
+
+/// A Claude store whose one session spawned one sub-agent, in the session's own `subagents/` dir,
+/// the sub-agent's records carrying the root session's id as Claude Code writes them. `main` and
+/// `sub` are extra lines for each transcript.
+fn store_with_a_sub_agent(root: &Path, main: &[String], sub: &[String]) -> (PathBuf, PathBuf) {
+    let project = root.join("claude").join("-work-tern");
+    let subs = project.join(SID).join("subagents");
+    std::fs::create_dir_all(&subs).unwrap();
+    let head = r#"{"type":"user","cwd":"/work/tern","sessionId":"0f0e0d0c-0000-4000-8000-000000000276","version":"9.9.9","message":{"role":"user","content":[{"type":"text","text":"count the terns"}]},"timestamp":"2026-09-25T00:00:00Z"}"#;
+    let sub_head = r#"{"type":"user","cwd":"/work/tern","sessionId":"0f0e0d0c-0000-4000-8000-000000000276","isSidechain":true,"agentId":"a1","version":"9.9.9","message":{"role":"user","content":[{"type":"text","text":"count the north colony"}]},"timestamp":"2026-09-25T00:00:01Z"}"#;
+    let main_path = project.join(format!("{SID}.jsonl"));
+    let sub_path = subs.join("agent-a1.jsonl");
+    let lines = |first: &str, rest: &[String]| {
+        std::iter::once(first.to_string())
+            .chain(rest.iter().cloned())
+            .map(|l| l + "\n")
+            .collect::<String>()
+    };
+    std::fs::write(&main_path, lines(head, main)).unwrap();
+    std::fs::write(&sub_path, lines(sub_head, sub)).unwrap();
+    (main_path, sub_path)
+}
+
+/// #s370: a shape that only a SUB-AGENT transcript carries is reported. The sweep listed main
+/// sessions alone, so 3 of 6 refusal notes and 4 of 8 sandbox attachments on one machine went
+/// unseen, and a 2.1.310 shape stayed unreported for two weeks. The row's example is the root
+/// session's id, which the sub-agent's records carry, and `--paths` resolves it to that session.
+#[test]
+fn a_shape_only_a_sub_agent_writes_is_reported_under_its_root_session() {
+    let root = scratch("sub-agent");
+    let (main_path, _) = store_with_a_sub_agent(
+        &root,
+        &[],
+        &[r#"{"type":"a_record_only_sub_agents_write","sessionId":"0f0e0d0c-0000-4000-8000-000000000276","isSidechain":true,"agentId":"a1","version":"9.9.9","timestamp":"2026-09-25T00:00:02Z"}"#.to_string()],
+    );
+    for window in [&[][..], &["--since", "1d"][..]] {
+        let mut args = vec!["--unknown", "--json"];
+        args.extend_from_slice(window);
+        let (out, err, ok) = run(&root, &root, &args);
+        assert!(ok, "{err}");
+        assert!(
+            err.contains("scanning 2 transcript"),
+            "the session and its sub-agent, {window:?}: {err}"
+        );
+        let rows = rows(&out);
+        assert_eq!(rows.len(), 1, "{window:?}: {out}");
+        assert_eq!(rows[0]["where"], "record.type");
+        assert_eq!(rows[0]["name"], "a_record_only_sub_agents_write");
+        assert_eq!(rows[0]["count"], 1);
+        assert_eq!(
+            rows[0]["example"], SID,
+            "the root session to go and look in"
+        );
+    }
+    let (paths, err, ok) = run(&root, &root, &["--paths", SID]);
+    assert!(ok, "the example resolves: {err}");
+    assert!(
+        paths.contains(&main_path.display().to_string()),
+        "to the root session: {paths}"
+    );
+}
+
+/// #s370: a model with no price used by a session AND its sub-agent is one session, not two:
+/// the count says how many sessions read as a lower bound.
+#[test]
+fn a_model_with_no_price_counts_a_session_and_its_sub_agents_once() {
+    let root = scratch("unpriced-sub");
+    let assistant = |side: &str, ts: &str| {
+        format!(
+            r#"{{"type":"assistant","sessionId":"{SID}",{side}"version":"9.9.9","message":{{"role":"assistant","model":"claude-imaginary-9","content":[{{"type":"text","text":"ok"}}],"usage":{{"input_tokens":10,"output_tokens":5}}}},"timestamp":"{ts}"}}"#
+        )
+    };
+    store_with_a_sub_agent(
+        &root,
+        &[assistant("", "2026-09-25T00:00:03Z")],
+        &[assistant(
+            r#""isSidechain":true,"agentId":"a1","#,
+            "2026-09-25T00:00:02Z",
+        )],
+    );
+    let (out, err, ok) = run(&root, &root, &["--unknown", "--json"]);
+    assert!(ok, "{err}");
+    assert!(err.contains("scanning 2 transcript"), "{err}");
+    let rows = rows(&out);
+    let unpriced: Vec<_> = rows
+        .iter()
+        .filter(|r| r["where"] == "model.unpriced")
+        .collect();
+    assert_eq!(unpriced.len(), 1, "{out}");
+    assert_eq!(unpriced[0]["count"], 1, "one session: {out}");
+    assert_eq!(unpriced[0]["example"], SID);
+}
