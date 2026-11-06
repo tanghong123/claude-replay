@@ -750,7 +750,13 @@ pub(crate) fn session_card(path: &Path, memo: Option<&CardMemo>) -> CardOutcome 
         }
     }
 
-    let card = SessionCard { title, last_prompt };
+    // The person's own name is the title only when a `custom-title` line set it (#s389).
+    let name = if custom { title.clone() } else { None };
+    let card = SessionCard {
+        title,
+        last_prompt,
+        name,
+    };
     let next = CardMemo::encode(&Memo {
         v: MEMO_V,
         at: len,
@@ -1325,6 +1331,8 @@ mod tests {
             "latest wins"
         );
         assert_eq!(c.label(), Some("My Name"));
+        // #s389: the person's own name, and the only name a tool may send off the computer.
+        assert_eq!(c.name.as_deref(), Some("My Name"), "the person named it");
     }
 
     /// With no user title, the agent's is the name — and it is still the LAST one.
@@ -1339,7 +1347,43 @@ mod tests {
                 "\n",
             ),
         );
-        assert_eq!(cold(&p).unwrap().title.as_deref(), Some("current"));
+        let c = cold(&p).unwrap();
+        assert_eq!(c.title.as_deref(), Some("current"));
+        assert_eq!(
+            c.name, None,
+            "a generated title is not the person's name (#s389)"
+        );
+    }
+
+    /// #s389: the person's name holds across a resumed read (the memo keeps whose the title is),
+    /// and a later generated title displaces neither it nor the title.
+    #[test]
+    fn session_card_keeps_the_persons_name_across_a_resumed_read() {
+        let first = concat!(
+            r#"{"type":"ai-title","aiTitle":"a guess"}"#,
+            "\n",
+            r#"{"type":"custom-title","customTitle":"Release notes"}"#,
+            "\n",
+        );
+        let p = card_tmp("resume-name", first);
+        let (card, memo) = match session_card(&p, None) {
+            CardOutcome::Fresh { card, memo } => (card, memo.expect("a memo")),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(card.name.as_deref(), Some("Release notes"));
+        std::fs::write(
+            &p,
+            format!(
+                "{first}{}\n",
+                r#"{"type":"ai-title","aiTitle":"a later guess"}"#
+            ),
+        )
+        .unwrap();
+        let CardOutcome::Fresh { card, .. } = session_card(&p, Some(&memo)) else {
+            panic!("grown: a fresh card")
+        };
+        assert_eq!(card.title.as_deref(), Some("Release notes"));
+        assert_eq!(card.name.as_deref(), Some("Release notes"));
     }
 
     /// A session with only a prompt has no name, and `label` degrades to it — which is what a

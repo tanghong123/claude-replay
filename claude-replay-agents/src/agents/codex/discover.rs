@@ -490,13 +490,21 @@ pub(crate) fn session_card(path: &Path, memo: Option<&CardMemo>) -> CardOutcome 
         prompt: genuine.then(|| prompt.clone()),
         stamp,
     });
-    let title = codex_thread_title(path).map(|title| compact_session_title(&title));
+    // The catalog's explicit rename is the person's own name; its generated title is not
+    // (#s389). The name goes out whole, the title as the card shows it.
+    let catalog = codex_thread_title(path);
+    let name = catalog
+        .as_ref()
+        .filter(|entry| entry.named)
+        .map(|entry| entry.title.clone());
+    let title = catalog.map(|entry| compact_session_title(&entry.title));
     if !genuine {
         return match title {
             Some(title) => CardOutcome::Fresh {
                 card: SessionCard {
                     title: Some(title),
                     last_prompt: None,
+                    name,
                 },
                 memo,
             },
@@ -507,6 +515,7 @@ pub(crate) fn session_card(path: &Path, memo: Option<&CardMemo>) -> CardOutcome 
         card: SessionCard {
             title: Some(title.unwrap_or_else(|| compact_session_title(&prompt))),
             last_prompt: Some(prompt),
+            name,
         },
         memo,
     }
@@ -538,12 +547,20 @@ fn catalog_stamp() -> (u64, u64) {
     }
 }
 
+/// A thread's title in the Desktop catalog, and whether it is the person's own: an explicit
+/// rename (`name`), not the title the app generated (#s389).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CatalogTitle {
+    title: String,
+    named: bool,
+}
+
 #[cfg(target_os = "macos")]
 #[derive(Default)]
 struct ThreadTitleCache {
     db: PathBuf,
     modified: Option<(SystemTime, Option<SystemTime>)>,
-    by_rollout: HashMap<PathBuf, String>,
+    by_rollout: HashMap<PathBuf, CatalogTitle>,
 }
 
 #[cfg(target_os = "macos")]
@@ -559,7 +576,7 @@ static THREAD_TITLES: OnceLock<Mutex<ThreadTitleCache>> = OnceLock::new();
 /// ships on macOS; elsewhere every session falls back to its first prompt, which is the same
 /// answer this returns when the catalog is simply absent.
 #[cfg(target_os = "macos")]
-fn codex_thread_title(path: &Path) -> Option<String> {
+fn codex_thread_title(path: &Path) -> Option<CatalogTitle> {
     let db = codex_home().join("state_5.sqlite");
     let db_modified = std::fs::metadata(&db)
         .and_then(|meta| meta.modified())
@@ -580,7 +597,7 @@ fn codex_thread_title(path: &Path) -> Option<String> {
 /// A rollout's title in the catalog, which names a rollout by its plain `.jsonl` path whether it
 /// is compressed or not (#s383).
 #[cfg(target_os = "macos")]
-fn title_in(by_rollout: &HashMap<PathBuf, String>, path: &Path) -> Option<String> {
+fn title_in(by_rollout: &HashMap<PathBuf, CatalogTitle>, path: &Path) -> Option<CatalogTitle> {
     by_rollout
         .get(&claude_replay_engine::seam::source::plain_path(path))
         .cloned()
@@ -594,7 +611,7 @@ fn plain_rollout(path: &str) -> PathBuf {
 }
 
 #[cfg(target_os = "macos")]
-fn read_thread_titles(db: &Path) -> HashMap<PathBuf, String> {
+fn read_thread_titles(db: &Path) -> HashMap<PathBuf, CatalogTitle> {
     let Ok(connection) = rusqlite::Connection::open_with_flags(
         db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -618,9 +635,17 @@ fn read_thread_titles(db: &Path) -> HashMap<PathBuf, String> {
             return rows
                 .flatten()
                 .filter_map(|(path, name, title, first)| {
-                    let title =
-                        name.or_else(|| title.filter(|value| first.as_deref() != Some(value)));
-                    title.map(|title| (plain_rollout(&path), title))
+                    let entry = match name {
+                        Some(name) => CatalogTitle {
+                            title: name,
+                            named: true,
+                        },
+                        None => CatalogTitle {
+                            title: title.filter(|value| first.as_deref() != Some(value))?,
+                            named: false,
+                        },
+                    };
+                    Some((plain_rollout(&path), entry))
                 })
                 .collect();
         }
@@ -638,12 +663,23 @@ fn read_thread_titles(db: &Path) -> HashMap<PathBuf, String> {
         return HashMap::new();
     };
     rows.flatten()
-        .filter_map(|(path, title)| title.map(|title| (plain_rollout(&path), title)))
+        // An old catalog folds name and title together, so whose it is cannot be told: not named.
+        .filter_map(|(path, title)| {
+            title.map(|title| {
+                (
+                    plain_rollout(&path),
+                    CatalogTitle {
+                        title,
+                        named: false,
+                    },
+                )
+            })
+        })
         .collect()
 }
 
 #[cfg(not(target_os = "macos"))]
-fn codex_thread_title(_path: &Path) -> Option<String> {
+fn codex_thread_title(_path: &Path) -> Option<CatalogTitle> {
     None
 }
 
@@ -1412,8 +1448,17 @@ mod tests {
         drop(connection);
 
         let titles = read_thread_titles(&db);
-        assert_eq!(titles[Path::new("/tmp/a.jsonl")], "Renamed task");
-        assert_eq!(titles[Path::new("/tmp/b.jsonl")], "Generated task");
+        assert_eq!(titles[Path::new("/tmp/a.jsonl")].title, "Renamed task");
+        assert_eq!(titles[Path::new("/tmp/b.jsonl")].title, "Generated task");
+        // #s389: only an explicit rename is the person's own name; a generated title is not.
+        assert!(
+            titles[Path::new("/tmp/a.jsonl")].named,
+            "a rename is the person's"
+        );
+        assert!(
+            !titles[Path::new("/tmp/b.jsonl")].named,
+            "a generated title is not"
+        );
         assert!(!titles.contains_key(Path::new("/tmp/c.jsonl")));
     }
 
@@ -1446,7 +1491,7 @@ mod tests {
         }
         drop(connection);
         let titles = read_thread_titles(&db);
-        let title = |p: &str| title_in(&titles, Path::new(p));
+        let title = |p: &str| title_in(&titles, Path::new(p)).map(|t| t.title);
         assert_eq!(
             title("/s/rollout-a.jsonl.zst").as_deref(),
             Some("Plain-named")
