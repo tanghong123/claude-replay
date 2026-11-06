@@ -18399,6 +18399,46 @@ fn scenario_a_bash_call_outside_the_sandbox_is_marked(
                 && (n(&full["badge"][0]) - n(&full["target"][0])).abs() <= 1,
             "{surface:?}: the badge sits under the full command, at its start: {full}"
         );
+        // Held sideways the state pill is back, beside the badge, and keeps its own width: at
+        // minmax(0,1fr) the long command took the state's column and "1 lines", aligned to its
+        // end, ran left under the badge. One more click shows the call's head as one line again.
+        eval(
+            tab,
+            "(function(){ var r = document.querySelector('.renderer[data-target=\"full\"]'); \
+               r.querySelector(':scope > button.renderer-head').click(); return 1; })()",
+        );
+        settle();
+        harness::phone(tab, 874, 402);
+        let heads = "(function(){ \
+               var out = []; \
+               document.querySelectorAll('.renderer > .renderer-head').forEach(function (h) { \
+                 var c = h.querySelector(':scope > .renderer-change'), s = h.querySelector(':scope > .renderer-state'); \
+                 if (!c || !s || !s.textContent.trim() || getComputedStyle(s).display === 'none') return; \
+                 var cr = c.getBoundingClientRect(), sr = s.getBoundingClientRect(); \
+                 if (!cr.width) return; \
+                 out.push({ badge: [Math.round(cr.left), Math.round(cr.right)], state: [Math.round(sr.left), Math.round(sr.right)], \
+                            clipped: s.scrollWidth > s.clientWidth + 1, text: s.textContent.trim() }); }); \
+               return JSON.stringify({ w: innerWidth, heads: out }); })()";
+        let mut side = serde_json::Value::Null;
+        for _ in 0..40 {
+            side = serde_json::from_str(eval(tab, heads).as_str().unwrap_or("null"))
+                .unwrap_or(serde_json::Value::Null);
+            if side["w"] == 874 && side["heads"].as_array().is_some_and(|h| !h.is_empty()) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        let rows = side["heads"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !rows.is_empty(),
+            "{surface:?}: held sideways, a head shows the badge beside a state: {side}"
+        );
+        for row in &rows {
+            assert!(
+                n(&row["badge"][1]) <= n(&row["state"][0]) + 1 && row["clipped"] == false,
+                "{surface:?}: held sideways, the state sits whole beside the badge, not under it: {side}"
+            );
+        }
     }
 }
 
@@ -18418,7 +18458,13 @@ fn sandbox_fixture(name: &str) -> Fixture {
     transcript += &user_at("Fetch the colony count.", &now_minus(60));
     for (id, cmd, inside, ago) in [
         ("toolu_in", "ls nests", true, 58u64),
-        ("toolu_out", "curl https://tern.example/nests", false, 56),
+        // Long enough to fill its head held sideways, where the state pill shows beside the badge.
+        (
+            "toolu_out",
+            "curl https://tern.example/nests?colony=north&season=2026&fields=burrows,eggs,chicks",
+            false,
+            56,
+        ),
     ] {
         let mut input = serde_json::json!({"command": cmd});
         if !inside {

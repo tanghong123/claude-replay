@@ -3493,7 +3493,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal((comp.match(/\$\{targetHtml\}\$\{openFilesHtml\(view\)\}\$\{changeBadgeHtml\(view\.change\)\}/g) || []).length, 2, "both heads carry the badge, after the target (and a send's Open all, #s222)");
   assert.match(comp, /const hidden = Math\.max\(0, groups\.length - visibleLimit\);/, "the cap counts every event again");
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
-  assert.match(css, /\.renderer>\.renderer-head:has\(>\.renderer-change\)\{grid-template-columns:11px max-content minmax\(0,max-content\) max-content minmax\(0,1fr\)\}/, "the badge has a column of its own");
+  assert.match(css, /\.renderer>\.renderer-head:has\(>\.renderer-change\)\{grid-template-columns:11px max-content minmax\(0,max-content\) max-content minmax\(max-content,1fr\)\}/, "the badge has a column of its own, and the state keeps its width beside it (#s381)");
   console.log("#s23 change badge cases passed");
 }
 
