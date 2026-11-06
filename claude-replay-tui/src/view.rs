@@ -2760,6 +2760,11 @@ fn block_occurrences(b: &Block, needle: &str, whole: bool) -> usize {
         | Block::AssistantText(t)
         | Block::AssistantCutOff(t)
         | Block::ToolResult(t) => count(t, needle),
+        // #s378: the line a reader sees, and the note folded under it.
+        Block::SafetyStop { category, note } => {
+            count(&crate::model::safety_stop_line(category.as_deref()), needle)
+                + count(note, needle)
+        }
         Block::AssistantMessage { text, .. } => count(text, needle),
         Block::QueueEvent { text } => count(text, needle),
         Block::PeerText { from, text, .. } => count(from, needle) + count(text, needle),
@@ -3957,6 +3962,35 @@ mod tests {
             buf[(w - 1, yo)].style().bg,
             bg,
             "output not filled to right edge"
+        );
+    }
+
+    /// #s378: by default the mark on a stopped reply shows its line and keeps the note folded, as
+    /// a result does; expanded, the note is there.
+    #[test]
+    fn a_stopped_reply_shows_its_line_and_folds_the_note() {
+        let stopped = || {
+            vec![Block::SafetyStop {
+                category: Some("cyber".into()),
+                note: "Your response above was stopped by a safety classifier.".into(),
+            }]
+        };
+        let screen = |policy| {
+            let mut v = View::new(stopped(), "t", false, policy);
+            let buf = draw(&mut v, 80, 8);
+            (0..8).map(|y| row(&buf, y)).collect::<Vec<_>>().join("\n")
+        };
+        let folded = screen(FoldPolicy::default());
+        assert!(
+            folded.contains("Stopped by the safety classifier · cyber"),
+            "{folded}"
+        );
+        assert!(!folded.contains("Your response above"), "{folded}");
+        let open = screen(FoldPolicy::none());
+        assert!(
+            open.contains("Stopped by the safety classifier · cyber")
+                && open.contains("Your response above was stopped by a safety classifier."),
+            "{open}"
         );
     }
 

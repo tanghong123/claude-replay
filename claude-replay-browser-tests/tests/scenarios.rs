@@ -18254,6 +18254,154 @@ fn app_shell_marks_a_reply_cut_off_by_an_interrupt() {
     scenario_a_reply_cut_off_by_an_interrupt_is_marked_cut_off(&page.tab, Surface::AppShell);
 }
 
+// ── scenario: a reply the safety classifier stopped is marked (#s378)
+
+/// Claude Code keeps a reply the safety classifier stopped (its thinking alone), records the
+/// category on it, and writes a note to the model right after naming it. Both pages drew that
+/// note as a plain "Result" line worded for the model, and nothing said the reply had been
+/// stopped. Hong on #s371: "Mark it: a line on the stopped reply naming the classifier and its
+/// category, the note folded under it." Now the note's place holds one head naming the classifier
+/// with the category beside it, the note folded under it until the reader opens it.
+fn scenario_a_reply_the_safety_classifier_stopped_is_marked(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let line = claude_replay_core::model::safety_stop_line(None);
+    let read = format!(
+        "(function(){{ \
+           var names = [...document.querySelectorAll('.tool-name, .renderer-title')] \
+             .filter(function(n){{ return n.textContent.trim() === {line:?}; }}); \
+           var prompt = [...document.querySelectorAll('p, .uturn, .user')] \
+             .find(function(p){{ return p.textContent.indexOf('Chart the skua burrows') >= 0; }}); \
+           var answer = [...document.querySelectorAll('p')] \
+             .find(function(p){{ return p.textContent.indexOf('The burrow map is in skua-notes.md') >= 0; }}); \
+           var marks = names.map(function(n){{ \
+             var head = n.closest('.fold-h, .renderer-head') || n.parentElement; \
+             var target = head.querySelector('.tool-target, .renderer-target'); \
+             var box = n.closest('.fold, .renderer'); \
+             var note = box ? [...box.querySelectorAll('pre, .renderer-output *')] \
+               .find(function(e){{ return e.textContent.indexOf('Do not produce that content again') >= 0; }}) : null; \
+             var r = head.getBoundingClientRect(); \
+             var nr = note ? note.getBoundingClientRect() : null; \
+             return {{ \
+               target: target ? target.textContent.trim() : null, \
+               shown: r.width > 0 && r.height > 0, \
+               noteShown: !!nr && nr.width > 0 && nr.height > 0, \
+               afterPrompt: !!prompt && !!(prompt.compareDocumentPosition(head) & Node.DOCUMENT_POSITION_FOLLOWING), \
+               beforeAnswer: !!answer && !!(answer.compareDocumentPosition(head) & Node.DOCUMENT_POSITION_PRECEDING) \
+             }}; \
+           }}); \
+           var loose = [...document.querySelectorAll('.tool-target, .renderer-target')] \
+             .filter(function(t){{ return t.textContent.indexOf('Your response above was stopped') >= 0; }}).length; \
+           return JSON.stringify({{ marks: marks, loose: loose }}); \
+         }})()"
+    );
+    let poll = |what: &str, done: &dyn Fn(&serde_json::Value) -> bool| {
+        let mut last = serde_json::Value::Null;
+        for _ in 0..40 {
+            last = serde_json::from_str(eval(tab, &read).as_str().unwrap_or("null"))
+                .unwrap_or(serde_json::Value::Null);
+            if done(&last) {
+                return last;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        panic!("{surface:?}: {what}: {last}");
+    };
+    let last = poll("one mark, drawn", &|v| {
+        v["marks"]
+            .as_array()
+            .is_some_and(|m| m.len() == 1 && m[0]["shown"] == true)
+    });
+    let mark = &last["marks"][0];
+    assert_eq!(
+        mark["target"], "cyber",
+        "{surface:?}: the category beside it: {mark}"
+    );
+    assert_eq!(
+        mark["afterPrompt"], true,
+        "{surface:?}: after the prompt whose reply was stopped: {mark}"
+    );
+    assert_eq!(
+        mark["beforeAnswer"], true,
+        "{surface:?}: before the reply the agent went on to give: {mark}"
+    );
+    assert_eq!(
+        mark["noteShown"], false,
+        "{surface:?}: the note is folded under the line: {mark}"
+    );
+    assert_eq!(
+        last["loose"], 0,
+        "{surface:?}: the note no longer draws as a result line of its own: {last}"
+    );
+    // Opening the mark shows the note, as opening any fold does.
+    let open = format!(
+        "(function(){{ \
+           var n = [...document.querySelectorAll('.tool-name, .renderer-title')] \
+             .find(function(n){{ return n.textContent.trim() === {line:?}; }}); \
+           (n.closest('.fold-h, .renderer-head') || n).click(); return true; }})()"
+    );
+    eval(tab, &open);
+    poll("the note shows once the mark is opened", &|v| {
+        v["marks"][0]["noteShown"] == true
+    });
+}
+
+/// Twelve turns, then a prompt whose reply the safety classifier stopped, as Claude Code 2.1.318
+/// writes it (the stopped reply's thinking, the notice for the person, the note naming the reply),
+/// then the reply the agent went on to give — #s378.
+fn safety_stop_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    let line = |v: serde_json::Value| format!("{v}\n");
+    transcript += &user_at("Chart the skua burrows.", &now_minus(60));
+    transcript += &line(serde_json::json!({
+        "type": "assistant", "cwd": "/r", "timestamp": now_minus(58), "version": "2.1.318",
+        "message": {"id": "msg_s378", "role": "assistant", "model": "claude-opus-5", "stop_reason": "refusal",
+                    "stop_details": {"type": "refusal", "category": "cyber", "explanation": "This request was flagged."},
+                    "usage": {"input_tokens": 12, "output_tokens": 8},
+                    "content": [{"type": "thinking", "thinking": "The burrows sit above the tern colony.", "signature": "x"}]}
+    }));
+    transcript += &line(serde_json::json!({
+        "type": "system", "subtype": "informational", "level": "notice", "isMeta": false, "cwd": "/r",
+        "timestamp": now_minus(57), "content": "The safeguards stopped the response above · continuing"
+    }));
+    transcript += &line(serde_json::json!({
+        "type": "user", "cwd": "/r", "timestamp": now_minus(57), "isMeta": true, "turnCompanion": true,
+        "refusedMessageId": "msg_s378",
+        "message": {"role": "user", "content": "Your response above was stopped by a safety classifier — this is not a tool or API error. The rest of it was withheld, and tool calls in it that had not finished did not run. Do not produce that content again, even reworded."}
+    }));
+    transcript += &assistant_at("The burrow map is in skua-notes.md.", &now_minus(50));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_marks_a_reply_the_safety_classifier_stopped() {
+    let _serial = serial();
+    let fx = safety_stop_fixture("scenario-safety-stop-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_reply_the_safety_classifier_stopped_is_marked(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_marks_a_reply_the_safety_classifier_stopped() {
+    let _serial = serial();
+    let fx = safety_stop_fixture("scenario-safety-stop-app");
+    let page = open(Surface::AppShell, &fx, 3100);
+    scenario_a_reply_the_safety_classifier_stopped_is_marked(&page.tab, Surface::AppShell);
+}
+
 /// #s272: Hong's messages that aries-inbox types into the Aries pane arrive as one signed
 /// element, recorded as a whole-turn paste. A verified one is HIS card in its own style: what the
 /// relay says of it as chips (via, kind, the issue, the agent and task, when), the words it answers

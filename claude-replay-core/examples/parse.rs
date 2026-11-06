@@ -70,6 +70,10 @@ fn describe(b: &Block) -> (&'static str, String) {
         ),
         Block::ToolUse { name, target, .. } => ("tool", format!("{name}({})", clip(target))),
         Block::ToolResult(t) => ("result", clip(t)),
+        Block::SafetyStop { category, .. } => (
+            "result",
+            claude_replay_core::model::safety_stop_line(category.as_deref()),
+        ),
         Block::Command { name, .. } => ("command", name.clone()),
         Block::SubAgent(sa) => (
             "agent",

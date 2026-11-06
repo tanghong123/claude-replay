@@ -942,6 +942,15 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                 out.push(Line::from(Span::styled(format!("  {prefix}{line}"), base)));
             }
         }
+        // #s378: the mark on a reply the safety classifier stopped, then the client's note to
+        // the model under it, on the result tier as the note was drawn before.
+        Block::SafetyStop { category, note } => {
+            out.push(safety_stop_header(category.as_deref()));
+            let base = theme::result().bg(theme::shell_expanded_bg());
+            for line in note.lines() {
+                out.push(Line::from(Span::styled(format!("    {line}"), base)));
+            }
+        }
         Block::Command { name, args, output } => {
             // `❯ /compact` header + dim `⎿ <stdout>` lines, like Claude Code — the
             // whole block shares the user-tier background so it reads as one region.
@@ -1297,9 +1306,19 @@ fn render_header(b: &Block) -> Line<'static> {
             format!("  ⎿ {}", t.lines().next().unwrap_or("")),
             theme::result(),
         ),
+        Block::SafetyStop { category, .. } => safety_stop_header(category.as_deref()),
         Block::Command { name, args, .. } => command_header(name, args),
         Block::Compaction { .. } => compaction_rule(b),
     }
+}
+
+/// The one dim line that marks a reply the safety classifier stopped (#s378): the classifier and
+/// the category, in the result gutter.
+fn safety_stop_header(category: Option<&str>) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("  ⎿ \u{a0}{}", crate::model::safety_stop_line(category)),
+        theme::dim(),
+    ))
 }
 
 /// How many lines `render_one` emits *after* the header — computed cheaply (no
@@ -1311,6 +1330,8 @@ fn body_len(b: &Block) -> usize {
         | Block::UserText(t)
         | Block::UserReply { text: t, .. }
         | Block::QueueEvent { text: t } => t.lines().count().saturating_sub(1),
+        // #s378: the line is the header; the whole note is the body.
+        Block::SafetyStop { note, .. } => note.lines().count(),
         Block::UserInbox { text, inbox } => inbox_lines(text, inbox).len() - 1,
         Block::Attachment(_) => 0, // one-line marker; not foldable
         Block::SubAgent(sa) => {
@@ -2595,6 +2616,36 @@ mod tests {
             texts(&[render_header(&cut)]),
             texts(&[render_header(&plain)])
         );
+    }
+
+    /// #s378: a reply the safety classifier stopped is one dim `⎿` line naming the classifier and
+    /// the category, which is also its collapsed header, with the client's note under it.
+    #[test]
+    fn a_stopped_reply_is_one_dim_line_with_the_note_under_it() {
+        let b = Block::SafetyStop {
+            category: Some("cyber".into()),
+            note: "Your response above was stopped.\nDo not produce it again.".into(),
+        };
+        let line = format!(
+            "  ⎿ \u{a0}{}",
+            crate::model::safety_stop_line(Some("cyber"))
+        );
+        let lines = render_one(&b, 80, Hl::Styled);
+        assert_eq!(
+            texts(&lines),
+            [
+                line.clone(),
+                "    Your response above was stopped.".to_string(),
+                "    Do not produce it again.".to_string()
+            ]
+        );
+        assert!(
+            lines[0].spans.iter().all(|s| s.style == theme::dim()),
+            "the line is dim: {:?}",
+            lines[0]
+        );
+        assert_eq!(texts(&[render_header(&b)]), [line]);
+        assert_eq!(body_len(&b), lines.len() - 1, "the body is the note");
     }
 
     /// A Command block renders `❯ /compact` + a dim `⎿`-prefixed stdout line.

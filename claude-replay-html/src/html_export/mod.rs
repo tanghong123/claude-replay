@@ -1608,6 +1608,18 @@ impl Emitter<'_> {
                 head.insert("target".into(), json!(label_of(text, 70)));
                 body.push(pre_part(text));
             }
+            // #s378: a reply the safety classifier stopped. Both pages draw a bare result as its
+            // name and target with the body folded under it, so the mark is that: the classifier
+            // as the name, the category the client recorded as the target, the note to the
+            // model as the body.
+            Block::SafetyStop { category, note } => {
+                o.insert("id".into(), json!(self.block_id()));
+                head.insert("name".into(), json!(crate::model::safety_stop_line(None)));
+                if let Some(c) = category.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+                    head.insert("target".into(), json!(c));
+                }
+                body.push(pre_part(note));
+            }
             Block::ToolUse {
                 name,
                 target,

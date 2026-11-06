@@ -104,6 +104,47 @@ fn cut_off_text(v: &Value, content: &[Value], phase: Option<AssistantPhase>) -> 
     })
 }
 
+/// A reply the safety classifier STOPPED (#s378), if this assistant record is one: `stop_reason`
+/// `refusal` on a record that is not the client's own error message (#286's synthetic one says so
+/// itself), with the message id the client's note will name and the category it recorded
+/// (`stop_details.category`, measured "cyber" on all 6 such records on hong-devserver, clients
+/// 2.1.310 and 2.1.318, each carrying its thinking alone).
+fn refused_reply(v: &Value) -> Option<Message> {
+    let m = v.get("message")?;
+    if m.get("stop_reason").and_then(Value::as_str) != Some("refusal") {
+        return None;
+    }
+    let id = m.get("id").and_then(Value::as_str)?.to_string();
+    let category = m
+        .pointer("/stop_details/category")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some(Message::Refused { id, category })
+}
+
+/// The client's note to the model after a stopped reply (#s378): an `isMeta` record carrying
+/// `refusedMessageId` (#s368), its string content already classified as the note it is (`m`).
+/// It becomes a [`Message::RefusedNote`] naming that reply, its text unchanged; anything else is
+/// `m` as it was.
+fn refused_note(v: &Value, injected: Injected, m: Message) -> Message {
+    let id = (injected == Injected::Meta)
+        .then(|| v.get("refusedMessageId").and_then(Value::as_str))
+        .flatten();
+    match (id, m) {
+        (
+            Some(id),
+            Message::SystemNote {
+                text,
+                kind: NoteKind::Plain,
+            },
+        ) => Message::RefusedNote {
+            id: id.to_string(),
+            text,
+        },
+        (_, m) => m,
+    }
+}
+
 /// L1 classification of a plain-string `user` message into the **structured** message the
 /// shared fold places — this is where Claude's raw wrappers (`<task-notification>`,
 /// `<command-name>`, `<local-command-*>`, skill bodies, caveats) are parsed, so the fold
@@ -952,11 +993,11 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // `message.id` of that reply. Measured 2026-11-05 on hong-devserver: 6 notes, 3 in
             // main sessions on 2.1.318 and 3 in sub-agents of one session on 2.1.310, each naming
             // the assistant record just before it (`stop_reason: "refusal"`, category "cyber" in
-            // all 6), one or two lines up; the agent then goes on in the same turn. The note
-            // already folds to a result line right after the stopped reply, saying it was stopped
-            // and withheld, so the key only links what sits side by side. Unread. Whether the
-            // stopped reply wears a mark of its own, with its category, is a RENDER question for
-            // the owner, asked in #s371. REVISIT: (1) a value naming a message other than the
+            // all 6), one or two lines up; the agent then goes on in the same turn. READ since
+            // #s378 (Hong on #s371): a note naming a stopped reply this fold met is that reply's
+            // mark (`Block::SafetyStop`, the classifier and the category, the note folded under
+            // it); one naming any other message stays the result line it was. REVISIT: (1) a
+            // value naming a message other than the
             // assistant record just before it (the note would then sit away from what was
             // stopped); (2) the key on a record that is not `isMeta`, or on another record type.
             "refusedMessageId",
@@ -3723,6 +3764,10 @@ pub(crate) fn decode_line_known(
                     }
                 }
             }
+            // #s378: after what the stopped reply kept, the fold learns it was stopped.
+            if let Some(r) = refused_reply(&v) {
+                msgs.push(r);
+            }
         }
         // A context-compaction boundary (#108).
         Some("system") if v.get("subtype").and_then(|s| s.as_str()) == Some("compact_boundary") => {
@@ -3863,7 +3908,7 @@ pub(crate) fn decode_line_known(
             note_reply_drift(&v);
             if let Some(s) = content.as_str() {
                 if let Some(m) = classify_user_string(s, injected) {
-                    msgs.push(m);
+                    msgs.push(refused_note(&v, injected, m));
                 }
             } else if let Some(arr) = content.as_array() {
                 let fallback = (injected == Injected::No)
@@ -4779,6 +4824,8 @@ pub(crate) fn parse_main<S: AsRef<str>>(
     let mut last_skill: Option<BlockIndex> = None;
     // #s272 mirror: the ids of the relayed messages already taken as the person's.
     let mut inbox_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // #s378 mirror: the replies the safety classifier stopped, by message id -> category.
+    let mut refused: HashMap<String, Option<String>> = HashMap::new();
 
     for line in lines {
         let line = line.as_ref().trim();
@@ -5006,6 +5053,10 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                         _ => {}
                     }
                 }
+                // #s378 mirror: the fold learns the reply was stopped.
+                if let Some(Message::Refused { id, category }) = refused_reply(&v) {
+                    refused.insert(id, category);
+                }
             }
             // #235 mirror: a slash command the client recorded on a `system` record rather than a
             // `user` one. This reference is pinned bit-identical to the streaming path by
@@ -5126,7 +5177,23 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     } else if is_skill_body(s) && attach_skill_body(&mut out, last_skill, s) {
                         // Nested into its `Skill` block above — no loose result block.
                     } else if injected {
+                        let before = out.len();
                         push_injected(s, &mut out);
+                        // #s378 mirror: the note naming a stopped reply this parse met is its mark.
+                        let named = (injection == Injected::Meta)
+                            .then(|| v.get("refusedMessageId").and_then(Value::as_str))
+                            .flatten();
+                        if let Some(id) = named {
+                            if out.len() == before + 1
+                                && matches!(out.last(), Some(Block::ToolResult(_)))
+                            {
+                                if let Some(category) = refused.remove(id) {
+                                    if let Some(Block::ToolResult(note)) = out.pop() {
+                                        out.push(Block::SafetyStop { category, note });
+                                    }
+                                }
+                            }
+                        }
                     } else {
                         push_user_string(s, &mut out, &mut queue, &mut suppress);
                     }
@@ -8455,8 +8522,9 @@ mod tests {
     }
 
     /// #s368: the note naming a reply the safety classifier stopped is known, not reported while
-    /// the sweep asks, and the stopped reply, the note and the next reply fold exactly as they do
-    /// without the key. Removing the key from the user arm of the census turns this red.
+    /// the sweep asks. Since #s378 the key is READ: with it the note is the stopped reply's mark,
+    /// and without it the note is the result line it always was. Removing the key from the user
+    /// arm of the census turns this red.
     #[test]
     fn a_refusal_note_s_refused_message_id_is_known() {
         unknown_watch_keys(true);
@@ -8474,12 +8542,115 @@ mod tests {
         assert!(seen.is_empty(), "nothing reported: {seen:?}");
         let without_key = with_key.replace(r#""refusedMessageId":"msg_s368a","#, "");
         assert_ne!(without_key, with_key, "the fixture carries the key");
-        assert_eq!(blocks, parse(&without_key), "the key changes no block");
         assert!(
-            blocks.iter().any(
+            blocks.iter().any(|b| matches!(
+                b,
+                Block::SafetyStop { category: Some(c), note } if c == "cyber" && note.contains("stopped by a safety classifier")
+            )),
+            "with the key the note is the stopped reply's mark (#s378): {blocks:?}"
+        );
+        let plain = parse(&without_key);
+        assert!(
+            plain.iter().any(
                 |b| matches!(b, Block::ToolResult(t) if t.contains("stopped by a safety classifier"))
             ),
-            "the note still reads as a result line: {blocks:?}"
+            "without it, the result line it was: {plain:?}"
+        );
+    }
+
+    /// #s378 (Hong on #s371: "Mark it: a line on the stopped reply naming the classifier and its
+    /// category, the note folded under it"): the client's note after a reply the safety
+    /// classifier stopped folds to ONE `SafetyStop` block where the note's result line was, its
+    /// category from the stopped reply's `stop_details`, the note whole as its body. Both measured
+    /// shapes: Claude Code 2.1.318 writes a `system` notice for the person between the reply and
+    /// the note, 2.1.310's sub-agents write the note right after the reply. The stopped reply's
+    /// thinking stays as it was, and both parse paths agree.
+    #[test]
+    fn a_reply_the_safety_classifier_stopped_carries_its_mark() {
+        const NOTE: &str = "Your response above was stopped by a safety classifier — this is not a tool or API error. The rest of it was withheld, and tool calls in it that had not finished did not run. Do not produce that content again, even reworded.";
+        let main = r##"
+{"type":"user","version":"2.1.318","sessionId":"s-s378","uuid":"u1","timestamp":"2026-11-06T01:00:00.000Z","message":{"role":"user","content":"chart the skua burrows"}}
+{"type":"assistant","version":"2.1.318","sessionId":"s-s378","uuid":"a1","timestamp":"2026-11-06T01:00:01.000Z","message":{"id":"msg_s378a","role":"assistant","model":"claude-opus-5-5","stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber","explanation":"This request was flagged."},"content":[{"type":"thinking","thinking":"The burrows sit above the tern colony.","signature":"x"}]}}
+{"type":"system","subtype":"informational","level":"notice","isMeta":false,"version":"2.1.318","sessionId":"s-s378","uuid":"y1","timestamp":"2026-11-06T01:00:01.500Z","content":"The safeguards stopped the response above · continuing"}
+{"type":"user","version":"2.1.318","sessionId":"s-s378","uuid":"u2","timestamp":"2026-11-06T01:00:02.000Z","isMeta":true,"turnCompanion":true,"refusedMessageId":"msg_s378a","message":{"role":"user","content":"NOTE"}}
+{"type":"assistant","version":"2.1.318","sessionId":"s-s378","uuid":"a2","timestamp":"2026-11-06T01:00:03.000Z","message":{"id":"msg_s378b","role":"assistant","model":"claude-opus-5-5","stop_reason":"end_turn","content":[{"type":"text","text":"The burrow map is in skua-notes.md."}]}}
+"##
+        .replace("NOTE", NOTE);
+        let sub = r##"
+{"type":"user","version":"2.1.310","sessionId":"s-s378","isSidechain":true,"agentId":"a378","uuid":"u1","timestamp":"2026-11-06T01:00:00.000Z","message":{"role":"user","content":"count the petrel nests"}}
+{"type":"assistant","version":"2.1.310","sessionId":"s-s378","isSidechain":true,"agentId":"a378","uuid":"a1","timestamp":"2026-11-06T01:00:01.000Z","message":{"id":"msg_s378c","role":"assistant","model":"claude-opus-5-5","stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber","explanation":"This request was flagged."},"content":[{"type":"thinking","thinking":"Forty nests on the north cliff.","signature":"x"}]}}
+{"type":"user","version":"2.1.310","sessionId":"s-s378","isSidechain":true,"agentId":"a378","uuid":"u2","timestamp":"2026-11-06T01:00:02.000Z","isMeta":true,"turnCompanion":true,"refusedMessageId":"msg_s378c","message":{"role":"user","content":"NOTE"}}
+{"type":"assistant","version":"2.1.310","sessionId":"s-s378","isSidechain":true,"agentId":"a378","uuid":"a2","timestamp":"2026-11-06T01:00:03.000Z","message":{"id":"msg_s378d","role":"assistant","model":"claude-opus-5-5","stop_reason":"end_turn","content":[{"type":"text","text":"Forty nests."}]}}
+"##
+        .replace("NOTE", NOTE);
+        for (shape, jsonl) in [("2.1.318 main", &main), ("2.1.310 sub-agent", &sub)] {
+            let blocks = parse(jsonl);
+            let marks: Vec<&Block> = blocks
+                .iter()
+                .filter(|b| matches!(b, Block::SafetyStop { .. }))
+                .collect();
+            assert_eq!(
+                marks,
+                [&Block::SafetyStop {
+                    category: Some("cyber".into()),
+                    note: NOTE.into()
+                }],
+                "{shape}: one mark, the category and the note whole: {blocks:#?}"
+            );
+            let at = blocks
+                .iter()
+                .position(|b| matches!(b, Block::SafetyStop { .. }))
+                .unwrap();
+            assert!(
+                matches!(&blocks[at - 1], Block::Thinking { text, .. } if !text.is_empty()),
+                "{shape}: right after the stopped reply's thinking, which stays: {blocks:#?}"
+            );
+            assert!(
+                !blocks.iter().any(|b| matches!(b, Block::ToolResult(t) if t.contains("stopped by a safety classifier"))),
+                "{shape}: the note no longer draws as its own result line: {blocks:#?}"
+            );
+            assert!(
+                matches!(
+                    blocks.last(),
+                    Some(Block::AssistantText(_) | Block::AssistantMessage { .. })
+                ),
+                "{shape}: the agent goes on as before: {blocks:#?}"
+            );
+            assert_eq!(
+                blocks,
+                parse_main(jsonl.lines(), &mut Vec::new()),
+                "{shape}: both parse paths agree"
+            );
+        }
+        // A note naming a reply this transcript never showed is the result line it was.
+        let stray = main.replace(
+            r#""refusedMessageId":"msg_s378a""#,
+            r#""refusedMessageId":"msg_other""#,
+        );
+        let blocks = parse(&stray);
+        assert!(
+            !blocks.iter().any(|b| matches!(b, Block::SafetyStop { .. })),
+            "{blocks:#?}"
+        );
+        assert!(
+            blocks
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult(t) if t == NOTE)),
+            "{blocks:#?}"
+        );
+        assert_eq!(blocks, parse_main(stray.lines(), &mut Vec::new()));
+        // A stopped reply with no category recorded is still marked, by the classifier alone.
+        let bare = main.replace(
+            r#""stop_details":{"type":"refusal","category":"cyber","explanation":"This request was flagged."},"#,
+            "",
+        );
+        assert!(
+            parse(&bare).contains(&Block::SafetyStop {
+                category: None,
+                note: NOTE.into()
+            }),
+            "{:#?}",
+            parse(&bare)
         );
     }
 

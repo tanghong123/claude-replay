@@ -190,7 +190,8 @@ pub const CLAIMS: &[KindClaim] = &[
     KindClaim {
         kind: "tool",
         parts: &["pre"],
-        why: "a bare `ToolResult` and every unrecognised `ToolUse` both end in `pre_part`",
+        why: "a bare `ToolResult`, the mark on a stopped reply (`SafetyStop`, #s378) and every \
+              unrecognised `ToolUse` all end in `pre_part`",
     },
 ];
 
@@ -265,9 +266,14 @@ pub fn corpus_for(kind: BlockKind) -> Vec<Block> {
             )],
         }],
         // A `tool_result` with no call before it (#122) — kind "tool", body `pre`.
-        ToolResult => vec![Block::ToolResult(
-            "bare result: 3 files changed, 41 insertions(+)".into(),
-        )],
+        ToolResult => vec![
+            Block::ToolResult("bare result: 3 files changed, 41 insertions(+)".into()),
+            // #s378: a reply the safety classifier stopped — the line, the note folded under it.
+            Block::SafetyStop {
+                category: Some("cyber".into()),
+                note: "Your response above was stopped by a safety classifier.".into(),
+            },
+        ],
         // Path-only, so nothing is loaded or embedded — and either way this arm emits no body.
         // `use BlockKind::*` shadows the struct's name here, hence the full path.
         Attachment => vec![Block::Attachment(crate::model::Attachment {
@@ -645,6 +651,16 @@ pub fn audit_jsonl() -> String {
         "message":{"role":"assistant","content":[{"type":"tool_use","id":other,"name":"Frobnicate","input":{"target":"the corpus"}}]}}));
     push(json!({"type":"user","timestamp":stamp(),
         "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":other,"content":"frobnicated 23 cells\n"}]}}));
+    // tool / pre — a reply the safety classifier stopped (#s378): its thinking, then the client's
+    // note naming it, which folds to the mark (the line, the note as its body).
+    push(json!({"type":"assistant","timestamp":stamp(),
+        "message":{"id":"msg-stopped","role":"assistant","stop_reason":"refusal",
+                   "stop_details":{"type":"refusal","category":"cyber"},
+                   "content":[{"type":"thinking","thinking":"The burrows sit above the tern colony.","signature":"x"}]}}));
+    push(
+        json!({"type":"user","timestamp":stamp(),"isMeta":true,"turnCompanion":true,"refusedMessageId":"msg-stopped",
+        "message":{"role":"user","content":"Your response above was stopped by a safety classifier — this is not a tool or API error."}}),
+    );
 
     out
 }

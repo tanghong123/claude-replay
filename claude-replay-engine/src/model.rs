@@ -453,6 +453,19 @@ pub enum Block {
     },
     /// A tool result with no matching tool_use (rare).
     ToolResult(String),
+    /// A reply the safety classifier STOPPED (#s378, Hong's choice on #s371): Claude Code keeps the
+    /// stopped reply (in every case measured, its thinking alone; the withheld text never reaches
+    /// the transcript), records the classifier's `stop_details.category` on it, and writes a note
+    /// to the model right after, naming the reply. That note used to draw as a plain result line,
+    /// worded for the model, and nothing said the reply had been stopped. This block takes the
+    /// note's place: one quiet line naming the classifier and the category
+    /// ([`safety_stop_line`]), the note folded under it. It is a result in every other respect —
+    /// the same kind, search class and `--json` line the note had (the stream is public, and the
+    /// mark is drawn, not stated).
+    SafetyStop {
+        category: Option<String>,
+        note: String,
+    },
     /// A file, plan, or image the transcript embedded or referenced. Surfaced (the
     /// viewer used to drop these) so the reader can **download** embedded content or
     /// **reveal** a path-only reference in the file manager. See `Attachment`.
@@ -818,6 +831,16 @@ pub enum BlockKind {
     Compaction,
 }
 
+/// The line that marks a reply the safety classifier stopped (`Block::SafetyStop`, #s378), on
+/// every surface that draws one: the classifier, then the category the client recorded, when it
+/// recorded one.
+pub fn safety_stop_line(category: Option<&str>) -> String {
+    match category.map(str::trim).filter(|c| !c.is_empty()) {
+        Some(c) => format!("Stopped by the safety classifier · {c}"),
+        None => "Stopped by the safety classifier".to_string(),
+    }
+}
+
 /// The line that ends a reply the person cut off mid-stream (`Block::AssistantCutOff`, #s305),
 /// on every surface that draws one.
 pub const CUT_OFF_NOTE: &str = "Cut off: interrupted mid-reply";
@@ -840,7 +863,7 @@ pub fn block_kind(b: &Block) -> BlockKind {
                 Act
             }
         }
-        Block::ToolResult(_) => ToolResult,
+        Block::ToolResult(_) | Block::SafetyStop { .. } => ToolResult,
         Block::Attachment(_) => Attachment,
         Block::SubAgent(_) | Block::AgentDone { .. } => Agent,
         Block::Command { .. } => Command,
@@ -947,6 +970,7 @@ pub fn foldable(b: &Block) -> bool {
         b,
         Block::ToolUse { .. }
             | Block::ToolResult(_)
+            | Block::SafetyStop { .. }
             | Block::Thinking { .. }
             | Block::Command { .. }
             | Block::SubAgent(_)
@@ -1416,6 +1440,29 @@ mod tests {
     /// `html` (`data-kind`). Pin the distinctions that used to be two separate functions:
     /// Thinking splits think/act in html but coarsens to `thinking`; ToolResult is `tool` in
     /// html but `tool_result` in fold_key; tool names project identically.
+    /// #s378: the mark on a stopped reply names the classifier and, when recorded, the category;
+    /// it is a result in kind, so it folds, filters and reads in `--json` as the note did.
+    #[test]
+    fn a_safety_stop_reads_as_a_result_with_its_line() {
+        assert_eq!(
+            safety_stop_line(Some("cyber")),
+            "Stopped by the safety classifier · cyber"
+        );
+        assert_eq!(safety_stop_line(None), "Stopped by the safety classifier");
+        assert_eq!(
+            safety_stop_line(Some("  ")),
+            "Stopped by the safety classifier"
+        );
+        let b = Block::SafetyStop {
+            category: Some("cyber".into()),
+            note: "n".into(),
+        };
+        assert_eq!(block_kind(&b), BlockKind::ToolResult);
+        assert_eq!(block_kind(&b).html(), "tool");
+        assert_eq!(fold_key(&b), "tool_result");
+        assert!(foldable(&b));
+    }
+
     #[test]
     fn block_kind_fine_html_vs_coarse_fold_key() {
         let tool = |name: &str| Block::ToolUse {

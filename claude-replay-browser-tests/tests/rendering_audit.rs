@@ -658,9 +658,16 @@ fn geometry_or_affordance(prop: &str) -> bool {
     // computed margin moves with it; the two machines differ in window size, so the pane
     // overflowed on one and not the other. A property that can be `auto` is a property layout
     // resolves, and belongs here rather than being discovered one CI run at a time.
+    //
+    // The INSETS for the same reason (#s378): a positioned element's `auto` offsets are resolved
+    // from its container's box. Measured on the app shell at 900px: `w` re-wrapped the note of a
+    // stopped reply (the first bare result in the corpus long enough to wrap there), the record
+    // grew, and its `#` link — absolutely positioned by `top` — reported a new `bottom`.
     matches!(prop, "block-size" | "inline-size" | "height" | "width" | "perspective-origin" | "transform-origin"
         | "margin-top" | "margin-right" | "margin-bottom" | "margin-left"
-        | "margin-block-start" | "margin-block-end" | "margin-inline-start" | "margin-inline-end")
+        | "margin-block-start" | "margin-block-end" | "margin-inline-start" | "margin-inline-end"
+        | "top" | "right" | "bottom" | "left"
+        | "inset-block-start" | "inset-block-end" | "inset-inline-start" | "inset-inline-end")
         // A control showing its own state. A suffix, not a list of properties.
         || prop == "color"
         || prop.ends_with("-color")

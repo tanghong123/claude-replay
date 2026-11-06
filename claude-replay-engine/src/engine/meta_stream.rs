@@ -339,11 +339,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// at their own rate. A v70 stream holds the aggregate alone, every write at the 5-minute rate, so
 /// a resumed session would keep its old figure.
 ///
+/// v72: #s378 — the note the client writes after a reply the safety classifier stopped is a
+/// `SafetyStop` block (a line naming the classifier and its category, the note folded under it)
+/// when the fold met the reply it names. A v71 stream holds it as a plain `ToolResult`.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 71;
+pub const FOLD_VERSION: u16 = 72;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

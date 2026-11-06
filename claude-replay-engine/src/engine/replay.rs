@@ -138,6 +138,12 @@ pub struct Replayer<'a> {
     /// those addresses names its recipient from here. Persisted through the meta stream
     /// (`MetaRecord::peer_names`) so a resumed fold still knows the senders in its committed part.
     peer_names: HashMap<String, String>,
+    /// The replies the safety classifier stopped in this fold (#s378): message id -> the category
+    /// the client recorded. A note naming one of them folds to its `SafetyStop` mark. Not carried
+    /// through the meta stream: a resume begins at a line that opens a turn, and the note follows
+    /// its reply within the turn (one or two records later, measured), so the two are never split
+    /// by a resume point.
+    refused: HashMap<String, Option<String>>,
 }
 
 /// #s355: a sub-agent a message went to, as the reader should read it: `sub-agent a29193b9`, with
@@ -193,6 +199,7 @@ impl<'a> Replayer<'a> {
             agent_ids: HashMap::new(),
             inbox_ids: std::collections::HashSet::new(),
             peer_names: HashMap::new(),
+            refused: HashMap::new(),
         }
     }
 
@@ -389,6 +396,18 @@ impl<'a> Replayer<'a> {
                 Message::SystemNote { text, .. } => {
                     self.out.push(Block::ToolResult(text.clone()));
                 }
+                Message::Refused { id, category } => {
+                    self.refused.insert(id.clone(), category.clone());
+                }
+                // #s378: the note under the reply it names; a note naming a reply this fold never
+                // met is the result line it always was.
+                Message::RefusedNote { id, text } => match self.refused.remove(id) {
+                    Some(category) => self.out.push(Block::SafetyStop {
+                        category,
+                        note: text.clone(),
+                    }),
+                    None => self.out.push(Block::ToolResult(text.clone())),
+                },
                 Message::CompactBoundary {
                     trigger,
                     pre_tokens,
@@ -864,6 +883,7 @@ impl<'a> Replayer<'a> {
             .iter()
             .map(|(a, n)| (a.clone(), n.clone()))
             .collect();
+        self.refused.clear();
         self.turn_durations = mm.turn_durations.clone();
         self.turn_durations.resize(mm.user_times.len(), None);
         self.user_times = mm.user_times.clone();

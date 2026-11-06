@@ -160,6 +160,18 @@ pub enum Message {
     /// into the same result gutter (the #236 follow-up). Defaults to [`NoteKind::Plain`], so a
     /// note nobody has classified behaves exactly as it did before.
     SystemNote { text: String, kind: NoteKind },
+    /// A reply the safety classifier STOPPED (#s378): the message id of the refused reply and the
+    /// category the client recorded for it, from the reply's own record. It draws nothing itself;
+    /// the fold remembers it for the note that names it ([`Message::RefusedNote`]).
+    Refused {
+        id: String,
+        category: Option<String>,
+    },
+    /// The client's note to the model that a reply was stopped (#s378), naming that reply's
+    /// message id. Folds to `Block::SafetyStop` when the fold met the reply it names, and
+    /// otherwise to the result line any other note is (`text` is exactly what that note's
+    /// `SystemNote` would have carried).
+    RefusedNote { id: String, text: String },
     /// A loaded skill's instruction body (L1-detected). The fold nests it into the most
     /// recent `Skill` tool block; if there is none, it falls back to `fallback` as a
     /// `SystemNote`-style result block. Only L1 knows the raw format; the fold only places it.

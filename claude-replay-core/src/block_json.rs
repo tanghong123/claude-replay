@@ -83,6 +83,8 @@ fn block_fields(b: &Block, o: &mut Map<String, Value>) {
         // #s305: a reply cut off mid-stream is prose here, as it was before the mark: the
         // stream is public, and the mark is drawn, not stated.
         | Block::AssistantCutOff(t)
+        // #s378: the mark on a stopped reply is the note it holds here, as the note was before.
+        | Block::SafetyStop { note: t, .. }
         | Block::ToolResult(t) => {
             o.insert("text".into(), json!(t));
         }
