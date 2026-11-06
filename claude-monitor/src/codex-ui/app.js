@@ -11,7 +11,7 @@ import { RecordStore } from "./record-store.js";
 import { SessionIndexStore } from "./session-index-store.js";
 import { controlState, indexState, persist, recordState, selectedRow, uiState } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
-import { ARRANGE_SOURCES, arrangeSessions, arrangedCount, familyHolds, flatFamilies, isDefaultView, nestSideSessions, rowLookup, sectionView, viewSection } from "./session-list.js";
+import { ARRANGE_SOURCES, arrangeSessions, familyHolds, flatFamilies, isDefaultView, nestSideSessions, rowLookup, sectionView, viewSection } from "./session-list.js";
 import { displayState, denoteState, sessionBucket, sessionFilterBuckets, FILTER_BUCKETS, FILTER_LABELS, BLOCKED_SUMMARY } from "./shared/state-labels.js";
 import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
@@ -564,7 +564,7 @@ function arrangedSessionsHtml(layout, agents, shownAgents) {
     const section = viewSection(arranged, view, facts);
     const open = section.collapsed ? indexState.collapsed.has(key) : !indexState.collapsed.has(key);
     const custom = !isDefaultView(view);
-    html += `<div class="agent-label arranged-head" role="treeitem" tabindex="0" data-toggle="${escapeText(key)}" aria-expanded="${open}"><span class="arranged-label">${escapeText(section.label)}</span><span class="arranged-count">${arrangedCount(section)}</span><button class="arranged-view ${custom ? "on" : ""}" type="button" data-section-view="${escapeText(key)}" data-section-label="${escapeText(section.label)}" aria-haspopup="true" aria-expanded="${sectionMenuKey === key}" aria-label="${escapeText(`Sort and group ${section.label}`)}" title="${escapeText(custom ? `Sorted or grouped here, not as in ${layout.label}` : `Sort and group ${section.label}`)}">${svg("sliders")}</button></div>`;
+    html += `<div class="agent-label arranged-head" role="treeitem" tabindex="0" data-toggle="${escapeText(key)}" aria-expanded="${open}"><span class="arranged-label">${escapeText(section.label)}</span><button class="arranged-view ${custom ? "on" : ""}" type="button" data-section-view="${escapeText(key)}" data-section-label="${escapeText(section.label)}" aria-haspopup="true" aria-expanded="${sectionMenuKey === key}" aria-label="${escapeText(`Sort and group ${section.label}`)}" title="${escapeText(custom ? `Sorted or grouped here, not as in ${layout.label}` : `Sort and group ${section.label}`)}">${svg("filterLines")}</button></div>`;
     if (!open) continue;
     html += list(section.nodes, `${key}:more`, false);
     for (const group of section.groups) {
@@ -580,8 +580,7 @@ function arrangedSessionsHtml(layout, agents, shownAgents) {
   const rest = nestSideSessions(flatFamilies(restTree, Date.now() / 1000));
   if (rest.length) {
     const key = `L:${source}:rest`, open = indexState.collapsed.has(key);
-    const count = rest.reduce((n, fam) => n + 1 + fam.forks.length + (fam.sides || []).length, 0);
-    html += `<div class="agent-label arranged-head arranged-rest" role="treeitem" tabindex="0" data-toggle="${escapeText(key)}" aria-expanded="${open}" title="Sessions this monitor lists that ${escapeText(layout.label)} does not, under the session filter and hides"><span class="arranged-label">Not in ${escapeText(layout.label)}</span><span class="arranged-count">${count}</span></div>`;
+    html += `<div class="agent-label arranged-head arranged-rest" role="treeitem" tabindex="0" data-toggle="${escapeText(key)}" aria-expanded="${open}" title="Sessions this monitor lists that ${escapeText(layout.label)} does not, under the session filter and hides"><span class="arranged-label">Not in ${escapeText(layout.label)}</span></div>`;
     if (open) {
       const overflowKey = `L:${source}:rest`, expanded = indexState.expandedProjects.has(overflowKey);
       let shown = expanded ? rest : rest.slice(0, FLAT_SESSION_LIMIT);

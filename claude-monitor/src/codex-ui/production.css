@@ -267,14 +267,12 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
 .arrange-strip-close{flex:none;width:22px;height:22px;display:grid;place-items:center;border:0;border-radius:6px;background:transparent;color:var(--faint);cursor:pointer;padding:0}
 .arrange-strip-close .icon{width:14px;height:14px}
 .arrange-strip-close:hover{background:var(--hover);color:var(--ink)}
-.arranged-head{justify-content:space-between;gap:8px}
+/* The section's menu sits at the head's right end, before its chevron, as the Claude app puts its
+   section menu; the head carries no count (the owner: the number goes). */
 .arranged-head .arranged-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
-.arranged-head .arranged-count{flex:none;font:10px var(--mono);letter-spacing:0;color:var(--faint)}
-.arranged-head[aria-expanded="false"] .arranged-label::after{content:" ›";color:var(--faint)}
-.arranged-head .arranged-count{margin-left:auto}
-.arranged-view{flex:none;width:26px;height:24px;display:grid;place-items:center;margin:-4px -2px -4px 4px;border:0;border-radius:6px;background:transparent;color:var(--faint);cursor:pointer;padding:0;opacity:.55}
-.arranged-view .icon{width:14px;height:14px}
-.arranged-head:hover .arranged-view,.arranged-head:focus-within .arranged-view,.arranged-view[aria-expanded="true"],.arranged-view.on{opacity:1}
+.arranged-head:has(.arranged-view):after{margin-left:2px}
+.arranged-view{flex:none;margin-left:auto;width:26px;height:24px;display:grid;place-items:center;margin-top:-4px;margin-bottom:-4px;border:0;border-radius:6px;background:transparent;color:var(--sub);cursor:pointer;padding:0}
+.arranged-view .icon{width:15px;height:15px}
 .arranged-view:hover,.arranged-view[aria-expanded="true"]{background:var(--hover);color:var(--ink)}
 .arranged-view.on{color:var(--blue)}
 .section-view-menu{display:block;position:fixed;right:auto;top:0;left:0;width:236px;z-index:60;max-height:calc(100vh - 16px)}
