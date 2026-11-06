@@ -96,6 +96,8 @@ struct Boundary {
     extra: std::collections::BTreeMap<String, u64>,
     span: Option<(EpochSeconds, EpochSeconds)>,
     cwd: String,
+    /// Whether the fold knew the Bash sandbox was on as of this line's start (#s381).
+    sandbox_on: bool,
     /// Opaque adapter preprocessing state as of this line's start. A durable resume begins at
     /// `offset`, so it must restore everything the adapter learned from bytes below that point
     /// before classifying the first re-read line.
@@ -246,6 +248,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             extra: mm.extra,
             span: mm.span,
             cwd: mm.cwd,
+            sandbox_on: mm.sandbox_on,
             pre: resume.pre.clone(),
             metrics_state: resume.metrics_state.clone(),
         };
@@ -329,6 +332,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             tasks: self.task_fold.clone(),
             cwd: e.cwd.clone(),
             span: e.span,
+            sandbox_on: e.sandbox_on,
         }
     }
 
@@ -387,6 +391,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
                 extra,
                 span,
                 cwd: self.cwd.clone(),
+                sandbox_on: self.replayer.sandbox_on(),
                 pre,
                 metrics_state,
             }
@@ -523,6 +528,9 @@ impl<S: BlockStore> SessionAccumulator<S> {
         }
         if e.cwd != self.emitted.cwd {
             rec.cwd = Some(e.cwd.clone());
+        }
+        if e.sandbox_on != self.emitted.sandbox_on {
+            rec.sandbox_on = Some(e.sandbox_on);
         }
         rec.resume = Some(crate::engine::meta_stream::Resume {
             id: self.committed.len(),

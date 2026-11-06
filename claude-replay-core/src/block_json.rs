@@ -337,6 +337,7 @@ mod tests {
                     secs: 0,
                     nanos: 530_000_000,
                 }),
+                outside_sandbox: false,
             }),
             published: None,
             asked: None,

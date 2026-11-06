@@ -215,9 +215,21 @@ mod tests {
             CardOutcome::Fresh { card, .. } => {
                 assert_eq!(card.title.as_deref(), Some("配置 qoder 适配"));
                 assert_eq!(card.last_prompt.as_deref(), Some("do the thing"));
+                assert_eq!(card.name, None, "a generated title is no name (#s389)");
             }
             other => panic!("expected a fresh card, got {other:?}"),
         }
+        // #s389: a title the person set is the session's name, as in Claude Code.
+        let named = d.join("def456.jsonl");
+        std::fs::write(
+            &named,
+            "{\"type\":\"custom-title\",\"sessionId\":\"def456\",\"customTitle\":\"迁移脚本\"}\n",
+        )
+        .unwrap();
+        let CardOutcome::Fresh { card, .. } = session_card(&named, None) else {
+            panic!("a fresh card")
+        };
+        assert_eq!(card.name.as_deref(), Some("迁移脚本"));
         let _ = std::fs::remove_dir_all(&d);
     }
 

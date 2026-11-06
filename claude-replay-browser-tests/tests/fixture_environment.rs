@@ -186,7 +186,7 @@ fn a_case_that_ends_takes_its_runners_leftover_browser_helpers_with_it() {
     let profile = |owner: u32| {
         format!(
             "--user-data-dir={}",
-            std::env::temp_dir()
+            harness::browser_profiles_root()
                 .join(format!("cr-browser-chrome-{owner}-999"))
                 .display()
         )

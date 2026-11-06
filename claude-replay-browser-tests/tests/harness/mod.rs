@@ -1900,14 +1900,24 @@ fn kill_launch(profile: &Path) -> usize {
     killed
 }
 
-/// This launch's own profile directory, under the workspace scratch (`.cargo/config.toml` points
-/// `TMPDIR` at `target/`), named with the pid of the process that LAUNCHED it. That name is the
-/// whole reaping mechanism: Chrome puts `--user-data-dir=<path>` on the command line of the
-/// browser process and of every helper it spawns, so the owner of a stray process can be read
-/// straight out of `ps`.
+/// Where every Chrome profile the harness launches lives (#s391): a folder under the workspace
+/// scratch whose name ends in `.noindex`, which Spotlight skips. A browser case writes its
+/// profile constantly, and with the profiles straight under `target/` Spotlight's `mds_stores`
+/// read every one of those writes (122% CPU beside a 105% Chrome, measured by hd-steward during
+/// #s381's suite) though nothing under `~/code` is indexed: the privacy list cannot stop it
+/// reading the change stream, and `.noindex` does.
+pub fn browser_profiles_root() -> PathBuf {
+    std::env::temp_dir().join("chrome.noindex")
+}
+
+/// This launch's own profile directory, under [`browser_profiles_root`] in the workspace scratch
+/// (`.cargo/config.toml` points `TMPDIR` at `target/`), named with the pid of the process that
+/// LAUNCHED it. That name is the whole reaping mechanism: Chrome puts `--user-data-dir=<path>` on
+/// the command line of the browser process and of every helper it spawns, so the owner of a
+/// stray process can be read straight out of `ps`.
 fn browser_profile() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let dir = std::env::temp_dir().join(format!(
+    let dir = browser_profiles_root().join(format!(
         "{BROWSER_PROFILE_MARK}{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -2091,8 +2101,13 @@ fn reap_stranded_browsers() {
         }
         // The profiles themselves: an explicit `user_data_dir` is not the crate's temp dir, so
         // nothing else removes them. They sit under `target/`, which `scripts/sweep.sh` and
-        // `cargo clean` clear, but a run that reaps should not also leave litter.
-        if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+        // `cargo clean` clear, but a run that reaps should not also leave litter. Under the
+        // `.noindex` root (#s391), and straight under the scratch where a run from before it
+        // left them.
+        for parent in [browser_profiles_root(), std::env::temp_dir()] {
+            let Ok(entries) = std::fs::read_dir(&parent) else {
+                continue;
+            };
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let Some(rest) = name
@@ -2126,7 +2141,7 @@ fn reap_stranded_browsers() {
 pub fn reap_own_browsers() {
     let mark = format!(
         "{}{}-",
-        std::env::temp_dir().join(BROWSER_PROFILE_MARK).display(),
+        browser_profiles_root().join(BROWSER_PROFILE_MARK).display(),
         std::process::id()
     );
     let Ok(out) = std::process::Command::new("ps")

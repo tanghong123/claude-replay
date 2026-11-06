@@ -328,14 +328,37 @@ pub fn corpus_for(kind: BlockKind) -> Vec<Block> {
                 .into()],
             },
         ],
-        Bash => vec![tool_use(
-            "Bash",
-            "cargo test -p claude-replay-html",
-            Some("test result: ok. 214 passed; 0 failed"),
-            vec![],
-            None,
-            None,
-        )],
+        Bash => vec![
+            tool_use(
+                "Bash",
+                "cargo test -p claude-replay-html",
+                Some("test result: ok. 214 passed; 0 failed"),
+                vec![],
+                None,
+                None,
+            ),
+            // #s381: a command that ran outside the sandbox its session ran with — its head wears
+            // the mark.
+            {
+                let mut b = tool_use(
+                    "Bash",
+                    "curl https://tern.example/nests",
+                    Some("42"),
+                    vec![],
+                    None,
+                    None,
+                );
+                if let Block::ToolUse { execution, .. } = &mut b {
+                    *execution = Some(crate::model::ToolExecution {
+                        status: None,
+                        exit_code: None,
+                        duration: None,
+                        outside_sandbox: true,
+                    });
+                }
+                b
+            },
+        ],
         Edit => vec![
             // With rows to diff: the summary `note` and the `diff` body.
             tool_use(
@@ -660,6 +683,17 @@ pub fn audit_jsonl() -> String {
     push(
         json!({"type":"user","timestamp":stamp(),"isMeta":true,"turnCompanion":true,"refusedMessageId":"msg-stopped",
         "message":{"role":"user","content":"Your response above was stopped by a safety classifier — this is not a tool or API error."}}),
+    );
+    // bash — a command that ran outside the sandbox (#s381): the sandbox's head says the session
+    // ran with it on, then a call whose result reads `sandboxed: false` wears the mark.
+    push(json!({"type":"attachment","timestamp":stamp(),
+        "attachment":{"type":"sandbox_instructions","content":"## Bash command sandbox"}}));
+    let outside = "call-outside";
+    push(json!({"type":"assistant","timestamp":stamp(),
+        "message":{"role":"assistant","content":[{"type":"tool_use","id":outside,"name":"Bash","input":{"command":"curl https://tern.example/nests","dangerouslyDisableSandbox":true}}]}}));
+    push(
+        json!({"type":"user","timestamp":stamp(),"sandboxed":false,"toolUseResult":{"stdout":"42","stderr":"","interrupted":false},
+        "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":outside,"content":"42"}]}}),
     );
 
     out

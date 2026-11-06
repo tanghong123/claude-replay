@@ -28,6 +28,13 @@ pub struct SessionCard {
     /// The most recent prompt: what the session is doing *now*, as opposed to what it opened
     /// with. Worth showing beside a title, not just as a fallback for one.
     pub last_prompt: Option<String>,
+    /// The name the PERSON gave the session (a rename), and nothing else (#s389, Hong's choice on
+    /// #s392): never a title the agent generated, which is made from the prompts. It is the one
+    /// name a tool may send off the computer, as agent-metrics' agent cards do. `None` when the
+    /// title is the agent's or the agent records no such name. Claude Code and Qoder: a
+    /// `custom-title` line. Codex: a thread renamed in the Desktop app (its catalog's `name`,
+    /// apart from the title it generates; macOS only). Others: none.
+    pub name: Option<String>,
 }
 
 /// **Opaque, adapter-owned memoization state** — whatever an adapter needs to answer faster next

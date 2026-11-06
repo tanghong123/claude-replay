@@ -378,7 +378,12 @@ pub(crate) fn session_card_for(home: &Home, path: &Path, memo: Option<&CardMemo>
     };
     let title_changed = prev.as_ref().map(|m| m.title_at) != Some(title_at);
 
-    let card = SessionCard { title, last_prompt };
+    // QoderWork's title (its sidecar or its database) does not say who gave it (#s389).
+    let card = SessionCard {
+        title,
+        last_prompt,
+        name: None,
+    };
     let next = CardMemo::encode(&Memo {
         v: MEMO_V,
         tail: tail_next.map(|m| m.value().clone()),

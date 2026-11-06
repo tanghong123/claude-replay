@@ -130,6 +130,11 @@ pub fn heading() -> Style {
 pub fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
 }
+/// A fact the reader should notice without it being a failure (#s381: a command that ran
+/// outside the sandbox).
+pub fn caution() -> Style {
+    Style::default().fg(Color::Yellow)
+}
 pub fn badge() -> Style {
     Style::default()
         .fg(Color::Black)

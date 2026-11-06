@@ -1046,21 +1046,28 @@ fn with_execution(
     let Some(execution) = execution else {
         return line;
     };
-    let summary = tool_execution_summary(execution);
-    if summary.is_empty() {
-        return line;
-    }
     let patch = |style: Style| match bg {
         Some(bg) => style.bg(bg),
         None => style,
     };
-    line.spans.push(Span::styled("  ", patch(Style::default())));
-    let style = if tool_execution_failed(execution) {
-        theme::diff_del()
-    } else {
-        theme::dim()
-    };
-    line.spans.push(Span::styled(summary, patch(style)));
+    let summary = tool_execution_summary(execution);
+    if !summary.is_empty() {
+        line.spans.push(Span::styled("  ", patch(Style::default())));
+        let style = if tool_execution_failed(execution) {
+            theme::diff_del()
+        } else {
+            theme::dim()
+        };
+        line.spans.push(Span::styled(summary, patch(style)));
+    }
+    // #s381: a command that ran outside the sandbox its session ran with.
+    if execution.outside_sandbox {
+        line.spans.push(Span::styled("  ", patch(Style::default())));
+        line.spans.push(Span::styled(
+            crate::model::OUTSIDE_SANDBOX,
+            patch(theme::caution()),
+        ));
+    }
     line
 }
 
@@ -1135,6 +1142,14 @@ fn render_collapsed(b: &Block) -> Vec<Line<'static>> {
             let summary = thinking_summary(text, *duration_secs, tools);
             let mut line = vec![Span::styled(format!("  {summary}"), header)];
             line.extend(change_spans(tools));
+            // #s381: a call in the run that ran outside the sandbox, so the closed run says so.
+            if crate::present::run_outside_sandbox(tools) {
+                line.push(Span::raw("  "));
+                line.push(Span::styled(
+                    crate::model::OUTSIDE_SANDBOX,
+                    theme::caution(),
+                ));
+            }
             vec![Line::from(line)]
         }
         Block::ToolUse {
@@ -2066,6 +2081,7 @@ mod tests {
                 status: Some(status),
                 exit_code: None,
                 duration: None,
+                outside_sandbox: false,
             }),
             published: None,
             asked: None,
@@ -2294,6 +2310,7 @@ mod tests {
                 secs: 0,
                 nanos: 42_000_000,
             }),
+            outside_sandbox: false,
         });
 
         let collapsed = texts(&render_collapsed(&block)).join("\n");
@@ -2302,6 +2319,77 @@ mod tests {
         let expanded = texts(&render_one(&block, 100, Hl::Styled)).join("\n");
         assert!(expanded.contains("Bash(cargo test)"));
         assert!(expanded.contains("exit 7 · 42ms"), "{expanded}");
+    }
+
+    /// #s381: a Bash call that ran outside the sandbox its session ran with ends its header with
+    /// the mark in the caution style, after any execution summary, and alone when there is none.
+    #[test]
+    fn a_call_outside_the_sandbox_ends_its_header_with_the_mark() {
+        use crate::model::{ToolExecution, ToolStatus};
+        let header = |status: Option<ToolStatus>, exit_code| {
+            let execution = ToolExecution {
+                status,
+                exit_code,
+                duration: None,
+                outside_sandbox: true,
+            };
+            let line = with_execution(tool_header("Bash", "curl x", None), Some(&execution), None);
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            let last = line.spans.last().expect("the mark").clone();
+            (text, last.content.to_string(), last.style)
+        };
+        let (text, last, style) = header(Some(ToolStatus::Completed), Some(0));
+        assert!(text.contains("exit 0"), "{text}");
+        assert!(text.ends_with(crate::model::OUTSIDE_SANDBOX), "{text}");
+        assert_eq!(
+            (last.as_str(), style),
+            (crate::model::OUTSIDE_SANDBOX, theme::caution())
+        );
+        let (alone, ..) = header(None, None);
+        assert!(
+            alone.ends_with(&format!("  {}", crate::model::OUTSIDE_SANDBOX)),
+            "{alone}"
+        );
+        // A closed run holding such a call says so on its one line.
+        let call = |outside| Block::ToolUse {
+            name: "Bash".into(),
+            target: "curl x".into(),
+            diffs: vec![],
+            output: None,
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: Some(ToolExecution {
+                status: None,
+                exit_code: None,
+                duration: None,
+                outside_sandbox: outside,
+            }),
+            published: None,
+            asked: None,
+            delivered: vec![],
+            sent: None,
+            sent_to: None,
+            saved_output: None,
+        };
+        let run = |outside| Block::Thinking {
+            text: String::new(),
+            duration_secs: Some(3),
+            tools: vec![call(false), call(outside)],
+        };
+        let line = |b: &Block| -> String {
+            render_collapsed(b)[0]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
+        assert!(
+            line(&run(true)).ends_with(crate::model::OUTSIDE_SANDBOX),
+            "{}",
+            line(&run(true))
+        );
+        assert!(!line(&run(false)).contains(crate::model::OUTSIDE_SANDBOX));
     }
 
     /// #s126: an exit the client calls no failure (recorded Completed beside its exit 1) keeps its
@@ -2314,6 +2402,7 @@ mod tests {
                 status: Some(status),
                 exit_code: Some(1),
                 duration: None,
+                outside_sandbox: false,
             };
             let line = with_execution(tool_header("Bash", "rg x", None), Some(&execution), None);
             let last = line.spans.last().expect("a summary span").clone();

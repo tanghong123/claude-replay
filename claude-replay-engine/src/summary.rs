@@ -327,6 +327,7 @@ mod tests {
                     status: Some(ToolStatus::Failed),
                     exit_code: None,
                     duration: None,
+                    outside_sandbox: false,
                 });
             }
             b

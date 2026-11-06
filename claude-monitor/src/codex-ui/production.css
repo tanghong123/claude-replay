@@ -1051,7 +1051,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    target and in a column of its own, so the target ellipsizes before the badge ever does; at
    every width, because a phone hides the state pill the counts used to share. The target column
    shrinks to its text, so the badge sits beside it rather than across the card. */
-.renderer>.renderer-head:has(>.renderer-change){grid-template-columns:11px max-content minmax(0,max-content) max-content minmax(0,1fr)}
+/* #s381: and the state keeps its own width beside it, as #s222 gave Open all's. At minmax(0,1fr) a
+   head whose target filled its own column gave the state 0px, and "1 lines", aligned to the end,
+   ran left under the badge: every Bash call outside the sandbox, on an iPhone held sideways (the
+   iOS Simulator walk). The target is what gives way. */
+.renderer>.renderer-head:has(>.renderer-change){grid-template-columns:11px max-content minmax(0,max-content) max-content minmax(max-content,1fr)}
 /* #s222: a send's Open all takes the badge's place, in a column of its own after the target, and
    the state keeps its own width: at minmax(0,1fr) a narrow head (the pane open beside it) gave the
    state 0px and its "4 lines", aligned to the end, spilled left over the chip and took its click.
@@ -1062,6 +1066,14 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .renderer-change>span{padding:0 5px;border-radius:5px}
 .renderer-change>.add{color:var(--green);background:var(--green-bg)}
 .renderer-change>.del{color:var(--red);background:var(--red-bg)}
+/* #s381: a Bash call that ran outside the sandbox its session ran with, beside the counts. */
+.renderer-change>.sandbox{color:var(--amber);background:var(--amber-bg);font-weight:560}
+/* #s381: a target shown in full (#129's third step) takes the head's width, and the badge goes on
+   a line of its own under it. Beside the badge the target had only what the badge left: at an
+   iPhone's 402px, "outside the sandbox" (130px) left the whole of "Listed 1 directory, ran 1 shell
+   command" a 55px column six lines tall (the iOS Simulator walk). */
+.renderer[data-target="full"]>.renderer-head:has(>.renderer-change){grid-template-columns:11px max-content minmax(0,1fr) max-content}
+.renderer[data-target="full"]>.renderer-head>.renderer-change{grid-row:2;grid-column:3;justify-self:start}
 /* `direction:rtl` ALONE. The classic page's own path line pairs it with `text-align:left`, but
    that element clips without an ellipsis; here the two fight — rtl puts the ellipsis at the
    visual left, and then left-alignment pushes the overflow back out to the right, losing the

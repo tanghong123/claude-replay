@@ -365,6 +365,14 @@ pub fn change_counts(b: &Block) -> Option<(usize, usize)> {
 
 /// What a RUN changed (#s23): the sum of its calls' [`change_counts`], `None` when none of them
 /// changed a file.
+/// Whether a run holds a call that ran outside the sandbox its session ran with (#s381), so its
+/// line wears the mark while it is closed, as it wears the change counts.
+pub fn run_outside_sandbox(tools: &[Block]) -> bool {
+    tools
+        .iter()
+        .any(|t| matches!(t, Block::ToolUse { execution: Some(e), .. } if e.outside_sandbox))
+}
+
 pub fn run_changes(tools: &[Block]) -> Option<(usize, usize)> {
     tools
         .iter()
@@ -492,6 +500,7 @@ mod tests {
                 status: Some(ToolStatus::Failed),
                 exit_code: None,
                 duration: None,
+                outside_sandbox: false,
             });
         }
         assert_eq!(change_counts(&failed), None, "an edit that changed nothing");
@@ -509,6 +518,7 @@ mod tests {
             status: Some(status),
             exit_code: None,
             duration: None,
+            outside_sandbox: false,
         };
         let failed = ran(ToolStatus::Failed);
         assert_eq!(
@@ -578,6 +588,7 @@ mod tests {
                 secs: 1,
                 nanos: 230_000_000,
             }),
+            outside_sandbox: false,
         };
         assert_eq!(tool_execution_summary(&execution), "exit 7 · 1.23s");
         assert!(tool_execution_failed(&execution));
@@ -592,6 +603,7 @@ mod tests {
             status,
             exit_code,
             duration: None,
+            outside_sandbox: false,
         };
         let interpreted = ran(Some(ToolStatus::Completed), Some(1));
         assert!(!tool_execution_failed(&interpreted));

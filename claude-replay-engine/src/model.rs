@@ -65,6 +65,12 @@ pub struct ToolExecution {
     pub status: Option<ToolStatus>,
     pub exit_code: Option<i32>,
     pub duration: Option<ToolDuration>,
+    /// The command ran OUTSIDE the agent's Bash sandbox in a transcript that ran with the sandbox
+    /// on (#s381, Hong's choice on #s372): Claude Code records `sandboxed` on every Bash result,
+    /// and a `false` there means something only where the sandbox was on, since with it off every
+    /// command runs outside it. The pages and the TUI mark such a card; `--json` does not carry it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outside_sandbox: bool,
 }
 
 /// A tool call that PUBLISHED something — a durable, addressable thing the reader may want to
@@ -830,6 +836,10 @@ pub enum BlockKind {
     Tool,
     Compaction,
 }
+
+/// The mark on a Bash call that ran outside the agent's sandbox in a transcript that ran with it
+/// on (`ToolExecution::outside_sandbox`, #s381), on every surface that draws one.
+pub const OUTSIDE_SANDBOX: &str = "outside the sandbox";
 
 /// The line that marks a reply the safety classifier stopped (`Block::SafetyStop`, #s378), on
 /// every surface that draws one: the classifier, then the category the client recorded, when it

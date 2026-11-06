@@ -490,13 +490,21 @@ pub(crate) fn session_card(path: &Path, memo: Option<&CardMemo>) -> CardOutcome 
         prompt: genuine.then(|| prompt.clone()),
         stamp,
     });
-    let title = codex_thread_title(path).map(|title| compact_session_title(&title));
+    // The catalog's explicit rename is the person's own name; its generated title is not
+    // (#s389). The name goes out whole, the title as the card shows it.
+    let catalog = codex_thread_title(path);
+    let name = catalog
+        .as_ref()
+        .filter(|entry| entry.named)
+        .map(|entry| entry.title.clone());
+    let title = catalog.map(|entry| compact_session_title(&entry.title));
     if !genuine {
         return match title {
             Some(title) => CardOutcome::Fresh {
                 card: SessionCard {
                     title: Some(title),
                     last_prompt: None,
+                    name,
                 },
                 memo,
             },
@@ -507,6 +515,7 @@ pub(crate) fn session_card(path: &Path, memo: Option<&CardMemo>) -> CardOutcome 
         card: SessionCard {
             title: Some(title.unwrap_or_else(|| compact_session_title(&prompt))),
             last_prompt: Some(prompt),
+            name,
         },
         memo,
     }
@@ -538,12 +547,20 @@ fn catalog_stamp() -> (u64, u64) {
     }
 }
 
+/// A thread's title in the Desktop catalog, and whether it is the person's own: an explicit
+/// rename (`name`), not the title the app generated (#s389).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CatalogTitle {
+    title: String,
+    named: bool,
+}
+
 #[cfg(target_os = "macos")]
 #[derive(Default)]
 struct ThreadTitleCache {
     db: PathBuf,
     modified: Option<(SystemTime, Option<SystemTime>)>,
-    by_rollout: HashMap<PathBuf, String>,
+    by_rollout: HashMap<PathBuf, CatalogTitle>,
 }
 
 #[cfg(target_os = "macos")]
@@ -559,7 +576,7 @@ static THREAD_TITLES: OnceLock<Mutex<ThreadTitleCache>> = OnceLock::new();
 /// ships on macOS; elsewhere every session falls back to its first prompt, which is the same
 /// answer this returns when the catalog is simply absent.
 #[cfg(target_os = "macos")]
-fn codex_thread_title(path: &Path) -> Option<String> {
+fn codex_thread_title(path: &Path) -> Option<CatalogTitle> {
     let db = codex_home().join("state_5.sqlite");
     let db_modified = std::fs::metadata(&db)
         .and_then(|meta| meta.modified())
@@ -580,7 +597,7 @@ fn codex_thread_title(path: &Path) -> Option<String> {
 /// A rollout's title in the catalog, which names a rollout by its plain `.jsonl` path whether it
 /// is compressed or not (#s383).
 #[cfg(target_os = "macos")]
-fn title_in(by_rollout: &HashMap<PathBuf, String>, path: &Path) -> Option<String> {
+fn title_in(by_rollout: &HashMap<PathBuf, CatalogTitle>, path: &Path) -> Option<CatalogTitle> {
     by_rollout
         .get(&claude_replay_engine::seam::source::plain_path(path))
         .cloned()
@@ -594,7 +611,7 @@ fn plain_rollout(path: &str) -> PathBuf {
 }
 
 #[cfg(target_os = "macos")]
-fn read_thread_titles(db: &Path) -> HashMap<PathBuf, String> {
+fn read_thread_titles(db: &Path) -> HashMap<PathBuf, CatalogTitle> {
     let Ok(connection) = rusqlite::Connection::open_with_flags(
         db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -618,9 +635,17 @@ fn read_thread_titles(db: &Path) -> HashMap<PathBuf, String> {
             return rows
                 .flatten()
                 .filter_map(|(path, name, title, first)| {
-                    let title =
-                        name.or_else(|| title.filter(|value| first.as_deref() != Some(value)));
-                    title.map(|title| (plain_rollout(&path), title))
+                    let entry = match name {
+                        Some(name) => CatalogTitle {
+                            title: name,
+                            named: true,
+                        },
+                        None => CatalogTitle {
+                            title: title.filter(|value| first.as_deref() != Some(value))?,
+                            named: false,
+                        },
+                    };
+                    Some((plain_rollout(&path), entry))
                 })
                 .collect();
         }
@@ -638,12 +663,23 @@ fn read_thread_titles(db: &Path) -> HashMap<PathBuf, String> {
         return HashMap::new();
     };
     rows.flatten()
-        .filter_map(|(path, title)| title.map(|title| (plain_rollout(&path), title)))
+        // An old catalog folds name and title together, so whose it is cannot be told: not named.
+        .filter_map(|(path, title)| {
+            title.map(|title| {
+                (
+                    plain_rollout(&path),
+                    CatalogTitle {
+                        title,
+                        named: false,
+                    },
+                )
+            })
+        })
         .collect()
 }
 
 #[cfg(not(target_os = "macos"))]
-fn codex_thread_title(_path: &Path) -> Option<String> {
+fn codex_thread_title(_path: &Path) -> Option<CatalogTitle> {
     None
 }
 
@@ -654,8 +690,43 @@ pub(crate) fn archived_dir() -> PathBuf {
     codex_home().join("archived_sessions")
 }
 
+/// A rollout file in a form the adapter cannot read, for the `--unknown` sweep (#s385): one
+/// `store.unread` row per ending, counted in files, the example one file's path. A `.jsonl.zst`
+/// beside its plain file is superseded, not unreadable, and Codex's own temporaries (a
+/// compression's `rollout-compress-*.tmp`; a decompression's `.rollout-materialize-*` names no
+/// rollout) are not the store's. Only while the sweep watches, and once per file: the walk
+/// runs for the main listing and again for the sub-agents.
+fn note_unread(path: &Path, name: &str) {
+    use claude_replay_engine::seam::{note_unknown, unknown_watching_keys, UnknownAt};
+    if !unknown_watching_keys()
+        || name.ends_with(".jsonl")
+        || name.ends_with(claude_replay_engine::seam::source::COMPRESSED_SUFFIX)
+        || (name.starts_with("rollout-compress-") && name.ends_with(".tmp"))
+        || !path.is_file()
+    {
+        return;
+    }
+    static NOTED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    let first = NOTED
+        .get_or_init(Default::default)
+        .lock()
+        .is_ok_and(|mut noted| noted.insert(path.to_path_buf()));
+    if !first {
+        return;
+    }
+    let ending = name.find('.').map_or("(no ending)", |at| &name[at..]);
+    note_unknown(
+        Agent::CODEX.label(),
+        UnknownAt::StoreUnread,
+        ending,
+        None,
+        Some(&path.display().to_string()),
+    );
+}
+
 /// Every `rollout-*.jsonl` under `dir`, and every `rollout-*.jsonl.zst` with no plain file
-/// beside it (see [`readable_rollout`]), bounded to the dated tree's depth.
+/// beside it (see [`readable_rollout`]), bounded to the dated tree's depth. Any other
+/// `rollout-*` file is reported to the sweep ([`note_unread`]).
 fn rollout_files(dir: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -665,13 +736,15 @@ fn rollout_files(dir: &Path) -> Vec<PathBuf> {
             let p = e.path();
             if p.is_dir() && depth < 4 {
                 walk(&p, depth + 1, out);
-            } else if p
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("rollout-"))
-                && readable_rollout(&p)
-            {
-                out.push(p);
+            } else if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                if !name.starts_with("rollout-") {
+                    continue;
+                }
+                if readable_rollout(&p) {
+                    out.push(p);
+                } else {
+                    note_unread(&p, name);
+                }
             }
         }
     }
@@ -1375,8 +1448,17 @@ mod tests {
         drop(connection);
 
         let titles = read_thread_titles(&db);
-        assert_eq!(titles[Path::new("/tmp/a.jsonl")], "Renamed task");
-        assert_eq!(titles[Path::new("/tmp/b.jsonl")], "Generated task");
+        assert_eq!(titles[Path::new("/tmp/a.jsonl")].title, "Renamed task");
+        assert_eq!(titles[Path::new("/tmp/b.jsonl")].title, "Generated task");
+        // #s389: only an explicit rename is the person's own name; a generated title is not.
+        assert!(
+            titles[Path::new("/tmp/a.jsonl")].named,
+            "a rename is the person's"
+        );
+        assert!(
+            !titles[Path::new("/tmp/b.jsonl")].named,
+            "a generated title is not"
+        );
         assert!(!titles.contains_key(Path::new("/tmp/c.jsonl")));
     }
 
@@ -1409,7 +1491,7 @@ mod tests {
         }
         drop(connection);
         let titles = read_thread_titles(&db);
-        let title = |p: &str| title_in(&titles, Path::new(p));
+        let title = |p: &str| title_in(&titles, Path::new(p)).map(|t| t.title);
         assert_eq!(
             title("/s/rollout-a.jsonl.zst").as_deref(),
             Some("Plain-named")
@@ -1421,6 +1503,50 @@ mod tests {
         );
         assert_eq!(title("/s/rollout-z.jsonl").as_deref(), Some("Zst-named"));
         assert_eq!(title("/s/rollout-q.jsonl.zst"), None);
+    }
+
+    /// A rollout file the adapter cannot read is reported to the `--unknown` sweep (#s385), once
+    /// per file, named by its ending: not Codex's own temporaries, and not a `.zst` beside its
+    /// plain file, which is superseded rather than unreadable.
+    #[test]
+    fn the_store_walk_reports_a_rollout_it_cannot_read() {
+        use claude_replay_engine::seam::{source, unknown_shapes, unknown_watch_keys, UnknownAt};
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let plain = fixture.rollout_with_user("u1", &cwd, "a plain session");
+        fs::write(
+            format!("{}.zst", plain.display()),
+            source::compress_for_tests(&fs::read(&plain).unwrap()),
+        )
+        .unwrap();
+        let day = plain.parent().unwrap().to_path_buf();
+        let new_form = day.join("rollout-u2.jsonl.lz4");
+        fs::write(&new_form, b"lz4 bytes").unwrap();
+        fs::write(day.join("rollout-compress-u3.tmp"), b"partial").unwrap();
+        fs::write(day.join(".rollout-materialize-u4"), b"partial").unwrap();
+        unknown_watch_keys(true);
+        let roots = [fixture.sessions.clone()];
+        for _ in 0..2 {
+            let _ = store_transcripts_machine_in(&roots);
+            let _ = subagent_transcripts_in(&roots);
+        }
+        let ours: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| {
+                s.at == UnknownAt::StoreUnread
+                    && s.example
+                        .as_deref()
+                        .is_some_and(|e| e.starts_with(&fixture.root.display().to_string()))
+            })
+            .collect();
+        assert_eq!(ours.len(), 1, "{ours:?}");
+        assert_eq!(ours[0].name, ".jsonl.lz4");
+        assert_eq!(ours[0].count, 1, "once, however many walks");
+        assert_eq!(ours[0].agent, "codex");
+        assert_eq!(
+            ours[0].example.as_deref(),
+            Some(new_form.display().to_string().as_str())
+        );
     }
 
     /// The machine-wide walks read a rollout's head once per version of the file (#s383): the

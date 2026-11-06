@@ -172,6 +172,14 @@ pub enum Message {
     /// otherwise to the result line any other note is (`text` is exactly what that note's
     /// `SystemNote` would have carried).
     RefusedNote { id: String, text: String },
+    /// The transcript ran with the agent's Bash sandbox ON (#s381): Claude Code's
+    /// `sandbox_instructions` attachment at the head of a session or a sub-agent. Draws nothing;
+    /// the fold remembers it, through the meta stream, for the runs below.
+    SandboxOn,
+    /// Where a call's command ran, as its result's record says (#s381; Claude Code's `sandboxed`):
+    /// `inside` the sandbox or not. An inside run also says the sandbox was on. Draws nothing
+    /// itself; in a fold that knows the sandbox was on, an outside run marks its call.
+    SandboxRun { tool_use_id: String, inside: bool },
     /// A loaded skill's instruction body (L1-detected). The fold nests it into the most
     /// recent `Skill` tool block; if there is none, it falls back to `fallback` as a
     /// `SystemNote`-style result block. Only L1 knows the raw format; the fold only places it.

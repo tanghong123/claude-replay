@@ -863,9 +863,10 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     // 2026-11-05 on hong-devserver in 8 transcripts, once in each: four test sessions run with the
     // sandbox on and their sub-agents, no ordinary session. Addressed to the model, like
     // `instructions`, `mcp_instructions_delta` and `environment`, so nothing is drawn. Whether the
-    // page says a session ran sandboxed is the owner's question in #s372. REVISIT: the first
-    // transcript holding it more than once (a mid-session change of the sandbox's settings, which a
-    // reader might want named).
+    // page says a session ran sandboxed is the owner's question in #s372. Still drawn as nothing;
+    // since #s381 it tells the fold the transcript ran with the sandbox on, so a Bash call that ran
+    // outside it is marked. REVISIT: the first transcript holding it more than once (a mid-session
+    // change of the sandbox's settings, which a reader might want named).
     "sandbox_instructions",
     "session_context",
     // #s93 (client 2.1.296): `{type, tasks: [{id, cron, prompt, createdAt, recurring}]}`, the
@@ -1084,6 +1085,13 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // run with the sandbox on (client 2.1.318), the owner's question in #s372. No
             // transcript holds both values yet. The calls the sandbox refused in three other such
             // sub-agents are "Error: Blocked: …" strings that carry no `sandboxed` key at all.
+            // READ since #s381 (Hong on #s372: "Mark a Bash card whose command ran outside the
+            // sandbox"): in a transcript that ran with the sandbox on (its `sandbox_instructions`
+            // head, or a `true` here), a `false` marks the call "outside the sandbox"; elsewhere
+            // it is read and changes nothing. A refused call, with no key, is not marked: the
+            // sandbox stopped it and its text says so. REVISIT: the first real `false` beside a
+            // sandbox that was on (fixtures only so far: the 8 calls measured asking
+            // `dangerouslyDisableSandbox`, clients 2.1.296 to 2.1.311, all ran with it off).
             "sandboxed",
             // #s374 (client 2.1.318): a list beside `sandboxed: true` on that one Bash result,
             // empty there (2026-11-05, hong-devserver, the only record carrying it): what the
@@ -3337,6 +3345,7 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
                     status: None,
                     exit_code: None,
                     duration: None,
+                    outside_sandbox: false,
                 });
                 if e.status.is_none() {
                     e.status = Some(ToolStatus::Failed);
@@ -3371,6 +3380,7 @@ fn apply_result(block: &mut Block, txt: &str, tur: &Value, is_error: Option<bool
                     status: None,
                     exit_code: None,
                     duration: None,
+                    outside_sandbox: false,
                 });
                 if e.exit_code.is_none() {
                     e.exit_code = exit_code;
@@ -3969,6 +3979,15 @@ pub(crate) fn decode_line_known(
                                         .unwrap_or(false),
                                 ),
                             });
+                            // #s381: where the command ran, from the record (`sandboxed`, on every
+                            // Bash result since 2.1.308). The fold marks the call when it ran
+                            // outside a sandbox that was on.
+                            if let Some(inside) = v.get("sandboxed").and_then(Value::as_bool) {
+                                msgs.push(Message::SandboxRun {
+                                    tool_use_id: tid.to_string(),
+                                    inside,
+                                });
+                            }
                             if let Some(items) = blk.get("content").and_then(|c| c.as_array()) {
                                 for item in items {
                                     if let Some(att) = image_attachment(item) {
@@ -4037,6 +4056,12 @@ pub(crate) fn decode_line_known(
         }
         Some("attachment") => {
             let a = v.get("attachment");
+            // #s381: the client telling the model how its Bash sandbox works — so this transcript
+            // ran with the sandbox on. Still nothing drawn (#s369); the fold remembers it.
+            if a.and_then(|a| a.get("type")).and_then(Value::as_str) == Some("sandbox_instructions")
+            {
+                msgs.push(Message::SandboxOn);
+            }
             let is_prompt = a.and_then(|a| a.get("type")).and_then(|t| t.as_str())
                 == Some("queued_command")
                 && a.and_then(|a| a.get("commandMode"))
@@ -4826,6 +4851,8 @@ pub(crate) fn parse_main<S: AsRef<str>>(
     let mut inbox_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     // #s378 mirror: the replies the safety classifier stopped, by message id -> category.
     let mut refused: HashMap<String, Option<String>> = HashMap::new();
+    // #s381 mirror: whether this transcript ran with the Bash sandbox on.
+    let mut sandbox_on = false;
 
     for line in lines {
         let line = line.as_ref().trim();
@@ -4979,6 +5006,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                             status: Some(ToolStatus::Failed),
                                             exit_code: None,
                                             duration: None,
+                                            outside_sandbox: false,
                                         });
                                     }
                                 }
@@ -5268,6 +5296,10 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     blk.get("content").unwrap_or(&Value::Null),
                                     &tur,
                                 );
+                                // #s381 mirror: a run inside the sandbox says it was on.
+                                if v.get("sandboxed").and_then(Value::as_bool) == Some(true) {
+                                    sandbox_on = true;
+                                }
                                 if let Some(&idx) = tool_slot.get(tid) {
                                     // Its tool_use is already emitted — back-patch in place.
                                     // (#26 decode rule, mirrored: an absent key is an explicit
@@ -5278,6 +5310,22 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                             .unwrap_or(false),
                                     );
                                     apply_result(&mut out[idx], &txt, &tur, is_error);
+                                    // #s381 mirror: where the command ran.
+                                    if sandbox_on
+                                        && v.get("sandboxed").and_then(Value::as_bool)
+                                            == Some(false)
+                                    {
+                                        if let Block::ToolUse { execution, .. } = &mut out[idx] {
+                                            execution
+                                                .get_or_insert(ToolExecution {
+                                                    status: None,
+                                                    exit_code: None,
+                                                    duration: None,
+                                                    outside_sandbox: false,
+                                                })
+                                                .outside_sandbox = true;
+                                        }
+                                    }
                                 } else if !txt.trim().is_empty() && !is_boilerplate(&txt) {
                                     // No tool_use seen yet — a genuine orphan, shown inline.
                                     out.push(Block::ToolResult(txt));
@@ -5393,6 +5441,12 @@ pub(crate) fn parse_main<S: AsRef<str>>(
             // they took effect.
             Some("attachment") => {
                 let a = v.get("attachment");
+                // #s381 mirror: the sandbox's instructions say it was on.
+                if a.and_then(|a| a.get("type")).and_then(Value::as_str)
+                    == Some("sandbox_instructions")
+                {
+                    sandbox_on = true;
+                }
                 let is_prompt = a.and_then(|a| a.get("type")).and_then(|t| t.as_str())
                     == Some("queued_command")
                     && a.and_then(|a| a.get("commandMode"))
@@ -6508,6 +6562,7 @@ mod tests {
                 status: Some(ToolStatus::Failed),
                 exit_code: None,
                 duration: None,
+                outside_sandbox: false,
             }),
             "the recorded failure is a structural fact"
         );
@@ -7992,6 +8047,114 @@ mod tests {
             .filter(|s| s.example.as_deref() == Some("s-368"))
             .collect();
         assert!(seen.is_empty(), "and is not reported as new: {seen:?}");
+    }
+
+    /// #s381 (Hong on #s372: "Mark a Bash card whose command ran outside the sandbox"): in a
+    /// transcript that ran with the sandbox on, a Bash call whose result reads `sandboxed: false`
+    /// carries `outside_sandbox`, and nothing else does — not a call that ran inside, not one the
+    /// sandbox refused (an "Error: Blocked" result with no key), and nothing at all in a transcript
+    /// that ran with it off, where every call reads false (the 8 measured calls asking
+    /// `dangerouslyDisableSandbox` were all there). Both parse paths agree.
+    #[test]
+    fn a_bash_call_outside_a_sandbox_that_was_on_is_marked() {
+        unknown_watch_keys(true);
+        const HEAD: &str = r###"{"type":"attachment","version":"2.1.318","sessionId":"s-s381","uuid":"m1","timestamp":"2026-11-06T01:00:00.500Z","attachment":{"type":"sandbox_instructions","content":"## Bash command sandbox\n\nCommands run inside a sandbox that limits writes to the workspace."}}"###;
+        let call = |id: &str, cmd: &str, skip: bool, at: u32| {
+            let input = if skip {
+                serde_json::json!({"command": cmd, "dangerouslyDisableSandbox": true})
+            } else {
+                serde_json::json!({"command": cmd})
+            };
+            serde_json::json!({"type":"assistant","version":"2.1.318","sessionId":"s-s381","timestamp":format!("2026-11-06T01:00:{at:02}.000Z"),
+                "message":{"role":"assistant","content":[{"type":"tool_use","id":id,"name":"Bash","input":input}]}})
+            .to_string()
+        };
+        let result = |id: &str, out: &str, sandboxed: Option<bool>, at: u32| {
+            let mut r = serde_json::json!({"type":"user","version":"2.1.318","sessionId":"s-s381","timestamp":format!("2026-11-06T01:00:{at:02}.500Z"),
+                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":id,"content":out}]},
+                "toolUseResult":{"stdout":out,"stderr":"","interrupted":false}});
+            if let Some(b) = sandboxed {
+                r["sandboxed"] = serde_json::json!(b);
+            }
+            r.to_string()
+        };
+        let blocked = serde_json::json!({"type":"user","version":"2.1.318","sessionId":"s-s381","timestamp":"2026-11-06T01:00:07.500Z",
+            "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_blocked","content":"Error: Blocked: write outside the workspace","is_error":true}]},
+            "toolUseResult":"Error: Blocked: write outside the workspace"}).to_string();
+        let prompt = r#"{"type":"user","version":"2.1.318","sessionId":"s-s381","timestamp":"2026-11-06T01:00:00.000Z","message":{"role":"user","content":"count the tern nests"}}"#;
+        let answer = r#"{"type":"assistant","version":"2.1.318","sessionId":"s-s381","timestamp":"2026-11-06T01:00:09.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Forty-two nests."}]}}"#;
+        let session = |head: bool, first_inside: bool| {
+            let mut lines = vec![prompt.to_string()];
+            if head {
+                lines.push(HEAD.to_string());
+            }
+            lines.push(call("toolu_in", "ls nests", false, 1));
+            lines.push(result("toolu_in", "north.txt", Some(first_inside), 1));
+            lines.push(call(
+                "toolu_out",
+                "curl https://tern.example/nests",
+                true,
+                3,
+            ));
+            lines.push(result("toolu_out", "42", Some(false), 3));
+            lines.push(call("toolu_blocked", "touch /etc/terns", false, 7));
+            lines.push(blocked.clone());
+            lines.push(answer.to_string());
+            lines.join("\n")
+        };
+        fn marks(blocks: &[Block]) -> Vec<bool> {
+            fn walk(blocks: &[Block], out: &mut Vec<bool>) {
+                for b in blocks {
+                    match b {
+                        Block::ToolUse {
+                            name, execution, ..
+                        } if name == "Bash" => {
+                            out.push(execution.is_some_and(|e| e.outside_sandbox))
+                        }
+                        Block::Thinking { tools, .. } => walk(tools, out),
+                        _ => {}
+                    }
+                }
+            }
+            let mut out = Vec::new();
+            walk(blocks, &mut out);
+            out
+        }
+        for (what, jsonl, want) in [
+            (
+                "the sandbox's head, then a run inside it",
+                session(true, true),
+                [false, true, false],
+            ),
+            (
+                "only a run inside it says it was on",
+                session(false, true),
+                [false, true, false],
+            ),
+            (
+                "the head alone says it was on",
+                session(true, false),
+                [true, true, false],
+            ),
+            (
+                "the sandbox off: every call reads false, and none is marked",
+                session(false, false),
+                [false, false, false],
+            ),
+        ] {
+            let blocks = parse(&jsonl);
+            assert_eq!(marks(&blocks), want, "{what}: {blocks:#?}");
+            assert_eq!(
+                blocks,
+                parse_main(jsonl.lines(), &mut Vec::new()),
+                "{what}: both parse paths agree"
+            );
+        }
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s381"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
     }
 
     /// #s369: the 2.1.318 attachment `sandbox_instructions`, the client telling the model how its

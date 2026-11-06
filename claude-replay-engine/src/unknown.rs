@@ -52,6 +52,13 @@ pub enum Where {
     /// A known native text-envelope prefix with an unsupported complete layout.
     /// The name identifies the envelope family, never the user's text.
     TextEnvelope,
+    /// A file in an agent's store that the adapter cannot read (#s385, Hong's choice on #s384):
+    /// a rollout with an ending no reader knows, or a compressed one that does not decode, named
+    /// by that ending or that failure, the example its path. Codex once compressed 3,416 sessions
+    /// to `.jsonl.zst` and discovery passed over every one for a month without a word; the next
+    /// form should reach the daily review the day it appears. Only collected while
+    /// [`watch_keys`] is on, as the sweep alone reads it.
+    StoreUnread,
 }
 
 impl Where {
@@ -65,6 +72,7 @@ impl Where {
             Self::ToolResultKey => "toolUseResult.key",
             Self::RecordKey => "record.key",
             Self::TextEnvelope => "text.envelope",
+            Self::StoreUnread => "store.unread",
         }
     }
 }

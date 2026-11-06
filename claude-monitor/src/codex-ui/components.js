@@ -254,7 +254,7 @@ function besideHtml(view, h, capability) {
  *  the state pill — which a phone hides, and which is where the owner looked for it. Empty for
  *  a record that changed no file. */
 export const changeBadgeHtml = change => change?.length
-  ? `<span class="renderer-change">${change.map(c => `<span class="${c.kind === "del" ? "del" : "add"}">${escapeText(c.text)}</span>`).join("")}</span>`
+  ? `<span class="renderer-change">${change.map(c => `<span class="${c.kind === "del" ? "del" : c.kind === "sandbox" ? "sandbox" : "add"}">${escapeText(c.text)}</span>`).join("")}</span>`
   : "";
 
 function renderProcess(unit, state) {
