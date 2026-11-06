@@ -2085,6 +2085,42 @@ const ARTIFACT_COMMENTS_WATCH_SHAPE: &[&str] = &["watch"];
 /// "not_found", or a key beside these two.
 const ARTIFACT_COMMENTS_WATCH_LIST_SHAPE: &[&str] = &["arms", "watches"];
 
+/// The whole of an ArtifactComments REPLY result (#s396, client 2.1.318, 12 records in one session
+/// on hong-devserver, measured 2026-11-07): exactly `{replied: true, thread_id, comment_id}`, the
+/// ids UUID strings. The card is the generic tool card, which draws the result TEXT, and the text
+/// says "Replied to comment thread `<id>`" and goes on with the comment; the ids are the client's
+/// bookkeeping for the next call. `comment_id`, `replied` and `thread_id` are generic words, so each
+/// is known only in this shape. Named in the 2.1.319 client and NOT yet met, so not here, to be
+/// judged as its own row when one first carries it: `standing_reply_id`. REVISIT: (1) `replied`
+/// arriving false, where the text should still say the reply did not go (check it then); (2) a
+/// reply whose text no longer names the thread.
+const ARTIFACT_COMMENTS_REPLY_SHAPE: &[&str] = &["comment_id", "replied", "thread_id"];
+
+/// The whole of an ArtifactComments RESOLVE result (#s396, client 2.1.318, 19 records in one session
+/// on hong-devserver, measured 2026-11-07): exactly `{thread_resolved: true, thread_id}`, the id a
+/// UUID string. The card is the generic tool card, and its text says "Marked comment thread `<id>`
+/// resolved. Viewers see it as resolved by Claude; a person can reopen it." It shares `thread_id`
+/// with the reply, so that name is in two shapes. Named in the 2.1.319 client and NOT yet met, so
+/// not here: `thread_resolved` false with a refusal flag (`not_authorized`, `summon_foreign`,
+/// `relayed_credential`, or a refusal the client does not recognize), whose text begins "Thread not
+/// resolved:" with the reason; each is judged as its own row when one first carries it. REVISIT:
+/// (1) `thread_resolved` arriving false, where the text should still say the thread stays open
+/// (check it then); (2) a resolve whose text no longer names the thread.
+const ARTIFACT_COMMENTS_RESOLVE_SHAPE: &[&str] = &["thread_id", "thread_resolved"];
+
+/// The whole of an ArtifactComments thread LISTING narrowed to one thread or resumed from a cursor
+/// (#s396, client 2.1.318, measured 2026-11-07 on hong-devserver): `{thread_filter, threads}` on 12
+/// records and `{cursor, threads}` on 2, each id a UUID string. The plain listing `{threads}` (13
+/// records, earlier clients too) was already silent, since `threads` is on the flat ignored list,
+/// and it is in this array or the shape could never hold. The client reads both `cursor` and
+/// `thread_filter` on one listing, so one shape covers either and both. The card is the generic
+/// tool card, and its text says it is "Showing only the requested thread" and how many other threads
+/// carry comments, or that it "Resumed from the cursor". `cursor` and `thread_filter` are generic
+/// words, so each is known only in this shape. Named in the 2.1.319 client and NOT yet met, so not
+/// here: `scoped_dispatch`, to be judged as its own row when one first carries it. REVISIT: a
+/// listing whose text no longer says it was narrowed or resumed.
+const ARTIFACT_COMMENTS_THREADS_SHAPE: &[&str] = &["cursor", "thread_filter", "threads"];
+
 /// Every key an Artifact list result was met with (#s62, client 2.1.288, one record): `{artifacts:
 /// array, scope: string, pins_enabled: boolean}`. `pins_enabled` is a service feature flag (whether
 /// the account may pin artifacts), not something the call did; the result TEXT the page draws
@@ -2335,6 +2371,16 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // whole result, never on the flat ignored list.
     ("arms", ARTIFACT_COMMENTS_WATCH_LIST_SHAPE),
     ("watches", ARTIFACT_COMMENTS_WATCH_LIST_SHAPE),
+    // #s396 (client 2.1.318): an ArtifactComments reply, resolve and narrowed or resumed thread
+    // listing, each a whole result whose text states what it did. Generic words all, so each is
+    // known only in its own shape, never on the flat ignored list; `thread_id` is in two.
+    ("comment_id", ARTIFACT_COMMENTS_REPLY_SHAPE),
+    ("replied", ARTIFACT_COMMENTS_REPLY_SHAPE),
+    ("thread_id", ARTIFACT_COMMENTS_REPLY_SHAPE),
+    ("thread_id", ARTIFACT_COMMENTS_RESOLVE_SHAPE),
+    ("thread_resolved", ARTIFACT_COMMENTS_RESOLVE_SHAPE),
+    ("cursor", ARTIFACT_COMMENTS_THREADS_SHAPE),
+    ("thread_filter", ARTIFACT_COMMENTS_THREADS_SHAPE),
     // Artifact's list result (#s62): `pins_enabled` is an account's feature flag, and a word
     // another tool could use for anything, so it is known only in the list's own shape.
     ("pins_enabled", ARTIFACT_LIST_SHAPE),
@@ -10615,6 +10661,61 @@ mod tests {
             unknown_tool_result_keys(&serde_json::json!({"watches": [], "watch": {}})),
             vec!["watch", "watches"],
             "the listing and the watch are two shapes, not one"
+        );
+    }
+
+    /// #s396: ArtifactComments' reply, resolve and narrowed or resumed thread listing (client
+    /// 2.1.318) are each known whole, and a shaped name beside a key from outside its shape, or
+    /// from another of these shapes, is reported. Removing any one row turns this red.
+    #[test]
+    fn artifact_comments_reply_resolve_and_thread_listing_results_are_known_in_their_shapes() {
+        let thread = "6f1c2b9e-0d4a-4c3e-9b7a-2e5f8d1a0c34";
+        let comment = "a3d9e1f0-7b2c-4e8a-9f61-0c5b7d2e4a18";
+        let whole = [
+            serde_json::json!({"replied": true, "thread_id": thread, "comment_id": comment}),
+            serde_json::json!({"thread_resolved": true, "thread_id": thread}),
+            serde_json::json!({"thread_filter": thread, "threads": [{"id": thread}]}),
+            serde_json::json!({"cursor": thread, "threads": []}),
+            serde_json::json!({"cursor": thread, "thread_filter": thread, "threads": []}),
+            serde_json::json!({"threads": []}),
+        ];
+        for result in &whole {
+            assert!(
+                unknown_tool_result_keys(result).is_empty(),
+                "a whole result is known: {result} -> {:?}",
+                unknown_tool_result_keys(result)
+            );
+        }
+        let beside = |mut v: Value| -> Vec<String> {
+            v["stdout"] = serde_json::json!("ok");
+            unknown_tool_result_keys(&v)
+                .into_iter()
+                .map(String::from)
+                .collect()
+        };
+        assert_eq!(
+            beside(
+                serde_json::json!({"replied": true, "thread_id": thread, "comment_id": comment})
+            ),
+            vec!["comment_id", "replied", "thread_id"],
+            "outside its shape, the reply's names are reported"
+        );
+        assert_eq!(
+            beside(serde_json::json!({"thread_resolved": true, "thread_id": thread})),
+            vec!["thread_id", "thread_resolved"],
+            "outside its shape, the resolve's names are reported"
+        );
+        assert_eq!(
+            beside(serde_json::json!({"cursor": thread, "thread_filter": thread, "threads": []})),
+            vec!["cursor", "thread_filter"],
+            "outside its shape, the listing's names are reported"
+        );
+        assert_eq!(
+            unknown_tool_result_keys(&serde_json::json!({
+                "replied": true, "thread_id": thread, "thread_resolved": true
+            })),
+            vec!["replied", "thread_id", "thread_resolved"],
+            "the reply and the resolve are two shapes, not one"
         );
     }
 
