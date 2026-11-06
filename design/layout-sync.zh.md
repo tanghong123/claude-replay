@@ -69,7 +69,8 @@ worker 放在各自的仓库下，分散在四个地方，看不出它们是一�
 session、放在哪些小标题下；它们在那里怎么排序、怎么分组，由每个 section 头上的一个菜单决定，选项与
 Claude app 的 section 菜单一致。菜单是 section 头右端、折叠箭头旁的 ≡ 控件，与 Claude app 放置它自己菜单
 的位置相同；section 头不显示数量。在手机上，菜单以 sheet 的形式从屏幕底部弹出，背后有一层变暗的遮罩，每行
-高 44px；点击遮罩会关闭菜单，这次点击不会落到下面的任何东西上。
+高 44px；点击遮罩会关闭菜单，这次点击不会落到下面的任何东西上。横屏时它和桌面上一样，是控件旁边的弹层，
+背后的 scrim（遮罩层）是透明的，但仍会接住关闭菜单的那次点击。
 
 | 选择 | 选项 |
 |---|---|
@@ -146,7 +147,8 @@ OpenAI 的 Codex 桌面应用；在被读取的机器上是 `/Applications/ChatG
 **这个人整理了什么。** project：每个 project 是一个名字加一个或多个文件夹，顺序由这个人决定。thread：
 每个 thread 由这个人归入某个 project，归属不是从文件夹推出来的（有 15 个 thread 在其 project 的文件夹
 之外，另有 81 个在某个 project 的文件夹里却没有 project）。自定义侧边栏 section 装着 thread，有顺序，
-有的折叠。置顶 thread，有顺序。归档的 thread。改过名的标题。sub-agent thread 嵌在派生它的 thread 下。
+有的折叠。置顶 thread，有顺序。归档的 thread。改过名的标题。（sub-agent thread 和 `codex exec` 运行在它的
+数据库里，但不在它的 sidebar 里：见下面的"app 列出哪些 thread"。）
 
 **存在哪里。** 在三个存储里，而它们之间的迁移只完成了一半：
 
@@ -178,7 +180,11 @@ OpenAI 的 Codex 桌面应用；在被读取的机器上是 `/Applications/ChatG
 **app 列出哪些 thread。** app 自己有一份它所列 thread 的目录（catalogue，`~/.codex/sqlite/codex.db` 里的
 `local_thread_catalog`）。在那台机器上测得：81 个 `codex exec` 运行和 sub-agent thread（971 个 reviewer
 sub-agent，以及所有派生出来的子 thread）都在 threads 表里，但不在这份目录里，也没有一个被放进 section 或
-project。所以原型只画目录里有的 thread；读不到目录时，和以前一样每个 thread 都算。
+project。所以原型只画目录里有的 thread。目录不存在或读不了时（评审时读到的一台机器上就没有 `codex.db`），
+原型按 threads 表给每个 thread 的 `source` 排除同样的 thread——`exec`，或一个 `subagent` 对象；app 自己的
+thread 是 `vscode`，CLI 的是 `cli`——并在列表上方的说明行里说明这份列表是 monitor 的推测。2026-11-07 在第一台
+机器上测得：推测得到 2,791 个未归档的 thread，目录列出 2,772 个，多出的 19 个是目录里没有的 `vscode` thread。
+目录忙时，和数据库忙时一样，保留上一次读到的结果。
 
 **sidebar 本身**只存在状态文件里，位于 `electron-persisted-atom-state` 下，2026-11-06 对照 app 自己的
 sidebar 核对过：
@@ -202,7 +208,7 @@ project，Projects 列表按 app 的顺序包含其余 9 个。数据库自己�
 的 section，含 11 个 thread，但那不是 Pinned 显示的内容。
 
 **评估。** sidebar 只能从私有的状态文件读到；app 每隔几分钟重写一次这个文件，而且它没有 schema（key
-带版本后缀）。原型以只读方式读它，只在它变化时重读，标题、最近活动、归档和 sub-agent 取自数据库；没有
+带版本后缀）。原型以只读方式读它，只在它变化时重读，标题、最近活动和归档取自数据库；没有
 状态文件时，退回到数据库里的 section，并说明这一点。等 app-server 提供 sidebar 的 section、置顶和文件夹
 之后，改为通过 app-server 读取。
 
@@ -256,7 +262,7 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
 | Codex app：一个 project | 一个文件夹小标题，放在它的自定义 section 里，或按 app 的 project 顺序放在 Projects 下；除非在 app 里展开过，否则是关闭的；即使为空也画出来 |
 | Codex app：一个没有 project 的 thread | Chats |
 | Codex app：一个归档的 thread | 不画，因为 app 也不画 |
-| Codex app：一个 sub-agent thread | 嵌在它的父 thread 下面 |
+| Codex app：一个 sub-agent thread，或一个 `codex exec` 运行 | 不画，因为 app 不列出它 |
 | Herdr：一个 workspace | 一个带 workspace label 的 section，按 Herdr 的顺序 |
 | Herdr：一个 tab | 它里面的一个小标题 |
 | Herdr：一个 agent pane | 该 session 的行 |
@@ -275,7 +281,10 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
   `label` 和 `entries`：一个 project、一个 Herdr tab）。一个 entry 指向一个 monitor 行 id，在 app 保存了
   标题时带上 app 显示的 `title`，可以包含子 entry（嵌套）；
 - `note`：这个人需要知道的、关于列表有多忠实的说明（例如 app 数据库里还有多少 Codex thread 没有
-  project）。
+  project）；
+- `pending: true`，不带 section：这个来源的第一次读取还没完成；
+- `stale: true`：这份结果是这个来源的读取线程上一次停止之前读到的（手机隔一小时回到页面时，它可能已经是
+  一小时前的）；列表照画，但说明行写 "updating…"，直到新的读取完成。
 
 headless worker（monitor 标了 `startedBy` 的行，#s53）只出现在它的发起者的 Agents 面板里，这里从不画它，
 即使某个 app 列出了它。
@@ -296,17 +305,42 @@ headless worker（monitor 标了 `startedBy` 的行，#s53）只出现在它的�
 
 **请求从不读取 app。** 每个来源有自己的读取线程，由第一次请求启动，只在有页面跟随这个来源时运行：每 3 秒
 读一次，最后一次请求之后 30 秒结束。route 返回这个线程最近一次读到的结果；第一次读取完成之前返回
-`pending: true`，页面一秒后再问。读取来源时不持有任何锁，所以慢的 herdr 或忙的数据库不会耽误任何请求；
+`pending: true`；读取线程上一次停止之前留下的结果带 `stale: true` 返回。两种情况页面都在一秒后再问，用的是
+同一个定时器，每次回复都重新设置它，所以重试不会越积越多。读取来源时不持有任何锁，所以慢的 herdr 或忙的数据库不会耽误任何请求；
 herdr 按读取线程自己的节奏去问，和 monitor 的 `HerdrReader` 一样（#s238）。Codex 读取器给 SQLite 250 ms，
 而不是默认的 5 秒，数据库忙时保留上一次读到的结果。**不带 `source` 的 `GET api/layout`** 在打开筛选面板时
-请求，只检查文件——Claude app 的存储和设置文件、Codex app 的数据库、herdr 程序——以及上一次读取的错误（如果
-有）；它不读任何 app。从不选择 app 的人，不会触发任何一次读取。
+请求，只检查文件——Claude app 的存储和设置文件、Codex app 的数据库、herdr 程序——不读任何 app。只有这项
+检查决定一个来源能不能选：读取失败会作为 `lastError` 显示在选项旁边，但从不让它变成不可选，因为选中它
+正是重新读取它的方式。从不选择 app 的人，不会触发任何一次读取。
+
+两种回复的确切格式：
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `sources` | 对象数组 | 每个来源一项，顺序为 `claude-app`、`codex-app`、`herdr`（请求不带 `source` 时） |
+| `sources[].source` | `"claude-app"` \| `"codex-app"` \| `"herdr"` | 来源 |
+| `sources[].label` | 字符串 | 选项的名字 |
+| `sources[].available` | 布尔 | 这个来源的文件是否在读取器查找的位置 |
+| `sources[].reason` | 字符串或 null | `available` 为 false 时的原因 |
+| `sources[].lastError` | 字符串或 null | `available` 为 true 而上一次读取失败时，读取遇到了什么 |
+| `source`、`label` | 同上 | 这份 layout 的来源（请求带 `source` 时） |
+| `available` | 布尔 | 上一次读取是否成功 |
+| `reason` | 字符串或 null | 没成功的原因 |
+| `note` | 字符串或 null | 列表有多忠实 |
+| `sections` | 数组 | §4 的 section；`available` 为 false 或带 `pending` 时为空 |
+| `pending` | `true`，或没有这个字段 | 还没有任何一次读取完成 |
+| `stale` | `true`，或没有这个字段 | 这份结果来自读取线程上一次停止之前 |
+
+不是这三个来源之一的 `source` 返回 404。
 
 由 server 而不是页面来读这些存储：页面可能是通过 tailnet 访问的手机，读不到 Mac 的磁盘；而且 server 已经
 为其中一个存储保留了带缓存的读取器（#s340 的 `desktop_sessions.rs`，只在一条记录的修改时间或长度变化时
 才重读）。每个读取器：
 
-- 只读，从不对 app 的文件持有写锁；
+- 只读，从不对 app 的文件持有写锁，也不创建任何文件。读 WAL 模式的 SQLite 数据库时，如果旁边没有 `-shm`
+  和 `-wal`，读取者会创建它们，关闭后也不会删除（用 SQLite 3.54 测过）；所以没有 `-wal` 的 WAL 数据库（没有
+  写入者打开它，所有已提交的页都在主文件里）以 immutable（不可变）方式打开，不创建任何文件；有写入者打开时，
+  通过那个写入者自己的 `-wal` 读取；
 - 跳过无法解析的记录，忽略不认识的键，和 #s340 的读取器一样；
 - 有一个环境变量可以改它读取的位置，让 browser case 在隔离的存储上运行，和这里其他每个存储一样；
 - 遇到不认识的格式时，在选项的原因说明和 monitor 的日志里说出来，这样 app 更新挪动了排列时会被注意到，
@@ -320,6 +354,8 @@ herdr 按读取线程自己的节奏去问，和 monitor 的 `HerdrReader` 一�
 | app 没有安装，或它的存储不存在 | 选项显示为不可用，原因作为它的提示和第二行文字。 |
 | 存储存在但读不了，或格式不认识 | 同上，并在能读到时附上 app 版本。 |
 | 选中的来源在之后某次刷新时失败 | 列表退回被 app 替换掉的那种排列（"By agent and project" 或 "One list by activity"），列表顶部用琥珀色写着 "Showing by agent and project: the Claude app's list could not be read"，并给出原因。选择会被保留；下一次能读到来源的刷新会重新按它来画。 |
+| 一个来源上一次读取失败，但它的文件还在 | 仍然可选；第二行写 "Last read: …"，说明读取遇到了什么。选中它就会重新读取。 |
+| Codex app 没有它的 thread 目录，或目录读不了 | 列表照画，按 `source` 排除 `codex exec` 运行和 sub-agent（§3.2），说明行写明这份列表是 monitor 的推测。 |
 | app 写到一半的记录 | 这次刷新跳过；下一次再读。 |
 | 在手机或另一台桌面上看的人 | 看到的是 monitor 所在机器上的排列，也就是 session 运行的那台机器。 |
 
@@ -414,12 +450,27 @@ herdr 按读取线程自己的节奏去问，和 monitor 的 `HerdrReader` 一�
 - 在 390 × 844 下，section 菜单从 44 px 的控件以 sheet 弹出，每行 44 px；点击遮罩关闭菜单，不选中任何东西；
   说明行的 ✕ 是 44 px；Arrange 的两行选项能容下原因说明。在 844 × 390 下菜单是控件旁边的弹层。
 
-没有运行的：iOS 模拟器（竖屏、横屏、浅色、深色）——这台机器上没有模拟器工具；Codex app 的 browser case（它
-的存储是 SQLite 数据库，browser-test crate 没法写）；Linux。
+**第二轮评审后补上的：**
+
+- 单元测试：读取失败成为来源的 `lastError`，来源仍然可选；只有文件缺失才让它不可选。读取线程停止之前留下
+  的结果带 `stale` 返回，直到新线程的第一次读取完成。读取线程的用例让每次读取等一个闸门放行，而不是给请求
+  计时，所以负载高的机器上不会不稳（#s300）。Codex 读取器读 WAL 数据库时不在旁边创建 `-shm` 或 `-wal`（关掉
+  immutable 打开时，用例失败并列出这两个文件）；没有目录时，按 `source` 排除 `exec` 和 sub-agent thread，并
+  说明这一点。
+- Claude app 的 browser case 继续往下：设置文件里没有 sidebar 排列时，列表退回；用说明行的 ✕ 离开后，选项
+  仍然可选，并显示 "Last read: …"；再次选中，就重新读取。换回旧规则（读取失败就让来源不可选）时，用例在这一步
+  失败。
+- 一个 Codex app 的 browser case（只在 macOS 上，数据库用系统自带的 `sqlite3` 建）：app 的文件夹和 Chats，用
+  app 的标题；数据库里的一个 `codex exec` 运行放在 "Not in the Codex app" 下——没有目录时按 `source` 排除（说明
+  行写明），目录出现后由目录单独决定；两个数据库旁边都不会多出 `-shm` 或 `-wal`。关掉按 `source` 排除的规则时
+  用例失败。
+- 在 844 × 390 下，section 菜单的 scrim 不再让屏幕变暗，但仍会接住关闭菜单的那次点击。
+
+没有运行的：iOS 模拟器（竖屏、横屏、浅色、深色）——这台机器上没有模拟器工具；Linux。Herdr 的 browser case
+里没有 monitor 关联到 pane 的行，所以"先按 pane 匹配"只由 node contract 覆盖。
 
 **发布前拟议的检查：**
 
-- 一个 Codex app 的 browser case，用隔离的数据库、状态文件和目录。
 - iOS 模拟器上走一遍：竖屏、横屏、浅色、深色。
 - 一个协调者的 side session 在别的 project 里：在 "Like the Claude app" 下嵌在它下面，而 tree 保持不变。
 - 一个 node contract case：给定行和一个 layout，每一行恰好出现一次。

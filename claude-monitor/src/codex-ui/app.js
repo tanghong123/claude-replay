@@ -376,6 +376,10 @@ const FLAT_SESSION_LIMIT = 30;
 // otherwise; `sourceState` whether each source can be read, asked as the filter sheet opens.
 let layoutState = { source: null, data: null, error: null, text: null, loading: null };
 let sourceState = {};
+// One timer asks again while a source's reader has not read (pending) or answers with a read from
+// before it last stopped (stale): every answer re-arms the same one, so retries never pile up.
+let layoutRetry = null;
+function retryLayout() { clearTimeout(layoutRetry); layoutRetry = setTimeout(() => { layoutRetry = null; refreshLayout(); }, 1000); }
 let arrangeStrip = null;
 const ARRANGE_LABELS = { "claude-app": "the Claude app", "codex-app": "the Codex app", herdr: "Herdr" };
 // An arranged section shows this many sessions before "Show more", the selected one always.
@@ -410,6 +414,13 @@ function placeSectionMenu() {
   const below = r.bottom + 4;
   sectionMenu.style.top = `${Math.round(below + height <= innerHeight - 8 ? below : Math.max(8, r.top - height - 4))}px`;
 }
+/** Upright on a phone the section menu is a sheet at the foot over a dim; held sideways, as on a
+ *  desktop, a popover at the control's side (#s41: a band across a sideways screen hides what it
+ *  covers), whose scrim stays clear — it still takes the tap that closes the menu. */
+function placeSheet() {
+  const sheet = matchMedia(PHONE_QUERY).matches && innerHeight > innerWidth;
+  sectionMenu.classList.toggle("sheet", sheet); sectionScrim.classList.toggle("dim", sheet);
+}
 function openSectionMenu(key, label, anchor) {
   if (!sectionMenu) {
     sectionMenu = document.createElement("div");
@@ -438,15 +449,13 @@ function openSectionMenu(key, label, anchor) {
     });
     document.addEventListener("pointerdown", event => { if (sectionMenu && !sectionMenu.hidden && !sectionMenu.contains(event.target) && event.target !== sectionScrim && !event.target.closest?.("[data-section-view]")) closeSectionMenu(false); }, true);
     document.addEventListener("keydown", event => { if (event.key === "Escape" && sectionMenu && !sectionMenu.hidden) { event.stopPropagation(); closeSectionMenu(true); } }, true);
-    addEventListener("resize", () => { if (sectionMenu.hidden) return; sectionMenu.classList.toggle("sheet", matchMedia(PHONE_QUERY).matches && innerHeight > innerWidth); placeSectionMenu(); });
+    addEventListener("resize", () => { if (sectionMenu.hidden) return; placeSheet(); placeSectionMenu(); });
   }
   if (sectionMenuKey === key && !sectionMenu.hidden) { closeSectionMenu(false); return; }
   sectionMenuKey = key; sectionMenuAnchor = anchor; sectionMenu.dataset.label = label;
   sectionMenu.setAttribute("aria-label", `Sort and group ${label}`);
   sectionMenu.innerHTML = sectionMenuHtml(key, label);
-  // Upright on a phone a sheet at the foot; held sideways, as on a desktop, a popover at the
-  // control's side (#s41: a band across a sideways screen hides what it covers).
-  sectionMenu.classList.toggle("sheet", matchMedia(PHONE_QUERY).matches && innerHeight > innerWidth);
+  placeSheet();
   sectionMenu.hidden = false; sectionScrim.hidden = false;
   anchor.setAttribute("aria-expanded", "true");
   placeSectionMenu();
@@ -892,10 +901,14 @@ function refreshLayout() {
       if (arrangeSource() !== source) return;
       const data = JSON.parse(text);
       // The source's reader has not read yet (the server never reads in a request): ask again soon.
-      if (data.pending) { setTimeout(() => refreshLayout(), 1000); return; }
+      if (data.pending) { retryLayout(); return; }
+      // A read from before the reader last stopped is drawn, said to be updating, and asked again.
+      if (data.stale) retryLayout();
       const changed = text !== layoutState.text || layoutState.error;
       layoutState = { ...layoutState, source, text, data, error: null };
-      if (layoutState.data && !layoutState.data.available) sourceState[source] = { available: false, reason: layoutState.data.reason };
+      // A read that failed is said beside the choice; it never disables it (only missing files do).
+      const known = sourceState[source] || { available: true, reason: "" };
+      sourceState[source] = { ...known, lastError: data.available ? "" : data.reason || "" };
       if (changed) renderTree();
     })
     .catch(error => {
@@ -913,7 +926,7 @@ function refreshSources() {
     .then(response => response.ok ? response.json() : null)
     .then(data => {
       if (!data) return;
-      sourceState = Object.fromEntries((data.sources || []).map(item => [item.source, { available: !!item.available, reason: item.reason || "" }]));
+      sourceState = Object.fromEntries((data.sources || []).map(item => [item.source, { available: !!item.available, reason: item.reason || "", lastError: item.lastError || "" }]));
       renderTree();
     })
     .catch(() => {});
@@ -933,7 +946,7 @@ function paintArrangeStrip(source, layout) {
   const back = indexState.arrangeBefore === "flat" ? "one list by activity" : "by agent and project";
   let text, detail = "", warn = false;
   if (layout?.available) {
-    text = `Arranged like ${label} · follows it`;
+    text = layout.stale ? `Arranged like ${label} · updating…` : `Arranged like ${label} · follows it`;
     const empty = (layout.sections || []).every(section => !(section.entries || []).length && (section.groups || []).every(group => !(group.entries || []).length));
     detail = layout.note || (empty ? `${label[0].toUpperCase()}${label.slice(1)} lists no sessions right now` : "");
   }
@@ -962,13 +975,14 @@ function renderFilterControl(counts, shown, total) {
     const key = option.dataset.arrange, on = indexState.arrange === key;
     option.classList.toggle("on", on); option.setAttribute("aria-checked", String(on));
     if (!ARRANGE_SOURCES.includes(key)) continue;
-    // A source that cannot be read is offered with the reason, and not chosen — unless it is the
-    // one chosen, which stays checked and says why it is not drawn.
+    // A source whose files are not there is offered with the reason, and not chosen — unless it is
+    // the one chosen, which stays checked and says why it is not drawn. A source whose last read
+    // failed stays choosable (choosing it is what reads it again) and says what the read met.
     const known = sourceState[key];
     const off = !!known && !known.available && !on;
     option.classList.toggle("disabled", off); option.setAttribute("aria-disabled", String(off));
     const note = filterSheet.querySelector(`[data-arrange-note="${key}"]`);
-    if (note) note.textContent = known && !known.available ? known.reason || "Cannot be read" : "";
+    if (note) note.textContent = !known ? "" : !known.available ? known.reason || "Cannot be read" : known.lastError ? `Last read: ${known.lastError}` : "";
   }
   for (const el of filterSheet.querySelectorAll("[data-bucket-count]")) {
     const key = el.dataset.bucketCount;

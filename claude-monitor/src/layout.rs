@@ -116,6 +116,7 @@ const READ_EVERY: Duration = Duration::from_secs(3);
 const WANTED_FOR: Duration = Duration::from_secs(30);
 
 type ReadFn = dyn Fn(&mut Readers, Source) -> LayoutRead + Send + Sync;
+type ProbeFn = dyn Fn(Source) -> Result<(), String> + Send + Sync;
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -125,12 +126,13 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// SQLite or a file and holds no lock while one is read (the review of #s387, as `HerdrReader`
 /// asks herdr at its own pace, #s238). A source is read only while a page follows it: the first
 /// ask starts its reader, which reads every `READ_EVERY` and ends `WANTED_FOR` after the last ask;
-/// until its first read lands the route answers "pending". A person who never chooses an app
-/// never has one read.
+/// until its first read lands the route answers "pending", and a read kept from before its reader
+/// last stopped is answered as "stale". A person who never chooses an app never has one read.
 pub struct Layouts {
     slots: [Arc<Mutex<Slot>>; 3],
     readers: [Arc<Mutex<Readers>>; 3],
     read: Arc<ReadFn>,
+    probe: Arc<ProbeFn>,
     every: Duration,
     wanted_for: Duration,
 }
@@ -138,6 +140,10 @@ pub struct Layouts {
 #[derive(Default)]
 struct Slot {
     last: Option<LayoutRead>,
+    /// Whether `last` was read by the reader that runs now. A reader that stopped (nobody asked
+    /// for `WANTED_FOR`) leaves its last read behind, which can be an hour old when a phone comes
+    /// back: it is answered as stale until the new reader's first read lands.
+    fresh: bool,
     wanted: Option<Instant>,
     reading: bool,
 }
@@ -156,6 +162,7 @@ impl Default for Layouts {
     fn default() -> Self {
         Layouts::with(
             Arc::new(|readers: &mut Readers, source| readers.read(source)),
+            Arc::new(probe),
             READ_EVERY,
             WANTED_FOR,
         )
@@ -163,11 +170,12 @@ impl Default for Layouts {
 }
 
 impl Layouts {
-    fn with(read: Arc<ReadFn>, every: Duration, wanted_for: Duration) -> Self {
+    fn with(read: Arc<ReadFn>, probe: Arc<ProbeFn>, every: Duration, wanted_for: Duration) -> Self {
         Layouts {
             slots: Default::default(),
             readers: Default::default(),
             read,
+            probe,
             every,
             wanted_for,
         }
@@ -188,6 +196,7 @@ impl Layouts {
         slot.wanted = Some(Instant::now());
         if !slot.reading {
             slot.reading = true;
+            slot.fresh = false;
             let (shared, readers, read) = (
                 self.slots[i].clone(),
                 self.readers[i].clone(),
@@ -202,6 +211,7 @@ impl Layouts {
                         let fresh = read(&mut lock(&readers), source);
                         let mut slot = lock(&shared);
                         slot.last = Some(fresh);
+                        slot.fresh = true;
                         if slot.wanted.is_none_or(|at| at.elapsed() > wanted_for) {
                             return;
                         }
@@ -214,14 +224,23 @@ impl Layouts {
             }
         }
         match &slot.last {
-            Some(read) => layout_json(source, read),
+            Some(read) => {
+                let mut v = layout_json(source, read);
+                if !slot.fresh {
+                    v["stale"] = json!(true);
+                }
+                v
+            }
             None => pending_json(source),
         }
         .to_string()
     }
 
     /// `GET api/layout`: whether each source can be followed, and why not, for the Arrange choice.
-    /// Checks files only (and the last read, when there is one); reads no app.
+    /// Checks files only; reads no app. Only the file check decides whether a source can be
+    /// chosen (`available`, with `reason` when it cannot): a read that failed is said as
+    /// `lastError` and never disables the choice, since choosing it is what reads it again (the
+    /// second review of #s387: a source that failed once stayed disabled until a restart).
     pub fn sources_json(&self) -> String {
         let sources: Vec<Value> = Source::ALL
             .into_iter()
@@ -230,12 +249,13 @@ impl Layouts {
                     .last
                     .as_ref()
                     .and_then(|read| read.as_ref().err().cloned());
-                let reason = probe(source).err().or(last);
+                let reason = (self.probe)(source).err();
                 json!({
                     "source": source.key(),
                     "label": source.label(),
                     "available": reason.is_none(),
                     "reason": reason,
+                    "lastError": if reason.is_none() { last } else { None },
                 })
             })
             .collect();
@@ -292,7 +312,8 @@ pub struct Readers {
     claude_config: Option<ConfigRead>,
     codex: Option<CodexRead>,
     codex_state: Option<CodexStateRead>,
-    /// The last reason logged per source, so an unreadable source is logged once, not every 5 s.
+    /// The last reason logged per source, so an unreadable source is logged once, not on every
+    /// read (`READ_EVERY`).
     reported: HashMap<&'static str, String>,
 }
 
@@ -1051,6 +1072,9 @@ struct CodexThread {
     /// Milliseconds since the epoch.
     created: i64,
     parent: Option<String>,
+    /// A `codex exec` run or a sub-agent, by the database's `source` (`exec`, or a `subagent`
+    /// object): the app does not list it. Read for when its catalogue cannot be.
+    headless: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1063,30 +1087,37 @@ struct CodexData {
     /// The threads the app lists (its own catalogue, `local_thread_catalog` in its `codex.db`),
     /// or `None` where that catalogue cannot be read. Measured 2026-11-06: `codex exec` runs and
     /// sub-agent threads are in the threads table but not in the catalogue, and the app does not
-    /// list them, so neither does this view.
+    /// list them, so neither does this view. Without the catalogue they are told apart by their
+    /// `source` (`CodexThread::headless`) and `catalogue_note` says so.
     listed: Option<HashSet<String>>,
+    /// Why the catalogue could not be read, when it could not.
+    catalogue_note: Option<String>,
     /// Thread rows the database holds that did not read (a column of an unexpected type).
     unreadable: usize,
 }
 
 impl CodexData {
-    /// Whether the app lists this thread.
-    fn lists(&self, id: &str) -> bool {
-        self.listed
-            .as_ref()
-            .is_none_or(|listed| listed.contains(id))
+    /// Whether the app lists this thread: its catalogue says so, or without one, it is not a
+    /// `codex exec` run or a sub-agent.
+    fn lists(&self, t: &CodexThread) -> bool {
+        match &self.listed {
+            Some(listed) => listed.contains(&t.id),
+            None => !t.headless,
+        }
     }
 
-    /// A note for a layout drawn from this data, when some threads could not be read.
-    fn unreadable_note(&self) -> Option<String> {
-        (self.unreadable > 0).then(|| {
+    /// The note for a layout drawn from this data: a catalogue that could not be read, and threads
+    /// that could not be.
+    fn note(&self) -> Option<String> {
+        let unreadable = (self.unreadable > 0).then(|| {
             format!(
                 "{} thread{} in the Codex app's database could not be read and {} not shown",
                 self.unreadable,
                 if self.unreadable == 1 { "" } else { "s" },
                 if self.unreadable == 1 { "is" } else { "are" },
             )
-        })
+        });
+        join_notes(self.catalogue_note.clone(), unreadable)
     }
 }
 
@@ -1105,13 +1136,25 @@ fn codex_catalog_path(db: &Path) -> PathBuf {
 #[cfg(target_os = "macos")]
 fn read_codex(db: &Path) -> Result<CodexData, String> {
     use rusqlite::{Connection, OpenFlags};
-    // A database the app holds open answers busy at once rather than after SQLite's default five
-    // seconds: the reader thread then keeps its last read (`CODEX_BUSY`).
+    // Read-only, and no file of the app's is made. A reader of a WAL database makes `-shm` and
+    // `-wal` beside it when they are not there, and they stay after it closes (measured with
+    // SQLite 3.54, the second review of #s387). With no `-wal`, every committed page of a WAL
+    // database is in the main file, which a writer changes only at a checkpoint, so that file is
+    // read as immutable, which makes nothing; while the app or the Codex CLI has the database open,
+    // its own `-wal` and `-shm` are there and are shared as any reader shares them. A database in
+    // the rollback-journal mode is opened as usual: its readers make no file, and immutable would
+    // ignore a writer's lock. A database the app holds busy answers at once rather than after
+    // SQLite's default five seconds: the reader thread then keeps its last read (`CODEX_BUSY`).
     let open = |path: &Path| {
-        let conn = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_URI;
+        let wal_absent = !PathBuf::from(format!("{}-wal", path.display())).exists();
+        let conn = if wal_absent && sqlite_wal_mode(path) {
+            Connection::open_with_flags(immutable_uri(path), flags)?
+        } else {
+            Connection::open_with_flags(path, flags)?
+        };
         conn.busy_timeout(Duration::from_millis(250))?;
         Ok::<_, rusqlite::Error>(conn)
     };
@@ -1156,14 +1199,15 @@ fn read_codex(db: &Path) -> Result<CodexData, String> {
              NULLIF(project_id, ''), NULLIF(thread_section_id, ''), section_position, \
              is_pinned, archived, \
              COALESCE(NULLIF(recency_at_ms, 0), updated_at_ms, updated_at * 1000, 0), \
-             COALESCE(created_at_ms, created_at * 1000, 0) \
+             COALESCE(created_at_ms, created_at * 1000, 0), source \
              FROM threads",
         )
         .map_err(unknown)?;
-    let threads = stmt
+    let rows = stmt
         .query_map([], |row| {
             let id: String = row.get(0)?;
             let rollout: Option<String> = row.get(1)?;
+            let source: Option<String> = row.get(10)?;
             Ok(CodexThread {
                 row: rollout
                     .as_deref()
@@ -1179,39 +1223,103 @@ fn read_codex(db: &Path) -> Result<CodexData, String> {
                 recency: row.get(8)?,
                 created: row.get(9)?,
                 parent: None,
+                headless: source.as_deref().is_some_and(codex_headless),
             })
         })
         .map_err(unknown)?;
-    // A row of an unexpected type is counted and said, never dropped in silence.
+    // A row of an unexpected type is counted and said, never dropped in silence; a database that
+    // turns busy part-way gives no read at all, since a part of one would be kept as the whole.
+    let mut threads = Vec::new();
     let mut unreadable = 0;
-    let threads = threads
-        .filter_map(|row| match row {
+    for row in rows {
+        match row {
             Ok(mut t) => {
                 t.parent = parents.get(&t.id).cloned();
-                Some(t)
+                threads.push(t);
             }
-            Err(e) if busy(&e) => None,
-            Err(_) => {
-                unreadable += 1;
-                None
-            }
-        })
-        .collect();
-    // The app's own catalogue says which threads it lists; without it, every thread counts.
-    let listed = open(&codex_catalog_path(db)).ok().and_then(|catalog| {
-        let mut stmt = catalog
-            .prepare("SELECT thread_id FROM local_thread_catalog")
-            .ok()?;
-        let ids = stmt.query_map([], |row| row.get::<_, String>(0)).ok()?;
-        ids.collect::<Result<HashSet<_>, _>>().ok()
-    });
+            Err(e) if busy(&e) => return Err(CODEX_BUSY.into()),
+            Err(_) => unreadable += 1,
+        }
+    }
+    // The app's own catalogue says which threads it lists. Without one (an app that keeps none,
+    // or a file that does not read) the headless threads are told apart by their `source`, and
+    // the note says the list is the monitor's guess.
+    let catalogue = codex_catalog_path(db);
+    let read_catalogue = || -> Result<HashSet<String>, rusqlite::Error> {
+        let conn = open(&catalogue)?;
+        let mut stmt = conn.prepare("SELECT thread_id FROM local_thread_catalog")?;
+        let ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<_, _>>();
+        ids
+    };
+    let (listed, catalogue_note) = match read_catalogue() {
+        Ok(ids) => (Some(ids), None),
+        Err(e) if busy(&e) => return Err(CODEX_BUSY.into()),
+        Err(e) => {
+            let why = if catalogue.is_file() {
+                format!("could not be read ({e})")
+            } else {
+                "was not found".to_string()
+            };
+            (
+                None,
+                Some(format!(
+                    "The Codex app's own list of threads (sqlite/codex.db) {why}, so every thread \
+                     but codex exec runs and sub-agents is shown"
+                )),
+            )
+        }
+    };
     Ok(CodexData {
         projects,
         sections,
         threads,
         listed,
+        catalogue_note,
         unreadable,
     })
+}
+
+/// Whether an SQLite file is in the WAL mode, by its header: the file format's write and read
+/// versions (bytes 18 and 19) are 2 in WAL mode and 1 in the rollback-journal mode.
+#[cfg(target_os = "macos")]
+fn sqlite_wal_mode(path: &Path) -> bool {
+    use std::io::Read;
+    let mut header = [0u8; 20];
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut header))
+        .is_ok_and(|()| {
+            header.starts_with(b"SQLite format 3\0") && header[18] == 2 && header[19] == 2
+        })
+}
+
+/// A database path as an SQLite URI that opens it immutable: `%`, `?` and `#` are escaped, since
+/// the URI gives them meaning.
+#[cfg(target_os = "macos")]
+fn immutable_uri(path: &Path) -> String {
+    let mut uri = String::from("file:");
+    for c in path.to_string_lossy().chars() {
+        match c {
+            '%' => uri.push_str("%25"),
+            '?' => uri.push_str("%3f"),
+            '#' => uri.push_str("%23"),
+            c => uri.push(c),
+        }
+    }
+    uri.push_str("?immutable=1");
+    uri
+}
+
+/// Whether a thread's `source` is one the Codex app does not list: `exec` (a `codex exec` run) or
+/// a `subagent` object (measured 2026-11-07: `{"subagent":{"thread_spawn":…}}` and
+/// `{"subagent":{"other":"guardian"}}`; the app's own threads say `vscode`, the CLI's `cli`).
+#[cfg(target_os = "macos")]
+fn codex_headless(source: &str) -> bool {
+    source == "exec"
+        || serde_json::from_str::<Value>(source)
+            .ok()
+            .is_some_and(|v| v.get("subagent").is_some())
 }
 
 /// Where the Codex app keeps its window state, the sidebar among it:
@@ -1463,7 +1571,7 @@ fn parse_codex_sidebar(state: &Value) -> Result<CodexSidebar, String> {
 /// recency, archive, sub-agents); an archived thread is not drawn, as the app does not draw it.
 fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
     // Only the threads the app lists (its catalogue): not `codex exec` runs, not sub-agents.
-    let threads: Vec<&CodexThread> = data.threads.iter().filter(|t| data.lists(&t.id)).collect();
+    let threads: Vec<&CodexThread> = data.threads.iter().filter(|t| data.lists(t)).collect();
     let by_id: HashMap<&str, &CodexThread> = threads.iter().map(|t| (t.id.as_str(), *t)).collect();
     let mut kids: HashMap<&str, Vec<&CodexThread>> = HashMap::new();
     for &t in &threads {
@@ -1509,8 +1617,8 @@ fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
         match by_id.get(id) {
             Some(t) if t.archived => None,
             Some(t) => Some(codex_entry(t, &kids, &mut HashSet::new())),
-            // Not in the database: kept by its id, unless the app's catalogue says it is not listed.
-            None if data.listed.is_some() => None,
+            // Not in the database: kept by its id, unless the app's catalogue does not list it.
+            None if data.listed.as_ref().is_some_and(|l| !l.contains(id)) => None,
             None => Some(Entry {
                 id: id.to_string(),
                 ..Default::default()
@@ -1657,7 +1765,7 @@ fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
     });
     Layout {
         sections: out,
-        note: join_notes(note, data.unreadable_note()),
+        note: join_notes(note, data.note()),
     }
 }
 
@@ -1685,7 +1793,7 @@ fn read_codex(_db: &Path) -> Result<CodexData, String> {
 
 fn codex_layout(data: &CodexData) -> Layout {
     // Only the threads the app lists (its catalogue): not `codex exec` runs, not sub-agents.
-    let threads: Vec<&CodexThread> = data.threads.iter().filter(|t| data.lists(&t.id)).collect();
+    let threads: Vec<&CodexThread> = data.threads.iter().filter(|t| data.lists(t)).collect();
     let by_id: HashMap<&str, &CodexThread> = threads.iter().map(|t| (t.id.as_str(), *t)).collect();
     let mut kids: HashMap<&str, Vec<&CodexThread>> = HashMap::new();
     let mut tops: Vec<&CodexThread> = Vec::new();
@@ -1802,7 +1910,7 @@ fn codex_layout(data: &CodexData) -> Layout {
     });
     Layout {
         sections: out,
-        note: join_notes(note, data.unreadable_note()),
+        note: join_notes(note, data.note()),
     }
 }
 
@@ -2356,20 +2464,59 @@ mod tests {
         let db = root.join("state_5.sqlite");
         let conn = rusqlite::Connection::open(&db).unwrap();
         conn.execute_batch(
-            "CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, metadata TEXT NOT NULL DEFAULT '{}', position INTEGER NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+            "PRAGMA journal_mode=WAL;
+             CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, metadata TEXT NOT NULL DEFAULT '{}', position INTEGER NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
              CREATE TABLE thread_sections (id TEXT PRIMARY KEY, name TEXT NOT NULL, appearance TEXT);
              CREATE TABLE thread_spawn_edges (parent_thread_id TEXT NOT NULL, child_thread_id TEXT NOT NULL PRIMARY KEY, status TEXT NOT NULL);
-             CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, title TEXT NOT NULL, updated_at INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0, updated_at_ms INTEGER, recency_at_ms INTEGER NOT NULL DEFAULT 0, name TEXT, is_pinned INTEGER NOT NULL DEFAULT 0, thread_section_id TEXT, section_position INTEGER, project_id TEXT, created_at INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER);
+             CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, title TEXT NOT NULL, updated_at INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0, updated_at_ms INTEGER, recency_at_ms INTEGER NOT NULL DEFAULT 0, name TEXT, is_pinned INTEGER NOT NULL DEFAULT 0, thread_section_id TEXT, section_position INTEGER, project_id TEXT, created_at INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER, source TEXT NOT NULL);
              INSERT INTO projects VALUES ('p1', 'atlas', '{}', 0, 0, 0);
              INSERT INTO thread_sections VALUES ('s1', 'Release', NULL);
-             INSERT INTO threads VALUES ('t1', '/h/.codex/sessions/2026/11/06/rollout-2026-11-06T01-02-03-t1.jsonl.zst', 'first prompt', 1, 0, NULL, 5000, 'Renamed', 0, NULL, NULL, 'p1', 1, NULL);
-             INSERT INTO threads VALUES ('t2', '', 'child', 1, 0, NULL, 4000, NULL, 0, NULL, NULL, NULL, 1, NULL);
-             INSERT INTO threads VALUES ('t3', '/h/rollout-x-t3.jsonl', 'release', 1, 0, NULL, 0, '', 0, 's1', 1, NULL, 1, NULL);
+             INSERT INTO threads VALUES ('t1', '/h/.codex/sessions/2026/11/06/rollout-2026-11-06T01-02-03-t1.jsonl.zst', 'first prompt', 1, 0, NULL, 5000, 'Renamed', 0, NULL, NULL, 'p1', 1, NULL, 'vscode');
+             INSERT INTO threads VALUES ('t2', '', 'child', 1, 0, NULL, 4000, NULL, 0, NULL, NULL, NULL, 1, NULL, '{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"t1\",\"depth\":1}}}');
+             INSERT INTO threads VALUES ('t3', '/h/rollout-x-t3.jsonl', 'release', 1, 0, NULL, 0, '', 0, 's1', 1, NULL, 1, NULL, 'cli');
+             INSERT INTO threads VALUES ('t4', '/h/rollout-y-t4.jsonl', 'a codex exec run', 1, 0, NULL, 3000, NULL, 0, NULL, NULL, 'p1', 1, NULL, 'exec');
              INSERT INTO thread_spawn_edges VALUES ('t1', 't2', 'open');",
         )
         .unwrap();
         drop(conn);
+        let made = |root: &Path| -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(root)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|n| n.ends_with("-shm") || n.ends_with("-wal"))
+                .collect();
+            names.sort();
+            names
+        };
+        assert!(made(&root).is_empty(), "the fixture left {:?}", made(&root));
+        // No catalogue beside it (an app that keeps none): a `codex exec` run and a sub-agent are
+        // told apart by their source, and the note says the list is a guess.
         let data = read_codex(&db).unwrap();
+        // The second review of #s387: a WAL database is read without making its `-shm` or `-wal`.
+        assert!(made(&root).is_empty(), "the read made {:?}", made(&root));
+        let layout = codex_layout(&data);
+        assert_eq!(
+            ids(&layout.sections[2].groups[0].entries),
+            vec!["rollout-2026-11-06T01-02-03-t1"]
+        );
+        assert!(
+            layout.note.as_deref().unwrap().contains("was not found"),
+            "{:?}",
+            layout.note
+        );
+        // With the app's catalogue, it decides: here it lists the sub-agent too.
+        std::fs::create_dir_all(root.join("sqlite")).unwrap();
+        let catalogue = rusqlite::Connection::open(root.join("sqlite/codex.db")).unwrap();
+        catalogue
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE local_thread_catalog (host_id TEXT NOT NULL, thread_id TEXT NOT NULL);
+                 INSERT INTO local_thread_catalog VALUES ('local', 't1'), ('local', 't2'), ('local', 't3');",
+            )
+            .unwrap();
+        drop(catalogue);
+        let data = read_codex(&db).unwrap();
+        assert!(made(&root.join("sqlite")).is_empty());
         let layout = codex_layout(&data);
         // A row is named by its rollout, as the monitor names it; a thread with none, by its id.
         assert_eq!(ids(&layout.sections[1].entries), vec!["rollout-x-t3"]);
@@ -2693,64 +2840,115 @@ mod tests {
 
     /// The review of #s387: a request never reads an app. The first ask answers "pending" and
     /// starts the source's reader; the next answers with its read; asking which sources can be
-    /// followed reads nothing; the reader ends once nobody asks, and a later ask starts it again.
+    /// followed reads nothing; the reader ends once nobody asks, and a later ask starts it again,
+    /// answering with the old read marked stale until the new reader's first read lands.
     #[test]
     fn a_layout_request_never_waits_on_a_read() {
-        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counted = reads.clone();
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+        let reads = Arc::new(AtomicUsize::new(0));
+        // Each read waits until the case lets it go, so "the request did not wait" is a fact of
+        // the order of events, not of a clock (#s300: a timing bound flakes on a loaded machine).
+        let open = Arc::new(AtomicBool::new(false));
+        let (counted, gate) = (reads.clone(), open.clone());
         let layouts = Layouts::with(
             Arc::new(move |_: &mut Readers, _| {
-                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                std::thread::sleep(Duration::from_millis(150));
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !gate.load(SeqCst) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                let n = counted.fetch_add(1, SeqCst) + 1;
                 Ok(Layout {
-                    note: Some("read".into()),
+                    note: Some(format!("read {n}")),
                     ..Default::default()
                 })
             }),
+            Arc::new(|_| Ok(())),
             Duration::from_millis(20),
             Duration::from_millis(200),
         );
-        let started = Instant::now();
         let first: Value = serde_json::from_str(&layouts.layout_json(Source::Herdr)).unwrap();
-        assert!(
-            started.elapsed() < Duration::from_millis(100),
-            "the request waited"
-        );
-        assert_eq!(first["pending"], true);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let read = loop {
-            let v: Value = serde_json::from_str(&layouts.layout_json(Source::Herdr)).unwrap();
-            if v["note"] == "read" || Instant::now() > deadline {
-                break v;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        assert_eq!(read["available"], true, "{read}");
-        // Asking which sources can be followed reads nothing.
-        let before = reads.load(std::sync::atomic::Ordering::SeqCst);
-        let _ = layouts.sources_json();
-        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), before);
-        // Nobody asks: the reader ends, and its count stops.
-        std::thread::sleep(Duration::from_millis(600));
-        let settled = reads.load(std::sync::atomic::Ordering::SeqCst);
-        std::thread::sleep(Duration::from_millis(300));
         assert_eq!(
-            reads.load(std::sync::atomic::Ordering::SeqCst),
-            settled,
-            "the reader kept reading"
+            first["pending"], true,
+            "the request waited on a read: {first}"
         );
-        assert!(!lock(&layouts.slots[Layouts::index(Source::Herdr)]).reading);
-        // A failed read is the source's reason in the list of sources.
+        open.store(true, SeqCst);
+        let until = |what: &str, done: &dyn Fn(&Value) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let v: Value = serde_json::from_str(&layouts.layout_json(Source::Herdr)).unwrap();
+                if done(&v) {
+                    return v;
+                }
+                assert!(Instant::now() < deadline, "{what}: {v}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let read = until("no read landed", &|v| v["note"].as_str().is_some());
+        assert_eq!(read["available"], true, "{read}");
+        assert!(read.get("stale").is_none(), "{read}");
+        // Asking which sources can be followed reads nothing.
+        let before = reads.load(SeqCst);
+        let _ = layouts.sources_json();
+        assert_eq!(reads.load(SeqCst), before);
+        // Nobody asks: the reader ends, and its count stops.
+        let slot = &layouts.slots[Layouts::index(Source::Herdr)];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while lock(slot).reading {
+            assert!(Instant::now() < deadline, "the reader kept reading");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let settled = reads.load(SeqCst);
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(reads.load(SeqCst), settled, "the reader kept reading");
+        // The second review of #s387: an ask after that answers with the last read, marked stale
+        // (it may be an hour old), until the new reader's first read lands.
+        open.store(false, SeqCst);
+        let back: Value = serde_json::from_str(&layouts.layout_json(Source::Herdr)).unwrap();
+        assert_eq!(back["stale"], true, "{back}");
+        assert_eq!(back["note"], format!("read {settled}"));
+        open.store(true, SeqCst);
+        until("the new reader's read did not land", &|v| {
+            v.get("stale").is_none()
+        });
+    }
+
+    /// The second review of #s387: only the file check decides whether a source can be chosen. A
+    /// read that failed is said, and the source stays choosable — choosing it is what reads it
+    /// again — so a source that failed once is not disabled until the monitor restarts.
+    #[test]
+    fn a_failed_read_is_said_and_never_disables_a_source() {
         let failing = Layouts::with(
             Arc::new(|_: &mut Readers, _| Err("No Herdr server is running".into())),
+            Arc::new(|source| match source {
+                Source::CodexApp => Err("The Codex app is not installed on this machine".into()),
+                _ => Ok(()),
+            }),
             Duration::from_millis(20),
             Duration::from_millis(100),
         );
         let _ = failing.layout_json(Source::Herdr);
-        std::thread::sleep(Duration::from_millis(100));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while lock(&failing.slots[Layouts::index(Source::Herdr)])
+            .last
+            .is_none()
+        {
+            assert!(Instant::now() < deadline, "no read landed");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let sources: Value = serde_json::from_str(&failing.sources_json()).unwrap();
-        assert_eq!(sources["sources"][2]["source"], "herdr");
-        assert_eq!(sources["sources"][2]["available"], false);
+        let herdr = &sources["sources"][2];
+        assert_eq!(herdr["source"], "herdr");
+        assert_eq!(herdr["available"], true, "{herdr}");
+        assert_eq!(herdr["reason"], Value::Null);
+        assert_eq!(herdr["lastError"], "No Herdr server is running");
+        // A source whose files are not there cannot be chosen, and says why.
+        let codex = &sources["sources"][1];
+        assert_eq!(codex["available"], false, "{codex}");
+        assert_eq!(
+            codex["reason"],
+            "The Codex app is not installed on this machine"
+        );
+        assert_eq!(codex["lastError"], Value::Null);
     }
 
     /// The review of #s387: the Codex app lists only the threads in its own catalogue, so a
@@ -2768,13 +2966,19 @@ mod tests {
         let mut data = CodexData {
             threads: vec![
                 t("shown", 3),
-                t("exec-run", 2),
+                CodexThread {
+                    headless: true,
+                    ..t("exec-run", 2)
+                },
                 CodexThread {
                     parent: Some("shown".into()),
+                    headless: true,
                     ..t("sub", 1)
                 },
+                t("cli-run", 0),
             ],
             listed: Some(["shown", "t-pin"].map(String::from).into_iter().collect()),
+            catalogue_note: None,
             unreadable: 2,
             ..Default::default()
         };
@@ -2795,11 +2999,32 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("2 threads in the Codex app's database could not be read"));
-        // Without a catalogue every thread counts, as before.
+        // The second review of #s387: without a catalogue, every thread but the headless ones
+        // (`codex exec` runs and sub-agents, by their source) counts, and the note says why.
         data.listed = None;
+        data.catalogue_note = Some("The Codex app's own list of threads was not found".into());
         let layout = codex_sidebar_layout(&data, &sidebar);
         let work = layout.sections.iter().find(|s| s.label == "Work").unwrap();
-        assert_eq!(ids(&work.groups[0].entries), vec!["shown[sub]", "exec-run"]);
+        assert_eq!(ids(&work.groups[0].entries), vec!["shown", "cli-run"]);
+        let note = layout.note.unwrap();
+        assert!(
+            note.contains("The Codex app's own list of threads was not found. 2 threads"),
+            "{note}"
+        );
+    }
+
+    /// The second review of #s387: the Codex app's `source` names the threads it does not list.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_codex_exec_run_and_a_sub_agent_are_headless() {
+        assert!(codex_headless("exec"));
+        assert!(codex_headless(r#"{"subagent":{"other":"guardian"}}"#));
+        assert!(codex_headless(
+            r#"{"subagent":{"thread_spawn":{"parent_thread_id":"t","depth":1}}}"#
+        ));
+        assert!(!codex_headless("vscode"));
+        assert!(!codex_headless("cli"));
+        assert!(!codex_headless("{}"));
     }
 
     /// The review of #s387: a database another process holds says it is busy, at once, rather than

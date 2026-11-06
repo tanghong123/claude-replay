@@ -1318,7 +1318,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .arranged-view{width:44px;height:44px;margin-top:-10px;margin-bottom:-10px}
   #app .arranged-view .icon{width:18px;height:18px}
   #app .arrange-strip-close{width:44px;height:44px;margin:-10px -6px -10px 0}
-  #app .section-view-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:59;background:rgba(14,19,31,.32)}
+  #app .section-view-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:59;background:transparent}
+  #app .section-view-scrim.dim:not([hidden]){background:rgba(14,19,31,.32)}
   #app .section-view-menu.sheet{left:calc(8px + env(safe-area-inset-left,0px))!important;right:calc(8px + env(safe-area-inset-right,0px));top:auto!important;bottom:calc(8px + env(safe-area-inset-bottom,0px));width:auto;max-height:calc(100dvh - 72px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));padding:12px 14px;border-radius:16px}
   #app .session-filter-options .scope-option.arrange-app{height:auto;min-height:44px;padding-top:6px;padding-bottom:6px}
   #app .section-view-menu .section-menu-name{max-width:60%;font-size:12px}

@@ -74,7 +74,9 @@ decides which sessions a section holds and under which sub-heads; how they are s
 there is a menu on each section's head with the Claude app's section menu's choices. The menu is
 the ≡ control at the head's right end, beside its chevron, as the Claude app places its own; a
 section head carries no count. On a phone the menu opens as a sheet at the foot of the screen over
-a dim, with 44px rows; a tap on the dim closes it and reaches nothing beneath.
+a dim, with 44px rows; a tap on the dim closes it and reaches nothing beneath. Held sideways it is
+a popover at its control's side, as on a desktop, over a clear scrim that still takes the closing
+tap.
 
 | Choice | Options |
 |---|---|
@@ -166,7 +168,8 @@ OpenAI's Codex desktop app; on the machine read it is `/Applications/ChatGPT.app
 Threads, each assigned to a project by the person: membership is not derived from the folder (15
 threads sat outside their project's folders, and 81 inside a project's folder had no project). Custom
 sidebar sections holding threads, in an order, some collapsed. Pinned threads, in an order. Archived
-threads. Renamed titles. Sub-agent threads under the thread that spawned them.
+threads. Renamed titles. (Sub-agent threads and `codex exec` runs are in its database but not in
+its sidebar: see "What the app lists" below.)
 
 **Where it lives.** In three stores, with a migration between them half done:
 
@@ -203,7 +206,12 @@ dimmed, as sessions the app lists that the monitor has no row for.
 in `~/.codex/sqlite/codex.db`). Measured on that machine: the 81 `codex exec` runs and the sub-agent
 threads (971 reviewer sub-agents, and every spawned child) are in the threads table but not in the
 catalogue, and none of them is filed into a section or a project. The prototype therefore draws only
-catalogued threads; where the catalogue cannot be read, every thread counts, as before.
+catalogued threads. Where the catalogue is missing or does not read (a machine read during review
+had no `codex.db`), it leaves out the same threads by the `source` the threads table gives each one
+— `exec`, or a `subagent` object; the app's own threads say `vscode`, the CLI's `cli` — and the line
+over the list says the list is the monitor's guess. Measured 2026-11-07 on the first machine, the
+guess holds 2,791 live threads where the catalogue lists 2,772: the 19 more are `vscode` threads the
+catalogue does not hold. A busy catalogue, like a busy database, keeps the last read.
 
 **The sidebar itself** is only in the state file, under `electron-persisted-atom-state`, checked
 against the app's own sidebar on 2026-11-06:
@@ -229,8 +237,8 @@ projects, and the Projects list held the other nine, in the app's order. The dat
 
 **Assessment.** The sidebar is readable only from the private state file, which the app rewrites
 every few minutes and which has no schema (its keys carry version suffixes). The prototype reads it
-read-only, re-reading only when it changes, and takes titles, recency, archive and sub-agents from
-the database; with no state file it falls back to the database's sections and says so. Read through
+read-only, re-reading only when it changes, and takes titles, recency and archive from the
+database; with no state file it falls back to the database's sections and says so. Read through
 the app-server instead once it offers the sidebar's sections, pins and folders.
 
 ### 3.3 Herdr
@@ -286,7 +294,7 @@ live pane-to-row mapping was observed; the Claude hook (v11) and the Codex hook 
 | Codex app: a project | A folder sub-head, in its custom section or under Projects in the app's project order, closed unless opened in the app, drawn even when empty |
 | Codex app: a thread with no project | Chats |
 | Codex app: an archived thread | Not drawn, as the app does not draw it |
-| Codex app: a sub-agent thread | Nested under its parent |
+| Codex app: a sub-agent thread, or a `codex exec` run | Not drawn, as the app does not list it |
 | Herdr: a workspace | A section with the workspace's label, in Herdr's order |
 | Herdr: a tab | A sub-head inside it |
 | Herdr: an agent pane | The session's row |
@@ -305,7 +313,11 @@ A **layout** is what the server hands the page for one source:
   sub-head with its own `label` and `entries`: a project, a Herdr tab). An entry names a monitor row
   id, carries the `title` the app shows when it keeps one, and may hold child entries (nesting);
 - `note`: anything the person should know about how faithful the list is (for example how many
-  Codex threads have no project in the app's database yet).
+  Codex threads have no project in the app's database yet);
+- `pending: true`, with no sections, before the source's first read has landed;
+- `stale: true` when the read is from before the source's reader last stopped (it can be an hour
+  old when a phone comes back to the page); the list is drawn under "updating…" until a fresh read
+  lands.
 
 A headless worker (a row the monitor marks `startedBy`, #s53) lives in its starter's Agents pane
 and is never drawn here, even where an app lists it.
@@ -329,20 +341,48 @@ only while an app layout is chosen, at the index's own refresh. `api/sessions` r
 **A request never reads an app.** Each source has a reader thread of its own, started by the first
 ask and kept only while a page follows that source: it reads every 3 seconds and ends 30 seconds
 after the last ask. The route answers with that thread's last read, or with `pending: true` before
-its first read lands, and the page asks again a second later. No lock is held while a source is
+its first read lands; a read kept from before the reader last stopped is answered with
+`stale: true`. In both cases the page asks again a second later, through one timer that every
+answer re-arms, so retries never pile up. No lock is held while a source is
 read, so a slow herdr or a busy database delays nobody's request; herdr is asked at the reader's
 own pace, as the monitor's `HerdrReader` asks it (#s238). The Codex reader gives SQLite 250 ms
 rather than its default five seconds, and a busy database keeps the last read. **`GET api/layout`
 with no `source`**, asked as the filter sheet opens, checks files only — the Claude app's store and
-settings file, the Codex app's database, the herdr program — and the last read's error, if any; it
-reads no app. A person who never chooses an app never has one read.
+settings file, the Codex app's database, the herdr program — and reads no app. Only that check
+decides whether a source can be chosen: a read that failed is reported beside it as `lastError` and
+never disables it, since choosing it is what reads it again. A person who never chooses an app
+never has one read.
+
+The two answers, exactly:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `sources` | array of objects | One per source, in the order `claude-app`, `codex-app`, `herdr` (no `source` asked) |
+| `sources[].source` | `"claude-app"` \| `"codex-app"` \| `"herdr"` | The source |
+| `sources[].label` | string | The option's name |
+| `sources[].available` | boolean | Whether the source's files are where its reader looks |
+| `sources[].reason` | string or null | Why not, when `available` is false |
+| `sources[].lastError` | string or null | What the source's last read met, when it failed and `available` is true |
+| `source`, `label` | as above | The layout's source (`source` asked) |
+| `available` | boolean | Whether the last read succeeded |
+| `reason` | string or null | Why it did not |
+| `note` | string or null | How faithful the list is |
+| `sections` | array | §4's sections; empty when `available` is false or `pending` is set |
+| `pending` | `true`, or absent | No read has landed yet |
+| `stale` | `true`, or absent | The read is from before the reader last stopped |
+
+A source that is not one of the three answers 404.
 
 The server, not the page, reads the stores: the page may be a phone across the tailnet, which cannot
 read the Mac's disk, and the server already keeps a cached reader for one of them (#s340's
 `desktop_sessions.rs`, which re-reads a record only when its modification time or length changes).
 Each reader:
 
-- reads only, and never holds a write lock on the app's files;
+- reads only, never holds a write lock on the app's files, and makes none. A reader of an SQLite
+  database in WAL mode makes its `-shm` and `-wal` beside it when they are absent, and they stay
+  after it closes (measured with SQLite 3.54); so a WAL database with no `-wal` (no writer has it
+  open, and every committed page is in the main file) is opened immutable, which makes nothing,
+  and one a writer has open is read through that writer's own `-wal`;
 - skips a record it cannot parse and ignores keys it does not know, as #s340's reader does;
 - has an environment override for its location, so the browser cases run on a hermetic store, as
   every other store here has;
@@ -358,6 +398,8 @@ Each reader:
 | The app is not installed, or its store is absent | The option is shown disabled, with the reason as its tooltip and second line. |
 | The store is present but unreadable, or its format is not recognised | The same, with the app version read when one is known. |
 | The chosen source fails at a later refresh | The list falls back to the arrangement the app replaced ("By agent and project", or "One list by activity") and its head says, in amber, "Showing by agent and project: the Claude app's list could not be read", with the reason. The choice is kept; the next refresh that reads the source draws it again. |
+| A source whose last read failed, with its files still there | Still offered; its second line says "Last read: …" with what the read met. Choosing it reads it again. |
+| The Codex app keeps no catalogue of its threads, or it does not read | The list is drawn, leaving out `codex exec` runs and sub-agents by their source (§3.2), and the line over it says the list is the monitor's guess. |
 | A record half-written by the app | Skipped for that refresh; read again at the next. |
 | A reader on a phone or another desktop | Sees the arrangement on the monitor's own machine, which is the machine the sessions run on. |
 
@@ -466,13 +508,31 @@ stand-in the harness gives every monitor, so no case reads this machine's apps o
   dim closes it and chooses nothing, the line's ✕ is 44 px, and Arrange's two-line rows hold their
   reason; at 844 × 390 the menu is a popover at its glyph's side.
 
+**Added after the second review:**
+
+- Unit cases: a read that failed is the source's `lastError` and the source stays available; only
+  missing files make it unavailable. A read from before the reader stopped is answered `stale`
+  until the new reader's first read lands. The reader case holds each read on a gate rather than
+  timing the request, so a loaded machine cannot flake it (#s300). The Codex reader makes no `-shm`
+  or `-wal` beside a WAL database (with the immutable open turned off, the case fails naming both
+  files); without a catalogue it leaves out `exec` and sub-agent threads by their source and says
+  so.
+- The Claude app browser case goes on: its settings hold no sidebar layout, the list falls back; left
+  with the line's ✕, the option is still offered with "Last read: …"; chosen again, it reads again.
+  With the old rule (a failed read disables the source) the case fails at that step.
+- A Codex app browser case (macOS only, its databases built with the system's own `sqlite3`): the
+  app's folder and Chats under the app's titles; a `codex exec` run the database holds waits under
+  "Not in the Codex app", left out by its source while there is no catalogue (the line says so) and
+  by the catalogue once one appears, which then decides alone; no `-shm` or `-wal` is made beside
+  either database. With the source rule turned off the case fails.
+- At 844 × 390 the section menu's scrim no longer dims the screen; it still takes the closing tap.
+
 Not run: the iOS Simulator walk (upright, sideways, light, dark): this machine has no simulator
-tools. A Codex app browser case (its stores are SQLite databases the browser-test crate cannot
-write). Linux.
+tools. Linux. The Herdr browser case has no row the monitor links to a pane, so the pane-first
+matching is held by the node contract only.
 
 **Proposed checks for a release:**
 
-- A Codex app browser case on a hermetic database, state file and catalogue.
 - The iOS Simulator walk, upright and sideways, light and dark.
 - A coordinator with side sessions in other projects nests them under "Like the Claude app" and
   leaves the tree as it is.
