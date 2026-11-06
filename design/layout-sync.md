@@ -71,7 +71,10 @@ arrange differently.
 
 **Order and grouping inside a section are the monitor's own** (revised 2026-11-06). The app
 decides which sessions a section holds and under which sub-heads; how they are sorted and grouped
-there is a menu on each section's head with the Claude app's section menu's choices:
+there is a menu on each section's head with the Claude app's section menu's choices. The menu is
+the ≡ control at the head's right end, beside its chevron, as the Claude app places its own; a
+section head carries no count. On a phone the menu opens as a sheet at the foot of the screen over
+a dim, with 44px rows; a tap on the dim closes it and reaches nothing beneath.
 
 | Choice | Options |
 |---|---|
@@ -82,11 +85,11 @@ there is a menu on each section's head with the Claude app's section menu's choi
 
 Each section's choice is remembered per browser and is never written to the app; the default is
 "As in the app" for both, so out of the box the list matches the app. The reason for the split: a
-sort or group change is not in any transcript, and the apps save it to the files the monitor reads
-late or not at all (§3.1, §3.2), so following it would be unreliable; which sessions sit where is
-what the person spent effort arranging, and is readable. A sort changed in the app is therefore
-seen by the monitor's "As in the app" only once the app saves it, and the person can set the same
-sort in the monitor's menu at once.
+sort or group change is in no transcript; the monitor sees it only in the app's own files, once
+the app has saved it there (§3.1, §3.2), and it covers only the sessions that app holds. Which
+sessions sit where is what the person spent effort arranging, and is readable; the order inside a
+section is a click away, and the monitor's own menu applies at once, on a phone too, and to any
+section. "As in the app" follows the app's sort as soon as the app has saved it.
 
 ## 3. What each app holds, and how the monitor would read it
 
@@ -128,9 +131,13 @@ group colour is stored. The split-view panes are in the same `epitaxyPrefs` and 
 
 **Sort and group settings.** A section's `sortBy` is `recency`, `alpha` or `created` (the app's
 own sidebar tool names them so), with `ascending`. Its grouping (`date`, `project`, `state`,
-`custom` or `none`) is not in the file: the Sessions section's `group_by: project` reported by the
-app had no key there, so it is kept only in the app's internal storage. How soon a sort change
-reaches the file is not measured.
+`custom` or `none`) is the section's `groupBy`; a section whose grouping was never changed has no
+such key, which means the app's default (by project for Sessions, none for a custom section). A
+change made in the app reached the file within a minute when observed on 2026-11-06 (a custom
+section's sort set to date created: the file held `sortBy: created` and `groupBy: none`, written 40
+seconds before it was read). The prototype follows `sortBy` and `ascending`; it does not yet read
+`groupBy`, so a grouping chosen in the app is not followed by "As in the app" and is set with the
+monitor's own menu instead.
 
 **Mapping.** A record's `cliSessionId` is the monitor's row id; all 78 records mapped to a
 transcript. Group assignments name the desktop id (`local_<uuid>`), which the record maps to the row.
@@ -409,7 +416,12 @@ in the app.
   Chats). All 1,276 threads it placed at the top level were monitor rows once #s383's reader for
   compressed rollouts was merged in (85 before it).
 - In the same monitor, the section menu: sorting long-running by name, grouping it by date and by
-  state, and Reset back to the app's order; the choice survives a reload and Reset clears it.
+  state, and Reset back to the app's order; the choice survives a reload and Reset clears it; the
+  chosen options are marked. With long-running set to date created in the Claude app, "As in the
+  Claude app" listed it in the records' date-created order.
+- At 375 × 812 (a phone upright): the menu opens as a sheet at the foot, 8 px from each side, with
+  44 px rows and a 40 px control in the 44 px head; a tap on the dim closes it and leaves the drawer
+  and the open session as they were.
 - In the same monitor: each option draws its
   app's list; the Claude app's matched its own sidebar listing (§3.1); an unreadable source is
   offered disabled with its reason; a failing read falls back with the amber line and recovers; the

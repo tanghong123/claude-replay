@@ -67,7 +67,9 @@ worker 放在各自的仓库下，分散在四个地方，看不出它们是一�
 
 **section 内的排序和分组由 monitor 自己决定**（2026-11-06 修订）。app 决定一个 section 包含哪些
 session、放在哪些小标题下；它们在那里怎么排序、怎么分组，由每个 section 头上的一个菜单决定，选项与
-Claude app 的 section 菜单一致：
+Claude app 的 section 菜单一致。菜单是 section 头右端、折叠箭头旁的 ≡ 控件，与 Claude app 放置它自己菜单
+的位置相同；section 头不显示数量。在手机上，菜单以 sheet 的形式从屏幕底部弹出，背后有一层变暗的遮罩，每行
+高 44px；点击遮罩会关闭菜单，这次点击不会落到下面的任何东西上。
 
 | 选择 | 选项 |
 |---|---|
@@ -77,10 +79,10 @@ Claude app 的 section 菜单一致：
 | Reset | 回到 app 的顺序 |
 
 每个 section 的选择按浏览器记住，从不写回 app；两项的默认值都是 "As in the app"，所以开箱即与 app 一致。
-这样划分的原因：排序或分组的改动不在任何 transcript 里，而 app 把它保存到 monitor 读取的文件里要么很晚、
-要么根本不保存（§3.1、§3.2），所以跟随它不可靠；哪些 session 放在哪里，是这个人花力气整理出来的，而且
-能读到。因此，在 app 里改的排序，只有等 app 保存之后，monitor 的 "As in the app" 才能看到；这个人也可以
-立刻在 monitor 的菜单里设成同样的排序。
+这样划分的原因：排序或分组的改动不在任何 transcript 里；monitor 只能在 app 自己的文件里看到它，而且要等
+app 把它保存进去之后（§3.1、§3.2），它也只覆盖那个 app 自己的 session。哪些 session 放在哪里，是这个人花
+力气整理出来的，而且能读到；section 内的顺序点一下就能改，monitor 自己的菜单立即生效，在手机上也一样，
+对任何 section 都适用。app 一保存它的排序，"As in the app" 就会跟随。
 
 ## 3. 每个 app 存了什么，monitor 怎么读
 
@@ -116,9 +118,11 @@ LevelDB 存储，app 会不断压缩它。为了核对 JSON 文件，从一份�
 分屏 pane 在同一个 `epitaxyPrefs` 里，不在本提案范围内（§7）。
 
 **排序和分组设置。** section 的 `sortBy` 是 `recency`、`alpha` 或 `created`（app 自己的 sidebar 工具这样
-命名），另有 `ascending`。它的分组方式（`date`、`project`、`state`、`custom` 或 `none`）不在这个文件里：app
-报告 Sessions section 的 `group_by: project`，文件里却没有对应的 key，所以它只存在 app 的内部存储里。排序
-改动多快写进文件，没有测量。
+命名），另有 `ascending`。它的分组方式（`date`、`project`、`state`、`custom` 或 `none`）是 section 的 `groupBy`；分组从未改过的
+section 没有这个 key，表示 app 的默认值（Sessions 按 project，自定义 section 为 none）。2026-11-06 观察到，
+在 app 里做的改动一分钟内就写进了文件（把一个自定义 section 的排序设为 date created：文件里是
+`sortBy: created` 和 `groupBy: none`，写入时间比读取早 40 秒）。原型跟随 `sortBy` 和 `ascending`；它还不读
+`groupBy`，所以在 app 里选的分组不会被 "As in the app" 跟随，需要用 monitor 自己的菜单设置。
 
 **映射。** 记录的 `cliSessionId` 就是 monitor 的行 id；全部 78 条记录都对应到一个 transcript。group
 归属用的是桌面 id（`local_<uuid>`），由记录映射到行。
@@ -371,7 +375,10 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
   文件夹，全部关闭，然后是 Chats）。合入 #s383 对压缩 rollout 的读取之后，它在顶层放置的 1,276 个
   thread 全部是 monitor 的行（合入之前是 85 个）。
 - 在同一个 monitor 里试 section 菜单：把 long-running 按名字排序、按日期分组、按状态分组，再 Reset 回 app
-  的顺序；刷新页面后选择仍在，Reset 会清除它。
+  的顺序；刷新页面后选择仍在，Reset 会清除它；选中的选项有勾选标记。在 Claude app 里把 long-running 设为
+  date created 后，"As in the Claude app" 按记录里的创建时间顺序列出它。
+- 在 375 × 812（竖握的手机）下：菜单以 sheet 的形式从底部弹出，距两侧各 8 px，每行 44 px，44 px 高的
+  section 头里是 40 px 的控件；点击遮罩会关闭菜单，抽屉和打开的 session 保持不变。
 - 在同一个 monitor 里：每个选项都画出对应 app 的列表；Claude app 的
   与它自己的 sidebar 列表一致（§3.1）；读不到的来源显示为不可用并给出原因；读取失败时带琥珀色说明行
   退回，之后恢复；说明行的 ✕ 回到 tree；刷新页面后选择仍在；手机抽屉在 375 px 下显示说明行和列表，
