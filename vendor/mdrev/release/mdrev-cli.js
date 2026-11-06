@@ -32602,12 +32602,14 @@ function makeHandlers(opts, policy2, cleaned) {
       const merged = hasBefore && after.trim() ? mergeDiagramLabels(before, after) : null;
       const views = merged ? [["merged", merged.source], ["before", before], ["after", after]] : hasBefore ? [["after", after], ["before", before]] : [["after", after]];
       const changeId = node2.data?.hProperties?.["data-mdv-change"];
+      const span2 = opts.sourceMap ? rangeOf(node2) : null;
       return {
         type: "raw",
         value: toHtml(marked, { allowDangerousHtml: true }) + diagramCanvas(views, {
           changed: merged?.changed ?? 0,
           nodes: merged?.nodes ?? [],
-          ...changeId ? { marks: String(changeId) } : {}
+          ...changeId ? { marks: String(changeId) } : {},
+          ...span2 ? { src: ` data-mdv-src="${span2[0]},${span2[1]}"` } : {}
         })
       };
     },
@@ -32741,7 +32743,9 @@ var rangeOf = (n) => {
 function isDeleted(n) {
   const cls = n.properties?.className;
   const names = Array.isArray(cls) ? cls.map(String) : typeof cls === "string" ? cls.split(/\s+/) : [];
-  return names.includes("mdv-del") || names.includes("mdv-block-del");
+  if (names.includes("mdv-del") || names.includes("mdv-block-del"))
+    return true;
+  return n.tagName === "pre" && (n.children ?? []).some((c) => c.tagName === "code" && isDeleted(c));
 }
 function stampSource(node2, side = "to") {
   const n = node2;

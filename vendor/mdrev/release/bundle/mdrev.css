@@ -76,8 +76,8 @@
 .mdrev-host .doc th, .mdrev-host .doc td {border:1px solid var(--rule-soft);vertical-align:top;overflow-wrap:anywhere;padding:.4em .75em}
 .mdrev-host .doc table {container-type:inline-size}
 .mdrev-host .doc th[class*=mdv-f], .mdrev-host .doc td[class*=mdv-f] {min-width:min(calc(var(--mdv-floor) * 1.15ch + 1.5em + 1px), calc(var(--mdv-share) * 1cqi))}
-.mdrev-host .doc th[class*=mdv-keep], .mdrev-host .doc td[class*=mdv-keep] {--mdv-keep-width:calc(var(--mdv-keep) * 1.15ch + 1.5em + 1px);--mdv-past:calc(((var(--mdv-need-tens,99) * 10 + var(--mdv-need-units,0)) * 1.15ch + var(--mdv-columns,99) * (1.5em + 1px) + 1px - 100cqi) * 1000);min-width:max(min(calc(var(--mdv-floor,0) * 1.15ch + 1.5em + 1px), calc(var(--mdv-share,0) * 1cqi)), min(var(--mdv-keep-width), calc(var(--mdv-keep-width) - var(--mdv-past))))}
-.mdrev-host .is-cuts-folded .doc th[class*=mdv-keep], .mdrev-host .is-cuts-folded .doc td[class*=mdv-keep] {--mdv-keep-width:calc(var(--mdv-fkeep,var(--mdv-keep)) * 1.15ch + var(--mdv-cut,0) * 24px + 1.5em + 1px);--mdv-past:calc(((var(--mdv-fneed-tens,var(--mdv-need-tens,99)) * 10 + var(--mdv-fneed-units,var(--mdv-need-units,0))) * 1.15ch + var(--mdv-cuts,0) * 24px + var(--mdv-columns,99) * (1.5em + 1px) + 1px - 100cqi) * 1000)}
+.mdrev-host .doc th[class*=mdv-keep], .mdrev-host .doc td[class*=mdv-keep] {--mdv-keep-width:calc(var(--mdv-keep) * 1.13ch + 1.5em + 1px);--mdv-past:calc(((var(--mdv-need-tens,99) * 10 + var(--mdv-need-units,0)) * 1.13ch + var(--mdv-columns,99) * (1.5em + 1px) + 1px - 100cqi) * 1000);min-width:max(min(calc(var(--mdv-floor,0) * 1.15ch + 1.5em + 1px), calc(var(--mdv-share,0) * 1cqi)), min(var(--mdv-keep-width), calc(var(--mdv-keep-width) - var(--mdv-past))))}
+.mdrev-host .is-cuts-folded .doc th[class*=mdv-keep], .mdrev-host .is-cuts-folded .doc td[class*=mdv-keep] {--mdv-keep-width:calc(var(--mdv-fkeep,var(--mdv-keep)) * 1.13ch + var(--mdv-cut,0) * 24px + 1.5em + 1px);--mdv-past:calc(((var(--mdv-fneed-tens,var(--mdv-need-tens,99)) * 10 + var(--mdv-fneed-units,var(--mdv-need-units,0))) * 1.13ch + var(--mdv-cuts,0) * 24px + var(--mdv-columns,99) * (1.5em + 1px) + 1px - 100cqi) * 1000)}
 .mdrev-host .mdv-f1 {--mdv-floor:1}
 .mdrev-host .mdv-f2 {--mdv-floor:2}
 .mdrev-host .mdv-f3 {--mdv-floor:3}
@@ -429,9 +429,9 @@
 .mdrev-host .note-hint kbd:after {content:")"}
 .mdrev-host .note-hint-x {color:var(--ink-faint);background:0 0;border:none;border-radius:4px;padding:2px 4px;font-size:14px;line-height:1}
 .mdrev-host .note-hint-x:hover {color:var(--ink);background:var(--bg-soft)}
-.mdrev-host .find {z-index:150;border:1px solid var(--rule);background:var(--bg);border-radius:10px;align-items:center;gap:6px;padding:6px 8px;display:flex;position:fixed;top:14px;right:18px;box-shadow:0 6px 22px #0000002e}
-.mdrev-host .find-input {border:1px solid var(--rule-soft);width:15rem;height:24px;color:var(--ink);background:var(--bg-soft);border-radius:6px;padding:0 7px;font-size:13px}
-.mdrev-host .find-count {min-width:8.5rem;color:var(--ink-faint);font-variant-numeric:tabular-nums;white-space:nowrap;font-size:11.5px}
+.mdrev-host .find {z-index:150;box-sizing:border-box;max-width:calc(var(--mdv-app-w,100vw) - 36px);border:1px solid var(--rule);background:var(--bg);border-radius:10px;align-items:center;gap:6px;padding:6px 8px;display:flex;position:fixed;top:14px;right:18px;box-shadow:0 6px 22px #0000002e}
+.mdrev-host .find-input {border:1px solid var(--rule-soft);width:15rem;min-width:0;height:24px;color:var(--ink);background:var(--bg-soft);border-radius:6px;flex:0 15rem;padding:0 7px;font-size:13px}
+.mdrev-host .find-count {min-width:8.5rem;color:var(--ink-faint);font-variant-numeric:tabular-nums;white-space:nowrap;flex:none;font-size:11.5px}
 .mdrev-host .find-count.none {color:var(--del-fg)}
 .mdrev-host .find-step {border:1px solid var(--rule-soft);width:24px;height:24px;color:var(--ink-soft);background:0 0;border-radius:6px;font-size:13px;line-height:1}
 .mdrev-host .find-step:hover:not(:disabled) {color:var(--ink);background:var(--bg-soft)}
@@ -902,6 +902,7 @@
 .mdrev-host .ann-suggest button {text-align:left;font:inherit;cursor:pointer;background:0 0;border:0;align-items:baseline;gap:6px;padding:4px 8px;font-size:12px;display:flex}
 .mdrev-host .ann-suggest button:hover {background:var(--shared-soft)}
 .mdrev-host .ann-suggest-email {color:var(--ink-faint);font-size:11px}
+.mdrev-host .ann-suggest-hint {color:var(--ink-soft);margin:2px 0 4px;font-size:11.5px}
 .mdrev-host .ann-review-new {color:var(--shared);font-weight:600}
 .mdrev-host .ann-review-follow {border:1px solid var(--rule);cursor:pointer;background:0 0;border-radius:10px;padding:1px 8px;font-size:12px}
 .mdrev-host .ann-review-follow.is-on {border-color:var(--shared);color:var(--shared)}

@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.74/
+mdrev-embed-1.1.76/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -180,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.74`, with two tarballs: `mdrev-1.1.74-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.74.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.76`, with two tarballs: `mdrev-1.1.76-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.76.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.74/mdrev-embed-1.1.74.tar.gz
-tar xzf mdrev-embed-1.1.74.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.74
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.76/mdrev-embed-1.1.76.tar.gz
+tar xzf mdrev-embed-1.1.76.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.76
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.74/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.76/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -196,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.74/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.74.tar.gz
-cd mdrev-embed-1.1.74
+tar xzf mdrev-embed-1.1.76.tar.gz
+cd mdrev-embed-1.1.76
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -478,6 +478,17 @@ cosmetic and worth knowing before it surprises you: those 404s show up in the
 browser's console on every page load, in red, next to nothing that is actually
 wrong. Answering `{"files": []}` or `[]` instead of 404 quiets them, and says
 the same thing.
+
+**Shared review's routes** (`review/…`) are in contract.md and are optional
+the same way: a host that answers none of them gets the viewer without shared
+review. One of them is for a host that knows who its reader works with. `GET
+review/people?path=` answers `{people: [{name, email}]}`: the people @ offers
+after the subscribers when the reader mentions someone in a shared note. A
+mention sends its line of the note and the document's path to the person it
+names, and nothing checks that they may read the document, so list people
+you have good reason to think can: the members of a team that holds the
+repository, say, rather than everyone the reader knows. A 404 is a fine
+answer here too: @ then offers the subscribers alone.
 
 Texts and revisions come from **your** store, however you keep it. `mdrev-v2` keeps them in git and answers `/text` with `git show <rev>:<path>` and `/revisions` with one `git log --format=…` — see `example/server.ts`, which is short enough to read top to bottom. If your documents are in git, those two commands are the whole backend; if they are in a database, the same two routes over your tables.
 

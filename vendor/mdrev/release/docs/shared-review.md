@@ -851,7 +851,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.74",
+  "mdrev": "1.1.76",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
@@ -1035,7 +1035,10 @@ Hong's rulings, 2026-10-08:
     that is not in the store.
 - **H3. A mention is an email:** `@dana@example.com` in a note or a reply,
   handed to the channel as written. The composer suggests subscribers by
-  name and inserts their email; any other email can be typed. Only a strict
+  name and inserts their email, then the people a host names beside them —
+  on the team service, the writer's teammates on the teams that hold the
+  repository (#s636; contract.md, `review/people`); any other email can be
+  typed. Only a strict
   email counts, outside code and quotes, compared without case. The push list
   draws each record's mentions as people, so what a person pushes shows whom
   it will reach — the mentions an agent wrote included.
@@ -1381,8 +1384,11 @@ knows only the protocol above.
 - **Mentions:** `@` in the composer suggests subscribers by the name the
   store knows (the display name they subscribed under) — asking a channel's
   tool for every subscriber as the reader types would be a directory round
-  trip each; a drawn mention shows that name too (a subscriber's or a thread
-  writer's), else the email, which a click shows.
+  trip each — and after them the people a host names in `review/people`
+  (#s636: on the team service, the writer's teammates on the teams that hold
+  the repository; other hosts name nobody); a drawn mention shows that name
+  too (a subscriber's, a teammate's or a thread writer's), else the email,
+  which a click shows.
 - **New:** a thread's chip carries a dot and its count of new entries; each
   new entry in its card says "new". "Mark read" on a card. Drawn only by a
   host that takes read marks.
