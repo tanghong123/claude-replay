@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Arrange Like an App</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* #s382 — clickable mockup for design/layout-sync.md. Invented sessions only (design/ is public).
+   Layout: the page's own strip of controls on top, then the monitor's sidebar beside the chosen
+   app's own list, then what to look for. Colours are the app shell's tokens (reference.css). */
+:root{
+  --page:#eef0ee;--bg:#fff;--side:#f8f8f7;--panel:#fbfbfa;--ink:#20201f;--sub:#62635f;--faint:#767772;
+  --line:#e4e4e0;--hover:#efefed;--selected:#e6e6e3;--green:#1f8a4c;--amber:#a8670f;--red:#b93c3c;--blue:#2f6cc4;
+  --blue-bg:#e9f0fb;--amber-bg:#fff4df;--shadow:0 12px 38px rgba(25,25,22,.12);
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  --mono:"SFMono-Regular",ui-monospace,Menlo,Consolas,"Liberation Mono",monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --page:#121211;--bg:#191918;--side:#20201f;--panel:#222221;--ink:#efefec;--sub:#b1b1ab;--faint:#909089;
+  --line:#343431;--hover:#2d2d2a;--selected:#383835;--green:#5cc283;--amber:#e1a44c;--red:#e88882;--blue:#80aeee;
+  --blue-bg:#1c2a40;--amber-bg:#3a2d1b;--shadow:0 18px 48px rgba(0,0,0,.4);color-scheme:dark}}
+:root[data-theme="dark"]{
+  --page:#121211;--bg:#191918;--side:#20201f;--panel:#222221;--ink:#efefec;--sub:#b1b1ab;--faint:#909089;
+  --line:#343431;--hover:#2d2d2a;--selected:#383835;--green:#5cc283;--amber:#e1a44c;--red:#e88882;--blue:#80aeee;
+  --blue-bg:#1c2a40;--amber-bg:#3a2d1b;--shadow:0 18px 48px rgba(0,0,0,.4);color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--page);color:var(--ink);font:14px/1.5 var(--sans);letter-spacing:-.006em;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:20px 40px}
+button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
+button:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.icon{width:16px;height:16px;display:block;stroke:currentColor;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.wrap{max-width:1240px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+
+/* The page's own header and controls */
+.intro{display:flex;flex-wrap:wrap;gap:12px 28px;align-items:flex-end;justify-content:space-between}
+.intro h1{margin:0;font-size:22px;letter-spacing:-.03em;text-wrap:balance}
+.intro p{margin:4px 0 0;color:var(--sub);max-width:62ch}
+.controls{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center}
+.control{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--sub)}
+.seg{display:inline-flex;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:2px}
+.seg button{padding:4px 10px;border-radius:7px;font-size:12.5px;color:var(--sub)}
+.seg button[aria-pressed="true"]{background:var(--selected);color:var(--ink);font-weight:560}
+
+/* The stage: monitor beside the app's own list */
+.stage{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px;align-items:start}
+.monitor{background:var(--bg);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden;
+  display:grid;grid-template-columns:300px minmax(0,1fr);height:720px}
+.monitor.phone{grid-template-columns:1fr;width:390px;max-width:100%;height:760px;margin:0 auto;position:relative}
+.sidebar{background:var(--side);border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0;position:relative}
+.monitor.phone .sidebar{border-right:0}
+.side-head{padding:14px 16px 6px;display:flex;flex-direction:column;gap:6px}
+.brand{font-size:17px;font-weight:650;letter-spacing:-.035em}
+.brand small{font:500 10px var(--mono);color:var(--faint);margin-left:6px;letter-spacing:0}
+.head-actions{display:flex;gap:2px}
+.iconbtn{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;color:var(--sub);position:relative}
+.iconbtn:hover{background:var(--hover);color:var(--ink)}
+.iconbtn[aria-expanded="true"],.iconbtn.on{background:var(--selected);color:var(--ink)}
+.iconbtn .dot{position:absolute;top:5px;right:5px;width:6px;height:6px;border-radius:50%;background:var(--blue)}
+.arranged{margin:2px 12px 0;padding:6px 8px 6px 10px;border-radius:9px;background:var(--blue-bg);color:var(--ink);font-size:12.5px;
+  display:flex;align-items:center;gap:8px}
+.arranged.warn{background:var(--amber-bg)}
+.arranged span{flex:1;min-width:0}
+.arranged button{width:24px;height:24px;border-radius:6px;display:grid;place-items:center;color:var(--sub)}
+.arranged button:hover{background:var(--hover);color:var(--ink)}
+.tree{overflow:auto;padding:4px 10px 60px;flex:1}
+.sec{min-height:28px;padding:12px 8px 4px;color:var(--faint);font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+  display:flex;align-items:center;gap:6px;width:100%;text-align:left}
+.sec .chev{transition:transform .15s}
+.sec[aria-expanded="false"] .chev{transform:rotate(-90deg)}
+.sec .count{margin-left:auto;font-weight:500;letter-spacing:0}
+.sub{min-height:28px;padding:4px 8px 4px 10px;color:var(--sub);font-size:13px;font-weight:500;display:flex;align-items:center;gap:7px}
+.sub .icon{width:15px;height:15px;color:var(--faint)}
+.row{width:100%;min-height:34px;margin:1px 0;padding:5px 10px 5px calc(14px + var(--depth,0) * 18px);border-radius:8px;
+  display:flex;align-items:center;gap:9px;text-align:left}
+.row.in-project{padding-left:calc(30px + var(--depth,0) * 18px)}
+.row:hover{background:var(--hover)}
+.row.selected{background:var(--selected)}
+.row.hidden-row{opacity:.5}
+.row .tl{flex:1;min-width:0;display:flex;flex-direction:column}
+.row .title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:450}
+.row .meta{font-size:11.5px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.3}
+.row.two{min-height:42px;align-items:center}
+.row .end{flex:none;display:flex;align-items:center;gap:7px;color:var(--faint);font-size:12px;font-variant-numeric:tabular-nums}
+.row .proj{font:11px var(--mono);color:var(--faint)}
+.row .side-mark{color:var(--faint);margin-left:-4px}
+.state{width:8px;height:8px;border-radius:50%;flex:none;background:var(--faint)}
+.state.busy{background:var(--blue)}
+.state.wait{background:var(--amber)}
+.state.idle{background:transparent;box-shadow:inset 0 0 0 1.4px var(--faint)}
+.fork-toggle{font-size:11px;color:var(--faint);padding:0 4px;border-radius:5px}
+.fork-toggle:hover{background:var(--hover);color:var(--ink)}
+.empty{padding:20px 12px;color:var(--faint);font-size:13px}
+
+/* The filter sheet, with the new Arrange group */
+.sheet{position:absolute;left:12px;right:12px;top:84px;z-index:5;background:var(--bg);border:1px solid var(--line);border-radius:12px;
+  box-shadow:var(--shadow);padding:8px;max-height:calc(100% - 96px);overflow:auto}
+.sheet-head{display:flex;align-items:center;justify-content:space-between;padding:4px 8px 6px;font:700 10.5px var(--sans);letter-spacing:.08em;color:var(--faint)}
+.sheet-head button{font:500 12px var(--sans);letter-spacing:0;color:var(--blue);padding:2px 6px;border-radius:6px}
+.opt{width:100%;display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:8px;text-align:left;font-size:13px}
+.opt:hover:not(:disabled){background:var(--hover)}
+.opt:disabled{cursor:not-allowed;color:var(--faint)}
+.opt .box{width:15px;height:15px;border-radius:4px;flex:none;box-shadow:inset 0 0 0 1.4px var(--faint);display:grid;place-items:center}
+.opt[aria-checked="true"] .box{background:var(--blue);box-shadow:none}
+.opt[aria-checked="true"] .box::after{content:"";width:7px;height:4px;border:2px solid var(--bg);border-top:0;border-right:0;transform:rotate(-45deg) translate(1px,-1px)}
+.opt.radio .box{border-radius:50%}
+.opt.radio[aria-checked="true"] .box{background:transparent;box-shadow:inset 0 0 0 1.4px var(--blue)}
+.opt.radio[aria-checked="true"] .box::after{width:7px;height:7px;border:0;border-radius:50%;background:var(--blue);transform:none}
+.opt .lbl{flex:1;min-width:0;display:flex;flex-direction:column}
+.opt .why{font-size:11.5px;color:var(--faint);line-height:1.35}
+.opt .count{color:var(--faint);font-size:12px;font-variant-numeric:tabular-nums}
+.opt.hint{animation:hint 1.6s ease-in-out infinite}
+@keyframes hint{0%,100%{background:transparent}50%{background:var(--blue-bg)}}
+@media (prefers-reduced-motion: reduce){.opt.hint{animation:none;background:var(--blue-bg)}}
+.divider{height:1px;background:var(--line);margin:6px 4px}
+
+/* The session area: a still placeholder, so the sidebar reads as the subject */
+.session-area{display:flex;flex-direction:column;min-width:0;background:var(--bg)}
+.session-top{height:52px;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 20px;gap:10px;font-weight:600}
+.session-top small{font:500 11.5px var(--mono);color:var(--faint)}
+.session-body{padding:24px 28px;color:var(--sub);display:flex;flex-direction:column;gap:14px;max-width:62ch}
+.bubble{align-self:flex-end;background:var(--hover);border-radius:14px;padding:10px 14px;color:var(--ink);max-width:80%}
+.monitor.phone .session-area{display:none}
+
+/* The app's own list, for comparison */
+.source{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 14px 16px;display:flex;flex-direction:column;gap:8px}
+.source h2{margin:0;font-size:13px;font-weight:600}
+.source .note{margin:0;font-size:12px;color:var(--faint)}
+.src-list{display:flex;flex-direction:column;gap:1px;font-size:13px}
+.src-sec{margin-top:8px;font-size:11px;font-weight:600;color:var(--faint);text-transform:uppercase;letter-spacing:.05em;display:flex;gap:6px;align-items:center}
+.src-item{padding:3px 6px 3px calc(6px + var(--depth,0) * 16px);border-radius:6px;display:flex;gap:6px;align-items:center;min-width:0}
+.src-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.src-proj{padding:3px 6px;color:var(--sub);font-weight:500;display:flex;gap:6px;align-items:center}
+.herdr{display:flex;flex-direction:column;gap:10px}
+.ws{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--bg)}
+.ws-head{padding:6px 10px;font:600 12px var(--mono);border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center}
+.tabs{display:flex;gap:2px;padding:6px 6px 0;flex-wrap:wrap}
+.tab{font:11.5px var(--mono);padding:3px 8px;border-radius:6px 6px 0 0;background:var(--hover);color:var(--sub)}
+.panes{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px;padding:6px}
+.pane{border:1px solid var(--line);border-radius:7px;padding:6px 8px;font-size:12px;min-height:46px;display:flex;flex-direction:column;gap:2px}
+.pane small{font:10.5px var(--mono);color:var(--faint)}
+.pane.shell{color:var(--faint);border-style:dashed}
+
+/* What to look for */
+.look{background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:14px 18px}
+.look h2{margin:0 0 6px;font-size:14px}
+.look ul{margin:0;padding-left:18px;color:var(--sub);display:flex;flex-direction:column;gap:4px;max-width:90ch}
+.look b{color:var(--ink);font-weight:600}
+.foot{font-size:12px;color:var(--faint)}
+.foot code{font-family:var(--mono)}
+
+@media (max-width:1000px){.stage{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:720px){
+  .monitor{grid-template-columns:1fr;height:auto;min-height:620px}
+  .monitor .session-area{display:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="intro">
+    <div>
+      <h1>Arrange Agent Monitor like an app</h1>
+      <p>A mockup for <code>design/layout-sync.md</code>. Open the filter in the sidebar and choose an Arrange option: the list follows that app's arrangement. Every session here is invented.</p>
+    </div>
+    <div class="controls" role="group" aria-label="Demo controls">
+      <div class="control"><span id="availLabel">Apps on this Mac</span>
+        <div class="seg" role="group" aria-labelledby="availLabel">
+          <button type="button" id="availOk" data-avail="ok" aria-pressed="true">Readable</button>
+          <button type="button" id="availMissing" data-avail="missing" aria-pressed="false">Not found</button>
+          <button type="button" id="availFails" data-avail="fails" aria-pressed="false">Break after choosing</button>
+        </div>
+      </div>
+      <div class="control"><span id="widthLabel">Width</span>
+        <div class="seg" role="group" aria-labelledby="widthLabel">
+          <button type="button" id="widthDesktop" data-width="desktop" aria-pressed="true">Desktop</button>
+          <button type="button" id="widthPhone" data-width="phone" aria-pressed="false">Phone</button>
+        </div>
+      </div>
+      <div class="control"><span id="themeLabel">Theme</span>
+        <div class="seg" role="group" aria-labelledby="themeLabel">
+          <button type="button" id="themeLight" data-theme-set="light" aria-pressed="false">Light</button>
+          <button type="button" id="themeDark" data-theme-set="dark" aria-pressed="false">Dark</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="stage">
+    <section class="monitor" id="monitor" aria-label="Agent Monitor, mocked">
+      <div class="sidebar">
+        <div class="side-head">
+          <div class="brand">Agent Monitor<small>demo</small></div>
+          <div class="head-actions">
+            <button class="iconbtn" type="button" id="collapseAll" aria-label="Collapse every group" title="Collapse every group"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5-5 5 5M7 19l5-5 5 5"/></svg></button>
+            <button class="iconbtn" type="button" id="expandAll" aria-label="Expand every group" title="Expand every group"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5l5 5 5-5M7 14l5 5 5-5"/></svg></button>
+            <button class="iconbtn" type="button" id="filterBtn" aria-label="Show and arrange sessions" title="Show and arrange sessions" aria-expanded="true" aria-controls="sheet"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg><span class="dot" id="filterDot" hidden></span></button>
+          </div>
+        </div>
+        <div id="arrangedStrip"></div>
+        <div class="sheet" id="sheet" role="dialog" aria-label="Show and arrange sessions"></div>
+        <div class="tree" id="tree" role="tree" aria-label="Sessions"></div>
+      </div>
+      <div class="session-area" aria-hidden="true">
+        <div class="session-top"><span id="sessionTitle">Coordinate the release train</span><small id="sessionProject">ops</small></div>
+        <div class="session-body">
+          <div class="bubble">Start a worker in each repository and report back when the release notes are ready.</div>
+          <div>Started three workers. The atlas-api worker is asking whether the schema check may drop the unused column.</div>
+          <div class="foot">The session view is unchanged by this proposal; only the list beside it is arranged.</div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="source" id="source" aria-live="polite"></aside>
+  </div>
+
+  <section class="look" aria-labelledby="lookTitle">
+    <h2 id="lookTitle">What to look for</h2>
+    <ul id="look"></ul>
+  </section>
+  <p class="foot">Synthetic data. The real reading of each app is described in §3 of <code>design/layout-sync.md</code>; nothing here reads any app.</p>
+</div>
+
+<script>
+"use strict";
+// ---- Invented sessions. mins = minutes since the last activity. ----
+const SESSIONS = [
+  { id: "c-coord", agent: "claude", project: "ops", title: "Coordinate the release train", state: "busy", mins: 0 },
+  { id: "c-w1", agent: "claude", project: "atlas-web", title: "Worker: bump atlas-web dependencies", state: "busy", mins: 1, sideOf: "c-coord" },
+  { id: "c-w2", agent: "claude", project: "notes-cli", title: "Worker: notes-cli changelog", state: "idle", mins: 12, sideOf: "c-coord" },
+  { id: "c-w3", agent: "claude", project: "atlas-api", title: "Worker: atlas-api schema check", state: "wait", mins: 3, sideOf: "c-coord" },
+  { id: "c-plan", agent: "claude", project: "atlas-api", title: "Plan the billing migration", state: "idle", mins: 130 },
+  { id: "c-plan-btw", agent: "claude", project: "atlas-api", title: "btw: which tables hold invoices?", state: "idle", mins: 128, sideOf: "c-plan" },
+  { id: "c-rfc", agent: "claude", project: "atlas-web", title: "Draft the search RFC", state: "idle", mins: 1500 },
+  { id: "c-rev", agent: "claude", project: "atlas-api", title: "Review MR !214", state: "wait", mins: 20 },
+  { id: "c-rev2", agent: "claude", project: "atlas-web", title: "Review MR !219", state: "idle", mins: 300 },
+  { id: "c-flaky", agent: "claude", project: "atlas-web", title: "Fix the flaky login test", state: "busy", mins: 4 },
+  { id: "c-flaky-fork", agent: "claude", project: "atlas-web", title: "Fix the flaky login test", state: "idle", mins: 50, forkOf: "c-flaky" },
+  { id: "c-term", agent: "claude", project: "infra-ops", title: "Tail the deploy logs", state: "busy", mins: 0 },
+  { id: "c-auth", agent: "claude", project: "atlas-api", title: "Refactor the auth middleware", state: "idle", mins: 40 },
+  { id: "c-docs", agent: "claude", project: "atlas-api", title: "Update the API docs", state: "idle", mins: 70 },
+  { id: "c-old", agent: "claude", project: "notes-cli", title: "Try a SQLite cache", state: "idle", mins: 4000, hidden: true },
+  { id: "c-arch", agent: "claude", project: "atlas-web", title: "Prototype the export button", state: "idle", mins: 6200 },
+  { id: "x-parser", agent: "codex", project: "notes-cli", title: "Port the parser to Rust", state: "busy", mins: 2 },
+  { id: "x-dark", agent: "codex", project: "atlas-web", title: "Add a dark theme", state: "idle", mins: 180 },
+  { id: "x-leak", agent: "codex", project: "atlas-api", title: "Find the memory leak", state: "wait", mins: 8 },
+  { id: "x-spike", agent: "codex", project: "notes-cli", title: "Spike: streaming export", state: "idle", mins: 2900 },
+  { id: "x-e2e", agent: "codex", project: "atlas-web", title: "Write the end-to-end tests", state: "busy", mins: 1 },
+  { id: "x-lint", agent: "codex", project: "infra-ops", title: "Fix the lint warnings", state: "idle", mins: 30 },
+];
+const BY_ID = new Map(SESSIONS.map(s => [s.id, s]));
+const AGENTS = { claude: "Claude Code", codex: "Codex" };
+
+// ---- Each app's arrangement of the same sessions, as its reader would hand it over. ----
+// A section: { id, label, collapsed, entries } or { id, label, groups: [{ label, entries }] }.
+// An entry: a session id, or [id, [child entries]] for nesting.
+const LAYOUTS = {
+  "claude-app": {
+    name: "the Claude app", short: "Claude app",
+    missing: "The Claude app's session list was not found on this Mac",
+    sections: [
+      { id: "pinned", label: "Pinned", entries: [["c-coord", ["c-w1", "c-w2", "c-w3"]]] },
+      { id: "g-planning", label: "Planning", entries: [["c-plan", ["c-plan-btw"]], "c-rfc"] },
+      { id: "g-reviews", label: "Reviews", collapsed: true, entries: ["c-rev", "c-rev2"] },
+      { id: "sessions", label: "Sessions", groups: [{ label: "atlas-web", entries: ["c-flaky"] }] },
+      { id: "archived", label: "Archived", collapsed: true, entries: ["c-arch"] },
+    ],
+  },
+  "codex-app": {
+    name: "the Codex app", short: "Codex app",
+    missing: "The Codex app's thread list was not found on this Mac",
+    sections: [
+      { id: "pinned", label: "Pinned", entries: ["x-parser"] },
+      { id: "sec-release", label: "Release", entries: ["x-leak"] },
+      { id: "threads", label: "Threads", groups: [
+        { label: "atlas-web", entries: ["x-dark"] },
+        { label: "notes-cli", entries: [] },
+      ] },
+      { id: "archived", label: "Archived", collapsed: true, entries: ["x-spike"] },
+    ],
+  },
+  herdr: {
+    name: "Herdr", short: "Herdr",
+    missing: "No Herdr server is running on this Mac",
+    sections: [
+      { id: "ws-api", label: "api", kind: "workspace", groups: [{ label: "auth", entries: ["c-auth"] }, { label: "docs", entries: ["c-docs"] }] },
+      { id: "ws-web", label: "web", kind: "workspace", groups: [{ label: "tests", entries: ["x-e2e"] }] },
+      { id: "ws-ops", label: "ops", kind: "workspace", groups: [{ label: "deploy", entries: ["c-term"], shell: 1 }, { label: "lint", entries: ["x-lint"] }] },
+    ],
+  },
+};
+const ARRANGE = [
+  { id: "project", label: "By agent and project", why: "Today's tree" },
+  { id: "activity", label: "One list by activity", why: "Today's flat list" },
+  { id: "claude-app", label: "Like the Claude app", why: "Its groups, pins and side sessions" },
+  { id: "codex-app", label: "Like the Codex app", why: "Its pins, sections and projects" },
+  { id: "herdr", label: "Like Herdr", why: "Its workspaces and tabs" },
+];
+
+// ---- Page state ----
+const state = {
+  arrange: "project", sheetOpen: true, touched: false,
+  buckets: new Set(["recent", "blocked", "idle"]), includeHidden: false,
+  avail: "ok", failed: false, phone: false,
+  collapsed: new Set(), openForks: new Set(), selected: "c-coord",
+};
+try { const t = localStorage.getItem("layout-sync-demo-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) { /* no storage: system theme */ }
+
+// ---- The session filter's buckets (#202): recent = activity in 6 h or busy; blocked = a wait. ----
+const bucketsOf = s => {
+  const out = [];
+  if (s.state === "busy" || s.mins < 360) out.push("recent");
+  if (s.state === "wait") out.push("blocked");
+  if (!out.length) out.push("idle");
+  return out;
+};
+const visible = s => (!s.hidden || state.includeHidden) && bucketsOf(s).some(b => state.buckets.has(b));
+
+// Families: a fork rides with its representative (#142).
+function families(rows) {
+  const fams = new Map();
+  for (const s of rows) {
+    const rep = s.forkOf && rows.some(r => r.id === s.forkOf) ? s.forkOf : s.id;
+    if (!fams.has(rep)) fams.set(rep, { rep: BY_ID.get(rep), forks: [] });
+    if (rep !== s.id) fams.get(rep).forks.push(s);
+  }
+  for (const f of fams.values()) f.latest = Math.min(f.rep.mins, ...f.forks.map(x => x.mins));
+  return [...fams.values()];
+}
+const byActivity = (a, b) => {
+  const act = f => f.latest < 10;
+  return (act(b) - act(a)) || (act(a) ? 0 : a.latest - b.latest) || a.rep.title.localeCompare(b.rep.title);
+};
+const sourceReadable = () => state.avail === "ok" || (state.avail === "fails" && !state.failed);
+
+// ---- Rendering ----
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const ICON = {
+  folder: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h6l2 2h10v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></svg>',
+  chev: '<svg class="icon chev" viewBox="0 0 24 24" aria-hidden="true" style="width:12px;height:12px"><path d="M6 9l6 6 6-6"/></svg>',
+  tab: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7v4h9v8H4z"/></svg>',
+  close: '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true" style="width:14px;height:14px"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+};
+const age = m => m < 1 ? "now" : m < 60 ? `${m}m` : m < 1440 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`;
+
+// In an arranged or flat list a section mixes projects and agents, so each row says both on a
+// second line, except the project where a sub-head above already names it.
+function rowHtml(s, opts = {}) {
+  const { depth = 0, context = false, inProject = false, groupProject = null, fam = null } = opts;
+  const underProject = groupProject === s.project;
+  const forkBtn = fam && fam.forks.length ? `<span class="fork-toggle" data-fork="${s.id}" role="button" tabindex="0" aria-label="Show ${fam.forks.length} fork">⑂ ${fam.forks.length}</span>` : "";
+  const meta = context ? `<span class="meta">${underProject ? "" : `<span class="proj">${esc(s.project)}</span> · `}${AGENTS[s.agent]}</span>` : "";
+  return `<button type="button" class="row ${context ? "two" : ""} ${inProject ? "in-project" : ""} ${s.id === state.selected ? "selected" : ""} ${s.hidden ? "hidden-row" : ""}" style="--depth:${depth}" role="treeitem" data-session="${s.id}">`
+    + (depth ? '<span class="side-mark" aria-hidden="true">↳</span>' : "")
+    + `<span class="state ${s.state}" aria-hidden="true"></span>`
+    + `<span class="tl"><span class="title">${esc(s.title)}</span>${meta}</span><span class="end">${forkBtn}<span>${age(s.mins)}</span></span></button>`;
+}
+function famHtml(fam, opts = {}) {
+  let html = rowHtml(fam.rep, { ...opts, fam });
+  if (state.openForks.has(fam.rep.id)) for (const f of fam.forks) html += rowHtml(f, { ...opts, depth: (opts.depth || 0) + 1 });
+  return html;
+}
+function secHtml(key, label, count, open) {
+  return `<button type="button" class="sec" data-toggle="${esc(key)}" aria-expanded="${open}">${ICON.chev}<span>${esc(label)}</span><span class="count">${count}</span></button>`;
+}
+
+// Today's tree: agent, project, families; a side session nests only within its project (#s340).
+function treeHtml() {
+  const rows = SESSIONS.filter(visible);
+  let html = "";
+  for (const agent of Object.keys(AGENTS)) {
+    const mine = rows.filter(s => s.agent === agent);
+    if (!mine.length) continue;
+    const projects = [...new Set(mine.map(s => s.project))]
+      .map(p => ({ p, fams: families(mine.filter(s => s.project === p)) }))
+      .sort((a, b) => Math.min(...a.fams.map(f => f.latest)) - Math.min(...b.fams.map(f => f.latest)));
+    const key = `a:${agent}`, open = !state.collapsed.has(key);
+    html += secHtml(key, AGENTS[agent], mine.length, open);
+    if (!open) continue;
+    for (const { p, fams } of projects) {
+      html += `<div class="sub">${ICON.folder}<span>${esc(p)}</span></div>`;
+      fams.sort(byActivity);
+      const nested = new Set();
+      const childrenOf = id => fams.filter(f => f.rep.sideOf === id);
+      for (const f of fams) if (f.rep.sideOf && fams.some(g => g.rep.id === f.rep.sideOf)) nested.add(f);
+      const walk = (f, depth) => { let h = famHtml(f, { depth, inProject: true }); for (const c of childrenOf(f.rep.id)) h += walk(c, depth + 1); return h; };
+      for (const f of fams) if (!nested.has(f)) html += walk(f, 0);
+    }
+  }
+  return html;
+}
+function flatHtml() {
+  return families(SESSIONS.filter(visible)).sort(byActivity).map(f => famHtml(f, { context: true })).join("");
+}
+
+// An app's arrangement: every visible family once, at the first entry naming it; nesting kept,
+// across projects; anything the app does not hold goes to "Not in …", in today's order.
+function arrangedHtml(src) {
+  const layout = LAYOUTS[src];
+  const rows = SESSIONS.filter(visible);
+  const fams = families(rows);
+  const famOf = new Map();
+  for (const f of fams) { famOf.set(f.rep.id, f); for (const k of f.forks) famOf.set(k.id, f); }
+  const placed = new Set();
+  const entryHtml = (entry, depth, groupProject = null) => {
+    const [id, kids] = Array.isArray(entry) ? entry : [entry, []];
+    const f = famOf.get(id);
+    let h = "";
+    let childDepth = depth;
+    if (f && !placed.has(f)) { placed.add(f); h += famHtml(f, { depth, context: true, groupProject }); childDepth = depth + 1; }
+    // A child whose parent the filter hides takes the parent's place (#s340's rule).
+    for (const k of kids) h += entryHtml(k, childDepth, groupProject);
+    return h;
+  };
+  let html = "", shownAny = false;
+  for (const sec of layout.sections) {
+    const key = `${src}:${sec.id}`;
+    const open = state.collapsed.has(key) ? false : state.collapsed.has(`open:${key}`) ? true : !sec.collapsed;
+    let body = "", n = 0;
+    const before = placed.size;
+    if (sec.groups) {
+      for (const g of sec.groups) {
+        const gb = g.entries.map(e => entryHtml(e, 0, sec.kind === "workspace" ? null : g.label)).join("");
+        if (gb) body += `<div class="sub">${sec.kind === "workspace" ? ICON.tab : ICON.folder}<span>${esc(g.label)}</span></div>` + gb;
+      }
+    } else body = sec.entries.map(e => entryHtml(e, 0)).join("");
+    n = placed.size - before;
+    if (!n) continue; // a group the filter empties is not drawn
+    shownAny = true;
+    html += secHtml(key, sec.kind === "workspace" ? `${sec.label} workspace` : sec.label, n, open) + (open ? body : "");
+  }
+  const rest = fams.filter(f => !placed.has(f)).sort(byActivity);
+  if (rest.length) {
+    const key = `${src}:not-in`, open = !state.collapsed.has(key);
+    html += secHtml(key, `Not in ${layout.name}`, rest.length, open) + (open ? rest.map(f => famHtml(f, { context: true })).join("") : "");
+    shownAny = true;
+  }
+  return shownAny ? html : "";
+}
+
+function sheetHtml() {
+  const counts = { recent: 0, blocked: 0, idle: 0 };
+  let hidden = 0;
+  for (const s of SESSIONS) { if (s.hidden) { hidden++; if (!state.includeHidden) continue; } for (const b of bucketsOf(s)) counts[b]++; }
+  const box = (attrs, label, extra = "", checked = false, radio = false, disabled = false, why = "") =>
+    `<button type="button" class="opt ${radio ? "radio" : ""} ${extra}" ${attrs} role="${radio ? "radio" : "checkbox"}" aria-checked="${checked}" ${disabled ? "disabled" : ""}><span class="box" aria-hidden="true"></span><span class="lbl"><span>${label}</span>${why ? `<span class="why">${esc(why)}</span>` : ""}</span>`;
+  let h = `<div class="sheet-head"><span>SHOW</span><button type="button" id="everything">Everything</button></div>`;
+  for (const [b, label] of [["recent", "Active recently"], ["blocked", "Blocked"], ["idle", "Idle"]])
+    h += box(`data-bucket="${b}" id="bucket-${b}"`, label, "", state.buckets.has(b)) + `<span class="count">${counts[b]}</span></button>`;
+  h += `<div class="divider"></div>` + box(`data-include-hidden id="includeHidden"`, "Include hidden", "", state.includeHidden) + `<span class="count">${hidden}</span></button>`;
+  h += `<div class="divider"></div><div class="sheet-head"><span>ARRANGE</span></div><div role="radiogroup" aria-label="Arrange sessions">`;
+  for (const a of ARRANGE) {
+    const app = LAYOUTS[a.id];
+    const off = app && state.avail === "missing";
+    const why = off ? app.missing : a.why;
+    const hint = !state.touched && a.id === "claude-app" ? "hint" : "";
+    h += box(`data-arrange="${a.id}" id="arrange-${a.id}"`, a.label, hint, state.arrange === a.id, true, off, why) + `</button>`;
+  }
+  return h + "</div>";
+}
+
+function stripHtml() {
+  const app = LAYOUTS[state.arrange];
+  if (!app) return "";
+  if (!sourceReadable()) return `<div class="arranged warn" role="status"><span>Showing by project: ${esc(app.name)}'s list could not be read. It comes back when it can be.</span><button type="button" id="stripReset" aria-label="Arrange by agent and project">${ICON.close}</button></div>`;
+  return `<div class="arranged" role="status"><span>Arranged like ${esc(app.name)} · follows it</span><button type="button" id="stripReset" aria-label="Arrange by agent and project">${ICON.close}</button></div>`;
+}
+
+function sourceHtml() {
+  const app = LAYOUTS[state.arrange];
+  if (!app) return `<h2>The app's own list</h2><p class="note">Choose “Like the Claude app”, “Like the Codex app” or “Like Herdr” in the sidebar's filter. That app's own list appears here, so the two can be compared.</p>`;
+  if (!sourceReadable()) return `<h2>${esc(app.short)}</h2><p class="note">${state.avail === "missing" ? esc(app.missing) + "." : "The demo made the list unreadable after it was chosen. Choose “Readable” above to bring it back."}</p>`;
+  let h = `<h2>${esc(app.short)}'s own list</h2><p class="note">A sketch of what the app shows for the same invented sessions, for comparison. The monitor reads this arrangement; it never changes it.</p>`;
+  if (state.arrange === "herdr") {
+    h += `<div class="herdr">`;
+    for (const ws of app.sections) {
+      h += `<div class="ws"><div class="ws-head">${ICON.tab}${esc(ws.label)}</div><div class="tabs">${ws.groups.map(g => `<span class="tab">${esc(g.label)}</span>`).join("")}</div><div class="panes">`;
+      for (const g of ws.groups) {
+        for (const id of g.entries) { const s = BY_ID.get(id); h += `<div class="pane"><small>${esc(g.label)} · ${s.agent === "claude" ? "claude" : "codex"}</small>${esc(s.title)}</div>`; }
+        if (g.shell) h += `<div class="pane shell"><small>${esc(g.label)} · shell</small>zsh (not a session)</div>`;
+      }
+      h += `</div></div>`;
+    }
+    return h + `</div>`;
+  }
+  h += `<div class="src-list">`;
+  const item = (entry, depth) => {
+    const [id, kids] = Array.isArray(entry) ? entry : [entry, []];
+    const s = BY_ID.get(id);
+    return `<div class="src-item" style="--depth:${depth}">${depth ? "↳ " : ""}<span>${esc(s.title)}</span></div>` + kids.map(k => item(k, depth + 1)).join("");
+  };
+  for (const sec of app.sections) {
+    h += `<div class="src-sec">${sec.collapsed ? "▸" : "▾"} ${esc(sec.label)}</div>`;
+    if (sec.collapsed) continue;
+    if (sec.groups) for (const g of sec.groups) h += `<div class="src-proj">${ICON.folder}${esc(g.label)}</div>` + g.entries.map(e => item(e, 1)).join("");
+    else h += sec.entries.map(e => item(e, 0)).join("");
+  }
+  return h + `</div>`;
+}
+
+const LOOK = {
+  project: [
+    "<b>This is today's tree.</b> The coordinator sits under <code>ops</code>; its three workers sit under three other projects, with nothing to say they belong together.",
+    "Open the filter (the third button in the sidebar's head) and choose <b>Like the Claude app</b>. That is the one click.",
+  ],
+  activity: [
+    "<b>Today's flat list</b>, moved into the same Arrange group so the choice reads as one question.",
+  ],
+  "claude-app": [
+    "<b>Pinned first</b>, then the person's own groups in the app's order: Planning, then Reviews, which the app keeps collapsed, so it opens collapsed here too.",
+    "<b>The coordinator's workers nest under it</b>, though they are in three other projects. Each row names its project, as in the flat list.",
+    "<b>Archived</b> sessions, which the app takes out of its sidebar, wait in a collapsed group.",
+    "<b>Not in the Claude app</b> holds every other session (terminal runs, Codex) in today's order, so nothing is lost.",
+    "Untick <b>Idle</b> in the filter: groups it empties disappear; a worker whose coordinator is filtered out would take its place.",
+  ],
+  "codex-app": [
+    "<b>The Codex app's pinned thread</b> comes first, then the person's own section (Release), then the threads by project in the app's order; a project with nothing visible is not drawn.",
+    "<b>Archived</b> threads stay together in a collapsed group rather than mixing into the list.",
+    "On a real Mac today this option would be the least reliable of the three: the Codex app is midway through moving its arrangement between stores (§3.2 of the RFC).",
+    "Codex runs from a terminal and every Claude session fall into <b>Not in the Codex app</b>.",
+  ],
+  herdr: [
+    "<b>One group per Herdr workspace</b>, with its tabs as sub-heads, in Herdr's order.",
+    "A plain shell pane is not a session, so it does not appear; a pane whose agent the monitor does not know is dropped.",
+    "Sessions not open in any Herdr pane, including everything in the Claude and Codex apps, fall into <b>Not in Herdr</b>.",
+  ],
+  missing: [
+    "<b>The app options are disabled</b>, each saying why on its second line. Today's two arrangements still work.",
+  ],
+  failed: [
+    "<b>The chosen app stopped being readable.</b> The list falls back to the tree, and the strip at the top says so. The choice is kept: choose “Readable” above and the arrangement returns at the next refresh.",
+  ],
+};
+
+function render() {
+  const monitor = document.getElementById("monitor");
+  monitor.classList.toggle("phone", state.phone);
+  const sheet = document.getElementById("sheet");
+  sheet.hidden = !state.sheetOpen;
+  if (state.sheetOpen) sheet.innerHTML = sheetHtml();
+  document.getElementById("filterBtn").setAttribute("aria-expanded", String(state.sheetOpen));
+  document.getElementById("filterDot").hidden = state.arrange === "project" && state.buckets.size === 3;
+  document.getElementById("arrangedStrip").innerHTML = stripHtml();
+  const app = LAYOUTS[state.arrange];
+  let html;
+  if (state.arrange === "activity") html = flatHtml();
+  else if (app && sourceReadable()) html = arrangedHtml(state.arrange);
+  else html = treeHtml();
+  document.getElementById("tree").innerHTML = html || `<div class="empty">No sessions in this filter. “Everything”, in the filter, shows them all.</div>`;
+  document.getElementById("source").innerHTML = sourceHtml();
+  const sel = BY_ID.get(state.selected);
+  document.getElementById("sessionTitle").textContent = sel.title;
+  document.getElementById("sessionProject").textContent = sel.project;
+  let look = LOOK[state.arrange] || [];
+  if (state.avail === "missing" && app) look = LOOK.failed.concat(LOOK.missing);
+  else if (state.avail === "missing") look = look.concat(LOOK.missing);
+  else if (app && !sourceReadable()) look = LOOK.failed;
+  document.getElementById("look").innerHTML = look.map(l => `<li>${l}</li>`).join("");
+  for (const b of document.querySelectorAll("[data-avail]")) b.setAttribute("aria-pressed", String(b.dataset.avail === state.avail));
+  for (const b of document.querySelectorAll("[data-width]")) b.setAttribute("aria-pressed", String((b.dataset.width === "phone") === state.phone));
+  const theme = document.documentElement.dataset.theme || "";
+  for (const b of document.querySelectorAll("[data-theme-set]")) b.setAttribute("aria-pressed", String(b.dataset.themeSet === theme));
+}
+
+document.addEventListener("click", event => {
+  const t = event.target;
+  const on = sel => t.closest(sel);
+  let el;
+  if ((el = on("[data-arrange]"))) {
+    state.arrange = el.dataset.arrange; state.touched = true;
+    state.failed = false;
+    if (state.avail === "fails" && LAYOUTS[state.arrange]) setTimeout(() => { state.failed = true; render(); }, 1600);
+  } else if ((el = on("[data-bucket]"))) {
+    const b = el.dataset.bucket;
+    state.buckets.has(b) ? state.buckets.delete(b) : state.buckets.add(b);
+    if (!state.buckets.size) state.buckets = new Set(["recent", "blocked", "idle"]);
+  } else if (on("#everything")) state.buckets = new Set(["recent", "blocked", "idle"]);
+  else if (on("[data-include-hidden]")) state.includeHidden = !state.includeHidden;
+  else if (on("#filterBtn")) state.sheetOpen = !state.sheetOpen;
+  else if (on("#stripReset")) state.arrange = "project";
+  else if ((el = on("[data-fork]"))) { const id = el.dataset.fork; state.openForks.has(id) ? state.openForks.delete(id) : state.openForks.add(id); }
+  else if ((el = on("[data-session]"))) { state.selected = el.dataset.session; if (state.phone) state.sheetOpen = false; }
+  else if ((el = on("[data-toggle]"))) {
+    const k = el.dataset.toggle, open = el.getAttribute("aria-expanded") === "true";
+    state.collapsed.delete(k); state.collapsed.delete(`open:${k}`);
+    state.collapsed.add(open ? k : `open:${k}`);
+  } else if (on("#collapseAll")) {
+    for (const b of document.querySelectorAll("#tree [data-toggle]")) { state.collapsed.delete(`open:${b.dataset.toggle}`); state.collapsed.add(b.dataset.toggle); }
+  } else if (on("#expandAll")) state.collapsed = new Set([...document.querySelectorAll("#tree [data-toggle]")].map(b => `open:${b.dataset.toggle}`));
+  else if ((el = on("[data-avail]"))) { state.avail = el.dataset.avail; state.failed = false; if (state.avail === "fails" && LAYOUTS[state.arrange]) setTimeout(() => { state.failed = true; render(); }, 1600); }
+  else if ((el = on("[data-width]"))) state.phone = el.dataset.width === "phone";
+  else if ((el = on("[data-theme-set]"))) {
+    const v = el.dataset.themeSet, cur = document.documentElement.dataset.theme;
+    if (cur === v) delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = v;
+    try { localStorage.setItem("layout-sync-demo-theme", document.documentElement.dataset.theme || ""); } catch (e) { /* no storage */ }
+  } else if (state.sheetOpen && !on("#sheet") && on("#monitor")) state.sheetOpen = false;
+  else return;
+  render();
+});
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && state.sheetOpen) { state.sheetOpen = false; render(); }
+  if ((event.key === "Enter" || event.key === " ") && event.target.matches("[data-fork]")) { event.preventDefault(); event.target.click(); }
+});
+render();
+</script>
+</body>
+</html>
