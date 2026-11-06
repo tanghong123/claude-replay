@@ -18349,6 +18349,56 @@ fn scenario_a_bash_call_outside_the_sandbox_is_marked(
             serde_json::json!(true),
             "{surface:?}: the phone hides the pill, so the mark had to be a badge: {phone}"
         );
+        // Shown in full (the head's third step: open, then full), the outside call's command
+        // takes the head's width and the badge goes under it. Beside the badge it had what the
+        // badge left, a column narrower than the badge itself. Each click re-renders the window,
+        // so every step queries afresh.
+        let step = "(function(){ \
+               var r = [...document.querySelectorAll('.renderer[data-record-id]')].find(function (x) { \
+                 var t = x.querySelector(':scope > .renderer-head > .renderer-target'); \
+                 return t && t.textContent.indexOf('curl https://tern.example/nests') >= 0; }); \
+               if (!r) return 'missing'; \
+               if (r.dataset.target === 'full') return 'full'; \
+               r.querySelector(':scope > button.renderer-head').click(); return 'clicked'; })()";
+        let mut last = serde_json::Value::Null;
+        for _ in 0..6 {
+            last = eval(tab, step);
+            if last == serde_json::json!("full") {
+                break;
+            }
+            settle();
+        }
+        assert_eq!(
+            last,
+            serde_json::json!("full"),
+            "{surface:?}: two clicks on the outside call's head show its target in full"
+        );
+        let full = serde_json::from_str::<serde_json::Value>(
+            eval(
+                tab,
+                "(function(){ \
+                   var r = document.querySelector('.renderer[data-target=\"full\"]'); \
+                   var h = r.querySelector(':scope > .renderer-head'); \
+                   var t = h.querySelector(':scope > .renderer-target').getBoundingClientRect(); \
+                   var b = h.querySelector(':scope > .renderer-change').getBoundingClientRect(); \
+                   return JSON.stringify({ target: [Math.round(t.left), Math.round(t.top), Math.round(t.width), Math.round(t.bottom)], \
+                                           badge: [Math.round(b.left), Math.round(b.top), Math.round(b.width)], \
+                                           head: Math.round(h.getBoundingClientRect().width) }); })()",
+            )
+            .as_str()
+            .unwrap_or("null"),
+        )
+        .unwrap_or(serde_json::Value::Null);
+        let n = |v: &serde_json::Value| v.as_i64().unwrap_or(-1);
+        assert!(
+            n(&full["target"][2]) > n(&full["badge"][2]),
+            "{surface:?}: the full command is wider than the badge beside it would leave it: {full}"
+        );
+        assert!(
+            n(&full["badge"][1]) >= n(&full["target"][3]) - 1
+                && (n(&full["badge"][0]) - n(&full["target"][0])).abs() <= 1,
+            "{surface:?}: the badge sits under the full command, at its start: {full}"
+        );
     }
 }
 
