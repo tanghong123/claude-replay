@@ -2068,6 +2068,29 @@ const QWENWORK_BASH_SHAPE: &[&str] = &[
     "totalLines",
 ];
 
+/// Every key a Qwenwork Bash result was met with when the client moved its command to the
+/// background (#s375, client 1.1.59, measured 2026-11-06 on aries-black: 4 results, all in sub-agent
+/// transcripts of one session): `{kind: "backgrounded", backgroundReason, command, initialOutput,
+/// outputFile, pid, stdout, taskId, telemetryExecutionId}`. Its `stdout` is the client's notice,
+/// which the card shows: in all 4 it says the command went to the background at its time limit and
+/// names the task id, and the tool_result text says the same and names the output file.
+const QWENWORK_BASH_BACKGROUNDED_SHAPE: &[&str] = &[
+    "backgroundReason",
+    "command",
+    "initialOutput",
+    "kind",
+    "outputFile",
+    "pid",
+    "stdout",
+    "taskId",
+    "telemetryExecutionId",
+];
+
+/// Every key a Qwenwork tool's refusal was met with (#s375, client 1.1.71, measured 2026-11-06 on
+/// aries-black: 2 Read results in sub-agent transcripts): `{errorType, isHardFailure}`, on a
+/// tool_result marked `is_error`.
+const QWENWORK_TOOL_ERROR_SHAPE: &[&str] = &["errorType", "isHardFailure"];
+
 /// Every key a Qwenwork Agent (sub-agent spawn) result was met with (#s65, client 1.1.59, measured
 /// 2026-10-09 over all 10 in the store): `{kind, agentId, agentType, content, state,
 /// terminateReason, outputPath, transcriptPath}`, plus `apiError` on the one that failed. `kind` is
@@ -2128,6 +2151,14 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // and this value could put a next-run line on the CronCreate card in the reader's own zone,
     // a RENDER question for the owner, not decided here.
     ("nextFireAt", CRON_CREATE_SHAPE),
+    // #s375 (client 2.1.296, one result in a sub-agent transcript, measured 2026-11-06 on
+    // aries-black): Artifact's listing of an artifact's files. Its whole result is `{file_list:
+    // {url, ver, type: {title, url}, files: [{path, content_type, size_bytes, sha256}], stored:
+    // {capabilities, contract}, cowritten, foreign, from_type}}`, and its text names the
+    // artifact's url, its version, its type and all 24 of its files; the digests and the stored
+    // settings are bookkeeping. A generic word, so known only as the whole result, as `jobs` and
+    // `quickstart` are. REVISIT if a listing's text stops naming its files.
+    ("file_list", &["file_list"]),
     // Read's `file_unchanged` (`{type, file, source}`): `source: "seeded"` says the file was in
     // context from seeding (a CLAUDE.md) rather than from an earlier Read. The page already draws
     // the file_unchanged result, whose text says the file is in context; the provenance word
@@ -2273,6 +2304,26 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // REVISIT for a saved file that is itself cut, which the notice does not say. `preview` is
     // the first 2,000 characters of `stdout`.
     ("persistedOutput", QWENWORK_BASH_SHAPE),
+    // #s375 (Qwenwork 1.1.59): a command the client moved to the background, one shape. `kind`
+    // ("backgrounded" in all 4) is the result's type tag. `backgroundReason` was "timeout" in all
+    // 4, which the notice the card shows states, and the client's source also names "model". `pid`
+    // is the process's, which nothing on the page can use. `initialOutput` is what the command
+    // printed before the move, empty in all 4. Each is generic, so known in this shape only.
+    // REVISIT: a non-empty `initialOutput` (output the card, which shows `stdout`'s notice, would
+    // leave out), a reason other than timeout or model, or a `stdout` that no longer says the
+    // command was moved.
+    ("backgroundReason", QWENWORK_BASH_BACKGROUNDED_SHAPE),
+    ("initialOutput", QWENWORK_BASH_BACKGROUNDED_SHAPE),
+    ("kind", QWENWORK_BASH_BACKGROUNDED_SHAPE),
+    ("pid", QWENWORK_BASH_BACKGROUNDED_SHAPE),
+    // #s375 (Qwenwork 1.1.71): a refused tool's class of failure, beside the flat-known
+    // `isHardFailure`, on a tool_result marked `is_error`, which the card draws failed with its
+    // text. Both met were Read's "file_not_found", whose text says the file was not found; the
+    // client's source names seven more (file_too_large, invalid_tool_params, permission_denied,
+    // policy_violation, read_content_failure, stop_execution, target_is_directory). Generic, so
+    // known in this shape only. REVISIT: on a result NOT marked `is_error`, or a class whose text
+    // does not state it.
+    ("errorType", QWENWORK_TOOL_ERROR_SHAPE),
     // #s65 (Qwenwork 1.1.59): a sub-agent result's five keys nothing renders, each generic enough
     // to mean something else on another tool, so each is known only in this shape. `kind` is a type
     // tag (the block is a SubAgent by its tool name). `terminateReason` pairs with `state`, which
@@ -8410,6 +8461,92 @@ mod tests {
         }
         assert_eq!(blocks, parse(&bare), "the four change no block");
         assert!(!blocks.is_empty(), "the sub-agent's calls still draw");
+    }
+
+    /// #s375: the shapes the sub-agent sweep first showed on aries-black are known in the shape
+    /// each was judged in, and only there — a Qwenwork Bash result whose command the client moved
+    /// to the background, a Qwenwork tool's refusal class, Artifact's file listing — and the code
+    /// on a Qwenwork API-error record is known to the family's adapters alone. Removing any one
+    /// entry turns this red.
+    #[test]
+    fn the_shapes_the_sub_agent_sweep_showed_on_aries_black_are_known_in_their_shape() {
+        let sorted = |mut v: Vec<&str>| {
+            v.sort_unstable();
+            v.into_iter().map(String::from).collect::<Vec<_>>()
+        };
+        let none: Vec<String> = Vec::new();
+        let backgrounded = serde_json::json!({
+            "kind": "backgrounded", "backgroundReason": "timeout", "command": "count-nests --all",
+            "initialOutput": "", "outputFile": "/tmp/skua/b375.output", "pid": 37501,
+            "stdout": "Command moved to the background at its time limit (task b375).",
+            "taskId": "b375", "telemetryExecutionId": "00000000-0000-4000-8000-000000000375"
+        });
+        assert_eq!(
+            sorted(unknown_tool_result_keys(&backgrounded)),
+            none,
+            "a backgrounded command"
+        );
+        let mut beside = backgrounded.clone();
+        beside["a_key_from_the_future"] = serde_json::json!(1);
+        assert_eq!(
+            sorted(unknown_tool_result_keys(&beside)),
+            sorted(vec![
+                "a_key_from_the_future",
+                "backgroundReason",
+                "initialOutput",
+                "kind",
+                "pid"
+            ]),
+            "beside a key outside the shape, its generic keys are reported again"
+        );
+        let refused = serde_json::json!({"errorType": "file_not_found", "isHardFailure": false});
+        assert_eq!(
+            sorted(unknown_tool_result_keys(&refused)),
+            none,
+            "a refused tool"
+        );
+        let elsewhere = serde_json::json!({"errorType": "file_not_found", "stdout": ""});
+        assert_eq!(
+            sorted(unknown_tool_result_keys(&elsewhere)),
+            vec!["errorType".to_string()],
+            "errorType outside its shape"
+        );
+        let listing = serde_json::json!({"file_list": {
+            "url": "https://claude.ai/code/artifact/a375", "ver": "v375",
+            "type": {"title": "Page", "url": "https://claude.ai/code/artifact/t375"},
+            "files": [{"path": "index.html", "content_type": "text/html", "size_bytes": 12, "sha256": "00"}],
+            "stored": {"capabilities": {}, "contract": "1.0.0"},
+            "cowritten": true, "foreign": true, "from_type": true
+        }});
+        assert_eq!(
+            sorted(unknown_tool_result_keys(&listing)),
+            none,
+            "Artifact's file listing"
+        );
+        let listing_beside = serde_json::json!({"file_list": {}, "stdout": ""});
+        assert_eq!(
+            sorted(unknown_tool_result_keys(&listing_beside)),
+            vec!["file_list".to_string()],
+            "file_list as part of another result"
+        );
+        let api_error: Value = serde_json::from_str(
+            r#"{"type":"assistant","sessionId":"s-s375","isApiErrorMessage":true,"error":"billing_error","errorDetails":"{}","errorFallbackMessage":"The request failed.","displayErrorCode":"402","message":{}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            sorted(unknown_record_keys(&api_error, "assistant", &[])),
+            sorted(vec!["displayErrorCode", "errorFallbackMessage"]),
+            "on a Claude Code record the family's keys are new"
+        );
+        assert_eq!(
+            sorted(unknown_record_keys(
+                &api_error,
+                "assistant",
+                crate::agents::qoderwork::discover::FAMILY_RECORD_KEYS
+            )),
+            none,
+            "for the family, its own"
+        );
     }
 
     /// #s215: the 2.1.308 sandbox flag on a Bash result — an object result and a failed command's

@@ -51,6 +51,19 @@ pub(crate) const FAMILY_RECORD_KEYS: &[&str] = &[
     // wording for the failure. The record's own message, which the page shows as the API error
     // (#236), already says what failed; looked at in the first sweep (2026-10-02).
     "errorFallbackMessage",
+    // #s375 (Qwenwork 1.1.71, measured 2026-11-06 on aries-black): the error's code on the same
+    // `isApiErrorMessage` record, beside `error`, `errorDetails` and `errorFallbackMessage`. Met on
+    // ONE record, in a sub-agent transcript: "402", with `error` "billing_error". The client's
+    // bundled SDK builds the record from the code and the fallback text, and its own window looks
+    // the code up in a table of its own wording, which the transcript does not keep; the record's
+    // text is the fallback, which the page draws as the failure note. The code is not in that
+    // text, and this one's text names no billing, credit or quota cause: whether an error only the
+    // person can fix should read differently from one that passes by itself is the owner's
+    // question (#s376), as `apiError`'s REVISIT put it for Claude Code. The SDK can also write
+    // `isContentFilteredMessage` here, not yet met, to be judged as its own row. REVISIT: the key
+    // on a record NOT flagged `isApiErrorMessage`, or on one whose text is empty or "[No
+    // content]", where the code would be the only cause left.
+    "displayErrorCode",
     "parent_tool_use_id",
     "humanInput",
     "requestSetId",
