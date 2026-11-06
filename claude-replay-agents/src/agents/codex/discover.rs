@@ -3,11 +3,9 @@ use claude_replay_engine::seam::{Agent, Candidate, CardMemo, CardOutcome, Sessio
 use serde_json::Value;
 #[cfg(test)]
 use std::cell::Cell;
-#[cfg(target_os = "macos")]
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
