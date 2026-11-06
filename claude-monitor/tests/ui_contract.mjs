@@ -28,7 +28,7 @@ import { agentRecordTargets, currentTurnIndex, peerHue, peerLabelRest, Projectio
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
-import { ARRANGE_SOURCES, CALM_SECS, arrangeSessions, arrangedCount, familyHolds, flatFamilies, nestSideSessions, rowLookup } from "../src/codex-ui/session-list.js";
+import { ARRANGE_SOURCES, CALM_SECS, DATE_GROUPS, arrangeSessions, arrangedCount, dateGroup, familyHolds, flatFamilies, isDefaultView, nestSideSessions, rowLookup, sectionView, viewSection } from "../src/codex-ui/session-list.js";
 import { BLOCKED_SUMMARY, BUCKETS, FILTER_BUCKETS, FILTER_LABELS, RECENT_SECS, REASONS, REASON_BUCKETS, denoteState, displayState, needsPerson, sessionBucket, sessionFilterBuckets } from "../../claude-replay-html/src/html/shared/state-labels.js";
 import { composeCapability, consentQuery, grantOutcome, runRevoke, runSend, sendOutcome, sendQuery } from "../../claude-replay-html/src/html/shared/control-protocol.js";
 import { cursorText, freshCursor, parseRecords, pullQuery, recordsQuery, reducePull } from "../../claude-replay-html/src/html/shared/record-stream.js";
@@ -862,6 +862,35 @@ assert.match(appSource, /flatFamilies\(agents, Date\.now\(\) \/ 1000\)/, "the fl
   assert.deepEqual(aliased.sections[0].nodes.map(n => n.id), [`rollout-2026-11-06T01-02-03-${uuid}`], "found by its session id, once");
   assert.ok(aliased.placed.has(`rollout-2026-11-06T01-02-03-${uuid}`), "placed under the row's own id, so it is not listed again under Not in");
   console.log("arranged list cases passed");
+}
+// #s387, the owner's hybrid: the app decides which sessions a section holds; the reader's own menu
+// sorts them (as the app gave them, last updated, date created, name; either way) and groups them
+// (the app's sub-heads, none, project, date, state), nested sessions staying under their parent.
+{
+  const node = (id, updated, created, name, project, state, children = []) => ({ id, row: { id }, title: name, children, f: { updated, created, project, state } });
+  const facts = { updated: n => n.f.updated, created: n => n.f.created, name: n => n.title, project: n => n.f.project, state: n => n.f.state, now: new Date(2026, 10, 6, 12).getTime() / 1000 };
+  const day = 86400, now = facts.now;
+  const a = node("a", now - 60, 30, "beta", "web", "idle", [node("a1", now, 1, "kid", "web", "active")]);
+  const b = node("b", now - 2 * day, 10, "Alpha", "api", "blocked");
+  const c = node("c", now - 40 * day, 20, "gamma", "api", "active");
+  const section = { id: "s", label: "S", collapsed: false, nodes: [a], groups: [{ id: "g", label: "G", collapsed: true, keep: true, nodes: [b, c] }] };
+  const ids = s => [s.nodes.map(n => n.id), s.groups.map(g => [g.label, g.nodes.map(n => n.id)])];
+  assert.deepEqual(ids(viewSection(section, undefined, facts)), [["a"], [["G", ["b", "c"]]]], "the default leaves the app's arrangement");
+  assert.ok(viewSection(section, undefined, facts).groups[0].collapsed, "and its sub-heads as the app has them");
+  assert.deepEqual(ids(viewSection(section, { sort: "name", descending: false }, facts)), [["a"], [["G", ["b", "c"]]]], "sorted inside the app's sub-heads");
+  assert.deepEqual(ids(viewSection(section, { sort: "created", descending: true }, facts)), [["a"], [["G", ["c", "b"]]]]);
+  assert.deepEqual(ids(viewSection(section, { group: "none", sort: "updated" }, facts)), [["a", "b", "c"], []], "one list, newest first");
+  assert.deepEqual(ids(viewSection(section, { group: "none", sort: "updated", descending: false }, facts)), [["c", "b", "a"], []]);
+  assert.deepEqual(viewSection(section, { group: "none", sort: "updated" }, facts).nodes[0].children.map(n => n.id), ["a1"], "a nested session stays under its parent");
+  assert.deepEqual(ids(viewSection(section, { group: "project", sort: "name", descending: false }, facts)), [[], [["api", ["b", "c"]], ["web", ["a"]]]]);
+  assert.deepEqual(ids(viewSection(section, { group: "date" }, facts)), [[], [["Today", ["a"]], ["Previous 7 days", ["b"]], ["Older", ["c"]]]], "date heads newest first");
+  assert.deepEqual(ids(viewSection(section, { group: "state" }, facts)), [[], [["Active", ["c"]], ["Blocked", ["b"]], ["Idle", ["a"]]]]);
+  assert.equal(dateGroup(now - day + 60, now), "Yesterday");
+  assert.equal(dateGroup(0, now), "No date");
+  assert.equal(DATE_GROUPS[0], "Today");
+  assert.deepEqual(sectionView({ group: "nope", sort: "name", descending: false }), { group: "app", sort: "name", descending: false }, "an unknown choice falls back");
+  assert.ok(isDefaultView({}) && !isDefaultView({ sort: "name" }));
+  console.log("section view cases passed");
 }
 assert.match(appSource, /arrangeSessions\(layout, rowLookup\(indexState\.rows\)\)/, "the arranged list places rows through the tested functions");
 // #s340: a Claude desktop side session nests under the family of the session that started it, in

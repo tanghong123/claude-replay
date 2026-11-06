@@ -11,8 +11,8 @@ import { RecordStore } from "./record-store.js";
 import { SessionIndexStore } from "./session-index-store.js";
 import { controlState, indexState, persist, recordState, selectedRow, uiState } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
-import { ARRANGE_SOURCES, arrangeSessions, arrangedCount, familyHolds, flatFamilies, nestSideSessions, rowLookup } from "./session-list.js";
-import { displayState, denoteState, sessionFilterBuckets, FILTER_BUCKETS, FILTER_LABELS, BLOCKED_SUMMARY } from "./shared/state-labels.js";
+import { ARRANGE_SOURCES, arrangeSessions, arrangedCount, familyHolds, flatFamilies, isDefaultView, nestSideSessions, rowLookup, sectionView, viewSection } from "./session-list.js";
+import { displayState, denoteState, sessionBucket, sessionFilterBuckets, FILTER_BUCKETS, FILTER_LABELS, BLOCKED_SUMMARY } from "./shared/state-labels.js";
 import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
@@ -383,6 +383,75 @@ let arrangeStrip = null;
 const ARRANGE_LABELS = { "claude-app": "the Claude app", "codex-app": "the Codex app", herdr: "Herdr" };
 // An arranged section shows this many sessions before "Show more", the selected one always.
 const ARRANGED_LIMIT = 30;
+// The section menu (#s387, the owner's hybrid): one floating menu, opened from a section head's
+// glyph, with the Claude app's section menu's choices; `sectionMenuKey` is the section it serves.
+let sectionMenu = null;
+let sectionMenuKey = null;
+let sectionMenuAnchor = null;
+const SECTION_GROUP_LABELS = { none: "None", project: "Project", date: "Date", state: "State" };
+const SECTION_SORT_LABELS = { updated: "Last updated", created: "Date created", name: "Name" };
+function sectionMenuHtml(key, label) {
+  const view = sectionView(indexState.sectionViews[key]);
+  const app = ARRANGE_LABELS[arrangeSource()] || "the app";
+  const option = (attr, value, text, on, disabled = false) => `<button class="scope-option${disabled ? " disabled" : ""}" type="button" role="radio" aria-checked="${on}" aria-disabled="${disabled}" ${attr}="${value}"><span class="scope-check"></span><span>${escapeText(text)}</span></button>`;
+  return `<div class="scope-menu-head"><strong>GROUP BY</strong><span class="section-menu-name">${escapeText(label)}</span></div>
+<div class="scope-menu-list" role="radiogroup" aria-label="Group by">${option("data-view-group", "app", `As in ${app}`, view.group === "app")}${Object.entries(SECTION_GROUP_LABELS).map(([value, text]) => option("data-view-group", value, text, view.group === value)).join("")}</div>
+<div class="scope-menu-divider"></div>
+<div class="scope-menu-head"><strong>SORT BY</strong></div>
+<div class="scope-menu-list" role="radiogroup" aria-label="Sort by">${option("data-view-sort", "app", `As in ${app}`, view.sort === "app")}${Object.entries(SECTION_SORT_LABELS).map(([value, text]) => option("data-view-sort", value, text, view.sort === value)).join("")}</div>
+<div class="scope-menu-divider"></div>
+<div class="scope-menu-list" role="radiogroup" aria-label="Order">${option("data-view-dir", "desc", "Descending", view.sort !== "app" && view.descending, view.sort === "app")}${option("data-view-dir", "asc", "Ascending", view.sort !== "app" && !view.descending, view.sort === "app")}</div>
+<div class="scope-menu-divider"></div>
+<button class="scope-option section-menu-reset${isDefaultView(view) ? " disabled" : ""}" type="button" data-view-reset aria-disabled="${isDefaultView(view)}"><span></span><span>${escapeText(`Reset to ${app}'s order`)}</span></button>`;
+}
+function placeSectionMenu() {
+  if (!sectionMenu || sectionMenu.hidden || !sectionMenuAnchor) return;
+  const r = sectionMenuAnchor.getBoundingClientRect();
+  const width = sectionMenu.offsetWidth, height = sectionMenu.offsetHeight;
+  sectionMenu.style.left = `${Math.round(Math.max(8, Math.min(r.right - width, innerWidth - width - 8)))}px`;
+  const below = r.bottom + 4;
+  sectionMenu.style.top = `${Math.round(below + height <= innerHeight - 8 ? below : Math.max(8, r.top - height - 4))}px`;
+}
+function openSectionMenu(key, label, anchor) {
+  if (!sectionMenu) {
+    sectionMenu = document.createElement("div");
+    sectionMenu.className = "navigator-options section-view-menu"; sectionMenu.id = "sectionViewMenu"; sectionMenu.hidden = true;
+    sectionMenu.setAttribute("role", "dialog");
+    document.body.appendChild(sectionMenu);
+    sectionMenu.addEventListener("click", event => {
+      const view = sectionView(indexState.sectionViews[sectionMenuKey]);
+      const pick = event.target.closest("[data-view-group], [data-view-sort], [data-view-dir], [data-view-reset]");
+      if (!pick || pick.getAttribute("aria-disabled") === "true") return;
+      if (pick.dataset.viewGroup) view.group = pick.dataset.viewGroup;
+      if (pick.dataset.viewSort) view.sort = pick.dataset.viewSort;
+      if (pick.dataset.viewDir) view.descending = pick.dataset.viewDir === "desc";
+      if (pick.hasAttribute("data-view-reset")) { delete indexState.sectionViews[sectionMenuKey]; }
+      else if (isDefaultView(view) && view.descending) delete indexState.sectionViews[sectionMenuKey];
+      else indexState.sectionViews[sectionMenuKey] = view;
+      persist(); renderTree();
+      sectionMenu.innerHTML = sectionMenuHtml(sectionMenuKey, sectionMenu.dataset.label || "");
+      sectionMenuAnchor = tree.querySelector(`[data-section-view="${CSS.escape(sectionMenuKey)}"]`) || sectionMenuAnchor;
+      placeSectionMenu();
+    });
+    document.addEventListener("pointerdown", event => { if (sectionMenu && !sectionMenu.hidden && !sectionMenu.contains(event.target) && !event.target.closest?.("[data-section-view]")) closeSectionMenu(false); }, true);
+    document.addEventListener("keydown", event => { if (event.key === "Escape" && sectionMenu && !sectionMenu.hidden) { event.stopPropagation(); closeSectionMenu(true); } }, true);
+    addEventListener("resize", placeSectionMenu);
+  }
+  if (sectionMenuKey === key && !sectionMenu.hidden) { closeSectionMenu(false); return; }
+  sectionMenuKey = key; sectionMenuAnchor = anchor; sectionMenu.dataset.label = label;
+  sectionMenu.setAttribute("aria-label", `Sort and group ${label}`);
+  sectionMenu.innerHTML = sectionMenuHtml(key, label);
+  sectionMenu.hidden = false;
+  anchor.setAttribute("aria-expanded", "true");
+  placeSectionMenu();
+}
+function closeSectionMenu(refocus) {
+  if (!sectionMenu) return;
+  const key = sectionMenuKey;
+  sectionMenu.hidden = true; sectionMenuKey = null; sectionMenuAnchor = null;
+  const anchor = key && tree.querySelector(`[data-section-view="${CSS.escape(key)}"]`);
+  if (anchor) { anchor.setAttribute("aria-expanded", "false"); if (refocus) anchor.focus(); }
+}
 
 // Hide / restore (parity #1). The control lives ON the row, where the shell keeps row-level
 // actions, and appears on hover or focus — except on a hidden row, where "restore" is the
@@ -477,18 +546,32 @@ function arrangedSessionsHtml(layout, agents, shownAgents) {
     if (nodes.length > ARRANGED_LIMIT) out += `<button class="tree-project-more" type="button" data-project-more="${escapeText(overflowKey)}" aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${nodes.length - shown.length} more`}</span><span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>`;
     return out;
   };
+  // The reader's own order and grouping per section (#s387, the owner's hybrid): the app says which
+  // sessions a section holds; the section's menu says how they are sorted and grouped here.
+  const facts = {
+    updated: item => item.row?.activityTs || 0,
+    created: item => item.row?.startTs || 0,
+    name: item => item.title || item.row?.name || item.id,
+    project: item => where.get(item.id)?.project?.name || "",
+    state: item => (item.row ? sessionBucket(item.row) : ""),
+    now: Date.now() / 1000,
+  };
+  const groupIcon = view => ({ project: "folder", date: "clock", state: "list" })[view.group] || (source === "herdr" ? "terminal" : "folder");
   let html = "";
-  for (const section of sections) {
-    const key = `L:${source}:${section.id}`;
+  for (const arranged of sections) {
+    const key = `L:${source}:${arranged.id}`;
+    const view = sectionView(indexState.sectionViews[key]);
+    const section = viewSection(arranged, view, facts);
     const open = section.collapsed ? indexState.collapsed.has(key) : !indexState.collapsed.has(key);
-    html += `<div class="agent-label arranged-head" role="treeitem" tabindex="0" data-toggle="${escapeText(key)}" aria-expanded="${open}"><span class="arranged-label">${escapeText(section.label)}</span><span class="arranged-count">${arrangedCount(section)}</span></div>`;
+    const custom = !isDefaultView(view);
+    html += `<div class="agent-label arranged-head" role="treeitem" tabindex="0" data-toggle="${escapeText(key)}" aria-expanded="${open}"><span class="arranged-label">${escapeText(section.label)}</span><span class="arranged-count">${arrangedCount(section)}</span><button class="arranged-view ${custom ? "on" : ""}" type="button" data-section-view="${escapeText(key)}" data-section-label="${escapeText(section.label)}" aria-haspopup="true" aria-expanded="${sectionMenuKey === key}" aria-label="${escapeText(`Sort and group ${section.label}`)}" title="${escapeText(custom ? `Sorted or grouped here, not as in ${layout.label}` : `Sort and group ${section.label}`)}">${svg("sliders")}</button></div>`;
     if (!open) continue;
     html += list(section.nodes, `${key}:more`, false);
     for (const group of section.groups) {
       // A sub-head opens and closes like the app's too: a Codex project folder starts closed unless
       // the person opened it there, and is drawn even when it holds no session, as the app draws it.
       const groupKey = `${key}:${group.id}`, groupOpen = group.collapsed ? indexState.collapsed.has(groupKey) : !indexState.collapsed.has(groupKey);
-      html += `<div class="tree-row project arranged-group" role="treeitem" tabindex="0" data-toggle="${escapeText(groupKey)}" aria-expanded="${groupOpen}" title="${escapeText(group.label)}">${svg(source === "herdr" ? "terminal" : "folder")}<span class="tree-title">${escapeText(group.label)}</span></div>`;
+      html += `<div class="tree-row project arranged-group" role="treeitem" tabindex="0" data-toggle="${escapeText(groupKey)}" aria-expanded="${groupOpen}" title="${escapeText(group.label)}">${svg(groupIcon(view))}<span class="tree-title">${escapeText(group.label)}</span></div>`;
       if (groupOpen) html += group.nodes.length ? list(group.nodes, `${groupKey}:more`, true) : `<div class="arranged-empty">No sessions</div>`;
     }
   }
@@ -894,6 +977,9 @@ async function applyIgnore(op, key) {
 }
 
 tree.onclick = event => {
+  // #s387: a section head's menu, before the head's own toggle.
+  const viewButton = event.target.closest("[data-section-view]");
+  if (viewButton) { event.stopPropagation(); openSectionMenu(viewButton.dataset.sectionView, viewButton.dataset.sectionLabel || "", viewButton); return; }
   const addProject = event.target.closest("[data-native-add-project]");
   if (addProject) { event.stopPropagation(); controls.newSession?.("add"); return; }
   const newSession = event.target.closest("[data-native-project]");

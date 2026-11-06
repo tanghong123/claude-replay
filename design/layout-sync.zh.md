@@ -65,6 +65,23 @@ worker 放在各自的仓库下，分散在四个地方，看不出它们是一�
 回到 "By agent and project" 的控件。这个选择按浏览器记住，和今天的 flat list 一样（`localStorage`），
 所以手机和桌面可以用不同的排列。
 
+**section 内的排序和分组由 monitor 自己决定**（2026-11-06 修订）。app 决定一个 section 包含哪些
+session、放在哪些小标题下；它们在那里怎么排序、怎么分组，由每个 section 头上的一个菜单决定，选项与
+Claude app 的 section 菜单一致：
+
+| 选择 | 选项 |
+|---|---|
+| Group by | As in the app（app 的小标题）、None、Project、Date（Today、Yesterday、Previous 7 days、Previous 30 days、Older）、State（Active、Blocked、Idle，按 session filter 的定义，#202） |
+| Sort by | As in the app、Last updated、Date created、Name |
+| Order | Descending、Ascending（排序不是 "As in the app" 时） |
+| Reset | 回到 app 的顺序 |
+
+每个 section 的选择按浏览器记住，从不写回 app；两项的默认值都是 "As in the app"，所以开箱即与 app 一致。
+这样划分的原因：排序或分组的改动不在任何 transcript 里，而 app 把它保存到 monitor 读取的文件里要么很晚、
+要么根本不保存（§3.1、§3.2），所以跟随它不可靠；哪些 session 放在哪里，是这个人花力气整理出来的，而且
+能读到。因此，在 app 里改的排序，只有等 app 保存之后，monitor 的 "As in the app" 才能看到；这个人也可以
+立刻在 monitor 的菜单里设成同样的排序。
+
 ## 3. 每个 app 存了什么，monitor 怎么读
 
 每个 app 都是 2026-11-06 在一台 Mac 上读取的：把它的文件复制到一个临时目录后读副本（从不读正在使用的
@@ -97,6 +114,11 @@ LevelDB 存储，app 会不断压缩它。为了核对 JSON 文件，从一份�
 
 只在 `localStorage` 里、也不需要读的：未读标记（monitor 有自己的已读标记）。没有存储 group 颜色。
 分屏 pane 在同一个 `epitaxyPrefs` 里，不在本提案范围内（§7）。
+
+**排序和分组设置。** section 的 `sortBy` 是 `recency`、`alpha` 或 `created`（app 自己的 sidebar 工具这样
+命名），另有 `ascending`。它的分组方式（`date`、`project`、`state`、`custom` 或 `none`）不在这个文件里：app
+报告 Sessions section 的 `group_by: project`，文件里却没有对应的 key，所以它只存在 app 的内部存储里。排序
+改动多快写进文件，没有测量。
 
 **映射。** 记录的 `cliSessionId` 就是 monitor 的行 id；全部 78 条记录都对应到一个 transcript。group
 归属用的是桌面 id（`local_<uuid>`），由记录映射到行。
@@ -160,6 +182,11 @@ sidebar 核对过：
 | `pinned-thread-ids`（顶层） | Pinned 显示的置顶 |
 | `project-order`、`local-projects`（顶层） | Projects 列表的顺序和名字，用状态文件自己的 project id，`app-server-project-id-by-legacy-project-id-by-host` 把它映射到数据库的 id |
 | `thread-project-assignments`、`projectless-thread-ids`（顶层） | app 还没把 thread 迁进数据库时它所属的 project，以及 Chats 显示的 thread |
+
+app 的排序设置也在同一个文件里：`flat-project-sidebar-preferences-v1` 包含 `chatSortMode`（文件夹内和
+Chats 里的 thread：`manual`、`updated_at` 或 `created_at`）和 `projectSortMode`（`manual`、`priority`、
+`created_at` 或 `updated_at`，取自 app 自己的代码）。在那台机器上 `projectSortMode` 是 `updated_at`，但
+app 画出的 Projects 列表遵循 `project-order`，所以原型保留 `project-order`，只读取 `chatSortMode`。
 
 一个自定义 section 可以包含 project 文件夹，而不只是 thread：在那台机器上，"Project H" 包含 5 个
 project，Projects 列表按 app 的顺序包含其余 9 个。数据库自己的 `thread_sections` 里有一个叫 "Pinned"
@@ -343,6 +370,8 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
   sidebar（Pinned 折叠，"Project H" 带 5 个文件夹，第二个自定义 section 折叠，Projects 按顺序带其余 9 个
   文件夹，全部关闭，然后是 Chats）。合入 #s383 对压缩 rollout 的读取之后，它在顶层放置的 1,276 个
   thread 全部是 monitor 的行（合入之前是 85 个）。
+- 在同一个 monitor 里试 section 菜单：把 long-running 按名字排序、按日期分组、按状态分组，再 Reset 回 app
+  的顺序；刷新页面后选择仍在，Reset 会清除它。
 - 在同一个 monitor 里：每个选项都画出对应 app 的列表；Claude app 的
   与它自己的 sidebar 列表一致（§3.1）；读不到的来源显示为不可用并给出原因；读取失败时带琥珀色说明行
   退回，之后恢复；说明行的 ✕ 回到 tree；刷新页面后选择仍在；手机抽屉在 375 px 下显示说明行和列表，

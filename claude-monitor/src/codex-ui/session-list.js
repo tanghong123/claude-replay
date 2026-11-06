@@ -134,3 +134,67 @@ export function arrangedCount(section) {
   const count = list => list.reduce((n, node) => n + 1 + count(node.children), 0);
   return count(section.nodes) + section.groups.reduce((n, group) => n + count(group.nodes), 0);
 }
+
+/** The choices of an arranged section's own menu (#s387, the owner's hybrid), as the Claude app's
+ *  section menu offers them: "app" keeps what the app gave. */
+export const SECTION_GROUPS = ["app", "none", "project", "date", "state"];
+export const SECTION_SORTS = ["app", "updated", "created", "name"];
+export const DEFAULT_SECTION_VIEW = Object.freeze({ group: "app", sort: "app", descending: true });
+
+/** A remembered view, with anything unknown put back to the default. */
+export function sectionView(saved) {
+  return {
+    group: SECTION_GROUPS.includes(saved?.group) ? saved.group : "app",
+    sort: SECTION_SORTS.includes(saved?.sort) ? saved.sort : "app",
+    descending: saved?.descending !== false,
+  };
+}
+
+/** Whether a view leaves the section as the app arranged it. */
+export const isDefaultView = view => { const v = sectionView(view); return v.group === "app" && v.sort === "app"; };
+
+/** The date heads the Date grouping draws, newest first, by the reader's local day. */
+export const DATE_GROUPS = ["Today", "Yesterday", "Previous 7 days", "Previous 30 days", "Older", "No date"];
+export function dateGroup(ts, now = Date.now() / 1000) {
+  if (!ts) return "No date";
+  const day = new Date(now * 1000); day.setHours(0, 0, 0, 0);
+  const start = day.getTime() / 1000;
+  if (ts >= start) return "Today";
+  if (ts >= start - 86400) return "Yesterday";
+  if (ts >= start - 7 * 86400) return "Previous 7 days";
+  if (ts >= start - 30 * 86400) return "Previous 30 days";
+  return "Older";
+}
+const STATE_GROUPS = [["active", "Active"], ["blocked", "Blocked"], ["idle", "Idle"], ["", "Not in this monitor's list"]];
+
+/**
+ * An arranged section in the reader's own order and grouping (#s387, the owner's hybrid): the app
+ * decides which sessions the section holds and under which sub-heads; the reader decides, per
+ * section, how they are sorted (as the app gave them, last updated, date created or name, either
+ * way) and grouped (the app's sub-heads, none, project, date or state). A session's nested ones
+ * stay under it. `facts` reads a node: `updated`, `created` (seconds), `name`, `project` (a label)
+ * and `state` ("active" | "blocked" | "idle", "" for a session the monitor has no row for), and
+ * `now` (seconds). Ties keep the app's order, so a sort is stable across refreshes.
+ */
+export function viewSection(section, view, facts) {
+  const v = sectionView(view);
+  const order = nodes => {
+    if (v.sort === "app") return nodes;
+    const key = v.sort === "name" ? node => String(facts.name(node) || "").toLowerCase() : v.sort === "created" ? node => facts.created(node) || 0 : node => facts.updated(node) || 0;
+    const sign = v.descending ? -1 : 1;
+    return nodes.map((node, at) => [node, at, key(node)])
+      .sort(([, i, x], [, j, y]) => (x < y ? -sign : x > y ? sign : 0) || i - j)
+      .map(([node]) => node);
+  };
+  if (v.group === "app") return { ...section, nodes: order(section.nodes), groups: section.groups.map(group => ({ ...group, nodes: order(group.nodes) })) };
+  const all = [...section.nodes, ...section.groups.flatMap(group => group.nodes)];
+  if (v.group === "none") return { ...section, nodes: order(all), groups: [] };
+  const labelOf = v.group === "project" ? node => facts.project(node) || "No project"
+    : v.group === "date" ? node => dateGroup(facts.updated(node), facts.now)
+    : node => (STATE_GROUPS.find(([key]) => key === (facts.state(node) || "")) || STATE_GROUPS[3])[1];
+  const buckets = new Map();
+  for (const node of all) { const label = labelOf(node); if (!buckets.has(label)) buckets.set(label, []); buckets.get(label).push(node); }
+  const rank = v.group === "date" ? label => DATE_GROUPS.indexOf(label) : v.group === "state" ? label => STATE_GROUPS.findIndex(([, l]) => l === label) : null;
+  const labels = [...buckets.keys()].sort((a, b) => rank ? rank(a) - rank(b) : a.localeCompare(b));
+  return { ...section, nodes: [], groups: labels.map(label => ({ id: `${v.group}:${label}`, label, collapsed: false, keep: false, nodes: order(buckets.get(label)) })) };
+}

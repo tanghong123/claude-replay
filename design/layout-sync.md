@@ -69,6 +69,25 @@ Claude app · follows it") with a control that goes back to "By agent and projec
 remembered per browser, as the flat list is today (`localStorage`), so a phone and a desktop can
 arrange differently.
 
+**Order and grouping inside a section are the monitor's own** (revised 2026-11-06). The app
+decides which sessions a section holds and under which sub-heads; how they are sorted and grouped
+there is a menu on each section's head with the Claude app's section menu's choices:
+
+| Choice | Options |
+|---|---|
+| Group by | As in the app (its sub-heads), None, Project, Date (Today, Yesterday, Previous 7 days, Previous 30 days, Older), State (Active, Blocked, Idle, as the session filter defines them, #202) |
+| Sort by | As in the app, Last updated, Date created, Name |
+| Order | Descending, Ascending (for a sort other than "As in the app") |
+| Reset | Back to the app's order |
+
+Each section's choice is remembered per browser and is never written to the app; the default is
+"As in the app" for both, so out of the box the list matches the app. The reason for the split: a
+sort or group change is not in any transcript, and the apps save it to the files the monitor reads
+late or not at all (§3.1, §3.2), so following it would be unreliable; which sessions sit where is
+what the person spent effort arranging, and is readable. A sort changed in the app is therefore
+seen by the monitor's "As in the app" only once the app saves it, and the person can set the same
+sort in the monitor's menu at once.
+
 ## 3. What each app holds, and how the monitor would read it
 
 Each app was read on one Mac on 2026-11-06, by copying its files to a scratch directory and reading
@@ -106,6 +125,12 @@ sessions follow their starter's group.
 Not readable outside `localStorage`, and not needed: unread marks (the monitor keeps its own). No
 group colour is stored. The split-view panes are in the same `epitaxyPrefs` and are out of scope
 (§7).
+
+**Sort and group settings.** A section's `sortBy` is `recency`, `alpha` or `created` (the app's
+own sidebar tool names them so), with `ascending`. Its grouping (`date`, `project`, `state`,
+`custom` or `none`) is not in the file: the Sessions section's `group_by: project` reported by the
+app had no key there, so it is kept only in the app's internal storage. How soon a sort change
+reaches the file is not measured.
 
 **Mapping.** A record's `cliSessionId` is the monitor's row id; all 78 records mapped to a
 transcript. Group assignments name the desktop id (`local_<uuid>`), which the record maps to the row.
@@ -178,6 +203,12 @@ against the app's own sidebar on 2026-11-06:
 | `pinned-thread-ids` (top level) | The pins Pinned draws |
 | `project-order`, `local-projects` (top level) | The Projects list's order and names, in the state file's project ids, which `app-server-project-id-by-legacy-project-id-by-host` maps to the database's |
 | `thread-project-assignments`, `projectless-thread-ids` (top level) | A thread's project while the app has not moved it into the database, and the threads Chats draws |
+
+The app's sort settings are in the same file: `flat-project-sidebar-preferences-v1` holds
+`chatSortMode` (threads in a folder and in Chats: `manual`, `updated_at` or `created_at`) and
+`projectSortMode` (`manual`, `priority`, `created_at` or `updated_at`, from the app's own code). On
+that machine `projectSortMode` was `updated_at`, yet the Projects list the app drew followed
+`project-order`, so the prototype keeps `project-order` and reads only `chatSortMode`.
 
 A custom section can hold project folders, not only threads: on that machine "Project H" held five
 projects, and the Projects list held the other nine, in the app's order. The database's own
@@ -377,6 +408,8 @@ in the app.
   the second custom section closed, Projects with the other nine folders in order, all closed, then
   Chats). All 1,276 threads it placed at the top level were monitor rows once #s383's reader for
   compressed rollouts was merged in (85 before it).
+- In the same monitor, the section menu: sorting long-running by name, grouping it by date and by
+  state, and Reset back to the app's order; the choice survives a reload and Reset clears it.
 - In the same monitor: each option draws its
   app's list; the Claude app's matched its own sidebar listing (§3.1); an unreadable source is
   offered disabled with its reason; a failing read falls back with the amber line and recovers; the

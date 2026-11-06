@@ -372,6 +372,8 @@ struct AppRecord {
     folder: Option<String>,
     /// Milliseconds since the epoch.
     last_activity: i64,
+    /// Milliseconds since the epoch.
+    created: i64,
 }
 
 /// The records read so far, each kept with the modification time and length it was read at.
@@ -448,6 +450,7 @@ fn parse_app_record(bytes: &[u8], scope: String) -> Option<AppRecord> {
             .or_else(|| v.get("createdAt"))
             .and_then(Value::as_i64)
             .unwrap_or(0),
+        created: v.get("createdAt").and_then(Value::as_i64).unwrap_or(0),
     })
 }
 
@@ -460,6 +463,9 @@ enum Order {
     Title {
         ascending: bool,
     },
+    Created {
+        ascending: bool,
+    },
     /// The person's own order (a group's `order` list, or the pins'), the rest by recency after.
     Manual,
 }
@@ -469,9 +475,11 @@ fn order_of(section: &Value) -> Order {
         .get("ascending")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    // The app's names are `recency`, `alpha` and `created` (its sidebar tool's `sort_by`).
     match section.get("sortBy").and_then(Value::as_str) {
         Some("manual" | "custom") => Order::Manual,
-        Some("title" | "name" | "alphabetical") => Order::Title { ascending },
+        Some("alpha" | "title" | "name") => Order::Title { ascending },
+        Some("created") => Order::Created { ascending },
         _ => Order::Recent { ascending },
     }
 }
@@ -498,6 +506,14 @@ fn sort_records(records: &mut [&AppRecord], order: Order, manual: &[String]) {
                 by
             } else {
                 by.reverse()
+            }
+        }),
+        Order::Created { ascending } => records.sort_by(|a, b| {
+            let by = b.created.cmp(&a.created).then_with(|| recent(a, b));
+            if ascending {
+                by.reverse()
+            } else {
+                by
             }
         }),
         Order::Manual => {
@@ -864,6 +880,8 @@ struct CodexThread {
     archived: bool,
     /// Milliseconds since the epoch.
     recency: i64,
+    /// Milliseconds since the epoch.
+    created: i64,
     parent: Option<String>,
 }
 
@@ -909,7 +927,8 @@ fn read_codex(db: &Path) -> Result<CodexData, String> {
             "SELECT id, rollout_path, COALESCE(NULLIF(TRIM(name), ''), NULLIF(TRIM(title), '')), \
              NULLIF(project_id, ''), NULLIF(thread_section_id, ''), section_position, \
              is_pinned, archived, \
-             COALESCE(NULLIF(recency_at_ms, 0), updated_at_ms, updated_at * 1000, 0) \
+             COALESCE(NULLIF(recency_at_ms, 0), updated_at_ms, updated_at * 1000, 0), \
+             COALESCE(created_at_ms, created_at * 1000, 0) \
              FROM threads",
         )
         .map_err(unknown)?;
@@ -930,6 +949,7 @@ fn read_codex(db: &Path) -> Result<CodexData, String> {
                 pinned: row.get::<_, i64>(6)? != 0,
                 archived: row.get::<_, i64>(7)? != 0,
                 recency: row.get(8)?,
+                created: row.get(9)?,
                 parent: None,
             })
         })
@@ -984,6 +1004,12 @@ struct CodexSidebar {
     projectless: Vec<String>,
     /// A project folder the person opened, by either of its ids.
     expanded: HashSet<String>,
+    /// How threads are ordered in a project folder and in Chats (`chatSortMode` of
+    /// `flat-project-sidebar-preferences-v1`): `updated_at` (the default), `created_at` or
+    /// `manual` (the person's order, `sidebar-project-thread-orders`, then the newest).
+    chat_sort: String,
+    /// The person's thread order per project, for the `manual` mode.
+    thread_orders: HashMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1164,6 +1190,22 @@ fn parse_codex_sidebar(state: &Value) -> Result<CodexSidebar, String> {
         thread_project,
         projectless: strings(state.get("projectless-thread-ids")),
         expanded,
+        chat_sort: atoms
+            .and_then(|a| a.get("flat-project-sidebar-preferences-v1"))
+            .and_then(|p| p.get("chatSortMode"))
+            .or_else(|| atoms.and_then(|a| a.get("thread-sort-key")))
+            .and_then(Value::as_str)
+            .unwrap_or("updated_at")
+            .to_string(),
+        thread_orders: state
+            .get("sidebar-project-thread-orders")
+            .and_then(Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .map(|(project, ids)| (project.clone(), strings(Some(ids))))
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -1243,9 +1285,24 @@ fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
             })
             .unwrap_or_else(|| "Project".to_string())
     };
+    // Threads in a folder and in Chats, in the app's chats order.
+    let arrange = |threads: &mut Vec<&CodexThread>, project: Option<&str>| {
+        threads.sort_by(recent);
+        match sidebar.chat_sort.as_str() {
+            "created_at" => {
+                threads.sort_by(|a, b| b.created.cmp(&a.created).then_with(|| recent(a, b)))
+            }
+            "manual" => {
+                let order = project.and_then(|p| sidebar.thread_orders.get(p));
+                let at = |t: &CodexThread| order.and_then(|o| o.iter().position(|id| *id == t.id));
+                threads.sort_by_key(|t| at(t).unwrap_or(usize::MAX));
+            }
+            _ => {}
+        }
+    };
     let folder = |project: &str| {
         let mut threads = by_project.get(project).cloned().unwrap_or_default();
-        threads.sort_by(recent);
+        arrange(&mut threads, Some(project));
         let server = sidebar.server_project.get(project);
         let open = sidebar.expanded.contains(project)
             || server.is_some_and(|s| sidebar.expanded.contains(s));
@@ -1304,7 +1361,7 @@ fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
                     .filter_map(|id| by_id.get(id.as_str()).copied())
                     .filter(|t| !t.archived && !is_child(t))
                     .collect();
-                chats.sort_by(recent);
+                arrange(&mut chats, None);
                 out.push(Section {
                     id: "chats".into(),
                     label: "Chats".into(),
@@ -1700,6 +1757,7 @@ mod tests {
             archived: false,
             folder: Some("/w/harbor".into()),
             last_activity: 1_000_000 - minutes_ago * 60_000,
+            created: 0,
         }
     }
 
@@ -1839,6 +1897,44 @@ mod tests {
             claude_layout(&json!({}), &[]),
             Err("The Claude app has no Code sessions on this machine".to_string())
         );
+    }
+
+    /// #s387: a section sorted by name or by date created, as the app names them (`alpha`,
+    /// `created`), ascending or descending.
+    #[test]
+    fn the_claude_app_layout_sorts_a_section_by_name_or_date_created() {
+        let mut a = record("local_a", "a", 1);
+        let mut b = record("local_b", "b", 3);
+        let mut c = record("local_c", "c", 2);
+        (a.title, b.title, c.title) = (
+            Some("Beta".into()),
+            Some("alpha".into()),
+            Some("Gamma".into()),
+        );
+        (a.created, b.created, c.created) = (30, 10, 20);
+        let records = vec![a, b, c];
+        let prefs = |sort: &str, ascending: bool| {
+            json!({
+                "dframe-group-scopes": { "acct/org": {
+                    "groups": [{ "id": "cg-x", "name": "X" }],
+                    "assignments": { "code:local_a": "cg-x", "code:local_b": "cg-x", "code:local_c": "cg-x" },
+                }},
+                "dframe-code-sections": { "acct/org": { "sections": [
+                    { "id": "cg-x", "kind": "manual", "order": 0, "sortBy": sort, "ascending": ascending },
+                ]}},
+            })
+        };
+        let order = |sort: &str, ascending: bool| {
+            ids(&claude_layout(&prefs(sort, ascending), &records)
+                .unwrap()
+                .sections[0]
+                .entries)
+        };
+        assert_eq!(order("recency", false), vec!["a", "c", "b"]);
+        assert_eq!(order("alpha", true), vec!["b", "a", "c"]);
+        assert_eq!(order("alpha", false), vec!["c", "a", "b"]);
+        assert_eq!(order("created", false), vec!["a", "c", "b"]);
+        assert_eq!(order("created", true), vec!["b", "c", "a"]);
     }
 
     /// #s387: records and settings are read from the app's files, read-only and tolerantly, and a
@@ -2001,12 +2097,12 @@ mod tests {
             "CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, metadata TEXT NOT NULL DEFAULT '{}', position INTEGER NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
              CREATE TABLE thread_sections (id TEXT PRIMARY KEY, name TEXT NOT NULL, appearance TEXT);
              CREATE TABLE thread_spawn_edges (parent_thread_id TEXT NOT NULL, child_thread_id TEXT NOT NULL PRIMARY KEY, status TEXT NOT NULL);
-             CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, title TEXT NOT NULL, updated_at INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0, updated_at_ms INTEGER, recency_at_ms INTEGER NOT NULL DEFAULT 0, name TEXT, is_pinned INTEGER NOT NULL DEFAULT 0, thread_section_id TEXT, section_position INTEGER, project_id TEXT);
+             CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, title TEXT NOT NULL, updated_at INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0, updated_at_ms INTEGER, recency_at_ms INTEGER NOT NULL DEFAULT 0, name TEXT, is_pinned INTEGER NOT NULL DEFAULT 0, thread_section_id TEXT, section_position INTEGER, project_id TEXT, created_at INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER);
              INSERT INTO projects VALUES ('p1', 'atlas', '{}', 0, 0, 0);
              INSERT INTO thread_sections VALUES ('s1', 'Release', NULL);
-             INSERT INTO threads VALUES ('t1', '/h/.codex/sessions/2026/11/06/rollout-2026-11-06T01-02-03-t1.jsonl.zst', 'first prompt', 1, 0, NULL, 5000, 'Renamed', 0, NULL, NULL, 'p1');
-             INSERT INTO threads VALUES ('t2', '', 'child', 1, 0, NULL, 4000, NULL, 0, NULL, NULL, NULL);
-             INSERT INTO threads VALUES ('t3', '/h/rollout-x-t3.jsonl', 'release', 1, 0, NULL, 0, '', 0, 's1', 1, NULL);
+             INSERT INTO threads VALUES ('t1', '/h/.codex/sessions/2026/11/06/rollout-2026-11-06T01-02-03-t1.jsonl.zst', 'first prompt', 1, 0, NULL, 5000, 'Renamed', 0, NULL, NULL, 'p1', 1, NULL);
+             INSERT INTO threads VALUES ('t2', '', 'child', 1, 0, NULL, 4000, NULL, 0, NULL, NULL, NULL, 1, NULL);
+             INSERT INTO threads VALUES ('t3', '/h/rollout-x-t3.jsonl', 'release', 1, 0, NULL, 0, '', 0, 's1', 1, NULL, 1, NULL);
              INSERT INTO thread_spawn_edges VALUES ('t1', 't2', 'open');",
         )
         .unwrap();
@@ -2195,6 +2291,44 @@ mod tests {
         assert!(parse_codex_sidebar(&json!({ "project-order": [] }))
             .unwrap_err()
             .contains("sidebar-custom-sections-v3"));
+    }
+
+    /// #s387: threads in a project folder and in Chats follow the app's chats order: the newest
+    /// first by default, by date created, or the person's own order.
+    #[test]
+    fn the_codex_app_layout_orders_threads_as_its_chats_sort_says() {
+        let t = |id: &str, recency: i64, created: i64| CodexThread {
+            id: id.into(),
+            row: id.into(),
+            recency,
+            created,
+            project: Some("srv-api".into()),
+            ..Default::default()
+        };
+        let data = CodexData {
+            threads: vec![t("old-new", 9, 1), t("mid", 5, 5), t("new-old", 1, 9)],
+            ..Default::default()
+        };
+        let mut sidebar = parse_codex_sidebar(&codex_state_json()).unwrap();
+        let folder = |sidebar: &CodexSidebar| {
+            let layout = codex_sidebar_layout(&data, sidebar);
+            let work = layout.sections.iter().find(|s| s.label == "Work").unwrap();
+            ids(&work.groups[0].entries)
+        };
+        assert_eq!(sidebar.chat_sort, "updated_at");
+        assert_eq!(folder(&sidebar), vec!["old-new", "mid", "new-old"]);
+        sidebar.chat_sort = "created_at".into();
+        assert_eq!(folder(&sidebar), vec!["new-old", "mid", "old-new"]);
+        sidebar.chat_sort = "manual".into();
+        sidebar
+            .thread_orders
+            .insert("lp-api".into(), vec!["mid".into(), "new-old".into()]);
+        assert_eq!(folder(&sidebar), vec!["mid", "new-old", "old-new"]);
+        // The state file's own key.
+        let mut state = codex_state_json();
+        state["electron-persisted-atom-state"]["flat-project-sidebar-preferences-v1"] =
+            json!({ "chatSortMode": "created_at", "mode": "project" });
+        assert_eq!(parse_codex_sidebar(&state).unwrap().chat_sort, "created_at");
     }
 
     /// #s387: the state file is read beside the database, re-read only when it changes, and a file

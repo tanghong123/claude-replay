@@ -27,6 +27,9 @@ export const indexState = {
     return localStorage.getItem("am-prod-session-flat") === "1" ? "flat" : "tree";
   })(),
   get flat() { return this.arrange === "flat"; },
+  // #s387, the owner's hybrid: each arranged section's own order and grouping, keyed
+  // `L:<source>:<section id>` — the reader's, never the app's — remembered like the arrangement.
+  sectionViews: json("am-prod-section-views", {}),
   // Fork families opened in the tree (view state, like classic famOpen), and whether the
   // selected id was a LIST row when chosen — a sub-agent child never is, and must not be
   // declared gone by the index poll for that reason.
@@ -132,6 +135,7 @@ export function persist() {
   localStorage.setItem("am-prod-read", JSON.stringify(indexState.read));
   localStorage.setItem("am-prod-session-filter", JSON.stringify([...indexState.buckets]));
   localStorage.setItem("am-prod-session-flat", indexState.flat ? "1" : "0");
+  localStorage.setItem("am-prod-section-views", JSON.stringify(indexState.sectionViews));
   if (["claude-app", "codex-app", "herdr"].includes(indexState.arrange)) localStorage.setItem("am-prod-session-arrange", indexState.arrange);
   else localStorage.removeItem("am-prod-session-arrange");
   if (uiState.readingChosen) localStorage.setItem(READING_KEY, JSON.stringify(uiState.reading));
