@@ -79,3 +79,57 @@ export function nestSideSessions(fams = []) {
 export function familyHolds(fam, id) {
   return fam.members.some(row => row.id === id) || (fam.sides || []).some(side => familyHolds(side, id));
 }
+
+/** The apps whose session list the list can follow (#s387), as `api/layout` names them. */
+export const ARRANGE_SOURCES = ["claude-app", "codex-app", "herdr"];
+
+/**
+ * Another app's session list over this monitor's rows (#s387, design/layout-sync.md): each section
+ * of `layout` (the server's `api/layout` answer), its entries resolved to rows by id. The list
+ * shows the SAME sessions the app shows (the owner: not only the layout, "but also those exact
+ * sessions"), so the session filter and the hides drop no entry, and an entry the monitor has no
+ * row for is kept with the app's title (`row: null`), so nothing the app lists goes missing. Each
+ * session appears once: the first entry naming it wins, and a repeat is dropped, its children with
+ * it (they were placed under the first). `rowsById` maps a row id to its row. Returns the sections
+ * that hold anything — each `{ id, label, collapsed, nodes, groups: [{ id, label, nodes }] }`, a node
+ * being `{ id, row, title, children }` — and `placed`, the ids shown.
+ */
+export function arrangeSessions(layout, rowsById = new Map()) {
+  const placed = new Set();
+  const node = entry => {
+    const id = String(entry?.id || "");
+    const row = (id && rowsById.get(id)) || null;
+    if (!id || placed.has(id) || (row && placed.has(row.id))) return null;
+    placed.add(id); if (row) placed.add(row.id);
+    const children = (entry.children || []).map(node).filter(Boolean);
+    return { id: row ? row.id : id, row, title: entry.title || null, children };
+  };
+  const nodes = entries => (entries || []).map(node).filter(Boolean);
+  const sections = [];
+  for (const section of layout?.sections || []) {
+    const top = nodes(section.entries);
+    const groups = (section.groups || [])
+      .map(group => ({ id: String(group.id), label: String(group.label || ""), nodes: nodes(group.entries) }))
+      .filter(group => group.nodes.length);
+    if (top.length || groups.length) sections.push({ id: String(section.id), label: String(section.label || ""), collapsed: !!section.collapsed, nodes: top, groups });
+  }
+  return { sections, placed };
+}
+
+/** The index's rows by id, and by the session id a row's id ends with (#s387): the monitor names a
+ *  Codex row by its rollout (`rollout-<time>-<uuid>`), while Herdr's hooks may report the bare
+ *  session id. A row's own id always wins over another's alias. */
+export function rowLookup(rows = new Map()) {
+  const lookup = new Map(rows);
+  for (const [id, row] of rows) {
+    const tail = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(id);
+    if (tail && !lookup.has(tail[1])) lookup.set(tail[1], row);
+  }
+  return lookup;
+}
+
+/** How many sessions an arranged section shows, its nested ones included (#s387). */
+export function arrangedCount(section) {
+  const count = list => list.reduce((n, node) => n + 1 + count(node.children), 0);
+  return count(section.nodes) + section.groups.reduce((n, group) => n + count(group.nodes), 0);
+}

@@ -1043,7 +1043,7 @@ fn effective_uid() -> Result<u32> {
 /// The pane's herdr socket, when it is one we may talk to: an absolute path named `herdr.sock`
 /// that is a socket owned by this process's own user (it comes from another process's
 /// environment, so it is checked rather than trusted).
-fn herdr_socket_ok(socket: &str) -> Result<std::path::PathBuf> {
+pub(crate) fn herdr_socket_ok(socket: &str) -> Result<std::path::PathBuf> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     let path = std::path::PathBuf::from(socket);
     if !path.is_absolute() || path.file_name() != Some(std::ffi::OsStr::new("herdr.sock")) {
@@ -1071,7 +1071,7 @@ fn herdr_text(prompt: &str) -> String {
 
 /// The herdr command, final when `AGENT_MONITOR_HERDR` names one (a test's stand-in), else
 /// `herdr` on PATH.
-fn herdr_program() -> std::ffi::OsString {
+pub(crate) fn herdr_program() -> std::ffi::OsString {
     std::env::var_os("AGENT_MONITOR_HERDR")
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "herdr".into())
@@ -1095,6 +1095,17 @@ const HERDR_STEP: std::time::Duration = std::time::Duration::from_secs(30);
 /// `HERDR_STEP`, its two pipes read side by side. herdr reports an error as JSON on stderr with
 /// exit 1.
 fn herdr_cli(program: &std::ffi::OsStr, socket: &std::path::Path, args: &[&str]) -> Result<String> {
+    herdr_run(program, Some(socket), args)
+}
+
+/// [`herdr_cli`] with the server optional: `herdr session list` names every server and addresses
+/// none (#s387, the Herdr layout reader). The monitor's own `HERDR_*` variables are removed either
+/// way, so a monitor running in a herdr pane never asks its own server by accident.
+pub(crate) fn herdr_run(
+    program: &std::ffi::OsStr,
+    socket: Option<&std::path::Path>,
+    args: &[&str],
+) -> Result<String> {
     use std::io::Read;
     let mut cmd = std::process::Command::new(program);
     for (key, _) in std::env::vars_os() {
@@ -1102,8 +1113,10 @@ fn herdr_cli(program: &std::ffi::OsStr, socket: &std::path::Path, args: &[&str])
             cmd.env_remove(key);
         }
     }
+    if let Some(socket) = socket {
+        cmd.env("HERDR_SOCKET_PATH", socket);
+    }
     let mut child = cmd
-        .env("HERDR_SOCKET_PATH", socket)
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

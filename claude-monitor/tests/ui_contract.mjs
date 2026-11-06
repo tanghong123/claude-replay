@@ -28,7 +28,7 @@ import { agentRecordTargets, currentTurnIndex, peerHue, peerLabelRest, Projectio
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
-import { CALM_SECS, familyHolds, flatFamilies, nestSideSessions } from "../src/codex-ui/session-list.js";
+import { ARRANGE_SOURCES, CALM_SECS, arrangeSessions, arrangedCount, familyHolds, flatFamilies, nestSideSessions, rowLookup } from "../src/codex-ui/session-list.js";
 import { BLOCKED_SUMMARY, BUCKETS, FILTER_BUCKETS, FILTER_LABELS, RECENT_SECS, REASONS, REASON_BUCKETS, denoteState, displayState, needsPerson, sessionBucket, sessionFilterBuckets } from "../../claude-replay-html/src/html/shared/state-labels.js";
 import { composeCapability, consentQuery, grantOutcome, runRevoke, runSend, sendOutcome, sendQuery } from "../../claude-replay-html/src/html/shared/control-protocol.js";
 import { cursorText, freshCursor, parseRecords, pullQuery, recordsQuery, reducePull } from "../../claude-replay-html/src/html/shared/record-stream.js";
@@ -825,6 +825,43 @@ assert.match(appSource, /families\(rows\)/, "the tree clusters fork families thr
   console.log("flat list cases passed");
 }
 assert.match(appSource, /flatFamilies\(agents, Date\.now\(\) \/ 1000\)/, "the flat list orders through the tested function");
+// #s387 (design/layout-sync.md): another app's list over the monitor's rows shows the SAME sessions
+// the app shows — every entry, a hidden or filtered row included, an id the monitor has no row for
+// kept with the app's title — each once (the first entry wins and a repeat goes with its children),
+// in the app's order, with empty sections and groups dropped.
+{
+  const rows = new Map([["a", { id: "a", name: "A", hidden: true }], ["b", { id: "b", name: "B" }], ["c", { id: "c", name: "C" }], ["d", { id: "d", name: "D" }]]);
+  const layout = { source: "claude-app", sections: [
+    { id: "pinned", label: "Pinned", collapsed: false, entries: [{ id: "b", title: "Bee", children: [] }], groups: [] },
+    { id: "g", label: "Planning", collapsed: true, entries: [{ id: "a", title: null, children: [{ id: "b", children: [] }, { id: "gone", title: "Gone away", children: [{ id: "c", children: [] }] }] }], groups: [] },
+    { id: "empty", label: "Empty", entries: [{ id: "b", children: [] }], groups: [] },
+    { id: "sessions", label: "Sessions", entries: [], groups: [{ id: "/w/x", label: "x", entries: [{ id: "d", children: [] }] }, { id: "/w/y", label: "y", entries: [] }] },
+  ] };
+  const { sections, placed } = arrangeSessions(layout, rows);
+  assert.deepEqual(sections.map(s => s.id), ["pinned", "g", "sessions"], "a section the first entries emptied is not drawn");
+  assert.equal(sections[0].nodes[0].title, "Bee", "the app's title rides on the node");
+  assert.equal(sections[1].nodes[0].row, rows.get("a"), "a hidden row the app lists is still listed");
+  assert.deepEqual(sections[1].nodes[0].children.map(n => n.id), ["gone"], "a repeat is dropped; an id with no row is kept");
+  assert.equal(sections[1].nodes[0].children[0].row, null);
+  assert.deepEqual(sections[1].nodes[0].children[0].children.map(n => n.id), ["c"], "nesting below an absent entry is kept");
+  assert.ok(sections[1].collapsed, "collapsed as the app has it");
+  assert.deepEqual(sections[2].groups.map(g => g.label), ["x"], "an empty group is not drawn");
+  assert.deepEqual([...placed].sort(), ["a", "b", "c", "d", "gone"]);
+  assert.deepEqual(sections.map(arrangedCount), [1, 3, 1], "a section counts its nested sessions");
+  assert.deepEqual(arrangeSessions(null, rows).sections, []);
+  assert.deepEqual(arrangeSessions({ sections: [{ id: "s", entries: [{ id: "" }, {}] }] }, rows).sections, [], "an entry with no id is skipped");
+  assert.deepEqual(ARRANGE_SOURCES, ["claude-app", "codex-app", "herdr"], "the sources are the server's (layout.rs Source::ALL)");
+  // A Codex row is named by its rollout; an app that names the bare session id still finds it, the
+  // row is placed once whichever name an entry uses, and the node carries the row's own id.
+  const uuid = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+  const codexRows = new Map([[`rollout-2026-11-06T01-02-03-${uuid}`, { id: `rollout-2026-11-06T01-02-03-${uuid}`, name: "cx" }]]);
+  const lookup = rowLookup(codexRows);
+  const aliased = arrangeSessions({ sections: [{ id: "s", entries: [{ id: uuid, children: [] }, { id: `rollout-2026-11-06T01-02-03-${uuid}`, children: [] }] }] }, lookup);
+  assert.deepEqual(aliased.sections[0].nodes.map(n => n.id), [`rollout-2026-11-06T01-02-03-${uuid}`], "found by its session id, once");
+  assert.ok(aliased.placed.has(`rollout-2026-11-06T01-02-03-${uuid}`), "placed under the row's own id, so it is not listed again under Not in");
+  console.log("arranged list cases passed");
+}
+assert.match(appSource, /arrangeSessions\(layout, rowLookup\(indexState\.rows\)\)/, "the arranged list places rows through the tested functions");
 // #s340: a Claude desktop side session nests under the family of the session that started it, in
 // the tree and the flat list; one whose starter is left out stays a family of its own, a loop nests
 // nothing, and a side session of a side session nests under that one.

@@ -15,6 +15,7 @@ pub mod cost;
 mod desktop_sessions;
 pub mod dialog;
 pub mod index;
+pub mod layout;
 pub mod pair_phone;
 pub mod routes;
 pub mod state;

@@ -252,6 +252,38 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
 #app.sessions-flat .tree-row.session.is-side{padding-left:calc(16px + var(--side-depth,1) * 14px)}
 #app.sessions-flat .side-head .head-actions>:is(#collapseBtn,#expandBtn){display:none}
 
+/* Another app's list (#s387, design/layout-sync.md): the app's sections as heads with a count, its
+   sub-heads (a project, a Herdr tab) as folder rows, each session a flat row (title, then agent and
+   project) — under a sub-head a step in — and a session the app lists that this monitor does not,
+   dimmed. The line over the list says which app it follows, and turns amber when that app's list
+   cannot be read; the ✕ goes back to the arrangement it replaced. */
+.sidebar>.arrange-strip{width:var(--sidebar);min-width:var(--sidebar);box-sizing:border-box;padding:2px 12px 6px;flex:none}
+#app.sidebar-off .sidebar>.arrange-strip{display:none}
+.arrange-strip-box{display:flex;align-items:flex-start;gap:6px;padding:7px 6px 7px 10px;border-radius:8px;background:color-mix(in srgb,var(--blue) 9%,transparent);color:var(--sub);font-size:12px;line-height:16px}
+.arrange-strip.warn .arrange-strip-box{background:var(--amber-bg);color:var(--ink)}
+.arrange-strip-text{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.arrange-strip-text small{font-size:11px;line-height:14px;color:var(--faint)}
+.arrange-strip.warn .arrange-strip-text small{color:var(--sub)}
+.arrange-strip-close{flex:none;width:22px;height:22px;display:grid;place-items:center;border:0;border-radius:6px;background:transparent;color:var(--faint);cursor:pointer;padding:0}
+.arrange-strip-close .icon{width:14px;height:14px}
+.arrange-strip-close:hover{background:var(--hover);color:var(--ink)}
+.arranged-head{justify-content:space-between;gap:8px}
+.arranged-head .arranged-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.arranged-head .arranged-count{flex:none;font:10px var(--mono);letter-spacing:0;color:var(--faint)}
+.arranged-head[aria-expanded="false"] .arranged-label::after{content:" ›";color:var(--faint)}
+.arranged-rest{margin-top:8px;border-top:1px solid var(--line)}
+.tree-row.project.arranged-group{padding-left:12px}
+#app.sessions-arranged .tree-row.session.arranged.in-group{padding-left:28px}
+#app.sessions-arranged .tree-row.session.arranged.is-side{padding-left:calc(16px + var(--side-depth,1) * 14px)}
+.tree-row.session.is-absent .tree-title{color:var(--faint);font-style:italic}
+.tree-row.session.is-absent .tree-context{color:var(--faint)}
+.session-filter-options .scope-option[role="radio"] .scope-check{border-radius:50%}
+.session-filter-options .scope-option.arrange-app{height:auto;min-height:30px;align-items:start;padding-top:5px;padding-bottom:5px}
+.session-filter-options .scope-option.disabled{opacity:.55;cursor:not-allowed}
+.arrange-text{display:flex;flex-direction:column;gap:1px;min-width:0}
+.arrange-note{font-size:10.5px;line-height:13px;color:var(--faint);white-space:normal}
+.arrange-note:empty{display:none}
+
 /* Reading controls (parity #7): the reference rules size code and the transcript with literals;
    production sizes them through custom properties the app root carries, so a preference is one
    property change, not a rule per element. */

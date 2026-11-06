@@ -273,6 +273,7 @@ dependencies = [
  "libc",
  "mdrev",
  "qrcode",
+ "rusqlite",
  "serde_json",
  "sha2",
 ]

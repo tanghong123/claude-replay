@@ -26,6 +26,9 @@ pub struct Backend {
     /// shown rescans at most once per [`RESCAN_COOLDOWN`], so a truly unknown id polled every
     /// second does not walk every store every second.
     pub rescanned: Mutex<Option<std::time::Instant>>,
+    /// The readers of the Claude app's, the Codex app's and Herdr's session lists (#s387), for
+    /// the app shell's Arrange choice; each keeps what it read between refreshes.
+    pub layouts: Mutex<crate::layout::Readers>,
 }
 
 /// How often an unknown id may trigger a rescan (#309).
@@ -115,6 +118,20 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
         // param, because the loopback listener only parses the request line — no method, no
         // body (serve.rs). Persisting a local hide preference at the monitor's own root is UI
         // state, not agent/terminal control, so it stays inside the read-only contract (R8).
+        // #s387 (design/layout-sync.md): another app's session list, for the Arrange choice — the
+        // Claude app's sidebar, the Codex app's threads or Herdr's workspaces, read read-only on
+        // this machine. With no `source`, whether each can be read; the page asks only while an
+        // app is chosen, or as the filter sheet opens.
+        "api/layout" => {
+            let mut readers = backend.layouts.lock().unwrap_or_else(|e| e.into_inner());
+            match query_get(query, "source") {
+                None => HttpResponse::json(readers.sources_json()),
+                Some(name) => match crate::layout::Source::parse(&index::percent_decode(name)) {
+                    Some(source) => HttpResponse::json(readers.layout_json(source)),
+                    None => HttpResponse::not_found("no such layout source"),
+                },
+            }
+        }
         "api/ignore" => {
             let resp = match (query_get(query, "add"), query_get(query, "remove")) {
                 (Some(k), _) => backend.idx.set_ignore(&index::percent_decode(k), true),
@@ -181,6 +198,7 @@ mod tests {
             scratch,
             attempts: Mutex::new(Attempts::default()),
             rescanned: Mutex::new(None),
+            layouts: Mutex::new(Default::default()),
         })
     }
 
@@ -328,6 +346,19 @@ mod tests {
         }
         // The API arms.
         assert!(body(&dispatch(&backend, &front, &get("api/sessions", ""))).contains("\"groups\""));
+        // #s387: the Arrange choice's sources, each unreadable in a test (no app is read), one
+        // source's layout, and a name it does not know.
+        assert!(body(&dispatch(&backend, &front, &get("api/layout", ""))).contains("\"sources\""));
+        assert!(body(&dispatch(
+            &backend,
+            &front,
+            &get("api/layout", "source=claude-app")
+        ))
+        .contains("\"available\":false"));
+        assert_eq!(
+            dispatch(&backend, &front, &get("api/layout", "source=nope")).code,
+            "404 Not Found"
+        );
         assert!(body(&dispatch(&backend, &front, &get("api/ignore", ""))).contains("\"ok\":false"));
         // The write routes refuse an unauthenticated GET rather than acting.
         assert!(!dispatch(&backend, &front, &get("api/send", "target=s1"))

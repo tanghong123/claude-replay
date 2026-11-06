@@ -2,9 +2,9 @@
 
 > 本文是 `design/layout-sync.md` 的中文副本；以英文版为准，两份描述同一个设计。
 >
-> **DRAFT（草案）**（#s382，2026-11-06）。这是一个提案：文中内容都还没有实现。§3 中关于各个 app 的事实，
-> 是 2026-11-06 在一台 macOS 机器上读取的，版本号见各节。demo 是 `design/layout-sync-demo.html`
-> （只含虚构的 session）。
+> **DRAFT（草案）**（#s382，2026-11-06）。这是一个提案；同一分支上有一个本地原型（prototype，#s387），
+> 按修订后的 §2 规则实现；都还没有发布。§3 中关于各个 app 的事实，是 2026-11-06 在一台 macOS 机器上
+> 读取的，版本号见各节。demo 是 `design/layout-sync-demo.html`（只含虚构的 session），早于 §2 的修订。
 
 ## 1. 问题
 
@@ -45,14 +45,21 @@ worker 放在各自的仓库下，分散在四个地方，看不出它们是一�
 一次）都按这个 app 当前的排列来画列表，直到这个人选别的选项。monitor 不复制任何东西，所以不会过时，
 也不会往 app 里写回任何东西。
 
-无论 app 里有什么，三条规则保证列表如实：
+三条规则让列表显示和 app 相同的 session，这样这个人在 app 和 monitor 之间切换时，不用再去找某个 session：
 
-1. **每个 session 恰好出现一次。** app 里没有的 session（在 "Like the Claude app" 下的 Codex
-   session、在普通终端里运行的 Claude Code、Herdr 已经关掉的 pane）放进最后一组 **Not in the Claude
-   app**（或 Codex app、或 Herdr），按今天的顺序画。
-2. **筛选和隐藏照样生效。** session filter（Active recently、Blocked、Idle，#202）和已隐藏的集合，
-   对排列后的列表的收窄效果，与对 tree 完全一样。被筛空的 group 不画。
-3. **family 保持完整。** fork（#142）和它的代表 session 待在一起，不管 app 把其中哪一个放在哪里。
+1. **由 app 决定列出哪些 session。** app 显示的每个 session 都会出现，恰好一次，位于 app 的 section
+   里、按 app 的顺序，不管 session filter（#202）或已隐藏的集合怎么说。app 列出、但 monitor 没有对应
+   行的 session，会以变暗的样子画出来，带 app 的标题和 "Not in this monitor's list"，所以 app 列出的
+   东西一个都不少。
+2. **其余的都放进最后一组。** app 里没有的 session（在 "Like the Claude app" 下的 Codex session、在
+   普通终端里运行的 Claude Code、Herdr 已经关掉的 pane）放进 **Not in the Claude app**（或 Codex
+   app、或 Herdr），默认折叠，按今天的顺序画。session filter 和已隐藏的集合对这一组的收窄效果，与对
+   tree 完全一样。
+3. **app 列出的每个 session 都是单独一行，用 app 的标题。** app 把每个 fork 当作独立的 session 列出，
+   所以 app 的 section 里不合并 fork family（#142）；在 "Not in …" 下，family 和今天一样保持完整。
+
+这些规则在 2026-11-06 修订过。初稿让筛选和隐藏作用于整个排列后的列表，并保持 fork family 完整，
+结果显示的 session 比 app 少，标题也和 app 不同。
 
 在显示某个 app 的排列时，列表顶部有一行说明（"Arranged like the Claude app · follows it"），带一个
 回到 "By agent and project" 的控件。这个选择按浏览器记住，和今天的 flat list 一样（`localStorage`），
@@ -94,6 +101,12 @@ LevelDB 存储，app 会不断压缩它。为了核对 JSON 文件，从一份�
 **映射。** 记录的 `cliSessionId` 就是 monitor 的行 id；全部 78 条记录都对应到一个 transcript。group
 归属用的是桌面 id（`local_<uuid>`），由记录映射到行。
 
+**app 实际画出什么，对照它自己的 sidebar 列表核对过**（app 的 `list_sections` 和 `list_sessions`
+回答，2026-11-06）：置顶的 session 只画在 Pinned 下，但它保留自己的 group；side session 画在它的
+starter 下，并归在 starter 的 group 里；Sessions section 按 project 分组（`group_by: project`），
+按最近活动排序；被关掉的 section（`shown: false`）不画；归档的 session 不画。原型对那台机器上 60 个
+可见 session 的排列，与这个列表逐个 section 一致，而且每一个都是 monitor 的行。
+
 **评估。** 今天就能从两个普通 JSON 文件读到，monitor 已经读了其中一半；没有受支持的接口，也没有格式
 版本。有一件事尚未确定：这个人移动一个 session 之后，app 多快重写 config 文件（读取时它已有 45 分钟没
 更新，而 session 记录只有几分钟）。在动手实现之前要先检查：把一个 session 在 group 之间移动，观察这个
@@ -127,8 +140,14 @@ OpenAI 的 Codex 桌面应用；在被读取的机器上是 `/Applications/ChatG
 `thread/section/changed` 通知。monitor 的 `claude-monitor-codex` crate 已经用这个协议调用
 `project/list` 和 `thread/list`。没有找到置顶相关的方法。
 
-**映射。** thread id 就是 rollout 文件名（`rollout-<timestamp>-<id>.jsonl`）里的 Codex session id，
-也就是 monitor 的行 id。sub-agent 的父 thread 已经写在它的 rollout 的 `session_meta` 里，monitor 会读。
+**映射。** thread 的 `rollout_path` 指向它的 rollout；rollout 文件名去掉扩展名
+（`rollout-<timestamp>-<id>`）才是 monitor 的行 id，单独的 thread id 不是。sub-agent 的父 thread 写在
+`thread_spawn_edges` 里，也写在它的 rollout 的 `session_meta` 里，monitor 会读。数据库没有保存 section
+的顺序；原型按 section 的创建顺序来画。
+
+**压缩的 rollout。** app 放进某个 section 或 project 的 612 个未归档 thread 中，有 611 个存成了
+`rollout-….jsonl.zst`，而 monitor 目前还不读这种文件（#s383）。在修好之前，"Like the Codex app" 会把
+它们画成变暗的行，也就是 app 列出、但 monitor 没有对应行的 session。
 
 **评估。** 今天只能从私有的状态文件读到，而 app 不断重写它，格式也正在迁移中。等 app-server 的存储
 写入每个 thread 的 project 之后，再通过 app-server（或以只读方式读它的数据库）来读；在那之前，大约一半
@@ -174,7 +193,7 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
 | Claude app：Sessions，按 project 分组 | app 的最后一个 section，每个 project 一个小标题，按 app 的方式排序 |
 | Claude app：一个 side session | 嵌在启动者下面，位于启动者的 section 里，可以跨 project |
 | Claude app：一个归档的 session | 一个折叠的 Archived section，在 "Not in the Claude app" 之前 |
-| Claude app：这个人输入的标题 | 在这个视图里作为该行的名字 |
+| Claude app：session 的标题（这个人输入的，或 app 自己起的） | 在这个视图里作为该行的名字 |
 | Claude app：Routines | 不显示：routine 不是 session 行 |
 | Codex app：一个置顶 thread | 第一个 section，Pinned，等置顶列表查清之后 |
 | Codex app：一个自定义 section | 一个带它名字的 section，按 app 的顺序，折叠状态与 app 相同 |
@@ -195,12 +214,16 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
 - `available`：是否读到了这个来源；没读到时，`reason` 用页面会显示的话说明原因（例如 "The Claude
   app's session list was not found on this Mac"）；
 - `sections`：一个有序列表。每个 section 有一个在刷新之间保持稳定的 `id`、一个原样取自 app 的
-  `label`、app 是否把它显示为 `collapsed`，以及有序的 `entries`。一个 entry 指向一个 monitor 行 id，
-  可以包含子 entry（嵌套）。
+  `label`、app 是否把它显示为 `collapsed`、有序的 `entries`，以及有序的 `groups`（小标题，带自己的
+  `label` 和 `entries`：一个 project、一个 Herdr tab）。一个 entry 指向一个 monitor 行 id，在 app 保存了
+  标题时带上 app 显示的 `title`，可以包含子 entry（嵌套）；
+- `note`：这个人需要知道的、关于列表有多忠实的说明（例如 app 数据库里还有多少 Codex thread 没有
+  project）。
 
-然后页面应用 §2 的三条规则：把每个 family 放在第一个指向它某个成员的 entry 处，把子 entry 嵌在父 entry
-下，丢掉指向此处没有的行的 entry，并把没有任何 entry 指向的行放进最后一组。server 不知道页面的筛选、
-隐藏或 family，所以从不替页面决定这些；由页面用它画 tree 时已有的代码来决定。
+然后页面应用 §2 的三条规则：每个 entry 只画一次，画在第一个指向它的 entry 处，作为那个 session 的行
+（monitor 没有这一行时画成变暗的行）；把子 entry 嵌在父 entry 下；把没有任何 entry 指向的行放进最后一组，
+受筛选和隐藏约束。server 不知道页面的筛选、隐藏或 family，所以从不替页面决定这些。Herdr 的 hook 可能
+上报单独的 session id，而 monitor 用 rollout 名称命名 Codex 行；页面会把 entry 匹配到 id 以它结尾的行。
 
 来自 app 的嵌套可以跨 project。这正是 §1 中协调者那个例子的要点；在这里这样做是安全的，因为这个视图里
 每一行都已经写明它的 project，和 flat list 的行一样。在 "By agent and project" 下什么都不变：tree 继续
@@ -229,7 +252,7 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
 |---|---|
 | app 没有安装，或它的存储不存在 | 选项显示为不可用，原因作为它的提示和第二行文字。 |
 | 存储存在但读不了，或格式不认识 | 同上，并在能读到时附上 app 版本。 |
-| 选中的来源在之后某次刷新时失败 | 列表退回 "By agent and project"，列表顶部写着 "Showing by project: the Claude app's list could not be read"。选择会被保留；下一次能读到来源的刷新会重新按它来画。 |
+| 选中的来源在之后某次刷新时失败 | 列表退回被 app 替换掉的那种排列（"By agent and project" 或 "One list by activity"），列表顶部用琥珀色写着 "Showing by agent and project: the Claude app's list could not be read"，并给出原因。选择会被保留；下一次能读到来源的刷新会重新按它来画。 |
 | app 写到一半的记录 | 这次刷新跳过；下一次再读。 |
 | 在手机或另一台桌面上看的人 | 看到的是 monitor 所在机器上的排列，也就是 session 运行的那台机器。 |
 
@@ -288,11 +311,27 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
 
 ## 10. 评审者如何判断它有效
 
-拟议的检查（尚未运行；这是草案）：
+**在原型（#s387）上运行过的，一台 Mac，2026-11-06：**
+
+- Rust 单元测试（`claude-monitor/src/layout.rs`），每个读取器都用虚构的存储：Claude app 从磁盘上的
+  设置和记录读出 section、group、置顶、side session 和归档；Codex app 从按实测结构建的数据库读出置顶、
+  section、project、sub-agent 和归档，结构不同的数据库会被拒绝；Herdr 从一个和两个 server 的 snapshot
+  读出 workspace、tab 和 agent pane。还有一个 `api/layout` 的 route 测试。
+- 一个关于页面放置逻辑的 node contract case：每个 entry 一次，隐藏的行和 index 里没有的 entry 都保留，
+  重复的丢掉，空 section 不画，单独的 session id 能匹配到用 rollout 命名的行。
+- 在这台机器的 app 上本地启动一个 monitor，用内置浏览器：每个选项都画出对应 app 的列表；Claude app 的
+  与它自己的 sidebar 列表一致（§3.1）；读不到的来源显示为不可用并给出原因；读取失败时带琥珀色说明行
+  退回，之后恢复；说明行的 ✕ 回到 tree；刷新页面后选择仍在；手机抽屉在 375 px 下显示说明行和列表，
+  不会横向滚动。
+
+没有运行的：在隔离存储上的 browser suite case（见下）、整个 workspace 的测试，以及 Linux。
+
+**发布前拟议的检查：**
 
 - 每个来源一个隔离的 fixture 存储和一个 browser case：选中该选项后，按 fixture 的顺序画出它的 group，
   置顶在前，保留嵌套，其余每一行在 "Not in …" 下各出现一次。
-- 同一个 case 收窄 session filter：被筛空的 group 不画；被筛掉的置顶 session 不画。
+- 同一个 case 收窄 session filter 并隐藏一个 session：app 列出的每个 session 仍然画出；只有 "Not in …"
+  被收窄。
 - 存储缺失时选项不可用并给出原因；选中时存储被移除，列表带提示退回，存储回来时排列也回来。
 - 一个协调者的 side session 在别的 project 里：在 "Like the Claude app" 下嵌在它下面，而 tree 保持不变。
 - 手机抽屉在 390×844 下显示排列后的列表和 Arrange 选择。
@@ -303,7 +342,9 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
 1. **跟随，还是复制一次？** 建议：跟随（§8）。如果跟随的读取开销过大，复制一次是备选。
 2. **先做哪些来源？** 建议：先做 Claude app（读取器已经有了，协调者例子也最常见），然后 Herdr（有发布的
    schema 和受支持的 CLI，monitor 也已经在轮询每个 server），最后在 Codex app 的 app-server 存储写入
-   每个 thread 的 project 之后再做它（§3.2）。在那之前，"Like the Codex app" 显示为不可用并说明原因。
+   每个 thread 的 project、且 monitor 能读压缩的 rollout（#s383）之后再做它（§3.2）。原型把 "Like the
+   Codex app" 作为可选项提供，并附一行说明还有多少 thread 没有 project，而不是显示为不可用，这样这个人
+   能看到它今天的效果。
 3. **新的 route，还是给 `api/sessions` 的行加字段？** 建议：route（§5）。这是一个 fleet 视图和
    attention report 目前都不读的公共接口，所以对它们没有影响；但和 #s342 一样，仍需维护者决定。
 4. **按浏览器记住，还是所有浏览器共用一个选择？** 建议：按浏览器，和 flat list 一样。共用的选择需要一个
@@ -318,4 +359,5 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
 
 `design/layout-sync-demo.html` 是一个基于虚构 session 的可点击 mockup：左边是 monitor 的侧边栏，旁边是
 所选 app 自己的列表以便对照，包含 Arrange 选择、每个来源、"Not in …" 组、筛选作用于排列后的列表、来源
-缺失的情况，以及手机宽度。
+缺失的情况，以及手机宽度。它做于 §2 修订之前，仍然让筛选作用于整个排列后的列表；原型（#s387）按修订后的
+规则实现。

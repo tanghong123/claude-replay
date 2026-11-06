@@ -1,8 +1,9 @@
 # Arranging the session list like the Claude app, the Codex app or Herdr
 
-> **DRAFT** (#s382, 2026-11-06). A proposal: nothing here is built. The facts about each app in §3
-> were read on one macOS machine on 2026-11-06, with the versions named there. The demo is
-> `design/layout-sync-demo.html` (synthetic sessions only).
+> **DRAFT** (#s382, 2026-11-06). A proposal, with a local prototype on the same branch (#s387) that
+> follows the revised rules of §2; nothing is released. The facts about each app in §3 were read on
+> one macOS machine on 2026-11-06, with the versions named there. The demo is
+> `design/layout-sync-demo.html` (synthetic sessions only); it predates the revision of §2.
 
 ## 1. The problem
 
@@ -44,16 +45,24 @@ the index (every 5 s today) draws the list in the app's current arrangement, unt
 chooses another option. Nothing is copied into the monitor, so nothing goes stale, and nothing is
 written back to the app.
 
-Three rules keep the list honest whatever the app holds:
+Three rules make the list show the same sessions as the app, so the person can move between the
+app and the monitor without hunting for a session:
 
-1. **Every session appears exactly once.** A session the app does not hold (a Codex session under
-   "Like the Claude app", a Claude Code run in a plain terminal, a pane Herdr has closed) goes to a
-   last group, **Not in the Claude app** (or Codex app, or Herdr), drawn in today's order.
-2. **The filter and hides still apply.** The session filter (Active recently, Blocked, Idle, #202)
-   and the hidden set narrow the arranged list exactly as they narrow the tree. A group the filter
-   empties is not drawn.
-3. **A family stays whole.** Forks (#142) stay together under their representative, wherever the
-   app places any member.
+1. **The app decides which sessions are listed.** Every session the app shows appears, exactly once,
+   in the app's section and order, whatever the session filter (#202) or the hidden set says. A
+   session the app lists that the monitor has no row for is drawn dimmed, with the app's title and
+   "Not in this monitor's list", so nothing the app lists is missing.
+2. **Everything else goes to one last group.** A session the app does not hold (a Codex session
+   under "Like the Claude app", a Claude Code run in a plain terminal, a pane Herdr has closed) goes
+   to **Not in the Claude app** (or the Codex app, or Herdr), collapsed, in today's order. The
+   session filter and the hidden set narrow that group exactly as they narrow the tree.
+3. **Each session the app lists is its own row, with the app's title.** The app lists each fork as
+   a session of its own, so the app's sections do not merge fork families (#142); under "Not in …"
+   a family stays whole as it does today.
+
+These rules were revised on 2026-11-06. The first draft applied the filter and the hides to the
+whole arranged list and kept fork families whole, which showed fewer sessions than the app did and
+under different titles.
 
 While an app's arrangement is shown, a line at the top of the list says so ("Arranged like the
 Claude app · follows it") with a control that goes back to "By agent and project". The choice is
@@ -101,6 +110,14 @@ group colour is stored. The split-view panes are in the same `epitaxyPrefs` and 
 **Mapping.** A record's `cliSessionId` is the monitor's row id; all 78 records mapped to a
 transcript. Group assignments name the desktop id (`local_<uuid>`), which the record maps to the row.
 
+**What the app draws, checked against its own sidebar listing** (the app's `list_sections` and
+`list_sessions` answers, 2026-11-06): a pinned session is drawn under Pinned only, though it keeps
+its group; a side session is drawn under its starter and is reported in its starter's group; the
+Sessions section groups by project (`group_by: project`) and sorts by recency; a section switched
+off (`shown: false`) is not drawn; an archived session is not drawn. The prototype's arrangement of
+that machine's 60 visible sessions matched the listing section for section, and every one of them
+was a monitor row.
+
 **Assessment.** Readable today from two plain JSON files the monitor half-reads already, with no
 supported interface and no format version. One fact is not established: how soon the app rewrites
 the config file after the person moves a session (it was 45 minutes old when read, and the session
@@ -139,9 +156,15 @@ and which list the app draws was not established.
 `claude-monitor-codex` crate already speaks this protocol for `project/list` and `thread/list`. No
 method for pins was found.
 
-**Mapping.** A thread id is the Codex session id in the rollout's name
-(`rollout-<timestamp>-<id>.jsonl`), which is the monitor's row id. A sub-agent's parent is already
-in its rollout's `session_meta`, which the monitor reads.
+**Mapping.** A thread's `rollout_path` names the rollout, and the rollout's name without its
+extension (`rollout-<timestamp>-<id>`) is the monitor's row id; the bare thread id is not. A
+sub-agent's parent is in `thread_spawn_edges`, and also in its rollout's `session_meta`, which the
+monitor reads. The database keeps no order for sections; the prototype draws them in the order they
+were made.
+
+**Compressed rollouts.** Of the 612 live threads the app files into a section or a project, 611 are
+stored as `rollout-….jsonl.zst`, which the monitor does not read yet (#s383). Until it does, "Like
+the Codex app" draws them dimmed, as sessions the app lists that the monitor has no row for.
 
 **Assessment.** Readable today only from the private state file, which the app rewrites constantly
 and whose format is mid-migration. Read through the app-server (or its database, read-only) once
@@ -190,7 +213,7 @@ live pane-to-row mapping was observed; the Claude hook (v11) and the Codex hook 
 | Claude app: Sessions, grouped by project | A last app section with one sub-head per project, sorted as the app sorts it |
 | Claude app: a side session | Nested under its starter, in the starter's section, across projects |
 | Claude app: an archived session | A collapsed Archived section, before "Not in the Claude app" |
-| Claude app: a title the person typed | The row's name in this view |
+| Claude app: a session's title (typed by the person, or the app's own) | The row's name in this view |
 | Claude app: Routines | Nothing: a routine is not a session row |
 | Codex app: a pinned thread | First section, Pinned, once the pin list is known |
 | Codex app: a custom section | A section with its name, in the app's order, collapsed as in the app |
@@ -211,13 +234,18 @@ A **layout** is what the server hands the page for one source:
 - `available`: whether the source was read; when it was not, `reason` says why in words the page
   shows (for example "The Claude app's session list was not found on this Mac");
 - `sections`: an ordered list. Each has an `id` stable across refreshes, a `label` taken verbatim
-  from the app, whether the app shows it `collapsed`, and ordered `entries`. An entry names a monitor
-  row id and may hold child entries (nesting).
+  from the app, whether the app shows it `collapsed`, ordered `entries`, and ordered `groups` (a
+  sub-head with its own `label` and `entries`: a project, a Herdr tab). An entry names a monitor row
+  id, carries the `title` the app shows when it keeps one, and may hold child entries (nesting);
+- `note`: anything the person should know about how faithful the list is (for example how many
+  Codex threads have no project in the app's database yet).
 
-The page then applies the three rules of §2: it places each family at the first entry naming one of
-its members, nests children under their parent entry, drops entries that name no row here, and puts
-every row no entry named into the last group. The server does not know the page's filter, hides or
-families, so it never decides them; the page does, with the code it already uses for the tree.
+The page then applies the three rules of §2: it draws each entry once, at the first entry naming it,
+as that session's row (a dimmed row when the monitor has none), nests children under their parent
+entry, and puts every row no entry named into the last group, under the filter and the hides. The
+server does not know the page's filter, hides or families, so it never decides them. A Herdr hook
+may report a bare session id where the monitor names a Codex row by its rollout; the page matches an
+entry to a row whose id ends with it.
 
 Nesting from the app may cross projects. That is the point of the coordinator case in §1, and it is
 safe here because every row in this view already says its project, as rows in the flat list do.
@@ -249,7 +277,7 @@ Each reader:
 |---|---|
 | The app is not installed, or its store is absent | The option is shown disabled, with the reason as its tooltip and second line. |
 | The store is present but unreadable, or its format is not recognised | The same, with the app version read when one is known. |
-| The chosen source fails at a later refresh | The list falls back to "By agent and project" and its head says "Showing by project: the Claude app's list could not be read". The choice is kept; the next refresh that reads the source draws it again. |
+| The chosen source fails at a later refresh | The list falls back to the arrangement the app replaced ("By agent and project", or "One list by activity") and its head says, in amber, "Showing by agent and project: the Claude app's list could not be read", with the reason. The choice is kept; the next refresh that reads the source draws it again. |
 | A record half-written by the app | Skipped for that refresh; read again at the next. |
 | A reader on a phone or another desktop | Sees the arrangement on the monitor's own machine, which is the machine the sessions run on. |
 
@@ -313,13 +341,31 @@ in the app.
 
 ## 10. How a reviewer can tell it works
 
-Proposed checks (none run yet; this is a draft):
+**Run on the prototype (#s387), on one Mac, 2026-11-06:**
+
+- Rust unit tests (`claude-monitor/src/layout.rs`) for each reader on synthetic stores: the Claude
+  app's sections, groups, pins, side sessions and archive from its settings and records on disk;
+  the Codex app's pins, sections, projects, sub-agents and archive from a database in its measured
+  shape, a database of another shape refused; Herdr's workspaces, tabs and agent panes from
+  snapshots of one and of two servers. A route test for `api/layout`.
+- A node contract case for the page's placement: every entry once, hidden rows and rows with no
+  index entry kept, repeats dropped, empty sections not drawn, a bare session id matched to a
+  rollout-named row.
+- A locally started monitor on this machine's apps, in the built-in browser: each option draws its
+  app's list; the Claude app's matched its own sidebar listing (§3.1); an unreadable source is
+  offered disabled with its reason; a failing read falls back with the amber line and recovers; the
+  line's ✕ returns to the tree; the choice survives a reload; the phone drawer at 375 px shows the
+  line and the list without scrolling sideways.
+
+Not run: browser-suite cases on hermetic stores (below), the full workspace test suite, and Linux.
+
+**Proposed checks for a release:**
 
 - For each source, a hermetic fixture store and a browser case: choosing the option draws the
   fixture's groups in its order, its pins first, its nesting, and every other row once under
   "Not in …".
-- The same case with the session filter narrowed: groups it empties are not drawn; a pinned session
-  the filter hides is not drawn.
+- The same case with the session filter narrowed and a session hidden: every session the app lists
+  is still drawn; only "Not in …" narrows.
 - A missing store disables the option with its reason; a store removed while chosen falls back with
   the notice and returns when the store does.
 - A coordinator with side sessions in other projects nests them under "Like the Claude app" and
@@ -334,7 +380,9 @@ Proposed checks (none run yet; this is a draft):
 2. **Which sources first?** Recommended: the Claude app first (its reader exists, and the coordinator
    case is the common one), then Herdr (a published schema and a supported CLI, and the monitor
    already polls each server), then the Codex app once its app-server store holds each thread's
-   project (§3.2). Until then "Like the Codex app" is shown disabled, saying why.
+   project (§3.2) and the monitor reads compressed rollouts (#s383). The prototype offers "Like the
+   Codex app" with a note saying how many threads have no project yet, rather than disabled, so the
+   person can see what it does today.
 3. **A new route, or new fields on `api/sessions` rows?** Recommended: the route (§5). It is a public
    interface the fleet view and the attention report do not read today, so it changes nothing for
    them; it still needs the maintainer's decision, as #s342 did.
@@ -351,4 +399,6 @@ Proposed checks (none run yet; this is a draft):
 
 `design/layout-sync-demo.html` is a clickable mockup on invented sessions: the monitor's sidebar on
 the left, the chosen app's own list beside it for comparison, the Arrange choice, each source, the
-"Not in …" group, the filter applied to an arranged list, a missing source, and a phone width.
+"Not in …" group, the filter applied to an arranged list, a missing source, and a phone width. It
+was made before the revision of §2 and still applies the filter to the whole arranged list; the
+prototype (#s387) follows the revised rules.

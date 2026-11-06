@@ -19,7 +19,7 @@ use std::time::SystemTime;
 
 /// A record bigger than this is not read: the ids sit at its top, and the largest measured was a
 /// few kilobytes, but a record can carry a side session's report.
-const RECORD_LIMIT: u64 = 1 << 20;
+pub(crate) const RECORD_LIMIT: u64 = 1 << 20;
 
 /// Where the desktop app keeps its session records: `CLAUDE_DESKTOP_SESSIONS_DIR` when set (a
 /// test's hermetic store), else `~/Library/Application Support/Claude/claude-code-sessions` on
@@ -90,7 +90,7 @@ impl DesktopSessions {
 /// The record files: `local_*.json` exactly two directories below the store (account, then
 /// organization). Other files there (`scheduled-tasks.json`, measured on aries-black) are not
 /// session records.
-fn record_paths(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn record_paths(root: &Path) -> Vec<PathBuf> {
     let dirs = |dir: &Path| -> Vec<PathBuf> {
         std::fs::read_dir(dir)
             .map(|entries| {

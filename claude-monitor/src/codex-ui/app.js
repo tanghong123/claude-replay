@@ -11,7 +11,7 @@ import { RecordStore } from "./record-store.js";
 import { SessionIndexStore } from "./session-index-store.js";
 import { controlState, indexState, persist, recordState, selectedRow, uiState } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
-import { familyHolds, flatFamilies, nestSideSessions } from "./session-list.js";
+import { ARRANGE_SOURCES, arrangeSessions, arrangedCount, familyHolds, flatFamilies, nestSideSessions, rowLookup } from "./session-list.js";
 import { displayState, denoteState, sessionFilterBuckets, FILTER_BUCKETS, FILTER_LABELS, BLOCKED_SUMMARY } from "./shared/state-labels.js";
 import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
@@ -251,6 +251,8 @@ const sessionIndex = new SessionIndexStore({
   update: () => {
     if (indexState.selected && indexState.selectedWasRow && !selectedRow()) sessionGone();
     renderTree(); renderHeader(); controls.paint();
+    // #s387: an app's list is followed at the index's own pace.
+    refreshLayout();
     // The open session's workers (#s53) are index rows, not records: their arrival and their state
     // reach the Agents pane on the index's poll, which redraws the outline only when they changed.
     if (recordState.session && workersKey(sessionWorkers()) !== lastWorkers) renderNavigator();
@@ -369,6 +371,19 @@ function agentGlyph(id, name) {
 // #s206: the flat list shows this many families before "Show more", the selected one always.
 const FLAT_SESSION_LIMIT = 30;
 
+// #s387 (design/layout-sync.md): another app's list. `layoutState` holds the chosen source's last
+// answer from `api/layout`, asked at every index refresh while a source is chosen and never
+// otherwise; `sourceState` whether each source can be read, asked as the filter sheet opens.
+// `arrangeBefore` is the arrangement an app replaced: the list falls back to it while the app's
+// list cannot be read, and the strip's ✕ returns to it.
+let layoutState = { source: null, data: null, error: null, text: null, loading: null };
+let sourceState = {};
+let arrangeBefore = "tree";
+let arrangeStrip = null;
+const ARRANGE_LABELS = { "claude-app": "the Claude app", "codex-app": "the Codex app", herdr: "Herdr" };
+// An arranged section shows this many sessions before "Show more", the selected one always.
+const ARRANGED_LIMIT = 30;
+
 // Hide / restore (parity #1). The control lives ON the row, where the shell keeps row-level
 // actions, and appears on hover or focus — except on a hidden row, where "restore" is the
 // whole point of showing it. The key is the server's (`ignoreKey`), passed through verbatim.
@@ -380,7 +395,7 @@ function treeAction(target, kind) {
 // A row, or a fork family's representative (`fam`): the family's state and age, not just the
 // rep's — a forked conversation is "running" when any fork is — plus a fork count that opens
 // the other members, indented, the way the classic rail's ⑂ chip does (#142).
-function sessionTreeRow(row, fam = null, member = false, context = null, side = null) {
+function sessionTreeRow(row, fam = null, member = false, context = null, side = null, name = null) {
   const forked = fam && fam.forks.length ? fam : null;
   const denote = forked && forked.growing && stateDenote(row)?.tone !== "busy" ? { label: "A fork is running", tone: "busy" } : stateDenote(row);
   const newest = forked ? forked.members.reduce((a, b) => ((b.activityTs || 0) > (a.activityTs || 0) ? b : a), row) : row;
@@ -392,8 +407,10 @@ function sessionTreeRow(row, fam = null, member = false, context = null, side = 
   // #s340: a Claude desktop side session wears a mark of its own under its starter (the fork
   // chip means a copied conversation; a side session is a conversation of its own). `side` is
   // `{ depth, starter }`: how deep it nests, and its starter's title.
-  const sideMark = side ? `<span class="tree-side" role="img" aria-label="Side session" title="${escapeText(`Started from “${side.starter}” in the Claude desktop app`)}">↳</span>` : "";
-  const title = `${sideMark}<span class="tree-title">${escapeText(row.name || row.id)}</span>`;
+  // #s387: an arranged row takes the title the app shows (`name`), and its mark says where it sits.
+  const sideMark = side ? `<span class="tree-side" role="img" aria-label="Side session" title="${escapeText(side.via || `Started from “${side.starter}” in the Claude desktop app`)}">↳</span>` : "";
+  // Over a context line (an arranged row, #s387) the mark rides inside the title's line.
+  const title = context && sideMark ? `<span class="tree-title">${sideMark}${escapeText(name || row.name || row.id)}</span>` : `${sideMark}<span class="tree-title">${escapeText(name || row.name || row.id)}</span>`;
   const main = context ? `<span class="tree-main">${title}<span class="tree-context"><span class="tree-agent" role="img" aria-label="${escapeText(context.agent.name)}" title="${escapeText(context.agent.name)}">${agentGlyph(context.agent.id, context.agent.name)}</span><span class="tree-project" title="${escapeText(context.project.path || context.project.name)}">${escapeText(context.project.name)}</span></span></span>` : title;
   return `<div class="tree-row session ${context ? "flat" : ""} ${row.id === indexState.selected ? "selected" : ""} ${row.hidden ? "is-hidden" : ""} ${member ? "is-member" : ""} ${side ? "is-side" : ""}"${side ? ` style="--side-depth:${side.depth}"` : ""} role="treeitem" tabindex="0" data-session="${escapeText(row.id)}" title="${escapeText(displayState(row).label)} · ${escapeText(row.stateDetail || "")}">${main}<span class="session-end">${chip}${treeAction(row, "session")}${marker}<span class="session-age">${escapeText(newest.activity || row.activity || "")}</span></span></div>`;
 }
@@ -425,6 +442,79 @@ function flatSessionsHtml(agents, overflowKey = "flat") {
   const hidden = fams.filter(fam => !shown.includes(fam)).length;
   if (fams.length > FLAT_SESSION_LIMIT) html += `<button class="tree-project-more" type="button" data-project-more="${escapeText(overflowKey)}" aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span><span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>`;
   return html;
+}
+
+/** Another app's list (#s387, design/layout-sync.md): its sections and sub-heads in its order, each
+ *  session the app lists as a row with the app's title — whatever the session filter or a hide
+ *  says, since the point is the SAME sessions as the app — and an entry this monitor has no row
+ *  for kept, dimmed, so nothing the app lists is missing. Every other session the monitor lists
+ *  follows in one collapsed group, "Not in …", under the filter and the hides as ever, drawn as the
+ *  flat list draws. `agents` is the whole grouped index (for each row's agent and project);
+ *  `shownAgents` is the filtered tree. A section opens and closes like the app's (collapsed as the
+ *  app has it) and the reader's flip of it is remembered with the tree's. */
+function arrangedSessionsHtml(layout, agents, shownAgents) {
+  const source = layout.source;
+  const where = new Map();
+  for (const agent of agents) for (const project of agent.projects) for (const row of project.sessions) where.set(row.id, { agent: { id: agent.id, name: agentName(agent.id) }, project });
+  const { sections, placed } = arrangeSessions(layout, rowLookup(indexState.rows));
+  const node = (item, depth, parent, grouped) => {
+    const side = depth ? { depth, starter: parent, via: `Under “${parent}” in ${layout.label}` } : null;
+    const html = item.row
+      ? sessionTreeRow(item.row, null, false, where.get(item.id) || null, side, item.title).replace('class="tree-row session ', `class="tree-row session arranged ${grouped && !depth ? "in-group " : ""}`)
+      : absentRowHtml(item, side, layout.label, grouped);
+    const name = item.title || item.row?.name || item.id;
+    return html + item.children.map(child => node(child, depth + 1, name, grouped)).join("");
+  };
+  // A long section shows its first sessions and a "Show more", as a project does in the tree; the
+  // selected session is always shown.
+  const holds = (item, id) => item.id === id || item.children.some(child => holds(child, id));
+  const list = (nodes, overflowKey, grouped) => {
+    const expanded = indexState.expandedProjects.has(overflowKey);
+    let shown = expanded ? nodes : nodes.slice(0, ARRANGED_LIMIT);
+    const selected = nodes.find(item => holds(item, indexState.selected));
+    if (!expanded && selected && !shown.includes(selected)) shown = shown.concat(selected);
+    let out = shown.map(item => node(item, 0, "", grouped)).join("");
+    if (nodes.length > ARRANGED_LIMIT) out += `<button class="tree-project-more" type="button" data-project-more="${escapeText(overflowKey)}" aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${nodes.length - shown.length} more`}</span><span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>`;
+    return out;
+  };
+  let html = "";
+  for (const section of sections) {
+    const key = `L:${source}:${section.id}`;
+    const open = section.collapsed ? indexState.collapsed.has(key) : !indexState.collapsed.has(key);
+    html += `<div class="agent-label arranged-head" role="treeitem" tabindex="0" data-toggle="${escapeText(key)}" aria-expanded="${open}"><span class="arranged-label">${escapeText(section.label)}</span><span class="arranged-count">${arrangedCount(section)}</span></div>`;
+    if (!open) continue;
+    html += list(section.nodes, `${key}:more`, false);
+    for (const group of section.groups) {
+      const groupKey = `${key}:${group.id}`, groupOpen = !indexState.collapsed.has(groupKey);
+      html += `<div class="tree-row project arranged-group" role="treeitem" tabindex="0" data-toggle="${escapeText(groupKey)}" aria-expanded="${groupOpen}" title="${escapeText(group.id)}">${svg(source === "herdr" ? "terminal" : "folder")}<span class="tree-title">${escapeText(group.label)}</span></div>`;
+      if (groupOpen) html += list(group.nodes, `${groupKey}:more`, true);
+    }
+  }
+  // Everything else the monitor lists: the filtered tree less what the app placed, collapsed.
+  const restTree = shownAgents.map(agent => ({ ...agent, projects: agent.projects.map(project => ({ ...project, rows: project.rows.filter(row => !placed.has(row.id)) })).filter(project => project.rows.length) })).filter(agent => agent.projects.length);
+  const rest = nestSideSessions(flatFamilies(restTree, Date.now() / 1000));
+  if (rest.length) {
+    const key = `L:${source}:rest`, open = indexState.collapsed.has(key);
+    const count = rest.reduce((n, fam) => n + 1 + fam.forks.length + (fam.sides || []).length, 0);
+    html += `<div class="agent-label arranged-head arranged-rest" role="treeitem" tabindex="0" data-toggle="${escapeText(key)}" aria-expanded="${open}" title="Sessions this monitor lists that ${escapeText(layout.label)} does not, under the session filter and hides"><span class="arranged-label">Not in ${escapeText(layout.label)}</span><span class="arranged-count">${count}</span></div>`;
+    if (open) {
+      const overflowKey = `L:${source}:rest`, expanded = indexState.expandedProjects.has(overflowKey);
+      let shown = expanded ? rest : rest.slice(0, FLAT_SESSION_LIMIT);
+      const selectedFam = rest.find(fam => familyHolds(fam, indexState.selected));
+      if (!expanded && selectedFam && !shown.includes(selectedFam)) shown = shown.concat(selectedFam);
+      for (const fam of shown) html += familyRowsHtml(fam, { agent: { id: fam.agent.id, name: agentName(fam.agent.id) }, project: fam.project });
+      const hidden = rest.filter(fam => !shown.includes(fam)).length;
+      if (rest.length > FLAT_SESSION_LIMIT) html += `<button class="tree-project-more" type="button" data-project-more="${escapeText(overflowKey)}" aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span><span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>`;
+    }
+  }
+  return html;
+}
+
+/** A session the app lists that this monitor has no row for (#s387): the app's title, dimmed,
+ *  saying so; choosing it still asks the monitor for the session, which may find it. */
+function absentRowHtml(item, side, label, grouped) {
+  const sideMark = side ? `<span class="tree-side" role="img" aria-label="Side session" title="${escapeText(side.via)}">↳</span>` : "";
+  return `<div class="tree-row session flat arranged is-absent ${grouped && !side ? "in-group" : ""} ${side ? "is-side" : ""} ${item.id === indexState.selected ? "selected" : ""}"${side ? ` style="--side-depth:${side.depth}"` : ""} role="treeitem" tabindex="0" data-session="${escapeText(item.id)}" title="${escapeText(`Listed in ${label}; not in this monitor's list`)}"><span class="tree-main"><span class="tree-title">${sideMark}${escapeText(item.title || item.id)}</span><span class="tree-context"><span class="tree-project">Not in this monitor's list</span></span></span></div>`;
 }
 
 /** One agent's projects and their session rows, as the tree draws them — the sidebar and the
@@ -465,8 +555,17 @@ function renderTree() {
   lastShownAgents = shownAgents;
   // #s206: one list by activity, or the tree. Flat, no group is collapsed and nothing is left to
   // expand, so Collapse every group and Expand every group go with the heads (`sessions-flat`).
-  app.classList.toggle("sessions-flat", indexState.flat);
-  if (indexState.flat) html = flatSessionsHtml(shownAgents);
+  // #s387: or another app's list, while it reads; until it does, or when it cannot be read, the
+  // arrangement it replaced, under a line that says so.
+  const source = arrangeSource();
+  const layout = source && layoutState.source === source ? layoutState.data : null;
+  const arranged = !!layout?.available;
+  const flat = indexState.flat || (source && !arranged && arrangeBefore === "flat");
+  paintArrangeStrip(source, layout);
+  app.classList.toggle("sessions-flat", flat || arranged);
+  app.classList.toggle("sessions-arranged", arranged);
+  if (arranged) html = arrangedSessionsHtml(layout, agents, shownAgents);
+  else if (flat) html = flatSessionsHtml(shownAgents);
   else for (const agent of shownAgents) {
     const agentKey = `a:${agent.id}`, openAgent = !indexState.collapsed.has(agentKey);
     html += `<div class="agent-label" role="treeitem" tabindex="0" data-toggle="${escapeText(agentKey)}" aria-expanded="${openAgent}">${escapeText(agent.name)}${agent.id === "codex" && controls.projectActions ? `<button class="native-project-add" type="button" data-native-add-project aria-label="Add Codex project" title="Add project"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 19H3V5h6l2 2h10v5M17 14v8m-4-4h8"/></svg></button>` : ""}</div>`;
@@ -524,8 +623,11 @@ filterSheet.innerHTML = `<div class="scope-menu-head"><strong>SHOW</strong><butt
 <button class="scope-option" type="button" role="checkbox" aria-checked="false" data-include-hidden title="Show the sessions, projects and agents you have hidden, dimmed"><span class="scope-check"></span><span>Include hidden</span><span class="scope-count" data-bucket-count="hidden"></span></button>
 </div>
 <div class="scope-menu-divider"></div>
-<div class="scope-menu-list">
-<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-flat title="One list, most recent activity first, without the agent and project groups: each session names its project and agent"><span class="scope-check"></span><span>One list by activity</span></button>
+<div class="scope-menu-head"><strong>ARRANGE</strong></div>
+<div class="scope-menu-list" role="radiogroup" aria-label="Arrange the sessions">
+<button class="scope-option" type="button" role="radio" aria-checked="false" data-arrange="tree" title="Grouped by agent, then by project"><span class="scope-check"></span><span>By agent and project</span></button>
+<button class="scope-option" type="button" role="radio" aria-checked="false" data-arrange="flat" data-flat title="One list, most recent activity first, without the agent and project groups: each session names its project and agent"><span class="scope-check"></span><span>One list by activity</span></button>
+${ARRANGE_SOURCES.map(key => `<button class="scope-option arrange-app" type="button" role="radio" aria-checked="false" data-arrange="${key}" title="${escapeText(`The sessions ${ARRANGE_LABELS[key]} shows, in its sections and order, following it as it changes; everything else under “Not in ${ARRANGE_LABELS[key]}”`)}"><span class="scope-check"></span><span class="arrange-text"><span>Like ${escapeText(ARRANGE_LABELS[key])}</span><small class="arrange-note" data-arrange-note="${key}"></small></span></button>`).join("")}
 </div>`;
 document.querySelector(".side-head").appendChild(filterSheet);
 const filterMini = document.createElement("button");
@@ -544,6 +646,7 @@ function setBuckets(next) {
 }
 function toggleFilterSheet(open) {
   if (!open && railFlyoutFor === "filter") { closeRailFlyout(false); return; }
+  if (open) refreshSources();
   filterSheet.hidden = !open; filterBtn.setAttribute("aria-expanded", String(open));
   fitFilterSheet();
 }
@@ -563,7 +666,15 @@ filterMini.onclick = () => { if (railFlyoutFor === "filter" && railFlyoutPinned)
 filterSheet.addEventListener("click", event => {
   if (event.target.closest("[data-filter-reset]")) { setBuckets(FILTER_BUCKETS); return; }
   if (event.target.closest("[data-include-hidden]")) { indexState.showHidden = !indexState.showHidden; renderTree(); return; }
-  if (event.target.closest("[data-flat]")) { indexState.flat = !indexState.flat; persist(); renderTree(); return; }
+  // #s387: an arrangement. One list by activity keeps its checkbox's toggle (#s206): chosen again,
+  // it goes back to the tree. A source that cannot be read is not chosen.
+  const arrange = event.target.closest("[data-arrange]");
+  if (arrange) {
+    if (arrange.getAttribute("aria-disabled") === "true") return;
+    const next = arrange.dataset.arrange;
+    setArrange(next === "flat" && indexState.arrange === "flat" ? "tree" : next);
+    return;
+  }
   const option = event.target.closest("[data-bucket]"); if (!option) return;
   const bucket = option.dataset.bucket;
   const next = new Set(indexState.buckets); if (next.has(bucket)) next.delete(bucket); else next.add(bucket);
@@ -592,7 +703,7 @@ function railFlyoutBody() {
   if (railFlyoutFor === "filter") return null;
   const agent = lastShownAgents.find(item => item.id === railFlyoutFor);
   const name = agentName(railFlyoutFor);
-  const rows = !agent ? "" : indexState.flat ? flatSessionsHtml([agent], `flat:${agent.id}`) : agentProjectsHtml(agent);
+  const rows = !agent ? "" : indexState.arrange !== "tree" ? flatSessionsHtml([agent], `flat:${agent.id}`) : agentProjectsHtml(agent);
   return `<div class="rail-flyout-head">${escapeText(name)}</div><div class="rail-flyout-tree" role="tree" aria-label="${escapeText(name)} sessions">${rows || `<div class="no-results">${bucketFilterActive() ? "No sessions in this filter" : "No sessions"}</div>`}</div>`;
 }
 function placeRailFlyout() {
@@ -674,6 +785,73 @@ railFlyout.addEventListener("keydown", event => {
 document.addEventListener("keydown", event => { if (event.key === "Escape" && !railFlyout.hidden) { event.stopPropagation(); closeRailFlyout(true); } }, true);
 document.addEventListener("pointerdown", event => { if (!railFlyout.hidden && !railFlyout.contains(event.target) && !railMarks.contains(event.target) && !filterMini.contains(event.target)) closeRailFlyout(false); }, true);
 addEventListener("resize", () => { if (!railFlyout.hidden) placeRailFlyout(); });
+function arrangeSource() { return ARRANGE_SOURCES.includes(indexState.arrange) ? indexState.arrange : null; }
+function setArrange(next) {
+  if (!["tree", "flat", ...ARRANGE_SOURCES].includes(next) || next === indexState.arrange) return;
+  if (!arrangeSource()) arrangeBefore = indexState.arrange;
+  indexState.arrange = next;
+  if (layoutState.source !== arrangeSource()) layoutState = { source: null, data: null, error: null, text: null, loading: null };
+  persist(); renderTree(); refreshLayout();
+}
+function refreshLayout() {
+  const source = arrangeSource();
+  if (!source || layoutState.loading) return layoutState.loading || Promise.resolve();
+  const loading = fetch(`/api/layout?source=${encodeURIComponent(source)}`, { cache: "no-store" })
+    .then(response => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.text(); })
+    .then(text => {
+      if (arrangeSource() !== source) return;
+      const changed = text !== layoutState.text || layoutState.error;
+      layoutState = { ...layoutState, source, text, data: JSON.parse(text), error: null };
+      if (layoutState.data && !layoutState.data.available) sourceState[source] = { available: false, reason: layoutState.data.reason };
+      if (changed) renderTree();
+    })
+    .catch(error => {
+      if (arrangeSource() !== source) return;
+      const changed = layoutState.error !== error.message;
+      layoutState = { ...layoutState, source, data: null, text: null, error: error.message };
+      if (changed) renderTree();
+    })
+    .finally(() => { if (layoutState.loading === loading) layoutState.loading = null; });
+  layoutState.loading = loading;
+  return loading;
+}
+function refreshSources() {
+  return fetch("/api/layout", { cache: "no-store" })
+    .then(response => response.ok ? response.json() : null)
+    .then(data => {
+      if (!data) return;
+      sourceState = Object.fromEntries((data.sources || []).map(item => [item.source, { available: !!item.available, reason: item.reason || "" }]));
+      renderTree();
+    })
+    .catch(() => {});
+}
+/** The line over an arranged list: which app it follows (and anything the app's list leaves out),
+ *  that it is being read, or that it cannot be — with a ✕ back to the arrangement it replaced. */
+function paintArrangeStrip(source, layout) {
+  if (!arrangeStrip) {
+    arrangeStrip = document.createElement("div");
+    arrangeStrip.className = "arrange-strip"; arrangeStrip.id = "arrangeStrip"; arrangeStrip.hidden = true;
+    arrangeStrip.setAttribute("role", "status");
+    tree.insertAdjacentElement("beforebegin", arrangeStrip);
+    arrangeStrip.addEventListener("click", event => { if (event.target.closest("[data-arrange-off]")) setArrange(arrangeBefore); });
+  }
+  if (!source) { arrangeStrip.hidden = true; return; }
+  const label = ARRANGE_LABELS[source];
+  const back = arrangeBefore === "flat" ? "one list by activity" : "by agent and project";
+  let text, detail = "", warn = false;
+  if (layout?.available) {
+    text = `Arranged like ${label} · follows it`;
+    const empty = (layout.sections || []).every(section => !(section.entries || []).length && (section.groups || []).every(group => !(group.entries || []).length));
+    detail = layout.note || (empty ? `${label[0].toUpperCase()}${label.slice(1)} lists no sessions right now` : "");
+  }
+  else if (layout || layoutState.error) { warn = true; text = `Showing ${back}: ${label}'s list could not be read`; detail = layout?.reason || layoutState.error || ""; }
+  else text = `Reading ${label}'s list…`;
+  const html = `<div class="arrange-strip-box"><span class="arrange-strip-text"><span>${escapeText(text)}</span>${detail ? `<small>${escapeText(detail)}</small>` : ""}</span><button class="arrange-strip-close" type="button" data-arrange-off aria-label="${escapeText(`Stop arranging like ${label}`)}" title="${escapeText(`Stop arranging like ${label} — back to ${back}`)}">${svg("x")}</button></div>`;
+  if (arrangeStrip.dataset.html !== html) { arrangeStrip.innerHTML = html; arrangeStrip.dataset.html = html; }
+  arrangeStrip.classList.toggle("warn", warn);
+  arrangeStrip.hidden = false;
+}
+
 /** Paint the glyphs and the sheet from the one state. */
 function renderFilterControl(counts, shown, total) {
   if (!indexState.ignoredCount) indexState.showHidden = false;
@@ -687,8 +865,18 @@ function renderFilterControl(counts, shown, total) {
   }
   const include = filterSheet.querySelector("[data-include-hidden]");
   include.classList.toggle("on", indexState.showHidden); include.setAttribute("aria-checked", String(indexState.showHidden));
-  const flat = filterSheet.querySelector("[data-flat]");
-  flat.classList.toggle("on", indexState.flat); flat.setAttribute("aria-checked", String(indexState.flat));
+  for (const option of filterSheet.querySelectorAll("[data-arrange]")) {
+    const key = option.dataset.arrange, on = indexState.arrange === key;
+    option.classList.toggle("on", on); option.setAttribute("aria-checked", String(on));
+    if (!ARRANGE_SOURCES.includes(key)) continue;
+    // A source that cannot be read is offered with the reason, and not chosen — unless it is the
+    // one chosen, which stays checked and says why it is not drawn.
+    const known = sourceState[key];
+    const off = !!known && !known.available && !on;
+    option.classList.toggle("disabled", off); option.setAttribute("aria-disabled", String(off));
+    const note = filterSheet.querySelector(`[data-arrange-note="${key}"]`);
+    if (note) note.textContent = known && !known.available ? known.reason || "Cannot be read" : "";
+  }
   for (const el of filterSheet.querySelectorAll("[data-bucket-count]")) {
     const key = el.dataset.bucketCount;
     el.textContent = String(key === "hidden" ? indexState.ignoredCount : counts[key] || 0);

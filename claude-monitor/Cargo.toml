@@ -39,6 +39,12 @@ sha2 = "0.10"
 # no image features, so no image dependencies.
 qrcode = { version = "0.14", default-features = false }
 
+# The Codex app's thread database, read read-only for the Arrange choice (#s387). macOS-only, as in
+# the agents crate: the Codex app ships there, and a Linux build never compiles the workspace's one
+# C dependency. `bundled` so the build never depends on the host's libsqlite3.
+[target.'cfg(target_os = "macos")'.dependencies]
+rusqlite = { version = "0.40", features = ["bundled"] }
+
 [dev-dependencies]
 # The html crate's signing key and its render and mask policies come from the state directory,
 # which the tests redirect one at a time through a process-wide variable (`StateEnv`); with the
