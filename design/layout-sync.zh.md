@@ -145,9 +145,9 @@ OpenAI 的 Codex 桌面应用；在被读取的机器上是 `/Applications/ChatG
 `thread_spawn_edges` 里，也写在它的 rollout 的 `session_meta` 里，monitor 会读。数据库没有保存 section
 的顺序；原型按 section 的创建顺序来画。
 
-**压缩的 rollout。** app 放进某个 section 或 project 的 612 个未归档 thread 中，有 611 个存成了
-`rollout-….jsonl.zst`，而 monitor 目前还不读这种文件（#s383）。在修好之前，"Like the Codex app" 会把
-它们画成变暗的行，也就是 app 列出、但 monitor 没有对应行的 session。
+**压缩的 rollout。** Codex 会把 7 天没动过的 rollout 压缩成 `rollout-….jsonl.zst`；app 放进某个 section
+或 project 的 612 个未归档 thread 中，有 611 个是这样存的。monitor 从 #s383 起能读这种文件；在那之前，
+"Like the Codex app" 把它们画成变暗的行，也就是 app 列出、但 monitor 没有对应行的 session。
 
 **sidebar 本身**只存在状态文件里，位于 `electron-persisted-atom-state` 下，2026-11-06 对照 app 自己的
 sidebar 核对过：
@@ -341,8 +341,8 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
   重复的丢掉，空 section 不画，单独的 session id 能匹配到用 rollout 命名的行。
 - 在这台机器的 app 上本地启动一个 monitor，用内置浏览器："Like the Codex app" 按 app 显示的样子画出了它的
   sidebar（Pinned 折叠，"Project H" 带 5 个文件夹，第二个自定义 section 折叠，Projects 按顺序带其余 9 个
-  文件夹，全部关闭，然后是 Chats）。它在顶层放置的 1,276 个 thread 中，有 85 个是 monitor 的行；其余是
-  压缩的 rollout（#s383），画成变暗的行。
+  文件夹，全部关闭，然后是 Chats）。合入 #s383 对压缩 rollout 的读取之后，它在顶层放置的 1,276 个
+  thread 全部是 monitor 的行（合入之前是 85 个）。
 - 在同一个 monitor 里：每个选项都画出对应 app 的列表；Claude app 的
   与它自己的 sidebar 列表一致（§3.1）；读不到的来源显示为不可用并给出原因；读取失败时带琥珀色说明行
   退回，之后恢复；说明行的 ✕ 回到 tree；刷新页面后选择仍在；手机抽屉在 375 px 下显示说明行和列表，
@@ -365,10 +365,9 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
 
 1. **跟随，还是复制一次？** 建议：跟随（§8）。如果跟随的读取开销过大，复制一次是备选。
 2. **先做哪些来源？** 建议：先做 Claude app（读取器已经有了，协调者例子也最常见），然后 Herdr（有发布的
-   schema 和受支持的 CLI，monitor 也已经在轮询每个 server），最后在 Codex app 的 app-server 存储写入
-   每个 thread 的 project、且 monitor 能读压缩的 rollout（#s383）之后再做它（§3.2）。原型把 "Like the
-   Codex app" 作为可选项提供，并附一行说明还有多少 thread 没有 project，而不是显示为不可用，这样这个人
-   能看到它今天的效果。
+   schema 和受支持的 CLI，monitor 也已经在轮询每个 server），最后是 Codex app：它的 sidebar 只能从一个私有的
+   状态文件读到，app 在任何一次发布中都可能改动它（§3.2）。原型三个都提供；Codex 的读取器最可能在 app
+   发布后需要更新，当文件结构不是它认识的样子时，会在原因里说明。
 3. **新的 route，还是给 `api/sessions` 的行加字段？** 建议：route（§5）。这是一个 fleet 视图和
    attention report 目前都不读的公共接口，所以对它们没有影响；但和 #s342 一样，仍需维护者决定。
 4. **按浏览器记住，还是所有浏览器共用一个选择？** 建议：按浏览器，和 flat list 一样。共用的选择需要一个

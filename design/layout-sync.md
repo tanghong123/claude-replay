@@ -162,9 +162,10 @@ sub-agent's parent is in `thread_spawn_edges`, and also in its rollout's `sessio
 monitor reads. The database keeps no order for sections; the prototype draws them in the order they
 were made.
 
-**Compressed rollouts.** Of the 612 live threads the app files into a section or a project, 611 are
-stored as `rollout-….jsonl.zst`, which the monitor does not read yet (#s383). Until it does, "Like
-the Codex app" draws them dimmed, as sessions the app lists that the monitor has no row for.
+**Compressed rollouts.** Codex compresses a rollout untouched for seven days into
+`rollout-….jsonl.zst`; of the 612 live threads the app files into a section or a project, 611 were
+stored that way. The monitor reads them since #s383; before that, "Like the Codex app" drew them
+dimmed, as sessions the app lists that the monitor has no row for.
 
 **The sidebar itself** is only in the state file, under `electron-persisted-atom-state`, checked
 against the app's own sidebar on 2026-11-06:
@@ -374,8 +375,8 @@ in the app.
 - A locally started monitor on this machine's apps, in the built-in browser: "Like the Codex app"
   drew the app's sidebar as the app showed it (Pinned closed, "Project H" with its five folders,
   the second custom section closed, Projects with the other nine folders in order, all closed, then
-  Chats). Of the 1,276 threads it placed at the top level, 85 were monitor rows; the rest are
-  compressed rollouts (#s383) and are drawn dimmed.
+  Chats). All 1,276 threads it placed at the top level were monitor rows once #s383's reader for
+  compressed rollouts was merged in (85 before it).
 - In the same monitor: each option draws its
   app's list; the Claude app's matched its own sidebar listing (§3.1); an unreadable source is
   offered disabled with its reason; a failing read falls back with the amber line and recovers; the
@@ -404,10 +405,10 @@ Not run: browser-suite cases on hermetic stores (below), the full workspace test
    proves too costly to read.
 2. **Which sources first?** Recommended: the Claude app first (its reader exists, and the coordinator
    case is the common one), then Herdr (a published schema and a supported CLI, and the monitor
-   already polls each server), then the Codex app once its app-server store holds each thread's
-   project (§3.2) and the monitor reads compressed rollouts (#s383). The prototype offers "Like the
-   Codex app" with a note saying how many threads have no project yet, rather than disabled, so the
-   person can see what it does today.
+   already polls each server), then the Codex app, whose sidebar is readable only from a private
+   state file that the app may change in any release (§3.2). The prototype offers all three; the
+   Codex reader is the one most likely to need an update after an app release, and says so in its
+   reason when the file's shape is not one it knows.
 3. **A new route, or new fields on `api/sessions` rows?** Recommended: the route (§5). It is a public
    interface the fleet view and the attention report do not read today, so it changes nothing for
    them; it still needs the maintainer's decision, as #s342 did.
