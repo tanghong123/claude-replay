@@ -950,6 +950,8 @@ function paintArrangeStrip(source, layout) {
     const empty = (layout.sections || []).every(section => !(section.entries || []).length && (section.groups || []).every(group => !(group.entries || []).length));
     detail = layout.note || (empty ? `${label[0].toUpperCase()}${label.slice(1)} lists no sessions right now` : "");
   }
+  // A failed read from before the reader last stopped is old news: the source is being read again.
+  else if (layout?.stale) text = `Reading ${label}'s list…`;
   else if (layout || layoutState.error) { warn = true; text = `Showing ${back}: ${label}'s list could not be read`; detail = layout?.reason || layoutState.error || ""; }
   else text = `Reading ${label}'s list…`;
   const html = `<div class="arrange-strip-box"><span class="arrange-strip-text"><span>${escapeText(text)}</span>${detail ? `<small>${escapeText(detail)}</small>` : ""}</span><button class="arrange-strip-close" type="button" data-arrange-off aria-label="${escapeText(`Stop arranging like ${label}`)}" title="${escapeText(`Stop arranging like ${label} — back to ${back}`)}">${svg("x")}</button></div>`;

@@ -207,12 +207,22 @@ dimmed, as sessions the app lists that the monitor has no row for.
 in `~/.codex/sqlite/codex.db`). Measured on that machine: the 81 `codex exec` runs and the sub-agent
 threads (971 reviewer sub-agents, and every spawned child) are in the threads table but not in the
 catalogue, and none of them is filed into a section or a project. The prototype therefore draws only
-catalogued threads. Where the catalogue is missing or does not read (a machine read during review
-had no `codex.db`), it leaves out the same threads by the `source` the threads table gives each one
-— `exec`, or a `subagent` object; the app's own threads say `vscode`, the CLI's `cli` — and the line
-over the list says the list is the monitor's guess. Measured 2026-11-07 on the first machine, the
-guess holds 2,791 live threads where the catalogue lists 2,772: the 19 more are `vscode` threads the
-catalogue does not hold. A busy catalogue, like a busy database, keeps the last read.
+catalogued threads.
+
+The app's own code says how it fills that catalogue (its catalogue builder, read in app 26.1103.31037
+on 2026-11-07): it leaves out a thread that is ephemeral, has a parent thread, or has one of three
+internal `threadSource` values, and a thread whose `source` is `exec` or is not a string (a
+`subagent` object, or any object other than `{"custom": "<name>"}`). Every other source is listed:
+the app's own threads (`vscode`), the CLI's (`cli`), an app-server or MCP run, and `unknown`.
+
+Where the catalogue is missing or does not read (a machine read during review had no `codex.db`),
+the prototype applies the part of that rule the threads table can answer — the `source` — and the
+line over the list says the list is the monitor's guess. An ephemeral thread or one with a parent
+cannot be told from the table alone: measured 2026-11-07 on the first machine, the guess holds 2,791
+live threads where the catalogue lists 2,772. The 19 more are `vscode` threads: 9 forked threads and
+1 whose parent the table names; why the app leaves out the other 9 was not established. A database with no `source` column (an older app) is still
+read; without the catalogue every thread then counts, and the note says so. A busy catalogue, like a
+busy database, keeps the last read.
 
 **The sidebar itself** is only in the state file, under `electron-persisted-atom-state`, checked
 against the app's own sidebar on 2026-11-06:
@@ -379,11 +389,18 @@ read the Mac's disk, and the server already keeps a cached reader for one of the
 `desktop_sessions.rs`, which re-reads a record only when its modification time or length changes).
 Each reader:
 
-- reads only, never holds a write lock on the app's files, and makes none. A reader of an SQLite
-  database in WAL mode makes its `-shm` and `-wal` beside it when they are absent, and they stay
-  after it closes (measured with SQLite 3.54); so a WAL database with no `-wal` (no writer has it
-  open, and every committed page is in the main file) is opened immutable, which makes nothing,
-  and one a writer has open is read through that writer's own `-wal`;
+- reads only, never holds a write lock on the app's files, and makes none of its own. A reader of
+  an SQLite database in WAL mode makes its `-shm` and `-wal` beside it when they are absent, and
+  they stay after it closes (measured with SQLite 3.54); so a WAL database with no `-wal` (no writer
+  has it open, and every committed page is in the main file) is opened immutable, which makes
+  nothing, and one a writer has open is read through that writer's own `-wal`. An immutable read
+  takes no lock, so when a writer reaches the file during it (a `-wal` appears, or the file
+  changes), the read is treated as busy and the last read stands. In practice the immutable branch
+  is rare: the monitor's own Codex title reader (in the agents crate, outside this change) opens the
+  same database read-only in the usual way, so on a machine running the monitor its `-wal` and
+  `-shm` are usually already there;
+- never keeps part of a list as the whole: a row whose value has an unexpected type is counted in
+  the note and the rest still read, but any other error part-way through a scan fails the read;
 - skips a record it cannot parse and ignores keys it does not know, as #s340's reader does;
 - has an environment override for its location, so the browser cases run on a hermetic store, as
   every other store here has;
@@ -397,9 +414,8 @@ Each reader:
 | Situation | What the person sees |
 |---|---|
 | The app is not installed, or its store is absent | The option is shown disabled, with the reason as its tooltip and second line. |
-| The store is present but unreadable, or its format is not recognised | The same, with the app version read when one is known. |
-| The chosen source fails at a later refresh | The list falls back to the arrangement the app replaced ("By agent and project", or "One list by activity") and its head says, in amber, "Showing by agent and project: the Claude app's list could not be read", with the reason. The choice is kept; the next refresh that reads the source draws it again. |
-| A source whose last read failed, with its files still there | Still offered; its second line says "Last read: …" with what the read met. Choosing it reads it again. |
+| The store is present but does not read, or its format is not recognised | Still offered, since only missing files disable a source; its second line says "Last read: …" with what the read met. Chosen, it is read again, and while it does not read it falls back as in the next row. |
+| The chosen source fails at a later refresh | The list falls back to the arrangement the app replaced ("By agent and project", or "One list by activity") and its head says, in amber, "Showing by agent and project: the Claude app's list could not be read", with the reason. The choice is kept; the next refresh that reads the source draws it again. A failure kept from before the reader last stopped says "Reading …" instead, since the source is being read again. |
 | The Codex app keeps no catalogue of its threads, or it does not read | The list is drawn, leaving out `codex exec` runs and sub-agents by their source (§3.2), and the line over it says the list is the monitor's guess. |
 | A record half-written by the app | Skipped for that refresh; read again at the next. |
 | A reader on a phone or another desktop | Sees the arrangement on the monitor's own machine, which is the machine the sessions run on. |
@@ -528,9 +544,20 @@ stand-in the harness gives every monitor, so no case reads this machine's apps o
   either database. With the source rule turned off the case fails.
 - At 844 × 390 the section menu's scrim no longer dims the screen; it still takes the closing tap.
 
+**Added after the third review:**
+
+- Unit cases: an immutable read a writer reached (its `-wal` appears) is busy, and an ordinary read
+  is never treated so; only a value of the wrong type in a row is counted, while an error such as
+  `SQLITE_CORRUPT` is not; a database with no `source` column still reads and says so; the
+  headless rule follows the app's (an MCP or app-server run, `unknown` and a custom source are
+  listed; `exec` and any other object are not).
+- The Codex browser case's `sqlite3` runs with `-init /dev/null`, so no `~/.sqliterc` reaches it.
+
 Not run: the iOS Simulator walk (upright, sideways, light, dark): this machine has no simulator
 tools. Linux. The Herdr browser case has no row the monitor links to a pane, so the pane-first
-matching is held by the node contract only.
+matching is held by the node contract only. The Codex reader's unit cases and its browser case
+compile on macOS only, as the agents crate's Codex reader does (a Linux build compiles no C
+dependency), so the Linux CI does not run them.
 
 **Proposed checks for a release:**
 

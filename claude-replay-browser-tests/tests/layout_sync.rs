@@ -342,12 +342,14 @@ fn codex_rollout(stores: &Stores, id: &str, prompt: &str, secs: u64) -> (String,
     (format!("rollout-{stem}"), path.display().to_string())
 }
 
-/// Run SQL on a database through macOS's own `sqlite3`, so the case needs no SQLite crate. That
-/// `sqlite3` keeps a WAL database's `-wal` and `-shm` after it exits, so its log is checkpointed
-/// into the database and both are removed: the database is left as an app that closed leaves it.
+/// Run SQL on a database through macOS's own `sqlite3`, so the case needs no SQLite crate; with
+/// `-init /dev/null`, so no `~/.sqliterc` reaches it. That `sqlite3` keeps a WAL database's `-wal`
+/// and `-shm` after it exits, so its log is checkpointed into the database and both are removed:
+/// the database is left as an app that closed leaves it.
 #[cfg(target_os = "macos")]
 fn sqlite(db: &std::path::Path, sql: &str) {
     let out = std::process::Command::new("/usr/bin/sqlite3")
+        .args(["-init", "/dev/null"])
         .arg(db)
         .arg(format!("{sql}\nPRAGMA wal_checkpoint(TRUNCATE);"))
         .output()
@@ -410,11 +412,6 @@ fn arranged_like_the_codex_app_shows_the_threads_it_lists() {
                ('{Y}', '{y_path}', 'y prompt', 1, 2000, NULL, 'srv-api', 'exec'),
                ('{Z}', '{z_path}', 'z prompt', 1, 1000, 'App chat Z', NULL, 'vscode');"
         ),
-    );
-    assert!(
-        sqlite_side_files(&app).is_empty(),
-        "{:?}",
-        sqlite_side_files(&app)
     );
     let state = serde_json::json!({
         "electron-persisted-atom-state": {

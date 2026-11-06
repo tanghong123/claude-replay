@@ -181,11 +181,19 @@ OpenAI 的 Codex 桌面应用；在被读取的机器上是 `/Applications/ChatG
 **app 列出哪些 thread。** app 自己有一份它所列 thread 的目录（catalogue，`~/.codex/sqlite/codex.db` 里的
 `local_thread_catalog`）。在那台机器上测得：81 个 `codex exec` 运行和 sub-agent thread（971 个 reviewer
 sub-agent，以及所有派生出来的子 thread）都在 threads 表里，但不在这份目录里，也没有一个被放进 section 或
-project。所以原型只画目录里有的 thread。目录不存在或读不了时（评审时读到的一台机器上就没有 `codex.db`），
-原型按 threads 表给每个 thread 的 `source` 排除同样的 thread——`exec`，或一个 `subagent` 对象；app 自己的
-thread 是 `vscode`，CLI 的是 `cli`——并在列表上方的说明行里说明这份列表是 monitor 的推测。2026-11-07 在第一台
-机器上测得：推测得到 2,791 个未归档的 thread，目录列出 2,772 个，多出的 19 个是目录里没有的 `vscode` thread。
-目录忙时，和数据库忙时一样，保留上一次读到的结果。
+project。所以原型只画目录里有的 thread。
+
+app 自己的代码说明了它怎样填这份目录（它的目录构建代码，2026-11-07 在 app 26.1103.31037 里读到）：它排除
+ephemeral（临时）的 thread、有父 thread 的 thread、`threadSource` 是三个内部值之一的 thread，以及 `source` 为
+`exec` 或不是字符串的 thread（`subagent` 对象，或除 `{"custom": "<name>"}` 以外的任何对象）。其他 source 都会
+列出：app 自己的 thread（`vscode`）、CLI 的（`cli`）、app-server 或 MCP 方式的运行，以及 `unknown`。
+
+目录不存在或读不了时（评审时读到的一台机器上就没有 `codex.db`），原型只应用这条规则里 threads 表能回答的
+部分——`source`——并在列表上方的说明行里说明这份列表是 monitor 的推测。ephemeral 的 thread 和有父 thread 的
+thread 单凭这张表分辨不出来：2026-11-07 在第一台机器上测得，推测得到 2,791 个未归档的 thread，目录列出 2,772
+个。多出的 19 个都是 `vscode` thread：9 个是 fork 出来的 thread，1 个在表里写明了父 thread；app 为什么不列出另外
+9 个，没有查清。没有 `source` 列的数据库（较旧的 app）仍然能读；
+这时如果没有目录，每个 thread 都算，note 里会说明。目录忙时，和数据库忙时一样，保留上一次读到的结果。
 
 **sidebar 本身**只存在状态文件里，位于 `electron-persisted-atom-state` 下，2026-11-06 对照 app 自己的
 sidebar 核对过：
@@ -338,10 +346,15 @@ herdr 按读取线程自己的节奏去问，和 monitor 的 `HerdrReader` 一�
 为其中一个存储保留了带缓存的读取器（#s340 的 `desktop_sessions.rs`，只在一条记录的修改时间或长度变化时
 才重读）。每个读取器：
 
-- 只读，从不对 app 的文件持有写锁，也不创建任何文件。读 WAL 模式的 SQLite 数据库时，如果旁边没有 `-shm`
-  和 `-wal`，读取者会创建它们，关闭后也不会删除（用 SQLite 3.54 测过）；所以没有 `-wal` 的 WAL 数据库（没有
-  写入者打开它，所有已提交的页都在主文件里）以 immutable（不可变）方式打开，不创建任何文件；有写入者打开时，
-  通过那个写入者自己的 `-wal` 读取；
+- 只读，从不对 app 的文件持有写锁，自己也不创建任何文件。读 WAL 模式的 SQLite 数据库时，如果旁边没有
+  `-shm` 和 `-wal`，读取者会创建它们，关闭后也不会删除（用 SQLite 3.54 测过）；所以没有 `-wal` 的 WAL 数据库
+  （没有写入者打开它，所有已提交的页都在主文件里）以 immutable（不可变）方式打开，不创建任何文件；有写入者
+  打开时，通过那个写入者自己的 `-wal` 读取。immutable 读取不持锁，所以读取过程中如果有写入者碰到了这个文件
+  （出现了 `-wal`，或文件变了），这次读取按 busy 处理，保留上一次的结果。实际上很少走到 immutable：monitor
+  自己的 Codex 标题读取器（在 agents crate 里，不属于这次改动）以普通只读方式打开同一个数据库，所以在运行
+  monitor 的机器上，它的 `-wal` 和 `-shm` 通常已经在了；
+- 从不把列表的一部分当成整个列表：某一行的值类型不对时，计入 note，其余行照读；扫描中途出现的其他错误会让
+  这次读取失败；
 - 跳过无法解析的记录，忽略不认识的键，和 #s340 的读取器一样；
 - 有一个环境变量可以改它读取的位置，让 browser case 在隔离的存储上运行，和这里其他每个存储一样；
 - 遇到不认识的格式时，在选项的原因说明和 monitor 的日志里说出来，这样 app 更新挪动了排列时会被注意到，
@@ -353,9 +366,8 @@ herdr 按读取线程自己的节奏去问，和 monitor 的 `HerdrReader` 一�
 | 情况 | 这个人看到什么 |
 |---|---|
 | app 没有安装，或它的存储不存在 | 选项显示为不可用，原因作为它的提示和第二行文字。 |
-| 存储存在但读不了，或格式不认识 | 同上，并在能读到时附上 app 版本。 |
-| 选中的来源在之后某次刷新时失败 | 列表退回被 app 替换掉的那种排列（"By agent and project" 或 "One list by activity"），列表顶部用琥珀色写着 "Showing by agent and project: the Claude app's list could not be read"，并给出原因。选择会被保留；下一次能读到来源的刷新会重新按它来画。 |
-| 一个来源上一次读取失败，但它的文件还在 | 仍然可选；第二行写 "Last read: …"，说明读取遇到了什么。选中它就会重新读取。 |
+| 存储存在但读不了，或格式不认识 | 仍然可选，因为只有文件缺失才让来源不可选；第二行写 "Last read: …"，说明读取遇到了什么。选中后会重新读取，读不到时按下一行的方式退回。 |
+| 选中的来源在之后某次刷新时失败 | 列表退回被 app 替换掉的那种排列（"By agent and project" 或 "One list by activity"），列表顶部用琥珀色写着 "Showing by agent and project: the Claude app's list could not be read"，并给出原因。选择会被保留；下一次能读到来源的刷新会重新按它来画。读取线程上一次停止之前留下的失败结果显示为 "Reading …"，因为这个来源正在重新读取。 |
 | Codex app 没有它的 thread 目录，或目录读不了 | 列表照画，按 `source` 排除 `codex exec` 运行和 sub-agent（§3.2），说明行写明这份列表是 monitor 的推测。 |
 | app 写到一半的记录 | 这次刷新跳过；下一次再读。 |
 | 在手机或另一台桌面上看的人 | 看到的是 monitor 所在机器上的排列，也就是 session 运行的那台机器。 |
@@ -467,8 +479,18 @@ herdr 按读取线程自己的节奏去问，和 monitor 的 `HerdrReader` 一�
   用例失败。
 - 在 844 × 390 下，section 菜单的 scrim 不再让屏幕变暗，但仍会接住关闭菜单的那次点击。
 
+**第三轮评审后补上的：**
+
+- 单元测试：写入者碰到过的 immutable 读取（出现了 `-wal`）按 busy 处理，普通读取从不这样处理；只有某一行的
+  值类型不对才计数，`SQLITE_CORRUPT` 这类错误不算；没有 `source` 列的数据库仍然能读，并说明这一点；判断
+  headless 的规则与 app 一致（MCP 或 app-server 方式的运行、`unknown` 和 custom source 会列出；`exec` 和其他
+  对象不会）。
+- Codex 的 browser case 用 `-init /dev/null` 运行 `sqlite3`，不会读到 `~/.sqliterc`。
+
 没有运行的：iOS 模拟器（竖屏、横屏、浅色、深色）——这台机器上没有模拟器工具；Linux。Herdr 的 browser case
-里没有 monitor 关联到 pane 的行，所以"先按 pane 匹配"只由 node contract 覆盖。
+里没有 monitor 关联到 pane 的行，所以"先按 pane 匹配"只由 node contract 覆盖。Codex 读取器的单元测试和它的
+browser case 只在 macOS 上编译，和 agents crate 的 Codex 读取器一样（Linux 构建不编译 C 依赖），所以 Linux 上
+的 CI 不运行它们。
 
 **发布前拟议的检查：**
 

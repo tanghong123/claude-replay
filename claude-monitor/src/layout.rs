@@ -1133,47 +1133,151 @@ fn codex_catalog_path(db: &Path) -> PathBuf {
         .unwrap_or_else(|| db.with_file_name("sqlite").join("codex.db"))
 }
 
+/// One of the Codex app's SQLite files, opened read-only so that no file of the app's is made.
+///
+/// A reader of a WAL database makes `-shm` and `-wal` beside it when they are not there, and they
+/// stay after it closes (measured with SQLite 3.54, the second review of #s387). With no `-wal`,
+/// every committed page of a WAL database is in the main file, which a writer changes only at a
+/// checkpoint, so that file is opened immutable, which makes nothing; while the app, the Codex CLI
+/// or the monitor's own title reader has the database open, the `-wal` and `-shm` are there and
+/// are shared as any reader shares them. An immutable connection takes no lock, so a writer that
+/// arrives and checkpoints during the read could hand it a mix of old and new pages: `moved` says
+/// a writer reached the file, and the read is then treated as busy (the third review of #s387). A
+/// database in the rollback-journal mode is opened as usual: its readers make no file, and
+/// immutable would ignore a writer's lock. A busy database answers at once rather than after
+/// SQLite's default five seconds: the reader thread then keeps its last read (`CODEX_BUSY`).
 #[cfg(target_os = "macos")]
-fn read_codex(db: &Path) -> Result<CodexData, String> {
-    use rusqlite::{Connection, OpenFlags};
-    // Read-only, and no file of the app's is made. A reader of a WAL database makes `-shm` and
-    // `-wal` beside it when they are not there, and they stay after it closes (measured with
-    // SQLite 3.54, the second review of #s387). With no `-wal`, every committed page of a WAL
-    // database is in the main file, which a writer changes only at a checkpoint, so that file is
-    // read as immutable, which makes nothing; while the app or the Codex CLI has the database open,
-    // its own `-wal` and `-shm` are there and are shared as any reader shares them. A database in
-    // the rollback-journal mode is opened as usual: its readers make no file, and immutable would
-    // ignore a writer's lock. A database the app holds busy answers at once rather than after
-    // SQLite's default five seconds: the reader thread then keeps its last read (`CODEX_BUSY`).
-    let open = |path: &Path| {
+struct AppDb {
+    conn: rusqlite::Connection,
+    path: PathBuf,
+    /// The file's modification time when it was opened immutable; `None` when opened as usual.
+    immutable_at: Option<Option<SystemTime>>,
+}
+
+#[cfg(target_os = "macos")]
+impl AppDb {
+    fn open(path: &Path) -> rusqlite::Result<AppDb> {
+        use rusqlite::{Connection, OpenFlags};
         let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
             | OpenFlags::SQLITE_OPEN_URI;
-        let wal_absent = !PathBuf::from(format!("{}-wal", path.display())).exists();
-        let conn = if wal_absent && sqlite_wal_mode(path) {
+        let immutable = !AppDb::wal(path).exists() && sqlite_wal_mode(path);
+        let at = modified(path);
+        let conn = if immutable {
             Connection::open_with_flags(immutable_uri(path), flags)?
         } else {
             Connection::open_with_flags(path, flags)?
         };
         conn.busy_timeout(Duration::from_millis(250))?;
-        Ok::<_, rusqlite::Error>(conn)
-    };
-    let busy = |e: &rusqlite::Error| {
-        matches!(e, rusqlite::Error::SqliteFailure(f, _)
-            if matches!(f.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked))
-    };
-    let conn = open(db).map_err(|e| {
-        if busy(&e) {
+        Ok(AppDb {
+            conn,
+            path: path.to_path_buf(),
+            immutable_at: immutable.then_some(at),
+        })
+    }
+
+    fn wal(path: &Path) -> PathBuf {
+        PathBuf::from(format!("{}-wal", path.display()))
+    }
+
+    /// Whether a writer reached a file read immutable while it was read.
+    fn moved(&self) -> bool {
+        self.immutable_at
+            .is_some_and(|at| AppDb::wal(&self.path).exists() || modified(&self.path) != at)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn sqlite_busy(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(f, _)
+        if matches!(f.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked))
+}
+
+/// A value of an unexpected type in one row: that row is counted and the rest still read. Any
+/// other error ends SQLite's scan, so what was read before it is not the whole list.
+#[cfg(target_os = "macos")]
+fn sqlite_row_type(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::FromSqlConversionFailure(..)
+            | rusqlite::Error::InvalidColumnType(..)
+            | rusqlite::Error::IntegralValueOutOfRange(..)
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn read_codex(db: &Path) -> Result<CodexData, String> {
+    let app = AppDb::open(db).map_err(|e| {
+        if sqlite_busy(&e) {
             CODEX_BUSY.to_string()
         } else {
             format!("The Codex app's thread database could not be opened: {e}")
         }
     })?;
+    let read = read_codex_threads(&app.conn);
+    if app.moved() {
+        return Err(CODEX_BUSY.into());
+    }
+    let (mut data, has_source) = read?;
+    // The app's own catalogue says which threads it lists. Without one (an app that keeps none,
+    // or a file that does not read) the headless threads are told apart by their `source`, and
+    // the note says the list is the monitor's guess.
+    let catalogue = codex_catalog_path(db);
+    let listed = AppDb::open(&catalogue).and_then(|c| {
+        let mut stmt = c
+            .conn
+            .prepare("SELECT thread_id FROM local_thread_catalog")?;
+        let ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<HashSet<String>, _>>();
+        drop(stmt);
+        if c.moved() {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                None,
+            ));
+        }
+        ids
+    });
+    match listed {
+        Ok(ids) => data.listed = Some(ids),
+        Err(e) if sqlite_busy(&e) => return Err(CODEX_BUSY.into()),
+        Err(e) => {
+            let why = if catalogue.is_file() {
+                format!("could not be read ({e})")
+            } else {
+                "was not found".to_string()
+            };
+            let guess = if has_source {
+                "so every thread but codex exec runs, sub-agents and other runs it does not list is \
+                 shown"
+            } else {
+                "and its database names no thread's source, so every thread is shown"
+            };
+            data.catalogue_note = Some(format!(
+                "The Codex app's own list of threads (sqlite/codex.db) {why}, {guess}"
+            ));
+        }
+    }
+    Ok(data)
+}
+
+/// The threads, projects and sections in the Codex app's database, and whether it names each
+/// thread's `source` (an older database has no such column: every thread then counts as listed).
+#[cfg(target_os = "macos")]
+fn read_codex_threads(conn: &rusqlite::Connection) -> Result<(CodexData, bool), String> {
     let unknown = |e: rusqlite::Error| {
-        if busy(&e) {
+        if sqlite_busy(&e) {
             CODEX_BUSY.to_string()
         } else {
             format!("The Codex app's thread database has a shape this monitor does not know ({e})")
+        }
+    };
+    let failed = |e: rusqlite::Error| {
+        if sqlite_busy(&e) {
+            CODEX_BUSY.to_string()
+        } else {
+            format!("The Codex app's thread database could not be read ({e})")
         }
     };
     let pairs = |sql: &str| -> Result<Vec<(String, String)>, String> {
@@ -1182,8 +1286,8 @@ fn read_codex(db: &Path) -> Result<CodexData, String> {
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
-            .map_err(unknown)?;
-        rows.collect::<Result<_, _>>().map_err(unknown)
+            .map_err(failed)?;
+        rows.collect::<Result<_, _>>().map_err(failed)
     };
     let projects = pairs("SELECT id, name FROM projects ORDER BY position, id")?;
     let sections = pairs("SELECT id, name FROM thread_sections ORDER BY rowid")?;
@@ -1193,16 +1297,22 @@ fn read_codex(db: &Path) -> Result<CodexData, String> {
             .unwrap_or_default()
             .into_iter()
             .collect();
-    let mut stmt = conn
-        .prepare(
+    let threads_sql = |source: &str| {
+        format!(
             "SELECT id, rollout_path, COALESCE(NULLIF(TRIM(name), ''), NULLIF(TRIM(title), '')), \
              NULLIF(project_id, ''), NULLIF(thread_section_id, ''), section_position, \
              is_pinned, archived, \
              COALESCE(NULLIF(recency_at_ms, 0), updated_at_ms, updated_at * 1000, 0), \
-             COALESCE(created_at_ms, created_at * 1000, 0), source \
-             FROM threads",
+             COALESCE(created_at_ms, created_at * 1000, 0), {source} \
+             FROM threads"
         )
-        .map_err(unknown)?;
+    };
+    // An older database names no thread's source: read without it (the third review of #s387).
+    let (mut stmt, has_source) = match conn.prepare(&threads_sql("source")) {
+        Ok(stmt) => (stmt, true),
+        Err(e) if !sqlite_busy(&e) => (conn.prepare(&threads_sql("NULL")).map_err(unknown)?, false),
+        Err(e) => return Err(unknown(e)),
+    };
     let rows = stmt
         .query_map([], |row| {
             let id: String = row.get(0)?;
@@ -1226,9 +1336,10 @@ fn read_codex(db: &Path) -> Result<CodexData, String> {
                 headless: source.as_deref().is_some_and(codex_headless),
             })
         })
-        .map_err(unknown)?;
-    // A row of an unexpected type is counted and said, never dropped in silence; a database that
-    // turns busy part-way gives no read at all, since a part of one would be kept as the whole.
+        .map_err(failed)?;
+    // A row of an unexpected type is counted and said, never dropped in silence. Any other error
+    // ends the scan part-way, and a part of the list is never kept as the whole (the third review
+    // of #s387): the read fails, busy or not, and the last good read stands.
     let mut threads = Vec::new();
     let mut unreadable = 0;
     for row in rows {
@@ -1237,48 +1348,21 @@ fn read_codex(db: &Path) -> Result<CodexData, String> {
                 t.parent = parents.get(&t.id).cloned();
                 threads.push(t);
             }
-            Err(e) if busy(&e) => return Err(CODEX_BUSY.into()),
-            Err(_) => unreadable += 1,
+            Err(e) if sqlite_row_type(&e) => unreadable += 1,
+            Err(e) => return Err(failed(e)),
         }
     }
-    // The app's own catalogue says which threads it lists. Without one (an app that keeps none,
-    // or a file that does not read) the headless threads are told apart by their `source`, and
-    // the note says the list is the monitor's guess.
-    let catalogue = codex_catalog_path(db);
-    let read_catalogue = || -> Result<HashSet<String>, rusqlite::Error> {
-        let conn = open(&catalogue)?;
-        let mut stmt = conn.prepare("SELECT thread_id FROM local_thread_catalog")?;
-        let ids = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<_, _>>();
-        ids
-    };
-    let (listed, catalogue_note) = match read_catalogue() {
-        Ok(ids) => (Some(ids), None),
-        Err(e) if busy(&e) => return Err(CODEX_BUSY.into()),
-        Err(e) => {
-            let why = if catalogue.is_file() {
-                format!("could not be read ({e})")
-            } else {
-                "was not found".to_string()
-            };
-            (
-                None,
-                Some(format!(
-                    "The Codex app's own list of threads (sqlite/codex.db) {why}, so every thread \
-                     but codex exec runs and sub-agents is shown"
-                )),
-            )
-        }
-    };
-    Ok(CodexData {
-        projects,
-        sections,
-        threads,
-        listed,
-        catalogue_note,
-        unreadable,
-    })
+    Ok((
+        CodexData {
+            projects,
+            sections,
+            threads,
+            listed: None,
+            catalogue_note: None,
+            unreadable,
+        },
+        has_source,
+    ))
 }
 
 /// Whether an SQLite file is in the WAL mode, by its header: the file format's write and read
@@ -1311,15 +1395,23 @@ fn immutable_uri(path: &Path) -> String {
     uri
 }
 
-/// Whether a thread's `source` is one the Codex app does not list: `exec` (a `codex exec` run) or
-/// a `subagent` object (measured 2026-11-07: `{"subagent":{"thread_spawn":…}}` and
-/// `{"subagent":{"other":"guardian"}}`; the app's own threads say `vscode`, the CLI's `cli`).
+/// Whether a thread's `source` is one the Codex app does not list, by the app's own rule (its
+/// catalogue builder, read in the app 26.1103.31037 on 2026-11-07, the third review of #s387): a
+/// source that is `exec` (a `codex exec` run), or one that is not a string — a `subagent` object
+/// (measured: `{"subagent":{"thread_spawn":…}}` and `{"subagent":{"other":"guardian"}}`) or any
+/// other object — unless it is `{"custom": "<name>"}`. Every other string is listed: the app's own
+/// threads (`vscode`), the CLI's (`cli`), an app-server or MCP run, and `unknown`. The app also
+/// leaves out an ephemeral thread and one with a parent, which the database does not say alone, so
+/// without the catalogue this is a guess, and the note says so.
 #[cfg(target_os = "macos")]
 fn codex_headless(source: &str) -> bool {
-    source == "exec"
-        || serde_json::from_str::<Value>(source)
-            .ok()
-            .is_some_and(|v| v.get("subagent").is_some())
+    if source == "exec" {
+        return true;
+    }
+    match serde_json::from_str::<Value>(source) {
+        Ok(Value::Object(object)) => !object.get("custom").is_some_and(Value::is_string),
+        _ => false,
+    }
 }
 
 /// Where the Codex app keeps its window state, the sidebar among it:
@@ -3024,7 +3116,77 @@ mod tests {
         ));
         assert!(!codex_headless("vscode"));
         assert!(!codex_headless("cli"));
-        assert!(!codex_headless("{}"));
+        // The third review of #s387: the app lists an MCP or app-server run and `unknown`, and a
+        // custom source; any other object it does not.
+        assert!(!codex_headless("mcp"));
+        assert!(!codex_headless("appServer"));
+        assert!(!codex_headless("unknown"));
+        assert!(!codex_headless(r#"{"custom":"my-tool"}"#));
+        assert!(codex_headless(r#"{"other":{}}"#));
+        assert!(codex_headless("{}"));
+    }
+
+    /// The third review of #s387: an immutable read that a writer reached is not trusted, and only a
+    /// value of the wrong type in a row is counted; any other error mid-scan fails the read.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_codex_read_a_writer_reached_is_busy_and_a_failed_scan_is_no_list() {
+        let root =
+            std::env::temp_dir().join(format!("cm-layout-codex-moved-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("state_5.sqlite");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE t (x);")
+            .unwrap();
+        drop(conn);
+        let app = AppDb::open(&db).unwrap();
+        assert!(app.immutable_at.is_some(), "a WAL database with no -wal");
+        assert!(!app.moved());
+        // A writer arrives: its -wal appears beside the database.
+        std::fs::write(root.join("state_5.sqlite-wal"), b"").unwrap();
+        assert!(app.moved());
+        drop(app);
+        // Opened while a writer has it, the read is an ordinary one, and nothing moves it.
+        let app = AppDb::open(&db).unwrap();
+        assert!(app.immutable_at.is_none());
+        assert!(!app.moved());
+        drop(app);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(sqlite_row_type(&rusqlite::Error::InvalidColumnType(
+            0,
+            "x".into(),
+            rusqlite::types::Type::Text
+        )));
+        assert!(!sqlite_row_type(&rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+            None
+        )));
+    }
+
+    /// The third review of #s387: a database with no `source` column still reads; with no
+    /// catalogue every thread then counts, and the note says the database names no source.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_codex_database_without_sources_still_reads() {
+        let root =
+            std::env::temp_dir().join(format!("cm-layout-codex-nosource-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("state_5.sqlite");
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE projects (id TEXT, name TEXT, position INTEGER);
+                 CREATE TABLE thread_sections (id TEXT, name TEXT);
+                 CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, title TEXT NOT NULL, updated_at INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0, updated_at_ms INTEGER, recency_at_ms INTEGER NOT NULL DEFAULT 0, name TEXT, is_pinned INTEGER NOT NULL DEFAULT 0, thread_section_id TEXT, section_position INTEGER, project_id TEXT, created_at INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER);
+                 INSERT INTO threads (id, rollout_path, title, updated_at) VALUES ('a', '/h/rollout-x-a.jsonl', 'a', 1), ('b', '/h/rollout-x-b.jsonl', 'b', 1);",
+            )
+            .unwrap();
+        let data = read_codex(&db).unwrap();
+        assert_eq!(data.threads.len(), 2);
+        assert!(data.threads.iter().all(|t| data.lists(t)));
+        let note = data.note().unwrap();
+        assert!(note.contains("names no thread's source"), "{note}");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// The review of #s387: a database another process holds says it is busy, at once, rather than
