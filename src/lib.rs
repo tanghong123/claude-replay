@@ -365,26 +365,28 @@ fn print_field_coverage(args: &Args) -> anyhow::Result<()> {
 fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
     /// How many of the newest transcripts a sweep with no window parses.
     const NEWEST: usize = 200;
-    let paths: Vec<std::path::PathBuf> = if args.target.is_some() || args.latest {
-        vec![discover::resolve_any(
-            args.agent,
-            args.target.as_deref(),
-            args.latest,
-        )?]
-    } else {
-        // Every agent's STORE, machine-wide (#276): the format moves under all of them, not
-        // under the directory this happens to run from. `candidates_all` answered that question
-        // — the viewer's, cwd-scoped — and from `/tmp` it swept nothing at all. `--since` trims
-        // on mtime before a byte is read; without a window, the newest NEWEST. Sub-agent
-        // transcripts are swept too (#s370).
-        sweep_transcripts(args.agent, args.since.as_deref(), NEWEST)?
-            .into_iter()
-            .map(|e| e.path)
-            .collect()
-    };
-    eprintln!("scanning {} transcript(s)…", paths.len());
-    // The per-record key census (#361) is this sweep's alone: an ordinary parse skips it.
+    // The per-record key census (#361) is this sweep's alone: an ordinary parse skips it. On
+    // before the store is walked, which reports the files no reader can open (#s385).
     claude_replay_core::unknown::watch_keys(true);
+    let paths: Vec<(claude_replay_core::Agent, std::path::PathBuf)> =
+        if args.target.is_some() || args.latest {
+            let path = discover::resolve_any(args.agent, args.target.as_deref(), args.latest)?;
+            vec![(
+                args.agent.unwrap_or_else(|| discover::detect_agent(&path)),
+                path,
+            )]
+        } else {
+            // Every agent's STORE, machine-wide (#276): the format moves under all of them, not
+            // under the directory this happens to run from. `candidates_all` answered that question
+            // — the viewer's, cwd-scoped — and from `/tmp` it swept nothing at all. `--since` trims
+            // on mtime before a byte is read; without a window, the newest NEWEST. Sub-agent
+            // transcripts are swept too (#s370).
+            sweep_transcripts(args.agent, args.since.as_deref(), NEWEST)?
+                .into_iter()
+                .map(|e| (e.agent, e.path))
+                .collect()
+        };
+    eprintln!("scanning {} transcript(s)…", paths.len());
     // The pricing half of "what the adapters did not know about" (#276): a model that produced
     // tokens and has no price in `pricing.json` — its cost is DROPPED, and the session's figure
     // becomes a lower bound. Keyed by family and model; the count is SESSIONS, so a session whose
@@ -393,11 +395,29 @@ fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
     type Sessions = (std::collections::BTreeSet<String>, Option<String>);
     let mut unpriced: std::collections::BTreeMap<(&'static str, String), Sessions> =
         std::collections::BTreeMap::new();
-    for path in &paths {
+    for (agent, path) in &paths {
         // A transcript that will not parse says nothing about the FORMAT moving, and one bad
-        // file must not stop the sweep that would have found the thing we are looking for.
-        let Ok(session) = claude_replay_core::parse_session(path) else {
-            continue;
+        // file must not stop the sweep that would have found the thing we are looking for. A
+        // compressed one that does not decode is a file the store holds and no reader can open,
+        // though (#s385): that is reported.
+        let session = match claude_replay_core::parse_session(path) {
+            Ok(session) => session,
+            Err(e) => {
+                let undecodable = matches!(
+                    e.kind(),
+                    std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
+                );
+                if undecodable && claude_replay_core::source::is_compressed(path) {
+                    claude_replay_core::unknown::note(
+                        agent.label(),
+                        claude_replay_core::unknown::Where::StoreUnread,
+                        ".jsonl.zst (does not decode)",
+                        None,
+                        Some(&path.display().to_string()),
+                    );
+                }
+                continue;
+            }
         };
         if !session.metrics.cost_partial {
             continue;

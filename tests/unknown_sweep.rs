@@ -339,3 +339,89 @@ fn a_shape_only_a_qwenwork_sub_agent_writes_is_reported_once() {
         "the root session to go and look in"
     );
 }
+
+/// #s385 (Hong's choice on #s384): a Codex store's file that no reader can open is a
+/// `store.unread` row: a rollout with an ending nothing reads, named by that ending, and a
+/// `.jsonl.zst` that does not decode, each counted in files with one path to go and look at.
+/// Codex's own temporaries, a `.zst` beside its plain file and a `.zst` that decodes are not.
+/// The sweep listed none of these before: a store's unreadable files were silent.
+#[test]
+fn a_codex_store_file_no_reader_can_open_is_reported() {
+    let root = scratch("store-unread");
+    let day = root.join("codex").join("sessions").join("2026/09/25");
+    std::fs::create_dir_all(&day).unwrap();
+    let head = |id: &str| {
+        format!(
+            r#"{{"timestamp":"2026-09-25T00:00:00Z","type":"session_meta","payload":{{"id":"{id}","cwd":"/work/skua","originator":"codex_cli_rs","cli_version":"0.170.0"}}}}"#
+        ) + "\n"
+    };
+    let compress = claude_replay_core::source::compress_for_tests;
+    // Read: a plain rollout, a compressed one that decodes, a .zst beside its plain twin.
+    std::fs::write(day.join("rollout-a1.jsonl"), head("a1")).unwrap();
+    std::fs::write(
+        day.join("rollout-a2.jsonl.zst"),
+        compress(head("a2").as_bytes()),
+    )
+    .unwrap();
+    std::fs::write(day.join("rollout-a3.jsonl"), head("a3")).unwrap();
+    std::fs::write(
+        day.join("rollout-a3.jsonl.zst"),
+        compress(head("a3").as_bytes()),
+    )
+    .unwrap();
+    // Codex's own temporaries.
+    std::fs::write(day.join("rollout-compress-x1.tmp"), b"partial").unwrap();
+    std::fs::write(day.join(".rollout-materialize-x2"), b"partial").unwrap();
+    let (out, err, ok) = run(&root, &root, &["--unknown", "--json", "--agent", "codex"]);
+    assert!(ok, "{err}");
+    let unread = |out: &str| -> Vec<serde_json::Value> {
+        rows(out)
+            .into_iter()
+            .filter(|r| r["where"] == "store.unread")
+            .collect()
+    };
+    assert!(
+        unread(&out).is_empty(),
+        "a store it can read reports nothing: {out}"
+    );
+
+    // Unreadable: a form nothing reads, and a compressed one that does not decode.
+    let new_form = day.join("rollout-b1.jsonl.br");
+    std::fs::write(&new_form, b"\x0b\x05\x80brotli bytes").unwrap();
+    let broken = day.join("rollout-b2.jsonl.zst");
+    let mut bytes = compress(head("b2").as_bytes());
+    bytes.extend_from_slice(b"and then bytes that are no frame");
+    std::fs::write(&broken, bytes).unwrap();
+    let (out, err, ok) = run(&root, &root, &["--unknown", "--json", "--agent", "codex"]);
+    assert!(ok, "{err}");
+    let mut got: Vec<(String, u64, String)> = unread(&out)
+        .into_iter()
+        .map(|r| {
+            assert_eq!(r["agent"], "codex", "{r}");
+            (
+                r["name"].as_str().unwrap().to_string(),
+                r["count"].as_u64().unwrap(),
+                r["example"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            (".jsonl.br".to_string(), 1, new_form.display().to_string()),
+            (
+                ".jsonl.zst (does not decode)".to_string(),
+                1,
+                broken.display().to_string()
+            ),
+        ],
+        "{out}"
+    );
+    // A person's table says the same.
+    let (table, _, _) = run(&root, &root, &["--unknown", "--agent", "codex"]);
+    assert!(
+        table.contains("store.unread") && table.contains(".jsonl.br"),
+        "{table}"
+    );
+}

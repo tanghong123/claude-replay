@@ -1300,7 +1300,11 @@ sessions (#s370; `--field-coverage` too): half the refusal notes and sandbox att
 machine held were in sub-agents alone, where a 2.1.310 shape went unreported for two weeks. A
 Claude sub-agent's row names its ROOT session as the example. It also names every MODEL that produced tokens
 with no price in `claude-replay-engine/pricing.json` (`where: model.unpriced`, counted in sessions):
-that session's cost silently becomes a lower bound.
+that session's cost silently becomes a lower bound. And every FILE a store holds that no reader can
+open (`where: store.unread`, #s385, Hong's choice on #s384): a Codex rollout with an ending nothing
+reads, named by that ending, or a `.jsonl.zst` that does not decode, counted in files, the example
+its path. Codex compressed 3,416 of one machine's sessions to `.jsonl.zst` (#s383), and discovery
+passed over every one for a month without a word.
 
 An internal daily review reads both sweeps and queues what it finds; it is part of the owner's
 process, not of this repository (its notes are imported at the end of *Releasing*).
