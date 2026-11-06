@@ -137,8 +137,9 @@ own sidebar tool names them so), with `ascending`. Its grouping (`date`, `projec
 such key, which means the app's default (by project for Sessions, none for a custom section). A
 change made in the app reached the file within a minute when observed on 2026-11-06 (a custom
 section's sort set to date created: the file held `sortBy: created` and `groupBy: none`, written 40
-seconds before it was read). The prototype follows `sortBy` and `ascending`; it does not yet read
-`groupBy`, so a grouping chosen in the app is not followed by "As in the app" and is set with the
+seconds before it was read). The prototype follows `sortBy` and `ascending`; of `groupBy` it reads
+only whether Sessions is grouped by project (any other value draws Sessions as one list), so a date
+or state grouping chosen in the app is not followed by "As in the app" and is set with the
 monitor's own menu instead.
 
 **Mapping.** A record's `cliSessionId` is the monitor's row id; all 78 records mapped to a

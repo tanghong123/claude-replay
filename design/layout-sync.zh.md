@@ -122,8 +122,9 @@ LevelDB 存储，app 会不断压缩它。为了核对 JSON 文件，从一份�
 命名），另有 `ascending`。它的分组方式（`date`、`project`、`state`、`custom` 或 `none`）是 section 的 `groupBy`；分组从未改过的
 section 没有这个 key，表示 app 的默认值（Sessions 按 project，自定义 section 为 none）。2026-11-06 观察到，
 在 app 里做的改动一分钟内就写进了文件（把一个自定义 section 的排序设为 date created：文件里是
-`sortBy: created` 和 `groupBy: none`，写入时间比读取早 40 秒）。原型跟随 `sortBy` 和 `ascending`；它还不读
-`groupBy`，所以在 app 里选的分组不会被 "As in the app" 跟随，需要用 monitor 自己的菜单设置。
+`sortBy: created` 和 `groupBy: none`，写入时间比读取早 40 秒）。原型跟随 `sortBy` 和 `ascending`；对
+`groupBy` 只读 Sessions 是否按 project 分组（其他值都把 Sessions 画成一个列表），所以在 app 里选的按日期或
+按状态分组不会被 "As in the app" 跟随，需要用 monitor 自己的菜单设置。
 
 **映射。** 记录的 `cliSessionId` 就是 monitor 的行 id；全部 78 条记录都对应到一个 transcript。group
 归属用的是桌面 id（`local_<uuid>`），由记录映射到行。
