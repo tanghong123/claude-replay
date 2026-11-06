@@ -388,6 +388,10 @@ fn main() -> Result<()> {
             index::xdg_cache_root()?.join("ignored.json"),
         ],
     );
+    // #s386: the decoded tail of each compressed Codex rollout this monitor reads is kept under its
+    // root (the root's only writer, as above), so a start does not decode them all again to read
+    // their ends.
+    claude_replay_core::source::keep_tails_in(Some(root.join("decoded-tails")));
     let idx = Arc::new(index::Index::new(root.clone(), state, only));
 
     let paired = token.is_some();
