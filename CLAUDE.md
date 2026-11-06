@@ -1155,7 +1155,11 @@ resizes the others (#159). Six drawer cases catch that in one run.
   background jobs with them. `chrome()` now names each profile `cr-browser-chrome-<launching
   pid>-<n>` under the workspace scratch and reaps, at launch, any marked process whose owner pid
   is gone. Both halves of the mark are required, so a suite running in parallel is never in range
-  and the developer's own Chrome cannot be (#141).
+  and the developer's own Chrome cannot be (#141). The profiles live under the scratch's
+  `chrome.noindex/` (`harness::browser_profiles_root`, #s391), because Spotlight skips a folder
+  named `.noindex` and read every write a browser case makes otherwise: over the 15 `files.rs`
+  cases `mds_stores` and `mds` spent 118 s of CPU with the profiles straight under `target/`, and
+  19 s under `chrome.noindex/`, about what an idle window of the same length costs.
 - **Quick plain check:** `agent-replay <path|--latest> --dump -` renders to stdout
   (no TUI) — good for verifying parsing/markdown/diffs in a pipe. (`--dump <stem>` or
   bare `--dump` instead write `<stem>.txt` + `<stem>.ansi` at the terminal width or
@@ -1316,7 +1320,7 @@ so all of it stays inside the repo and `cargo clean` (or `scripts/sweep.sh`) cle
 (#164). It used to land in macOS's opaque `/var/folders/…`, which nothing sweeps: 8,014
 directories and 267 MB had accumulated there. A full run leaves ~3.4 MB — except the browser
 harness's roots (`cr-browser-follow-<pid>-<case>`, `cr-browser-state-<pid>`,
-`cr-browser-chrome-<pid>-<n>`), one per case per run and ~0.3 GB for a walk over a long
+`chrome.noindex/cr-browser-chrome-<pid>-<n>`), one per case per run and ~0.3 GB for a walk over a long
 session. A case that PASSES removes its own as its `serial()` guard goes (#s142: a day's suites
 had left 741 of them, 13.6 GB); a failed case keeps its root for diagnosis, as `CR_KEEP_SCRATCH=1`
 keeps every root. What is left the sweep prunes by the LIVENESS of the pid in the name, not by

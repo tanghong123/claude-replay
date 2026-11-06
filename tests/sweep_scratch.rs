@@ -55,6 +55,16 @@ fn harness_roots_go_by_liveness_and_the_rest_by_age() {
     let dead_follow = mk(&dir, &format!("cr-browser-follow-{dead}-scenario-y"));
     let dead_state = mk(&dir, &format!("cr-browser-state-{dead}"));
     let dead_chrome = mk(&dir, &format!("cr-browser-chrome-{dead}-2"));
+    // #s391: profiles live under `chrome.noindex/` now, and go by liveness there too.
+    std::fs::create_dir_all(dir.join("chrome.noindex")).unwrap();
+    let live_noindex = mk(
+        &dir.join("chrome.noindex"),
+        &format!("cr-browser-chrome-{live_pid}-3"),
+    );
+    let dead_noindex = mk(
+        &dir.join("chrome.noindex"),
+        &format!("cr-browser-chrome-{dead}-4"),
+    );
     // Names without a pid: young stays, old goes.
     let young = mk(&dir, "sc-young");
     let old = mk(&dir, "sc-old");
@@ -69,21 +79,24 @@ fn harness_roots_go_by_liveness_and_the_rest_by_age() {
 
     let dry = run(&dir, true);
     assert!(
-        dry.contains("would drop 3 ("),
-        "the dry run names the three dead roots and deletes nothing: {dry}"
+        dry.contains("would drop 4 ("),
+        "the dry run names the four dead roots and deletes nothing: {dry}"
     );
     assert!(
-        dead_follow.exists() && dead_state.exists() && dead_chrome.exists(),
+        dead_follow.exists()
+            && dead_state.exists()
+            && dead_chrome.exists()
+            && dead_noindex.exists(),
         "dry run"
     );
 
     let out = run(&dir, false);
-    assert!(out.contains("dead test processes: dropped 3 ("), "{out}");
+    assert!(out.contains("dead test processes: dropped 4 ("), "{out}");
     assert!(out.contains("older than a day: dropped 1"), "{out}");
-    for d in [&live_follow, &live_state, &live_chrome] {
+    for d in [&live_follow, &live_state, &live_chrome, &live_noindex] {
         assert!(d.exists(), "a live run's root stays: {}", d.display());
     }
-    for d in [&dead_follow, &dead_state, &dead_chrome] {
+    for d in [&dead_follow, &dead_state, &dead_chrome, &dead_noindex] {
         assert!(!d.exists(), "a dead pid's root goes: {}", d.display());
     }
     assert!(young.exists(), "young scratch without a pid stays");

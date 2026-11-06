@@ -6,7 +6,8 @@
 #
 #   1. LIVENESS, for the browser harness's roots — `cr-browser-follow-<pid>-<case>` (a case's
 #      hermetic stores, ~0.3 GB for a walk over a long session), `cr-browser-state-<pid>` and
-#      `cr-browser-chrome-<pid>-<n>` (a Chrome profile). A root is dead the moment the test
+#      `cr-browser-chrome-<pid>-<n>` (a Chrome profile, under `chrome.noindex/` since #s391 so
+#      Spotlight skips its writes, straight under the target dir before). A root is dead the moment the test
 #      process that made it is gone, however young: one per case per run, a suite several times
 #      a day, and the age rule below kept 43 GB of them on 2026-09-13. A running suite's roots
 #      are never in range — their pids are alive — so this is safe beside a live run.
@@ -23,7 +24,7 @@ verb() { [[ -n "$DRY" ]] && echo "would drop" || echo "dropped"; }
 
 # 1. Liveness.
 n=0; freed=0
-for d in "$TARGET"/cr-browser-follow-[0-9]*-* "$TARGET"/cr-browser-state-[0-9]* "$TARGET"/cr-browser-chrome-[0-9]*-*; do
+for d in "$TARGET"/cr-browser-follow-[0-9]*-* "$TARGET"/cr-browser-state-[0-9]* "$TARGET"/cr-browser-chrome-[0-9]*-* "$TARGET"/chrome.noindex/cr-browser-chrome-[0-9]*-*; do
   [[ -e "$d" ]] || continue
   pid=$(basename "$d" | sed -E 's/^cr-browser-(follow|state|chrome)-([0-9]+).*$/\2/')
   [[ "$pid" =~ ^[0-9]+$ ]] || continue
