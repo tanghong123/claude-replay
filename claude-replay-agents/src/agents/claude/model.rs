@@ -1118,6 +1118,25 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             "attributionMcpTool",
             "serverClassifierRequest",
             "thinkingDurationMs",
+            // #s395 (client 2.1.319): an integer of milliseconds on exactly the assistant records
+            // that carry a `tool_use` block: how long the model took to stream that call's input,
+            // from the same timing helper as `thinkingDurationMs` above (the 2.1.319 client builds
+            // the record as {message, thinkingDurationMs, toolInputStreamMs, wireToolInputs, …}
+            // and sends the same figure in its own tool-call telemetry). Measured 2026-11-07 on
+            // hong-devserver: 1,847 records in 21 transcripts, main sessions and sub-agents, all
+            // written by 2.1.319, none by 2.1.318 or earlier (whose client does not contain the
+            // name), values 1 to 39,954, most under 6,000; 3,259 records in two days on
+            // aries-black, all 2.1.319. Unread: it is the model's generation time for the call,
+            // not anything the tool did; a tool card's duration is the tool's run time, read from
+            // its result, and nothing on the page shows generation time. Expected beside it and NOT
+            // yet met in any transcript, so not in this census, to be judged as its own row when
+            // one first carries it: `batchToolUses`, which the same code writes in its place.
+            // REVISIT: (1) the key on an assistant record with no `tool_use` block; (2) a value
+            // that is not a non-negative integer; (3) whether a tool card should say how long its
+            // arguments took to stream (the long ones, 10 to 40 seconds, are a large Write or Edit)
+            // is a RENDER question for the owner, queued with the record count and client version,
+            // never decided here.
+            "toolInputStreamMs",
             "attributionPlugin",
             "isApiErrorMessage",
             "error",
@@ -9131,6 +9150,29 @@ mod tests {
                 .any(|b| matches!(b, Block::AssistantText(_) | Block::AssistantMessage { .. })),
             "the error is not the assistant speaking: {blocks:?}"
         );
+    }
+
+    /// #s395: 2.1.319's tool-input stream time on an assistant record carrying a `tool_use` block
+    /// is known, not reported while the sweep asks, and the call still folds to its tool card.
+    /// Removing the key from the assistant arm of the census turns this red.
+    #[test]
+    fn a_tool_call_s_input_stream_time_is_known() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.319","sessionId":"s-s395","uuid":"u1","message":{"role":"user","content":"list it"}}
+{"type":"assistant","version":"2.1.319","sessionId":"s-s395","uuid":"a1","requestId":"req_1","message":{"id":"msg_1","role":"assistant","model":"claude-opus-5-5","stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":20},"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]},"thinkingDurationMs":812,"toolInputStreamMs":1543,"wireToolInputs":{}}
+"##;
+        let messages = tokenize(jsonl.lines());
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s395"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+        let calls = messages
+            .iter()
+            .filter(|m| matches!(m, Message::ToolUse { .. }))
+            .count();
+        assert_eq!(calls, 1, "the call still folds: {messages:?}");
     }
 
     /// #s359: the split is asked of an answer that wrote to the cache and of no other, so a client
