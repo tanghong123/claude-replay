@@ -3480,19 +3480,22 @@ pub(crate) fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Mes
 /// reveal action. `tokenize` is this over every line; the streaming driver (M9) calls it one
 /// line at a time so no whole-file `Vec<Message>` is ever built.
 pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>) {
-    decode_line_known(line, cwd, msgs, &[], &[])
+    decode_line_known(line, cwd, msgs, &[], &[], &[])
 }
 
 /// [`decode_line`] for an adapter that writes record types — and top-level keys (#361) — of its
 /// OWN on top of Claude's format: the QoderWork family's head rows (#359) and its extra keys, so
 /// they are known for that adapter alone and a Claude record that ever takes the same name is
-/// still reported.
+/// still reported. `also_read_subtypes` names the `system` subtypes of its own this decoder folds
+/// for it (#s377: the family's `api_retry`), which through Claude's own decoder draw nothing and
+/// are reported as new.
 pub(crate) fn decode_line_known(
     line: &str,
     cwd: &mut String,
     msgs: &mut Vec<Message>,
     also_known: &[&str],
     also_known_keys: &[&str],
+    also_read_subtypes: &[&str],
 ) {
     let line = line.trim();
     if line.is_empty() {
@@ -3760,6 +3763,19 @@ pub(crate) fn decode_line_known(
         Some("system") if v.get("subtype").and_then(|s| s.as_str()) == Some("api_error") => {
             if let Some(text) = api_error_note(&v) {
                 // Same as the flagged-record arm above: this turn failed, it did not finish.
+                msgs.push(Message::SystemNote {
+                    text,
+                    kind: NoteKind::Failure,
+                });
+            }
+        }
+        // #s377: the QoderWork family's form of the same event, one record per retry, read for
+        // the family's adapters alone and drawn exactly as `api_error` is.
+        Some("system")
+            if v.get("subtype").and_then(|s| s.as_str()) == Some("api_retry")
+                && also_read_subtypes.contains(&"api_retry") =>
+        {
+            if let Some(text) = api_retry_note(&v) {
                 msgs.push(Message::SystemNote {
                     text,
                     kind: NoteKind::Failure,
@@ -4077,27 +4093,65 @@ fn api_error_note(v: &Value) -> Option<String> {
         .and_then(|e| e.get("message"))
         .and_then(Value::as_str)
         .or_else(|| e.and_then(|e| e.get("formatted")).and_then(Value::as_str))
-        .unwrap_or("API error")
-        .trim();
-    let mut text = format!("API error: {}", msg.lines().next().unwrap_or(msg));
-    if let Some(status) = e.and_then(|e| e.get("status")).and_then(Value::as_i64) {
-        text.push_str(&format!(" (HTTP {status})"));
-    }
-    match (
+        .unwrap_or("API error");
+    Some(compose_api_error_note(
+        msg,
+        e.and_then(|e| e.get("status")).and_then(Value::as_i64),
         v.get("retryAttempt").and_then(Value::as_i64),
         v.get("maxRetries").and_then(Value::as_i64),
-    ) {
+        e.and_then(|e| e.get("isNetworkDown"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    ))
+}
+
+/// The note the QoderWork family's `api_retry` record composes to (#s377), worded by the same
+/// function as Claude Code's `api_error`, from the family's own names: `content` is the error's
+/// message (one line, the HTTP status in it when there is one, in every record measured on
+/// aries-black, 2026-11-06), `error` its kind ("server_error" or "unknown" there), `error_status`
+/// the HTTP status or null, and `attempt` and `max_retries` the retry.
+fn api_retry_note(v: &Value) -> Option<String> {
+    if v.get("subtype").and_then(Value::as_str) != Some("api_retry") {
+        return None;
+    }
+    let msg = [v.get("content"), v.get("error")]
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .find(|s| !s.trim().is_empty())
+        .unwrap_or("API error");
+    Some(compose_api_error_note(
+        msg,
+        v.get("error_status").and_then(Value::as_i64),
+        v.get("attempt").and_then(Value::as_i64),
+        v.get("max_retries").and_then(Value::as_i64),
+        false,
+    ))
+}
+
+/// `API error: <the message's first line> (HTTP <status>) — retry <n> of <max>[, network down]`,
+/// each part only when the record has it: the one wording every agent's retried API error reads.
+fn compose_api_error_note(
+    msg: &str,
+    status: Option<i64>,
+    attempt: Option<i64>,
+    max: Option<i64>,
+    network_down: bool,
+) -> String {
+    let msg = msg.trim();
+    let mut text = format!("API error: {}", msg.lines().next().unwrap_or(msg));
+    if let Some(status) = status {
+        text.push_str(&format!(" (HTTP {status})"));
+    }
+    match (attempt, max) {
         (Some(n), Some(max)) => text.push_str(&format!(" \u{2014} retry {n} of {max}")),
         (Some(n), None) => text.push_str(&format!(" \u{2014} retry {n}")),
         _ => {}
     }
-    if e.and_then(|e| e.get("isNetworkDown"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
+    if network_down {
         text.push_str(", network down");
     }
-    Some(text)
+    text
 }
 
 fn claude_keep_orphan(t: &str) -> bool {
@@ -8295,7 +8349,7 @@ mod tests {
         let row = r#"{"type":"a-family-row-359","sessionId":"s-359","x":1}"#;
         let other = r#"{"type":"another-family-row-359","sessionId":"s-359"}"#;
         let (mut cwd, mut out) = (String::new(), Vec::new());
-        decode_line_known(row, &mut cwd, &mut out, &["a-family-row-359"], &[]);
+        decode_line_known(row, &mut cwd, &mut out, &["a-family-row-359"], &[], &[]);
         decode_line(other, &mut cwd, &mut out);
         let seen: Vec<String> = unknown_shapes()
             .into_iter()
@@ -8546,6 +8600,84 @@ mod tests {
             )),
             none,
             "for the family, its own"
+        );
+    }
+
+    /// #s377: the QoderWork family's `api_retry` folds, for the family's adapters alone, to the
+    /// one failure note Claude Code's `api_error` folds to, in the same words; through Claude's own
+    /// decoder it draws nothing and is still reported as a new subtype.
+    #[test]
+    fn the_family_s_api_retry_is_drawn_as_claude_code_s_api_error_is() {
+        use crate::agents::qoderwork::discover::{
+            FAMILY_RECORD_KEYS, FAMILY_RECORD_TYPES, FAMILY_SYSTEM_SUBTYPES,
+        };
+        let family = |line: &str| {
+            let (mut cwd, mut out) = (String::new(), Vec::new());
+            decode_line_known(
+                line,
+                &mut cwd,
+                &mut out,
+                FAMILY_RECORD_TYPES,
+                FAMILY_RECORD_KEYS,
+                FAMILY_SYSTEM_SUBTYPES,
+            );
+            out
+        };
+        let claude = |line: &str| {
+            let (mut cwd, mut out) = (String::new(), Vec::new());
+            decode_line(line, &mut cwd, &mut out);
+            out
+        };
+        let notes = |out: Vec<Message>| -> Vec<(String, NoteKind)> {
+            out.into_iter()
+                .filter_map(|m| match m {
+                    Message::SystemNote { text, kind } => Some((text, kind)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let retry = |sid: &str, status: &str| {
+            format!(
+                r#"{{"type":"system","subtype":"api_retry","level":"error","content":"Upstream answered 502 Bad Gateway","error":"server_error","error_status":{status},"attempt":2,"max_retries":10,"retry_delay_ms":4000,"isSidechain":true,"agentId":"a377","version":"1.1.71","sessionId":"{sid}","timestamp":"2026-11-05T01:00:00.000Z","uuid":"r377"}}"#
+            )
+        };
+        let drawn = notes(family(&retry("s-s377", "502")));
+        assert_eq!(
+            drawn,
+            vec![(
+                "API error: Upstream answered 502 Bad Gateway (HTTP 502) \u{2014} retry 2 of 10"
+                    .to_string(),
+                NoteKind::Failure
+            )],
+            "one failure note"
+        );
+        let api_error = r#"{"type":"system","subtype":"api_error","level":"error","error":{"status":502,"message":"Upstream answered 502 Bad Gateway"},"retryAttempt":2,"maxRetries":10,"retryInMs":4000,"version":"2.1.318","sessionId":"s-s377c","timestamp":"2026-11-05T01:00:00.000Z","uuid":"e377"}"#;
+        assert_eq!(
+            notes(claude(api_error)),
+            drawn,
+            "worded as Claude Code's api_error"
+        );
+        assert_eq!(
+            notes(family(&retry("s-s377n", "null"))),
+            vec![(
+                "API error: Upstream answered 502 Bad Gateway \u{2014} retry 2 of 10".to_string(),
+                NoteKind::Failure
+            )],
+            "no status, none in the note"
+        );
+        assert!(
+            notes(claude(&retry("s-s377x", "502"))).is_empty(),
+            "Claude's own decoder draws nothing for it"
+        );
+        let seen = unknown_shapes();
+        let reported = |sid: &str| {
+            seen.iter()
+                .any(|s| s.name == "api_retry" && s.example.as_deref() == Some(sid))
+        };
+        assert!(reported("s-s377x"), "and reports it as new");
+        assert!(
+            !reported("s-s377") && !reported("s-s377n"),
+            "the family's own is not reported"
         );
     }
 

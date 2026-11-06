@@ -40,6 +40,15 @@ pub(crate) const FAMILY_RECORD_TYPES: &[&str] = &[
     "worktree-state",
 ];
 
+/// The `system` subtypes the family writes that Claude Code does not, which Claude's decoder folds
+/// for the family's adapters alone (#s377), so a Claude Code record that ever takes the name is
+/// still reported. `api_retry` is one record per retry of a failed API request, the family's form
+/// of Claude Code's `api_error`, and is drawn as that is: `{level: "error", content, error,
+/// error_status, attempt, max_retries, retry_delay_ms}`. Measured 2026-11-06 on aries-black: 18
+/// Qwenwork records (1.1.59, 1.1.71) and 15 QoderWork records, all in sub-agent transcripts, the
+/// assistant's reply right after it in 17 of the 18.
+pub(crate) const FAMILY_SYSTEM_SUBTYPES: &[&str] = &["api_retry"];
+
 /// The top-level keys the family writes on Claude's record types beyond Claude's own (#361), from
 /// the 2026-10-02 census of the QoderWork and Qwenwork stores (keys only): known to the family's
 /// adapters alone, as its head rows are (#359).

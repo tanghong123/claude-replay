@@ -560,7 +560,8 @@ macro_rules! qwork_family_adapter {
             fn elision(&self) -> claude_replay_engine::seam::Elision {
                 agents::claude::model::CLAUDE_ELISION
             }
-            // Claude's decoder, with the family's own head rows known (#359).
+            // Claude's decoder, with the family's own head rows known (#359) and its own system
+            // subtypes read (#s377).
             fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
                 agents::claude::model::decode_line_known(
                     line,
@@ -568,6 +569,7 @@ macro_rules! qwork_family_adapter {
                     out,
                     agents::qoderwork::discover::FAMILY_RECORD_TYPES,
                     agents::qoderwork::discover::FAMILY_RECORD_KEYS,
+                    agents::qoderwork::discover::FAMILY_SYSTEM_SUBTYPES,
                 )
             }
             // Claude Code's tool vocabulary, so Claude's interactive set (#21).
