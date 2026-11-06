@@ -386,6 +386,7 @@ const ARRANGED_LIMIT = 30;
 // The section menu (#s387, the owner's hybrid): one floating menu, opened from a section head's
 // glyph, with the Claude app's section menu's choices; `sectionMenuKey` is the section it serves.
 let sectionMenu = null;
+let sectionScrim = null;
 let sectionMenuKey = null;
 let sectionMenuAnchor = null;
 const SECTION_GROUP_LABELS = { none: "None", project: "Project", date: "Date", state: "State" };
@@ -393,7 +394,7 @@ const SECTION_SORT_LABELS = { updated: "Last updated", created: "Date created", 
 function sectionMenuHtml(key, label) {
   const view = sectionView(indexState.sectionViews[key]);
   const app = ARRANGE_LABELS[arrangeSource()] || "the app";
-  const option = (attr, value, text, on, disabled = false) => `<button class="scope-option${disabled ? " disabled" : ""}" type="button" role="radio" aria-checked="${on}" aria-disabled="${disabled}" ${attr}="${value}"><span class="scope-check"></span><span>${escapeText(text)}</span></button>`;
+  const option = (attr, value, text, on, disabled = false) => `<button class="scope-option${on ? " on" : ""}${disabled ? " disabled" : ""}" type="button" role="radio" aria-checked="${on}" aria-disabled="${disabled}" ${attr}="${value}"><span class="scope-check"></span><span>${escapeText(text)}</span></button>`;
   return `<div class="scope-menu-head"><strong>GROUP BY</strong><span class="section-menu-name">${escapeText(label)}</span></div>
 <div class="scope-menu-list" role="radiogroup" aria-label="Group by">${option("data-view-group", "app", `As in ${app}`, view.group === "app")}${Object.entries(SECTION_GROUP_LABELS).map(([value, text]) => option("data-view-group", value, text, view.group === value)).join("")}</div>
 <div class="scope-menu-divider"></div>
@@ -417,7 +418,12 @@ function openSectionMenu(key, label, anchor) {
     sectionMenu = document.createElement("div");
     sectionMenu.className = "navigator-options section-view-menu"; sectionMenu.id = "sectionViewMenu"; sectionMenu.hidden = true;
     sectionMenu.setAttribute("role", "dialog");
-    document.body.appendChild(sectionMenu);
+    // On a phone the menu is a sheet over a dim (the phone block styles both): the dim takes the
+    // tap that closes it, so that tap never reaches a row beneath.
+    sectionScrim = document.createElement("div");
+    sectionScrim.className = "section-view-scrim"; sectionScrim.hidden = true;
+    sectionScrim.addEventListener("click", event => { event.preventDefault(); event.stopPropagation(); closeSectionMenu(false); });
+    app.append(sectionScrim, sectionMenu);
     sectionMenu.addEventListener("click", event => {
       const view = sectionView(indexState.sectionViews[sectionMenuKey]);
       const pick = event.target.closest("[data-view-group], [data-view-sort], [data-view-dir], [data-view-reset]");
@@ -433,7 +439,7 @@ function openSectionMenu(key, label, anchor) {
       sectionMenuAnchor = tree.querySelector(`[data-section-view="${CSS.escape(sectionMenuKey)}"]`) || sectionMenuAnchor;
       placeSectionMenu();
     });
-    document.addEventListener("pointerdown", event => { if (sectionMenu && !sectionMenu.hidden && !sectionMenu.contains(event.target) && !event.target.closest?.("[data-section-view]")) closeSectionMenu(false); }, true);
+    document.addEventListener("pointerdown", event => { if (sectionMenu && !sectionMenu.hidden && !sectionMenu.contains(event.target) && event.target !== sectionScrim && !event.target.closest?.("[data-section-view]")) closeSectionMenu(false); }, true);
     document.addEventListener("keydown", event => { if (event.key === "Escape" && sectionMenu && !sectionMenu.hidden) { event.stopPropagation(); closeSectionMenu(true); } }, true);
     addEventListener("resize", placeSectionMenu);
   }
@@ -441,14 +447,14 @@ function openSectionMenu(key, label, anchor) {
   sectionMenuKey = key; sectionMenuAnchor = anchor; sectionMenu.dataset.label = label;
   sectionMenu.setAttribute("aria-label", `Sort and group ${label}`);
   sectionMenu.innerHTML = sectionMenuHtml(key, label);
-  sectionMenu.hidden = false;
+  sectionMenu.hidden = false; sectionScrim.hidden = false;
   anchor.setAttribute("aria-expanded", "true");
   placeSectionMenu();
 }
 function closeSectionMenu(refocus) {
   if (!sectionMenu) return;
   const key = sectionMenuKey;
-  sectionMenu.hidden = true; sectionMenuKey = null; sectionMenuAnchor = null;
+  sectionMenu.hidden = true; sectionScrim.hidden = true; sectionMenuKey = null; sectionMenuAnchor = null;
   const anchor = key && tree.querySelector(`[data-section-view="${CSS.escape(key)}"]`);
   if (anchor) { anchor.setAttribute("aria-expanded", "false"); if (refocus) anchor.focus(); }
 }
