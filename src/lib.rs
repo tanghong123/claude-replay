@@ -284,7 +284,8 @@ fn print_field_coverage(args: &Args) -> anyhow::Result<()> {
         if fields.is_empty() {
             continue;
         }
-        let Ok(file) = std::fs::File::open(&e.1) else {
+        // The JSONL, a compressed rollout decoded as it is read (#s383).
+        let Ok(file) = claude_replay_core::source::stream(&e.1) else {
             continue;
         };
         scanned += 1;

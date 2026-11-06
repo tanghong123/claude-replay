@@ -432,8 +432,9 @@ struct PulseRead {
 fn pulse_within(adapter: &dyn TranscriptAdapter, path: &Path, window: u64) -> Option<PulseRead> {
     use std::io::{Read, Seek, SeekFrom};
     let mut pulse = TailPulse::default();
-    let mut f = std::fs::File::open(path).ok()?;
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    // The JSONL's tail, a compressed rollout's decoded one (#s383).
+    let mut f = crate::source::open(path).ok()?;
+    let len = f.len().unwrap_or(0);
     let start = len.saturating_sub(window);
     f.seek(SeekFrom::Start(start)).ok()?;
     let mut raw = Vec::new();

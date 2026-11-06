@@ -126,6 +126,11 @@ impl<R: BufRead> LineSource<R> {
         self.last_torn
     }
 
+    /// The reader this source reads through.
+    pub fn get_ref(&self) -> &R {
+        &self.reader
+    }
+
     /// Reposition the underlying reader to [`offset`](Self::offset). Needed only by the
     /// live tails (the metrics fold, the follower), which keep their reader open across
     /// polls: discovering a torn tail consumes its bytes, so before the next poll the
@@ -177,9 +182,10 @@ impl<R: BufRead> LineSource<R> {
 /// candidate discovery sees. Sniffs pass [`Elision::None`] (ceiling-bounded, zero
 /// behavioral change — their point is the bound, not elision); a whole-file field scan
 /// passes [`Elision::Aggressive`]. An unopenable path yields nothing, exactly as the
-/// `.lines()` idiom's `ok()?` did.
+/// `.lines()` idiom's `ok()?` did. A compressed transcript reads as its JSONL, decoded only as
+/// far as the lines taken (#s383).
 pub fn bounded_lines(path: &std::path::Path, policy: Elision) -> impl Iterator<Item = String> {
-    let mut src = std::fs::File::open(path)
+    let mut src = crate::source::stream(path)
         .ok()
         .map(|f| LineSource::new(std::io::BufReader::new(f), 0, TornTail::Yield, policy));
     std::iter::from_fn(move || match src.as_mut()?.next() {

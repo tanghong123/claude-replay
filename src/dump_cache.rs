@@ -81,7 +81,7 @@ pub(crate) fn write_cached<W: Write + ?Sized>(
     out: &mut W,
 ) -> anyhow::Result<Served> {
     // The entry's key is the transcript's stem, as the TUI's is: a session id, never a title.
-    let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+    let Some(id) = claude_replay_core::source::stem(path) else {
         write_plain(agent, path, out)?;
         return Ok(Served::Plain(Fallback::Unavailable));
     };
@@ -153,11 +153,12 @@ pub(crate) fn write_cached<W: Write + ?Sized>(
     Ok(Served::Entry(origin))
 }
 
-/// Whether the transcript ends with a newline (or is empty) — no final line in progress.
+/// Whether the transcript ends with a newline (or is empty) — no final line in progress. The
+/// JSONL's last byte, a compressed rollout's decoded one (#s383).
 fn ends_at_a_line_boundary(path: &Path) -> std::io::Result<bool> {
     use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(path)?;
-    let len = f.metadata()?.len();
+    let mut f = claude_replay_core::source::open(path)?;
+    let len = f.len()?;
     if len == 0 {
         return Ok(true);
     }
@@ -424,6 +425,43 @@ mod tests {
     /// cannot vouch for and writes the plain dump's bytes. What vouches is #222's pair, the
     /// first line's identity and a length that never shrinks below the resume point; an in-place
     /// rewrite that keeps both is not looked for, since an agent only appends to its transcript.
+    /// A rollout compressed to `.jsonl.zst` (#s383) is served from its entry like a plain one:
+    /// its length and last byte are the JSONL's. Checked against the compressed file's own last
+    /// byte it read as torn, so every sweep folded it twice and never served the entry. The entry
+    /// is the session's under either form, so a rollout decompressed again resumes it.
+    #[test]
+    fn a_compressed_transcript_is_served_from_its_entry_in_either_form() {
+        let dir = scratch("zst");
+        let root = dir.join("cache");
+        let path = dir.join("s.jsonl");
+        let corpus = working_session(&dir.join("unused"));
+        std::fs::write(&path, &corpus).unwrap();
+        let want = plain(&path);
+        let z = claude_replay_core::source::compress_in_place_for_tests(&path).unwrap();
+        let (got, served) = cached(&root, &z);
+        assert_eq!(
+            served,
+            Served::Entry(Origin::Cold(ColdReason::NoPriorCache))
+        );
+        assert_eq!(got, want);
+        let (got, served) = cached(&root, &z);
+        assert!(
+            matches!(served, Served::Entry(Origin::Resumed { .. })),
+            "{served:?}"
+        );
+        assert_eq!(got, want);
+        // Decompressed again, as a resume does: the same entry, resumed.
+        std::fs::write(&path, &corpus).unwrap();
+        std::fs::remove_file(&z).unwrap();
+        let (got, served) = cached(&root, &path);
+        assert!(
+            matches!(served, Served::Entry(Origin::Resumed { .. })),
+            "{served:?}"
+        );
+        assert_eq!(got, want);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_rewritten_transcript_is_folded_cold_not_spliced() {
         let dir = scratch("rewrite");

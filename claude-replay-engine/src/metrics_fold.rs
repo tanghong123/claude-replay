@@ -103,7 +103,7 @@ pub struct MetricsFold {
     path: PathBuf,
     /// The one bounded line source (#193): `Stop` — the durable cursor must never pass a
     /// torn line — and aggressive elision, provably metric-neutral.
-    src: LineSource<BufReader<std::fs::File>>,
+    src: LineSource<BufReader<crate::source::Source>>,
     /// Gauges already banked into `acc.extra` — the next [`Self::next_event`] banks the delta.
     banked: crate::engine::reader::ElisionCounts,
     pre: Box<dyn LinePreprocessor>,
@@ -124,8 +124,9 @@ impl MetricsFold {
     ) -> std::io::Result<Self> {
         let mut pre = adapter.line_preprocessor();
         let mut acc = adapter.metrics_acc();
-        let file = std::fs::File::open(path)?;
-        let len = file.metadata()?.len();
+        // The JSONL, a compressed rollout decoded (#s383): the cursor's offsets are its.
+        let file = crate::source::open(path)?;
+        let len = file.len()?;
         let mut reader = BufReader::new(file);
 
         let (offset, start) = match cursor {

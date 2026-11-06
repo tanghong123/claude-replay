@@ -247,7 +247,8 @@ pub fn latest_cwd(path: &Path) -> Option<PathBuf> {
 /// [`latest_cwd`] with the tail's size as a parameter, so the tests can move the window across
 /// every position of a small file.
 fn latest_cwd_within(path: &Path, tail: u64) -> Option<PathBuf> {
-    let len = std::fs::metadata(path).ok()?.len();
+    // The JSONL's length and offsets, a compressed rollout's decoded ones (#s383).
+    let len = crate::source::len(path).ok()?;
     if len > tail {
         if let Some(cwd) = last_cwd_from(path, len - tail) {
             return Some(cwd);
@@ -263,7 +264,7 @@ fn latest_cwd_within(path: &Path, tail: u64) -> Option<PathBuf> {
 /// behind `from`, and whatever the skip passes over the whole-file fallback still reads.
 fn last_cwd_from(path: &Path, from: u64) -> Option<PathBuf> {
     use std::io::{BufRead, Seek, SeekFrom};
-    let mut reader = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+    let mut reader = std::io::BufReader::new(crate::source::open(path).ok()?);
     let mut at = from;
     if from > 0 {
         reader.seek(SeekFrom::Start(from)).ok()?;

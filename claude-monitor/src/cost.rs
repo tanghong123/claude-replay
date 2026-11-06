@@ -207,7 +207,12 @@ impl CostLedger {
         let Ok(meta) = std::fs::metadata(path) else {
             return CostUpdate::Keep;
         };
-        let (len, mtime) = (meta.len(), epoch(meta.modified().ok()));
+        // The JSONL's length, which a fold's offsets count (#s383): a compressed rollout's is its
+        // decoded length, counted once and remembered, or `complete` would come early.
+        let Ok(len) = claude_replay_core::source::len(path) else {
+            return CostUpdate::Keep;
+        };
+        let mtime = epoch(meta.modified().ok());
         if let Some(e) = self.entries.get(&stem) {
             if e.len == len && e.mtime == mtime {
                 return CostUpdate::Replace(e.summary());
@@ -342,10 +347,10 @@ fn save_entry(path: &Path, e: &Entry) {
     let _ = std::fs::write(path, v.to_string());
 }
 
-/// A transcript's ledger key — its file stem, the same key the index rows use.
+/// A transcript's ledger key — its file stem, the same key the index rows use (one key for
+/// a rollout in either form, #s383).
 fn stem_of(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|s| s.to_str())
+    claude_replay_core::source::stem(path)
         .unwrap_or_default()
         .to_string()
 }
@@ -707,6 +712,46 @@ mod tests {
             "the stale v3 priced-zero state must become authoritative no usage"
         );
         assert!(budget < COST_BUDGET_BYTES, "a real re-fold spent bytes");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A compressed rollout is folded in its JSONL's bytes (#s383), so the length the ledger holds
+    /// a fold to is the decoded one: a fold the cycle's budget stops part-way is not taken for a
+    /// finished one. Held to the file's own, smaller size, a fold that stopped past it read as
+    /// complete, and its partial cost stood for good behind the quiet-file fast path.
+    #[test]
+    fn a_compressed_rollout_folded_in_pieces_prices_the_whole_file() {
+        let d = scratch("zst-pieces");
+        let t = d.join("rollout-2026-08-12T01-00-00-zst-pieces.jsonl");
+        let mut body = turn_context("gpt-5.6");
+        for i in 1..=200u64 {
+            body.push_str(&token_count("2026-08-12T01:00:01Z", i * 10_000, 0, 0));
+        }
+        std::fs::write(&t, &body).unwrap();
+        let mut full = COST_BUDGET_BYTES;
+        let (whole, _) =
+            priced(CostLedger::new(&d.join("cache-plain")).cost(Agent::CODEX, &t, &mut full));
+        assert!((whole - 8.0).abs() < 1e-9, "2M input on gpt-5.6: {whole}");
+
+        let z = claude_replay_core::source::compress_in_place_for_tests(&t).unwrap();
+        let compressed = std::fs::metadata(&z).unwrap().len();
+        assert!(
+            compressed * 4 < body.len() as u64,
+            "{compressed} of {}",
+            body.len()
+        );
+        let mut ledger = CostLedger::new(&d.join("cache-zst"));
+        let mut last = None;
+        for _ in 0..60 {
+            // More than the compressed file each cycle, and much less than the JSONL.
+            let mut budget = compressed + 1;
+            if let CostUpdate::Replace(Some(summary)) = ledger.cost(Agent::CODEX, &z, &mut budget) {
+                last = Some(summary);
+            }
+        }
+        let last = last.expect("a cost was published");
+        assert_eq!(last.known_usd, Some(whole), "the whole file, in pieces");
+        assert!(!last.partial);
         let _ = std::fs::remove_dir_all(&d);
     }
 

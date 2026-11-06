@@ -186,3 +186,37 @@ fn a_codex_sub_agent_rollout_is_counted() {
         .unwrap_or_else(|| panic!("no cwd row: {out}"));
     assert_eq!(cwd["records"], 2, "{cwd}");
 }
+
+/// #s383: a Codex rollout compressed to `.jsonl.zst` (Codex does so once one has gone seven days
+/// untouched, so a 14-day window holds them) is counted as its JSONL. Read as raw bytes, it was
+/// counted as a transcript read and gave no record at all.
+#[test]
+fn a_compressed_codex_rollout_is_counted() {
+    let root = scratch("codex-zst");
+    let day = root.join("codex").join("sessions").join("2026/09/25");
+    std::fs::create_dir_all(&day).unwrap();
+    let plain = day.join("rollout-z383.jsonl");
+    std::fs::write(
+        &plain,
+        concat!(
+            r#"{"timestamp":"2026-09-25T00:00:00Z","type":"session_meta","payload":{"id":"z383","cwd":"/work/skua","originator":"codex_cli_rs","cli_version":"0.170.0"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-09-25T00:00:01Z","type":"turn_context","payload":{"cwd":"/work/skua","model":"gpt-5.6"}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    claude_replay_core::source::compress_in_place_for_tests(&plain).unwrap();
+    let (out, err, ok) = run(&root, &["--field-coverage", "--json", "--agent", "codex"]);
+    assert!(ok, "{err}");
+    assert!(err.contains("read 1 transcript"), "{err}");
+    let rows = rows(&out);
+    for field in ["session_meta.cwd", "turn_context.model"] {
+        let row = rows
+            .iter()
+            .find(|r| r["agent"] == "codex" && r["field"] == field)
+            .unwrap_or_else(|| panic!("no {field} row: {out}"));
+        assert_eq!(row["records"], 1, "{row}");
+        assert_eq!(row["rate"], 1.0, "{row}");
+    }
+}

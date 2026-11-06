@@ -247,9 +247,8 @@ pub(crate) fn recover(
     // The source must still reach the partition, and the bytes BELOW it must be unchanged —
     // everything the resume restores derives from there. Bytes at or after it are re-read and
     // folded fresh, so a rewrite there is self-correcting and needs no coverage.
-    let len = std::fs::metadata(src)
-        .map_err(|_| ColdReason::SourceRewritten)?
-        .len();
+    // The JSONL's length, a compressed rollout's decoded one (#s383): the partition is its.
+    let len = claude_replay_core::source::len(src).map_err(|_| ColdReason::SourceRewritten)?;
     if len < a.resume.replay_from {
         return Err(ColdReason::SourceRewritten);
     }

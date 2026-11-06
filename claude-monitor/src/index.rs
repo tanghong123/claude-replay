@@ -1279,6 +1279,12 @@ impl Index {
                     title_mtime: None,
                     cost: None,
                 });
+                // A Codex rollout changes form under its row (#s383): compressed once it has gone
+                // seven days untouched, decompressed again when its thread is resumed. The row
+                // keeps its key (the stem is the same) and follows the file the store lists now.
+                if row.path != path {
+                    row.path = path.clone();
+                }
                 // The mtime is only the TRIGGER. Growth — and the activity clock — come
                 // from the transcript's CONTENT: an attached idle client touches the file
                 // without appending, and trusting mtime made three-week-old sessions read
@@ -2856,7 +2862,8 @@ fn write_started_by(path: &Path, edges: &BTreeMap<String, String>) {
 fn head_one_shot(path: &Path) -> Option<String> {
     use std::io::Read;
     let mut buf = Vec::new();
-    std::fs::File::open(path)
+    // The JSONL's head, a compressed rollout decoded only that far (#s383).
+    claude_replay_core::source::stream(path)
         .ok()?
         .take(64 * 1024)
         .read_to_end(&mut buf)
@@ -4121,7 +4128,8 @@ fn first_event_ts(path: &Path) -> Option<u64> {
 fn first_event_within(path: &Path, cap: usize) -> Option<u64> {
     use std::io::Read;
     let mut buf = vec![0u8; cap];
-    let mut f = std::fs::File::open(path).ok()?;
+    // The JSONL's head, a compressed rollout decoded only that far (#s383).
+    let mut f = claude_replay_core::source::stream(path).ok()?;
     let mut n = 0;
     while n < cap {
         match f.read(&mut buf[n..]) {
@@ -4189,8 +4197,9 @@ enum Activity {
 fn last_event_within(path: &Path, window: u64) -> Activity {
     use std::io::{Read, Seek, SeekFrom};
     let read = || -> Option<Vec<u8>> {
-        let mut f = std::fs::File::open(path).ok()?;
-        let len = f.metadata().ok()?.len();
+        // The JSONL's tail, a compressed rollout's decoded one (#s383).
+        let mut f = claude_replay_core::source::open(path).ok()?;
+        let len = f.len().ok()?;
         f.seek(SeekFrom::Start(len.saturating_sub(window))).ok()?;
         let mut raw = Vec::new();
         f.read_to_end(&mut raw).ok()?;
@@ -4256,9 +4265,10 @@ fn field_after<'a>(line: &'a str, pat: &str) -> impl Iterator<Item = &'a str> {
     out.into_iter()
 }
 
+/// A row's key: the transcript's stem, one key for a Codex rollout whether it is plain or
+/// compressed (#s383), so a session keeps its row as Codex moves it between the two.
 fn stem_of(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|s| s.to_str())
+    claude_replay_core::source::stem(path)
         .unwrap_or("session")
         .to_string()
 }
@@ -4560,6 +4570,107 @@ mod tests {
         assert!(policy.allow_session(Agent::CLAUDE, "owned").is_ok());
         owner.0.store(false, std::sync::atomic::Ordering::SeqCst);
         assert!(policy.allow_session(Agent::CODEX, "owned").is_ok());
+    }
+
+    /// Codex compresses a rollout untouched for seven days into `….jsonl.zst` and decompresses
+    /// it again when the thread is resumed (#s383; on one machine 3,416 of 4,502 sessions were
+    /// compressed, and the monitor listed none of them). The session is listed with its title and
+    /// its cost read through the compressed file, and keeps ONE row, under one id, as its file
+    /// changes form in either direction between scans.
+    #[test]
+    fn a_compressed_codex_rollout_is_listed_and_keeps_one_row_as_it_changes_form() {
+        struct RestoreStores([(&'static str, Option<std::ffi::OsString>); 3]);
+        impl Drop for RestoreStores {
+            fn drop(&mut self) {
+                for (name, previous) in &self.0 {
+                    match previous {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+        let scratch = std::env::temp_dir().join(format!("cm-zst-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let _state_env = StateEnv::set(scratch.join("state"));
+        let variables = ["CLAUDE_PROJECTS_DIR", "CODEX_HOME", "CODEX_SESSIONS_DIR"];
+        let _restore = RestoreStores(variables.map(|name| (name, std::env::var_os(name))));
+        let codex_home = scratch.join("codex");
+        let day = codex_home.join("sessions/2026/10/01");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::create_dir_all(scratch.join("claude/projects")).unwrap();
+        std::env::set_var("CLAUDE_PROJECTS_DIR", scratch.join("claude/projects"));
+        std::env::set_var("CODEX_HOME", &codex_home);
+        std::env::set_var("CODEX_SESSIONS_DIR", codex_home.join("sessions"));
+
+        let id = "0193a5c0-0000-7000-8000-00000000m383";
+        let sid = format!("rollout-2026-10-01T09-00-00-{id}");
+        let plain = day.join(format!("{sid}.jsonl"));
+        let cwd = scratch.join("project");
+        let lines = [
+            json!({"timestamp":"2026-10-01T09:00:00.000Z","type":"session_meta",
+                "payload":{"id":id,"cwd":cwd,"originator":"codex_cli_rs","source":"cli"}}),
+            json!({"timestamp":"2026-10-01T09:00:01.000Z","type":"turn_context",
+                "payload":{"cwd":cwd,"model":"gpt-5.6"}}),
+            json!({"timestamp":"2026-10-01T09:00:02.000Z","type":"response_item",
+                "payload":{"type":"message","role":"user",
+                    "content":[{"type":"input_text","text":"Sort the release notes"}]}}),
+            json!({"timestamp":"2026-10-01T09:00:03.000Z","type":"event_msg",
+                "payload":{"type":"token_count","info":{"total_token_usage":
+                    {"input_tokens":1200,"cached_input_tokens":200,"output_tokens":80}}}}),
+            json!({"timestamp":"2026-10-01T09:00:04.000Z","type":"response_item",
+                "payload":{"type":"message","role":"assistant",
+                    "content":[{"type":"output_text","text":"Sorted."}]}}),
+        ];
+        let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        std::fs::write(&plain, &body).unwrap();
+        let z = claude_replay_core::source::compress_in_place_for_tests(&plain).unwrap();
+
+        let rows = |index: &Index| -> Vec<Value> {
+            fn walk(v: &Value, sid: &str, out: &mut Vec<Value>) {
+                match v {
+                    Value::Object(o) => {
+                        if o.get("id").and_then(Value::as_str) == Some(sid) {
+                            out.push(v.clone());
+                        }
+                        o.values().for_each(|c| walk(c, sid, out));
+                    }
+                    Value::Array(a) => a.iter().for_each(|c| walk(c, sid, out)),
+                    _ => {}
+                }
+            }
+            let listed: Value = serde_json::from_str(&index.sessions_json(|_| {})).unwrap();
+            let mut out = Vec::new();
+            walk(&listed, &sid, &mut out);
+            out
+        };
+        let index = Index::new(
+            scratch.join("cache"),
+            scratch.join("state"),
+            vec![Agent::CODEX],
+        );
+        let got = rows(&index);
+        assert_eq!(got.len(), 1, "the compressed session is one row: {got:?}");
+        assert_eq!(got[0]["name"], "Sort the release notes");
+        assert!(
+            got[0]["cost"].as_f64().is_some_and(|usd| usd > 0.0),
+            "priced through the compressed file: {:?}",
+            got[0]
+        );
+        assert_eq!(index.agent_for_session(&sid), Some(Agent::CODEX));
+
+        // Resumed: Codex writes the plain file back and removes the .zst; then, a week on, it
+        // compresses it again. One row, the same id, each time.
+        std::fs::write(&plain, &body).unwrap();
+        std::fs::remove_file(&z).unwrap();
+        let got = rows(&index);
+        assert_eq!(got.len(), 1, "decompressed: still one row: {got:?}");
+        assert!(got[0]["cost"].as_f64().is_some_and(|usd| usd > 0.0));
+        claude_replay_core::source::compress_in_place_for_tests(&plain).unwrap();
+        let got = rows(&index);
+        assert_eq!(got.len(), 1, "compressed again: still one row: {got:?}");
+        assert_eq!(got[0]["name"], "Sort the release notes");
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     #[test]

@@ -12,7 +12,6 @@ use super::agent::{
 };
 use crate::{codex_discover, Agent};
 use anyhow::{anyhow, bail, Context, Result};
-use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
@@ -73,8 +72,9 @@ impl CodexPermissionSnapshot {
     }
 
     pub(crate) fn from_rollout(path: &Path) -> Result<Self> {
-        let file =
-            File::open(path).with_context(|| format!("open Codex rollout {}", path.display()))?;
+        // The JSONL, a compressed rollout decoded as it is read (#s383).
+        let file = claude_replay_core::source::stream(path)
+            .with_context(|| format!("open Codex rollout {}", path.display()))?;
         let mut latest = None;
         for line in BufReader::new(file).lines().map_while(Result::ok) {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {

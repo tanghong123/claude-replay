@@ -12,6 +12,12 @@ categories = ["parser-implementations"]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
+# #s383: Codex compresses a rollout untouched for seven days into `rollout-*.jsonl.zst`, and
+# every reader works in the JSONL's byte offsets, so `source` decodes one. Pure Rust and used
+# here to decode only (its encoder makes the test fixtures): `zstd`'s `zstd-sys` would be the
+# workspace's first C dependency on Linux. `std` alone, without the checksum feature's crate:
+# Codex verifies each file decodes before it publishes it.
+ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }
 
 # Dev-only closure of the split (#87): the machinery's own tests exercise it with the
 # REAL built-in adapters (and the facade's dispatchers). A legal dev-dependency cycle.

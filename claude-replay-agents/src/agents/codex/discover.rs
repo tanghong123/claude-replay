@@ -14,6 +14,8 @@ use std::time::SystemTime;
 #[cfg(test)]
 thread_local! {
     static RELATIONSHIP_READS: Cell<usize> = const { Cell::new(0) };
+    /// Rollout heads the machine-wide walks read (#s383).
+    static HEAD_READS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -51,6 +53,18 @@ pub(crate) fn sessions_dir() -> PathBuf {
         .unwrap_or_else(|| codex_home().join("sessions"))
 }
 
+/// Whether a file found in a Codex store is a transcript to read: a `*.jsonl`, or the
+/// `*.jsonl.zst` Codex compresses a rollout into once it has gone seven days untouched (#s383)
+/// unless the plain file is beside it, which is the one to read (a resume decompressing it
+/// back), as Codex's own discovery decides.
+fn readable_rollout(path: &Path) -> bool {
+    use claude_replay_engine::seam::source;
+    if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+        return true;
+    }
+    source::is_compressed(path) && !source::plain_path(path).exists()
+}
+
 fn jsonl_files(root: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -63,9 +77,7 @@ fn jsonl_files(root: &Path) -> Vec<PathBuf> {
             };
             if kind.is_dir() {
                 walk(&path, out);
-            } else if kind.is_file()
-                && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
-            {
+            } else if kind.is_file() && readable_rollout(&path) {
                 out.push(path);
             }
         }
@@ -187,18 +199,25 @@ impl CodexRelationshipIndex {
         index.root_id(root).is_some().then_some(index)
     }
 
-    /// The relationship node for the rollout at `root`. Raw path equality first (the walk
-    /// and the caller normally spell the path identically); a canonicalized rescan only on
-    /// miss, so a symlinked/non-canonical root still resolves instead of silently
-    /// disabling the tree.
+    /// The relationship node for the rollout at `root`. Path equality first (the walk and the
+    /// caller normally spell the path identically), in the plain name either form stands for
+    /// (#s383: a caller may hold the path a rollout had before Codex compressed it, or before a
+    /// resume decompressed it); a canonicalized rescan only on miss, so a symlinked or
+    /// non-canonical root still resolves instead of silently disabling the tree.
     fn root_id(&self, root: &Path) -> Option<&str> {
-        if let Some(node) = self.nodes.iter().find(|node| node.path == root) {
+        use claude_replay_engine::seam::source::plain_path;
+        let plain = plain_path(root);
+        if let Some(node) = self
+            .nodes
+            .iter()
+            .find(|node| plain_path(&node.path) == plain)
+        {
             return Some(node.id.as_str());
         }
-        let root = normalized(root);
+        let root = rollout_key(root);
         self.nodes
             .iter()
-            .find(|node| normalized(&node.path) == root)
+            .find(|node| rollout_key(&node.path) == root)
             .map(|node| node.id.as_str())
     }
 
@@ -265,6 +284,14 @@ pub(crate) fn subagent_sources(root: &Path, ids: &[&str]) -> Vec<Option<PathBuf>
 
 fn normalized(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// A rollout's identity in the tree: the canonical path of the file holding it, in either form,
+/// named as the plain `.jsonl` it stands for (#s383).
+fn rollout_key(path: &Path) -> PathBuf {
+    use claude_replay_engine::seam::source;
+    let on_disk = source::resolve(path).unwrap_or_else(|| path.to_path_buf());
+    source::plain_path(&normalized(&on_disk))
 }
 
 fn first_user_snippet(path: &Path) -> String {
@@ -549,7 +576,23 @@ fn codex_thread_title(path: &Path) -> Option<String> {
         cache.modified = Some(modified);
         cache.by_rollout = read_thread_titles(&db);
     }
-    cache.by_rollout.get(path).cloned()
+    title_in(&cache.by_rollout, path)
+}
+
+/// A rollout's title in the catalog, which names a rollout by its plain `.jsonl` path whether it
+/// is compressed or not (#s383).
+#[cfg(target_os = "macos")]
+fn title_in(by_rollout: &HashMap<PathBuf, String>, path: &Path) -> Option<String> {
+    by_rollout
+        .get(&claude_replay_engine::seam::source::plain_path(path))
+        .cloned()
+}
+
+/// A catalog's `rollout_path` as the plain `.jsonl` path it stands for, should a catalog ever
+/// name the compressed file (#s383: the measured ones name the plain path for both forms).
+#[cfg(target_os = "macos")]
+fn plain_rollout(path: &str) -> PathBuf {
+    claude_replay_engine::seam::source::plain_path(Path::new(path))
 }
 
 #[cfg(target_os = "macos")]
@@ -579,7 +622,7 @@ fn read_thread_titles(db: &Path) -> HashMap<PathBuf, String> {
                 .filter_map(|(path, name, title, first)| {
                     let title =
                         name.or_else(|| title.filter(|value| first.as_deref() != Some(value)));
-                    title.map(|title| (PathBuf::from(path), title))
+                    title.map(|title| (plain_rollout(&path), title))
                 })
                 .collect();
         }
@@ -597,7 +640,7 @@ fn read_thread_titles(db: &Path) -> HashMap<PathBuf, String> {
         return HashMap::new();
     };
     rows.flatten()
-        .filter_map(|(path, title)| title.map(|title| (PathBuf::from(path), title)))
+        .filter_map(|(path, title)| title.map(|title| (plain_rollout(&path), title)))
         .collect()
 }
 
@@ -613,7 +656,8 @@ pub(crate) fn archived_dir() -> PathBuf {
     codex_home().join("archived_sessions")
 }
 
-/// Every `rollout-*.jsonl` under `dir`, bounded to the dated tree's depth.
+/// Every `rollout-*.jsonl` under `dir`, and every `rollout-*.jsonl.zst` with no plain file
+/// beside it (see [`readable_rollout`]), bounded to the dated tree's depth.
 fn rollout_files(dir: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -626,7 +670,8 @@ fn rollout_files(dir: &Path) -> Vec<PathBuf> {
             } else if p
                 .file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("rollout-") && n.ends_with(".jsonl"))
+                .is_some_and(|n| n.starts_with("rollout-"))
+                && readable_rollout(&p)
             {
                 out.push(p);
             }
@@ -678,12 +723,42 @@ fn head_is_subagent(path: &Path) -> bool {
     head_subagent_lineage(path).is_some()
 }
 
+/// What a rollout's head says about its lineage (see [`read_head_subagent_lineage`]), remembered
+/// per version of the file (#s383). The machine-wide walks read every rollout's head on every
+/// monitor scan; a compressed rollout's head costs a frame decoder and a decoded block, and on
+/// 1,000 of them every scan took 4.5 s (0.1 s plain) while the page polled. A rollout's head
+/// never changes once written, so a version (length and mtime) that was read is not read again.
+fn head_subagent_lineage(path: &Path) -> Option<(String, Option<String>)> {
+    type Lineage = Option<(String, Option<String>)>;
+    type Heads = Mutex<HashMap<PathBuf, (u64, Option<SystemTime>, Lineage)>>;
+    static HEADS: OnceLock<Heads> = OnceLock::new();
+    let heads = HEADS.get_or_init(Default::default);
+    let Ok(meta) = std::fs::metadata(path) else {
+        return read_head_subagent_lineage(path);
+    };
+    let (len, mtime) = (meta.len(), meta.modified().ok());
+    if let Some((_, _, lineage)) = heads
+        .lock()
+        .ok()
+        .and_then(|h| h.get(path).filter(|e| e.0 == len && e.1 == mtime).cloned())
+    {
+        return lineage;
+    }
+    let lineage = read_head_subagent_lineage(path);
+    if let Ok(mut h) = heads.lock() {
+        h.insert(path.to_path_buf(), (len, mtime, lineage.clone()));
+    }
+    lineage
+}
+
 /// The head's sub-agent lineage — `(own session id, parent thread id)` — when the rollout
 /// at `path` IS a sub-agent thread. The SAME single-line read and the SAME marker
 /// ([`subagent_snippet`]) as the main-listing exclusion, deliberately: a file excluded
 /// from the main listing must be exactly the file this lineage listing surfaces, or a
 /// rollout falls between the two and its spend vanishes.
-fn head_subagent_lineage(path: &Path) -> Option<(String, Option<String>)> {
+fn read_head_subagent_lineage(path: &Path) -> Option<(String, Option<String>)> {
+    #[cfg(test)]
+    HEAD_READS.set(HEAD_READS.get() + 1);
     let line =
         claude_replay_engine::seam::bounded_lines(path, claude_replay_engine::seam::Elision::None)
             .next()?;
@@ -1305,6 +1380,185 @@ mod tests {
         assert_eq!(titles[Path::new("/tmp/a.jsonl")], "Renamed task");
         assert_eq!(titles[Path::new("/tmp/b.jsonl")], "Generated task");
         assert!(!titles.contains_key(Path::new("/tmp/c.jsonl")));
+    }
+
+    /// The catalog keeps a rollout's plain `.jsonl` path after Codex compresses the file (#s383:
+    /// 3,405 of 4,497 threads on one machine named a path that existed only as `<path>.zst`), so a
+    /// compressed rollout finds its title by the plain path; and a catalog naming the `.zst` would
+    /// find it the same way.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn the_thread_catalog_titles_a_compressed_rollout_by_its_plain_path() {
+        let fixture = Fixture::new();
+        let db = fixture.root.join("state_5.sqlite");
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection
+            .execute(
+                "CREATE TABLE threads (rollout_path TEXT, name TEXT, title TEXT NOT NULL, first_user_message TEXT)",
+                [],
+            )
+            .unwrap();
+        for (path, name) in [
+            ("/s/rollout-a.jsonl", "Plain-named"),
+            ("/s/rollout-z.jsonl.zst", "Zst-named"),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO threads VALUES (?1, ?2, ?3, ?4)",
+                    (path, name, "Generated", "Prompt"),
+                )
+                .unwrap();
+        }
+        drop(connection);
+        let titles = read_thread_titles(&db);
+        let title = |p: &str| title_in(&titles, Path::new(p));
+        assert_eq!(
+            title("/s/rollout-a.jsonl.zst").as_deref(),
+            Some("Plain-named")
+        );
+        assert_eq!(title("/s/rollout-a.jsonl").as_deref(), Some("Plain-named"));
+        assert_eq!(
+            title("/s/rollout-z.jsonl.zst").as_deref(),
+            Some("Zst-named")
+        );
+        assert_eq!(title("/s/rollout-z.jsonl").as_deref(), Some("Zst-named"));
+        assert_eq!(title("/s/rollout-q.jsonl.zst"), None);
+    }
+
+    /// The machine-wide walks read a rollout's head once per version of the file (#s383): the
+    /// monitor walks the store on every scan, and a compressed head costs a decoder and a block.
+    /// A rollout that grows, or changes form, is read again.
+    #[test]
+    fn the_store_walk_reads_each_head_once_per_version() {
+        use claude_replay_engine::seam::source;
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let plain = fixture.rollout_with_user("w1", &cwd, "a plain session");
+        let z = source::compress_in_place_for_tests(&fixture.rollout_with_user(
+            "w2",
+            &cwd,
+            "a compressed session",
+        ))
+        .unwrap();
+        let _sub = fixture.related_rollout("w3", &cwd, "w1", "agents/reviewer");
+        let roots = [fixture.sessions.clone()];
+        let reads = || HEAD_READS.get();
+        let walk = || {
+            let mut main = store_transcripts_machine_in(&roots);
+            main.sort();
+            let subs = subagent_transcripts_in(&roots).len();
+            (main, subs)
+        };
+        let at = reads();
+        let first = walk();
+        assert_eq!(first.0.len(), 2, "{:?}", first.0);
+        assert_eq!(first.1, 1);
+        assert_eq!(reads() - at, 3, "each head once");
+        for _ in 0..3 {
+            assert_eq!(walk(), first);
+        }
+        assert_eq!(reads() - at, 3, "and never again while the files stand");
+        Fixture::append_user(&plain, "more");
+        assert_eq!(walk(), first);
+        assert_eq!(reads() - at, 4, "a rollout that grew is read again");
+        assert!(z.exists());
+    }
+
+    /// A served session keeps the path it was first registered under while Codex moves its
+    /// rollout between forms (#s383), so the tree is found from either path, in either form: the
+    /// plain path of a rollout compressed since, and the `.zst` path of one resumed since.
+    #[test]
+    fn the_sub_agent_tree_is_found_from_a_root_path_in_either_form() {
+        use claude_replay_engine::seam::source;
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let root = fixture.rollout_with_user("m1", &cwd, "build the thing");
+        let child = fixture.related_rollout("s1", &cwd, "m1", "agents/reviewer");
+        let child_of = |root: &Path| {
+            CodexRelationshipIndex::load(root).and_then(|tree| tree.subagent_source(root, "s1"))
+        };
+        assert_eq!(child_of(&root).as_deref(), Some(child.as_path()));
+
+        let bytes = fs::read(&root).unwrap();
+        let z = source::compress_in_place_for_tests(&root).unwrap();
+        assert_eq!(
+            child_of(&root).as_deref(),
+            Some(child.as_path()),
+            "the plain path, compressed since"
+        );
+        assert_eq!(
+            child_of(&z).as_deref(),
+            Some(child.as_path()),
+            "the .zst path"
+        );
+
+        // Resumed: the plain file is back and the .zst gone.
+        fs::write(&root, bytes).unwrap();
+        fs::remove_file(&z).unwrap();
+        assert_eq!(
+            child_of(&z).as_deref(),
+            Some(child.as_path()),
+            "the .zst path, resumed since"
+        );
+    }
+
+    /// Codex compresses a rollout untouched for seven days into `….jsonl.zst` (#s383): every walk
+    /// lists it, once, under the path that holds it, and reads its head through it; a plain file
+    /// beside a `.zst` (a resume decompressing it back) is the one listed.
+    #[test]
+    fn a_compressed_rollout_is_listed_once_and_its_plain_twin_wins() {
+        use claude_replay_engine::seam::source;
+        let fixture = Fixture::new();
+        let cwd = fixture.root.join("repo");
+        let plain = fixture.rollout_with_user("p1", &cwd, "a plain session");
+        let only_z = source::compress_in_place_for_tests(&fixture.rollout_with_user(
+            "z1",
+            &cwd,
+            "a compressed session",
+        ))
+        .unwrap();
+        let twin = fixture.rollout_with_user("t1", &cwd, "a session being resumed");
+        fs::write(
+            format!("{}.zst", twin.display()),
+            source::compress_for_tests(&fs::read(&twin).unwrap()),
+        )
+        .unwrap();
+        let archive = fixture.root.join("archived_sessions");
+        fs::create_dir_all(&archive).unwrap();
+        let arch = archive.join("rollout-a1.jsonl");
+        fs::write(
+            &arch,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"a1\",\"cwd\":\"/repo\"}}\n",
+        )
+        .unwrap();
+        let arch_z = source::compress_in_place_for_tests(&arch).unwrap();
+
+        let mut got = store_transcripts_machine_in(&[fixture.sessions.clone(), archive]);
+        got.sort();
+        let mut want = vec![plain, only_z.clone(), twin.clone(), arch_z];
+        want.sort();
+        assert_eq!(got, want, "each session once, the plain twin over its .zst");
+
+        let mut ids: Vec<_> = sessions_in(&fixture.sessions)
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["p1", "t1", "z1"]);
+        let candidates = candidates_in(&fixture.sessions, &cwd);
+        let z = candidates
+            .iter()
+            .find(|c| c.path == only_z)
+            .expect("the compressed session is a candidate for its directory");
+        assert_eq!(z.snippet, "a compressed session");
+        assert_eq!(
+            resolve_in(&fixture.sessions, Some("z1"), false).unwrap(),
+            only_z
+        );
+        assert_eq!(
+            resolve_in(&fixture.sessions, Some("t1"), false).unwrap(),
+            twin
+        );
     }
 
     /// The prompts are Chinese because the clause-boundary rule under test is; the PATHS are

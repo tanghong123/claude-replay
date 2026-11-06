@@ -57,6 +57,9 @@ pub use crate::engine::build_sub_agents;
 pub use crate::engine::replay::{
     parse_path_timed_for, replay, stamp_user_turns, QueueItem, Replayer,
 };
+// #s383: a transcript's bytes whatever form its store keeps them in — Codex compresses a
+// rollout untouched for seven days to `.jsonl.zst` — so a family lists, names and reads one
+// as the JSONL it stands for.
 pub use crate::engine::taskq::{queue_tasks, taskq_create_ops, taskq_ops, TASKQ_SENTINEL};
 pub use crate::engine::tasks::{task_from_json, TaskList, TaskOp, Todo};
 pub use crate::engine::time::epoch_secs;
@@ -71,6 +74,7 @@ pub use crate::metrics::{
 #[doc(hidden)]
 pub use crate::model::attach_skill_body;
 pub use crate::model::*;
+pub use crate::source;
 // What a client says it waits on, outside its transcript (#s76).
 pub use crate::state::ClientWait;
 // `watch_keys` too (#361): an adapter's tests turn the per-record key census on, as the sweep does.
