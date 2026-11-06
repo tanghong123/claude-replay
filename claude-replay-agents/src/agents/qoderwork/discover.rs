@@ -77,6 +77,22 @@ pub(crate) const FAMILY_RECORD_KEYS: &[&str] = &[
     "humanInput",
     "requestSetId",
     "requestTokenAnchor",
+    // #s397 (Qwenwork 1.1.71, measured 2026-11-06 on aries-black): an integer on an assistant
+    // record salvaged from a reply whose stream FAILED partway. The client's bundled worker sets it
+    // in one place, under the failed stream's snapshot: each block that had arrived is written as
+    // an assistant record carrying the block's index there, then the failure as an API-error record
+    // (`error`, `errorDetails`, and `displayErrorCode` 406 for a refusal), as Claude Code flags a
+    // reply cut off with Esc (`isAbortedMidStream`, #s305). Met on ONE record in the whole store,
+    // in a sub-agent transcript: the value 0, one text block, `stop_reason` null, no usage, the
+    // next record the API error (`error` "unknown"). Read (`cut_off_text`): the text is an
+    // `AssistantCutOff` block, drawn with the cut-off line above the failure note; `--json`
+    // still says `assistant`. No usage arrives for the partial, so the cost counts none for it.
+    // Kept to the family's list, so a Claude Code record carrying it is still news. REVISIT: (1)
+    // the key on a record holding a `tool_use` or `thinking` block, where a call that never ran
+    // would be drawn as one that did (#s305's own REVISIT); (2) a value that is not a
+    // non-negative integer, which reads as no mark; (3) a salvaged record NOT followed by an
+    // API-error record; (4) a Claude Code record carrying it.
+    "partialStreamIndex",
     "requiresActiveLeafCommit",
     "attempt",
     "max_retries",

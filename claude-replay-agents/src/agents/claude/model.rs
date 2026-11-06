@@ -91,8 +91,18 @@ fn assistant_phase(v: &Value, content: &[Value]) -> Option<AssistantPhase> {
 /// `isAbortedMidStream`. The mark goes on the record's LAST text block, where the reply stopped.
 /// Only an unphased record is read (the one shape measured: `stop_reason` null, text alone); a
 /// flagged record with a stop reason or a call is the census's REVISIT, drawn as before.
+///
+/// Qwenwork 1.1.71 says the same of a reply whose STREAM failed partway (#s397): it writes each
+/// block that had arrived as an assistant record carrying `partialStreamIndex` (the block's index
+/// in the failed stream), then the failure as an API-error record. A non-negative integer there
+/// reads as the flag does; Claude Code has never written the key.
 fn cut_off_text(v: &Value, content: &[Value], phase: Option<AssistantPhase>) -> Option<usize> {
-    if phase.is_some() || v.get("isAbortedMidStream").and_then(Value::as_bool) != Some(true) {
+    let aborted = v.get("isAbortedMidStream").and_then(Value::as_bool) == Some(true);
+    let salvaged = v
+        .get("partialStreamIndex")
+        .and_then(Value::as_u64)
+        .is_some();
+    if phase.is_some() || !(aborted || salvaged) {
         return None;
     }
     content.iter().rposition(|blk| {
@@ -9284,6 +9294,94 @@ mod tests {
             via_main.iter().any(|b| matches!(b,
                 Block::AssistantMessage { text, phase: AssistantPhase::Final, .. } if text == "Done.")),
             "a flagged record with a phase keeps it, unmarked: {via_main:?}"
+        );
+    }
+
+    /// #s397: Qwenwork 1.1.71 writes what had arrived of a reply whose stream FAILED as assistant
+    /// records carrying `partialStreamIndex`, then the failure as an API-error record. On both parse
+    /// paths the text is a cut-off reply and the failure still its one note; without the key, or
+    /// with a value that is not a non-negative integer, the same record is plain prose; and the key
+    /// is the family's own, known there and news on a Claude Code record.
+    #[test]
+    fn a_qwenwork_reply_salvaged_from_a_failed_stream_is_cut_off() {
+        let salvaged = r##"
+{"type":"user","version":"1.1.71","sessionId":"s-s397","uuid":"u1","timestamp":"2026-11-06T01:00:00.000Z","message":{"role":"user","content":"Count the terns on the east stack."}}
+{"type":"assistant","version":"1.1.71","sessionId":"s-s397","uuid":"a1","parentUuid":"u1","partialStreamIndex":0,"requestTokenAnchor":"anchor-1","timestamp":"2026-11-06T01:00:02.000Z","message":{"id":"msg_1","type":"message","role":"assistant","model":"qwen3-max","stop_reason":null,"stop_sequence":null,"content":[{"type":"text","text":"There are forty-one nests on the east"}]}}
+{"type":"assistant","version":"1.1.71","sessionId":"s-s397","uuid":"a2","parentUuid":"a1","isApiErrorMessage":true,"error":"unknown","errorDetails":"{}","timestamp":"2026-11-06T01:00:03.000Z","message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: the response stream ended early."}]}}
+"##;
+        let cut = "There are forty-one nests on the east";
+        let messages = tokenize(salvaged.lines());
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| matches!(m, Message::AssistantCutOff(t) if t == cut))
+                .count(),
+            1,
+            "the salvaged text is cut off: {messages:?}"
+        );
+        let failures = messages
+            .iter()
+            .filter(|m| {
+                matches!(
+                    m,
+                    Message::SystemNote {
+                        kind: NoteKind::Failure,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(failures, 1, "one Failure note: {messages:?}");
+
+        let mut ut = Vec::new();
+        let via_engine = replay(&messages, &mut ut, &CLAUDE_SHAPING);
+        let mut ut_main = Vec::new();
+        let via_main = parse_main(salvaged.lines(), &mut ut_main);
+        assert_eq!(format!("{via_main:?}"), format!("{via_engine:?}"));
+        assert_eq!(ut, ut_main);
+        assert!(
+            via_main
+                .iter()
+                .any(|b| matches!(b, Block::AssistantCutOff(t) if t == cut)),
+            "{via_main:?}"
+        );
+
+        for unmarked in [
+            salvaged.replace(r#""partialStreamIndex":0,"#, ""),
+            salvaged.replace(r#""partialStreamIndex":0"#, r#""partialStreamIndex":"0""#),
+            salvaged.replace(r#""partialStreamIndex":0"#, r#""partialStreamIndex":-1"#),
+        ] {
+            let blocks = parse_main(unmarked.lines(), &mut Vec::new());
+            assert!(
+                !blocks
+                    .iter()
+                    .any(|b| matches!(b, Block::AssistantCutOff(_))),
+                "no mark: {blocks:?}"
+            );
+            assert!(
+                blocks
+                    .iter()
+                    .any(|b| matches!(b, Block::AssistantText(t) if t == cut)),
+                "plain prose: {blocks:?}"
+            );
+        }
+
+        let record: Value = serde_json::from_str(salvaged.lines().nth(2).unwrap()).unwrap();
+        let mut news = unknown_record_keys(&record, "assistant", &[]);
+        news.sort_unstable();
+        assert_eq!(
+            news,
+            ["partialStreamIndex", "requestTokenAnchor"],
+            "on a Claude Code record the family's keys are new"
+        );
+        assert!(
+            unknown_record_keys(
+                &record,
+                "assistant",
+                crate::agents::qoderwork::discover::FAMILY_RECORD_KEYS
+            )
+            .is_empty(),
+            "for the family, its own"
         );
     }
 
