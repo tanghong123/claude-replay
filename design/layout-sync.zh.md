@@ -149,9 +149,26 @@ OpenAI 的 Codex 桌面应用；在被读取的机器上是 `/Applications/ChatG
 `rollout-….jsonl.zst`，而 monitor 目前还不读这种文件（#s383）。在修好之前，"Like the Codex app" 会把
 它们画成变暗的行，也就是 app 列出、但 monitor 没有对应行的 session。
 
-**评估。** 今天只能从私有的状态文件读到，而 app 不断重写它，格式也正在迁移中。等 app-server 的存储
-写入每个 thread 的 project 之后，再通过 app-server（或以只读方式读它的数据库）来读；在那之前，大约一半
-的 thread 会被放错位置。在弄清 app 显示哪个置顶列表之前，不处理置顶。
+**sidebar 本身**只存在状态文件里，位于 `electron-persisted-atom-state` 下，2026-11-06 对照 app 自己的
+sidebar 核对过：
+
+| Key | sidebar 从中显示什么 |
+|---|---|
+| `sidebar-custom-sections-v3`（按账号） | `sectionOrder`（`pinned`、`orbit`、`agents`、`custom:<id>`…、`threads`、`chats`）；每个自定义 section 的 `name` 和 `itemKeys`，一项是一个 project（`codex:project:<id>`）或一个 thread（`codex:thread:<host>:<id>`）；`collapsedSectionIds` |
+| `sidebar-collapsed-sections-v1` | Pinned、Projects（`threads`）和 Chats 是否折叠 |
+| `sidebar-project-expanded-v1-codex:<project id>` | 一个 project 文件夹是否展开 |
+| `pinned-thread-ids`（顶层） | Pinned 显示的置顶 |
+| `project-order`、`local-projects`（顶层） | Projects 列表的顺序和名字，用状态文件自己的 project id，`app-server-project-id-by-legacy-project-id-by-host` 把它映射到数据库的 id |
+| `thread-project-assignments`、`projectless-thread-ids`（顶层） | app 还没把 thread 迁进数据库时它所属的 project，以及 Chats 显示的 thread |
+
+一个自定义 section 可以包含 project 文件夹，而不只是 thread：在那台机器上，"Project H" 包含 5 个
+project，Projects 列表按 app 的顺序包含其余 9 个。数据库自己的 `thread_sections` 里有一个叫 "Pinned"
+的 section，含 11 个 thread，但那不是 Pinned 显示的内容。
+
+**评估。** sidebar 只能从私有的状态文件读到；app 每隔几分钟重写一次这个文件，而且它没有 schema（key
+带版本后缀）。原型以只读方式读它，只在它变化时重读，标题、最近活动、归档和 sub-agent 取自数据库；没有
+状态文件时，退回到数据库里的 section，并说明这一点。等 app-server 提供 sidebar 的 section、置顶和文件夹
+之后，改为通过 app-server 读取。
 
 ### 3.3 Herdr
 
@@ -195,10 +212,11 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
 | Claude app：一个归档的 session | 一个折叠的 Archived section，在 "Not in the Claude app" 之前 |
 | Claude app：session 的标题（这个人输入的，或 app 自己起的） | 在这个视图里作为该行的名字 |
 | Claude app：Routines | 不显示：routine 不是 session 行 |
-| Codex app：一个置顶 thread | 第一个 section，Pinned，等置顶列表查清之后 |
-| Codex app：一个自定义 section | 一个带它名字的 section，按 app 的顺序，折叠状态与 app 相同 |
-| Codex app：一个 project | Threads 下的一个小标题，按 app 的 project 顺序 |
-| Codex app：一个归档的 thread | 最后一个折叠的 Archived section，在 "Not in the Codex app" 之前 |
+| Codex app：一个置顶 thread | Pinned，按 app 的置顶顺序，折叠状态与 app 相同 |
+| Codex app：一个自定义 section | 一个带它名字的 section，按 app 的顺序，折叠状态与 app 相同；其中的 project 文件夹作为小标题，thread 作为行 |
+| Codex app：一个 project | 一个文件夹小标题，放在它的自定义 section 里，或按 app 的 project 顺序放在 Projects 下；除非在 app 里展开过，否则是关闭的；即使为空也画出来 |
+| Codex app：一个没有 project 的 thread | Chats |
+| Codex app：一个归档的 thread | 不画，因为 app 也不画 |
 | Codex app：一个 sub-agent thread | 嵌在它的父 thread 下面 |
 | Herdr：一个 workspace | 一个带 workspace label 的 section，按 Herdr 的顺序 |
 | Herdr：一个 tab | 它里面的一个小标题 |
@@ -314,12 +332,18 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
 **在原型（#s387）上运行过的，一台 Mac，2026-11-06：**
 
 - Rust 单元测试（`claude-monitor/src/layout.rs`），每个读取器都用虚构的存储：Claude app 从磁盘上的
-  设置和记录读出 section、group、置顶、side session 和归档；Codex app 从按实测结构建的数据库读出置顶、
-  section、project、sub-agent 和归档，结构不同的数据库会被拒绝；Herdr 从一个和两个 server 的 snapshot
+  设置和记录读出 section、group、置顶、side session 和归档；Codex app 从按实测结构建的状态文件读出
+  sidebar（置顶、包含 project 文件夹或 thread 的自定义 section、Projects 列表、Chats、折叠的 section 和关闭
+  的文件夹，thread 的 project 先看状态文件再看数据库），从按实测结构建的数据库读出 thread，结构不同的状态
+  文件或数据库会被拒绝；Herdr 从一个和两个 server 的 snapshot
   读出 workspace、tab 和 agent pane。还有一个 `api/layout` 的 route 测试。
 - 一个关于页面放置逻辑的 node contract case：每个 entry 一次，隐藏的行和 index 里没有的 entry 都保留，
   重复的丢掉，空 section 不画，单独的 session id 能匹配到用 rollout 命名的行。
-- 在这台机器的 app 上本地启动一个 monitor，用内置浏览器：每个选项都画出对应 app 的列表；Claude app 的
+- 在这台机器的 app 上本地启动一个 monitor，用内置浏览器："Like the Codex app" 按 app 显示的样子画出了它的
+  sidebar（Pinned 折叠，"Project H" 带 5 个文件夹，第二个自定义 section 折叠，Projects 按顺序带其余 9 个
+  文件夹，全部关闭，然后是 Chats）。它在顶层放置的 1,276 个 thread 中，有 85 个是 monitor 的行；其余是
+  压缩的 rollout（#s383），画成变暗的行。
+- 在同一个 monitor 里：每个选项都画出对应 app 的列表；Claude app 的
   与它自己的 sidebar 列表一致（§3.1）；读不到的来源显示为不可用并给出原因；读取失败时带琥珀色说明行
   退回，之后恢复；说明行的 ✕ 回到 tree；刷新页面后选择仍在；手机抽屉在 375 px 下显示说明行和列表，
   不会横向滚动。

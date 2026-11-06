@@ -91,8 +91,9 @@ export const ARRANGE_SOURCES = ["claude-app", "codex-app", "herdr"];
  * row for is kept with the app's title (`row: null`), so nothing the app lists goes missing. Each
  * session appears once: the first entry naming it wins, and a repeat is dropped, its children with
  * it (they were placed under the first). `rowsById` maps a row id to its row. Returns the sections
- * that hold anything — each `{ id, label, collapsed, nodes, groups: [{ id, label, nodes }] }`, a node
- * being `{ id, row, title, children }` — and `placed`, the ids shown.
+ * that hold anything — each `{ id, label, collapsed, nodes, groups: [{ id, label, collapsed, nodes }] }`,
+ * a node being `{ id, row, title, children }` — and `placed`, the ids shown. A group the app draws
+ * even when empty (`keep`: a Codex project folder) is kept empty.
  */
 export function arrangeSessions(layout, rowsById = new Map()) {
   const placed = new Set();
@@ -109,8 +110,8 @@ export function arrangeSessions(layout, rowsById = new Map()) {
   for (const section of layout?.sections || []) {
     const top = nodes(section.entries);
     const groups = (section.groups || [])
-      .map(group => ({ id: String(group.id), label: String(group.label || ""), nodes: nodes(group.entries) }))
-      .filter(group => group.nodes.length);
+      .map(group => ({ id: String(group.id), label: String(group.label || ""), collapsed: !!group.collapsed, keep: !!group.keep, nodes: nodes(group.entries) }))
+      .filter(group => group.nodes.length || group.keep);
     if (top.length || groups.length) sections.push({ id: String(section.id), label: String(section.label || ""), collapsed: !!section.collapsed, nodes: top, groups });
   }
   return { sections, placed };

@@ -836,9 +836,11 @@ assert.match(appSource, /flatFamilies\(agents, Date\.now\(\) \/ 1000\)/, "the fl
     { id: "g", label: "Planning", collapsed: true, entries: [{ id: "a", title: null, children: [{ id: "b", children: [] }, { id: "gone", title: "Gone away", children: [{ id: "c", children: [] }] }] }], groups: [] },
     { id: "empty", label: "Empty", entries: [{ id: "b", children: [] }], groups: [] },
     { id: "sessions", label: "Sessions", entries: [], groups: [{ id: "/w/x", label: "x", entries: [{ id: "d", children: [] }] }, { id: "/w/y", label: "y", entries: [] }] },
+    { id: "projects", label: "Projects", entries: [], groups: [{ id: "p1", label: "github", collapsed: true, keep: true, entries: [] }] },
   ] };
   const { sections, placed } = arrangeSessions(layout, rows);
-  assert.deepEqual(sections.map(s => s.id), ["pinned", "g", "sessions"], "a section the first entries emptied is not drawn");
+  assert.deepEqual(sections.map(s => s.id), ["pinned", "g", "sessions", "projects"], "a section the first entries emptied is not drawn");
+  assert.deepEqual(sections[3].groups.map(g => [g.label, g.collapsed, g.nodes.length]), [["github", true, 0]], "a folder the app draws empty is kept, closed as the app has it");
   assert.equal(sections[0].nodes[0].title, "Bee", "the app's title rides on the node");
   assert.equal(sections[1].nodes[0].row, rows.get("a"), "a hidden row the app lists is still listed");
   assert.deepEqual(sections[1].nodes[0].children.map(n => n.id), ["gone"], "a repeat is dropped; an id with no row is kept");
@@ -847,7 +849,7 @@ assert.match(appSource, /flatFamilies\(agents, Date\.now\(\) \/ 1000\)/, "the fl
   assert.ok(sections[1].collapsed, "collapsed as the app has it");
   assert.deepEqual(sections[2].groups.map(g => g.label), ["x"], "an empty group is not drawn");
   assert.deepEqual([...placed].sort(), ["a", "b", "c", "d", "gone"]);
-  assert.deepEqual(sections.map(arrangedCount), [1, 3, 1], "a section counts its nested sessions");
+  assert.deepEqual(sections.map(arrangedCount), [1, 3, 1, 0], "a section counts its nested sessions");
   assert.deepEqual(arrangeSessions(null, rows).sections, []);
   assert.deepEqual(arrangeSessions({ sections: [{ id: "s", entries: [{ id: "" }, {}] }] }, rows).sections, [], "an entry with no id is skipped");
   assert.deepEqual(ARRANGE_SOURCES, ["claude-app", "codex-app", "herdr"], "the sources are the server's (layout.rs Source::ALL)");

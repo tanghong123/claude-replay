@@ -166,10 +166,27 @@ were made.
 stored as `rollout-….jsonl.zst`, which the monitor does not read yet (#s383). Until it does, "Like
 the Codex app" draws them dimmed, as sessions the app lists that the monitor has no row for.
 
-**Assessment.** Readable today only from the private state file, which the app rewrites constantly
-and whose format is mid-migration. Read through the app-server (or its database, read-only) once
-that store holds each thread's project; until then about half the threads would land in the wrong
-place. Pins stay out until the list the app draws is known.
+**The sidebar itself** is only in the state file, under `electron-persisted-atom-state`, checked
+against the app's own sidebar on 2026-11-06:
+
+| Key | What the sidebar shows from it |
+|---|---|
+| `sidebar-custom-sections-v3` (per account) | `sectionOrder` (`pinned`, `orbit`, `agents`, `custom:<id>`…, `threads`, `chats`); each custom section's `name` and `itemKeys`, a project (`codex:project:<id>`) or a thread (`codex:thread:<host>:<id>`); `collapsedSectionIds` |
+| `sidebar-collapsed-sections-v1` | Whether Pinned, Projects (`threads`) and Chats are collapsed |
+| `sidebar-project-expanded-v1-codex:<project id>` | Whether a project folder is open |
+| `pinned-thread-ids` (top level) | The pins Pinned draws |
+| `project-order`, `local-projects` (top level) | The Projects list's order and names, in the state file's project ids, which `app-server-project-id-by-legacy-project-id-by-host` maps to the database's |
+| `thread-project-assignments`, `projectless-thread-ids` (top level) | A thread's project while the app has not moved it into the database, and the threads Chats draws |
+
+A custom section can hold project folders, not only threads: on that machine "Project H" held five
+projects, and the Projects list held the other nine, in the app's order. The database's own
+`thread_sections` held a section named "Pinned" with 11 threads, which is not what Pinned draws.
+
+**Assessment.** The sidebar is readable only from the private state file, which the app rewrites
+every few minutes and which has no schema (its keys carry version suffixes). The prototype reads it
+read-only, re-reading only when it changes, and takes titles, recency, archive and sub-agents from
+the database; with no state file it falls back to the database's sections and says so. Read through
+the app-server instead once it offers the sidebar's sections, pins and folders.
 
 ### 3.3 Herdr
 
@@ -215,10 +232,11 @@ live pane-to-row mapping was observed; the Claude hook (v11) and the Codex hook 
 | Claude app: an archived session | A collapsed Archived section, before "Not in the Claude app" |
 | Claude app: a session's title (typed by the person, or the app's own) | The row's name in this view |
 | Claude app: Routines | Nothing: a routine is not a session row |
-| Codex app: a pinned thread | First section, Pinned, once the pin list is known |
-| Codex app: a custom section | A section with its name, in the app's order, collapsed as in the app |
-| Codex app: a project | A sub-head under Threads, in the app's project order |
-| Codex app: an archived thread | A last, collapsed Archived section, before "Not in the Codex app" |
+| Codex app: a pinned thread | Pinned, in the app's pin order, collapsed as in the app |
+| Codex app: a custom section | A section with its name, in the app's order, collapsed as in the app; its project folders as sub-heads, its threads as rows |
+| Codex app: a project | A folder sub-head, in its custom section or under Projects in the app's project order, closed unless opened in the app, drawn even when empty |
+| Codex app: a thread with no project | Chats |
+| Codex app: an archived thread | Not drawn, as the app does not draw it |
 | Codex app: a sub-agent thread | Nested under its parent |
 | Herdr: a workspace | A section with the workspace's label, in Herdr's order |
 | Herdr: a tab | A sub-head inside it |
@@ -345,13 +363,20 @@ in the app.
 
 - Rust unit tests (`claude-monitor/src/layout.rs`) for each reader on synthetic stores: the Claude
   app's sections, groups, pins, side sessions and archive from its settings and records on disk;
-  the Codex app's pins, sections, projects, sub-agents and archive from a database in its measured
-  shape, a database of another shape refused; Herdr's workspaces, tabs and agent panes from
+  the Codex app's sidebar from a state file in its measured shape (pins, custom sections holding
+  project folders or threads, the Projects list, Chats, collapsed sections and closed folders, a
+  thread's project from the state file before the database), its threads from a database in its
+  measured shape, and a state file or database of another shape refused; Herdr's workspaces, tabs and agent panes from
   snapshots of one and of two servers. A route test for `api/layout`.
 - A node contract case for the page's placement: every entry once, hidden rows and rows with no
   index entry kept, repeats dropped, empty sections not drawn, a bare session id matched to a
   rollout-named row.
-- A locally started monitor on this machine's apps, in the built-in browser: each option draws its
+- A locally started monitor on this machine's apps, in the built-in browser: "Like the Codex app"
+  drew the app's sidebar as the app showed it (Pinned closed, "Project H" with its five folders,
+  the second custom section closed, Projects with the other nine folders in order, all closed, then
+  Chats). Of the 1,276 threads it placed at the top level, 85 were monitor rows; the rest are
+  compressed rollouts (#s383) and are drawn dimmed.
+- In the same monitor: each option draws its
   app's list; the Claude app's matched its own sidebar listing (§3.1); an unreadable source is
   offered disabled with its reason; a failing read falls back with the amber line and recovers; the
   line's ✕ returns to the tree; the choice survives a reload; the phone drawer at 375 px shows the

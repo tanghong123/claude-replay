@@ -485,9 +485,11 @@ function arrangedSessionsHtml(layout, agents, shownAgents) {
     if (!open) continue;
     html += list(section.nodes, `${key}:more`, false);
     for (const group of section.groups) {
-      const groupKey = `${key}:${group.id}`, groupOpen = !indexState.collapsed.has(groupKey);
-      html += `<div class="tree-row project arranged-group" role="treeitem" tabindex="0" data-toggle="${escapeText(groupKey)}" aria-expanded="${groupOpen}" title="${escapeText(group.id)}">${svg(source === "herdr" ? "terminal" : "folder")}<span class="tree-title">${escapeText(group.label)}</span></div>`;
-      if (groupOpen) html += list(group.nodes, `${groupKey}:more`, true);
+      // A sub-head opens and closes like the app's too: a Codex project folder starts closed unless
+      // the person opened it there, and is drawn even when it holds no session, as the app draws it.
+      const groupKey = `${key}:${group.id}`, groupOpen = group.collapsed ? indexState.collapsed.has(groupKey) : !indexState.collapsed.has(groupKey);
+      html += `<div class="tree-row project arranged-group" role="treeitem" tabindex="0" data-toggle="${escapeText(groupKey)}" aria-expanded="${groupOpen}" title="${escapeText(group.label)}">${svg(source === "herdr" ? "terminal" : "folder")}<span class="tree-title">${escapeText(group.label)}</span></div>`;
+      if (groupOpen) html += group.nodes.length ? list(group.nodes, `${groupKey}:more`, true) : `<div class="arranged-empty">No sessions</div>`;
     }
   }
   // Everything else the monitor lists: the filtered tree less what the app placed, collapsed.

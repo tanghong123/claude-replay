@@ -73,6 +73,10 @@ pub struct Entry {
 pub struct Group {
     pub id: String,
     pub label: String,
+    /// Whether the app shows it closed (a Codex project folder the person has not opened).
+    pub collapsed: bool,
+    /// Drawn even when it holds no session, because the app draws it (a Codex project folder).
+    pub keep: bool,
     pub entries: Vec<Entry>,
 }
 
@@ -106,6 +110,7 @@ pub struct Readers {
     claude_records: ClaudeRecords,
     claude_config: Option<ConfigRead>,
     codex: Option<CodexRead>,
+    codex_state: Option<CodexStateRead>,
     /// The last reason logged per source, so an unreadable source is logged once, not every 5 s.
     reported: HashMap<&'static str, String>,
 }
@@ -121,6 +126,13 @@ struct CodexRead {
     db: PathBuf,
     stamp: (Option<SystemTime>, Option<SystemTime>),
     data: CodexData,
+}
+
+struct CodexStateRead {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    len: u64,
+    sidebar: CodexSidebar,
 }
 
 impl Readers {
@@ -239,15 +251,32 @@ impl Readers {
             modified(&db),
             modified(&PathBuf::from(format!("{}-wal", db.display()))),
         );
-        if let Some(read) = &self.codex {
-            if read.db == db && read.stamp == stamp {
-                return Ok(codex_layout(&read.data));
+        let fresh = self
+            .codex
+            .as_ref()
+            .is_some_and(|read| read.db == db && read.stamp == stamp);
+        if !fresh {
+            let data = read_codex(&db)?;
+            self.codex = Some(CodexRead {
+                db: db.clone(),
+                stamp,
+                data,
+            });
+        }
+        let data = &self.codex.as_ref().expect("read above").data;
+        // The sidebar itself — its sections, what each holds, the pins, the project folders — is
+        // in the app's state file; without it the database's sections are the best guess.
+        match codex_state(&db, &mut self.codex_state) {
+            Ok(sidebar) => Ok(codex_sidebar_layout(data, sidebar)),
+            Err(reason) => {
+                let mut layout = codex_layout(data);
+                layout.note = Some(format!(
+                    "{reason}; showing the sections its database holds{}",
+                    layout.note.map(|n| format!(". {n}")).unwrap_or_default()
+                ));
+                Ok(layout)
             }
         }
-        let data = read_codex(&db)?;
-        let layout = codex_layout(&data);
-        self.codex = Some(CodexRead { db, stamp, data });
-        Ok(layout)
     }
 }
 
@@ -285,6 +314,8 @@ fn section_json(section: &Section) -> Value {
         "groups": section.groups.iter().map(|group| json!({
             "id": group.id,
             "label": group.label,
+            "collapsed": group.collapsed,
+            "keep": group.keep,
             "entries": group.entries.iter().map(entry_json).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
     })
@@ -756,6 +787,8 @@ fn project_groups(
             Group {
                 id: folder,
                 label,
+                collapsed: false,
+                keep: false,
                 entries: rs
                     .into_iter()
                     .map(|r| claude_entry(r, kids, false, &mut HashSet::new()))
@@ -914,6 +947,413 @@ fn read_codex(db: &Path) -> Result<CodexData, String> {
     })
 }
 
+/// Where the Codex app keeps its window state, the sidebar among it:
+/// `AGENT_MONITOR_CODEX_APP_STATE` when set, else `.codex-global-state.json` beside its database.
+fn codex_state_path(db: &Path) -> PathBuf {
+    std::env::var_os("AGENT_MONITOR_CODEX_APP_STATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| db.with_file_name(".codex-global-state.json"))
+}
+
+/// The state file is a few megabytes (2.5 MB measured); anything far larger is not it.
+const CODEX_STATE_LIMIT: u64 = 64 << 20;
+
+/// The sidebar as the Codex app keeps it in its state file (measured with the Codex app
+/// 26.1103.31037 on 2026-11-06): `electron-persisted-atom-state` holds `sidebar-custom-sections-v3`
+/// (per account: the section order, each custom section's name and items — a project
+/// `codex:project:<id>` or a thread `codex:thread:<host>:<id>` — and the collapsed custom
+/// sections), `sidebar-collapsed-sections-v1` (the built-in sections' collapsed state) and one
+/// `sidebar-project-expanded-v1-codex:<project id>` per project folder; the top level holds the
+/// pins (`pinned-thread-ids`), the project order and names (`project-order`, `local-projects`),
+/// the threads with no project (`projectless-thread-ids`), each thread's project while the app
+/// has not yet moved it into its database (`thread-project-assignments`), and how the state file's
+/// project ids map to the database's.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct CodexSidebar {
+    section_order: Vec<String>,
+    custom: Vec<CustomSection>,
+    collapsed_custom: HashSet<String>,
+    collapsed_builtin: HashMap<String, bool>,
+    pinned: Vec<String>,
+    /// Project ids as the state file names them, in the app's order, with their names.
+    projects: Vec<(String, String)>,
+    /// The database's project id for a state-file project id.
+    server_project: HashMap<String, String>,
+    /// A thread's project (a state-file id) while the app has not moved it into its database.
+    thread_project: HashMap<String, String>,
+    projectless: Vec<String>,
+    /// A project folder the person opened, by either of its ids.
+    expanded: HashSet<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CustomSection {
+    id: String,
+    name: String,
+    items: Vec<CustomItem>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum CustomItem {
+    Project(String),
+    Thread(String),
+}
+
+/// The sidebar from the state file, re-read only when the file changes. A file caught
+/// half-written keeps the last good read.
+fn codex_state<'a>(
+    db: &Path,
+    cache: &'a mut Option<CodexStateRead>,
+) -> Result<&'a CodexSidebar, String> {
+    let path = codex_state_path(db);
+    let meta = std::fs::metadata(&path)
+        .map_err(|_| "The Codex app's sidebar state was not found".to_string())?;
+    let (modified, len) = (meta.modified().ok(), meta.len());
+    let current = cache
+        .as_ref()
+        .is_some_and(|read| read.path == path && read.modified == modified && read.len == len);
+    if !current {
+        let parsed = (len <= CODEX_STATE_LIMIT)
+            .then(|| std::fs::read(&path).ok())
+            .flatten()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        match parsed {
+            Some(state) => {
+                let sidebar = parse_codex_sidebar(&state)?;
+                *cache = Some(CodexStateRead {
+                    path,
+                    modified,
+                    len,
+                    sidebar,
+                });
+            }
+            None if cache.as_ref().is_some_and(|read| read.path == path) => {}
+            None => return Err("The Codex app's sidebar state could not be read".into()),
+        }
+    }
+    Ok(&cache.as_ref().expect("read above").sidebar)
+}
+
+fn parse_codex_sidebar(state: &Value) -> Result<CodexSidebar, String> {
+    let atoms = state
+        .get("electron-persisted-atom-state")
+        .and_then(Value::as_object);
+    let unknown = || {
+        "The Codex app's sidebar state is in a format this monitor does not know \
+         (no sidebar-custom-sections-v3)"
+            .to_string()
+    };
+    // One account's sections: the first that has a section order.
+    let custom = atoms
+        .and_then(|a| a.get("sidebar-custom-sections-v3"))
+        .and_then(Value::as_object)
+        .and_then(|accounts| accounts.values().find(|v| v.get("sectionOrder").is_some()))
+        .ok_or_else(unknown)?;
+    let strings = |v: Option<&Value>| -> Vec<String> {
+        v.and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let sections = custom
+        .get("sections")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|section| {
+                    Some(CustomSection {
+                        id: section.get("id")?.as_str()?.to_string(),
+                        name: section
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Section")
+                            .to_string(),
+                        items: strings(section.get("itemKeys"))
+                            .into_iter()
+                            .filter_map(|key| {
+                                if let Some(id) = key.strip_prefix("codex:project:") {
+                                    Some(CustomItem::Project(id.to_string()))
+                                } else {
+                                    // `codex:thread:<host>:<id>`: the id after the host.
+                                    let rest = key.strip_prefix("codex:thread:")?;
+                                    let id = rest.split_once(':').map_or(rest, |(_, id)| id);
+                                    Some(CustomItem::Thread(id.to_string()))
+                                }
+                            })
+                            .collect(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let collapsed_builtin = atoms
+        .and_then(|a| a.get("sidebar-collapsed-sections-v1"))
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_bool()?)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let expanded = atoms
+        .map(|a| {
+            a.iter()
+                .filter(|(_, v)| v.as_bool() == Some(true))
+                .filter_map(|(k, _)| k.strip_prefix("sidebar-project-expanded-v1-codex:"))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let names = state.get("local-projects").and_then(Value::as_object);
+    let projects = strings(state.get("project-order"))
+        .into_iter()
+        .map(|id| {
+            let name = names
+                .and_then(|n| n.get(&id))
+                .and_then(|p| p.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or(&id)
+                .to_string();
+            (id, name)
+        })
+        .collect();
+    // The database's project ids by the state file's, for this machine's host.
+    let server_project = state
+        .get("app-server-project-id-by-legacy-project-id-by-host")
+        .and_then(Value::as_object)
+        .and_then(|hosts| {
+            hosts
+                .iter()
+                .find(|(host, _)| host.starts_with("local"))
+                .map(|(_, v)| v)
+        })
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let thread_project = state
+        .get("thread-project-assignments")
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(thread, a)| {
+                    Some((thread.clone(), a.get("projectId")?.as_str()?.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(CodexSidebar {
+        section_order: strings(custom.get("sectionOrder")),
+        custom: sections,
+        collapsed_custom: strings(custom.get("collapsedSectionIds"))
+            .into_iter()
+            .collect(),
+        collapsed_builtin,
+        pinned: strings(state.get("pinned-thread-ids")),
+        projects,
+        server_project,
+        thread_project,
+        projectless: strings(state.get("projectless-thread-ids")),
+        expanded,
+    })
+}
+
+/// The Codex app's sidebar: its sections in its order — Pinned, each custom section with the
+/// projects and threads the person put in it, Projects (every other project folder, in the app's
+/// project order) and Chats (threads with no project) — each collapsed as the app has it, a
+/// project folder closed unless the person opened it. Threads are the database's (titles,
+/// recency, archive, sub-agents); an archived thread is not drawn, as the app does not draw it.
+fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
+    let by_id: HashMap<&str, &CodexThread> =
+        data.threads.iter().map(|t| (t.id.as_str(), t)).collect();
+    let mut kids: HashMap<&str, Vec<&CodexThread>> = HashMap::new();
+    for t in &data.threads {
+        if let Some(parent) = t
+            .parent
+            .as_deref()
+            .filter(|p| *p != t.id && by_id.contains_key(p))
+        {
+            kids.entry(parent).or_default().push(t);
+        }
+    }
+    let is_child = |t: &CodexThread| {
+        t.parent
+            .as_deref()
+            .is_some_and(|p| p != t.id && by_id.contains_key(p))
+    };
+    // A project by the state file's id; the database names it by its own.
+    let state_id: HashMap<&str, &str> = sidebar
+        .server_project
+        .iter()
+        .map(|(state, server)| (server.as_str(), state.as_str()))
+        .collect();
+    let project_of = |t: &CodexThread| -> Option<String> {
+        sidebar.thread_project.get(&t.id).cloned().or_else(|| {
+            let server = t.project.as_deref()?;
+            Some(state_id.get(server).copied().unwrap_or(server).to_string())
+        })
+    };
+    let mut by_project: HashMap<String, Vec<&CodexThread>> = HashMap::new();
+    for t in &data.threads {
+        if t.archived || is_child(t) {
+            continue;
+        }
+        if let Some(project) = project_of(t) {
+            by_project.entry(project).or_default().push(t);
+        }
+    }
+    let recent = |a: &&CodexThread, b: &&CodexThread| {
+        b.recency.cmp(&a.recency).then_with(|| a.id.cmp(&b.id))
+    };
+    // A thread the state file names: its database row, or its id alone where the database has none.
+    let thread_entry = |id: &str| -> Option<Entry> {
+        match by_id.get(id) {
+            Some(t) if t.archived => None,
+            Some(t) => Some(codex_entry(t, &kids, &mut HashSet::new())),
+            None => Some(Entry {
+                id: id.to_string(),
+                ..Default::default()
+            }),
+        }
+    };
+    let name_of = |project: &str| {
+        sidebar
+            .projects
+            .iter()
+            .find(|(id, _)| id == project)
+            .map(|(_, name)| name.clone())
+            .or_else(|| {
+                let server = sidebar
+                    .server_project
+                    .get(project)
+                    .map_or(project, String::as_str);
+                data.projects
+                    .iter()
+                    .find(|(id, _)| id == server)
+                    .map(|(_, name)| name.clone())
+            })
+            .unwrap_or_else(|| "Project".to_string())
+    };
+    let folder = |project: &str| {
+        let mut threads = by_project.get(project).cloned().unwrap_or_default();
+        threads.sort_by(recent);
+        let server = sidebar.server_project.get(project);
+        let open = sidebar.expanded.contains(project)
+            || server.is_some_and(|s| sidebar.expanded.contains(s));
+        Group {
+            id: project.to_string(),
+            label: name_of(project),
+            collapsed: !open,
+            keep: true,
+            entries: threads
+                .into_iter()
+                .map(|t| codex_entry(t, &kids, &mut HashSet::new()))
+                .collect(),
+        }
+    };
+    let in_custom: HashSet<&str> = sidebar
+        .custom
+        .iter()
+        .flat_map(|section| section.items.iter())
+        .filter_map(|item| match item {
+            CustomItem::Project(id) => Some(id.as_str()),
+            CustomItem::Thread(_) => None,
+        })
+        .collect();
+    let builtin = |key: &str| sidebar.collapsed_builtin.get(key).copied().unwrap_or(false);
+    let mut out = Vec::new();
+    let mut unknown = Vec::new();
+    for key in &sidebar.section_order {
+        match key.as_str() {
+            "pinned" => out.push(Section {
+                id: "pinned".into(),
+                label: "Pinned".into(),
+                collapsed: builtin("pinned"),
+                entries: sidebar
+                    .pinned
+                    .iter()
+                    .filter_map(|id| thread_entry(id))
+                    .collect(),
+                groups: Vec::new(),
+            }),
+            "threads" => out.push(Section {
+                id: "threads".into(),
+                label: "Projects".into(),
+                collapsed: builtin("threads"),
+                entries: Vec::new(),
+                groups: sidebar
+                    .projects
+                    .iter()
+                    .filter(|(id, _)| !in_custom.contains(id.as_str()))
+                    .map(|(id, _)| folder(id))
+                    .collect(),
+            }),
+            "chats" => {
+                let mut chats: Vec<&CodexThread> = sidebar
+                    .projectless
+                    .iter()
+                    .filter_map(|id| by_id.get(id.as_str()).copied())
+                    .filter(|t| !t.archived && !is_child(t))
+                    .collect();
+                chats.sort_by(recent);
+                out.push(Section {
+                    id: "chats".into(),
+                    label: "Chats".into(),
+                    collapsed: builtin("chats"),
+                    entries: chats
+                        .into_iter()
+                        .map(|t| codex_entry(t, &kids, &mut HashSet::new()))
+                        .collect(),
+                    groups: Vec::new(),
+                });
+            }
+            custom if custom.starts_with("custom:") => {
+                let id = &custom["custom:".len()..];
+                let Some(section) = sidebar.custom.iter().find(|s| s.id == id) else {
+                    continue;
+                };
+                let mut entries = Vec::new();
+                let mut groups = Vec::new();
+                for item in &section.items {
+                    match item {
+                        CustomItem::Thread(thread) => entries.extend(thread_entry(thread)),
+                        CustomItem::Project(project) => groups.push(folder(project)),
+                    }
+                }
+                out.push(Section {
+                    id: format!("custom:{id}"),
+                    label: section.name.clone(),
+                    collapsed: sidebar.collapsed_custom.contains(id),
+                    entries,
+                    groups,
+                });
+            }
+            // Not session lists: the app's own home items.
+            "orbit" | "agents" | "cloud" => {}
+            other => unknown.push(other.to_string()),
+        }
+    }
+    let note = (!unknown.is_empty()).then(|| {
+        format!(
+            "The Codex app has sidebar sections this monitor does not know ({}); they are not shown",
+            unknown.join(", ")
+        )
+    });
+    Layout {
+        sections: out,
+        note,
+    }
+}
+
 /// A transcript path as the monitor's row id: its file name without `.jsonl` (or `.jsonl.zst`).
 /// The monitor names a Codex session by its rollout's name, a Claude session by its transcript's.
 fn rollout_row_id(path: &str) -> Option<String> {
@@ -998,6 +1438,8 @@ fn codex_layout(data: &CodexData) -> Layout {
         .map(|(id, name)| Group {
             id: id.clone(),
             label: name.clone(),
+            collapsed: false,
+            keep: false,
             entries: entries(
                 live.iter()
                     .copied()
@@ -1218,6 +1660,8 @@ fn herdr_layout(servers: &[(String, Value)]) -> Layout {
                     Some(Group {
                         id: tab_id,
                         label: text(tab, "label").unwrap_or_else(|| format!("Tab {}", number(tab))),
+                        collapsed: false,
+                        keep: false,
                         entries,
                     })
                 })
@@ -1594,6 +2038,189 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// The Codex app's state file in its measured shape (synthetic ids and names).
+    fn codex_state_json() -> Value {
+        json!({
+            "electron-persisted-atom-state": {
+                "sidebar-custom-sections-v3": { "acct-1": {
+                    "sections": [
+                        { "id": "cs-work", "name": "Work", "hostSectionIds": { "local": "db-s1" },
+                          "itemKeys": ["codex:project:lp-api", "codex:project:lp-web"], "appearance": null },
+                        { "id": "cs-agent", "name": "Agent chats", "hostSectionIds": { "local": "db-s2" },
+                          "itemKeys": ["codex:thread:local:t-chat2", "codex:thread:local:t-gone", "codex:thread:local:t-arch"], "appearance": null },
+                    ],
+                    "collapsedSectionIds": ["cs-agent"],
+                    "sectionOrder": ["pinned", "orbit", "agents", "custom:cs-work", "custom:cs-agent", "threads", "chats", "x-new"],
+                }},
+                "sidebar-collapsed-sections-v1": { "pinned": true, "threads": false, "chats": false },
+                "sidebar-project-expanded-v1-codex:srv-web": true,
+                "sidebar-project-expanded-v1-codex:lp-docs": false,
+                "thread-client-id-v1:local%3Ax": true,
+            },
+            "pinned-thread-ids": ["t-pin"],
+            "project-order": ["lp-api", "lp-web", "lp-docs", "lp-empty"],
+            "local-projects": {
+                "lp-api": { "id": "lp-api", "name": "api" },
+                "lp-web": { "id": "lp-web", "name": "web" },
+                "lp-docs": { "id": "lp-docs", "name": "docs" },
+                "lp-empty": { "id": "lp-empty", "name": "empty" },
+            },
+            "app-server-project-id-by-legacy-project-id-by-host": {
+                "local:/h/.codex": { "lp-api": "srv-api", "lp-web": "srv-web", "lp-docs": "srv-docs", "lp-empty": "srv-empty" },
+            },
+            "thread-project-assignments": { "t-moved": { "projectId": "lp-docs", "projectKind": "local" } },
+            "projectless-thread-ids": ["t-chat"],
+        })
+    }
+
+    /// #s387: the Codex app's sidebar as its state file keeps it — Pinned (collapsed as the app
+    /// has it), each custom section with its project folders or threads, Projects (every other
+    /// folder, in the app's order, empty ones too), Chats — a folder closed unless the person
+    /// opened it, a thread's project from the state file while the app has not moved it into its
+    /// database, archived threads not drawn, and a section kind not known reported.
+    #[test]
+    fn the_codex_app_layout_follows_its_sidebar_state() {
+        let t = |id: &str, recency: i64| CodexThread {
+            id: id.into(),
+            row: format!("rollout-{id}"),
+            title: Some(format!("thread {id}")),
+            recency,
+            ..Default::default()
+        };
+        let data = CodexData {
+            projects: vec![
+                ("srv-api".into(), "api".into()),
+                ("srv-web".into(), "web".into()),
+            ],
+            sections: vec![],
+            threads: vec![
+                CodexThread {
+                    project: Some("srv-api".into()),
+                    ..t("t-pin", 9)
+                },
+                CodexThread {
+                    project: Some("srv-api".into()),
+                    ..t("t-a1", 3)
+                },
+                CodexThread {
+                    project: Some("srv-api".into()),
+                    ..t("t-a2", 5)
+                },
+                CodexThread {
+                    project: Some("srv-web".into()),
+                    ..t("t-w", 1)
+                },
+                CodexThread {
+                    parent: Some("t-w".into()),
+                    ..t("t-sub", 2)
+                },
+                // The database still names the old project; the state file has moved it.
+                CodexThread {
+                    project: Some("srv-api".into()),
+                    ..t("t-moved", 4)
+                },
+                CodexThread {
+                    archived: true,
+                    project: Some("srv-web".into()),
+                    ..t("t-old", 8)
+                },
+                CodexThread {
+                    archived: true,
+                    ..t("t-arch", 7)
+                },
+                t("t-chat", 6),
+                t("t-chat2", 2),
+            ],
+        };
+        let sidebar = parse_codex_sidebar(&codex_state_json()).unwrap();
+        let layout = codex_sidebar_layout(&data, &sidebar);
+        let shown: Vec<(String, bool, Vec<String>)> = layout
+            .sections
+            .iter()
+            .map(|s| {
+                let mut all = ids(&s.entries);
+                for g in &s.groups {
+                    all.push(format!(
+                        "{}{}:{}",
+                        g.label,
+                        if g.collapsed { "(closed)" } else { "" },
+                        ids(&g.entries).join(",")
+                    ));
+                }
+                (s.label.clone(), s.collapsed, all)
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                (
+                    "Pinned".to_string(),
+                    true,
+                    vec!["rollout-t-pin".to_string()]
+                ),
+                (
+                    "Work".into(),
+                    false,
+                    vec![
+                        "api(closed):rollout-t-pin,rollout-t-a2,rollout-t-a1".into(),
+                        "web:rollout-t-w[rollout-t-sub]".into()
+                    ]
+                ),
+                (
+                    "Agent chats".into(),
+                    true,
+                    vec!["rollout-t-chat2".into(), "t-gone".into()]
+                ),
+                (
+                    "Projects".into(),
+                    false,
+                    vec![
+                        "docs(closed):rollout-t-moved".into(),
+                        "empty(closed):".into()
+                    ]
+                ),
+                ("Chats".into(), false, vec!["rollout-t-chat".into()]),
+            ]
+        );
+        assert!(
+            layout.sections[1].groups.iter().all(|g| g.keep),
+            "a folder is drawn empty too"
+        );
+        assert!(
+            layout.note.as_deref().unwrap().contains("(x-new)"),
+            "{:?}",
+            layout.note
+        );
+        // A state file of another shape says so.
+        assert!(parse_codex_sidebar(&json!({ "project-order": [] }))
+            .unwrap_err()
+            .contains("sidebar-custom-sections-v3"));
+    }
+
+    /// #s387: the state file is read beside the database, re-read only when it changes, and a file
+    /// caught half-written keeps the last good read.
+    #[test]
+    fn the_codex_app_state_file_is_read_beside_its_database() {
+        let root =
+            std::env::temp_dir().join(format!("cm-layout-codex-state-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("state_5.sqlite");
+        let state = root.join(".codex-global-state.json");
+        let mut cache = None;
+        assert!(codex_state(&db, &mut cache)
+            .unwrap_err()
+            .contains("not found"));
+        std::fs::write(&state, codex_state_json().to_string()).unwrap();
+        assert_eq!(codex_state(&db, &mut cache).unwrap().pinned, vec!["t-pin"]);
+        std::fs::write(&state, "{\"electron-persisted-atom-state\": {").unwrap();
+        assert_eq!(codex_state(&db, &mut cache).unwrap().pinned, vec!["t-pin"]);
+        let mut fresh = None;
+        assert!(codex_state(&db, &mut fresh)
+            .unwrap_err()
+            .contains("could not be read"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// #s387: Herdr's workspaces and tabs in their numbered order, a row per pane whose agent
     /// reported its session (an id, or a transcript path), shell panes skipped, and the server's
     /// name on each workspace when more than one server runs.
@@ -1681,6 +2308,8 @@ mod tests {
                 groups: vec![Group {
                     id: "g".into(),
                     label: "G".into(),
+                    collapsed: true,
+                    keep: true,
                     entries: vec![],
                 }],
             }],
@@ -1692,6 +2321,8 @@ mod tests {
         assert_eq!(v["note"], "n");
         assert_eq!(v["sections"][0]["entries"][0]["children"][0]["id"], "b");
         assert_eq!(v["sections"][0]["groups"][0]["label"], "G");
+        assert_eq!(v["sections"][0]["groups"][0]["collapsed"], true);
+        assert_eq!(v["sections"][0]["groups"][0]["keep"], true);
         let v = layout_json(Source::CodexApp, &Err("why".into()));
         assert_eq!(
             (v["available"].clone(), v["reason"].clone()),
