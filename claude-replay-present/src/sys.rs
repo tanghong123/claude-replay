@@ -159,8 +159,7 @@ pub fn deduce_stem(path: &Path, width: Option<usize>) -> String {
     cwd.hash(&mut h);
     let pathhash: String = format!("{:016x}", h.finish())[..6].to_string();
     let sid = discover::session_id(path).unwrap_or_else(|| {
-        path.file_stem()
-            .and_then(|s| s.to_str())
+        claude_replay_core::source::stem(path)
             .unwrap_or("")
             .to_string()
     });

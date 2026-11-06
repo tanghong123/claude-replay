@@ -542,9 +542,7 @@ fn run_view_loop<B: ratatui::backend::Backend>(
                 // the general path below builds the target BEFORE releasing the current root,
                 // which for the same id would install a fresh session and then quiesce it —
                 // leaving the viewer on a frozen session that silently stops following.
-                let new_id = p
-                    .file_stem()
-                    .and_then(|s| s.to_str())
+                let new_id = claude_replay_core::source::stem(&p)
                     .unwrap_or("session")
                     .to_string();
                 if stack.first().is_some_and(|r| r.id == new_id) {
@@ -711,9 +709,7 @@ fn build_frame(
     let agent = discover::detect_agent(path);
     // The session's own name when it has one, else its id. A transcript's stem is a UUID, which
     // tells you nothing about which session you are looking at — the agent usually knows better.
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
+    let stem = claude_replay_core::source::stem(path)
         .unwrap_or("session")
         .to_string();
     // The agent's own name for this session (#106), when it has one. Kept apart from the stem:
@@ -1555,8 +1551,8 @@ mod switch_cost {
 
     /// The cache id `build_frame` derives for a transcript — its stem.
     fn again_id(path: &std::path::Path) -> String {
-        path.file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
+        claude_replay_core::source::stem(path)
+            .map(str::to_string)
             .unwrap_or_default()
     }
 }

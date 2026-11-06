@@ -20,7 +20,7 @@ pub fn latest_tree_activity(transcript: &Path) -> Option<std::time::SystemTime> 
         .ok();
     let subagents = transcript
         .parent()
-        .zip(transcript.file_stem())
+        .zip(claude_replay_engine::source::stem(transcript))
         .map(|(dir, stem)| dir.join(stem).join("subagents"));
     if let Some(entries) = subagents.and_then(|d| std::fs::read_dir(d).ok()) {
         for e in entries.flatten() {
@@ -111,10 +111,11 @@ pub struct InflightTool {
 /// same lossy-decode rationale, same pairing rules as the boolean form.
 pub fn inflight_tools_in_tail(transcript: &Path) -> Vec<InflightTool> {
     use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut f) = std::fs::File::open(transcript) else {
+    // The JSONL's tail, a compressed rollout's decoded one (#s383).
+    let Ok(mut f) = claude_replay_engine::source::open(transcript) else {
         return Vec::new();
     };
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let len = f.len().unwrap_or(0);
     // One byte before the window, so a window opening exactly on a line's start keeps that line.
     let start = len.saturating_sub(INFLIGHT_TAIL_BYTES + 1);
     if f.seek(SeekFrom::Start(start)).is_err() {

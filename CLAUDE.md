@@ -1453,6 +1453,10 @@ presentation-agnostic".
   `metrics.rs` the `Metrics` value + pricing · `discover.rs` the `Candidate` type +
   `detect_agent`/`session_cwd`/`session_id`/`subagent_source`/`resolve_any` ·
   `follow.rs` incremental `FollowParser` (drives `engine/elide.rs` + `LineSource` — the bounded eliding reader, #193) · `tail.rs` byte-offset tail · `agent.rs` the `Agent` enum ·
+  `source.rs` a transcript's BYTES whatever form its store keeps (#s383: Codex compresses a rollout
+  untouched for seven days to `rollout-….jsonl.zst` and decompresses it on resume) — every content
+  read goes through `open`/`stream`/`len`, in the JSONL's offsets, and a session's id through `stem`;
+  only a "did it change" check may read the file's own metadata ·
   `adapter.rs` the `TranscriptAdapter` trait + `adapter()`/`adapters()` registry (the one per-agent seam)
 - **Per-agent adapter families** (`agents/<agent>/`, symmetric, each feeds the shared engine):
   `agents/{claude,codex}/model.rs` (tokenizer + `Shaping`) · `agents/{claude,codex}/metrics.rs`

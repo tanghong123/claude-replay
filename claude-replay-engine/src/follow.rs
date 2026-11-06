@@ -52,7 +52,7 @@ pub struct FollowParser<S: BlockStore = InMemoryStore> {
     /// Cursor into the file: the next unread byte. The live source is (re)opened lazily and
     /// kept across polls (#193 §9.1 — `LineReader` dissolved into this).
     cursor: crate::model::ByteOffset,
-    src: Option<LineSource<BufReader<std::fs::File>>>,
+    src: Option<LineSource<BufReader<crate::source::Source>>>,
     /// Gauges already banked into the metrics accumulator; each poll banks the delta.
     banked: ElisionCounts,
     /// Previous poll's committed length + open-turn blocks — the O(turn) state
@@ -147,9 +147,27 @@ impl<S: BlockStore> FollowParser<S> {
         // Truncation / compaction: the file shrank below the cursor — the kept prefix
         // changed. Rebuild from scratch (fresh metrics accumulator too, so the gauge bank
         // restarts with it) and re-fold the whole new file.
-        let len = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
+        // The JSONL's length (#s383): a compressed rollout's decoded length, remembered, so a
+        // `.zst` (which never grows) reads as unchanged rather than as a file shorter than the
+        // cursor, and a rollout compressed or resumed under a follower is still the same file.
+        let len = crate::source::len(&self.path).unwrap_or(0);
         let cursor = self.src.as_ref().map(|s| s.offset()).unwrap_or(self.cursor);
         let reset = len < cursor;
+        // The file under the path is no longer the one this reader holds (#s383): a Codex
+        // rollout decompressed by a resume (which then appends), or one removed and written
+        // anew. Open again at the cursor, as after a brief failure to open.
+        if !reset
+            && self
+                .src
+                .as_ref()
+                .is_some_and(|s| !s.get_ref().get_ref().reads(&self.path))
+        {
+            self.src = None;
+            self.cursor = cursor;
+            // The new reader counts its elisions from zero: bank its deltas against zero, or the
+            // old reader's totals underflow the next subtraction.
+            self.banked = ElisionCounts::default();
+        }
         if reset {
             self.builder.reset();
             self.src = None;
@@ -160,7 +178,7 @@ impl<S: BlockStore> FollowParser<S> {
             None => {
                 // (Re)open — lazily on the first poll, after a reset, or if the file was
                 // briefly unopenable. A missing file is an idle tick, exactly as before.
-                let Ok(f) = std::fs::File::open(&self.path) else {
+                let Ok(f) = crate::source::open(&self.path) else {
                     return Ok(if reset {
                         Tick {
                             advanced: true,

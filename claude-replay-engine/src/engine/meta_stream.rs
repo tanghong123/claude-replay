@@ -1001,7 +1001,8 @@ pub const WINDOW_BYTES: u64 = 64 * 1024;
 /// a periodic collector can prove the prefix it is skipping is the prefix it already folded.
 pub fn window_at(src: &std::path::Path, offset: u64) -> std::io::Result<u32> {
     use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(src)?;
+    // The JSONL's bytes, a compressed rollout's decoded ones (#s383).
+    let mut f = crate::source::open(src)?;
     let start = offset.saturating_sub(WINDOW_BYTES);
     f.seek(SeekFrom::Start(start))?;
     let mut buf = vec![0u8; (offset - start) as usize];

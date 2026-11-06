@@ -31,7 +31,8 @@ pub fn anchor_of(src: &Path) -> std::io::Result<u32> {
     // ceiling bound `.read_line` never had. UTF-8 is enforced as `read_line` enforced it,
     // so the anchor of every existing cache is unchanged.
     let mut out = Vec::new();
-    let mut r = BufReader::new(File::open(src)?);
+    // The JSONL's first line, a compressed rollout's decoded one (#s383).
+    let mut r = BufReader::new(claude_replay_core::source::stream(src)?);
     use claude_replay_core::engine::{read_line_elided, Elision};
     read_line_elided(&mut r, &mut out, 0, Elision::None)?;
     let first = std::str::from_utf8(&out)

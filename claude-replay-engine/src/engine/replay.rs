@@ -34,7 +34,7 @@ pub fn parse_path_timed_for(
     crate::metrics::Metrics,
 )> {
     let mut b = crate::engine::builder::SessionAccumulator::new(adapter);
-    let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
+    let mut reader = std::io::BufReader::new(crate::source::stream(path)?);
     b.advance_reader(&mut reader)?; // one line resident
     Ok(b.fold())
 }

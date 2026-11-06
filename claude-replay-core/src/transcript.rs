@@ -81,7 +81,9 @@ impl Transcript {
         // before the fold, so a child is named in the blocks AND in the derived index.
         b.set_spawn_links(crate::adapter::adapter(self.agent).spawn_links(&self.path));
 
-        let mut reader = io::BufReader::new(std::fs::File::open(&self.path)?);
+        // The JSONL, a compressed rollout decoded as it is read (#s383); the offsets the blocks
+        // keep are its, which the span reads below go back to.
+        let mut reader = io::BufReader::new(claude_replay_engine::source::stream(&self.path)?);
         b.advance_reader(&mut reader)?; // one line resident, byte offsets tracked
                                         // The read-side reconcile (#38): a fleet's members are runtime state, merged into the
                                         // view a batch consumer gets rather than folded into the block stream.
@@ -158,7 +160,7 @@ impl Transcript {
 
         // ── span fast path ──
         if let Some(h) = span {
-            let mut f = std::fs::File::open(&self.path)?;
+            let mut f = claude_replay_engine::source::open(&self.path)?;
             if let Some(value) = read_validated_span(&mut f, h.off, h.len, &h.prefix, &h.postfix)? {
                 return Ok(Some(match &h.mime {
                     Some(mime) => LoadedAttachment::Base64 {
@@ -173,7 +175,7 @@ impl Transcript {
 
         // ── walk path: elided read (bounded), ordinal walk, splice any marker ──
         let read_line_at = |policy: Elision| -> io::Result<String> {
-            let file = std::fs::File::open(&self.path)?;
+            let file = claude_replay_engine::source::open(&self.path)?;
             let mut reader = io::BufReader::new(file);
             reader.seek(SeekFrom::Start(at))?;
             let mut out = Vec::new();
@@ -193,7 +195,7 @@ impl Transcript {
             match parse_marker(s) {
                 None => Ok(None), // plain content — nothing to resolve
                 Some(m) => {
-                    let mut f = std::fs::File::open(&self.path)?;
+                    let mut f = claude_replay_engine::source::open(&self.path)?;
                     read_validated_span(&mut f, m.off, m.len, &m.prefix, &m.postfix)
                 }
             }

@@ -363,11 +363,7 @@ fn resolve_lone(cands: &mut Vec<Candidate>, cwd: &Path) -> Result<PathBuf> {
             let mut msg =
                 format!("{n} sessions match this directory — give a session id or use --latest:");
             for c in cands.iter().take(10) {
-                let id = c
-                    .path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("<unnamed>");
+                let id = claude_replay_engine::source::stem(&c.path).unwrap_or("<unnamed>");
                 let age = match c.mtime.elapsed() {
                     Ok(d) if d.as_secs() < 3600 => format!("{}m ago", d.as_secs() / 60),
                     Ok(d) if d.as_secs() < 86_400 => format!("{}h ago", d.as_secs() / 3600),
