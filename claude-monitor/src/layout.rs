@@ -2,8 +2,7 @@
 //! (#s387, design/layout-sync.md): the Claude desktop app's Code sidebar, the Codex app's thread
 //! list, and Herdr's workspaces and tabs. The monitor shows the SAME sessions each app shows, in
 //! the app's sections and order, so the person can move between the app and the monitor without
-//! hunting for a session (the owner, 2026-11-06: not only the layout, "but also those exact
-//! sessions to be the same").
+//! hunting for a session (#s387: not only the layout, the same sessions).
 //!
 //! A layout is sections of entries; an entry names a monitor row id (the transcript's session id),
 //! the title the app shows, and the entries the app nests under it. The page decides everything
@@ -14,12 +13,17 @@
 //! parse, ignores keys it does not know, and answers "unavailable, because …" rather than failing
 //! the request. Each location has an environment override, so a test reads a hermetic store, and
 //! a unit test never reads this machine's apps.
+//!
+//! A request never reads an app (the review of #s387): each source has a reader thread of its own
+//! that runs only while a page follows that source, and the route answers with its last read
+//! (`Layouts`). Asking which sources can be followed checks files only.
 
-use crate::desktop_sessions;
+use crate::desktop_sessions::{self, RecordFiles};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 /// An app whose session list the monitor can follow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +68,10 @@ pub struct Entry {
     pub id: String,
     /// The title the app shows for it, when the app keeps one.
     pub title: Option<String>,
+    /// For a Herdr pane, `<server>|<pane id>`: the page prefers the row the monitor itself links
+    /// to that pane, because the session id a Herdr hook reported at the agent's start goes stale
+    /// when the session moves (#s294).
+    pub pane: Option<String>,
     pub children: Vec<Entry>,
 }
 
@@ -103,6 +111,179 @@ pub struct Layout {
 /// A source's layout, or why it could not be read, in words the page shows.
 pub type LayoutRead = Result<Layout, String>;
 
+/// How often a followed source is read, and for how long after a page last asked for it.
+const READ_EVERY: Duration = Duration::from_secs(3);
+const WANTED_FOR: Duration = Duration::from_secs(30);
+
+type ReadFn = dyn Fn(&mut Readers, Source) -> LayoutRead + Send + Sync;
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Each source's last read, kept by a reader thread of its own, so a request never waits on herdr,
+/// SQLite or a file and holds no lock while one is read (the review of #s387, as `HerdrReader`
+/// asks herdr at its own pace, #s238). A source is read only while a page follows it: the first
+/// ask starts its reader, which reads every `READ_EVERY` and ends `WANTED_FOR` after the last ask;
+/// until its first read lands the route answers "pending". A person who never chooses an app
+/// never has one read.
+pub struct Layouts {
+    slots: [Arc<Mutex<Slot>>; 3],
+    readers: [Arc<Mutex<Readers>>; 3],
+    read: Arc<ReadFn>,
+    every: Duration,
+    wanted_for: Duration,
+}
+
+#[derive(Default)]
+struct Slot {
+    last: Option<LayoutRead>,
+    wanted: Option<Instant>,
+    reading: bool,
+}
+
+/// Clears a slot's `reading` however its thread ends, a panic included, so the next ask starts
+/// another.
+struct ReadingDone(Arc<Mutex<Slot>>);
+
+impl Drop for ReadingDone {
+    fn drop(&mut self) {
+        lock(&self.0).reading = false;
+    }
+}
+
+impl Default for Layouts {
+    fn default() -> Self {
+        Layouts::with(
+            Arc::new(|readers: &mut Readers, source| readers.read(source)),
+            READ_EVERY,
+            WANTED_FOR,
+        )
+    }
+}
+
+impl Layouts {
+    fn with(read: Arc<ReadFn>, every: Duration, wanted_for: Duration) -> Self {
+        Layouts {
+            slots: Default::default(),
+            readers: Default::default(),
+            read,
+            every,
+            wanted_for,
+        }
+    }
+
+    fn index(source: Source) -> usize {
+        Source::ALL
+            .iter()
+            .position(|s| *s == source)
+            .expect("every source is in ALL")
+    }
+
+    /// `GET api/layout?source=<name>`: the source's last read as JSON, starting its reader if none
+    /// runs. Never reads the app itself.
+    pub fn layout_json(&self, source: Source) -> String {
+        let i = Layouts::index(source);
+        let mut slot = lock(&self.slots[i]);
+        slot.wanted = Some(Instant::now());
+        if !slot.reading {
+            slot.reading = true;
+            let (shared, readers, read) = (
+                self.slots[i].clone(),
+                self.readers[i].clone(),
+                self.read.clone(),
+            );
+            let (every, wanted_for) = (self.every, self.wanted_for);
+            let spawned = std::thread::Builder::new()
+                .name(format!("layout-{}", source.key()))
+                .spawn(move || {
+                    let _done = ReadingDone(shared.clone());
+                    loop {
+                        let fresh = read(&mut lock(&readers), source);
+                        let mut slot = lock(&shared);
+                        slot.last = Some(fresh);
+                        if slot.wanted.is_none_or(|at| at.elapsed() > wanted_for) {
+                            return;
+                        }
+                        drop(slot);
+                        std::thread::sleep(every);
+                    }
+                });
+            if spawned.is_err() {
+                slot.reading = false;
+            }
+        }
+        match &slot.last {
+            Some(read) => layout_json(source, read),
+            None => pending_json(source),
+        }
+        .to_string()
+    }
+
+    /// `GET api/layout`: whether each source can be followed, and why not, for the Arrange choice.
+    /// Checks files only (and the last read, when there is one); reads no app.
+    pub fn sources_json(&self) -> String {
+        let sources: Vec<Value> = Source::ALL
+            .into_iter()
+            .map(|source| {
+                let last = lock(&self.slots[Layouts::index(source)])
+                    .last
+                    .as_ref()
+                    .and_then(|read| read.as_ref().err().cloned());
+                let reason = probe(source).err().or(last);
+                json!({
+                    "source": source.key(),
+                    "label": source.label(),
+                    "available": reason.is_none(),
+                    "reason": reason,
+                })
+            })
+            .collect();
+        json!({ "sources": sources }).to_string()
+    }
+}
+
+/// Whether a source's files are where its reader looks, without reading them.
+fn probe(source: Source) -> Result<(), String> {
+    match source {
+        Source::ClaudeApp => match (desktop_sessions::store_root(), claude_config_path()) {
+            (Some(root), Some(config)) if root.is_dir() && config.is_file() => Ok(()),
+            (Some(_), Some(_)) => {
+                Err("The Claude app's session list was not found on this machine".into())
+            }
+            _ => Err("The Claude app is not installed on this machine".into()),
+        },
+        Source::CodexApp => match codex_db_path() {
+            Some(db) if db.is_file() => Ok(()),
+            Some(_) => Err("The Codex app's thread database was not found on this machine".into()),
+            None => Err("The Codex app is not installed on this machine".into()),
+        },
+        Source::Herdr => herdr_installed(),
+    }
+}
+
+/// Whether the herdr program can be found: `AGENT_MONITOR_HERDR`, else `herdr` on `PATH`. A unit
+/// test never looks for the real one.
+fn herdr_installed() -> Result<(), String> {
+    let missing = || Err("Herdr is not installed on this machine".to_string());
+    if cfg!(test) && std::env::var_os("AGENT_MONITOR_HERDR").is_none() {
+        return missing();
+    }
+    let program = PathBuf::from(crate::control::herdr_program());
+    let found = if program.components().count() > 1 {
+        program.is_file()
+    } else {
+        std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|dir| dir.join(&program).is_file())
+        })
+    };
+    if found {
+        Ok(())
+    } else {
+        missing()
+    }
+}
+
 /// The readers and what they keep between refreshes: the Claude app's session records (re-read
 /// only when one changes), its settings file, and the Codex app's database while it is unchanged.
 #[derive(Default)]
@@ -124,7 +305,13 @@ struct ConfigRead {
 
 struct CodexRead {
     db: PathBuf,
-    stamp: (Option<SystemTime>, Option<SystemTime>),
+    /// The database's and its catalogue's modification times, each with its write-ahead log.
+    stamp: (
+        Option<SystemTime>,
+        Option<SystemTime>,
+        Option<SystemTime>,
+        Option<SystemTime>,
+    ),
     data: CodexData,
 }
 
@@ -145,29 +332,6 @@ impl Readers {
         };
         self.report(source, &read);
         read
-    }
-
-    /// `GET api/layout?source=<name>`: one source's layout as JSON.
-    pub fn layout_json(&mut self, source: Source) -> String {
-        let read = self.read(source);
-        layout_json(source, &read).to_string()
-    }
-
-    /// `GET api/layout`: whether each source can be followed, and why not, for the Arrange choice.
-    pub fn sources_json(&mut self) -> String {
-        let sources: Vec<Value> = Source::ALL
-            .into_iter()
-            .map(|source| {
-                let read = self.read(source);
-                json!({
-                    "source": source.key(),
-                    "label": source.label(),
-                    "available": read.is_ok(),
-                    "reason": read.err(),
-                })
-            })
-            .collect();
-        json!({ "sources": sources }).to_string()
     }
 
     /// Log a source that cannot be read, once per reason: an app update that moves its list should
@@ -247,21 +411,30 @@ impl Readers {
         if !db.is_file() {
             return Err("The Codex app's thread database was not found on this machine".into());
         }
+        let catalog = codex_catalog_path(&db);
         let stamp = (
             modified(&db),
             modified(&PathBuf::from(format!("{}-wal", db.display()))),
+            modified(&catalog),
+            modified(&PathBuf::from(format!("{}-wal", catalog.display()))),
         );
         let fresh = self
             .codex
             .as_ref()
             .is_some_and(|read| read.db == db && read.stamp == stamp);
         if !fresh {
-            let data = read_codex(&db)?;
-            self.codex = Some(CodexRead {
-                db: db.clone(),
-                stamp,
-                data,
-            });
+            match read_codex(&db) {
+                Ok(data) => {
+                    self.codex = Some(CodexRead {
+                        db: db.clone(),
+                        stamp,
+                        data,
+                    })
+                }
+                // Busy: the last read stands, and the next refresh tries again.
+                Err(reason) if reason == CODEX_BUSY && self.codex.is_some() => {}
+                Err(reason) => return Err(reason),
+            }
         }
         let data = &self.codex.as_ref().expect("read above").data;
         // The sidebar itself — its sections, what each holds, the pins, the project folders — is
@@ -325,7 +498,21 @@ fn entry_json(entry: &Entry) -> Value {
     json!({
         "id": entry.id,
         "title": entry.title,
+        "pane": entry.pane,
         "children": entry.children.iter().map(entry_json).collect::<Vec<_>>(),
+    })
+}
+
+/// A source whose first read has not landed yet: the page shows that it is reading.
+pub fn pending_json(source: Source) -> Value {
+    json!({
+        "source": source.key(),
+        "label": source.label(),
+        "available": true,
+        "pending": true,
+        "reason": null,
+        "note": null,
+        "sections": [],
     })
 }
 
@@ -376,37 +563,17 @@ struct AppRecord {
     created: i64,
 }
 
-/// The records read so far, each kept with the modification time and length it was read at.
+/// The records read so far, through the store's one record cache (`RecordFiles`).
 #[derive(Default)]
 struct ClaudeRecords {
-    read: HashMap<PathBuf, (Option<SystemTime>, u64, AppRecord)>,
+    files: RecordFiles<AppRecord>,
 }
 
 impl ClaudeRecords {
     fn records(&mut self, root: &Path) -> Vec<AppRecord> {
-        let mut seen = HashSet::new();
-        for path in desktop_sessions::record_paths(root) {
-            let Ok(meta) = std::fs::metadata(&path) else {
-                continue;
-            };
-            let (modified, len) = (meta.modified().ok(), meta.len());
-            seen.insert(path.clone());
-            if let Some((was_modified, was_len, _)) = self.read.get(&path) {
-                if *was_modified == modified && *was_len == len {
-                    continue;
-                }
-            }
-            let record = (len <= desktop_sessions::RECORD_LIMIT)
-                .then(|| std::fs::read(&path).ok())
-                .flatten()
-                .and_then(|bytes| parse_app_record(&bytes, scope_of(&path)));
-            match record {
-                Some(record) => self.read.insert(path, (modified, len, record)),
-                None => self.read.remove(&path),
-            };
-        }
-        self.read.retain(|path, _| seen.contains(path));
-        let mut out: Vec<AppRecord> = self.read.values().map(|(.., r)| r.clone()).collect();
+        self.files
+            .refresh(root, |bytes, path| parse_app_record(bytes, scope_of(path)));
+        let mut out: Vec<AppRecord> = self.files.iter().map(|(_, r)| r.clone()).collect();
         out.sort_by(|a, b| a.desktop.cmp(&b.desktop));
         out
     }
@@ -836,6 +1003,7 @@ fn claude_entry(
     Entry {
         id: r.cli.clone(),
         title: r.title.clone(),
+        pane: None,
         children: children
             .into_iter()
             .map(|c| claude_entry(c, kids, archived, seen))
@@ -892,18 +1060,78 @@ struct CodexData {
     /// `(id, name)` in the order they were made: the database keeps no other.
     sections: Vec<(String, String)>,
     threads: Vec<CodexThread>,
+    /// The threads the app lists (its own catalogue, `local_thread_catalog` in its `codex.db`),
+    /// or `None` where that catalogue cannot be read. Measured 2026-11-06: `codex exec` runs and
+    /// sub-agent threads are in the threads table but not in the catalogue, and the app does not
+    /// list them, so neither does this view.
+    listed: Option<HashSet<String>>,
+    /// Thread rows the database holds that did not read (a column of an unexpected type).
+    unreadable: usize,
+}
+
+impl CodexData {
+    /// Whether the app lists this thread.
+    fn lists(&self, id: &str) -> bool {
+        self.listed
+            .as_ref()
+            .is_none_or(|listed| listed.contains(id))
+    }
+
+    /// A note for a layout drawn from this data, when some threads could not be read.
+    fn unreadable_note(&self) -> Option<String> {
+        (self.unreadable > 0).then(|| {
+            format!(
+                "{} thread{} in the Codex app's database could not be read and {} not shown",
+                self.unreadable,
+                if self.unreadable == 1 { "" } else { "s" },
+                if self.unreadable == 1 { "is" } else { "are" },
+            )
+        })
+    }
+}
+
+/// Why a read of the Codex app's database failed: a database another process holds is busy, and
+/// the last good read stands; anything else is said as it is.
+const CODEX_BUSY: &str = "The Codex app's thread database is busy";
+
+/// Where the Codex app keeps its own catalogue of the threads it lists:
+/// `AGENT_MONITOR_CODEX_APP_CATALOG` when set, else `sqlite/codex.db` beside its database.
+fn codex_catalog_path(db: &Path) -> PathBuf {
+    std::env::var_os("AGENT_MONITOR_CODEX_APP_CATALOG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| db.with_file_name("sqlite").join("codex.db"))
 }
 
 #[cfg(target_os = "macos")]
 fn read_codex(db: &Path) -> Result<CodexData, String> {
     use rusqlite::{Connection, OpenFlags};
-    let conn = Connection::open_with_flags(
-        db,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|e| format!("The Codex app's thread database could not be opened: {e}"))?;
+    // A database the app holds open answers busy at once rather than after SQLite's default five
+    // seconds: the reader thread then keeps its last read (`CODEX_BUSY`).
+    let open = |path: &Path| {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(Duration::from_millis(250))?;
+        Ok::<_, rusqlite::Error>(conn)
+    };
+    let busy = |e: &rusqlite::Error| {
+        matches!(e, rusqlite::Error::SqliteFailure(f, _)
+            if matches!(f.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked))
+    };
+    let conn = open(db).map_err(|e| {
+        if busy(&e) {
+            CODEX_BUSY.to_string()
+        } else {
+            format!("The Codex app's thread database could not be opened: {e}")
+        }
+    })?;
     let unknown = |e: rusqlite::Error| {
-        format!("The Codex app's thread database has a shape this monitor does not know ({e})")
+        if busy(&e) {
+            CODEX_BUSY.to_string()
+        } else {
+            format!("The Codex app's thread database has a shape this monitor does not know ({e})")
+        }
     };
     let pairs = |sql: &str| -> Result<Vec<(String, String)>, String> {
         let mut stmt = conn.prepare(sql).map_err(unknown)?;
@@ -912,7 +1140,7 @@ fn read_codex(db: &Path) -> Result<CodexData, String> {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(unknown)?;
-        Ok(rows.flatten().collect())
+        rows.collect::<Result<_, _>>().map_err(unknown)
     };
     let projects = pairs("SELECT id, name FROM projects ORDER BY position, id")?;
     let sections = pairs("SELECT id, name FROM thread_sections ORDER BY rowid")?;
@@ -953,17 +1181,36 @@ fn read_codex(db: &Path) -> Result<CodexData, String> {
                 parent: None,
             })
         })
-        .map_err(unknown)?
-        .flatten()
-        .map(|mut t| {
-            t.parent = parents.get(&t.id).cloned();
-            t
+        .map_err(unknown)?;
+    // A row of an unexpected type is counted and said, never dropped in silence.
+    let mut unreadable = 0;
+    let threads = threads
+        .filter_map(|row| match row {
+            Ok(mut t) => {
+                t.parent = parents.get(&t.id).cloned();
+                Some(t)
+            }
+            Err(e) if busy(&e) => None,
+            Err(_) => {
+                unreadable += 1;
+                None
+            }
         })
         .collect();
+    // The app's own catalogue says which threads it lists; without it, every thread counts.
+    let listed = open(&codex_catalog_path(db)).ok().and_then(|catalog| {
+        let mut stmt = catalog
+            .prepare("SELECT thread_id FROM local_thread_catalog")
+            .ok()?;
+        let ids = stmt.query_map([], |row| row.get::<_, String>(0)).ok()?;
+        ids.collect::<Result<HashSet<_>, _>>().ok()
+    });
     Ok(CodexData {
         projects,
         sections,
         threads,
+        listed,
+        unreadable,
     })
 }
 
@@ -1215,10 +1462,11 @@ fn parse_codex_sidebar(state: &Value) -> Result<CodexSidebar, String> {
 /// project folder closed unless the person opened it. Threads are the database's (titles,
 /// recency, archive, sub-agents); an archived thread is not drawn, as the app does not draw it.
 fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
-    let by_id: HashMap<&str, &CodexThread> =
-        data.threads.iter().map(|t| (t.id.as_str(), t)).collect();
+    // Only the threads the app lists (its catalogue): not `codex exec` runs, not sub-agents.
+    let threads: Vec<&CodexThread> = data.threads.iter().filter(|t| data.lists(&t.id)).collect();
+    let by_id: HashMap<&str, &CodexThread> = threads.iter().map(|t| (t.id.as_str(), *t)).collect();
     let mut kids: HashMap<&str, Vec<&CodexThread>> = HashMap::new();
-    for t in &data.threads {
+    for &t in &threads {
         if let Some(parent) = t
             .parent
             .as_deref()
@@ -1245,7 +1493,7 @@ fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
         })
     };
     let mut by_project: HashMap<String, Vec<&CodexThread>> = HashMap::new();
-    for t in &data.threads {
+    for &t in &threads {
         if t.archived || is_child(t) {
             continue;
         }
@@ -1261,6 +1509,8 @@ fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
         match by_id.get(id) {
             Some(t) if t.archived => None,
             Some(t) => Some(codex_entry(t, &kids, &mut HashSet::new())),
+            // Not in the database: kept by its id, unless the app's catalogue says it is not listed.
+            None if data.listed.is_some() => None,
             None => Some(Entry {
                 id: id.to_string(),
                 ..Default::default()
@@ -1407,7 +1657,15 @@ fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
     });
     Layout {
         sections: out,
-        note,
+        note: join_notes(note, data.unreadable_note()),
+    }
+}
+
+/// Two notes as one sentence each, either possibly absent.
+fn join_notes(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(format!("{a}. {b}")),
+        (a, b) => a.or(b),
     }
 }
 
@@ -1426,11 +1684,12 @@ fn read_codex(_db: &Path) -> Result<CodexData, String> {
 }
 
 fn codex_layout(data: &CodexData) -> Layout {
-    let by_id: HashMap<&str, &CodexThread> =
-        data.threads.iter().map(|t| (t.id.as_str(), t)).collect();
+    // Only the threads the app lists (its catalogue): not `codex exec` runs, not sub-agents.
+    let threads: Vec<&CodexThread> = data.threads.iter().filter(|t| data.lists(&t.id)).collect();
+    let by_id: HashMap<&str, &CodexThread> = threads.iter().map(|t| (t.id.as_str(), *t)).collect();
     let mut kids: HashMap<&str, Vec<&CodexThread>> = HashMap::new();
     let mut tops: Vec<&CodexThread> = Vec::new();
-    for t in &data.threads {
+    for &t in &threads {
         match t
             .parent
             .as_deref()
@@ -1543,7 +1802,7 @@ fn codex_layout(data: &CodexData) -> Layout {
     });
     Layout {
         sections: out,
-        note,
+        note: join_notes(note, data.unreadable_note()),
     }
 }
 
@@ -1566,6 +1825,7 @@ fn codex_entry(
     Entry {
         id: t.row.clone(),
         title: t.title.clone(),
+        pane: None,
         children: children
             .into_iter()
             .map(|c| codex_entry(c, kids, seen))
@@ -1710,6 +1970,7 @@ fn herdr_layout(servers: &[(String, Value)]) -> Layout {
                             Some(Entry {
                                 id: herdr_session_id(session)?,
                                 title: text(p, "label"),
+                                pane: text(p, "pane_id").map(|pane| format!("{name}|{pane}")),
                                 children: Vec::new(),
                             })
                         })
@@ -2048,6 +2309,7 @@ mod tests {
                 },
                 t("loose", 4),
             ],
+            ..Default::default()
         };
         let layout = codex_layout(&data);
         let shown: Vec<(String, Vec<String>)> = layout
@@ -2227,6 +2489,7 @@ mod tests {
                 t("t-chat", 6),
                 t("t-chat2", 2),
             ],
+            ..Default::default()
         };
         let sidebar = parse_codex_sidebar(&codex_state_json()).unwrap();
         let layout = codex_sidebar_layout(&data, &sidebar);
@@ -2414,6 +2677,11 @@ mod tests {
             layout.sections[0].groups[1].entries[0].title.as_deref(),
             Some("docs pane")
         );
+        // Each entry names its pane, so the page can prefer the row the monitor links to it.
+        assert_eq!(
+            layout.sections[0].groups[0].entries[0].pane.as_deref(),
+            Some("work|p1")
+        );
         let two = herdr_layout(&[
             ("work".into(), snapshot("api")),
             ("home".into(), snapshot("api")),
@@ -2421,6 +2689,145 @@ mod tests {
         assert_eq!(two.sections[0].label, "work · api");
         assert_eq!(two.sections[2].label, "home · api");
         assert_ne!(two.sections[0].id, two.sections[2].id);
+    }
+
+    /// The review of #s387: a request never reads an app. The first ask answers "pending" and
+    /// starts the source's reader; the next answers with its read; asking which sources can be
+    /// followed reads nothing; the reader ends once nobody asks, and a later ask starts it again.
+    #[test]
+    fn a_layout_request_never_waits_on_a_read() {
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = reads.clone();
+        let layouts = Layouts::with(
+            Arc::new(move |_: &mut Readers, _| {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(150));
+                Ok(Layout {
+                    note: Some("read".into()),
+                    ..Default::default()
+                })
+            }),
+            Duration::from_millis(20),
+            Duration::from_millis(200),
+        );
+        let started = Instant::now();
+        let first: Value = serde_json::from_str(&layouts.layout_json(Source::Herdr)).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "the request waited"
+        );
+        assert_eq!(first["pending"], true);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let read = loop {
+            let v: Value = serde_json::from_str(&layouts.layout_json(Source::Herdr)).unwrap();
+            if v["note"] == "read" || Instant::now() > deadline {
+                break v;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(read["available"], true, "{read}");
+        // Asking which sources can be followed reads nothing.
+        let before = reads.load(std::sync::atomic::Ordering::SeqCst);
+        let _ = layouts.sources_json();
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), before);
+        // Nobody asks: the reader ends, and its count stops.
+        std::thread::sleep(Duration::from_millis(600));
+        let settled = reads.load(std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::SeqCst),
+            settled,
+            "the reader kept reading"
+        );
+        assert!(!lock(&layouts.slots[Layouts::index(Source::Herdr)]).reading);
+        // A failed read is the source's reason in the list of sources.
+        let failing = Layouts::with(
+            Arc::new(|_: &mut Readers, _| Err("No Herdr server is running".into())),
+            Duration::from_millis(20),
+            Duration::from_millis(100),
+        );
+        let _ = failing.layout_json(Source::Herdr);
+        std::thread::sleep(Duration::from_millis(100));
+        let sources: Value = serde_json::from_str(&failing.sources_json()).unwrap();
+        assert_eq!(sources["sources"][2]["source"], "herdr");
+        assert_eq!(sources["sources"][2]["available"], false);
+    }
+
+    /// The review of #s387: the Codex app lists only the threads in its own catalogue, so a
+    /// `codex exec` run or a sub-agent the database holds is not drawn; a row that does not read is
+    /// counted in the note, not dropped in silence.
+    #[test]
+    fn the_codex_app_layout_lists_only_the_threads_its_catalogue_lists() {
+        let t = |id: &str, recency: i64| CodexThread {
+            id: id.into(),
+            row: id.into(),
+            recency,
+            project: Some("srv-api".into()),
+            ..Default::default()
+        };
+        let mut data = CodexData {
+            threads: vec![
+                t("shown", 3),
+                t("exec-run", 2),
+                CodexThread {
+                    parent: Some("shown".into()),
+                    ..t("sub", 1)
+                },
+            ],
+            listed: Some(["shown", "t-pin"].map(String::from).into_iter().collect()),
+            unreadable: 2,
+            ..Default::default()
+        };
+        let sidebar = parse_codex_sidebar(&codex_state_json()).unwrap();
+        let layout = codex_sidebar_layout(&data, &sidebar);
+        let work = layout.sections.iter().find(|s| s.label == "Work").unwrap();
+        assert_eq!(ids(&work.groups[0].entries), vec!["shown"]);
+        // A thread the state file names that the catalogue does not list is not drawn either (the
+        // section is sent empty, and the page draws no empty section).
+        let agent = layout
+            .sections
+            .iter()
+            .find(|s| s.label == "Agent chats")
+            .unwrap();
+        assert!(agent.entries.is_empty(), "{agent:?}");
+        assert!(layout
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("2 threads in the Codex app's database could not be read"));
+        // Without a catalogue every thread counts, as before.
+        data.listed = None;
+        let layout = codex_sidebar_layout(&data, &sidebar);
+        let work = layout.sections.iter().find(|s| s.label == "Work").unwrap();
+        assert_eq!(ids(&work.groups[0].entries), vec!["shown[sub]", "exec-run"]);
+    }
+
+    /// The review of #s387: a database another process holds says it is busy, at once, rather than
+    /// after SQLite's default five seconds, and not as a format this monitor does not know.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_busy_codex_database_says_so_at_once() {
+        let root =
+            std::env::temp_dir().join(format!("cm-layout-codex-busy-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("state_5.sqlite");
+        let writer = rusqlite::Connection::open(&db).unwrap();
+        writer
+            .execute_batch(
+                "CREATE TABLE projects (id TEXT, name TEXT, position INTEGER);
+                 CREATE TABLE thread_sections (id TEXT, name TEXT);
+                 BEGIN EXCLUSIVE; INSERT INTO projects VALUES ('p', 'p', 0);",
+            )
+            .unwrap();
+        let started = Instant::now();
+        assert_eq!(read_codex(&db).unwrap_err(), CODEX_BUSY);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        drop(writer);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// #s387: the wire shape the page reads, for a layout and for a source that cannot be read.
@@ -2434,6 +2841,7 @@ mod tests {
                 entries: vec![Entry {
                     id: "a".into(),
                     title: Some("A".into()),
+                    pane: Some("work|w1:p1".into()),
                     children: vec![Entry {
                         id: "b".into(),
                         ..Default::default()
@@ -2454,6 +2862,8 @@ mod tests {
         assert_eq!(v["available"], true);
         assert_eq!(v["note"], "n");
         assert_eq!(v["sections"][0]["entries"][0]["children"][0]["id"], "b");
+        assert_eq!(v["sections"][0]["entries"][0]["pane"], "work|w1:p1");
+        assert_eq!(pending_json(Source::Herdr)["pending"], true);
         assert_eq!(v["sections"][0]["groups"][0]["label"], "G");
         assert_eq!(v["sections"][0]["groups"][0]["collapsed"], true);
         assert_eq!(v["sections"][0]["groups"][0]["keep"], true);
@@ -2465,7 +2875,7 @@ mod tests {
         assert_eq!(Source::parse("claude-app"), Some(Source::ClaudeApp));
         assert_eq!(Source::parse("nope"), None);
         // In a unit test no source reads this machine's apps.
-        let summary: Value = serde_json::from_str(&Readers::default().sources_json()).unwrap();
+        let summary: Value = serde_json::from_str(&Layouts::default().sources_json()).unwrap();
         assert!(
             summary["sources"]
                 .as_array()

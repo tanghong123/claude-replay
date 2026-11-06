@@ -268,7 +268,7 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
 .arrange-strip-close .icon{width:14px;height:14px}
 .arrange-strip-close:hover{background:var(--hover);color:var(--ink)}
 /* The section's menu sits at the head's right end, before its chevron, as the Claude app puts its
-   section menu; the head carries no count (the owner: the number goes). */
+   section menu; the head carries no count (#s387). */
 .arranged-head .arranged-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .arranged-head:has(.arranged-view):after{margin-left:2px}
 .arranged-view{flex:none;margin-left:auto;width:26px;height:24px;display:grid;place-items:center;margin-top:-4px;margin-bottom:-4px;border:0;border-radius:6px;background:transparent;color:var(--sub);cursor:pointer;padding:0}
@@ -277,6 +277,7 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
 .arranged-view.on{color:var(--blue)}
 .section-view-menu{display:block;position:fixed;right:auto;top:0;left:0;width:236px;z-index:60;max-height:calc(100vh - 16px)}
 .section-view-menu[hidden]{display:none}
+@media(hover:none){#app :is(.arranged-view:not([aria-expanded="true"]),.arrange-strip-close):hover{background:transparent}#app .arranged-view:not(.on):not([aria-expanded="true"]):hover{color:var(--sub)}#app .arrange-strip-close:hover{color:var(--faint)}}
 .section-view-scrim{display:none}
 .section-view-menu .scope-option{grid-template-columns:18px minmax(0,1fr)}
 .section-view-menu .scope-option[role="radio"] .scope-check{border-radius:50%}
@@ -1310,12 +1311,16 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .side-head{height:auto;min-height:52px;padding-left:52px}
   #app .side-head .iconbtn{width:40px;height:44px}
   #app .tree-row.session,#app .tree-row.project,#app .agent-label{min-height:44px}
-  /* #s387: an arranged section's menu is a sheet at the foot, over a dim that takes the closing
-     tap, its glyph a 40px target in the 44px head; the rows are the shell's 44px menu rows. */
-  #app .arranged-view{width:40px;height:40px;margin-top:-8px;margin-bottom:-8px}
+  /* #s387: an arranged section's menu. Upright it is a sheet at the foot (`.sheet`, set by the
+     page), over a dim that takes the closing tap; held sideways it is a popover at its control's
+     side over the same dim (#s41). Its glyph and the line's ✕ are 44px targets in the 44px head;
+     the rows are the shell's 44px menu rows; Arrange's two-line rows in the filter sheet grow. */
+  #app .arranged-view{width:44px;height:44px;margin-top:-10px;margin-bottom:-10px}
   #app .arranged-view .icon{width:18px;height:18px}
+  #app .arrange-strip-close{width:44px;height:44px;margin:-10px -6px -10px 0}
   #app .section-view-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:59;background:rgba(14,19,31,.32)}
-  #app .section-view-menu{left:calc(8px + env(safe-area-inset-left,0px))!important;right:calc(8px + env(safe-area-inset-right,0px));top:auto!important;bottom:calc(8px + env(safe-area-inset-bottom,0px));width:auto;max-height:calc(100dvh - 72px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));padding:12px 14px;border-radius:16px}
+  #app .section-view-menu.sheet{left:calc(8px + env(safe-area-inset-left,0px))!important;right:calc(8px + env(safe-area-inset-right,0px));top:auto!important;bottom:calc(8px + env(safe-area-inset-bottom,0px));width:auto;max-height:calc(100dvh - 72px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));padding:12px 14px;border-radius:16px}
+  #app .session-filter-options .scope-option.arrange-app{height:auto;min-height:44px;padding-top:6px;padding-bottom:6px}
   #app .section-view-menu .section-menu-name{max-width:60%;font-size:12px}
 
   #app .workspace{grid-template-rows:auto minmax(0,1fr)}
@@ -1661,7 +1666,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app:not(.phone-column-off) .workspace>.topbar{padding-left:6px}
   #app:not(.phone-column-off) .transcript{padding-left:0}
   #app.column-pane-on:not(.phone-column-off) .column-pane{display:block}
-  #app.column-pane-on>.sidebar>.nav,#app.column-pane-on>.sidebar>.tree{display:none}
+  #app.column-pane-on>.sidebar>.nav,#app.column-pane-on>.sidebar>.tree,#app.column-pane-on>.sidebar>.arrange-strip{display:none}
   /* Collapse all, Expand all and the session filter act on the session list alone: while the column
      shows a pane they go (the owner); the theme applies everywhere and stays. */
   #app.column-pane-on .side-head .head-actions>:is(#collapseBtn,#expandBtn,#filterBtn){display:none}

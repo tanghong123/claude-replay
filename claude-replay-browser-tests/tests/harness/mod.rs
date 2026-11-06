@@ -1019,6 +1019,17 @@ impl Stores {
         for d in ["claude", "qoderwork", "qoder", "codex"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
+        // #s387 (the review): every monitor's herdr is this stand-in, so no case runs this
+        // machine's real herdr. It answers from fixture files beside it — `herdr-sessions.json`
+        // for `session list`, `herdr-snapshot.json` for `api snapshot` — and with nothing else.
+        let standin = root.join("herdr-standin");
+        std::fs::write(
+            &standin,
+            "#!/bin/sh\nhere=$(dirname \"$0\")\ncase \"$1 $2\" in\n  \"session list\") cat \"$here/herdr-sessions.json\" 2>/dev/null || echo '{\"sessions\":[]}' ;;\n  \"api snapshot\") cat \"$here/herdr-snapshot.json\" 2>/dev/null || echo '{}' ;;\n  *) echo '[]' ;;\nesac\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&standin, std::fs::Permissions::from_mode(0o755)).unwrap();
         Stores { root }
     }
 
@@ -1044,7 +1055,88 @@ impl Stores {
                 "CLAUDE_DESKTOP_SESSIONS_DIR",
                 self.root.join("claude-desktop"),
             ),
+            // #s387: the Claude app's settings (its sidebar's sections), the Codex app's thread
+            // database, sidebar state and catalogue, and herdr — none of this machine's own.
+            (
+                "CLAUDE_DESKTOP_CONFIG",
+                self.root.join("claude-desktop-config.json"),
+            ),
+            (
+                "AGENT_MONITOR_CODEX_APP_DB",
+                self.root.join("codex-app/state_5.sqlite"),
+            ),
+            (
+                "AGENT_MONITOR_CODEX_APP_STATE",
+                self.root.join("codex-app/codex-global-state.json"),
+            ),
+            (
+                "AGENT_MONITOR_CODEX_APP_CATALOG",
+                self.root.join("codex-app/codex.db"),
+            ),
+            ("AGENT_MONITOR_HERDR", self.root.join("herdr-standin")),
         ]
+    }
+
+    /// #s387: a Claude app session record with the fields its sidebar reads — its title, when it
+    /// was last active (seconds ago), and the session that started it — in the store #s340 reads.
+    pub fn app_session(
+        &self,
+        desktop: &str,
+        cli: &str,
+        title: &str,
+        secs_ago: u64,
+        starter: Option<&str>,
+    ) {
+        let org = self.root.join("claude-desktop/acct-0000/org-0000");
+        std::fs::create_dir_all(&org).unwrap();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let mut record = serde_json::json!({
+            "sessionId": desktop,
+            "cliSessionId": cli,
+            "cwd": "/r",
+            "title": title,
+            "titleSource": "user",
+            "isArchived": false,
+            "createdAt": now_ms - secs_ago * 1000 - 60_000,
+            "lastActivityAt": now_ms - secs_ago * 1000,
+        });
+        if let Some(starter) = starter {
+            record["spawnedFrom"] = serde_json::json!({ "sessionId": starter });
+        }
+        std::fs::write(org.join(format!("{desktop}.json")), record.to_string()).unwrap();
+    }
+
+    /// #s387: the Claude app's settings file with its sidebar: Pinned, one custom group per
+    /// `(id, name, members)` in that order, then Sessions.
+    pub fn app_settings(&self, groups: &[(&str, &str, &[&str])]) {
+        let scope = "acct-0000/org-0000";
+        let mut sections = vec![
+            serde_json::json!({ "id": "pinned", "kind": "pinned", "order": 0, "sortBy": "recency", "ascending": false, "collapsed": false, "shown": true }),
+        ];
+        let mut assignments = serde_json::Map::new();
+        for (i, (id, name, members)) in groups.iter().enumerate() {
+            sections.push(serde_json::json!({ "id": id, "kind": "manual", "name": name, "order": i + 1, "sortBy": "recency", "ascending": false, "collapsed": false, "shown": true }));
+            for member in *members {
+                assignments.insert(format!("code:{member}"), serde_json::json!(id));
+            }
+        }
+        sections.push(serde_json::json!({ "id": "sessions", "kind": "sessions", "order": groups.len() + 1, "sortBy": "recency", "ascending": false, "collapsed": false, "shown": true }));
+        let settings = serde_json::json!({ "preferences": { "epitaxyPrefs": {
+            "dframe-code-sections": { scope: { "sections": sections } },
+            "dframe-group-scopes": { scope: {
+                "groups": groups.iter().map(|(id, name, _)| serde_json::json!({ "id": id, "name": name, "mode": "code" })).collect::<Vec<_>>(),
+                "assignments": assignments,
+                "order": {},
+            }},
+        }}});
+        std::fs::write(
+            self.root.join("claude-desktop-config.json"),
+            settings.to_string(),
+        )
+        .unwrap();
     }
 
     /// #s340: a Claude desktop app session record (`<store>/<account>/<org>/local_<id>.json`, the

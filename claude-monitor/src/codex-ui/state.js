@@ -27,7 +27,11 @@ export const indexState = {
     return localStorage.getItem("am-prod-session-flat") === "1" ? "flat" : "tree";
   })(),
   get flat() { return this.arrange === "flat"; },
-  // #s387, the owner's hybrid: each arranged section's own order and grouping, keyed
+  // The arrangement an app replaced (#s387): the list falls back to it while the app's list
+  // cannot be read, and the line's ✕ returns to it. Kept under #s206's key, so "One list by
+  // activity" survives a reload while an app is chosen (the review of #s387).
+  arrangeBefore: localStorage.getItem("am-prod-session-flat") === "1" ? "flat" : "tree",
+  // #s387: each arranged section's own order and grouping (the reader's, beside the app's), keyed
   // `L:<source>:<section id>` — the reader's, never the app's — remembered like the arrangement.
   sectionViews: json("am-prod-section-views", {}),
   // Fork families opened in the tree (view state, like classic famOpen), and whether the
@@ -134,7 +138,8 @@ export function persist() {
   localStorage.setItem("am-prod-task-groups", JSON.stringify([...uiState.taskGroupsShown]));
   localStorage.setItem("am-prod-read", JSON.stringify(indexState.read));
   localStorage.setItem("am-prod-session-filter", JSON.stringify([...indexState.buckets]));
-  localStorage.setItem("am-prod-session-flat", indexState.flat ? "1" : "0");
+  const appChosen = ["claude-app", "codex-app", "herdr"].includes(indexState.arrange);
+  localStorage.setItem("am-prod-session-flat", indexState.flat || (appChosen && indexState.arrangeBefore === "flat") ? "1" : "0");
   localStorage.setItem("am-prod-section-views", JSON.stringify(indexState.sectionViews));
   if (["claude-app", "codex-app", "herdr"].includes(indexState.arrange)) localStorage.setItem("am-prod-session-arrange", indexState.arrange);
   else localStorage.removeItem("am-prod-session-arrange");

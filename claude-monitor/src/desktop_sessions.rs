@@ -19,7 +19,7 @@ use std::time::SystemTime;
 
 /// A record bigger than this is not read: the ids sit at its top, and the largest measured was a
 /// few kilobytes, but a record can carry a side session's report.
-pub(crate) const RECORD_LIMIT: u64 = 1 << 20;
+const RECORD_LIMIT: u64 = 1 << 20;
 
 /// Where the desktop app keeps its session records: `CLAUDE_DESKTOP_SESSIONS_DIR` when set (a
 /// test's hermetic store), else `~/Library/Application Support/Claude/claude-code-sessions` on
@@ -44,23 +44,28 @@ struct Record {
     starter: Option<String>,
 }
 
-/// The records read so far, each kept with the modification time and length it was read at, so a
-/// scan re-reads only a record that changed. A file that did not read as a record is not kept, so
-/// one caught half-written is read again at the next refresh.
-#[derive(Default)]
-pub struct DesktopSessions {
-    read: HashMap<PathBuf, (Option<SystemTime>, u64, Record)>,
+/// The store's record files as read so far, each kept with the modification time and length it was
+/// read at, so a refresh re-reads only a record that changed. A file that did not parse is not kept,
+/// so one caught half-written is read again at the next refresh. One implementation for every
+/// reader of the store: this module's links and the Arrange choice's Claude app list (#s387). Each
+/// keeps its own instance, because the index reads its links under its own lock, held for a whole
+/// scan, which the layout reader must never wait on.
+pub(crate) struct RecordFiles<T> {
+    read: HashMap<PathBuf, (Option<SystemTime>, u64, T)>,
 }
 
-impl DesktopSessions {
-    /// Every side session the store names whose starter it also names: the child's transcript id
-    /// to its starter's. A record with no transcript id, or whose starter's record is gone or has
-    /// none, links nothing.
-    pub fn links(&mut self, root: Option<&Path>) -> HashMap<String, String> {
-        let Some(root) = root else {
-            self.read.clear();
-            return HashMap::new();
-        };
+impl<T> Default for RecordFiles<T> {
+    fn default() -> Self {
+        RecordFiles {
+            read: HashMap::new(),
+        }
+    }
+}
+
+impl<T> RecordFiles<T> {
+    /// Bring the files under `root` up to date, parsing each changed one with `parse` (its bytes
+    /// and its path); a file that is gone is forgotten.
+    pub(crate) fn refresh(&mut self, root: &Path, parse: impl Fn(&[u8], &Path) -> Option<T>) {
         let mut seen = HashSet::new();
         for path in record_paths(root) {
             let Ok(meta) = std::fs::metadata(&path) else {
@@ -76,21 +81,49 @@ impl DesktopSessions {
             let record = (len <= RECORD_LIMIT)
                 .then(|| std::fs::read(&path).ok())
                 .flatten()
-                .and_then(|bytes| parse_record(&bytes));
+                .and_then(|bytes| parse(&bytes, &path));
             match record {
                 Some(record) => self.read.insert(path, (modified, len, record)),
                 None => self.read.remove(&path),
             };
         }
         self.read.retain(|path, _| seen.contains(path));
-        link_records(self.read.iter().map(|(path, (.., r))| (path, r)))
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.read.clear();
+    }
+
+    /// Every record read, with its file.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&PathBuf, &T)> {
+        self.read.iter().map(|(path, (.., record))| (path, record))
+    }
+}
+
+/// The side-session links the store names, kept between scans.
+#[derive(Default)]
+pub struct DesktopSessions {
+    files: RecordFiles<Record>,
+}
+
+impl DesktopSessions {
+    /// Every side session the store names whose starter it also names: the child's transcript id
+    /// to its starter's. A record with no transcript id, or whose starter's record is gone or has
+    /// none, links nothing.
+    pub fn links(&mut self, root: Option<&Path>) -> HashMap<String, String> {
+        let Some(root) = root else {
+            self.files.clear();
+            return HashMap::new();
+        };
+        self.files.refresh(root, |bytes, _| parse_record(bytes));
+        link_records(self.files.iter())
     }
 }
 
 /// The record files: `local_*.json` exactly two directories below the store (account, then
 /// organization). Other files there (`scheduled-tasks.json`, measured on aries-black) are not
 /// session records.
-pub(crate) fn record_paths(root: &Path) -> Vec<PathBuf> {
+fn record_paths(root: &Path) -> Vec<PathBuf> {
     let dirs = |dir: &Path| -> Vec<PathBuf> {
         std::fs::read_dir(dir)
             .map(|entries| {

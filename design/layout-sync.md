@@ -199,6 +199,12 @@ were made.
 stored that way. The monitor reads them since #s383; before that, "Like the Codex app" drew them
 dimmed, as sessions the app lists that the monitor has no row for.
 
+**What the app lists.** The app keeps its own catalogue of the threads it lists (`local_thread_catalog`
+in `~/.codex/sqlite/codex.db`). Measured on that machine: the 81 `codex exec` runs and the sub-agent
+threads (971 reviewer sub-agents, and every spawned child) are in the threads table but not in the
+catalogue, and none of them is filed into a section or a project. The prototype therefore draws only
+catalogued threads; where the catalogue cannot be read, every thread counts, as before.
+
 **The sidebar itself** is only in the state file, under `electron-persisted-atom-state`, checked
 against the app's own sidebar on 2026-11-06:
 
@@ -217,7 +223,7 @@ The app's sort settings are in the same file: `flat-project-sidebar-preferences-
 that machine `projectSortMode` was `updated_at`, yet the Projects list the app drew followed
 `project-order`, so the prototype keeps `project-order` and reads only `chatSortMode`.
 
-A custom section can hold project folders, not only threads: on that machine "Project H" held five
+A custom section can hold project folders, not only threads: on that machine "Platform" held five
 projects, and the Projects list held the other nine, in the app's order. The database's own
 `thread_sections` held a section named "Pinned" with 11 threads, which is not what Pinned draws.
 
@@ -248,7 +254,11 @@ expose it, and its delivery was not tried. Polling the snapshot at the index's r
 
 **Mapping.** A pane's `agent_session.value` is the agent's session id, which the agent's Herdr hook
 reports at start; it is the monitor's row id. A pane with no agent session (a shell, or an agent
-without the hook) is not a row and is skipped.
+without the hook) is not a row and is skipped. The hook reports only at the start (#s349), so after
+a session moves to a new id (#s294) the pane still names the old, finished one. Each entry therefore
+also names its pane (`<server>|<pane id>`), and the page prefers the row the monitor itself links
+to that pane (a row's `term: "herdr"`, `target` and `herdrSession`), using the hook's id only where
+the monitor links none.
 
 **What the monitor already does.** It finds a session's Herdr pane from the agent process's
 environment (`HERDR_PANE_ID`, `HERDR_SOCKET_PATH`), and polls `herdr agent list` every 2 s per server
@@ -297,6 +307,9 @@ A **layout** is what the server hands the page for one source:
 - `note`: anything the person should know about how faithful the list is (for example how many
   Codex threads have no project in the app's database yet).
 
+A headless worker (a row the monitor marks `startedBy`, #s53) lives in its starter's Agents pane
+and is never drawn here, even where an app lists it.
+
 The page then applies the three rules of §2: it draws each entry once, at the first entry naming it,
 as that session's row (a dimmed row when the monitor has none), nests children under their parent
 entry, and puts every row no entry named into the last group, under the filter and the hides. The
@@ -311,8 +324,18 @@ Under "By agent and project" nothing changes: the tree keeps #s340's same-projec
 ## 5. Interface
 
 **A new route, `GET api/layout?source=<name>`**, answers one source's layout as JSON. It is asked
-only while an app layout is chosen, at the index's own refresh, so the monitor reads no app store
-for a person who never chooses one. `api/sessions` rows do not change.
+only while an app layout is chosen, at the index's own refresh. `api/sessions` rows do not change.
+
+**A request never reads an app.** Each source has a reader thread of its own, started by the first
+ask and kept only while a page follows that source: it reads every 3 seconds and ends 30 seconds
+after the last ask. The route answers with that thread's last read, or with `pending: true` before
+its first read lands, and the page asks again a second later. No lock is held while a source is
+read, so a slow herdr or a busy database delays nobody's request; herdr is asked at the reader's
+own pace, as the monitor's `HerdrReader` asks it (#s238). The Codex reader gives SQLite 250 ms
+rather than its default five seconds, and a busy database keeps the last read. **`GET api/layout`
+with no `source`**, asked as the filter sheet opens, checks files only — the Claude app's store and
+settings file, the Codex app's database, the herdr program — and the last read's error, if any; it
+reads no app. A person who never chooses an app never has one read.
 
 The server, not the page, reads the stores: the page may be a phone across the tailnet, which cannot
 read the Mac's disk, and the server already keeps a cached reader for one of them (#s340's
@@ -411,13 +434,13 @@ in the app.
   index entry kept, repeats dropped, empty sections not drawn, a bare session id matched to a
   rollout-named row.
 - A locally started monitor on this machine's apps, in the built-in browser: "Like the Codex app"
-  drew the app's sidebar as the app showed it (Pinned closed, "Project H" with its five folders,
+  drew the app's sidebar as the app showed it (Pinned closed, "Platform" with its five folders,
   the second custom section closed, Projects with the other nine folders in order, all closed, then
   Chats). All 1,276 threads it placed at the top level were monitor rows once #s383's reader for
   compressed rollouts was merged in (85 before it).
-- In the same monitor, the section menu: sorting long-running by name, grouping it by date and by
+- In the same monitor, the section menu: sorting Ongoing by name, grouping it by date and by
   state, and Reset back to the app's order; the choice survives a reload and Reset clears it; the
-  chosen options are marked. With long-running set to date created in the Claude app, "As in the
+  chosen options are marked. With Ongoing set to date created in the Claude app, "As in the
   Claude app" listed it in the records' date-created order.
 - At 375 × 812 (a phone upright): the menu opens as a sheet at the foot, 8 px from each side, with
   44 px rows and a 40 px control in the 44 px head; a tap on the dim closes it and leaves the drawer
@@ -428,20 +451,31 @@ in the app.
   line's ✕ returns to the tree; the choice survives a reload; the phone drawer at 375 px shows the
   line and the list without scrolling sideways.
 
-Not run: browser-suite cases on hermetic stores (below), the full workspace test suite, and Linux.
+**Added after the first review (browser cases, `claude-replay-browser-tests/tests/layout_sync.rs`,
+on hermetic stores: the Claude app's records and settings written by each case, and a herdr
+stand-in the harness gives every monitor, so no case reads this machine's apps or runs its herdr):**
+
+- "Like the Claude app" draws the fixture's group and Sessions with the app's titles and a side
+  session nested; an idle and a hidden session are still drawn in their group; the rest waits under a
+  collapsed "Not in the Claude app"; a reload keeps the choice and "One list by activity" behind it,
+  which the line's ✕ returns to.
+- A source whose files are absent is offered disabled with its reason; its settings removed while
+  chosen, the list falls back under an amber line, and returns when they come back.
+- "Like Herdr" draws a workspace and its tab with the agent pane's row, through the stand-in.
+- At 390 × 844 the section menu opens as a sheet from a 44 px glyph with 44 px rows, a tap on the
+  dim closes it and chooses nothing, the line's ✕ is 44 px, and Arrange's two-line rows hold their
+  reason; at 844 × 390 the menu is a popover at its glyph's side.
+
+Not run: the iOS Simulator walk (upright, sideways, light, dark): this machine has no simulator
+tools. A Codex app browser case (its stores are SQLite databases the browser-test crate cannot
+write). Linux.
 
 **Proposed checks for a release:**
 
-- For each source, a hermetic fixture store and a browser case: choosing the option draws the
-  fixture's groups in its order, its pins first, its nesting, and every other row once under
-  "Not in …".
-- The same case with the session filter narrowed and a session hidden: every session the app lists
-  is still drawn; only "Not in …" narrows.
-- A missing store disables the option with its reason; a store removed while chosen falls back with
-  the notice and returns when the store does.
+- A Codex app browser case on a hermetic database, state file and catalogue.
+- The iOS Simulator walk, upright and sideways, light and dark.
 - A coordinator with side sessions in other projects nests them under "Like the Claude app" and
   leaves the tree as it is.
-- The phone drawer at 390×844 shows the arranged list and the Arrange choice.
 - A node contract case: given rows and a layout, every row appears exactly once.
 
 ## 11. Open questions

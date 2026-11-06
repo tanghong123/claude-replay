@@ -175,6 +175,11 @@ OpenAI 的 Codex 桌面应用；在被读取的机器上是 `/Applications/ChatG
 或 project 的 612 个未归档 thread 中，有 611 个是这样存的。monitor 从 #s383 起能读这种文件；在那之前，
 "Like the Codex app" 把它们画成变暗的行，也就是 app 列出、但 monitor 没有对应行的 session。
 
+**app 列出哪些 thread。** app 自己有一份它所列 thread 的目录（catalogue，`~/.codex/sqlite/codex.db` 里的
+`local_thread_catalog`）。在那台机器上测得：81 个 `codex exec` 运行和 sub-agent thread（971 个 reviewer
+sub-agent，以及所有派生出来的子 thread）都在 threads 表里，但不在这份目录里，也没有一个被放进 section 或
+project。所以原型只画目录里有的 thread；读不到目录时，和以前一样每个 thread 都算。
+
 **sidebar 本身**只存在状态文件里，位于 `electron-persisted-atom-state` 下，2026-11-06 对照 app 自己的
 sidebar 核对过：
 
@@ -192,7 +197,7 @@ Chats 里的 thread：`manual`、`updated_at` 或 `created_at`）和 `projectSor
 `created_at` 或 `updated_at`，取自 app 自己的代码）。在那台机器上 `projectSortMode` 是 `updated_at`，但
 app 画出的 Projects 列表遵循 `project-order`，所以原型保留 `project-order`，只读取 `chatSortMode`。
 
-一个自定义 section 可以包含 project 文件夹，而不只是 thread：在那台机器上，"Project H" 包含 5 个
+一个自定义 section 可以包含 project 文件夹，而不只是 thread：在那台机器上，"Platform" 包含 5 个
 project，Projects 列表按 app 的顺序包含其余 9 个。数据库自己的 `thread_sections` 里有一个叫 "Pinned"
 的 section，含 11 个 thread，但那不是 Pinned 显示的内容。
 
@@ -220,7 +225,10 @@ socket API 还提供 `events.subscribe`，可订阅 workspace、tab 和 pane 的
 试过它的推送。在 index 刷新时轮询 snapshot 就够了。
 
 **映射。** pane 的 `agent_session.value` 是 agent 的 session id，由 agent 的 Herdr hook 在启动时上报；
-它就是 monitor 的行 id。没有 agent session 的 pane（一个 shell，或没装 hook 的 agent）不是一行，跳过。
+它就是 monitor 的行 id。没有 agent session 的 pane（一个 shell，或没装 hook 的 agent）不是一行，跳过。hook
+只在启动时上报（#s349），所以 session 换了新 id 之后（#s294），pane 仍然指着旧的、已结束的那个。因此每个
+entry 还带上它的 pane（`<server>|<pane id>`），页面优先用 monitor 自己关联到这个 pane 的行（行上的
+`term: "herdr"`、`target` 和 `herdrSession`），只有 monitor 没有关联任何行时才用 hook 上报的 id。
 
 **monitor 已经在做的。** 它从 agent 进程的环境变量（`HERDR_PANE_ID`、`HERDR_SOCKET_PATH`）找到一个
 session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr agent list` 来取 agent 的状态
@@ -269,6 +277,9 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
 - `note`：这个人需要知道的、关于列表有多忠实的说明（例如 app 数据库里还有多少 Codex thread 没有
   project）。
 
+headless worker（monitor 标了 `startedBy` 的行，#s53）只出现在它的发起者的 Agents 面板里，这里从不画它，
+即使某个 app 列出了它。
+
 然后页面应用 §2 的三条规则：每个 entry 只画一次，画在第一个指向它的 entry 处，作为那个 session 的行
 （monitor 没有这一行时画成变暗的行）；把子 entry 嵌在父 entry 下；把没有任何 entry 指向的行放进最后一组，
 受筛选和隐藏约束。server 不知道页面的筛选、隐藏或 family，所以从不替页面决定这些。Herdr 的 hook 可能
@@ -281,8 +292,15 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
 ## 5. 接口
 
 **一个新的 route：`GET api/layout?source=<name>`**，以 JSON 返回一个来源的 layout。只有在选中某个 app
-的排列时才请求它，并跟随 index 自己的刷新，所以对从不选择的人，monitor 不读任何 app 的存储。
-`api/sessions` 的行不变。
+的排列时才请求它，并跟随 index 自己的刷新。`api/sessions` 的行不变。
+
+**请求从不读取 app。** 每个来源有自己的读取线程，由第一次请求启动，只在有页面跟随这个来源时运行：每 3 秒
+读一次，最后一次请求之后 30 秒结束。route 返回这个线程最近一次读到的结果；第一次读取完成之前返回
+`pending: true`，页面一秒后再问。读取来源时不持有任何锁，所以慢的 herdr 或忙的数据库不会耽误任何请求；
+herdr 按读取线程自己的节奏去问，和 monitor 的 `HerdrReader` 一样（#s238）。Codex 读取器给 SQLite 250 ms，
+而不是默认的 5 秒，数据库忙时保留上一次读到的结果。**不带 `source` 的 `GET api/layout`** 在打开筛选面板时
+请求，只检查文件——Claude app 的存储和设置文件、Codex app 的数据库、herdr 程序——以及上一次读取的错误（如果
+有）；它不读任何 app。从不选择 app 的人，不会触发任何一次读取。
 
 由 server 而不是页面来读这些存储：页面可能是通过 tailnet 访问的手机，读不到 Mac 的磁盘；而且 server 已经
 为其中一个存储保留了带缓存的读取器（#s340 的 `desktop_sessions.rs`，只在一条记录的修改时间或长度变化时
@@ -371,11 +389,11 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
 - 一个关于页面放置逻辑的 node contract case：每个 entry 一次，隐藏的行和 index 里没有的 entry 都保留，
   重复的丢掉，空 section 不画，单独的 session id 能匹配到用 rollout 命名的行。
 - 在这台机器的 app 上本地启动一个 monitor，用内置浏览器："Like the Codex app" 按 app 显示的样子画出了它的
-  sidebar（Pinned 折叠，"Project H" 带 5 个文件夹，第二个自定义 section 折叠，Projects 按顺序带其余 9 个
+  sidebar（Pinned 折叠，"Platform" 带 5 个文件夹，第二个自定义 section 折叠，Projects 按顺序带其余 9 个
   文件夹，全部关闭，然后是 Chats）。合入 #s383 对压缩 rollout 的读取之后，它在顶层放置的 1,276 个
   thread 全部是 monitor 的行（合入之前是 85 个）。
-- 在同一个 monitor 里试 section 菜单：把 long-running 按名字排序、按日期分组、按状态分组，再 Reset 回 app
-  的顺序；刷新页面后选择仍在，Reset 会清除它；选中的选项有勾选标记。在 Claude app 里把 long-running 设为
+- 在同一个 monitor 里试 section 菜单：把 Ongoing 按名字排序、按日期分组、按状态分组，再 Reset 回 app
+  的顺序；刷新页面后选择仍在，Reset 会清除它；选中的选项有勾选标记。在 Claude app 里把 Ongoing 设为
   date created 后，"As in the Claude app" 按记录里的创建时间顺序列出它。
 - 在 375 × 812（竖握的手机）下：菜单以 sheet 的形式从底部弹出，距两侧各 8 px，每行 44 px，44 px 高的
   section 头里是 40 px 的控件；点击遮罩会关闭菜单，抽屉和打开的 session 保持不变。
@@ -384,17 +402,26 @@ session 所在的 Herdr pane，并对每个 server 每 2 秒轮询一次 `herdr 
   退回，之后恢复；说明行的 ✕ 回到 tree；刷新页面后选择仍在；手机抽屉在 375 px 下显示说明行和列表，
   不会横向滚动。
 
-没有运行的：在隔离存储上的 browser suite case（见下）、整个 workspace 的测试，以及 Linux。
+**第一轮评审后补上的**（browser case，`claude-replay-browser-tests/tests/layout_sync.rs`，在隔离存储上运行：
+每个 case 自己写 Claude app 的记录和设置文件，harness 给每个 monitor 一个 herdr 替身，所以没有 case 读这台
+机器的 app 或运行它的 herdr）：
+
+- "Like the Claude app" 画出 fixture 的 group 和 Sessions，用 app 的标题，side session 嵌在下面；一个 idle
+  和一个被隐藏的 session 仍画在它们的 group 里；其余的放在折叠的 "Not in the Claude app" 下；刷新页面后选择
+  仍在，它背后的 "One list by activity" 也在，说明行的 ✕ 会回到它。
+- 文件缺失的来源显示为不可用并给出原因；选中后它的设置文件被删除，列表带琥珀色说明行退回，文件回来后恢复。
+- "Like Herdr" 通过替身画出一个 workspace 和它的 tab，以及 agent pane 对应的行。
+- 在 390 × 844 下，section 菜单从 44 px 的控件以 sheet 弹出，每行 44 px；点击遮罩关闭菜单，不选中任何东西；
+  说明行的 ✕ 是 44 px；Arrange 的两行选项能容下原因说明。在 844 × 390 下菜单是控件旁边的弹层。
+
+没有运行的：iOS 模拟器（竖屏、横屏、浅色、深色）——这台机器上没有模拟器工具；Codex app 的 browser case（它
+的存储是 SQLite 数据库，browser-test crate 没法写）；Linux。
 
 **发布前拟议的检查：**
 
-- 每个来源一个隔离的 fixture 存储和一个 browser case：选中该选项后，按 fixture 的顺序画出它的 group，
-  置顶在前，保留嵌套，其余每一行在 "Not in …" 下各出现一次。
-- 同一个 case 收窄 session filter 并隐藏一个 session：app 列出的每个 session 仍然画出；只有 "Not in …"
-  被收窄。
-- 存储缺失时选项不可用并给出原因；选中时存储被移除，列表带提示退回，存储回来时排列也回来。
+- 一个 Codex app 的 browser case，用隔离的数据库、状态文件和目录。
+- iOS 模拟器上走一遍：竖屏、横屏、浅色、深色。
 - 一个协调者的 side session 在别的 project 里：在 "Like the Claude app" 下嵌在它下面，而 tree 保持不变。
-- 手机抽屉在 390×844 下显示排列后的列表和 Arrange 选择。
 - 一个 node contract case：给定行和一个 layout，每一行恰好出现一次。
 
 ## 11. 待定问题

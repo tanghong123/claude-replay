@@ -11,7 +11,7 @@ import { RecordStore } from "./record-store.js";
 import { SessionIndexStore } from "./session-index-store.js";
 import { controlState, indexState, persist, recordState, selectedRow, uiState } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
-import { ARRANGE_SOURCES, arrangeSessions, familyHolds, flatFamilies, isDefaultView, nestSideSessions, rowLookup, sectionView, viewSection } from "./session-list.js";
+import { ARRANGE_SOURCES, arrangeSessions, familyHolds, flatFamilies, isDefaultView, nestSideSessions, paneLookup, rowLookup, sectionView, viewSection } from "./session-list.js";
 import { displayState, denoteState, sessionBucket, sessionFilterBuckets, FILTER_BUCKETS, FILTER_LABELS, BLOCKED_SUMMARY } from "./shared/state-labels.js";
 import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
@@ -374,16 +374,13 @@ const FLAT_SESSION_LIMIT = 30;
 // #s387 (design/layout-sync.md): another app's list. `layoutState` holds the chosen source's last
 // answer from `api/layout`, asked at every index refresh while a source is chosen and never
 // otherwise; `sourceState` whether each source can be read, asked as the filter sheet opens.
-// `arrangeBefore` is the arrangement an app replaced: the list falls back to it while the app's
-// list cannot be read, and the strip's ✕ returns to it.
 let layoutState = { source: null, data: null, error: null, text: null, loading: null };
 let sourceState = {};
-let arrangeBefore = "tree";
 let arrangeStrip = null;
 const ARRANGE_LABELS = { "claude-app": "the Claude app", "codex-app": "the Codex app", herdr: "Herdr" };
 // An arranged section shows this many sessions before "Show more", the selected one always.
 const ARRANGED_LIMIT = 30;
-// The section menu (#s387, the owner's hybrid): one floating menu, opened from a section head's
+// The section menu (#s387): one floating menu, opened from a section head's
 // glyph, with the Claude app's section menu's choices; `sectionMenuKey` is the section it serves.
 let sectionMenu = null;
 let sectionScrim = null;
@@ -441,12 +438,15 @@ function openSectionMenu(key, label, anchor) {
     });
     document.addEventListener("pointerdown", event => { if (sectionMenu && !sectionMenu.hidden && !sectionMenu.contains(event.target) && event.target !== sectionScrim && !event.target.closest?.("[data-section-view]")) closeSectionMenu(false); }, true);
     document.addEventListener("keydown", event => { if (event.key === "Escape" && sectionMenu && !sectionMenu.hidden) { event.stopPropagation(); closeSectionMenu(true); } }, true);
-    addEventListener("resize", placeSectionMenu);
+    addEventListener("resize", () => { if (sectionMenu.hidden) return; sectionMenu.classList.toggle("sheet", matchMedia(PHONE_QUERY).matches && innerHeight > innerWidth); placeSectionMenu(); });
   }
   if (sectionMenuKey === key && !sectionMenu.hidden) { closeSectionMenu(false); return; }
   sectionMenuKey = key; sectionMenuAnchor = anchor; sectionMenu.dataset.label = label;
   sectionMenu.setAttribute("aria-label", `Sort and group ${label}`);
   sectionMenu.innerHTML = sectionMenuHtml(key, label);
+  // Upright on a phone a sheet at the foot; held sideways, as on a desktop, a popover at the
+  // control's side (#s41: a band across a sideways screen hides what it covers).
+  sectionMenu.classList.toggle("sheet", matchMedia(PHONE_QUERY).matches && innerHeight > innerWidth);
   sectionMenu.hidden = false; sectionScrim.hidden = false;
   anchor.setAttribute("aria-expanded", "true");
   placeSectionMenu();
@@ -531,7 +531,7 @@ function arrangedSessionsHtml(layout, agents, shownAgents) {
   const source = layout.source;
   const where = new Map();
   for (const agent of agents) for (const project of agent.projects) for (const row of project.sessions) where.set(row.id, { agent: { id: agent.id, name: agentName(agent.id) }, project });
-  const { sections, placed } = arrangeSessions(layout, rowLookup(indexState.rows));
+  const { sections, placed } = arrangeSessions(layout, rowLookup(indexState.rows), paneLookup(indexState.rows));
   const node = (item, depth, parent, grouped) => {
     const side = depth ? { depth, starter: parent, via: `Under “${parent}” in ${layout.label}` } : null;
     const html = item.row
@@ -552,7 +552,7 @@ function arrangedSessionsHtml(layout, agents, shownAgents) {
     if (nodes.length > ARRANGED_LIMIT) out += `<button class="tree-project-more" type="button" data-project-more="${escapeText(overflowKey)}" aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${nodes.length - shown.length} more`}</span><span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>`;
     return out;
   };
-  // The reader's own order and grouping per section (#s387, the owner's hybrid): the app says which
+  // The reader's own order and grouping per section (#s387): the app says which
   // sessions a section holds; the section's menu says how they are sorted and grouped here.
   const facts = {
     updated: item => item.row?.activityTs || 0,
@@ -650,7 +650,7 @@ function renderTree() {
   const source = arrangeSource();
   const layout = source && layoutState.source === source ? layoutState.data : null;
   const arranged = !!layout?.available;
-  const flat = indexState.flat || (source && !arranged && arrangeBefore === "flat");
+  const flat = indexState.flat || (source && !arranged && indexState.arrangeBefore === "flat");
   paintArrangeStrip(source, layout);
   app.classList.toggle("sessions-flat", flat || arranged);
   app.classList.toggle("sessions-arranged", arranged);
@@ -878,7 +878,7 @@ addEventListener("resize", () => { if (!railFlyout.hidden) placeRailFlyout(); })
 function arrangeSource() { return ARRANGE_SOURCES.includes(indexState.arrange) ? indexState.arrange : null; }
 function setArrange(next) {
   if (!["tree", "flat", ...ARRANGE_SOURCES].includes(next) || next === indexState.arrange) return;
-  if (!arrangeSource()) arrangeBefore = indexState.arrange;
+  if (!arrangeSource()) indexState.arrangeBefore = indexState.arrange;
   indexState.arrange = next;
   if (layoutState.source !== arrangeSource()) layoutState = { source: null, data: null, error: null, text: null, loading: null };
   persist(); renderTree(); refreshLayout();
@@ -890,8 +890,11 @@ function refreshLayout() {
     .then(response => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.text(); })
     .then(text => {
       if (arrangeSource() !== source) return;
+      const data = JSON.parse(text);
+      // The source's reader has not read yet (the server never reads in a request): ask again soon.
+      if (data.pending) { setTimeout(() => refreshLayout(), 1000); return; }
       const changed = text !== layoutState.text || layoutState.error;
-      layoutState = { ...layoutState, source, text, data: JSON.parse(text), error: null };
+      layoutState = { ...layoutState, source, text, data, error: null };
       if (layoutState.data && !layoutState.data.available) sourceState[source] = { available: false, reason: layoutState.data.reason };
       if (changed) renderTree();
     })
@@ -923,11 +926,11 @@ function paintArrangeStrip(source, layout) {
     arrangeStrip.className = "arrange-strip"; arrangeStrip.id = "arrangeStrip"; arrangeStrip.hidden = true;
     arrangeStrip.setAttribute("role", "status");
     tree.insertAdjacentElement("beforebegin", arrangeStrip);
-    arrangeStrip.addEventListener("click", event => { if (event.target.closest("[data-arrange-off]")) setArrange(arrangeBefore); });
+    arrangeStrip.addEventListener("click", event => { if (event.target.closest("[data-arrange-off]")) setArrange(indexState.arrangeBefore); });
   }
   if (!source) { arrangeStrip.hidden = true; return; }
   const label = ARRANGE_LABELS[source];
-  const back = arrangeBefore === "flat" ? "one list by activity" : "by agent and project";
+  const back = indexState.arrangeBefore === "flat" ? "one list by activity" : "by agent and project";
   let text, detail = "", warn = false;
   if (layout?.available) {
     text = `Arranged like ${label} · follows it`;

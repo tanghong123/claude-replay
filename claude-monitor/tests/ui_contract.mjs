@@ -28,7 +28,7 @@ import { agentRecordTargets, currentTurnIndex, peerHue, peerLabelRest, Projectio
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
-import { ARRANGE_SOURCES, CALM_SECS, DATE_GROUPS, arrangeSessions, arrangedCount, dateGroup, familyHolds, flatFamilies, isDefaultView, nestSideSessions, rowLookup, sectionView, viewSection } from "../src/codex-ui/session-list.js";
+import { ARRANGE_SOURCES, CALM_SECS, DATE_GROUPS, arrangeSessions, dateGroup, familyHolds, flatFamilies, isDefaultView, nestSideSessions, paneLookup, rowLookup, sectionView, viewSection } from "../src/codex-ui/session-list.js";
 import { BLOCKED_SUMMARY, BUCKETS, FILTER_BUCKETS, FILTER_LABELS, RECENT_SECS, REASONS, REASON_BUCKETS, denoteState, displayState, needsPerson, sessionBucket, sessionFilterBuckets } from "../../claude-replay-html/src/html/shared/state-labels.js";
 import { composeCapability, consentQuery, grantOutcome, runRevoke, runSend, sendOutcome, sendQuery } from "../../claude-replay-html/src/html/shared/control-protocol.js";
 import { cursorText, freshCursor, parseRecords, pullQuery, recordsQuery, reducePull } from "../../claude-replay-html/src/html/shared/record-stream.js";
@@ -849,7 +849,15 @@ assert.match(appSource, /flatFamilies\(agents, Date\.now\(\) \/ 1000\)/, "the fl
   assert.ok(sections[1].collapsed, "collapsed as the app has it");
   assert.deepEqual(sections[2].groups.map(g => g.label), ["x"], "an empty group is not drawn");
   assert.deepEqual([...placed].sort(), ["a", "b", "c", "d", "gone"]);
-  assert.deepEqual(sections.map(arrangedCount), [1, 3, 1, 0], "a section counts its nested sessions");
+  // The review of #s387: a headless worker is never listed (#s53), and a Herdr pane's row is the one
+  // the monitor links to that pane, not the stale id its hook reported.
+  const worker = { id: "w", name: "W", startedBy: "a" };
+  const live = { id: "live", name: "Live", term: "herdr", target: "w1:p2", herdrSession: "work" };
+  const withWorker = new Map([...rows, ["w", worker], ["live", live]]);
+  const herdr = arrangeSessions({ sections: [{ id: "ws", entries: [{ id: "w", children: [] }, { id: "stale", pane: "work|w1:p2", children: [] }, { id: "d", pane: "work|w1:p9", children: [] }] }] }, withWorker, paneLookup(withWorker));
+  assert.deepEqual(herdr.sections[0].nodes.map(n => n.id), ["live", "d"], "a worker is dropped; the pane's linked row replaces a stale id");
+  assert.ok(!herdr.placed.has("w"));
+  assert.equal(paneLookup(new Map([["x", { id: "x", term: "herdr", target: "w1:p1" }]])).get("default|w1:p1").id, "x", "the default server is named default");
   assert.deepEqual(arrangeSessions(null, rows).sections, []);
   assert.deepEqual(arrangeSessions({ sections: [{ id: "s", entries: [{ id: "" }, {}] }] }, rows).sections, [], "an entry with no id is skipped");
   assert.deepEqual(ARRANGE_SOURCES, ["claude-app", "codex-app", "herdr"], "the sources are the server's (layout.rs Source::ALL)");
@@ -892,7 +900,7 @@ assert.match(appSource, /flatFamilies\(agents, Date\.now\(\) \/ 1000\)/, "the fl
   assert.ok(isDefaultView({}) && !isDefaultView({ sort: "name" }));
   console.log("section view cases passed");
 }
-assert.match(appSource, /arrangeSessions\(layout, rowLookup\(indexState\.rows\)\)/, "the arranged list places rows through the tested functions");
+assert.match(appSource, /arrangeSessions\(layout, rowLookup\(indexState\.rows\), paneLookup\(indexState\.rows\)\)/, "the arranged list places rows through the tested functions");
 // #s340: a Claude desktop side session nests under the family of the session that started it, in
 // the tree and the flat list; one whose starter is left out stays a family of its own, a loop nests
 // nothing, and a side session of a side session nests under that one.

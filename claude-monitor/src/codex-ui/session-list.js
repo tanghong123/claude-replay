@@ -86,8 +86,8 @@ export const ARRANGE_SOURCES = ["claude-app", "codex-app", "herdr"];
 /**
  * Another app's session list over this monitor's rows (#s387, design/layout-sync.md): each section
  * of `layout` (the server's `api/layout` answer), its entries resolved to rows by id. The list
- * shows the SAME sessions the app shows (the owner: not only the layout, "but also those exact
- * sessions"), so the session filter and the hides drop no entry, and an entry the monitor has no
+ * shows the SAME sessions the app shows (#s387: not only the layout, the same sessions), so the
+ * session filter and the hides drop no entry, and an entry the monitor has no
  * row for is kept with the app's title (`row: null`), so nothing the app lists goes missing. Each
  * session appears once: the first entry naming it wins, and a repeat is dropped, its children with
  * it (they were placed under the first). `rowsById` maps a row id to its row. Returns the sections
@@ -95,12 +95,16 @@ export const ARRANGE_SOURCES = ["claude-app", "codex-app", "herdr"];
  * a node being `{ id, row, title, children }` — and `placed`, the ids shown. A group the app draws
  * even when empty (`keep`: a Codex project folder) is kept empty.
  */
-export function arrangeSessions(layout, rowsById = new Map()) {
+export function arrangeSessions(layout, rowsById = new Map(), rowsByPane = new Map()) {
   const placed = new Set();
   const node = entry => {
     const id = String(entry?.id || "");
-    const row = (id && rowsById.get(id)) || null;
+    // A Herdr pane's row is the one the monitor itself links to that pane, when it links one: the
+    // id the pane's hook reported at the agent's start goes stale when the session moves (#s294).
+    const row = (entry?.pane && rowsByPane.get(entry.pane)) || (id && rowsById.get(id)) || null;
     if (!id || placed.has(id) || (row && placed.has(row.id))) return null;
+    // A headless worker lives in its starter's Agents pane, never in the list (#s53).
+    if (row?.startedBy) return null;
     placed.add(id); if (row) placed.add(row.id);
     const children = (entry.children || []).map(node).filter(Boolean);
     return { id: row ? row.id : id, row, title: entry.title || null, children };
@@ -129,13 +133,17 @@ export function rowLookup(rows = new Map()) {
   return lookup;
 }
 
-/** How many sessions an arranged section shows, its nested ones included (#s387). */
-export function arrangedCount(section) {
-  const count = list => list.reduce((n, node) => n + 1 + count(node.children), 0);
-  return count(section.nodes) + section.groups.reduce((n, group) => n + count(group.nodes), 0);
+/** The index's rows by the Herdr pane the monitor links each to (#s387): `<server>|<pane id>`, as
+ *  a Herdr layout entry names its pane; the default server is `default`. */
+export function paneLookup(rows = new Map()) {
+  const panes = new Map();
+  for (const row of rows.values()) {
+    if (row.term === "herdr" && row.target) panes.set(`${row.herdrSession || "default"}|${row.target}`, row);
+  }
+  return panes;
 }
 
-/** The choices of an arranged section's own menu (#s387, the owner's hybrid), as the Claude app's
+/** The choices of an arranged section's own menu (#s387), as the Claude app's
  *  section menu offers them: "app" keeps what the app gave. */
 export const SECTION_GROUPS = ["app", "none", "project", "date", "state"];
 export const SECTION_SORTS = ["app", "updated", "created", "name"];
@@ -168,7 +176,7 @@ export function dateGroup(ts, now = Date.now() / 1000) {
 const STATE_GROUPS = [["active", "Active"], ["blocked", "Blocked"], ["idle", "Idle"], ["", "Not in this monitor's list"]];
 
 /**
- * An arranged section in the reader's own order and grouping (#s387, the owner's hybrid): the app
+ * An arranged section in the reader's own order and grouping (#s387): the app
  * decides which sessions the section holds and under which sub-heads; the reader decides, per
  * section, how they are sorted (as the app gave them, last updated, date created or name, either
  * way) and grouped (the app's sub-heads, none, project, date or state). A session's nested ones
