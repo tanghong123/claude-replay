@@ -1593,6 +1593,13 @@ impl Emitter<'_> {
                         ]),
                     );
                 }
+                // #s381: and a call in it that ran outside the sandbox, so a closed run says so.
+                if crate::present::run_outside_sandbox(tools) {
+                    push_chip(
+                        &mut head,
+                        chip_class("sandbox", crate::model::OUTSIDE_SANDBOX),
+                    );
+                }
                 if !tools.is_empty() {
                     let items: Vec<Value> =
                         tools.iter().map(|t| self.block(t, None, None)).collect();
@@ -2069,6 +2076,15 @@ impl Emitter<'_> {
                             } else {
                                 chip(summary)
                             },
+                        );
+                    }
+                    // #s381: a command that ran outside the sandbox the session ran with. Classed,
+                    // so the app shell draws it as a badge of its own beside the change counts
+                    // (a phone hides the state pill), and the classic page as a chip in its colour.
+                    if execution.outside_sandbox {
+                        push_chip(
+                            &mut head,
+                            chip_class("sandbox", crate::model::OUTSIDE_SANDBOX),
                         );
                     }
                 }
@@ -4741,12 +4757,72 @@ mod tests {
                 secs: 0,
                 nanos: 42_000_000,
             }),
+            outside_sandbox: false,
         });
         let out = stream(&[block], &FoldPolicy::default());
         assert!(out[0]["head"]["chips"]
             .as_array()
             .unwrap()
             .contains(&json!({"c": "fail", "x": "exit 7 · 42ms"})));
+    }
+
+    /// #s381: a Bash call that ran outside the sandbox its session ran with carries a classed chip
+    /// after its execution summary, which the app shell draws as a badge and the classic page in
+    /// its own colour; one that did not carries none.
+    #[test]
+    fn a_call_outside_the_sandbox_carries_a_sandbox_chip() {
+        use crate::model::{ToolExecution, ToolStatus};
+        let with = |outside| {
+            let mut block = bash("curl https://tern.example/nests", "42");
+            let Block::ToolUse { execution, .. } = &mut block else {
+                unreachable!()
+            };
+            *execution = Some(ToolExecution {
+                status: Some(ToolStatus::Completed),
+                exit_code: Some(0),
+                duration: None,
+                outside_sandbox: outside,
+            });
+            stream(&[block], &FoldPolicy::default())[0]["head"]["chips"].clone()
+        };
+        let marked = with(true);
+        let chips = marked.as_array().unwrap();
+        assert_eq!(
+            chips.last(),
+            Some(&json!({"c": "sandbox", "x": crate::model::OUTSIDE_SANDBOX})),
+            "{marked}"
+        );
+        assert!(
+            !with(false)
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["c"] == "sandbox"),
+            "only an outside call is marked"
+        );
+        // A run holding such a call wears the mark on its own line too, so it shows closed.
+        let mut call = bash("curl https://tern.example/nests", "42");
+        if let Block::ToolUse { execution, .. } = &mut call {
+            *execution = Some(ToolExecution {
+                status: None,
+                exit_code: None,
+                duration: None,
+                outside_sandbox: true,
+            });
+        }
+        let run = Block::Thinking {
+            text: String::new(),
+            duration_secs: Some(3),
+            tools: vec![bash("ls nests", "north.txt"), call],
+        };
+        let out = stream(&[run], &FoldPolicy::default());
+        assert!(
+            out[0]["head"]["chips"].as_array().is_some_and(
+                |c| c.contains(&json!({"c": "sandbox", "x": crate::model::OUTSIDE_SANDBOX}))
+            ),
+            "{}",
+            out[0]["head"]
+        );
     }
 
     /// §8.8 per-kind keylines: the emitter tags each fold with `kind` (→ `data-kind`),
@@ -5760,6 +5836,7 @@ mod tests {
                     status: Some(status),
                     exit_code: None,
                     duration: None,
+                    outside_sandbox: false,
                 }),
                 published: None,
                 asked: None,
@@ -6503,6 +6580,7 @@ mod tests {
                 status: Some(status),
                 exit_code: None,
                 duration: None,
+                outside_sandbox: false,
             }),
             published: None,
             asked: None,

@@ -3497,6 +3497,21 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#s23 change badge cases passed");
 }
 
+// ── #s381: a Bash call that ran outside the sandbox wears its mark in the badge column ──────────
+{
+  // Hong on #s372: "Mark a Bash card whose command ran outside the sandbox." The server sends a
+  // chip classed `sandbox`; it rides the badge column beside the change counts, never the state
+  // pill, which a phone hides and a desktop cuts at 108px.
+  const bash = viewRecord({ t: "block", id: "b3", kind: "bash", tool: "Bash", fold: true, open: 0, head: { name: "Bash", target: "curl https://tern.example/nests", chips: [{ x: "exit 0" }, { c: "sandbox", x: "outside the sandbox" }] }, body: [] });
+  assert.deepEqual(bash.change, [{ kind: "sandbox", text: "outside the sandbox" }], "the mark is a badge");
+  assert.doesNotMatch(bash.pill || "", /outside the sandbox/, "…and never part of the state pill");
+  assert.equal(bash.pill, "exit 0", "the other chips still say what they said");
+  assert.equal(changeBadgeHtml(bash.change), '<span class="renderer-change"><span class="sandbox">outside the sandbox</span></span>');
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(css, /\.renderer-change>\.sandbox\{color:var\(--amber\);background:var\(--amber-bg\)/, "in the amber the shell keeps for what wants noticing");
+  console.log("#s381 sandbox mark cases passed");
+}
+
 // ── #228: an image is one click away, and the enlarged view zooms ───────────────────────────
 {
   // The owner: "currently it takes two clicks to see the image, which is one click too many."

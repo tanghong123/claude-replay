@@ -865,6 +865,7 @@ fn command_execution_metadata(item: &Value) -> Option<ToolExecution> {
         status,
         exit_code,
         duration,
+        outside_sandbox: false,
     })
 }
 
@@ -2407,6 +2408,7 @@ fn rejected_patch_messages(
         status: Some(ToolStatus::Failed),
         exit_code: None,
         duration: None,
+        outside_sandbox: false,
     };
     let mut messages = vec![Message::LineStart(ts)];
     for (index, patch) in patches.iter().flat_map(|p| patch_files(p)).enumerate() {

@@ -347,7 +347,8 @@ function rendererRecord(record, renderer, name) {
   // #s23: a change's `+N` / `−N` chips are its BADGE (components.js `changeBadgeHtml`), never
   // part of the state pill — a phone hides the pill, and a count is not a state.
   const allChips = Array.isArray(head.chips) ? head.chips : [];
-  const change = allChips.filter(c => c && (c.c === "add" || c.c === "del"));
+  // #s381: a command that ran outside the sandbox wears its mark in the same badge column.
+  const change = allChips.filter(c => c && (c.c === "add" || c.c === "del" || c.c === "sandbox"));
   const th = toolHead(change.length ? { ...head, chips: allChips.filter(c => !change.includes(c)) } : head);
   return {
     t: renderer === "thinking" ? "thinking" : renderer === "activity" ? "activity" : renderer === "task" ? "task" : renderer === "agent" ? "agent" : "tool",

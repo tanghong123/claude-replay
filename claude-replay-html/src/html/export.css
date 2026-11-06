@@ -34,6 +34,8 @@
   --delbg: #f9e7e3;
   --delfg: #963a2b;
   --delgut: #c07a6c;
+  --warnbg: #f6ead3; /* a Bash call that ran outside the sandbox (#s381) */
+  --warnfg: #8a5a12;
   --gut: #b3ab9b;
   --kw: #6d4fa1;
   --str: #8f5a22;
@@ -64,6 +66,8 @@
   --delbg: #3b211c;
   --delfg: #e3a99e;
   --delgut: #b06a5c;
+  --warnbg: #3a2c17;
+  --warnfg: #e0a85a;
   --gut: #5c574c;
   --kw: #b79ae8;
   --str: #d8a86a;
@@ -782,6 +786,7 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 .chip.add { font-weight: 600; border: none; background: var(--addbg); color: var(--addfg); padding: 1px 7px; }
 .chip.del { font-weight: 600; border: none; background: var(--delbg); color: var(--delfg); padding: 1px 7px; }
 .chip.fail { font-weight: 600; border: none; background: var(--delbg); color: var(--delfg); padding: 1px 7px; }
+.chip.sandbox { font-weight: 600; border: none; background: var(--warnbg); color: var(--warnfg); padding: 1px 7px; }
 
 .think-body { font-size: 13.5px; color: var(--muted); border-left: 2px solid var(--border); padding-left: 12px; }
 

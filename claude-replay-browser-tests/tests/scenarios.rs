@@ -18254,6 +18254,164 @@ fn app_shell_marks_a_reply_cut_off_by_an_interrupt() {
     scenario_a_reply_cut_off_by_an_interrupt_is_marked_cut_off(&page.tab, Surface::AppShell);
 }
 
+// ── scenario: a Bash call that ran outside the sandbox is marked (#s381)
+
+/// Hong on #s372: "Mark a Bash card whose command ran outside the sandbox." In a session that ran
+/// with Claude Code's Bash sandbox on, a call whose result reads `sandboxed: false` wears the mark
+/// "outside the sandbox": on its own head, and on the line of the run that holds it, so a closed
+/// run says so. The call that ran inside wears none. The app shell draws it in the badge column,
+/// which a phone keeps while it hides the state pill.
+fn scenario_a_bash_call_outside_the_sandbox_is_marked(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let mark = claude_replay_core::model::OUTSIDE_SANDBOX;
+    let read = format!(
+        "(function(){{ \
+           var marks = [...document.querySelectorAll('.chip.sandbox, .renderer-change > .sandbox')] \
+             .filter(function(m){{ return m.textContent.trim() === {mark:?}; }}); \
+           var shown = marks.filter(function(m){{ var r = m.getBoundingClientRect(); return r.width > 0 && r.height > 0; }}); \
+           var rows = shown.map(function(m){{ \
+             var box = m.closest('.fold, .renderer'); \
+             var head = box && (box.querySelector(':scope > .fold-h, :scope > .renderer-head') || box); \
+             var t = head ? (head.querySelector('.tool-target, .renderer-target') || {{}}).textContent || '' : ''; \
+             var s = head ? (head.querySelector('.summary, .renderer-title') || {{}}).textContent || '' : ''; \
+             return {{ target: t.trim(), title: s.trim() }}; \
+           }}); \
+           var pill = [...document.querySelectorAll('.renderer-state')].filter(function(p){{ return p.textContent.indexOf({mark:?}) >= 0; }}).length; \
+           return JSON.stringify({{ all: marks.length, shown: shown.length, rows: rows, inPill: pill, w: innerWidth }}); \
+         }})()"
+    );
+    let poll = |what: &str, done: &dyn Fn(&serde_json::Value) -> bool| {
+        let mut last = serde_json::Value::Null;
+        for _ in 0..40 {
+            last = serde_json::from_str(eval(tab, &read).as_str().unwrap_or("null"))
+                .unwrap_or(serde_json::Value::Null);
+            if done(&last) {
+                return last;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        panic!("{surface:?}: {what}: {last}");
+    };
+    let closed = poll("one mark shown, on the closed run's line", &|v| {
+        v["shown"] == 1
+    });
+    assert!(
+        closed["rows"][0]["target"]
+            .as_str()
+            .is_none_or(|t| !t.contains("curl")),
+        "{surface:?}: the shown mark is the run's, not a call's: {closed}"
+    );
+    assert_eq!(
+        closed["inPill"], 0,
+        "{surface:?}: never in the state pill: {closed}"
+    );
+    // Open the run: the call that ran outside wears the mark too, the one inside does not.
+    let open = "(function(){ \
+           var m = [...document.querySelectorAll('.chip.sandbox, .renderer-change > .sandbox')] \
+             .find(function(m){ var r = m.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); \
+           var box = m.closest('.fold, .renderer'); \
+           (box.querySelector(':scope > .fold-h, :scope > .renderer-head') || m).click(); return true; })()";
+    eval(tab, open);
+    let opened = poll("two marks shown once the run is open", &|v| v["shown"] == 2);
+    let targets: Vec<&str> = opened["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["target"].as_str())
+        .collect();
+    assert!(
+        targets
+            .iter()
+            .any(|t| t.contains("curl https://tern.example/nests")),
+        "{surface:?}: the call that ran outside wears it: {opened}"
+    );
+    assert!(
+        !targets.iter().any(|t| t.contains("ls nests")),
+        "{surface:?}: the call that ran inside does not: {opened}"
+    );
+    // At a phone's width the badge column stays while the state pill goes.
+    if surface == Surface::AppShell {
+        harness::phone(tab, 390, 844);
+        let phone = poll("the marks still shown at a phone's width", &|v| {
+            v["w"] == 390 && v["shown"] == 2
+        });
+        let pill_hidden = eval(
+            tab,
+            "[...document.querySelectorAll('.renderer-state')].every(function(p){ return getComputedStyle(p).display === 'none'; })",
+        );
+        assert_eq!(
+            pill_hidden,
+            serde_json::json!(true),
+            "{surface:?}: the phone hides the pill, so the mark had to be a badge: {phone}"
+        );
+    }
+}
+
+/// Twelve turns in a session run with the Bash sandbox on (its `sandbox_instructions` head, as
+/// Claude Code 2.1.318 writes it), then a turn with two Bash calls: one that ran inside the
+/// sandbox, one that asked to skip it and ran outside — #s381.
+fn sandbox_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let line = |v: serde_json::Value| format!("{v}\n");
+    let mut transcript = line(serde_json::json!({
+        "type": "attachment", "cwd": "/r", "timestamp": now_minus(3600), "version": "2.1.318",
+        "attachment": {"type": "sandbox_instructions",
+                       "content": "## Bash command sandbox\n\nCommands run inside a sandbox that limits writes to the workspace."}
+    }));
+    transcript += &long_session(12, Shape::default());
+    transcript += &user_at("Fetch the colony count.", &now_minus(60));
+    for (id, cmd, inside, ago) in [
+        ("toolu_in", "ls nests", true, 58u64),
+        ("toolu_out", "curl https://tern.example/nests", false, 56),
+    ] {
+        let mut input = serde_json::json!({"command": cmd});
+        if !inside {
+            input["dangerouslyDisableSandbox"] = serde_json::json!(true);
+        }
+        transcript += &line(serde_json::json!({
+            "type": "assistant", "cwd": "/r", "timestamp": now_minus(ago), "version": "2.1.318",
+            "message": {"role": "assistant", "model": "claude-opus-5", "usage": {"input_tokens": 12, "output_tokens": 8},
+                        "content": [{"type": "tool_use", "id": id, "name": "Bash", "input": input}]}
+        }));
+        transcript += &line(serde_json::json!({
+            "type": "user", "cwd": "/r", "timestamp": now_minus(ago - 1), "version": "2.1.318", "sandboxed": inside,
+            "toolUseResult": {"stdout": "42", "stderr": "", "interrupted": false},
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": "42"}]}
+        }));
+    }
+    transcript += &assistant_at("Forty-two nests.", &now_minus(50));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_marks_a_bash_call_outside_the_sandbox() {
+    let _serial = serial();
+    let fx = sandbox_fixture("scenario-sandbox-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_bash_call_outside_the_sandbox_is_marked(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_marks_a_bash_call_outside_the_sandbox() {
+    let _serial = serial();
+    let fx = sandbox_fixture("scenario-sandbox-app");
+    let page = open(Surface::AppShell, &fx, 3101);
+    scenario_a_bash_call_outside_the_sandbox_is_marked(&page.tab, Surface::AppShell);
+}
+
 // ── scenario: a reply the safety classifier stopped is marked (#s378)
 
 /// Claude Code keeps a reply the safety classifier stopped (its thinking alone), records the

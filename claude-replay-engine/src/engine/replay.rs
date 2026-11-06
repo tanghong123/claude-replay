@@ -144,6 +144,10 @@ pub struct Replayer<'a> {
     /// its reply within the turn (one or two records later, measured), so the two are never split
     /// by a resume point.
     refused: HashMap<String, Option<String>>,
+    /// Whether this transcript ran with the agent's Bash sandbox on (#s381): set by its
+    /// `SandboxOn` head or any run inside it, never unset. Carried through the meta stream (a
+    /// gauge, like the cwd), since the head sits far above most calls and below many resume points.
+    sandbox_on: bool,
 }
 
 /// #s355: a sub-agent a message went to, as the reader should read it: `sub-agent a29193b9`, with
@@ -200,6 +204,7 @@ impl<'a> Replayer<'a> {
             inbox_ids: std::collections::HashSet::new(),
             peer_names: HashMap::new(),
             refused: HashMap::new(),
+            sandbox_on: false,
         }
     }
 
@@ -401,6 +406,31 @@ impl<'a> Replayer<'a> {
                 }
                 // #s378: the note under the reply it names; a note naming a reply this fold never
                 // met is the result line it always was.
+                Message::SandboxOn => self.sandbox_on = true,
+                // #s381: an inside run says the sandbox was on; an outside run, once the fold knows
+                // it was, marks the call it belongs to.
+                Message::SandboxRun {
+                    tool_use_id,
+                    inside,
+                } => {
+                    if *inside {
+                        self.sandbox_on = true;
+                    } else if self.sandbox_on {
+                        if let Some(rel) = self.tool_slot.get(tool_use_id).map(|&i| i - self.base) {
+                            if let Block::ToolUse { execution, .. } = &mut self.out[rel] {
+                                execution
+                                    .get_or_insert(crate::model::ToolExecution {
+                                        status: None,
+                                        exit_code: None,
+                                        duration: None,
+                                        outside_sandbox: false,
+                                    })
+                                    .outside_sandbox = true;
+                                note_patch(&mut patch_floor, self.base + rel, emitted_frontier);
+                            }
+                        }
+                    }
+                }
                 Message::RefusedNote { id, text } => match self.refused.remove(id) {
                     Some(category) => self.out.push(Block::SafetyStop {
                         category,
@@ -884,6 +914,7 @@ impl<'a> Replayer<'a> {
             .map(|(a, n)| (a.clone(), n.clone()))
             .collect();
         self.refused.clear();
+        self.sandbox_on = mm.sandbox_on;
         self.turn_durations = mm.turn_durations.clone();
         self.turn_durations.resize(mm.user_times.len(), None);
         self.user_times = mm.user_times.clone();
@@ -893,6 +924,12 @@ impl<'a> Replayer<'a> {
         self.stamped = 0;
         self.out.clear();
         self.durable.clear();
+    }
+
+    /// Whether the fold knows the transcript ran with the Bash sandbox on (#s381) — the gauge
+    /// the builder captures at each resume point.
+    pub(crate) fn sandbox_on(&self) -> bool {
+        self.sandbox_on
     }
 
     /// Raw-logical index one past the last emitted block — `base + out.len()`. The builder

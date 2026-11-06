@@ -343,11 +343,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// `SafetyStop` block (a line naming the classifier and its category, the note folded under it)
 /// when the fold met the reply it names. A v71 stream holds it as a plain `ToolResult`.
 ///
+/// v73: #s381 — a Bash call that ran outside the sandbox in a transcript that ran with it on
+/// carries `ToolExecution::outside_sandbox`, drawn as a mark on its card; a record carries the
+/// sandbox's state as of its resume point (`sandbox_on`). A v72 stream holds neither.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 72;
+pub const FOLD_VERSION: u16 = 73;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
@@ -435,6 +439,10 @@ pub struct MetaRecord {
     pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub span: Option<(EpochSeconds, EpochSeconds)>,
+    /// The transcript ran with the agent's Bash sandbox on, as of this resume point (#s381);
+    /// written when it changes. A stream from before it reads as off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_on: Option<bool>,
 
     // ── resumption: presence IS the resume-point indicator ──
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -530,6 +538,9 @@ pub struct MaterializedMeta {
     /// The committed senders by address (#s355), the latest name winning.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub peer_names: BTreeMap<String, String>,
+    /// The transcript ran with the agent's Bash sandbox on (#s381).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sandbox_on: bool,
 }
 
 impl MaterializedMeta {
@@ -610,6 +621,9 @@ impl MaterializedMeta {
         }
         if let Some(s) = r.span {
             self.span = Some(s);
+        }
+        if let Some(on) = r.sandbox_on {
+            self.sandbox_on = on;
         }
     }
 }

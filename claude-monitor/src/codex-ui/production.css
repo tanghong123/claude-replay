@@ -1018,6 +1018,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .renderer-change>span{padding:0 5px;border-radius:5px}
 .renderer-change>.add{color:var(--green);background:var(--green-bg)}
 .renderer-change>.del{color:var(--red);background:var(--red-bg)}
+/* #s381: a Bash call that ran outside the sandbox its session ran with, beside the counts. */
+.renderer-change>.sandbox{color:var(--amber);background:var(--amber-bg);font-weight:560}
 /* `direction:rtl` ALONE. The classic page's own path line pairs it with `text-align:left`, but
    that element clips without an ellipsis; here the two fight — rtl puts the ellipsis at the
    visual left, and then left-alignment pushes the overflow back out to the right, losing the
