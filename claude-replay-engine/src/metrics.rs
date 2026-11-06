@@ -2045,6 +2045,8 @@ mod price_tests {
             ("gpt-daybreak-blue-latest", p("4", "5", "0.4", "20")),
             ("gpt-5-6-terra", p("2", "2.5", "0.2", "12")),
             ("gpt-5.6-luna", p("0.2", "0.25", "0.02", "1.2")),
+            // Priced before first use (#s379): the Cyber table's 30m write is the write rate.
+            ("gpt-6-cyber", p("20", "25", "2", "100")),
             ("gpt-5.6-cyber", p("12.5", "15.625", "1.25", "75")),
             ("gpt-daybreak-red-latest", p("12.5", "15.625", "1.25", "75")),
             // Listed with no cache-write rate, so it no longer shares gpt-5.6-cyber's row.
