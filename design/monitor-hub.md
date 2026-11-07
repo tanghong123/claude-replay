@@ -112,8 +112,7 @@ adds:
   iPad or a Mac, as the standalone app places them ("The standalone app becomes a host");
 - on a phone, the one-row top bar, which the standalone app keeps as a host too. What it shows
   belongs to the session (its title, the current turn, Info), so the session view has to tell its
-  host those and take an "open Info" from it. "Customizing" has no such events yet, for either host:
-  an addition to the kit, section 5;
+  host those and take an "open Info" from it, as embedding's "Customizing" now has it for step 4;
 - on a Mac, a session or an artifact in a window of its own (D8).
 
 Each component lays itself out from the device and the size of the pane the app gives it ("Layout
@@ -200,8 +199,8 @@ it:
   and any other navigation of a frame unless it is a link the reader tapped, which opens in the
   browser: a script in an agent's page must not open Safari or another app's URL with no tap. If the
   spike finds WebKit cannot tell a tap from a script's `click()`, the app refuses every navigation
-  out of a frame, or asks first in a sheet naming the address. This
-  needs the session view to let its host load that frame, an addition to the kit (section 5).
+  out of a frame, or asks first in a sheet naming the address. The
+  session view lets its host supply that frame ("Customizing", frames, step 4).
 - **The main frame never loads a page under `/k/`**: the navigation delegate refuses it. A
   navigation the page asks to save (a file over 64 MB is saved through an `<a download>` link to
   `/file`) becomes a download, never a page load. A main-frame navigation out of the app's schemes
@@ -228,7 +227,8 @@ image is downloaded by fetching its `data:` address); `frame-src app-frame:`; `f
 `base-uri 'none'`. An agent's page is not under it, being on its own scheme. The scripts the page
 loads from a monitor today come from the app's bundle instead, under `/kit/`: mdrev's guest (D8) and
 the diagram runtime (`/mermaid/<version>.js`, found today through the page head's
-`mermaid-runtime` meta), which section 5 places.
+`mermaid-runtime` meta), which each host vendors until a second host needs them in the kit
+("Delivery").
 
 ### D4 — Pairing and revoking
 
@@ -270,11 +270,12 @@ Both come from `design/embedding.md`'s order of the work, and are built there:
   what the page reads today from its own head for the one monitor it has (`data-paired`, which gates
   the HTML preview, `data-version` and `data-mdrev`). All of them are per handle, never page-wide. A
   handle's backend can also be in the page itself, as the merged source is (D6).
-  `design/embedding.md` describes step 1 with one prefix, while #s416 carries the handle's base,
-  credentials, locality and mdrev; the rest (what the page reads from its head, a backend in the
-  page, and the key in the base) is asked of #s416 or a follow-up of it. Amending embedding.md to
-  match is asked of its author, and is the owner's (section 5). Both call step 1 this design's
-  "stage 0": it is the first step of phase 0b here.
+  `design/embedding.md`'s step 1 now describes the handle this way, decided by its author within
+  the owner's direction (#s408, #s415), and #s416 builds it: any number of handles, each with any
+  base (so `app://monitor/k/<key>/m/<machine>/` works as is), credentials as a fetch option rather
+  than a header, the mdrev base per handle, and a handle that code in the page may answer. What the
+  page reads from its head moves to the handle in embedding's step 4. Step 1 is the first step of
+  phase 0b here.
 - **The backend contract** ("1. The backend contract", its step 2): the routes the components read,
   written down and versioned. Each paired machine's monitor already answers it. The app needs nothing
   of its step 3 (a backend a host mounts): it reaches monitors that already serve the contract.
@@ -479,13 +480,11 @@ recommendation:
 
 - **The kit's components and the backend contract** are `design/embedding.md`'s, decided there. The
   app relies on the contract across monitor versions (D2), which is what versioning it is for.
-- **A backend handle in the request layer, rather than one prefix** (D5, #s416): embedding's step 1
-  names one contract prefix for the page, which is enough for a host with one backend and costs no
-  change to its plan. The app needs more per backend: its credentials, its locality, its mdrev and
-  what the page reads from its head, and a backend that can live in the page (D6). With one prefix
-  the app would have to run a separate web view per machine and could not merge the list. #s416 is
-  building the handle; the owner confirms it, with embedding.md amended to match. Recommended: the
-  handle.
+  Settled there since draft 3 (`design/embedding.md` at 52bfd821, by its author within the owner's
+  direction): the request layer holds a handle per backend (D5); the session view's title, turn and
+  Info events and its frame hook ("Customizing", step 4); the kit as step 7 and detached views as
+  step 8, in a later kit; mdrev's guest and the diagram runtime vendored by each host until a second
+  host needs them in the kit.
 - **How the app learns a monitor's contract version** (D2), for embedding's step 2: (a) the kit maps
   a monitor's release version, which its page already carries (`data-version` on `/`, read natively
   by the app), to the contract versions it serves, with no monitor change; or (b) a version field in
@@ -500,13 +499,6 @@ recommendation:
   folds the machine into the project's label, which says where a row runs but makes "By device"
   impossible (R2). Recommended: the merged source, the field and the layouts per machine, triaged
   with embedding's step 5.
-- **What the session view tells its host, and what embedding's order delivers first** (D2, phase
-  0b): the session's title, its current turn and an "open Info" for the phone's top bar, which
-  "Customizing" does not list; and the kit (step 8) ahead of the detached page (step 7), so the first
-  kit ships without that page and a later one adds it. Both change embedding's plan, asked of its
-  author with a recommendation, and the owner's. The alternative with no change: the app's top bar
-  shows the machine and the session's name from the list's row only, and the Mac's windows wait for
-  the kit that carries step 7. Recommended: the events, and the kit first.
 - **What the app comes to rely on that a monitor does today**: the pairing QR's address form,
   `/api/pair` answering with the token in `Set-Cookie`, the gate reading its own cookie by the name
   it derives from its token, a request with no `Origin` passing the write check, the trusted-host
@@ -530,15 +522,6 @@ recommendation:
 - **Codex native mode in the app** (D9): its page modules joining the kit, an addition; the
   alternative with no change is the app without native mode, which the monitor's own page keeps.
   Recommended: without it at first, since nothing in the app's first phases needs it.
-- **Where the page's runtimes ship** (D3, D8): mdrev's guest and the diagram runtime, which the
-  monitor serves today. The alternative with no change: the app vendors both itself, pinned like the
-  kit. The other: the kit carries them, an addition to embedding's "Delivery", which every host that
-  cannot load a backend's scripts would want. Recommended: the app vendors them at first, and the
-  kit takes them over if a second host needs the same.
-- **How an agent's page is framed** (D3): the session view letting its host load that frame from a
-  scheme of its own, an addition to the kit. Without it the app either loosens its page's policy to
-  allow inline scripts, which gives up the policy, or shows agents' pages with their scripts off,
-  which gives up part of R3. Recommended: the addition, for embedding's step 4.
 - **The fleet as the Mac app's tunnel helper** (D10), for phase 4: the app reads `/api/fleet` as it
   is, which then becomes something it relies on. For the `Host` a tunnelled monitor wants: the
   fleet adds each machine's monitor port to `/api/fleet` (a field that only adds); or the app takes
@@ -557,11 +540,11 @@ is built in its own repository, and starts with what it can learn before the kit
 | Phase | Where | Ships | Accept |
 |---|---|---|---|
 | 0a | the app's repo | Spikes: a `WKURLSchemeHandler` relaying POST bodies and streaming a large `/records` range, with the gate's cookie set by hand and no cookie store (D3); a gzipped answer through the relay (D3); the key in the path reaching every kind of request the page makes, an agent's page framed from its own scheme with its policy as a header, refusing a frame's navigation, CORS on a custom scheme, and the page's strict policy (D3); a download from the page and the share sheet (D3, R3); the web view's storage for a custom scheme (the components keep their preferences in `localStorage`); whether a custom scheme is a secure context for the APIs the components use; a second web view getting `sessionStorage` from `window.open` (D8); App Transport Security and an `http://` pairing address (D4); and on a Mac, whether a sandboxed app can run `ssh`, reach a monitor on the loopback, and speak HTTP/1.1 to a tunnelled monitor with its port or with no `Host` (D10). Most can be measured with today's monitor page loaded whole through the scheme from one machine, an exception to D3 for the spike alone. | Each answered by measurement on the iOS Simulator, a device and a Mac, written down |
-| 0b | claude-replay | Embedding's steps 1 (the request layer, #s416), 2 (the contract), 4 and 5 (the two components, with the app shell mounting them), 6 (layout by pane size, which the iPad and the Mac need side by side) and 8 (the kit). The app needs the kit before step 7, so 8 comes ahead of 7, a change asked of embedding's order. | Embedding's own: the app shell's browser suite green at every step, a Simulator walk |
+| 0b | claude-replay | Embedding's steps 1 (the request layer, #s416), 2 (the contract), 4 and 5 (the two components, with the app shell mounting them), 6 (layout by pane size, which the iPad and the Mac need side by side) and 7 (the kit). | Embedding's own: the app shell's browser suite green at every step, a Simulator walk |
 | 1 | both | claude-replay: the merged source and the row's `machine` field (after the owner's yes, section 5). The app: the iOS app, with pairing by QR, the Keychain, the relay and its key, the session list over the merged source, and the session view on each row's machine, files and mdrev included, read-only | Paired with two machines, the app lists both; an offline machine costs only its own rows; a session on each, its files and its Markdown read as on its own machine; an agent's page runs its scripts, and its navigation to `app://`, an untapped navigation out and a call to each of the app's handlers are each refused; a page-issued `/api/send` or `/api/codex/send` is refused by the relay |
 | 2 | claude-replay | "By device" in the session list | The list arranged by machine, each arranged as the reader chose, on a phone and side by side on an iPad |
 | 3 | both | Writes across machines (or in 1, by the owner's choice) | The compose box, a dialog and a pane grant on another machine's session, each refused where today's rules refuse it; a frame's write refused by the relay |
-| 4 | both | The Mac app: the two components side by side, This Mac on the loopback, detached windows (embedding's step 7); the fleet's answer and its tunnels as the helper; the fleet's page retired | A machine reached only by ssh appears in the Mac app's list; a session opens in a window of its own; reveal works on This Mac only |
+| 4 | both | The Mac app: the two components side by side, This Mac on the loopback, detached windows (embedding's step 8, in a later kit); the fleet's answer and its tunnels as the helper; the fleet's page retired | A machine reached only by ssh appears in the Mac app's list; a session opens in a window of its own; reveal works on This Mac only |
 | 5 | both | Notifications, if the owner chooses them (D11) | — |
 
 ## 7. What this is not
@@ -584,19 +567,19 @@ is built in its own repository, and starts with what it can learn before the kit
 - Its code in a new private repository, `tanghong123/agent-monitor-app`, installed through
   TestFlight on his account (#s413, #s414).
 
+**Decided in `design/embedding.md`** by its author, within that direction (52bfd821): a backend
+handle per backend in the request layer; the session view's top-bar events and frame hook; the kit
+before detached views; each host vendoring mdrev and the diagram runtime at first.
+
 **Still open,** each asked when the phase it holds up comes near, not before:
 
-1. **The backend handle rather than one prefix** (section 5, #s416, now): recommended the handle.
-2. **The session list beyond one backend** (section 5, phase 1): the merged source in the kit and an
+1. **The session list beyond one backend** (section 5, phase 1): the merged source in the kit and an
    optional `machine` field on a row (recommended), or a session list that takes N backends itself.
-3. **The session view's events for the top bar, its host loading an agent's page frame, and the kit
-   before the detached page** (section 5, phase 0b): recommended yes to all three, through
-   embedding's author.
-4. **How the app learns a monitor's contract version** (section 5, embedding's step 2).
-5. **Writes** (D9, phase 3): in the first release with the rest, or read-only first (recommended).
-6. **Machines reachable only by ssh** (D10, phase 4): the fleet's binary as the Mac app's tunnel
+2. **How the app learns a monitor's contract version** (section 5, embedding's step 2).
+3. **Writes** (D9, phase 3): in the first release with the rest, or read-only first (recommended).
+4. **Machines reachable only by ssh** (D10, phase 4): the fleet's binary as the Mac app's tunnel
    helper (recommended, if the spike confirms the sandbox stops `ssh`), or a Mac build signed outside
    TestFlight; and with the helper, the monitor's port in `/api/fleet` (recommended) or no `Host`.
    Then whether the fleet's page retires (D12).
-7. **Notifications** (D11, phase 5): none in the first release (recommended), or pushes sent by each
+5. **Notifications** (D11, phase 5): none in the first release (recommended), or pushes sent by each
    monitor.
