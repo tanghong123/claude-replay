@@ -277,7 +277,18 @@ verdict is asked only for a request a route answers — a refusal or a public fi
 also admits a VERIFIED same-user loopback peer without the cookie (D3b, `/proc/net/tcp`); macOS cannot
 verify one. `AGENT_MONITOR_TOKEN_ONLY=1` turns that leg off for a paired gate — stricter only — and
 the browser suite sets it on every paired monitor, so a case's unpaired browser is refused on Linux
-as on macOS (#366). The pairing
+as on macOS (#366). An UNPAIRED gate that trusts tailnet names (the monitor's) refuses a request a
+relay on the machine brought (#s417): one carrying a relay's headers (`X-Forwarded-For`,
+`X-Forwarded-Host`, `Forwarded`, `Tailscale-User-Login`, which a client behind `tailscale serve`
+cannot take off; past the 8 KiB header cap the gate still reads 64 KiB more for those names, more
+than that past the cap counts as relayed, and so does a header section the peer cuts short before
+its blank line) or a `Host` that is not a loopback name (parsed: `127.evil.example` is not one).
+`tailscale serve` connects from the loopback and macOS cannot verify that peer, so an unpaired
+monitor behind it gave every device on the tailnet its reads, and the GETs with side effects
+(`/api/ignore`, a stamped `/__reveal`), with no token. The refusal names pairing; a tunnel's
+`Host` is a loopback one, a public file stays public, and a gate trusting no tailnet name
+(`agent-replay --html`) is unchanged. A raw relay (`tailscale serve --tcp`) sends no headers and
+is closed only by pairing (`an_unpaired_gate_refuses_a_request_relayed_under_a_tailnet_name`). The pairing
 cookie is named for the token it carries — `cmauth-` and eight hex digits of the token's SHA-256
 (`cookie_name`, #350) — because a cookie is scoped to the HOST, not the port: while every gate wrote
 `cmauth`, agent-metrics' `serve --phone` (this gate since #317, a token of its own) replaced the

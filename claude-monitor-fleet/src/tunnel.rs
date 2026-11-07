@@ -274,10 +274,11 @@ pub fn status_code_as(port: u16, authority: u16) -> Option<u16> {
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(400)).ok()?;
     s.set_read_timeout(Some(Duration::from_millis(1500))).ok()?;
     s.set_write_timeout(Some(Duration::from_millis(500))).ok()?;
-    // Name the listener's own authority, `127.0.0.1:<port>`. Host plays no part in admission,
-    // but the monitor checks any other Host against its trusted hosts before it replies, and that
-    // lookup can run `tailscale` (#s148, #s151); with the port its answer (a 401 when paired)
-    // comes at once. Connection: close avoids retaining a health-check connection.
+    // Name the listener's own authority, `127.0.0.1:<port>`. A loopback Host keeps an unpaired
+    // monitor's same-machine leg (#s417); the monitor checks any other Host against its trusted
+    // hosts before it replies, and that lookup can run `tailscale` (#s148, #s151); with the port
+    // its answer (a 401 when paired) comes at once. Connection: close avoids retaining a
+    // health-check connection.
     let request =
         format!("GET / HTTP/1.0\r\nHost: 127.0.0.1:{authority}\r\nConnection: close\r\n\r\n");
     s.write_all(request.as_bytes()).ok()?;

@@ -1875,7 +1875,8 @@ fn foreign_header(headers: &str, port: u16, trusted: Option<&HostCheck>) -> Opti
 ///
 /// Unpaired (no token), the gate is D3b exactly: Linux enforces same-user, macOS admits
 /// same-machine (the single-user-Mac assumption). Pairing is what closes the multi-user
-/// case. See `design/fleet-pairing.md` §4.2.
+/// case. See `design/fleet-pairing.md` §4.2. An unpaired gate that trusts tailnet names refuses
+/// a request a relay on this machine brought, whatever the peer (#s417).
 #[derive(Clone)]
 pub struct AuthGate {
     /// Our effective uid; a loopback peer with this uid is same-user (Linux). `None` when
@@ -2501,13 +2502,43 @@ fn serve_connection<R: Into<HttpReply>>(
     let mut line = String::new();
     reader.read_line(&mut line)?;
     let mut headers = String::new();
+    // #s417: past the cap a header is not kept, but a relay writes its own headers after the
+    // client's (Go's proxy: `Host`, `User-Agent`, then the rest sorted by name), so a client could
+    // push them past the cap with one long header. The rest are read, to a second bound, for
+    // whether a relay's header is among them; more than that past the cap counts as relayed. (The
+    // line that crosses the cap is kept whole, so a long last header is no hiding place: every
+    // line after it is still read.)
+    let mut past_cap = 0usize;
+    let mut relayed_past_cap = false;
+    // Whether the header section ended with its blank line. One cut short (the peer closed its
+    // side, or the last line has no newline) may be missing a relay's headers, which come late: a
+    // client behind a relay that cancels mid-headers leaves exactly that (#s417).
+    let mut headers_whole = false;
     loop {
         let mut h = String::new();
         let n = reader.read_line(&mut h)?;
-        if n == 0 || h == "\r\n" || h == "\n" || headers.len() > 8192 {
+        if n == 0 {
             break;
         }
-        headers.push_str(&h);
+        if h == "\r\n" || h == "\n" {
+            headers_whole = true;
+            break;
+        }
+        // A last line with no newline is the peer closing mid-line: kept as before, and the end.
+        let cut = !h.ends_with('\n');
+        if headers.len() > 8192 {
+            past_cap += n;
+            relayed_past_cap |= came_through_a_relay(&h);
+            if past_cap > HEADERS_PAST_CAP {
+                relayed_past_cap = true;
+                break;
+            }
+        } else {
+            headers.push_str(&h);
+        }
+        if cut {
+            break;
+        }
     }
     // `METHOD /name?query HTTP/1.1`
     let method = line.split_whitespace().next().unwrap_or("GET").to_string();
@@ -2545,6 +2576,26 @@ fn serve_connection<R: Into<HttpReply>>(
             }
             _ => Access::Denied,
         },
+    };
+    // #s417: an unpaired gate that tailnet relays can reach (it trusts a tailnet name, #331)
+    // admits the same-machine leg only for a request that did not come through a relay.
+    // `tailscale serve` connects from the loopback, so the peer says nothing; what says it is the
+    // relay's own headers, which a client cannot remove (`X-Forwarded-For`, `X-Forwarded-Host`,
+    // `Forwarded`, `Tailscale-User-Login`), and a `Host` that is not a loopback name. Either is
+    // refused, and the refusal names pairing. A raw TCP relay (`tailscale serve --tcp`) sends no
+    // headers and is not caught here; pairing closes it.
+    let access = if gate.token.is_none()
+        && gate.trusted_hosts.is_some()
+        && !public
+        && !matches!(access, Access::Denied)
+        && (relayed_past_cap
+            || !headers_whole
+            || came_through_a_relay(&headers)
+            || !host_is_local(header_value(&headers, "host")))
+    {
+        Access::Denied
+    } else {
+        access
     };
 
     // The request body, bounded — a write route (#133) reads its prompt/target from here, and
@@ -2945,7 +2996,8 @@ fn accepts_gzip(headers: &str) -> bool {
 }
 
 /// Whether a `Host` header names this machine's loopback (or is absent): such a client is on
-/// this machine, and the bytes never cross a network.
+/// this machine, and the bytes never cross a network. A name is `localhost` (or under it), or
+/// an address that parses as a loopback one: `127.evil.example` is a name, not an address.
 fn host_is_local(host: Option<&str>) -> bool {
     let Some(host) = host.map(str::trim).filter(|h| !h.is_empty()) else {
         return true;
@@ -2956,7 +3008,29 @@ fn host_is_local(host: Option<&str>) -> bool {
         host.rsplit_once(':').map_or(host, |(n, _)| n)
     };
     let name = name.to_ascii_lowercase();
-    name == "localhost" || name.ends_with(".localhost") || name == "::1" || name.starts_with("127.")
+    name == "localhost"
+        || name.ends_with(".localhost")
+        || name
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// How many bytes of header lines past the 8 KiB cap are read, unkept, for a relay's headers
+/// (#s417). More than this past the cap counts as relayed for an unpaired gate.
+const HEADERS_PAST_CAP: usize = 64 * 1024;
+
+/// Whether a request carries a header a relay adds (#s417): `tailscale serve`'s HTTP proxy sets
+/// `X-Forwarded-For` and `X-Forwarded-Host`, and `Tailscale-User-Login` for a known user, and a
+/// client cannot take them off; `Forwarded` is the standard form other proxies use.
+fn came_through_a_relay(headers: &str) -> bool {
+    [
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "forwarded",
+        "tailscale-user-login",
+    ]
+    .iter()
+    .any(|h| header_value(headers, h).is_some())
 }
 
 /// The status line and headers for a reply. `no-store` unless the route set its own
@@ -4957,6 +5031,154 @@ mod tests {
             "same-user connection is admitted:\n{resp}"
         );
         assert!(resp.trim_end().ends_with("ok"));
+    }
+
+    /// #s417: an unpaired gate that trusts tailnet names (#331) admits the same-machine leg only
+    /// for a request no relay brought. `tailscale serve` connects from the loopback and passes
+    /// the client's `Host` on (by SNI over TLS, so a client may send `Host: localhost`), and adds
+    /// `X-Forwarded-For`/`X-Forwarded-Host`, which the client cannot take off; an unpaired monitor
+    /// behind it answered every device on the tailnet with no token. Driven end to end on a bound
+    /// listener, so the platform's real peer lookup runs: on macOS the peer is unverifiable, on
+    /// Linux it is verifiably this user, and both used to admit these requests.
+    #[test]
+    fn an_unpaired_gate_refuses_a_request_relayed_under_a_tailnet_name() {
+        use std::io::{Read, Write};
+        let handler: RouteHandler =
+            std::sync::Arc::new(|_req: &Request| HttpResponse::ok("text/plain", b"ok".to_vec()));
+        let trusted: HostCheck = std::sync::Arc::new(|h: &str| h == "box.tail0000.ts.net");
+        let get_at = |port: u16, path: &str, head: &str| {
+            let mut s = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+            write!(s, "GET {path} HTTP/1.0\r\n{head}Connection: close\r\n\r\n").unwrap();
+            let mut resp = String::new();
+            s.read_to_string(&mut resp).unwrap();
+            resp
+        };
+        let get = |port: u16, host: &str, cookie: &str| {
+            get_at(port, "/api/x", &format!("Host: {host}\r\n{cookie}"))
+        };
+        let unpaired = spawn_listener_gated(
+            0,
+            handler.clone(),
+            AuthGate::same_user()
+                .with_trusted_hosts(trusted.clone())
+                .with_public(&["icon.png"]),
+        )
+        .unwrap();
+        let relayed = get(unpaired, "box.tail0000.ts.net", "");
+        assert!(
+            relayed.starts_with("HTTP/1.1 401"),
+            "an unpaired gate refuses a request relayed under its tailnet name:\n{relayed}"
+        );
+        assert!(!relayed.trim_end().ends_with("ok"), "{relayed}");
+        // A client behind the relay that names the loopback itself still carries the relay's
+        // headers; a name that only starts like an address is not the loopback.
+        for head in [
+            format!(
+                "Host: 127.0.0.1:{unpaired}\r\nX-Forwarded-Host: box.tail0000.ts.net\r\nX-Forwarded-For: 100.64.0.9\r\n"
+            ),
+            "Host: localhost\r\nX-Forwarded-For: 100.64.0.9\r\n".to_string(),
+            "Host: localhost\r\nX-Forwarded-Host: box.tail0000.ts.net\r\n".to_string(),
+            "Host: localhost\r\nForwarded: for=100.64.0.9\r\n".to_string(),
+            "Host: localhost\r\nTailscale-User-Login: someone\r\n".to_string(),
+            "Host: 127.evil.example\r\n".to_string(),
+        ] {
+            let refused = get_at(unpaired, "/api/x", &head);
+            assert!(refused.starts_with("HTTP/1.1 401"), "{head:?} is refused:\n{refused}");
+        }
+        // A long header before the relay's own cannot push them out of sight: past the 8 KiB cap
+        // they are still looked for, and a header section past the second bound counts as
+        // relayed. A long header with no relay's header behind it (a big cookie) stays admitted.
+        let long = |n: usize| "a".repeat(n);
+        for (head, ok) in [
+            (
+                format!(
+                    "Host: localhost\r\nUser-Agent: {}\r\nX-Forwarded-For: 100.64.0.9\r\n",
+                    long(9000)
+                ),
+                false,
+            ),
+            (
+                format!(
+                    "Host: localhost\r\nUser-Agent: {}\r\nA-Pad: {}\r\nX-Forwarded-For: 100.64.0.9\r\n",
+                    long(9000),
+                    long(70_000)
+                ),
+                false,
+            ),
+            (
+                format!("Host: localhost\r\nUser-Agent: {}\r\n", long(70_000)),
+                true,
+            ),
+            (
+                format!("Host: localhost\r\nCookie: c={}\r\n", long(9000)),
+                true,
+            ),
+        ] {
+            let resp = get_at(unpaired, "/api/x", &head);
+            assert_eq!(
+                resp.starts_with("HTTP/1.1 200 OK"),
+                ok,
+                "a {}-byte header section: {}",
+                head.len(),
+                resp.lines().next().unwrap_or("")
+            );
+        }
+        // The machine's own loopback names keep the same-machine leg, a tunnel's included, and so
+        // does a request with no `Host` (a raw relay sends none: pairing is what closes that).
+        for host in [
+            format!("127.0.0.1:{unpaired}"),
+            format!("localhost:{unpaired}"),
+            "127.0.0.1:2727".to_string(),
+            "[::1]:2727".to_string(),
+        ] {
+            let local = get(unpaired, &host, "");
+            assert!(
+                local.starts_with("HTTP/1.1 200 OK"),
+                "Host {host} stays admitted:\n{local}"
+            );
+        }
+        // A header section the peer cuts short (it closes its side before the blank line, as a
+        // relay does when its client cancels) is refused: the relay's headers may be what is
+        // missing.
+        {
+            let mut s = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, unpaired)).unwrap();
+            s.write_all(b"GET /api/x HTTP/1.0\r\nHost: localhost\r\nUser-Agent: aaaa")
+                .unwrap();
+            s.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut resp = String::new();
+            s.read_to_string(&mut resp).unwrap();
+            assert!(
+                !resp.starts_with("HTTP/1.1 200"),
+                "a cut-short request:\n{resp}"
+            );
+        }
+        let no_host = get_at(unpaired, "/api/x", "");
+        assert!(no_host.starts_with("HTTP/1.1 200 OK"), "{no_host}");
+        // A public file needs no pairing, relayed or not (#320).
+        let icon = get_at(unpaired, "/icon.png", "Host: box.tail0000.ts.net\r\n");
+        assert!(icon.starts_with("HTTP/1.1 200 OK"), "{icon}");
+        // A gate that trusts no tailnet name (`agent-replay --html`) keeps its posture behind a
+        // relay of the reader's own (a codespace's forwarded port, say).
+        let plain = spawn_listener_gated(0, handler.clone(), AuthGate::same_user()).unwrap();
+        let forwarded = get_at(
+            plain,
+            "/api/x",
+            "Host: x.app.github.dev\r\nX-Forwarded-For: 10.0.0.9\r\n",
+        );
+        assert!(forwarded.starts_with("HTTP/1.1 200 OK"), "{forwarded}");
+        // A paired gate takes the relayed request with its token, as a paired phone's.
+        let paired = spawn_listener_gated(
+            0,
+            handler,
+            AuthGate::with_token("secret-s417").with_trusted_hosts(trusted),
+        )
+        .unwrap();
+        let cookie = format!("Cookie: {}=secret-s417\r\n", cookie_name("secret-s417"));
+        let with_token = get(paired, "box.tail0000.ts.net", &cookie);
+        assert!(
+            with_token.starts_with("HTTP/1.1 200 OK"),
+            "a paired gate admits the token under its tailnet name:\n{with_token}"
+        );
     }
 
     /// #366: a token-only gate refuses its OWN user's connection without the token — on Linux,
