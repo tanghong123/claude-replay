@@ -292,6 +292,8 @@ So is each refused WRITE (#s399, for agent-metrics #s648, whose phone's change n
 route): a non-GET the gate refuses, and any request a route's `deny_mutation` refuses, says its
 status and which check failed (the gate's token, the method, a foreign `Host` or a foreign
 `Origin`, the route's pairing check), with the `Host` and `Origin` as sent (`refused_write_line`).
+The foreign header is the one the verdict's own check named (#s405): the trusted tailnet names
+refresh in the background, so asking again after the reply could name the other, or none.
 `deny_mutation` marks its check in a thread-local the gate reads after the route, since the route
 runs on its connection's thread and `Request` (built by other crates too) gains no field; the line
 is said once the reply is written. A refused read that is not a page load stays quiet.

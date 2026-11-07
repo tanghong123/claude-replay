@@ -1823,17 +1823,18 @@ fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
 /// and that name is as much its own as `127.0.0.1` is.
 pub type HostCheck = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
-/// Whether the request's `Host`/`Origin` are the server's own origin at `port` — the loopback,
-/// or a host `trusted` says is its own (#331) — or absent (§3.2). A foreign `Host` is DNS
-/// rebinding; a foreign `Origin` is a cross-site fetch; either is refused.
+/// Whether the request's `Host`/`Origin` are the server's own origin at `port`: the write verdict
+/// [`foreign_header`] gives, as a yes or no, for the cases that pin it.
+#[cfg(test)]
 fn origin_ok(headers: &str, port: u16, trusted: Option<&HostCheck>) -> bool {
     foreign_header(headers, port, trusted).is_none()
 }
 
-/// Which of `Host` and `Origin` is not the server's own origin, `Host` first, as [`origin_ok`]
-/// reads them; `None` when both are ours or absent. #s399's refusal line names it, since a foreign
-/// `Host` (DNS rebinding, or a name the trusted-hosts list lacks) and a foreign `Origin` (a
-/// cross-site fetch) are different troubles.
+/// Which of `Host` and `Origin` is not the server's own origin at `port`, `Host` first; `None`
+/// when both are ours or absent (§3.2). Ours is the loopback, or a host `trusted` says is its own
+/// (#331). A foreign `Host` is DNS rebinding (or a name the trusted-hosts list lacks); a foreign
+/// `Origin` is a cross-site fetch; either refuses the request's writes. The request records the
+/// answer once (#s405), and #s399's refusal line names the header from that same answer.
 fn foreign_header(headers: &str, port: u16, trusted: Option<&HostCheck>) -> Option<&'static str> {
     let ours = |raw: &str| {
         let v = raw
@@ -2592,14 +2593,26 @@ fn serve_connection<R: Into<HttpReply>>(
     // sends depends on it, so neither waits on that check. A public read is told the origin is
     // not ours: its route serves bytes that need no origin, and the verdict only ever refuses.
     let local_port = local.map(|l| l.port()).unwrap_or(0);
-    let request = || Request {
-        method: &method,
-        name,
-        query,
-        body: &body,
-        authenticated: gate.token_ok(presented.as_deref()),
-        origin_ok: !public && origin_ok(&headers, local_port, gate.trusted_hosts.as_ref()),
-        masked: super::mask::policy().masks(host_is_local(header_value(&headers, "host"))),
+    // #s405: the header the verdict found foreign, kept for the refusal line. The trusted-hosts
+    // check can change its answer at any moment (the tailnet names refresh in the background), so
+    // the line names what this one check said, never a second check's.
+    let verdict_foreign: std::cell::Cell<Option<&'static str>> = std::cell::Cell::new(None);
+    let request = || {
+        let foreign = if public {
+            None
+        } else {
+            foreign_header(&headers, local_port, gate.trusted_hosts.as_ref())
+        };
+        verdict_foreign.set(foreign);
+        Request {
+            method: &method,
+            name,
+            query,
+            body: &body,
+            authenticated: gate.token_ok(presented.as_deref()),
+            origin_ok: !public && foreign.is_none(),
+            masked: super::mask::policy().masks(host_is_local(header_value(&headers, "host"))),
+        }
     };
 
     let now = || {
@@ -2608,8 +2621,8 @@ fn serve_connection<R: Into<HttpReply>>(
             .map_or(0, |d| d.as_secs())
     };
     // #s399: a route runs here, on this connection's thread; what `deny_mutation` refused it on is
-    // read after it, and said once the reply is written (naming a foreign Host or Origin can ask
-    // the trusted-hosts check again, which the reply must not wait on).
+    // read after it, and said once the reply is written. A foreign Host or Origin is named from
+    // the verdict's own check (#s405), never asked again.
     let mut route_refusal = None;
     let mut route = || {
         ROUTE_REFUSAL.set(None);
@@ -2703,7 +2716,7 @@ fn serve_connection<R: Into<HttpReply>>(
             RefusedBy::Method => ("405", "wrong method for this route".to_string()),
             RefusedBy::Origin => (
                 "403",
-                match foreign_header(&headers, local_port, gate.trusted_hosts.as_ref()) {
+                match verdict_foreign.get() {
                     Some(which) => format!("foreign {which}"),
                     // Only a public path's request is told its origin is not ours without either
                     // header being foreign, and no public path writes.
@@ -4112,6 +4125,69 @@ mod tests {
             .iter()
             .any(|l| l.contains("/api/s399-read"));
         assert!(!quiet_read, "a refused read that is not a page load");
+    }
+
+    /// #s405: the 403 line names the header the VERDICT found foreign. The trusted-hosts check can
+    /// change its answer at any moment (the tailnet names refresh in the background), so a second
+    /// check after the reply could name the other header, or none. Here the check says "not ours"
+    /// once and "ours" ever after, and the line still says the Origin was foreign; the check is
+    /// asked once for the request.
+    #[test]
+    fn a_refused_write_names_the_header_the_verdict_saw_though_the_trusted_hosts_change() {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let asked = std::sync::Arc::new(AtomicUsize::new(0));
+        let check: HostCheck = {
+            let asked = asked.clone();
+            std::sync::Arc::new(move |host: &str| {
+                host == "phone.test" && asked.fetch_add(1, Ordering::SeqCst) > 0
+            })
+        };
+        let handler: RouteHandler = std::sync::Arc::new(|req: &Request| {
+            req.deny_write()
+                .unwrap_or_else(|| HttpResponse::json(r#"{"ok":true}"#.into()))
+        });
+        let port = spawn_listener_gated(
+            0,
+            handler,
+            AuthGate::for_test(Some("t0k")).with_trusted_hosts(check),
+        )
+        .unwrap();
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.write_all(
+            format!(
+                "POST /api/s405-flip HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://phone.test\r\n\
+                 Authorization: Bearer t0k\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let mut raw = String::new();
+        s.read_to_string(&mut raw).unwrap();
+        assert!(raw.starts_with("HTTP/1.1 403"), "{raw}");
+        let mut line = None;
+        for _ in 0..100 {
+            line = SAID_REFUSALS
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|l| l.contains(" to /api/s405-flip — "))
+                .cloned();
+            if line.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let line = line.expect("a line for the refused write");
+        assert!(
+            line.contains("— 403, foreign Origin, host 127.0.0.1:"),
+            "the header the verdict saw: {line}"
+        );
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            1,
+            "the check is asked once for the request"
+        );
     }
 
     /// #s110: a refused page load's line says when, and where the navigation came from — the
