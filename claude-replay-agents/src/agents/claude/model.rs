@@ -91,8 +91,18 @@ fn assistant_phase(v: &Value, content: &[Value]) -> Option<AssistantPhase> {
 /// `isAbortedMidStream`. The mark goes on the record's LAST text block, where the reply stopped.
 /// Only an unphased record is read (the one shape measured: `stop_reason` null, text alone); a
 /// flagged record with a stop reason or a call is the census's REVISIT, drawn as before.
+///
+/// Qwenwork 1.1.71 says the same of a reply whose STREAM failed partway (#s397): it writes each
+/// block that had arrived as an assistant record carrying `partialStreamIndex` (the block's index
+/// in the failed stream), then the failure as an API-error record. A non-negative integer there
+/// reads as the flag does; Claude Code has never written the key.
 fn cut_off_text(v: &Value, content: &[Value], phase: Option<AssistantPhase>) -> Option<usize> {
-    if phase.is_some() || v.get("isAbortedMidStream").and_then(Value::as_bool) != Some(true) {
+    let aborted = v.get("isAbortedMidStream").and_then(Value::as_bool) == Some(true);
+    let salvaged = v
+        .get("partialStreamIndex")
+        .and_then(Value::as_u64)
+        .is_some();
+    if phase.is_some() || !(aborted || salvaged) {
         return None;
     }
     content.iter().rposition(|blk| {
@@ -2075,6 +2085,42 @@ const ARTIFACT_COMMENTS_WATCH_SHAPE: &[&str] = &["watch"];
 /// "not_found", or a key beside these two.
 const ARTIFACT_COMMENTS_WATCH_LIST_SHAPE: &[&str] = &["arms", "watches"];
 
+/// The whole of an ArtifactComments REPLY result (#s396, client 2.1.318, 12 records in one session
+/// on hong-devserver, measured 2026-11-07): exactly `{replied: true, thread_id, comment_id}`, the
+/// ids UUID strings. The card is the generic tool card, which draws the result TEXT, and the text
+/// says "Replied to comment thread `<id>`" and goes on with the comment; the ids are the client's
+/// bookkeeping for the next call. `comment_id`, `replied` and `thread_id` are generic words, so each
+/// is known only in this shape. Named in the 2.1.319 client and NOT yet met, so not here, to be
+/// judged as its own row when one first carries it: `standing_reply_id`. REVISIT: (1) `replied`
+/// arriving false, where the text should still say the reply did not go (check it then); (2) a
+/// reply whose text no longer names the thread.
+const ARTIFACT_COMMENTS_REPLY_SHAPE: &[&str] = &["comment_id", "replied", "thread_id"];
+
+/// The whole of an ArtifactComments RESOLVE result (#s396, client 2.1.318, 19 records in one session
+/// on hong-devserver, measured 2026-11-07): exactly `{thread_resolved: true, thread_id}`, the id a
+/// UUID string. The card is the generic tool card, and its text says "Marked comment thread `<id>`
+/// resolved. Viewers see it as resolved by Claude; a person can reopen it." It shares `thread_id`
+/// with the reply, so that name is in two shapes. Named in the 2.1.319 client and NOT yet met, so
+/// not here: `thread_resolved` false with a refusal flag (`not_authorized`, `summon_foreign`,
+/// `relayed_credential`, or a refusal the client does not recognize), whose text begins "Thread not
+/// resolved:" with the reason; each is judged as its own row when one first carries it. REVISIT:
+/// (1) `thread_resolved` arriving false, where the text should still say the thread stays open
+/// (check it then); (2) a resolve whose text no longer names the thread.
+const ARTIFACT_COMMENTS_RESOLVE_SHAPE: &[&str] = &["thread_id", "thread_resolved"];
+
+/// The whole of an ArtifactComments thread LISTING narrowed to one thread or resumed from a cursor
+/// (#s396, client 2.1.318, measured 2026-11-07 on hong-devserver): `{thread_filter, threads}` on 12
+/// records and `{cursor, threads}` on 2, each id a UUID string. The plain listing `{threads}` (13
+/// records, earlier clients too) was already silent, since `threads` is on the flat ignored list,
+/// and it is in this array or the shape could never hold. The client reads both `cursor` and
+/// `thread_filter` on one listing, so one shape covers either and both. The card is the generic
+/// tool card, and its text says it is "Showing only the requested thread" and how many other threads
+/// carry comments, or that it "Resumed from the cursor". `cursor` and `thread_filter` are generic
+/// words, so each is known only in this shape. Named in the 2.1.319 client and NOT yet met, so not
+/// here: `scoped_dispatch`, to be judged as its own row when one first carries it. REVISIT: a
+/// listing whose text no longer says it was narrowed or resumed.
+const ARTIFACT_COMMENTS_THREADS_SHAPE: &[&str] = &["cursor", "thread_filter", "threads"];
+
 /// Every key an Artifact list result was met with (#s62, client 2.1.288, one record): `{artifacts:
 /// array, scope: string, pins_enabled: boolean}`. `pins_enabled` is a service feature flag (whether
 /// the account may pin artifacts), not something the call did; the result TEXT the page draws
@@ -2325,6 +2371,16 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // whole result, never on the flat ignored list.
     ("arms", ARTIFACT_COMMENTS_WATCH_LIST_SHAPE),
     ("watches", ARTIFACT_COMMENTS_WATCH_LIST_SHAPE),
+    // #s396 (client 2.1.318): an ArtifactComments reply, resolve and narrowed or resumed thread
+    // listing, each a whole result whose text states what it did. Generic words all, so each is
+    // known only in its own shape, never on the flat ignored list; `thread_id` is in two.
+    ("comment_id", ARTIFACT_COMMENTS_REPLY_SHAPE),
+    ("replied", ARTIFACT_COMMENTS_REPLY_SHAPE),
+    ("thread_id", ARTIFACT_COMMENTS_REPLY_SHAPE),
+    ("thread_id", ARTIFACT_COMMENTS_RESOLVE_SHAPE),
+    ("thread_resolved", ARTIFACT_COMMENTS_RESOLVE_SHAPE),
+    ("cursor", ARTIFACT_COMMENTS_THREADS_SHAPE),
+    ("thread_filter", ARTIFACT_COMMENTS_THREADS_SHAPE),
     // Artifact's list result (#s62): `pins_enabled` is an account's feature flag, and a word
     // another tool could use for anything, so it is known only in the list's own shape.
     ("pins_enabled", ARTIFACT_LIST_SHAPE),
@@ -9287,6 +9343,94 @@ mod tests {
         );
     }
 
+    /// #s397: Qwenwork 1.1.71 writes what had arrived of a reply whose stream FAILED as assistant
+    /// records carrying `partialStreamIndex`, then the failure as an API-error record. On both parse
+    /// paths the text is a cut-off reply and the failure still its one note; without the key, or
+    /// with a value that is not a non-negative integer, the same record is plain prose; and the key
+    /// is the family's own, known there and news on a Claude Code record.
+    #[test]
+    fn a_qwenwork_reply_salvaged_from_a_failed_stream_is_cut_off() {
+        let salvaged = r##"
+{"type":"user","version":"1.1.71","sessionId":"s-s397","uuid":"u1","timestamp":"2026-11-06T01:00:00.000Z","message":{"role":"user","content":"Count the terns on the east stack."}}
+{"type":"assistant","version":"1.1.71","sessionId":"s-s397","uuid":"a1","parentUuid":"u1","partialStreamIndex":0,"requestTokenAnchor":"anchor-1","timestamp":"2026-11-06T01:00:02.000Z","message":{"id":"msg_1","type":"message","role":"assistant","model":"qwen3-max","stop_reason":null,"stop_sequence":null,"content":[{"type":"text","text":"There are forty-one nests on the east"}]}}
+{"type":"assistant","version":"1.1.71","sessionId":"s-s397","uuid":"a2","parentUuid":"a1","isApiErrorMessage":true,"error":"unknown","errorDetails":"{}","timestamp":"2026-11-06T01:00:03.000Z","message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: the response stream ended early."}]}}
+"##;
+        let cut = "There are forty-one nests on the east";
+        let messages = tokenize(salvaged.lines());
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| matches!(m, Message::AssistantCutOff(t) if t == cut))
+                .count(),
+            1,
+            "the salvaged text is cut off: {messages:?}"
+        );
+        let failures = messages
+            .iter()
+            .filter(|m| {
+                matches!(
+                    m,
+                    Message::SystemNote {
+                        kind: NoteKind::Failure,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(failures, 1, "one Failure note: {messages:?}");
+
+        let mut ut = Vec::new();
+        let via_engine = replay(&messages, &mut ut, &CLAUDE_SHAPING);
+        let mut ut_main = Vec::new();
+        let via_main = parse_main(salvaged.lines(), &mut ut_main);
+        assert_eq!(format!("{via_main:?}"), format!("{via_engine:?}"));
+        assert_eq!(ut, ut_main);
+        assert!(
+            via_main
+                .iter()
+                .any(|b| matches!(b, Block::AssistantCutOff(t) if t == cut)),
+            "{via_main:?}"
+        );
+
+        for unmarked in [
+            salvaged.replace(r#""partialStreamIndex":0,"#, ""),
+            salvaged.replace(r#""partialStreamIndex":0"#, r#""partialStreamIndex":"0""#),
+            salvaged.replace(r#""partialStreamIndex":0"#, r#""partialStreamIndex":-1"#),
+        ] {
+            let blocks = parse_main(unmarked.lines(), &mut Vec::new());
+            assert!(
+                !blocks
+                    .iter()
+                    .any(|b| matches!(b, Block::AssistantCutOff(_))),
+                "no mark: {blocks:?}"
+            );
+            assert!(
+                blocks
+                    .iter()
+                    .any(|b| matches!(b, Block::AssistantText(t) if t == cut)),
+                "plain prose: {blocks:?}"
+            );
+        }
+
+        let record: Value = serde_json::from_str(salvaged.lines().nth(2).unwrap()).unwrap();
+        let mut news = unknown_record_keys(&record, "assistant", &[]);
+        news.sort_unstable();
+        assert_eq!(
+            news,
+            ["partialStreamIndex", "requestTokenAnchor"],
+            "on a Claude Code record the family's keys are new"
+        );
+        assert!(
+            unknown_record_keys(
+                &record,
+                "assistant",
+                crate::agents::qoderwork::discover::FAMILY_RECORD_KEYS
+            )
+            .is_empty(),
+            "for the family, its own"
+        );
+    }
+
     /// #370: the 2.1.288 placement flag on an attachment is known — not reported while the sweep
     /// asks. Removing it from the attachment arm of the census turns this red.
     #[test]
@@ -10517,6 +10661,61 @@ mod tests {
             unknown_tool_result_keys(&serde_json::json!({"watches": [], "watch": {}})),
             vec!["watch", "watches"],
             "the listing and the watch are two shapes, not one"
+        );
+    }
+
+    /// #s396: ArtifactComments' reply, resolve and narrowed or resumed thread listing (client
+    /// 2.1.318) are each known whole, and a shaped name beside a key from outside its shape, or
+    /// from another of these shapes, is reported. Removing any one row turns this red.
+    #[test]
+    fn artifact_comments_reply_resolve_and_thread_listing_results_are_known_in_their_shapes() {
+        let thread = "6f1c2b9e-0d4a-4c3e-9b7a-2e5f8d1a0c34";
+        let comment = "a3d9e1f0-7b2c-4e8a-9f61-0c5b7d2e4a18";
+        let whole = [
+            serde_json::json!({"replied": true, "thread_id": thread, "comment_id": comment}),
+            serde_json::json!({"thread_resolved": true, "thread_id": thread}),
+            serde_json::json!({"thread_filter": thread, "threads": [{"id": thread}]}),
+            serde_json::json!({"cursor": thread, "threads": []}),
+            serde_json::json!({"cursor": thread, "thread_filter": thread, "threads": []}),
+            serde_json::json!({"threads": []}),
+        ];
+        for result in &whole {
+            assert!(
+                unknown_tool_result_keys(result).is_empty(),
+                "a whole result is known: {result} -> {:?}",
+                unknown_tool_result_keys(result)
+            );
+        }
+        let beside = |mut v: Value| -> Vec<String> {
+            v["stdout"] = serde_json::json!("ok");
+            unknown_tool_result_keys(&v)
+                .into_iter()
+                .map(String::from)
+                .collect()
+        };
+        assert_eq!(
+            beside(
+                serde_json::json!({"replied": true, "thread_id": thread, "comment_id": comment})
+            ),
+            vec!["comment_id", "replied", "thread_id"],
+            "outside its shape, the reply's names are reported"
+        );
+        assert_eq!(
+            beside(serde_json::json!({"thread_resolved": true, "thread_id": thread})),
+            vec!["thread_id", "thread_resolved"],
+            "outside its shape, the resolve's names are reported"
+        );
+        assert_eq!(
+            beside(serde_json::json!({"cursor": thread, "thread_filter": thread, "threads": []})),
+            vec!["cursor", "thread_filter"],
+            "outside its shape, the listing's names are reported"
+        );
+        assert_eq!(
+            unknown_tool_result_keys(&serde_json::json!({
+                "replied": true, "thread_id": thread, "thread_resolved": true
+            })),
+            vec!["replied", "thread_id", "thread_resolved"],
+            "the reply and the resolve are two shapes, not one"
         );
     }
 
