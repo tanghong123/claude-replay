@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.76/
+mdrev-embed-1.1.77/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -180,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.76`, with two tarballs: `mdrev-1.1.76-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.76.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.77`, with two tarballs: `mdrev-1.1.77-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.77.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.76/mdrev-embed-1.1.76.tar.gz
-tar xzf mdrev-embed-1.1.76.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.76
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.77/mdrev-embed-1.1.77.tar.gz
+tar xzf mdrev-embed-1.1.77.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.77
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.76/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.77/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -196,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.76/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.76.tar.gz
-cd mdrev-embed-1.1.76
+tar xzf mdrev-embed-1.1.77.tar.gz
+cd mdrev-embed-1.1.77
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -405,9 +405,9 @@ isolates the mount for the duration so your application does not come out on
 the paper with the document. Pass `onPrint` and none of that happens: you print,
 and you decide what belongs on the sheet.
 
-**Keyboard.** The viewer's shortcuts (`a` annotate, `n`/`p` next and previous change, `j`/`k` next and previous open note, `[` `]` widen a redline's range, `Escape`) act only while the reader is engaged with the mount — a click or focus inside it — so they do not collide with yours. One of them is a browser key: while the reader is engaged with the mount, ⌘A / Ctrl+A is taken from your page and selects the document alone, not your page around it. Outside the mount and in any text field the key stays the browser's; while the viewer's own modal (its key list, an enlarged picture) is open, it selects nothing. And in the source view, a copy of the selection ⌘A made writes the document's newer text as a file, without the line numbers, change markers or removed lines the pane draws; the copy listener is on your page's `document`, but it acts only on that selection, so every other copy on your page is the browser's.
+**Keyboard.** The viewer's shortcuts (`a` annotate, `n`/`p` next and previous change, `j`/`k` next and previous open note, `[` `]` widen a redline's range, `Escape`) act only while the reader is engaged with the mount — a click or focus inside it — so they do not collide with yours. Some browser keys are taken too. While the reader is engaged with the mount, ⌘A / Ctrl+A is taken from your page and selects the document alone, not your page around it. Outside the mount and in any text field the key stays the browser's; while the viewer's own modal (its key list, an enlarged picture) is open, it selects nothing. ⌘F / Ctrl+F, while the reader is engaged with the mount, opens the viewer's own find instead of the browser's, which cannot see text the viewer has folded away; pressed again it brings the cursor back to that box, and pressed in the box's field it closes it. Outside the mount it stays the browser's, and so does Ctrl+F in a text field on a Mac, where it moves the cursor, and ⌘F / Ctrl+F in the field that names a new branch, which keeps every key but `Escape` to itself; while the viewer's own modal is open, it does nothing. And the zoom keys: while the reader is engaged with the mount, ⌘= / ⌘+, ⌘− and ⌘0 (or Ctrl with the same keys) size the document's text a step larger, a step smaller or back to its default, instead of zooming your page, in a note being written and in the find box as well; outside the mount they stay the browser's, and so do they in the field that names a new branch, which keeps every key but `Escape` to itself. The viewer's own modal also quiets the letter shortcuts: while the key list, an enlarged picture or the notice that a document is no longer available is open, `n`, `j`, `[` and the rest do nothing, so a letter pressed then does not move the document behind it. `Escape`, which closes it, still acts, and the other ⌘ / Ctrl keys are not held back by this. And in the source view, a copy of the selection ⌘A made writes the document's newer text as a file, without the line numbers, change markers or removed lines the pane draws; the copy listener is on your page's `document`, but it acts only on that selection, so every other copy on your page is the browser's.
 
-**Pinch.** Over a diagram or an image the viewer takes the pinch gesture and sizes THAT PICTURE, rather than letting the browser zoom your whole page to inspect one flowchart. It is taken nowhere else: a pinch over the prose, your header or anything outside a picture is left alone, so page zoom stays the reader's. (A pinch reaches a page as a `wheel` event with `ctrlKey`, which is also what ctrl+wheel sends from a mouse; both do the same thing here.)
+**Pinch.** Over a diagram or an image the viewer takes the pinch gesture and sizes THAT PICTURE, rather than letting the browser zoom your whole page to inspect one flowchart. It is taken nowhere else: a pinch over the prose, your header or anything outside a picture is left alone, so pinching there zooms your page as it always does. The zoom keys are another matter; see Keyboard. (A pinch reaches a page as a `wheel` event with `ctrlKey`, which is also what ctrl+wheel sends from a mouse; both do the same thing here.)
 
 **Theme.** Every colour is a token with a fallback: set any of these on the element or an ancestor and the viewer follows. It picks light or dark from `prefers-color-scheme` on its own; a host with its own dark switch sets the tokens under its own selector.
 
@@ -426,6 +426,8 @@ and you decide what belongs on the sheet.
 ```
 
 Set only what you want to change; the rest keeps mdrev's own look. The stylesheet is scoped under `.mdrev-host` — none of its rules reach your page, and yours reach the viewer only through the tokens.
+
+**A font for tables drawn in text.** A table or box drawn in a code block with Chinese in it lines up only in a font whose Han is exactly twice its Latin. Set `--mdrev-wide-mono` to such a font stack and the viewer uses it on those blocks alone. Without it they stay in the reader's own monospace, and a reader whose font cannot line them up is told how to get one. The bundle does not carry a font.
 
 **Rendering without mounting.** The same module exports the engine, for a preview or a static page rendered with the same code the viewer uses:
 

@@ -66,6 +66,7 @@
 .mdrev-host .doc a.mdv-embed-link:before {content:"⧉ ";color:var(--ink-faint)}
 .mdrev-host .doc img.mdv-embed {display:block}
 .mdrev-host .doc code {font-family:var(--read-mono);font-variant-numeric:tabular-nums;background:var(--bg-inset);border-radius:4px;padding:.12em .34em;font-size:.855em}
+.mdrev-host .doc pre.mdv-wide-table, .mdrev-host .doc pre.mdv-wide-table code {font-family:var(--mdrev-wide-mono,var(--read-mono))}
 .mdrev-host .doc pre {font-family:var(--read-mono);background:var(--code-bg);border:1px solid var(--rule-soft);tab-size:2;border-radius:8px;padding:.85em 1em;font-size:.82em;line-height:1.55;overflow-x:auto}
 .mdrev-host .doc pre code {font-size:inherit;background:0 0;padding:0}
 .mdrev-host .doc.wrap pre {white-space:pre-wrap;overflow-wrap:anywhere;overflow-x:auto}
@@ -308,6 +309,7 @@
 .mdrev-host .app>.main {grid-area:3/2;min-height:0}
 .mdrev-host .main {flex:1;min-height:0;display:flex}
 .mdrev-host .scrollpane {overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--rule) transparent;flex:1;min-width:0;overflow-y:auto}
+.mdrev-host [data-mdv-lent]:focus {outline:none}
 .mdrev-host .app.is-hosted-scroll {height:auto}
 .mdrev-host .is-hosted-scroll .main {align-items:flex-start;min-height:0}
 .mdrev-host .is-hosted-scroll .scrollpane {overflow:visible}
@@ -580,6 +582,7 @@
 .mdrev-host .mdv-pill {width:100%;color:var(--ink-soft);background:var(--bg-soft);border:1px dashed var(--rule);text-align:center;border-radius:8px;margin:12px 0;padding:5px 12px;font-size:12px;display:block}
 .mdrev-host .mdv-pill:hover {color:var(--ink);border-color:var(--ink-faint);background:var(--bg-inset)}
 .mdrev-host .source-view {border:1px solid var(--rule-soft);max-width:60rem;font-family:var(--read-mono);background:0 0;border-radius:8px;margin:16px auto;padding:16px 20px;font-size:13px;line-height:1.55;overflow-x:auto}
+.mdrev-host .source-view.mdv-wide-table {font-family:var(--mdrev-wide-mono,var(--read-mono))}
 .mdrev-host .source-view.size-xxxs {font-size:9.75px}
 .mdrev-host .source-view.size-xxs {font-size:10.5625px}
 .mdrev-host .source-view.size-xs {font-size:11.375px}
@@ -597,6 +600,8 @@
 .mdrev-host .src-num {color:var(--ink-faint);text-align:right;-webkit-user-select:none;user-select:none;font-variant-numeric:tabular-nums;padding-right:1ch}
 .mdrev-host .src-num:before {content:attr(data-n)}
 .mdrev-host .keys-box {text-align:left;width:min(34rem,100%)}
+.mdrev-host .keys-box:focus {outline:none}
+.mdrev-host .say.keys-dim {overscroll-behavior:contain;overflow-y:auto}
 .mdrev-host .keys-title {color:var(--ink);margin:0 0 14px;font-size:15px;font-weight:600}
 .mdrev-host .keys-group {margin-bottom:14px}
 .mdrev-host .keys-group-name {text-transform:uppercase;letter-spacing:.08em;color:var(--ink-faint);margin-bottom:5px;font-size:11px}
@@ -804,6 +809,12 @@
 .mdrev-host .ann-marker {right:10px;left:var(--ann-chip-left,auto);border:1px solid color-mix(in srgb, var(--accent) 38%, transparent);background:var(--accent-soft);width:24px;height:24px;color:var(--accent);box-shadow:0 1px 3px hsl(from var(--ink) h s l / 14%);border-radius:50%;padding:0;font-size:13px;font-weight:600;line-height:1;transition:transform .12s,background .12s;position:absolute}
 .mdrev-host .ann-marker:hover {background:color-mix(in srgb, var(--accent) 22%, transparent);transform:scale(1.12)}
 .mdrev-host .ann-marker.ann-resolved, .mdrev-host .ann-marker.ann-wontfix {background:var(--bg-inset);border-color:var(--rule);color:var(--ink-faint);font-weight:500}
+.mdrev-host .ann-marker.holds-words:before {content:"";background:var(--accent);width:6px;height:6px;box-shadow:0 0 0 1px var(--bg);pointer-events:none;border-radius:50%;position:absolute;bottom:3px;left:3px}
+.mdrev-host .ann-marker.holds-words.is-open:before {background:var(--on-accent);box-shadow:0 0 0 1px var(--accent)}
+.mdrev-host .ann-marker.holds-words.is-open.ann-resolved:hover:before, .mdrev-host .ann-marker.holds-words.is-open.ann-wontfix:hover:before {background:var(--accent);box-shadow:0 0 0 1px var(--bg)}
+.mdrev-host .ann-held-words {cursor:default}
+.mdrev-host .ann-held-quote {border-left:2px dashed color-mix(in srgb, var(--ink) 35%, transparent);color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere;cursor:default;margin:3px 0 0;padding:2px 8px;font-size:11px;font-style:normal}
+.mdrev-host .ann-held-label {font-style:normal;font-weight:600}
 .mdrev-host .ann-marker.is-open, .mdrev-host .ann-marker.is-open.ann-resolved, .mdrev-host .ann-marker.is-open.ann-wontfix {background:var(--accent);border-color:var(--accent);color:var(--on-accent);z-index:4}
 .mdrev-host .ann-marker.ann-group {overflow:visible}
 .mdrev-host .ann-count {background:var(--accent);min-width:15px;height:15px;color:var(--on-accent);text-align:center;box-shadow:0 0 0 1.5px var(--bg);border-radius:999px;padding:0 3px;font-size:10px;font-weight:700;line-height:15px;position:absolute;top:-6px;right:-7px}
