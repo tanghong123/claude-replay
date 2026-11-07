@@ -1,24 +1,26 @@
-# Design: one Agent Monitor over many machines — the hub (#s407)
+# Design: one Agent Monitor over many machines — a native app (#s407)
 
-> **DRAFT — PROPOSED, nothing built.** It goes to the owner as a decision before any code. It
-> amends `design/claude-monitor.md` §12 ("Not multi-machine") the way `design/monitor-fleet.md`
-> did: the monitor stays a single-machine service, and the thing that spans machines is a separate
-> binary. It supersedes the fleet's page of tabs and builds on what `design/fleet-pairing.md`
+> **DRAFT 2 — PROPOSED, nothing built.** Draft 1 proposed a hub, one server that relays to every
+> monitor. The owner chose a native app instead (2026-11-07): "I have devices spread across the
+> globe, and having a remote aggregation point will add more constraints." This draft designs that.
+> The monitor stays a single-machine service (`design/claude-monitor.md` §12); what spans machines is
+> an app on the reader's own device, talking to each monitor as a phone already does. It supersedes
+> the fleet's page of tabs (`design/monitor-fleet.md`) and builds on what `design/fleet-pairing.md`
 > shipped (the gate, the token, the one-time pairing code). Its stage 0 is shared with
-> `design/embedding.md` (#s406, the session view embedded in another web app), which cites it.
+> `design/embedding.md` (#s406), which cites this file.
 
-**What it is for.** A person with agents on several machines wants one Agent Monitor: pair it once
-with each machine, then see every session in ONE session list, each row saying where it runs, with
-a new way to arrange the list by device first. Everything else reads and behaves as the monitor
-does today: the session view, search, the panes, the compose box and dialogs, files and mdrev. On a
-phone too, saved to the Home Screen.
+**What it is for.** A person with agents on machines around the world wants one Agent Monitor: pair
+it once with each machine, then see every session in ONE session list, each row saying where it
+runs, with a new way to arrange the list by device first. Everything else reads and behaves as the
+monitor does today: the session view, search, the panes, the compose box and dialogs, files and
+mdrev. On a phone, and on a Mac.
 
-**The recommendation in three lines.** A *hub*: one origin, served by the fleet binary rebuilt, that
-the browser pairs with once, and that relays to each machine's monitor over the tailnet (or an ssh
-tunnel, as the fleet does today) with that monitor's own token. The hub merges the session lists and
-routes everything about a session to the monitor it runs on. No monitor changes its routes, its gate
-or its exposure. The app shell first learns to reach its monitor through a *backend handle* instead
-of its own origin (stage 0, shared with #s406).
+**The recommendation in four lines.** A native app, for iPhone, iPad and Mac from one codebase. It
+pairs with each monitor directly, by the QR code `--pair-phone` already shows, and keeps each token
+in the Keychain. It shows today's app shell in a web view, served from a custom URL scheme whose
+handler is a relay on the device itself: it sends each request to the monitor it is for, over the
+tailnet, with that monitor's token. The shell merges the lists and routes each session to its own
+machine. No monitor changes a route, a field or its gate.
 
 ---
 
@@ -29,140 +31,142 @@ of its own origin (stage 0, shared with #s406).
 | **R1** | One session list over N machines' monitors; each row says which device it runs on. |
 | **R2** | An Arrange choice "by device", then each device arranged as the reader already chose. |
 | **R3** | Otherwise the same look and feel: the session view, search, panes, files, mdrev, compose and dialogs, for a session on any paired device. |
-| **R4** | Pairing is once per backend, from the hub; the browser (desktop or phone) pairs once, with the hub. A backend can be revoked. |
-| **R5** | Works in Safari on a phone and as a Home Screen app, as the monitor does today. |
-| **R6** | A backend that is offline or slow costs its own rows only: the list still answers. |
-| **R7** | Nothing new is exposed by default; corp machines keep their one path, ssh (fleet-pairing D1). |
+| **R4** | Pairing is once per machine, from the app; a machine can be forgotten. |
+| **R5** | Works on a phone and on a Mac, with no server of its own anywhere: each request goes from the reader's device straight to the machine it is for. |
+| **R6** | A machine that is offline or slow costs its own rows only: the list still answers. |
+| **R7** | Nothing new is exposed: each monitor is reached exactly as a paired phone reaches it today. |
 | **R8** | No monitor is made multi-machine: its routes, gate and §11 exposure rule are unchanged. |
 
 ## 2. What exists, and the facts the design rests on
 
-- **The fleet** (`agent-monitor-fleet`, built, `design/monitor-fleet.md`) reads its topology from a
-  config file, probes each machine over `ssh host sh -s` for the monitor's port (from its `LOCK`) and
-  a machine id (which collapses two aliases of one machine), and keeps one `ssh -L` tunnel per
-  machine alive with backoff. Its page is a strip of iframe tabs, one monitor each. It knows nothing
-  about sessions, and it never worked from a phone: the tabs point at `127.0.0.1`. fleet-pairing's
-  `/h/<idx>/` proxy and `--listen tailscale` were never built.
-- **Pairing** (built): one 32-byte token per monitor, 0600 in its state directory, shared by every
-  paired device. `--pair-phone` mints a single-use five-minute code; `POST /api/pair`, answered ahead
-  of the gate, swaps it for a cookie whose value is the token itself (`cmauth-<8 hex>`, HttpOnly,
-  `SameSite=Strict`, host-scoped). The gate also takes `Authorization: Bearer`. A request through
-  `tailscale serve` is never the same-user bypass, so every tailnet client must pair.
+- **The fleet** (`agent-monitor-fleet`, built) reads its topology from a config file, probes each
+  machine over ssh for the monitor's port and a machine id, and keeps one `ssh -L` tunnel per
+  machine alive. Its page is a strip of iframe tabs pointing at `127.0.0.1`, so it never worked
+  from a phone. It knows nothing about sessions.
+- **Pairing** (built): one 32-byte token per monitor, 0600 in its state directory. `--pair-phone`
+  shows a QR for `<address>/pair#code=<code>`, a single-use five-minute code; `POST /api/pair`,
+  answered ahead of the gate, swaps it for a cookie whose value is the token itself. The gate also
+  takes `Authorization: Bearer`. A request through `tailscale serve` is never the same-user bypass.
 - **The write and file bar**: `origin_ok` asks that `Host` and `Origin` each be the loopback or a
-  trusted host (the names `tailscale serve` relays privately to this port, no `*.ts.net` wildcard).
-- **No CORS anywhere.** A cross-origin preflight is refused at the gate with 401.
-- **The app shell is bound to its own origin.** It names 22 distinct root-absolute routes at 74
-  places in 17 files (`/file` alone 18 times; `/records`, `/pull`, `/search`, `/turn-index`,
-  `/api/*`, `/markdown`, `/image`, `/__reveal`, `/mdrev/<version>/`, `/codex-workspace/*`), so it
-  cannot be served under a sub-path as fleet-pairing D2 assumed, nor pointed at another machine.
-  Whether the reader is at this machine (reveal or download, windowed reading of a long session) is
-  read from the page's own origin (`revealHere`, `WINDOWED`).
-- **The session list's shape**: groups of rows, `cwd` on the group. Nothing names the machine; `pid`,
-  `sock` and `target` are meaningful only on it. Session ids are UUIDs and do not collide across
-  machines in practice, but the page keys everything by the bare id, and **project keys do
-  collide**: the same `~/code/x` on two machines gives the same group key, and the list would merge
-  them. `/file`, `/__reveal` and mdrev's routes carry no session id, and their stamps are signed by a
-  per-machine key: a stamp is good only at the machine that minted it.
-- **Arrange** (#s387) just gained "like the Claude app", "like the Codex app" and "like Herdr", each
-  read from that machine's own app (`/api/layout`).
+  trusted host (the names `tailscale serve` relays privately to this port), and a request with no
+  `Origin` passes. There is no CORS anywhere.
+- **So a native client needs no monitor change**: it sends no `Origin`, sends `Host` as the monitor's
+  tailnet name, carries the token as a bearer, and reads that token from the pairing answer's
+  `Set-Cookie`, which native code can see and page script cannot. CORS does not apply to it.
+- **The app shell is bound to its own origin**: 22 distinct root-absolute routes at 74 places in 17
+  files (`/file` alone 18 times; `/records`, `/pull`, `/search`, `/turn-index`, `/api/*`,
+  `/markdown`, `/image`, `/__reveal`, `/mdrev/<version>/`, `/codex-workspace/*`). Whether the reader
+  is at this machine (reveal or download, windowed reading) is read from the page's own origin.
+- **The session list's shape**: groups of rows, `cwd` on the group, nothing naming the machine.
+  Session ids are UUIDs, but **project keys collide**: the same `~/code/x` on two machines gives the
+  same group key. `/file`, `/__reveal` and mdrev's routes carry no session id, and their stamps are
+  signed by a per-machine key: a stamp is good only at the machine that minted it.
+- **Arrange** (#s387) offers "like the Claude app", "like the Codex app" and "like Herdr", each read
+  from that machine's own app (`/api/layout`).
 
 ## 3. Decisions
 
-### D1 — Where the merged view runs: a hub, one origin relaying to N
+### D1 — Where the merged view runs: on the reader's device
 
-| | (a) **Hub** (recommended) | (b) Static client, N origins | (c) The fleet's tabs, kept |
-|---|---|---|---|
-| How | One origin serves the shell and relays every request to the backend it is for | The page calls each monitor's origin directly with CORS | One iframe per monitor, as today |
-| R1/R2 one list, by device | Yes, merged at the hub | Yes, merged in the page | No: one list per tab |
-| R4 pairing | The browser pairs once with the hub; the hub pairs with each backend | The browser pairs with every backend | Per tab, and never from a phone |
-| R5 phone | One origin, one pairing, as today | N origins; whether a cookie set while pairing a second origin from a Home Screen app lands in its store is unmeasured | The tabs point at `127.0.0.1`: dead on a phone |
-| R7/R8 monitors | Unchanged: the hub is one more paired client | Every monitor gains CORS, `OPTIONS`, an allow-list of client origins in the origin check, and a way to hand page script a token | Unchanged |
-| Corp machines (ssh only) | The hub keeps the fleet's tunnels | Unreachable from a browser: a hub is needed anyway | Yes |
-| Credentials | N tokens at the hub, 0600, never in a browser | N full tokens in browser storage, each exposed to any script injection | Each tab's own cookie |
-| Load on a phone | One list poll | N list polls every 5 s | N pages |
+| | (a) **Native app** (the owner's choice) | (b) Hub (draft 1) | (c) A page calling N monitors with CORS | (d) The fleet's tabs |
+|---|---|---|---|---|
+| Aggregates at | the reader's device | one server | the reader's browser | nowhere |
+| Machines around the world | each reached directly | every request via the hub's location | each reached directly | per tab |
+| A point that must be up | none | the hub | none | the fleet's machine |
+| Credentials | Keychain on the device | N tokens on the hub | N tokens in browser storage | per tab |
+| Monitors change | no | no | CORS and token hand-off on every one | no |
+| Phone | a native app | a web app | a web app, N pairings | dead tabs |
 
-(c) is the no-change option, judged against the goal: it fails R1, R2 and R5, which are the goal.
-(b) changes every monitor's gate and auth surface (the owner's), still needs a hub for corp
-machines, and puts N credentials where any injected script can read them. (a) changes no monitor
-and gives the phone exactly today's single-origin pairing.
+The owner chose (a): with machines spread around the world, an aggregation point in one place adds
+latency and a dependency on one machine, and holds every token in one place. (c) changes every
+monitor's gate and keeps N full credentials where any injected script can read them. (d) is not one
+list and does not work from a phone.
 
-### D2 — The hub is the fleet binary, rebuilt
+### D2 — The app shows today's shell, not a second UI
 
-The hub is `agent-monitor-fleet`, not a flag on the monitor and not a third binary. The monitor
-stays what `design/monitor-fleet.md` §2 argued it must be: a process whose security story is that
-it serves only its own machine. Giving it remote reach would put an aggregator inside that story.
-The fleet already owns the parts the hub needs: topology as data, the probe and its machine
-identity, and the tunnel supervisor with its orphan guard. Its page of tabs is what is replaced. Its
-formula and command keep their name, so nobody installs a new tool; a rename can come later. The
-shell's code comes from the monitor crate, as served today (`ui::asset()`, public in its library),
-so the hub never carries a copy that drifts. The fleet crate gains a dependency on the monitor's
-library for it.
+The app is a thin native shell around the web app shell, not a rewrite. A `WKWebView` loads the
+shell from a custom URL scheme (`app://`), and a `WKURLSchemeHandler` answers every request the
+page makes. Its own pieces are native: the device list, pairing (a QR scanner), the Keychain, and
+the scheme handler. Everything the reader sees inside a session is the same JavaScript and CSS the
+monitor serves, so a fix to the shell reaches the app with no second implementation. A fully native
+UI (SwiftUI throughout) is the alternative. It would read better as a native app, but it is a second
+renderer to keep in step with the first forever, which `design/claude-monitor.md` §12 ruled out
+("not a second renderer").
 
-### D3 — Reaching each backend
+**Where the shell's bytes come from.** Each monitor already serves them. The app loads them from one
+paired monitor (the first that answers, at the version it serves), and keeps a copy for when none
+answers. A shell can then talk to a monitor of another version, and some of its routes are newer
+than some installed monitors (the turn index, server search, records by turn). So the shell
+declares the oldest monitor version it works with, a device older than that is listed with a note
+to upgrade it rather than read wrongly, and the routes inside that window must keep working across
+versions, as they already must for a page that outlives its monitor (#s352). Which window is
+realistic is a phase-0 spike.
 
-A backend is a monitor the hub relays to, reached one of two ways, both data in the hub's config:
+### D3 — The relay on the device: the scheme handler
 
-- **Tailnet**: the backend's `tailscale serve` name and port, the way a phone reaches it. The hub
-  sends `Host` as that name, no `Origin`, and the backend's token as a bearer, so the backend's
-  `origin_ok` holds and its writes work. Never a public address: the hub refuses a backend address
-  outside the tailnet, and never via Funnel.
-- **ssh tunnel**: the fleet's tunnel, unchanged, for machines off the tailnet. Corp machines keep
-  this one path (fleet-pairing D1).
+The page's requests go to `app://d/<device>/<path>`. The handler:
 
-The hub's own machine, when it runs a monitor, is a backend like any other, reached on the loopback.
-The hub never reads a transcript itself.
+- maps `<device>` to that machine's address (its `tailscale serve` name and port) and token;
+- sends the request there natively, with `Host` set to that name, no `Origin`, the token as a bearer,
+  and the page's own body, so the monitor's `origin_ok` holds and its writes work;
+- relays the answer's status, headers and body back to the page, streaming large ones;
+- relays only to paired devices, by device id, never to an address a request names, with the path
+  normalized first, so the page cannot reach anything that was not paired;
+- never relays `/__reveal`, which opens the file manager on the machine that serves it, a side effect
+  on that machine's desktop, except to the monitor on the Mac the app runs on.
 
-### D4 — Credentials: the hub pairs with each backend as a phone does
+The token never enters the web view: the page cannot read it and no script in it can leak it.
 
-**Tailnet backend**: run `--pair-phone` there (a QR and a code, as today), and enter the code in the
-hub's "Add a device" form (or `agent-monitor-fleet pair <address>`). The hub redeems it with
-`POST /api/pair` and keeps the token the answer's cookie carries, 0600 in its own state directory.
-No backend route is added. **ssh backend**: through a tunnel the backend sees a loopback peer, so
-what it asks depends on its platform, as today (fleet-pairing D3b and §4.2). A Linux backend admits
-the tunnel's owner with no token. An unpaired Mac backend admits the loopback outright. A paired Mac
-backend needs its token, which the hub reads over ssh as the same user, who could read it anyway.
-**Revoke**: forget the device at the hub. A leaked hub token
-store is every backend's token, and backends have no rotate today; adding `--pair --rotate` is a
-follow-up the owner may want before writes cross devices (D9).
+### D4 — Pairing and revoking
 
-An alternative is a per-hub credential on each backend (a second token with its own scope). It
-changes every backend's auth file and gate (the owner's), and buys revoking the hub without
-re-pairing phones. Not recommended for the first stages.
+**Add a device**: on that machine, `agent-monitor --pair-phone` shows its QR as today. The app scans
+it, reads the address and the code, redeems the code with `POST /api/pair`, takes the token from the
+answer's `Set-Cookie`, and keeps it in the Keychain with the device's name, address and identity.
+Nothing is added to the monitor. **Forget a device**: delete it in the app. **A leaked phone**: every
+paired device holds the same token per monitor, and monitors have no rotate today; `--pair --rotate`
+on the monitor is a follow-up the owner may want before writes cross devices (D9).
 
-### D5 — Stage 0, shared with #s406: the data source and the backend handle
+The device's identity is the address it was paired at: its tailnet name (one per device on a
+tailnet, and stable). No monitor route says who a monitor is, so the same machine paired under two
+names lists twice; a route that names the machine would be a monitor change, for §5 if it is
+wanted.
+
+### D5 — Stage 0, shared with `design/embedding.md`: the data source and the backend handle
 
 Two layers, agreed with `design/embedding.md` (#s406) so neither shell change is done twice. That
 design adds the stage after this one, the views mounting inside a host's element.
 
 - **The backend handle** (layer B): what the shell needs to reach one monitor. A *base* (empty for
-  today's same origin; a prefix such as `/d/<device>` at the hub; an absolute origin for an embed);
-  how credentials ride (the ambient cookie, or a bearer); whether the reader is *local* to that
-  monitor (reveal or download; windowed reading); and where to load that monitor's mdrev bundle from
-  (each backend may pin a different mdrev). Every one of the 74 root-absolute paths goes through it.
+  today's same origin; `app://d/<device>` in the app; an absolute origin for an embed); how
+  credentials ride (the ambient cookie, the app's relay, or a bearer); whether the reader is *local*
+  to that monitor (reveal or download; windowed reading); and where that monitor's mdrev bundle loads
+  from (each machine may pin a different mdrev). Every one of the 74 root-absolute paths goes through
+  it.
 - **The data source** (layer A): what the views consume. Index rows; a session's records, snapshot
   plus growth, with the #165 rewrite rule; the turn index; search; files; writes as optional
   capabilities (send, dialog, consent). Three implementations: a *monitor source* over a handle
-  (today's behaviour), a *merged source* over several (this design), and a host-fed source (#s406).
+  (today's behaviour), a *merged source* over several (this design), and a host-fed source
+  (`design/embedding.md`).
 
 Stage 0 changes no route, no JSON and nothing a reader sees. It is page code, so it is held by the
-browser suite on both surfaces and walked on the iOS Simulator before it ships.
+browser suite on both surfaces and walked on the iOS Simulator before it ships. The monitor's own
+page keeps working exactly as today: it is the shell with one handle whose base is empty.
 
-### D6 — Merging the session list
+### D6 — Merging the session list, in the page
 
-- The hub polls each backend's `/api/sessions` on its own clock (each answer at most a poll old,
-  per-backend timeout, the last good answer kept and marked stale), so the browser makes one list
-  poll whatever N is (R6).
-- The merged answer is the hub's own route. Each backend's rows are **tagged by the hub** with their
-  device, and ids and group keys are namespaced by device (`<device>/<id>`), so the same `~/code/x`
-  on two machines stays two groups. No monitor's `/api/sessions` gains a field.
-- A device's identity is its tailnet name for a tailnet backend (one per device on a tailnet, and
-  stable), and the probe's machine id for an ssh backend. It is labelled with the name the person
-  gave it at pairing. The probe also reports the machine's tailnet name when it has one, so a
-  machine configured both ways is refused as a duplicate at pairing rather than listed twice.
-- The session filter's buckets and counts sum across devices. Recency compares each device's own
-  clock; a tailnet's machines keep time well enough for "the last six hours".
-- A device that does not answer keeps its last rows, greyed, under a head saying since when. One that
-  never answered is a head saying why.
+- The merged source polls each device's `/api/sessions` through its handle, on the list's clock,
+  with a per-device timeout, and keeps each device's last good answer, marked stale. One slow
+  machine never holds the list (R6). Merging in the page, not in Swift, keeps one implementation for
+  the app and anything else that hosts the shell.
+- Each answer is tagged in the page with its device, and ids and group keys are namespaced by device
+  (`<device>/<id>`), so the same `~/code/x` on two machines stays two groups. No monitor's
+  `/api/sessions` gains a field.
+- The session filter's buckets and counts sum across devices. Recency compares each machine's own
+  clock; tailnet machines keep time well enough for "the last six hours".
+- A machine that does not answer keeps its last rows, greyed, under a head saying since when. One
+  that never answered is a head saying why.
+- Cost: one list answer per machine per poll (about 13 KB gzipped). The app polls only while it is
+  open, as iOS suspends it otherwise.
 
 ### D7 — The by-device arrangement
 
@@ -172,109 +176,107 @@ list. An app arrangement (like the Claude app, the Codex app, Herdr) is read per
 device's `/api/layout`, since each machine has its own app. Every other choice shows one merged
 list, each row wearing its device as a small label.
 
-### D8 — Everything about a session goes to its own backend
+### D8 — Everything about a session goes to its own machine
 
 The merged source routes every per-session call (records, growth, the turn index, search, the panes'
-lists) to the row's monitor source. Files, reveal and mdrev carry stamps signed by the backend that
-offered them, so the page remembers, per record, which backend it came from, and asks that one. The
-mdrev guest loads that backend's bundle. **Locality is per device**: a reader is local only to the
-monitor on the machine they are sitting at (the hub's own machine, opened on the loopback). There
-they may reveal in the file manager; for every other device they download, and long sessions read
-windowed, as a phone does today.
+lists) to the row's monitor source. Files, reveal and mdrev carry stamps signed by the machine that
+offered them, so the page remembers, per record, which device it came from, and asks that one. The
+mdrev guest loads that device's bundle. **Locality is per device**: on the Mac the app runs on, the
+monitor of that same Mac is local (reveal works); every other device is remote, its files download,
+and long sessions read windowed. On a phone nothing is local.
 
 ### D9 — Writes across devices
 
-The compose box, dialogs and pane grants work on any device's session under both gates: the hub's
-(the browser is paired with the hub, its `Host` and `Origin` are the hub's own) and the backend's
-(its token, held by the hub; its consent, kept per pane and pid on that machine). The hub forwards
-no browser cookie, `Origin` or `Authorization` to a backend. **Choice for the owner**: writes in the
-first release with the rest (parity, R3), or a read-only first release with writes a stage later,
-after `--rotate` exists.
+The compose box, dialogs and pane grants work on any device's session, under that monitor's own
+gate: the token the app holds, and its consent, kept per pane and pid on that machine. **Choice for
+the owner**: writes in the first release with the rest (parity, R3), or a read-only first release
+with writes a stage later, after `--rotate` exists.
 
-### D10 — The phone: a web app, no native app
+### D10 — Machines off the tailnet
 
-One origin is exactly today's phone story: pair once in Safari, save to the Home Screen, and the
-Home Screen app takes Safari's cookies at that moment (#s111). The merged view needs no native app.
-A native app is needed only for widgets, Live Activities, answering from the lock screen,
-background refresh without a push, or keeping tokens in the Keychain. Web Push (iOS 16.4+, a Home
-Screen app with a service worker and a permission granted from a tap) could later say "a session
-needs you". Its notifications travel through Apple's push service over the internet, so their
-payload would carry no session content. That is a separate design.
+Today corp machines are reached only by ssh, through the fleet's tunnels (fleet-pairing D1). An iOS
+app cannot run those tunnels. The Mac app can, by keeping the fleet's tunnel code: a tunnelled
+monitor is then a device at a loopback port, reached through the same relay. So on a Mac every
+machine the fleet reaches today is in the list, and on a phone only the machines on the tailnet. The
+alternative would be one machine relaying for the others, which is the remote point the owner ruled
+out.
 
-### D11 — The fleet's tabs retire
+### D11 — Notifications: the owner's choice
 
-Once the merged page covers what the tabs did, it replaces them in the same binary. The config file,
-the probe and the tunnels stay. A person with a fleet config sees the merged list where the tabs
-were, after pairing each device (ssh backends need no pairing step). The integration's Skill and
-slash command are updated with it.
+With no server of its own, a push needs something to send it through Apple's push service. Either
+**each monitor sends** "a session on <device> needs you" (an APNs key on every Mac, and a payload
+with no session content, since it leaves the tailnet through Apple's servers), or **there are
+none**, and the app shows attention only while it is open. Background refresh on iOS is
+opportunistic and is not a substitute. Recommended for the first release: none.
+
+### D12 — The fleet's tabs retire
+
+Once the Mac app covers what the tabs did, the fleet's page is retired. Its tunnel code moves into
+the Mac app (D10), and its binary and formula are retired with a migration note, in the way the
+classic view was (#s98).
 
 ## 4. Security
 
-- **No monitor exposes more than today.** A backend sees the hub as one more paired client, on the
-  same tailnet or ssh path a phone or the fleet already uses.
-- **The hub is a paired, gated server**: the shared `AuthGate`, its own token and its own
-  `--pair-phone`. Its relay routes, its merged list and its pairing form are behind it.
-- **It relays only to configured backends**, by device id, never to an address a request names, and
-  normalizes the path before relaying, so a request cannot reach a host or route that was not
-  configured (no SSRF).
-- **Writes are checked at the hub before they leave it**: `origin_ok` on the browser's request, the
-  route's own method, and nothing that writes on a GET relayed for a cross-site request
-  (`/api/ignore` is a GET that writes today, with no origin check).
-- **Reveal is never relayed.** `/__reveal` opens the file manager on the machine that serves it, a
-  side effect on that machine's desktop. The hub refuses it for every backend but the one on its own
-  machine, opened from the loopback, whatever the page asks.
-- **Masking is the hub's too.** A backend masks secrets for a client whose `Host` is not the
-  loopback. Through an ssh tunnel, or for the hub's own machine on the loopback, a backend sends its
-  content unmasked to the hub. So the hub applies the mask policy itself to everything it serves a
-  client across a network, exactly as a monitor does (#365).
-- **Tokens stay at the hub**: 0600, never sent to a browser, never in a log, never in a URL.
-- **What crosses the network**: browser to hub, as today's phone to its monitor (WireGuard on the
-  tailnet); hub to backend over the tailnet, or over ssh for corp machines. Nothing goes to a
-  third-party relay.
+- **No monitor exposes more than today.** Each sees the app as one more paired phone, over the same
+  tailnet path.
+- **Tokens stay in the Keychain**, device-only, and never enter the web view, a log or a URL.
+- **The relay reaches only paired devices**, by id, with the path normalized: the page cannot make
+  it reach a host or a route that was not paired.
+- **The web view loads only the app's own scheme**; a navigation anywhere else opens in the browser,
+  never inside it, so no other page can call the relay. That also covers `/api/ignore`, a GET that
+  writes with no origin check today.
+- **Reveal is never relayed** to another machine (D3).
+- **Masking is each monitor's.** The app reaches a tailnet monitor by its tailnet name, so that
+  monitor masks secrets for it as for any client across a network (#365). Two monitors are reached
+  on the loopback and mask nothing: the one on the app's own Mac, which is the reader's own machine,
+  and one through an ssh tunnel (D10), exactly as the fleet's tabs reach it today, its content
+  reaching only the reader's own Mac over ssh. That is a limitation to name: the app adds no masking
+  of its own.
+- **What crosses the network**: the reader's device to each machine, over the tailnet (WireGuard),
+  and, if the owner chooses pushes, a content-free notice through Apple's push service. Nothing else
+  leaves the tailnet.
 
 ## 5. Contracts this creates or changes, and who relies on them
 
 Each is the owner's to approve:
 
-- **The fleet's page and config**: the tabs go; the config gains a backend's address, transport and
-  label. Relied on by whoever runs the fleet today and by the `monitor-fleet` integration.
-- **New hub routes**: the merged list, the device list, the relay under `/d/<device>/`, and the
-  pairing form. Nothing else relies on them yet.
-- **New CLI on the fleet binary**: `agent-monitor-fleet pair <address>` to pair with a backend, and
-  its own `--pair-phone`, which finds the `tailscale serve` entry relaying to the hub's port (the
-  monitor's finds its own) and pairs a browser with the hub.
-- **A new dependency**: the fleet crate on the monitor's library, for the shell's bytes (D2).
+- **A new app**: its repository, its bundle id, its signing and how it is installed (TestFlight, an
+  ad hoc build, the App Store). These need the owner's Apple developer account.
 - **The app shell's backend handle (stage 0)**: internal to the page, no route or JSON change. It
-  becomes a contract when #s406's embed ships.
-- **On the monitor, at most one optional flag**: `--pair --rotate`, to mint a new token (D4), in
-  phase 3 if the owner wants it before writes cross devices. No route, field or gate change. That is
-  the point of D1 and D2.
+  becomes a contract when `design/embedding.md`'s embed or this app ships.
+- **The routes the app relies on across versions** (D2): the shell's routes become a contract
+  between monitor versions, already true for a page that outlives its monitor.
+- **The fleet's retirement** (D12): its page, binary, formula and the `monitor-fleet` integration.
+- **On the monitor, at most one optional flag**: `--pair --rotate`, to mint a new token (D4), if the
+  owner wants it before writes cross devices. No route, field or gate change.
 
 ## 6. Phases
 
 | Phase | Ships | Accept |
 |---|---|---|
-| 0 | The backend handle and the data source in the shell (shared with #s406) | No change a reader can see: every browser case green on both surfaces, a Simulator walk |
-| 1 | The hub: config, pairing with tailnet backends, the relay (read-only), the merged list with device labels | A desktop and a phone, each paired once with the hub, list sessions from two machines; an offline machine costs only its own rows |
-| 2 | "By device", per-device locality, the session view, files and mdrev routed per row | Opening, searching and reading a session on another machine behaves as on that machine, files downloading rather than revealing |
+| 0a | Spikes: a `WKURLSchemeHandler` relaying POST bodies and streaming a large `/records` range; the web view's storage and cookies for a custom scheme (the shell keeps its preferences in `localStorage`); the mdrev bundle loading per device through the scheme; whether a custom scheme is a secure context for the APIs the shell uses | Each answered by measurement on the iOS Simulator and a device, written down |
+| 0b | The backend handle and the data source in the shell (shared with `design/embedding.md`) | No change a reader can see: every browser case green on both surfaces, a Simulator walk |
+| 1 | The iOS app: pairing by QR, the Keychain, the relay, the merged list (read-only) | Paired with two machines, the app lists both; an offline machine costs only its own rows |
+| 2 | "By device", per-device locality, the session view, files and mdrev routed per row | Reading and searching a session on another machine behaves as on that machine |
 | 3 | Writes across devices (or in 1, by the owner's choice), `--rotate` on the monitor | The compose box, a dialog and a pane grant on another machine's session, each refused where today's rules refuse it |
-| 4 | ssh backends folded in; the tabs retired; the integration updated | A corp machine reached only by ssh appears in the merged list |
+| 4 | The Mac app with the fleet's tunnels; the fleet retired | A machine reached only by ssh appears in the Mac app's list |
+| 5 | Notifications, if the owner chooses them (D11) | — |
 
 ## 7. What this is not
 
 - **Not a change to the monitor.** No route, field or gate; the one optional flag, `--rotate`, is
   §5's.
-- **Not a sync service.** The hub stores no session content: it relays and merges what it is
-  answered, and keeps only each backend's last list answer.
-- **Not a relay off the tailnet.** No third-party service carries anything.
-- **Not a cluster manager.** It starts no monitor and installs nothing on a backend.
-- **Not a native app.** See D10.
+- **Not a server.** Nothing runs anywhere but the monitors and the app on the reader's device.
+- **Not a second renderer.** The app shows the monitor's own shell (D2).
+- **Not a sync service.** The app stores no session content beyond each machine's last list answer
+  and what the page already caches.
 
 ## 8. Open questions for the owner
 
-1. **The architecture** (D1, D2): the hub as the fleet rebuilt (recommended), a static client with
-   CORS on every monitor, or keeping the fleet's tabs.
-2. **Writes** (D9): in the first release with the rest, or read-only first and writes after
+1. **The app's code and distribution** (§5): a new private repository, signed with the owner's
+   developer account and installed through TestFlight (recommended), or kept for personal ad hoc
+   builds. Phase 1 waits on this.
+2. **The UI** (D2): today's shell in a web view (recommended), or a fully native UI.
+3. **Writes** (D9): in the first release with the rest, or read-only first and writes after
    `--rotate`.
-3. **Credentials** (D4): the hub keeps each backend's own token (recommended for now), or each
-   backend mints a separate hub credential.
+4. **Notifications** (D11): none in the first release (recommended), or pushes sent by each monitor.
