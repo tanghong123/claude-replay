@@ -17,7 +17,9 @@ function fixture(initial, clipboard) {
   const document = { createElement: node, getElementById: id => { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id); } };
   const calls = [], toasts = [];
   const context = { appendDesktopHelp, renderNativeMenu, renderNativeServerStatus, positionNativeMenu, readNativeStatus, document, navigator: { clipboard }, controlState: { write: true }, indexState: { selected: null }, selectedRow: () => null,
-    usesNativeControls: () => false, isCodexSession: () => false, fetch: async (path, options) => { calls.push({ path, options }); return response; } };
+    usesNativeControls: () => false, isCodexSession: () => false, fetch: async (path, options) => { calls.push({ path, options }); return response; },
+    // #s416: the page reaches its server through the backend handle; here it is this context's fetch.
+    backend: () => ({ fetch: (path, init) => context.fetch(path, init), url: path => path }) };
   const NativeMode = vm.runInNewContext(source.replace(/^import .*\n/gm, "").replace("export class NativeModeControls", "class NativeModeControls") + "\nNativeModeControls", context);
   const controller = Object.assign(Object.create(NativeMode.prototype), { mode: "off", view: "ordinary", ordinary: { paint() {} },
     actions: { toast(message) { toasts.push(message); } },

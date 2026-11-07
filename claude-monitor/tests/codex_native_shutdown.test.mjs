@@ -31,9 +31,11 @@ function fixture(status = owned) {
   class GatewayApi { request(route, body) { calls.push({ route, body }); return result.promise; } }
   const context = { document, controlState, indexState: { selected: null }, ResizeObserver: class { observe() {} }, visualViewport: null,
     mountNativeMenu: () => ({ button, menu }), readNativeStatus, ownsNativeServer, confirmNativeShutdown, GatewayApi,
-    fetch: async () => { calls.push({ route: "status" }); if (statusError) throw statusError; return { ok: true, json: async () => status }; } };
+    fetch: async () => { calls.push({ route: "status" }); if (statusError) throw statusError; return { ok: true, json: async () => status }; },
+    // #s416: the page reaches its server through the backend handle; here it is this context's fetch.
+    backend: () => ({ fetch: (path, init) => context.fetch(path, init), url: path => path }) };
   const NativeMode = vm.runInNewContext(source.replace(/^import .*\n/gm, "").replace("export class NativeModeControls", "class NativeModeControls")
-    .replaceAll('await import("/codex-workspace/api.js")', 'await Promise.resolve({ GatewayApi: globalThis.GatewayApi })') + "\nNativeModeControls", context);
+    .replaceAll('await import(backend().url("/codex-workspace/api.js"))', 'await Promise.resolve({ GatewayApi: globalThis.GatewayApi })') + "\nNativeModeControls", context);
   NativeMode.prototype.paint = function () { button.disabled = this.pending; };
   const controller = new NativeMode({ actions: {} }, {
     toast: message => toasts.push(message), pauseIndex: () => events.push("pause"), resumeIndex: () => events.push("resume"),

@@ -1,4 +1,5 @@
 import { indexState } from "./state.js";
+import { backend } from "./backend.js";
 import { groupSessions } from "./shared/session-visibility.js";
 
 export class SessionIndexStore {
@@ -28,7 +29,7 @@ export class SessionIndexStore {
         let data;
         if (this.load) data = await this.load();
         else {
-          const response = await fetch("/api/sessions", { cache: "no-store" });
+          const response = await backend().fetch("/api/sessions", { cache: "no-store" });
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           data = await response.json();
         }

@@ -1,4 +1,5 @@
 import { revealQuery } from "./shared/capabilities.js";
+import { backend } from "./backend.js";
 
 const escapeName = value => String(value || "attachment").replace(/[\\/:*?"<>|]/g, "-");
 
@@ -31,7 +32,7 @@ export class AttachmentViewer {
   async reveal(item) {
     if (!item?.path || !item?.sig) { this.actions.toast?.("This path was not offered for reveal"); return; }
     try {
-      const response = await fetch(revealQuery({ path: item.path, sig: item.sig }), { cache: "no-store" });
+      const response = await backend().fetch(revealQuery({ path: item.path, sig: item.sig }), { cache: "no-store" });
       if (response.ok) { this.actions.toast?.("Revealed in the file manager"); return; }
       this.actions.toast?.(response.status === 404 ? "Nothing to reveal — the path is gone" : `Could not reveal: HTTP ${response.status}`);
     } catch (error) { this.actions.toast?.(`Could not reveal: ${error.message}`); }
@@ -59,9 +60,10 @@ export class AttachmentViewer {
       // #s29: text the transcript carried, with no file stamp to fetch the file by, is its own bytes.
       else if (item.text != null && !(item.path && item.fsig)) response = new Response(new Blob([item.text], { type: "text/plain;charset=utf-8" }));
       else {
-        fileUrl = `/file?path=${encodeURIComponent(item.path || "")}&sig=${encodeURIComponent(item.fsig || "")}`;
+        const filePath = `/file?path=${encodeURIComponent(item.path || "")}&sig=${encodeURIComponent(item.fsig || "")}`;
+        fileUrl = backend().url(filePath);
         controller = new AbortController();
-        response = await fetch(fileUrl, { cache: "no-store", signal: controller.signal });
+        response = await backend().fetch(filePath, { cache: "no-store", signal: controller.signal });
       }
       if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status });
       // Too large to hold: the refusal checks above are done, so the browser streams it to disk.

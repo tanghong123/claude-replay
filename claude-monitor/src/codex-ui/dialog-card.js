@@ -5,6 +5,8 @@
 // the one shown (its fingerprint) and types the answer. A written answer goes from the box's own
 // field. A permission prompt offers Yes and No only; the server enforces the same.
 
+import { backend } from "./backend.js";
+
 const json = response => response.json().catch(() => ({ ok: false, error: `HTTP ${response.status}` }));
 const target = row => encodeURIComponent(row?.id || "");
 
@@ -56,7 +58,7 @@ export class DialogCard {
     if (!row) return;
     this.show([el("p", "dialog-wait", "Reading the session's dialog…")]);
     let d;
-    try { d = await fetch(`/api/dialog?target=${target(row)}`, { cache: "no-store" }).then(json); } catch (_) { d = { ok: false, error: "could not reach the monitor" }; }
+    try { d = await backend().fetch(`/api/dialog?target=${target(row)}`, { cache: "no-store" }).then(json); } catch (_) { d = { ok: false, error: "could not reach the monitor" }; }
     if (load !== this.loads || this.row !== row) return;
     this.dialog = null;
     if (d.code === "no-consent") { this.showGrant(); return; }
@@ -152,7 +154,7 @@ export class DialogCard {
     const row = this.row;
     let d;
     try {
-      d = await fetch(`/api/answer?target=${target(row)}`, { method: "POST", body: JSON.stringify({ fingerprint: this.dialog.fingerprint, ...body }), cache: "no-store" }).then(json);
+      d = await backend().fetch(`/api/answer?target=${target(row)}`, { method: "POST", body: JSON.stringify({ fingerprint: this.dialog.fingerprint, ...body }), cache: "no-store" }).then(json);
     } catch (_) { d = { ok: false, error: "could not reach the monitor" }; }
     this.busy = false;
     this.box.classList.remove("answering");

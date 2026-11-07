@@ -22,7 +22,7 @@ globalThis.document = { body: { dataset: {} }, getElementById: node };
 const source = await readFile(new URL("../src/codex-workspace/monitor-controls.js", import.meta.url), "utf8");
 // Preserve the controller's exact methods; only browser-root module URLs need Node file URL resolution.
 const resolveBrowserImports = source => source.replace(/from "\.\/([^"\n]+)"/g, (_, path) => `from "${new URL(`../src/codex-workspace/${path}`, import.meta.url)}"`)
-  .replace(/from "\/monitor-ui\/([^"\n]+)"/g, (_, path) => `from "${new URL(`../src/codex-ui/${path}`, import.meta.url)}"`);
+  .replace(/from "\.\.\/monitor-ui\/([^"\n]+)"/g, (_, path) => `from "${new URL(`../src/codex-ui/${path}`, import.meta.url)}"`);
 const temporary = await mkdtemp(join(tmpdir(), "monitor-controller-test-"));
 const pickerPath = pathToFileURL(join(temporary, "project-picker.mjs"));
 const pickerSource = await readFile(new URL("../src/codex-workspace/project-picker.js", import.meta.url), "utf8");

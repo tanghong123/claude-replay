@@ -1,4 +1,5 @@
 import { escapeText } from "./view-model.js";
+import { backend } from "./backend.js";
 import { uiState } from "./state.js";
 import { sandboxDocument } from "./sandbox.js";
 import { createImageView } from "./shared/image-view.js";
@@ -25,7 +26,7 @@ export function imageTabHref(item, shown = "") {
     const key = `am-image:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     try { sessionStorage.setItem(key, bytes); query.push(`held=${encodeURIComponent(key)}`); } catch (_) { /* too large for sessionStorage: the file, if any, still opens */ }
   }
-  return query.length > 1 ? `/image?${query.join("&")}` : "";
+  return query.length > 1 ? backend().url(`/image?${query.join("&")}`) : "";
 }
 const SESSION_CACHE_LIMIT = 6;
 const SESSION_TAB_LIMIT = 6;
@@ -225,7 +226,7 @@ export class Preview {
     const generation = ++this.renderGeneration;
     const item = uiState.previewTabs.find(tab => tab.id === uiState.previewId);
     this.shown = item || null;
-    const beside = item ? besideAction(item) : null;
+    const beside = item ? besideAction(item, backend().local) : null;
     this.revealBtn.hidden = beside !== "reveal";
     this.downloadBtn.hidden = beside !== "download";
     // No file tab selected and something was published: the roster is what the pane shows —
@@ -259,7 +260,7 @@ export class Preview {
     if (item.text != null || item.data) { this.show(item, item.text, item.data); return; }
     byId("previewBody").classList.add("production-loading"); byId("previewBody").textContent = "Reading securely…";
     const query = `path=${encodeURIComponent(item.path)}&sig=${encodeURIComponent(item.fsig || "")}`;
-    fetch(`/file?${query}`, { cache: "no-store" }).then(response => {
+    backend().fetch(`/file?${query}`, { cache: "no-store" }).then(response => {
       if (response.status === 401) throw new Error("Reading local files requires pairing — run `agent-monitor --pair`.");
       // #s7: the route says which — 410 for a file that is gone, 403 for one this monitor may not
       // read, with the words — so the pane says it, not "may be gone, or outside".
@@ -289,7 +290,7 @@ export class Preview {
       // own copy, as the lightbox did, rather than the refusal, and says why.
       if (item.fallback) { this.show(item, null, item.fallback, `${error.gone ? "The original is gone" : "The original could not be read"}: this is the copy saved with the session.`); return; }
       const body = byId("previewBody"); body.classList.remove("production-loading");
-      body.innerHTML = `<div class="preview-error"><strong>${escapeText(error.title || "Cannot preview this file")}</strong><span>${escapeText(error.message)}</span><div class="preview-error-actions">${besideAction(item) === "reveal" ? '<button class="smallbtn" data-preview-reveal>Reveal in file manager</button>' : ""}<button class="smallbtn" data-copy-path>Copy original path</button><button class="smallbtn" data-close-preview>Close tab</button></div></div>`;
+      body.innerHTML = `<div class="preview-error"><strong>${escapeText(error.title || "Cannot preview this file")}</strong><span>${escapeText(error.message)}</span><div class="preview-error-actions">${besideAction(item, backend().local) === "reveal" ? '<button class="smallbtn" data-preview-reveal>Reveal in file manager</button>' : ""}<button class="smallbtn" data-copy-path>Copy original path</button><button class="smallbtn" data-close-preview>Close tab</button></div></div>`;
       const reveal = body.querySelector("[data-preview-reveal]");
       if (reveal) reveal.onclick = () => this.actions.reveal?.(item);
       body.querySelector("[data-copy-path]").onclick = () => {

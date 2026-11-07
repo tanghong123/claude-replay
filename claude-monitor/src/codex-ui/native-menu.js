@@ -6,7 +6,7 @@ export async function readNativeStatus(fetcher, { timeoutMs = 30_000, schedule =
     reject(new Error("Codex status timed out. Click the native control to retry.", { cause })); controller.abort(cause);
   }, timeoutMs); });
   const read = async () => {
-    const response = await fetcher("/api/codex/status", { cache: "no-store", credentials: "same-origin", signal: controller.signal });
+    const response = await fetcher("/api/codex/status", { cache: "no-store", signal: controller.signal });
     if (!response.ok) throw new Error(`Native status HTTP ${response.status}`);
     const status = await response.json();
     if (!status || typeof status !== "object" || Array.isArray(status) || status.ok !== true

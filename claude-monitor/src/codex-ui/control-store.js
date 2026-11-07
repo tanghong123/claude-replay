@@ -1,4 +1,5 @@
 import { canCompose, canInject, controlState, selectedRow } from "./state.js";
+import { backend } from "./backend.js";
 // The /api/send + /api/consent protocol is the shared module's (#48): this store keeps the
 // app shell's markup, its confirm dialog and its toasts, and asks the protocol what a server
 // answer means.
@@ -27,7 +28,7 @@ const readDataUrl = file => new Promise((resolve, reject) => {
   reader.readAsDataURL(file);
 });
 const json = response => response.json().catch(() => ({ ok: false, error: `HTTP ${response.status}` }));
-const post = (url, body) => fetch(url, { method: "POST", body, cache: "no-store" }).then(json);
+const post = (path, body) => backend().fetch(path, { method: "POST", body, cache: "no-store" }).then(json);
 
 export class ControlStore {
   constructor(actions) {

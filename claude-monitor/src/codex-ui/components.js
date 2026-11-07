@@ -1,6 +1,7 @@
 // The two-stamp file rule — what a clicked attachment or path may DO — is the shared module's
 // (html/shared/capabilities.js, #46), read here and by the classic page alike.
-import { attachmentCapability, besideAction, groupPointerRuns, isPointerAttachment, referenceAction, revealHere, revealQuery } from "./shared/capabilities.js";
+import { attachmentCapability, besideAction, groupPointerRuns, isPointerAttachment, referenceAction, revealQuery } from "./shared/capabilities.js";
+import { backend } from "./backend.js";
 import { svg } from "./icons.js";
 import { fleetGroups } from "./shared/fleet.js";
 import { escapeText, literalText, partsHtml, peerHue, placeholderUnit } from "./view-model.js";
@@ -55,7 +56,7 @@ export function imageRunHtml(items) {
 /** A process's events with each run of consecutive images (two or more) made one (#s221). */
 export function groupImageRuns(groups) {
   const isImage = group => !group.run && !!group.item?.view?.attachment
-    && attachmentCapability(group.item.view.attachment, { reveal: revealHere() }).action === "image";
+    && attachmentCapability(group.item.view.attachment, { reveal: backend().local }).action === "image";
   const out = [];
   let run = null;
   for (const group of groups) {
@@ -99,7 +100,7 @@ function deliveredHtml(view) {
   if (!(view.files?.length > 1)) return "";
   const files = view.files.map(offer => {
     const name = String(offer.path || "").split("/").pop() || offer.path;
-    const action = referenceAction({ fileSig: offer.fsig, revealSig: offer.sig, reveal: revealHere() });
+    const action = referenceAction({ fileSig: offer.fsig, revealSig: offer.sig, reveal: backend().local });
     return `<span class="renderer-delivered-file" data-reference-path="${escapeText(offer.path)}" data-reference-fsig="${escapeText(offer.fsig || "")}" data-reference-sig="${escapeText(offer.sig || "")}" title="${escapeText(`${REFERENCE_TITLES[action]}: ${offer.path}`)}">${escapeText(name)}</span>`;
   }).join("");
   return `<div class="renderer-delivered"><span class="renderer-delivered-lead">Delivered</span>${files}</div>`;
@@ -138,7 +139,7 @@ function rendererBody(view, state) {
   }
   if (view.attachment) {
     const h = view.attachment;
-    const capability = attachmentCapability(h, { reveal: revealHere() });
+    const capability = attachmentCapability(h, { reveal: backend().local });
     // A lone image (#s223): its thumbnail, one click from the right pane. It was a "Show image"
     // line (#80) whose thumbnail opened a lightbox, whose ↗ opened the pane: three steps where a
     // delivered file's name took one. A run of images is drawn by `imageRunHtml` instead.
@@ -194,7 +195,7 @@ function renderRenderer(view, index, state, inherited) {
   // #275: a path with NO stamp is still a link — `referenceAction` answers "copy" for it, as the
   // classic page now does. It used to be plain text here, so the path could not even be copied.
   const targetHtml = view.path
-    ? `<span class="renderer-target renderer-target-link" data-reference-path="${escapeText(view.path)}" data-reference-fsig="${escapeText(view.fileSig || "")}" data-reference-sig="${escapeText(view.revealSig || "")}" title="${REFERENCE_TITLES[referenceAction({ ...view, reveal: revealHere() })]}"><bdi dir="ltr">${escapeText(view.summary || "")}</bdi></span>`
+    ? `<span class="renderer-target renderer-target-link" data-reference-path="${escapeText(view.path)}" data-reference-fsig="${escapeText(view.fileSig || "")}" data-reference-sig="${escapeText(view.revealSig || "")}" title="${REFERENCE_TITLES[referenceAction({ ...view, reveal: backend().local })]}"><bdi dir="ltr">${escapeText(view.summary || "")}</bdi></span>`
     : `<span class="renderer-target"><bdi dir="ltr">${escapeText(view.summary || "")}</bdi></span>`;
   const head = noninteractive
     ? `<div class="renderer-head" aria-label="${escapeText(title)}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${targetHtml}${openFilesHtml(view)}${changeBadgeHtml(view.change)}<span class="renderer-state"></span></div>`
@@ -243,7 +244,7 @@ export const rendererStartsClosed = view =>
 
 /** The control beside an attachment's own action (#272, #s29): the file manager for a reader at
  *  this machine, the file as a download for one elsewhere — what `besideAction` allows. */
-const besideOf = h => besideAction({ path: h.att_path, sig: h.att_sig, fsig: h.att_fsig, data: h.att_datauri, text: h.att_text });
+const besideOf = h => besideAction({ path: h.att_path, sig: h.att_sig, fsig: h.att_fsig, data: h.att_datauri, text: h.att_text }, backend().local);
 function besideHtml(view, h, capability) {
   const beside = besideOf(h);
   if (!beside || beside === capability.action) return "";
@@ -488,7 +489,7 @@ export function promptNoticesHtml(attachments = []) {
   return attachments.filter(isChangedNotice).map(view => {
     const h = view.attachment || {};
     const name = h.att_name || String(h.att_path || "a file").split("/").pop();
-    const capability = attachmentCapability(h, { reveal: revealHere() });
+    const capability = attachmentCapability(h, { reveal: backend().local });
     const file = `<button class="turn-notice-file" type="button" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-name="${escapeText(h.att_name || "")}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}" title="${escapeText(h.att_path || name)}">${escapeText(name)}</button>`;
     return `<div class="turn-notice" role="note">${file} changed on disk; the agent was shown what changed</div>`;
   }).join("");
@@ -512,9 +513,9 @@ function renderPromptAttachments(attachments = []) {
   };
   const cards = attachments.map(view => {
     const h = view.attachment || {};
-    const capability = attachmentCapability(h, { reveal: revealHere() });
+    const capability = attachmentCapability(h, { reveal: backend().local });
     const isImage = capability.action === "image";
-    const source = h.att_datauri || (h.att_path && h.att_fsig ? `/file?path=${encodeURIComponent(h.att_path)}&sig=${encodeURIComponent(h.att_fsig)}` : "");
+    const source = h.att_datauri || (h.att_path && h.att_fsig ? backend().url(`/file?path=${encodeURIComponent(h.att_path)}&sig=${encodeURIComponent(h.att_fsig)}`) : "");
     // `data-name` so the viewer can title itself from what the CARD says even when the record
     // lookup misses (#144) — the lightbox reading "attachment" over a card that says "image.png"
     // is the visible fingerprint of that miss.

@@ -1,7 +1,8 @@
 import { agentLogo, svg } from "./icons.js";
+import { backend } from "./backend.js";
 import { AttachmentViewer } from "./attachment-viewer.js";
 import { bindComponentEvents, fleetHtml, pendingHeadText } from "./components.js";
-import { PHONE_QUERY, referenceAction, revealHere, WIDE_PHONE_QUERY } from "./shared/capabilities.js";
+import { PHONE_QUERY, referenceAction, WIDE_PHONE_QUERY } from "./shared/capabilities.js";
 import { costDisplay, reportedCostDisplay } from "./shared/cost-display.js";
 import { chainWalk, toolTree } from "./shared/filter.js";
 import { taskCardHtml, taskRowMeta, TASK_NO_TITLE } from "./shared/task-card.js";
@@ -274,7 +275,7 @@ const sessionIndex = new SessionIndexStore({
 // #s277 (design/slow-links.md §6.7, D3): a reader across a network — the test gzip and masking use —
 // reads a tail-first open's head turn by turn, in the order the view needs it; the desktop reads it
 // whole (stage 1). `?windowed=1|0` picks either path for a case.
-const WINDOWED = (() => { const q = new URLSearchParams(location.search).get("windowed"); return q === "1" ? true : q === "0" ? false : !revealHere(); })();
+const WINDOWED = (() => { const q = new URLSearchParams(location.search).get("windowed"); return q === "1" ? true : q === "0" ? false : !backend().local; })();
 const recordStore = new RecordStore({
   reset: () => { lastRecordCount = -1; heldRecords = null; heldTurnJump = null; fillWaiting = false; recordState.headIndex = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; projection.stub = null; projection.upto = Infinity; hashWait = null; remoteSearch = null; remoteFilter = null; stepWhenFound = null; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
   update: updateRecords,
@@ -921,7 +922,7 @@ function setArrange(next) {
 function refreshLayout() {
   const source = arrangeSource();
   if (!source || layoutState.loading) return layoutState.loading || Promise.resolve();
-  const loading = fetch(`/api/layout?source=${encodeURIComponent(source)}`, { cache: "no-store" })
+  const loading = backend().fetch(`/api/layout?source=${encodeURIComponent(source)}`, { cache: "no-store" })
     .then(response => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.text(); })
     .then(text => {
       if (arrangeSource() !== source) return;
@@ -948,7 +949,7 @@ function refreshLayout() {
   return loading;
 }
 function refreshSources() {
-  return fetch("/api/layout", { cache: "no-store" })
+  return backend().fetch("/api/layout", { cache: "no-store" })
     .then(response => response.ok ? response.json() : null)
     .then(data => {
       if (!data) return;
@@ -1019,7 +1020,7 @@ function renderFilterControl(counts, shown, total) {
 }
 async function applyIgnore(op, key) {
   try {
-    const response = await fetch(ignoreQuery({ op, key }), { cache: "no-store" });
+    const response = await backend().fetch(ignoreQuery({ op, key }), { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     toast(op === "add" ? "Hidden — find it under Hidden" : "Restored");
     await sessionIndex.refresh();
@@ -1455,7 +1456,7 @@ async function findTaskRecord(task, key) {
   const mine = taskFind = { at: performance.now() };
   let replies = null;
   try {
-    replies = await Promise.all(asks.map(q => fetch(`/search?session=${encodeURIComponent(session)}&epoch=${head.epoch}&upto=${owed.upto}&q=${encodeURIComponent(JSON.stringify(q))}`, { cache: "no-store" })
+    replies = await Promise.all(asks.map(q => backend().fetch(`/search?session=${encodeURIComponent(session)}&epoch=${head.epoch}&upto=${owed.upto}&q=${encodeURIComponent(JSON.stringify(q))}`, { cache: "no-store" })
       .then(response => (response.ok ? response.json() : Promise.reject(response.status)))));
   } catch (_) {}
   if (taskFind !== mine || recordState.session !== session) return;
@@ -2704,7 +2705,7 @@ function askRemote(mine, q, head, owed) {
     if (!recordState.pendingSearch && viewport.lastUserInput <= asked.at) stepSearch(asked.delta);
   };
   mine.tries++;
-  fetch(`/search?session=${encodeURIComponent(recordState.session)}&epoch=${head.epoch}&upto=${owed.upto}&q=${encodeURIComponent(JSON.stringify(q))}`, { cache: "no-store" })
+  backend().fetch(`/search?session=${encodeURIComponent(recordState.session)}&epoch=${head.epoch}&upto=${owed.upto}&q=${encodeURIComponent(JSON.stringify(q))}`, { cache: "no-store" })
     .then(response => (response.ok ? response.json() : Promise.reject(response.status)))
     .then(found => { if (current()) settle(found); })
     .catch(() => {
@@ -3568,7 +3569,7 @@ function openAttachment(id, path, fsig, action = "preview", sig = "", card = {})
   const record = findRecord(id); const head = record?.head || {};
   const item = { id: `attachment:${id || path}`, name: head.att_name || card.name || path.split("/").pop() || "attachment", path: head.att_path || path, fsig: head.att_fsig || fsig, sig: head.att_sig || sig, text: head.att_text, data: head.att_datauri, embedded: head.att_datauri != null || head.att_text != null };
   const shown = card.src || "";
-  const fileUrl = item.path && item.fsig ? `/file?path=${encodeURIComponent(item.path)}&sig=${encodeURIComponent(item.fsig)}` : "";
+  const fileUrl = item.path && item.fsig ? backend().url(`/file?path=${encodeURIComponent(item.path)}&sig=${encodeURIComponent(item.fsig)}`) : "";
   item.source = item.data || fileUrl || shown;
   // #324: an image with its file on disk AND a stamp to show it is opened from the file — for a
   // pasted image that is the saved original, where the copy inside the transcript is a downscaled
@@ -3609,7 +3610,7 @@ function paneImage(id) {
 function openReferenceOffer({ path, fileSig = "", revealSig = "", record = null }) {
   const head = record?.head || {};
   const item = { id: `reference:${path}`, name: head.att_name || path.split("/").pop() || "file", path, fsig: fileSig, sig: revealSig, text: head.att_text, data: head.att_datauri };
-  const action = referenceAction({ fileSig, revealSig, reveal: revealHere() });
+  const action = referenceAction({ fileSig, revealSig, reveal: backend().local });
   if (action === "preview") preview.open(item);
   else if (action === "reveal") attachmentViewer.reveal(item);
   else attachmentViewer.copyPath(item);

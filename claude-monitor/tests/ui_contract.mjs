@@ -758,7 +758,7 @@ assert.match(appSource, /ignoreQuery\(\{ op, key \}\)/, "the shell hides and res
 assert.match(appSource, /visibleTree\(agents, \{ showHidden: indexState\.showHidden/, "the tree is filtered through the tested predicate, not ad hoc");
 assert.match(productionCss, /\.tree-action\{/, "row actions have a production treatment");
 assert.match(productionCss, /\.tree-row\.is-hidden\{/, "a revealed hidden row is visibly different");
-assert.match(appSource, /referenceAction\(\{ fileSig, revealSig(, reveal: revealHere\(\))? \}\)/, "reference clicks dispatch on the tested precedence (#335: told whether the file manager is the reader's)");
+assert.match(appSource, /referenceAction\(\{ fileSig, revealSig(, reveal: (revealHere\(\)|backend\(\)\.local))? \}\)/, "reference clicks dispatch on the tested precedence (#335: told whether the file manager is the reader's)");
 assert.match(readFileSync(new URL("../../claude-monitor/src/codex-ui/attachment-viewer.js", import.meta.url), "utf8"), /revealQuery\(\{ path: item\.path, sig: item\.sig \}\)/, "reveal calls /__reveal with the REVEAL stamp, never the file stamp");
 assert.match(productionCss, /\.renderer-target-link\{/, "stamped tool-header paths read as references");
 console.log("reveal cases passed");
@@ -3947,4 +3947,48 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.ok(css.includes("body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!important}"), "native mode never shows them");
   assert.match(store, /images: images\.map\(item => item\.url\)/, "the send carries the strip's images");
   console.log("#s237 image send cases passed");
+}
+
+// #s416 (design/embedding.md step 1): the backend handle. The page's own handle is what the page
+// always did; a host's prefix, an absolute origin and a native host's own scheme each join a server
+// path the same way; locality and mdrev's base are the handle's, not the page's.
+{
+  const { backendHandle, backend, useBackend } = await import("../../claude-monitor/src/codex-ui/backend.js");
+  const page = backendHandle();
+  assert.equal(page.base, "");
+  assert.equal(page.url("/api/sessions"), "/api/sessions", "the page's own handle changes nothing");
+  assert.equal(page.mdrevUrl("/markdown"), "/markdown");
+  assert.equal(page.local, true, "node has no location: the loopback answer, as revealHere gives");
+  const prefixed = backendHandle({ base: "/agents/monitor/" });
+  assert.equal(prefixed.url("/file?path=x&sig=y"), "/agents/monitor/file?path=x&sig=y", "a host's prefix, trailing slash dropped");
+  assert.equal(prefixed.mdrevUrl("/mdrev/1.1.77/mdrev.js"), "/agents/monitor/mdrev/1.1.77/mdrev.js");
+  const remote = backendHandle({ base: "https://mac.example.ts.net" });
+  assert.equal(remote.url("/pull?session=s"), "https://mac.example.ts.net/pull?session=s");
+  assert.equal(remote.local, false, "a monitor at another origin is not the reader's machine");
+  assert.equal(backendHandle({ base: "http://127.0.0.1:2727" }).local, true, "a loopback origin is");
+  const device = backendHandle({ base: "app://d/mac-mini", mdrev: "app://d/mac-mini/pinned" });
+  assert.equal(device.url("/records?session=s&offset=0"), "app://d/mac-mini/records?session=s&offset=0", "a native host's own scheme");
+  assert.equal(device.local, false);
+  assert.equal(device.mdrevUrl("/markdown"), "app://d/mac-mini/pinned/markdown", "mdrev's base is the handle's");
+  assert.equal(backendHandle({ base: "app://d/mac-mini", local: true }).local, true, "a host may say the reader is local");
+  assert.throws(() => page.url("api/sessions"), /not a server path/);
+  assert.throws(() => page.url("https://elsewhere/api"), /not a server path/);
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (url, init) => { calls.push([url, init]); return Promise.resolve({ ok: true }); };
+  try {
+    await backendHandle({ base: "https://h", credentials: "include" }).fetch("/api/send?target=t", { method: "POST", body: "x" });
+    await device.mdrevFetch("/api/mdrev/hold", { method: "POST" });
+    assert.deepEqual(calls, [
+      ["https://h/api/send?target=t", { credentials: "include", method: "POST", body: "x" }],
+      ["app://d/mac-mini/pinned/api/mdrev/hold", { credentials: "same-origin", method: "POST" }],
+    ], "a fetch carries the handle's credentials and the caller's init");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  const before = backend();
+  useBackend(device);
+  assert.equal(backend(), device, "a host points the components at its server before mounting them");
+  useBackend(before);
+  console.log("#s416 backend handle cases passed");
 }

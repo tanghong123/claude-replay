@@ -7,8 +7,8 @@ import { OutgoingMessages } from "./outgoing.js";
 import { DeliveryJournal } from "./delivery-journal.js";
 import { ProjectPicker } from "./project-picker.js";
 import { SessionConflict, isThreadInUse } from "./session-conflict.js";
-import { PHONE_QUERY } from "/monitor-ui/shared/capabilities.js";
-import { controlState, indexState, selectedRow } from "/monitor-ui/state.js";
+import { PHONE_QUERY } from "../monitor-ui/shared/capabilities.js";
+import { controlState, indexState, selectedRow } from "../monitor-ui/state.js";
 
 const byId = id => document.getElementById(id);
 const make = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text) node.textContent = text; return node; };
@@ -21,7 +21,7 @@ const effortLabel = value => ({ xhigh: "Extra High", max: "Maximum", ultra: "Ult
  */
 export class MonitorControls {
   constructor(actions) {
-    this.active = true; this.actions = actions; this.api = new GatewayApi(); this.state = freshWorkspace(); this.projects = []; this.models = [];
+    this.active = true; this.actions = actions; this.api = new GatewayApi(actions?.backend?.fetch); this.state = freshWorkspace(); this.projects = []; this.models = [];
     this.browserAccess = "paired"; this.catalogEpoch = null; this.observedEpoch = null; this.connectionEpoch = null; this.latestError = null;
     this.initialThread = new URL(location.href).searchParams.get("thread");
     this.threads = []; this.drafts = new Map(); this.draftRevisions = new Map(); this.imageErrors = new Map(); this.uncertainSendPayloads = new Map(); this.sendDrafts = new Map(); this.requestDrafts = new Map(); this.uncertainActions = new Map(); this.selected = null; this.generation = 0; this.pending = false; this.creating = false; this.archived = false; this.projectId = "";
@@ -766,7 +766,7 @@ export class MonitorControls {
   connectEvents() {
     if (this.active === false) return;
     this.events?.close();
-    const events = this.events = new EventSource("/api/codex/events", { withCredentials: true });
+    const events = this.events = new EventSource(this.actions?.backend ? this.actions.backend.url("/api/codex/events") : "/api/codex/events", { withCredentials: true });
     events.onmessage = message => {
       if (this.events !== events) return;
       try {

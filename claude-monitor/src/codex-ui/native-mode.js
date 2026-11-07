@@ -1,4 +1,5 @@
 import { appendDesktopHelp, mountNativeMenu, renderNativeMenu, renderNativeServerStatus, positionNativeMenu, readNativeStatus, ownsNativeServer, confirmNativeShutdown } from "./native-menu.js";
+import { backend } from "./backend.js";
 import { controlState, indexState, selectedRow } from "./state.js";
 
 const byId = id => document.getElementById(id);
@@ -147,7 +148,7 @@ export class NativeModeControls {
   async checkStatus() {
     this.checking = true;
     try {
-      const status = await readNativeStatus(fetch);
+      const status = await readNativeStatus(backend().fetch);
       this.status = status; this.activationFailed = false;
     } catch (error) { this.status = { statusError: `Cannot check Codex server status: ${error.message}`, cause: error }; }
     finally { this.checking = false; this.paint(); }
@@ -179,8 +180,8 @@ export class NativeModeControls {
     if (!controlState.write || this.pending) return;
     this.mode = "enabling"; this.activationFailed = false; this.paint();
     try {
-      const { GatewayApi } = await import("/codex-workspace/api.js");
-      const result = await new GatewayApi().action("start", { writeMode: true, startIfMissing: true });
+      const { GatewayApi } = await import(backend().url("/codex-workspace/api.js"));
+      const result = await new GatewayApi(backend().fetch).action("start", { writeMode: true, startIfMissing: true });
       await this.actions.nativeStyles?.();
       await this.adopt(result);
       if (this.menu.matches(":popover-open")) this.appendConnectionHelp();
@@ -202,7 +203,7 @@ export class NativeModeControls {
     this.paint();
     try {
       // Refresh ownership: a previously external endpoint may now be Monitor-owned.
-      this.status = await readNativeStatus(fetch);
+      this.status = await readNativeStatus(backend().fetch);
       const owned = ownsNativeServer(this.status);
       if (owned || this.status.activeWork || this.status.activeTurns?.length) {
         if (this.menu.matches(":popover-open")) this.menu.hidePopover();
@@ -211,8 +212,8 @@ export class NativeModeControls {
       this.mode = "disabling"; this.actions.pauseIndex?.(); paused = true;
       if (this.native) { this.native.closing = true; this.native.suspendEvents(); }
       this.paint();
-      const { GatewayApi } = await import("/codex-workspace/api.js");
-      this.status = await new GatewayApi().request("stop", {});
+      const { GatewayApi } = await import(backend().url("/codex-workspace/api.js"));
+      this.status = await new GatewayApi(backend().fetch).request("stop", {});
       this.finishDisable();
       if (this.status.shutdownWarnings?.length) this.actions.toast(this.status.shutdownWarnings[0]);
       return true;
@@ -233,12 +234,12 @@ export class NativeModeControls {
     if (this.native) return this.native;
     if (this.installing) return this.installing;
     this.installing = (async () => {
-      const { MonitorControls } = await import("/codex-workspace/monitor-controls.js");
+      const { MonitorControls } = await import(backend().url("/codex-workspace/monitor-controls.js"));
       const presentation = new NativePresentation();
       if (indexState.selected) this.drafts.set(indexState.selected, byId("composeInput").value);
       this.presentation = presentation;
       document.body.dataset.sharedCodex = "true";
-      this.native = new MonitorControls({ ...this.actions, nativeManaged: true,
+      this.native = new MonitorControls({ ...this.actions, backend: backend(), nativeManaged: true,
         nativeDisabled: () => { if (this.mode !== "disabling") this.finishDisable(); },
         nativeNewClosed: () => { this.intent = "none"; this.paint(); } });
       presentation.capture(); presentation.show(); this.view = "native"; this.composerGeneration++;
@@ -267,7 +268,7 @@ export class NativeModeControls {
   }
   async loadSessions() {
     if (this.enabled && controlState.write && this.native) return this.native.loadSessions();
-    const response = await fetch("/api/sessions", { cache: "no-store" });
+    const response = await backend().fetch("/api/sessions", { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.json();
   }

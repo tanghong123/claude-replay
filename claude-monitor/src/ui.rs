@@ -154,6 +154,10 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/view-model.js").as_slice(),
         ),
+        "monitor-ui/backend.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/backend.js").as_slice(),
+        ),
         "monitor-ui/components.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/components.js").as_slice(),
@@ -341,6 +345,7 @@ mod tests {
                 "attachment-viewer.js",
                 include_str!("codex-ui/attachment-viewer.js"),
             ),
+            ("backend.js", include_str!("codex-ui/backend.js")),
             ("components.js", include_str!("codex-ui/components.js")),
             (
                 "control-store.js",

@@ -1,5 +1,6 @@
 // The optional enabling control is the only native UI loaded before activation.
 import { mountNativeMenu, renderNativeMenu, renderNativeServerStatus, positionNativeMenu, readNativeStatus } from "./native-menu.js";
+import { backend } from "./backend.js";
 import { controlState } from "./state.js";
 import { installNativeController } from "./app.js";
 
@@ -16,7 +17,7 @@ function toast(message) { const node = byId("toast"); node.textContent = message
 function nativeStyles() {
   if (byId("codexNativeStyles")) return Promise.resolve();
   return new Promise((resolve, reject) => {
-    const link = document.createElement("link"); link.id = "codexNativeStyles"; link.rel = "stylesheet"; link.href = "/codex-workspace/monitor.css";
+    const link = document.createElement("link"); link.id = "codexNativeStyles"; link.rel = "stylesheet"; link.href = backend().url("/codex-workspace/monitor.css");
     link.onload = resolve; link.onerror = () => { link.remove(); reject(new Error("Cannot load native controls. Retry activation.")); };
     document.head.append(link);
   });
@@ -29,13 +30,13 @@ async function openMenu() {
   if (!controlState.write || busy) return;
   busy = true; button.disabled = true;
   try {
-    const status = await readNativeStatus(fetch);
+    const status = await readNativeStatus(backend().fetch);
     const enable = renderNativeMenu(menu, { enabled: false, status }, async () => {
       if (busy || !controlState.write) return;
       busy = true; enable.disabled = true; byId("writeSwitch").disabled = true;
       try {
-        const { GatewayApi } = await import("/codex-workspace/api.js");
-        const activated = await new GatewayApi().request("start", { writeMode: true, startIfMissing: true });
+        const { GatewayApi } = await import(backend().url("/codex-workspace/api.js"));
+        const activated = await new GatewayApi(backend().fetch).request("start", { writeMode: true, startIfMissing: true });
         await nativeStyles();
         const { NativeModeControls } = await import("./native-mode.js");
         byId("writeSwitch").onclick = originalSwitch;
