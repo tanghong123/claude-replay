@@ -803,4 +803,96 @@ fn a_phone_sorts_an_arranged_section_from_a_sheet() {
         serde_json::json!(true),
         "the last row is reachable: {pop}"
     );
+    // #s403: the same phone held sideways in a Home Screen app, where the page has the screen's
+    // 402px and the home indicator takes the bottom 21 (the island the sides). The popover ends
+    // above the indicator, wherever it is placed, and its last row can still be reached.
+    harness::phone(&tab, 874, 402);
+    harness::safe_area(&tab, (0, 59, 21, 59));
+    tab.navigate_to(url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    open_drawer(&tab);
+    let glyph = rect(&tab, "#tree .arranged-head [data-section-view]");
+    harness::finger_tap(
+        &tab,
+        glyph[0].as_f64().unwrap() + glyph[2].as_f64().unwrap() / 2.0,
+        glyph[1].as_f64().unwrap() + glyph[3].as_f64().unwrap() / 2.0,
+    );
+    until(
+        &tab,
+        "!document.getElementById('sectionViewMenu').hidden",
+        "the menu opens",
+        Duration::from_secs(10),
+        "document.getElementById('sectionViewMenu').className",
+    );
+    let pop = rect(&tab, "#sectionViewMenu");
+    let (top, bottom) = (
+        pop[1].as_f64().unwrap(),
+        pop[1].as_f64().unwrap() + pop[3].as_f64().unwrap(),
+    );
+    assert!(
+        top >= 0.0 && bottom <= 402.0 - 21.0 + 0.5,
+        "the popover ends above the home indicator: {pop}"
+    );
+    let last = eval(
+        &tab,
+        "(function () { var m = document.getElementById('sectionViewMenu'); m.scrollTop = m.scrollHeight; var r = m.querySelector('.section-menu-reset').getBoundingClientRect(); return r.top >= 0 && r.bottom <= 381.5; })()",
+    );
+    assert_eq!(
+        last,
+        serde_json::json!(true),
+        "the last row is reachable above the indicator: {pop}"
+    );
+    harness::safe_area(&tab, (0, 0, 0, 0));
+}
+
+/// #s403: on a desktop the section menu keeps its stylesheet's cap, 74vh and at most 640px: the
+/// page's height may only lower it (a short window, a phone's visible page), never lift it, and
+/// no inline height overrides it in a tall window.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_desktop_section_menu_keeps_its_stylesheet_cap() {
+    let _serial = serial();
+    let base = base("layout-desktop-menu");
+    let stores = Stores::new(&base);
+    world(&stores);
+    let _monitor = Monitor::spawn(Kind::V1, 3216, &base, Some(&stores), false);
+    let (_browser, tab) = chrome_tab();
+    harness::resize(&tab, 1280.0, 1100.0);
+    let url = "http://127.0.0.1:3216/?ui=app";
+    tab.navigate_to(url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-arrange', 'claude-app')",
+    );
+    tab.navigate_to(url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    until(
+        &tab,
+        "!!document.querySelector('#tree .arranged-head [data-section-view]') && innerHeight > 900",
+        "the arranged list is drawn in a tall window",
+        Duration::from_secs(60),
+        "JSON.stringify([innerHeight, document.getElementById('tree').innerText.slice(0, 200)])",
+    );
+    click(&tab, "#tree .arranged-head [data-section-view]");
+    until(
+        &tab,
+        "!document.getElementById('sectionViewMenu').hidden",
+        "the menu opens",
+        Duration::from_secs(10),
+        "document.getElementById('sectionViewMenu').className",
+    );
+    let menu = eval(
+        &tab,
+        "(function () { var m = document.getElementById('sectionViewMenu'); return JSON.stringify([m.classList.contains('sheet'), m.style.maxHeight, parseFloat(getComputedStyle(m).maxHeight), innerHeight]); })()",
+    );
+    let menu: serde_json::Value = serde_json::from_str(menu.as_str().unwrap()).unwrap();
+    assert_eq!(menu[0], serde_json::json!(false), "a popover: {menu}");
+    assert_eq!(menu[1], serde_json::json!(""), "no inline height: {menu}");
+    let cap = menu[2].as_f64().unwrap();
+    let vh = menu[3].as_f64().unwrap();
+    assert!(
+        cap <= 640.0 + 0.5 && cap <= 0.74 * vh + 0.5,
+        "the stylesheet's cap holds: {menu}"
+    );
 }

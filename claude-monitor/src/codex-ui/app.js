@@ -406,18 +406,39 @@ function sectionMenuHtml(key, label) {
 <div class="scope-menu-divider"></div>
 <button class="scope-option section-menu-reset${isDefaultView(view) ? " disabled" : ""}" type="button" data-view-reset aria-disabled="${isDefaultView(view)}"><span></span><span>${escapeText(`Reset to ${app}'s order`)}</span></button>`;
 }
+let insetProbe = null;
+/** The safe area's inset on one side, in px. Script cannot read `env()` itself, so a hidden probe
+ *  takes it as its height (#s403). */
+function safeInset(side) {
+  if (!insetProbe) {
+    insetProbe = document.createElement("div");
+    insetProbe.setAttribute("aria-hidden", "true");
+    insetProbe.style.cssText = "position:fixed;top:0;left:0;width:0;visibility:hidden;pointer-events:none";
+    app.append(insetProbe);
+  }
+  insetProbe.style.height = `env(safe-area-inset-${side}, 0px)`;
+  return insetProbe.offsetHeight;
+}
 function placeSectionMenu() {
   if (!sectionMenu || sectionMenu.hidden || !sectionMenuAnchor) return;
-  // A popover is capped at the height the reader can SEE. Its stylesheet caps (74vh from
-  // `#app .navigator-options`) count iOS Safari's vh with the bars put away: held sideways on an
-  // iPhone 17 Pro that is the screen's 402px, and the menu was 297px tall on the 292px page beside
-  // the tab bar, its foot off the screen (the fourth review of #s387). The sheet keeps its own rule.
-  sectionMenu.style.maxHeight = sectionMenu.classList.contains("sheet") ? "" : `${Math.max(0, innerHeight - 16)}px`;
+  // A popover is capped at the height the reader can SEE, between the safe areas. Its stylesheet
+  // caps (74vh from `#app .navigator-options`, and 640px) count iOS Safari's vh with the bars put
+  // away: held sideways on an iPhone 17 Pro that is the screen's 402px, and the menu was 297px tall
+  // on the 292px page beside the tab bar, its foot off the screen (the fourth review of #s387). So
+  // the page's own height, less the safe areas, may LOWER that cap and never raise it: a desktop
+  // keeps its 74vh and 640px, and a Home Screen app held sideways ends above its home indicator
+  // (#s403). The sheet keeps its own rule.
+  sectionMenu.style.maxHeight = "";
+  const top = 8 + safeInset("top"), bottom = innerHeight - 8 - safeInset("bottom");
+  if (!sectionMenu.classList.contains("sheet")) {
+    const cap = parseFloat(getComputedStyle(sectionMenu).maxHeight), room = Math.max(0, bottom - top);
+    if (!(cap <= room)) sectionMenu.style.maxHeight = `${room}px`;
+  }
   const r = sectionMenuAnchor.getBoundingClientRect();
   const width = sectionMenu.offsetWidth, height = sectionMenu.offsetHeight;
   sectionMenu.style.left = `${Math.round(Math.max(8, Math.min(r.right - width, innerWidth - width - 8)))}px`;
   const below = r.bottom + 4;
-  sectionMenu.style.top = `${Math.round(below + height <= innerHeight - 8 ? below : Math.max(8, r.top - height - 4))}px`;
+  sectionMenu.style.top = `${Math.round(below + height <= bottom ? below : Math.max(top, r.top - height - 4))}px`;
 }
 /** Upright on a phone the section menu is a sheet at the foot over a dim; held sideways, as on a
  *  desktop, a popover at the control's side (#s41: a band across a sideways screen hides what it
