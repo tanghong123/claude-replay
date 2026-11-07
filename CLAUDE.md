@@ -288,6 +288,15 @@ file, #341), so a refused PAGE load gets `HttpResponse::refusal_page`: it reload
 — same-site, so the cookie comes along — bounded by a 10 s sessionStorage stamp, then shows the
 host's refusal words; fetches keep the plain 401, and each refused page load is one stderr line
 (never the token), which names a legacy `cmauth` that did not match apart from the gate's own.
+So is each refused WRITE (#s399, for agent-metrics #s648, whose phone's change never reached its
+route): a non-GET the gate refuses, and any request a route's `deny_mutation` refuses, says its
+status and which check failed (the gate's token, the method, a foreign `Host` or a foreign
+`Origin`, the route's pairing check), with the `Host` and `Origin` as sent (`refused_write_line`).
+The foreign header is the one the verdict's own check named (#s405): the trusted tailnet names
+refresh in the background, so asking again after the reply could name the other, or none.
+`deny_mutation` marks its check in a thread-local the gate reads after the route, since the route
+runs on its connection's thread and `Request` (built by other crates too) gains no field; the line
+is said once the reply is written. A refused read that is not a page load stays quiet.
 **The page saves to a Home Screen as itself** (#320): the tab icon's green mark, square and opaque
 (`claude-monitor/src/icons/`, rendered from `app-icon.svg` by `scripts/render-app-icon.sh`), named by
 the app shell's head with a manifest and the label "Agent Monitor"; iOS also asks the root

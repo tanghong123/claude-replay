@@ -1658,20 +1658,38 @@ impl Request<'_> {
     /// the route names, a same-origin request, a paired client.
     pub fn deny_mutation(&self, method: &str) -> Option<HttpResponse> {
         if self.method != method {
+            ROUTE_REFUSAL.set(Some(RefusedBy::Method));
             return Some(HttpResponse::method_not_allowed(
                 "wrong method for this route",
             ));
         }
         if !self.origin_ok {
+            ROUTE_REFUSAL.set(Some(RefusedBy::Origin));
             return Some(HttpResponse::forbidden("cross-origin request refused"));
         }
         if !self.authenticated {
+            ROUTE_REFUSAL.set(Some(RefusedBy::Token));
             return Some(HttpResponse::unauthorized(
                 "this action requires pairing — run `claude-monitor --pair`",
             ));
         }
         None
     }
+}
+
+/// The check [`Request::deny_mutation`] refused a request on (#s399), in its order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RefusedBy {
+    Method,
+    Origin,
+    Token,
+}
+
+thread_local! {
+    /// #s399: which check `deny_mutation` refused this thread's request on, for the gate's stderr
+    /// line. A route runs on its connection's own thread, synchronously, so the gate clears this
+    /// before the route and reads it after; the route itself sees only its 405, 403 or 401.
+    static ROUTE_REFUSAL: std::cell::Cell<Option<RefusedBy>> = const { std::cell::Cell::new(None) };
 }
 
 /// A header's value by case-insensitive name (`headers` is the raw block, one per line).
@@ -1707,6 +1725,60 @@ fn refusal_line(now: u64, name: &str, cookie: &str, headers: &str) -> String {
         h("user-agent"),
     )
 }
+
+/// #s399's stderr line for a refused WRITE: a request other than a GET the gate refused, or any
+/// request a route's [`Request::deny_mutation`] refused. Its form is [`refusal_line`]'s: when, the
+/// method and path, the status, which check failed, then the `Host` and `Origin` as sent, the
+/// fetch site, the referrer's origin and the user agent. agent-metrics' Manage route (#s648) could
+/// not say why a phone's change never reached it, and a 403's two causes, a foreign `Host` and a
+/// foreign `Origin`, could not be told apart afterwards. Never the token or a cookie's value: `name`
+/// is the path without its query, `why` names the check (and for the token check only whether a
+/// cookie came), and a referrer keeps only its origin.
+fn refused_write_line(
+    now: u64,
+    method: &str,
+    name: &str,
+    code: &str,
+    why: &str,
+    headers: &str,
+) -> String {
+    let h = |name| header_value(headers, name).unwrap_or("-");
+    let referrer = header_value(headers, "referer").map_or("-", referrer_origin);
+    format!(
+        "gate: {} refused a {method} to /{name} — {code}, {why}, host {}, origin {}, \
+         sec-fetch-site {}, referrer {referrer}, user-agent {}",
+        utc_stamp(now),
+        h("host"),
+        h("origin"),
+        h("sec-fetch-site"),
+        h("user-agent"),
+    )
+}
+
+/// What a request's token said, for a refusal line (#341, #350): whether a cookie came and whose.
+/// Never its value.
+fn token_said(from: Option<TokenFrom>) -> &'static str {
+    match from {
+        None => "no cookie",
+        Some(TokenFrom::Cookie) => "a cookie that did not match",
+        // #350: the slot every gated server on this host shared — another server's token.
+        Some(TokenFrom::LegacyCookie) => "a legacy cmauth cookie that did not match",
+        Some(TokenFrom::Presented) => "a token that did not match",
+    }
+}
+
+/// Write a refusal line to stderr (#341, #s399). A test build also keeps it, so a case can read
+/// the line a real request produced on the listener's own thread.
+fn say_refusal(line: String) {
+    eprintln!("{line}");
+    #[cfg(test)]
+    if let Ok(mut said) = SAID_REFUSALS.lock() {
+        said.push(line);
+    }
+}
+
+#[cfg(test)]
+static SAID_REFUSALS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 /// A referrer cut to its origin: `scheme://host[:port]`, without path, query or fragment.
 fn referrer_origin(referrer: &str) -> &str {
@@ -1751,10 +1823,19 @@ fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
 /// and that name is as much its own as `127.0.0.1` is.
 pub type HostCheck = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
-/// Whether the request's `Host`/`Origin` are the server's own origin at `port` — the loopback,
-/// or a host `trusted` says is its own (#331) — or absent (§3.2). A foreign `Host` is DNS
-/// rebinding; a foreign `Origin` is a cross-site fetch; either is refused.
+/// Whether the request's `Host`/`Origin` are the server's own origin at `port`: the write verdict
+/// [`foreign_header`] gives, as a yes or no, for the cases that pin it.
+#[cfg(test)]
 fn origin_ok(headers: &str, port: u16, trusted: Option<&HostCheck>) -> bool {
+    foreign_header(headers, port, trusted).is_none()
+}
+
+/// Which of `Host` and `Origin` is not the server's own origin at `port`, `Host` first; `None`
+/// when both are ours or absent (§3.2). Ours is the loopback, or a host `trusted` says is its own
+/// (#331). A foreign `Host` is DNS rebinding (or a name the trusted-hosts list lacks); a foreign
+/// `Origin` is a cross-site fetch; either refuses the request's writes. The request records the
+/// answer once (#s405), and #s399's refusal line names the header from that same answer.
+fn foreign_header(headers: &str, port: u16, trusted: Option<&HostCheck>) -> Option<&'static str> {
     let ours = |raw: &str| {
         let v = raw
             .trim()
@@ -1764,8 +1845,13 @@ fn origin_ok(headers: &str, port: u16, trusted: Option<&HostCheck>) -> bool {
             || v == format!("localhost:{port}")
             || trusted.is_some_and(|t| t(&v.to_ascii_lowercase()))
     };
-    header_value(headers, "host").is_none_or(ours)
-        && header_value(headers, "origin").is_none_or(ours)
+    if !header_value(headers, "host").is_none_or(ours) {
+        Some("Host")
+    } else if !header_value(headers, "origin").is_none_or(ours) {
+        Some("Origin")
+    } else {
+        None
+    }
 }
 
 /// The listener's access rule (#196 D3b + §4.2). Loopback is a MACHINE boundary, not a
@@ -2507,48 +2593,81 @@ fn serve_connection<R: Into<HttpReply>>(
     // sends depends on it, so neither waits on that check. A public read is told the origin is
     // not ours: its route serves bytes that need no origin, and the verdict only ever refuses.
     let local_port = local.map(|l| l.port()).unwrap_or(0);
-    let request = || Request {
-        method: &method,
-        name,
-        query,
-        body: &body,
-        authenticated: gate.token_ok(presented.as_deref()),
-        origin_ok: !public && origin_ok(&headers, local_port, gate.trusted_hosts.as_ref()),
-        masked: super::mask::policy().masks(host_is_local(header_value(&headers, "host"))),
+    // #s405: the header the verdict found foreign, kept for the refusal line. The trusted-hosts
+    // check can change its answer at any moment (the tailnet names refresh in the background), so
+    // the line names what this one check said, never a second check's.
+    let verdict_foreign: std::cell::Cell<Option<&'static str>> = std::cell::Cell::new(None);
+    let request = || {
+        let foreign = if public {
+            None
+        } else {
+            foreign_header(&headers, local_port, gate.trusted_hosts.as_ref())
+        };
+        verdict_foreign.set(foreign);
+        Request {
+            method: &method,
+            name,
+            query,
+            body: &body,
+            authenticated: gate.token_ok(presented.as_deref()),
+            origin_ok: !public && foreign.is_none(),
+            masked: super::mask::policy().masks(host_is_local(header_value(&headers, "host"))),
+        }
     };
 
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    };
+    // #s399: a route runs here, on this connection's thread; what `deny_mutation` refused it on is
+    // read after it, and said once the reply is written. A foreign Host or Origin is named from
+    // the verdict's own check (#s405), never asked again.
+    let mut route_refusal = None;
+    let mut route = || {
+        ROUTE_REFUSAL.set(None);
+        let reply: HttpReply = handler(&request()).into();
+        route_refusal = ROUTE_REFUSAL.take();
+        reply
+    };
     let (r, set_cookie, redirect_root) = match access {
         // #341: a refused PAGE load is said on stderr — whether a cookie came, and what the browser
         // said the navigation's site was (never the token) — so a report of "it said not paired"
         // has something to be read against; and it gets the refusal as a page that retries once.
         Access::Denied if is_page_load(&method, &headers) => {
-            let cookie = match from {
-                None => "no cookie",
-                Some(TokenFrom::Cookie) => "a cookie that did not match",
-                // #350: the slot every gated server on this host shared — another server's token.
-                Some(TokenFrom::LegacyCookie) => "a legacy cmauth cookie that did not match",
-                Some(TokenFrom::Presented) => "a token that did not match",
-            };
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs());
-            eprintln!("{}", refusal_line(now, name, cookie, &headers));
+            say_refusal(refusal_line(now(), name, token_said(from), &headers));
             let refusal = HttpResponse::refusal_page_with_pairing(
                 gate.refusal,
                 gate.token.is_some() && gate.pair_codes.is_some(),
             );
             (refusal.into(), None, false)
         }
-        Access::Denied => (
-            // A 401 is a well-formed reply: the fleet's `status_code` probe reads a gated
-            // remote monitor as "serving" (and its own tunnel passes same-user anyway).
-            HttpResponse::unauthorized(gate.refusal).into(),
-            None,
-            false,
-        ),
+        Access::Denied => {
+            // #s399: a refused WRITE is said too — a phone's change that never reached its route
+            // left nothing on the host to say why. A refused read (a page's own fetch, a probe)
+            // stays quiet: the fleet's probes would fill the log.
+            if method != "GET" {
+                let why = format!("no valid token at the gate ({})", token_said(from));
+                say_refusal(refused_write_line(
+                    now(),
+                    &method,
+                    name,
+                    "401",
+                    &why,
+                    &headers,
+                ));
+            }
+            (
+                // A 401 is a well-formed reply: the fleet's `status_code` probe reads a gated
+                // remote monitor as "serving" (and its own tunnel passes same-user anyway).
+                HttpResponse::unauthorized(gate.refusal).into(),
+                None,
+                false,
+            )
+        }
         Access::Ok if oversized => (too_large().into(), None, false),
         Access::Ok => (
-            handler(&request()).into(),
+            route(),
             if migrate { presented.clone() } else { None },
             false,
         ),
@@ -2568,7 +2687,7 @@ fn serve_connection<R: Into<HttpReply>>(
             } else if oversized {
                 (too_large().into(), Some(tok), false)
             } else {
-                (handler(&request()).into(), Some(tok), false)
+                (route(), Some(tok), false)
             }
         }
     };
@@ -2591,7 +2710,34 @@ fn serve_connection<R: Into<HttpReply>>(
         // A suspended or slow phone must not retain a writer thread indefinitely.
         stream.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
     }
-    write_reply(&mut stream, &head, &r)
+    let written = write_reply(&mut stream, &head, &r);
+    if let Some(check) = route_refusal {
+        let (code, why) = match check {
+            RefusedBy::Method => ("405", "wrong method for this route".to_string()),
+            RefusedBy::Origin => (
+                "403",
+                match verdict_foreign.get() {
+                    Some(which) => format!("foreign {which}"),
+                    // Only a public path's request is told its origin is not ours without either
+                    // header being foreign, and no public path writes.
+                    None => "origin not checked (a public path)".to_string(),
+                },
+            ),
+            RefusedBy::Token => (
+                "401",
+                format!("not paired: no valid token ({})", token_said(from)),
+            ),
+        };
+        say_refusal(refused_write_line(
+            now(),
+            &method,
+            name,
+            code,
+            &why,
+            &headers,
+        ));
+    }
+    written
 }
 
 /// `/pair` (the page) and `/api/pair` (redeem a code for the gate's cookie), #11. Returns the
@@ -3792,6 +3938,255 @@ mod tests {
             fetch.contains("Content-Type: text/plain; charset=utf-8")
                 && fetch.ends_with("open the dashboard with `agent-metrics`"),
             "a fetch keeps the plain refusal: {fetch}"
+        );
+    }
+
+    /// #s399: a refused WRITE is said on stderr in one line naming the status and the check that
+    /// failed — the gate's token, the route's method, a foreign `Host` or a foreign `Origin`, or the
+    /// route's pairing check — with the `Host` and `Origin` as sent, and never the token or a
+    /// cookie's value. A write that goes through, and a refused read that is not a page load, say
+    /// nothing. Each case writes to a route of its own, so cases running beside it cannot be mixed in.
+    #[test]
+    fn a_refused_write_says_its_code_its_check_host_and_origin_and_never_the_token() {
+        use std::io::{Read, Write};
+        let handler: RouteHandler = std::sync::Arc::new(|req: &Request| {
+            if let Some(deny) = req.deny_write() {
+                return deny;
+            }
+            HttpResponse::json(r#"{"ok":true}"#.into())
+        });
+        let paired =
+            spawn_listener_gated(0, handler.clone(), AuthGate::for_test(Some("t0k"))).unwrap();
+        // Unpaired, and admitting this process's own loopback on every platform: the route's own
+        // pairing check is what refuses.
+        let mut open = AuthGate::for_test(None);
+        open.euid = current_euid();
+        let unpaired = spawn_listener_gated(0, handler, open).unwrap();
+        let send = |port: u16, head: String| {
+            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.write_all(head.as_bytes()).unwrap();
+            let mut raw = String::new();
+            s.read_to_string(&mut raw).unwrap();
+            raw.lines().next().unwrap_or("").to_string()
+        };
+        let said = |route: &str| -> Vec<String> {
+            // The line is said after the reply is written; give the listener's thread its turn.
+            let needle = format!(" to /{route} — ");
+            for _ in 0..100 {
+                let lines: Vec<String> = SAID_REFUSALS
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|l| l.contains(&needle))
+                    .cloned()
+                    .collect();
+                if !lines.is_empty() {
+                    return lines;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Vec::new()
+        };
+        let one = |route: &str| -> String {
+            let lines = said(route);
+            assert_eq!(lines.len(), 1, "one line for /{route}: {lines:?}");
+            let line = lines[0].clone();
+            assert!(line.starts_with("gate: 20"), "{line}");
+            for secret in ["t0k", "wr0ng"] {
+                assert!(
+                    !line.contains(secret),
+                    "never the token or a cookie: {line}"
+                );
+            }
+            line
+        };
+        let host = format!("127.0.0.1:{paired}");
+
+        // A cross-site POST that carries the token: the route refuses it, 403, foreign Origin.
+        let status = send(
+            paired,
+            format!(
+                "POST /api/s399-origin HTTP/1.1\r\nHost: {host}\r\nOrigin: https://evil.example\r\n\
+                 Authorization: Bearer t0k\r\nSec-Fetch-Site: cross-site\r\n\
+                 User-Agent: s399-test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            ),
+        );
+        assert!(status.contains(" 403 "), "{status}");
+        assert_eq!(
+            one("api/s399-origin").split_once(" refused ").unwrap().1,
+            format!(
+                "a POST to /api/s399-origin — 403, foreign Origin, host {host}, origin \
+                 https://evil.example, sec-fetch-site cross-site, referrer -, user-agent s399-test"
+            )
+        );
+
+        // A rebound Host: 403 too, and the line says it was the Host.
+        let status = send(
+            paired,
+            "POST /api/s399-host HTTP/1.1\r\nHost: rebind.example:80\r\n\
+             Authorization: Bearer t0k\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_string(),
+        );
+        assert!(status.contains(" 403 "), "{status}");
+        let line = one("api/s399-host");
+        assert!(
+            line.contains("— 403, foreign Host, host rebind.example:80, origin -,"),
+            "{line}"
+        );
+
+        // A token-less POST to a paired gate is refused at the gate, 401, and says whether a
+        // cookie came: here one that did not match, never its value.
+        let status = send(
+            paired,
+            format!(
+                "POST /api/s399-token?token=wr0ng HTTP/1.1\r\nHost: {host}\r\n\
+                 Cookie: {}=wr0ng\r\nReferer: http://{host}/?token=wr0ng\r\n\
+                 Content-Length: 0\r\nConnection: close\r\n\r\n",
+                cookie_name("t0k")
+            ),
+        );
+        assert!(status.contains(" 401 "), "{status}");
+        let line = one("api/s399-token");
+        assert!(
+            line.contains(
+                "a POST to /api/s399-token — 401, no valid token at the gate (a token that did \
+                 not match),"
+            ),
+            "{line}"
+        );
+        assert!(line.contains(&format!("referrer http://{host},")), "{line}");
+        let status = send(
+            paired,
+            format!(
+                "POST /api/s399-nothing HTTP/1.1\r\nHost: {host}\r\nContent-Length: 0\r\n\
+                 Connection: close\r\n\r\n"
+            ),
+        );
+        assert!(status.contains(" 401 "), "{status}");
+        assert!(
+            one("api/s399-nothing").contains("401, no valid token at the gate (no cookie),"),
+            "a token-less POST"
+        );
+
+        // The gate let it in, unpaired, and the route's own pairing check refused it.
+        let open_host = format!("127.0.0.1:{unpaired}");
+        let status = send(
+            unpaired,
+            format!(
+                "POST /api/s399-unpaired HTTP/1.1\r\nHost: {open_host}\r\nContent-Length: 0\r\n\
+                 Connection: close\r\n\r\n"
+            ),
+        );
+        assert!(status.contains(" 401 "), "{status}");
+        assert!(
+            one("api/s399-unpaired").contains("401, not paired: no valid token (no cookie),"),
+            "the route's pairing check"
+        );
+
+        // A GET to a write route: 405, the method.
+        let status = send(
+            paired,
+            format!(
+                "GET /api/s399-method HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer t0k\r\n\
+                 Connection: close\r\n\r\n"
+            ),
+        );
+        assert!(status.contains(" 405 "), "{status}");
+        assert!(
+            one("api/s399-method").contains("a GET to /api/s399-method — 405, wrong method"),
+            "the method"
+        );
+
+        // A write that goes through, and a refused read that is not a page load, say nothing.
+        let status = send(
+            paired,
+            format!(
+                "POST /api/s399-fine HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\n\
+                 Authorization: Bearer t0k\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            ),
+        );
+        assert!(status.contains(" 200 "), "{status}");
+        let status = send(
+            paired,
+            format!(
+                "GET /api/s399-read HTTP/1.1\r\nHost: {host}\r\nSec-Fetch-Dest: empty\r\n\
+                 Connection: close\r\n\r\n"
+            ),
+        );
+        assert!(status.contains(" 401 "), "{status}");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            said("api/s399-fine").is_empty(),
+            "a write that went through"
+        );
+        let quiet_read = SAID_REFUSALS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("/api/s399-read"));
+        assert!(!quiet_read, "a refused read that is not a page load");
+    }
+
+    /// #s405: the 403 line names the header the VERDICT found foreign. The trusted-hosts check can
+    /// change its answer at any moment (the tailnet names refresh in the background), so a second
+    /// check after the reply could name the other header, or none. Here the check says "not ours"
+    /// once and "ours" ever after, and the line still says the Origin was foreign; the check is
+    /// asked once for the request.
+    #[test]
+    fn a_refused_write_names_the_header_the_verdict_saw_though_the_trusted_hosts_change() {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let asked = std::sync::Arc::new(AtomicUsize::new(0));
+        let check: HostCheck = {
+            let asked = asked.clone();
+            std::sync::Arc::new(move |host: &str| {
+                host == "phone.test" && asked.fetch_add(1, Ordering::SeqCst) > 0
+            })
+        };
+        let handler: RouteHandler = std::sync::Arc::new(|req: &Request| {
+            req.deny_write()
+                .unwrap_or_else(|| HttpResponse::json(r#"{"ok":true}"#.into()))
+        });
+        let port = spawn_listener_gated(
+            0,
+            handler,
+            AuthGate::for_test(Some("t0k")).with_trusted_hosts(check),
+        )
+        .unwrap();
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.write_all(
+            format!(
+                "POST /api/s405-flip HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://phone.test\r\n\
+                 Authorization: Bearer t0k\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let mut raw = String::new();
+        s.read_to_string(&mut raw).unwrap();
+        assert!(raw.starts_with("HTTP/1.1 403"), "{raw}");
+        let mut line = None;
+        for _ in 0..100 {
+            line = SAID_REFUSALS
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|l| l.contains(" to /api/s405-flip — "))
+                .cloned();
+            if line.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let line = line.expect("a line for the refused write");
+        assert!(
+            line.contains("— 403, foreign Origin, host 127.0.0.1:"),
+            "the header the verdict saw: {line}"
+        );
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            1,
+            "the check is asked once for the request"
         );
     }
 

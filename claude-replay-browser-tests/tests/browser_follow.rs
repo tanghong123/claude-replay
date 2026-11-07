@@ -4125,8 +4125,24 @@ fn the_app_shell_info_and_turns_panes_show_the_compaction() {
     drop(monitor);
 }
 
+/// #s401: the contrast ratio (WCAG's) of the tree's first agent head against the nearest opaque
+/// background behind it, its own colour composited over that background when translucent.
+const HEAD_CONTRAST: &str = "(function(){ \
+    function parse(s){ var n = (s.match(/[\\d.]+/g) || []).map(Number); \
+      if (/^color\\(/.test(s)) n = n.slice(0, 3).map(function(v){ return v * 255; }).concat(n.length > 3 ? [n[3]] : []); \
+      return n.length > 3 ? n : n.concat([1]); } \
+    function lum(c){ var a = c.slice(0, 3).map(function(v){ v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }); \
+      return 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2]; } \
+    var head = document.querySelector('#tree .agent-label'); \
+    var bg = [255, 255, 255, 1]; \
+    for (var e = head; e; e = e.parentElement) { var c = parse(getComputedStyle(e).backgroundColor); if (c[3] > 0.99) { bg = c; break; } } \
+    var fg = parse(getComputedStyle(head).color); \
+    fg = [0, 1, 2].map(function(i){ return fg[i] * fg[3] + bg[i] * (1 - fg[3]); }); \
+    var a = lum(fg), b = lum(bg); \
+    return { ratio: Math.round((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) * 100) / 100, fg: fg.map(Math.round), bg: bg.slice(0, 3) }; })()";
+
 /// #75: the theme toggle in the sidebar head is a visible button with a glyph, and it toggles
-/// the theme.
+/// the theme. #s401: the tree's agent head reads in both themes.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_theme_toggle_is_visible_and_works() {
@@ -4160,6 +4176,25 @@ fn the_app_shell_theme_toggle_is_visible_and_works() {
         "…and a name: {before}"
     );
     let was_dark = before["theme"] == "dark";
+    // #s401: the tree's agent head is drawn (the fixture is idle, so every bucket is shown), and
+    // its contrast against what lies behind it is read in each theme.
+    harness::show_every_session(
+        &tab,
+        &format!("http://127.0.0.1:2870/?ui=app&session={sid}"),
+    );
+    harness::until(
+        &tab,
+        "!!document.querySelector('#tree .agent-label')",
+        "the tree's agent head",
+        std::time::Duration::from_secs(30),
+        "document.getElementById('tree').innerText.slice(0, 120)",
+    );
+    let head_contrast = || {
+        harness::probe(&tab, HEAD_CONTRAST)["ratio"]
+            .as_f64()
+            .unwrap()
+    };
+    let contrast_before = head_contrast();
     harness::eval(&tab, "document.getElementById('themeBtn').click(); 'ok'");
     harness::until(
         &tab,
@@ -4170,6 +4205,20 @@ fn the_app_shell_theme_toggle_is_visible_and_works() {
         "the click to toggle the theme",
         std::time::Duration::from_secs(5),
         "document.documentElement.dataset.theme",
+    );
+    // #s401: the head reads in the dark theme at least as it does in the light one. Its colour was
+    // one fixed grey for both themes: 2.7:1 over the light sidebar, 1.3:1 over the dark one. The
+    // light theme keeps it (a fix through its own --faint went down to 2.3:1).
+    let contrast_after = head_contrast();
+    let (light, dark) = if was_dark {
+        (contrast_after, contrast_before)
+    } else {
+        (contrast_before, contrast_after)
+    };
+    eprintln!("#s401 agent head contrast: light {light}:1, dark {dark}:1");
+    assert!(
+        light >= 2.5 && dark >= 2.5 && dark >= light * 0.9,
+        "the agent head reads in both themes: light {light}:1, dark {dark}:1"
     );
     // The collapse-all control beside it is drawn too (#75 covers both empty buttons).
     let collapse_all = harness::probe(&tab, "(function(){ var b = document.getElementById('collapseBtn'); return { glyph: !!b.querySelector('svg'), label: b.getAttribute('aria-label') || '' }; })()");
