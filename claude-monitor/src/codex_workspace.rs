@@ -388,6 +388,7 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::routes::contract_index;
 
     #[cfg(unix)]
     #[test]
@@ -606,5 +607,79 @@ mod tests {
         assert_eq!(render_route(&request).code, "400 Bad Request");
         request.origin_ok = false;
         assert_eq!(render_route(&request).code, "403 Forbidden");
+    }
+
+    /// #s421: Codex native mode's rows of docs/backend-contract.md are answered by the handler a
+    /// native build serves, with its runtime inert (nothing is started). Beneath it is the
+    /// session service's own static fallback, so a row native mode does not answer reads as that
+    /// fallback's answer, as `routes`' test reads the rest of the index.
+    #[test]
+    fn the_contract_s_native_rows_are_answered_by_a_native_build() {
+        let root = std::env::temp_dir().join(format!("cm-native-contract-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("static")).unwrap();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let runtime = NativeRuntime::new(RuntimeConfig {
+            gateway: Config {
+                endpoint: format!("ws://127.0.0.1:{port}"),
+                allowed_roots: vec![root.clone()],
+                state_path: root.join("receipts.sqlite3"),
+            },
+            binary: root.join("missing-codex"),
+            home: root.join("codex-home"),
+            log_path: root.join("native.log"),
+        })
+        .unwrap();
+        let index = Arc::new(Index::new(root.clone(), root.join("state"), Vec::new()));
+        let fallback = root.join("static");
+        let legacy: RouteHandler = Arc::new(move |request: &Request| {
+            claude_replay_html::service_routes(None, &fallback, request)
+        });
+        let serve = handler(legacy, runtime, index);
+        let ask = |name: &str| -> Option<HttpResponse> {
+            match serve(&Request {
+                method: "GET",
+                name,
+                query: "",
+                body: b"",
+                authenticated: false,
+                origin_ok: false,
+                masked: false,
+            }) {
+                HttpReply::Buffered(reply) => Some(reply),
+                HttpReply::Events(_) => None,
+            }
+        };
+        let unanswered = |reply: &Option<HttpResponse>| {
+            reply.as_ref().is_some_and(|r| {
+                let text = String::from_utf8_lossy(&r.body);
+                (r.code == "403 Forbidden" && text == "forbidden")
+                    || (r.code == "404 Not Found" && text == "not found")
+            })
+        };
+        assert!(
+            unanswered(&ask("api/nonesuch")),
+            "the check sees the fallback"
+        );
+        let rows = contract_index::rows(&contract_index::read());
+        let native: Vec<_> = rows.iter().filter(|row| row.tier == "native").collect();
+        assert!(native.len() >= 2, "the index lists native mode's prefixes");
+        for row in native {
+            let name = contract_index::probe(row, "", "");
+            assert!(
+                row.covers(&format!("/{name}")),
+                "{}'s probe {name}",
+                row.path
+            );
+            let reply = ask(&name);
+            assert!(
+                !unanswered(&reply),
+                "the contract documents {}, and a native build does not answer it",
+                row.path
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

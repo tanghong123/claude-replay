@@ -231,6 +231,8 @@ pub(super) enum KeyKind {
     /// The review prefix's: shared review — threads, hide, Share, pairing, Push.
     Viewer,
     /// The pane's: the person's own notes, nothing shared.
+    // A dependent's test build (`hermetic-tests`) reads no key, so nothing makes this one there.
+    #[cfg_attr(feature = "hermetic-tests", allow(dead_code))]
     Notes,
 }
 
@@ -240,7 +242,7 @@ fn shares(viewer: Option<&Viewer>) -> bool {
 }
 
 /// mdrev's state directory: `MDREV_STATE_DIR` when absolute, else `~/.mdrev`.
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "hermetic-tests")))]
 fn state_dir() -> Option<PathBuf> {
     std::env::var_os("MDREV_STATE_DIR")
         .map(PathBuf::from)
@@ -251,8 +253,10 @@ fn state_dir() -> Option<PathBuf> {
 /// The viewer key, read on every request to the review prefix (mdrev mints it on its first run,
 /// which may come after the monitor's): `MDREV_STATE_DIR` when absolute, else `~/.mdrev`, file
 /// `token`. `None` without one. Fixed to `None` in a test build, which hands its own to
-/// [`contract`] and never reads this machine's.
-#[cfg(not(test))]
+/// [`contract`] and never reads this machine's, and in a dependent's test build
+/// (`hermetic-tests`, #s421): claude-monitor's tests reach the review prefix through the route
+/// table, and the notes key below would otherwise be minted into this machine's `~/.mdrev`.
+#[cfg(not(any(test, feature = "hermetic-tests")))]
 fn viewer() -> Option<Viewer> {
     let state_dir = state_dir()?;
     let key = std::fs::read_to_string(state_dir.join("token")).ok()?;
@@ -264,7 +268,7 @@ fn viewer() -> Option<Viewer> {
     })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "hermetic-tests"))]
 fn viewer() -> Option<Viewer> {
     None
 }
@@ -275,7 +279,7 @@ fn viewer() -> Option<Viewer> {
 /// hex characters and a newline, mode 0600, never replacing one (`create_new`, so a race with
 /// mdrev leaves whichever came first). No state directory, no key: mdrev has not run here, and the
 /// pane stays keyless as before. Fixed to `None` in a test build, like [`viewer`].
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "hermetic-tests")))]
 fn notes_key() -> Option<Viewer> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
@@ -302,7 +306,7 @@ fn notes_key() -> Option<Viewer> {
     })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "hermetic-tests"))]
 fn notes_key() -> Option<Viewer> {
     None
 }

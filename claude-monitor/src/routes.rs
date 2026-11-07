@@ -57,6 +57,13 @@ fn ensure_known(backend: &Backend, id: &str) {
     });
 }
 
+/// The version of the backend contract this table answers (#s421, `docs/backend-contract.md`):
+/// the routes the session list and session view read, their replies and the record format. A
+/// change that only adds (a route, a field, a record kind, a value) keeps it; one that removes,
+/// renames, or changes what an answer means moves it. The app shell's page names it as
+/// `<body data-contract>`, and the document's own version line must agree: a test reads both.
+pub const CONTRACT_VERSION: u16 = 1;
+
 /// What the app shell's page names: the build, and whether the monitor is paired.
 pub struct Frontend {
     pub version: &'static str,
@@ -167,6 +174,12 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
         }
     }
 }
+
+/// The route index of docs/backend-contract.md (#s421), shared with the integration tests and with
+/// `codex_workspace`'s test of the native rows.
+#[cfg(test)]
+#[path = "../tests/contract_index/mod.rs"]
+pub(crate) mod contract_index;
 
 #[cfg(test)]
 mod tests {
@@ -406,5 +419,95 @@ mod tests {
             assert_eq!(r.code, "404 Not Found", "{query}");
             assert!(body(&r).contains("retired"), "and says why: {query}");
         }
+    }
+
+    use super::contract_index;
+
+    /// A reply the table gives for a path no route answers: the static fallback's.
+    fn unanswered(reply: &HttpResponse) -> bool {
+        let text = body(reply);
+        (reply.code == "403 Forbidden" && text == "forbidden")
+            || (reply.code == "404 Not Found" && text == "not found")
+    }
+
+    /// #s421: every route `docs/backend-contract.md` documents is one the table answers. Each row's
+    /// probe is asked as the listener would hand it on, unpaired and from a foreign origin, so no
+    /// route acts: a refusal proves the route is there, and only the static fallback's answer means
+    /// it is not. Codex native mode's rows are answered by its own handler
+    /// (`codex_workspace`'s test). And the document's version is the one the page carries.
+    #[test]
+    fn every_route_the_contract_documents_is_one_the_table_answers() {
+        let state = std::env::temp_dir().join(format!("cm-routes-contract-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&state);
+        std::fs::create_dir_all(&state).unwrap();
+        let _env = crate::index::StateEnv::set(&state);
+        // Hermetic, as the table's own test: `api/sessions` scans an empty world.
+        for var in [
+            "CLAUDE_PROJECTS_DIR",
+            "QODERWORK_PROJECTS_DIR",
+            "QWENWORK_PROJECTS_DIR",
+            "QODER_PROJECTS_DIR",
+            "CODEX_HOME",
+        ] {
+            std::env::set_var(var, state.join(var.to_ascii_lowercase()));
+        }
+        let front = Frontend {
+            version: "0.0.0-test",
+            paired: false,
+        };
+        let serve = handler(make_backend("contract"), front);
+        let ask = |method: &'static str, name: &str| {
+            serve(&Request {
+                method,
+                origin_ok: false,
+                ..get(name, "")
+            })
+        };
+        // The check tells the two apart: paths no route answers get the fallback.
+        for name in ["nonesuch", "api/nonesuch", "monitor-ui/nonesuch.js"] {
+            assert!(unanswered(&ask("GET", name)), "{name} is no route");
+        }
+        let doc = contract_index::read();
+        assert_eq!(
+            contract_index::version(&doc),
+            Some(CONTRACT_VERSION),
+            "the document's version line is CONTRACT_VERSION"
+        );
+        let page = body(&serve(&get("", "")));
+        assert!(
+            page.contains(&format!("data-contract=\"{CONTRACT_VERSION}\"")),
+            "the page carries the version its server speaks"
+        );
+        let rows = contract_index::rows(&doc);
+        assert!(rows.len() > 15, "read only {} rows", rows.len());
+        let mut asked = 0;
+        for row in rows.iter().filter(|row| row.tier != "native") {
+            let name = contract_index::probe(
+                row,
+                mdrev::VERSION,
+                claude_replay_html::mermaid_runtime_path(),
+            );
+            assert!(
+                row.covers(&format!("/{name}")),
+                "{}'s probe {name} is not under it",
+                row.path
+            );
+            let method = match contract_index::method(row) {
+                "GET" => "GET",
+                "POST" => "POST",
+                other => panic!("{}: a method the probe does not know: {other}", row.path),
+            };
+            let reply = ask(method, &name);
+            assert!(
+                !unanswered(&reply),
+                "the contract documents {} {}, and the table does not answer it ({}: {})",
+                row.method,
+                row.path,
+                reply.code,
+                body(&reply)
+            );
+            asked += 1;
+        }
+        assert!(asked > 15, "asked only {asked}");
     }
 }

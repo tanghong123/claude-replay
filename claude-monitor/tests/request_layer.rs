@@ -7,6 +7,8 @@
 
 use std::path::Path;
 
+mod contract_index;
+
 /// The routes the page's server answers, as a path's first segment.
 const ROUTES: &[&str] = &[
     "api",
@@ -22,6 +24,7 @@ const ROUTES: &[&str] = &[
     "codex-workspace",
     "pair",
     "monitor-ui",
+    "mermaid",
 ];
 
 /// A line that hands its server path to the handle.
@@ -83,6 +86,41 @@ const NOT_REQUESTS: &[(&str, &str)] = &[
     ),
 ];
 
+/// The shared modules (`codex-ui/shared`, the html crate's, #s421) also run on the offline page,
+/// which has no backend handle, so they may not import it. They build path strings for their
+/// callers (`revealQuery`, `sendQuery`), and those callers hand them to the handle. A server path
+/// they USE themselves is a request: a line that loads or fetches one.
+const SHARED_USES: &[&str] = &[
+    "fetch(",
+    ".src",
+    ".href",
+    "new EventSource(",
+    "import(",
+    "location",
+];
+
+/// Every module the page's server serves the shell, as `(dir/name, path)`, sorted, with the
+/// modules that are not requests left out.
+fn modules() -> Vec<(String, std::path::PathBuf)> {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = Vec::new();
+    for dir in ["codex-ui", "codex-workspace", "codex-ui/shared"] {
+        let mut entries: Vec<_> = std::fs::read_dir(src.join(dir))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|x| x == "js"))
+            .collect();
+        entries.sort();
+        for path in entries {
+            let name = format!("{dir}/{}", path.file_name().unwrap().to_string_lossy());
+            if !NOT_REQUESTS.iter().any(|(module, _)| *module == name) {
+                found.push((name, path));
+            }
+        }
+    }
+    found
+}
+
 /// Every string or template literal on `line` that opens with a server route.
 fn server_paths(line: &str) -> Vec<String> {
     let mut found = Vec::new();
@@ -112,46 +150,40 @@ fn comment(line: &str) -> bool {
 
 #[test]
 fn every_server_request_the_page_makes_goes_through_the_backend_handle() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut refused = Vec::new();
     let mut read = 0;
-    for dir in ["codex-ui", "codex-workspace"] {
-        let mut entries: Vec<_> = std::fs::read_dir(src.join(dir))
-            .unwrap()
-            .map(|e| e.unwrap().path())
-            .filter(|p| p.extension().is_some_and(|x| x == "js"))
-            .collect();
-        entries.sort();
-        for path in entries {
-            let name = format!("{dir}/{}", path.file_name().unwrap().to_string_lossy());
-            if NOT_REQUESTS.iter().any(|(module, _)| *module == name) {
+    let mut shared = 0;
+    for (name, path) in modules() {
+        read += 1;
+        let is_shared = name.starts_with("codex-ui/shared/");
+        shared += usize::from(is_shared);
+        let text = std::fs::read_to_string(&path).unwrap();
+        for (n, line) in text.lines().enumerate() {
+            if comment(line) || server_paths(line).is_empty() {
                 continue;
             }
-            read += 1;
-            let text = std::fs::read_to_string(&path).unwrap();
-            for (n, line) in text.lines().enumerate() {
-                if comment(line) || server_paths(line).is_empty() {
-                    continue;
-                }
-                if THROUGH_THE_HANDLE.iter().any(|call| line.contains(call)) {
-                    continue;
-                }
-                if NAMED
-                    .iter()
-                    .any(|(module, text, _)| *module == name && line.contains(text))
-                {
-                    continue;
-                }
-                refused.push(format!(
-                    "{name}:{}: {} — {}",
-                    n + 1,
-                    server_paths(line).join(", "),
-                    line.trim().chars().take(140).collect::<String>()
-                ));
+            if THROUGH_THE_HANDLE.iter().any(|call| line.contains(call)) {
+                continue;
             }
+            if is_shared && !SHARED_USES.iter().any(|call| line.contains(call)) {
+                continue;
+            }
+            if NAMED
+                .iter()
+                .any(|(module, text, _)| *module == name && line.contains(text))
+            {
+                continue;
+            }
+            refused.push(format!(
+                "{name}:{}: {} — {}",
+                n + 1,
+                server_paths(line).join(", "),
+                line.trim().chars().take(140).collect::<String>()
+            ));
         }
     }
-    assert!(read > 20, "read only {read} modules");
+    assert!(read > 40, "read only {read} modules");
+    assert!(shared > 15, "read only {shared} shared modules");
     assert!(
         refused.is_empty(),
         "a server path built outside the backend handle (route it through backend() in codex-ui/backend.js, or name it in this test with the reason it is not a request):\n{}",
@@ -177,4 +209,88 @@ fn the_check_finds_a_server_path_anywhere_on_a_line() {
     assert!(server_paths(r#"const PROMPT = "/compact""#).is_empty());
     assert!(comment("  // the `/pull` route"));
     assert!(comment("   * `/records` ranges"));
+}
+
+/// Every server path on `line`, whole: from its opening quote to the first character that ends a
+/// path (a query, a quote, a template's `${`, a space or a closing bracket). A template's path is
+/// cut at its first `${`, so `/api/codex/${route}` names the prefix `/api/codex/`.
+fn whole_paths(line: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for quote in ['"', '`', '\''] {
+        for (at, _) in line.match_indices(quote) {
+            let rest = &line[at + 1..];
+            let segment: String = rest
+                .strip_prefix('/')
+                .unwrap_or("")
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            if !ROUTES.contains(&segment.as_str()) {
+                continue;
+            }
+            let end = rest
+                .find(['?', '"', '`', '\'', '$', ' ', ')', ']', '#'])
+                .unwrap_or(rest.len());
+            found.push(rest[..end].to_string());
+        }
+    }
+    found
+}
+
+/// #s421: every server path the page's modules name is one `docs/backend-contract.md` documents:
+/// a row of its route index, or under a prefix row. Lines the handle rule lets through (they hand
+/// the path to the handle, or name it for a caller that does) are read too: what matters here is
+/// that the route is in the contract, whoever asks for it. `routes`' test holds the other half,
+/// that every row is a route the table answers.
+#[test]
+fn every_server_path_the_page_names_is_one_the_contract_documents() {
+    let rows = contract_index::rows(&contract_index::read());
+    let mut undocumented = Vec::new();
+    let mut named = 0;
+    for (name, path) in modules() {
+        let text = std::fs::read_to_string(&path).unwrap();
+        for (n, line) in text.lines().enumerate() {
+            if comment(line) {
+                continue;
+            }
+            for found in whole_paths(line) {
+                named += 1;
+                if !rows.iter().any(|row| row.covers(&found)) {
+                    undocumented.push(format!("{name}:{}: {found}", n + 1));
+                }
+            }
+        }
+    }
+    assert!(named > 30, "found only {named} server paths");
+    assert!(
+        undocumented.is_empty(),
+        "a server path the page names that docs/backend-contract.md does not document (add it to the route index, with its section):\n{}",
+        undocumented.join("\n")
+    );
+}
+
+#[test]
+fn whole_paths_end_where_a_path_ends() {
+    assert_eq!(whole_paths(r#"fetch("/api/sessions")"#), ["/api/sessions"]);
+    assert_eq!(whole_paths("`/api/send?target=${t}`"), ["/api/send"]);
+    assert_eq!(whole_paths("`/api/codex/${route}`"), ["/api/codex/"]);
+    assert_eq!(
+        whole_paths(r#"import(backend().url("/codex-workspace/api.js"))"#),
+        ["/codex-workspace/api.js"]
+    );
+    assert!(whole_paths(r#"fetch("./relative.js")"#).is_empty());
+    assert!(whole_paths(r#"const PROMPT = "/compact""#).is_empty());
+}
+
+/// The index's rule for a path under a prefix row, and for a prefix named without its slash.
+#[test]
+fn the_route_index_covers_a_path_under_a_prefix() {
+    let rows = contract_index::rows(&contract_index::read());
+    let row = |path: &str| rows.iter().find(|r| r.path == path).unwrap();
+    assert!(row("/api/mdrev/").covers("/api/mdrev"));
+    assert!(row("/api/mdrev/").covers("/api/mdrev/hold"));
+    assert!(!row("/api/mdrev/").covers("/api/mdrev-review"));
+    assert!(row("/mdrev/<mdrev>/").covers("/mdrev/"));
+    assert!(row("/api/sessions").covers("/api/sessions"));
+    assert!(!row("/api/sessions").covers("/api/sessions/x"));
 }

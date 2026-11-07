@@ -20,6 +20,9 @@ pub fn page(version: &str, paired: bool) -> String {
         .replace("{{VERSION}}", version)
         .replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path())
         .replace("{{PAIRED}}", if paired { "true" } else { "false" })
+        // The backend contract this server answers (#s421), for the page to read; step 4 of
+        // design/embedding.md reads it from each backend's handle instead.
+        .replace("{{CONTRACT}}", &crate::routes::CONTRACT_VERSION.to_string())
         // The mdrev release the preview pane mounts Markdown with (#270), pinned into this binary
         // (#274) and installed by `routes::handler`; "" only before that, when the page renders
         // Markdown as text, as it always did.
