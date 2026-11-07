@@ -347,11 +347,16 @@ pub const COMPACT_AFTER: usize = 256;
 /// carries `ToolExecution::outside_sandbox`, drawn as a mark on its card; a record carries the
 /// sandbox's state as of its resume point (`sandbox_on`). A v72 stream holds neither.
 ///
+/// v74: #s397, bumped late by #s404 — a Qwenwork reply salvaged from a stream that failed partway
+/// (its record carries `partialStreamIndex`) is an `AssistantCutOff` block, as #s305's is for Claude
+/// Code. 1.483.0 shipped the change at v73, so a Qwenwork session folded before it kept the reply
+/// as plain `AssistantText` on a resume; a v73 stream may hold either.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 73;
+pub const FOLD_VERSION: u16 = 74;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
