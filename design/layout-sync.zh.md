@@ -512,7 +512,7 @@ herdr 按读取线程自己的节奏去问，和 monitor 的 `HerdrReader` 一�
 
 iOS 模拟器走查由评审者在 6d7a9f98 上做了（iPhone 17 Pro，带标签栏的 Safari；竖屏、横屏、浅色、深色）：除了
 横屏的 section 菜单底部超出 292 px 的页面外都正常，上面的修复就是针对这一点。深色模式下分区标题很淡，原因
-早于这次改动（`.agent-label` 没有深色的值），在队列里另外跟进。
+早于这次改动（`.agent-label` 没有深色的值），在 #s401 里另外跟进。
 
 没有运行的：Linux。Herdr 的 browser case
 里没有 monitor 关联到 pane 的行，所以"先按 pane 匹配"只由 node contract 覆盖。Codex 读取器的单元测试和它的

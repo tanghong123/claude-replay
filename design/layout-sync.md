@@ -587,7 +587,7 @@ stand-in the harness gives every monitor, so no case reads this machine's apps o
 The iOS Simulator walk was run by the reviewer on 6d7a9f98 (iPhone 17 Pro, Safari with its tab bar;
 upright, sideways, light and dark): everything held but the sideways section menu, whose foot was
 off a 292 px page; the fix above is for that. Dark section titles are faint for a reason older than
-this change (`.agent-label` has no dark value), tracked in the queue apart from it.
+this change (`.agent-label` has no dark value), tracked apart from it as #s401.
 
 Not run: Linux. The Herdr browser case has no row the monitor links to a pane, so the pane-first
 matching is held by the node contract only. The Codex reader's unit cases and its browser case
