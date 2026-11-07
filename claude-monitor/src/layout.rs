@@ -1071,6 +1071,8 @@ struct CodexThread {
     recency: i64,
     /// Milliseconds since the epoch.
     created: i64,
+    /// The thread it was started from: its sub-agent edge (`thread_spawn_edges`), else the thread
+    /// it is attached to (`attached_thread_parent_id`).
     parent: Option<String>,
     /// A `codex exec` run or a sub-agent, by the database's `source` (`exec`, or a `subagent`
     /// object): the app does not list it. Read for when its catalogue cannot be.
@@ -1088,7 +1090,7 @@ struct CodexData {
     /// or `None` where that catalogue cannot be read. Measured 2026-11-06: `codex exec` runs and
     /// sub-agent threads are in the threads table but not in the catalogue, and the app does not
     /// list them, so neither does this view. Without the catalogue they are told apart by their
-    /// `source` (`CodexThread::headless`) and `catalogue_note` says so.
+    /// `source` (`CodexThread::headless`) and their parent, and `catalogue_note` says so.
     listed: Option<HashSet<String>>,
     /// Why the catalogue could not be read, when it could not.
     catalogue_note: Option<String>,
@@ -1098,11 +1100,13 @@ struct CodexData {
 
 impl CodexData {
     /// Whether the app lists this thread: its catalogue says so, or without one, it is not a
-    /// `codex exec` run or a sub-agent.
+    /// `codex exec` run or a sub-agent and was not started from another thread. The app leaves out
+    /// a thread with a parent (`parentThreadId`); the database records one as a sub-agent edge or
+    /// an attached parent (the fourth review of #s387).
     fn lists(&self, t: &CodexThread) -> bool {
         match &self.listed {
             Some(listed) => listed.contains(&t.id),
-            None => !t.headless,
+            None => !t.headless && t.parent.is_none(),
         }
     }
 
@@ -1161,8 +1165,10 @@ impl AppDb {
         let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
             | OpenFlags::SQLITE_OPEN_URI;
-        let immutable = !AppDb::wal(path).exists() && sqlite_wal_mode(path);
+        // The time first, then the `-wal`: a writer that arrives between the two then changes
+        // either the `-wal` this sees or the time `moved` compares (the fourth review of #s387).
         let at = modified(path);
+        let immutable = !AppDb::wal(path).exists() && sqlite_wal_mode(path);
         let conn = if immutable {
             Connection::open_with_flags(immutable_uri(path), flags)?
         } else {
@@ -1193,8 +1199,9 @@ fn sqlite_busy(e: &rusqlite::Error) -> bool {
         if matches!(f.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked))
 }
 
-/// A value of an unexpected type in one row: that row is counted and the rest still read. Any
-/// other error ends SQLite's scan, so what was read before it is not the whole list.
+/// A value of an unexpected type in one row, or text that is not UTF-8: that row is counted and
+/// the rest still read. Any other error ends SQLite's scan, so what was read before it is not the
+/// whole list.
 #[cfg(target_os = "macos")]
 fn sqlite_row_type(e: &rusqlite::Error) -> bool {
     matches!(
@@ -1202,11 +1209,28 @@ fn sqlite_row_type(e: &rusqlite::Error) -> bool {
         rusqlite::Error::FromSqlConversionFailure(..)
             | rusqlite::Error::InvalidColumnType(..)
             | rusqlite::Error::IntegralValueOutOfRange(..)
+            | rusqlite::Error::Utf8Error(..)
     )
 }
 
+/// The threads the Codex app lists, by the app's own query (`readEntries` in ChatGPT.app
+/// 26.1103.31037, read on 2026-11-07, the fourth review of #s387): this machine's rows (`host_id`
+/// `local`; a remote host's threads are listed under that host) that the app's last scan still
+/// found. A thread a scan no longer finds is marked `missing_candidate` and hidden at once, and
+/// deleted later.
+#[cfg(target_os = "macos")]
+const CODEX_CATALOGUE_SQL: &str =
+    "SELECT thread_id FROM local_thread_catalog WHERE host_id = 'local' AND missing_candidate = 0";
+
 #[cfg(target_os = "macos")]
 fn read_codex(db: &Path) -> Result<CodexData, String> {
+    read_codex_with(db, &|_| {})
+}
+
+/// `read_codex`, calling `after_read` with each file's path once it is read and before the reader
+/// asks whether a writer reached it, which is where a test's writer arrives.
+#[cfg(target_os = "macos")]
+fn read_codex_with(db: &Path, after_read: &dyn Fn(&Path)) -> Result<CodexData, String> {
     let app = AppDb::open(db).map_err(|e| {
         if sqlite_busy(&e) {
             CODEX_BUSY.to_string()
@@ -1215,31 +1239,16 @@ fn read_codex(db: &Path) -> Result<CodexData, String> {
         }
     })?;
     let read = read_codex_threads(&app.conn);
+    after_read(db);
     if app.moved() {
         return Err(CODEX_BUSY.into());
     }
     let (mut data, has_source) = read?;
     // The app's own catalogue says which threads it lists. Without one (an app that keeps none,
-    // or a file that does not read) the headless threads are told apart by their `source`, and
+    // or a file that does not read) the threads are told apart by their `source` and parent, and
     // the note says the list is the monitor's guess.
     let catalogue = codex_catalog_path(db);
-    let listed = AppDb::open(&catalogue).and_then(|c| {
-        let mut stmt = c
-            .conn
-            .prepare("SELECT thread_id FROM local_thread_catalog")?;
-        let ids = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<HashSet<String>, _>>();
-        drop(stmt);
-        if c.moved() {
-            return Err(rusqlite::Error::SqliteFailure(
-                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
-                None,
-            ));
-        }
-        ids
-    });
-    match listed {
+    match read_codex_catalogue(&catalogue, after_read) {
         Ok(ids) => data.listed = Some(ids),
         Err(e) if sqlite_busy(&e) => return Err(CODEX_BUSY.into()),
         Err(e) => {
@@ -1249,21 +1258,49 @@ fn read_codex(db: &Path) -> Result<CodexData, String> {
                 "was not found".to_string()
             };
             let guess = if has_source {
-                "so every thread but codex exec runs, sub-agents and other runs it does not list is \
-                 shown"
+                "it leaves out codex exec runs and threads started from another thread, as the app \
+                 does"
             } else {
-                "and its database names no thread's source, so every thread is shown"
+                "its database does not say which threads are codex exec runs, so it leaves out \
+                 only threads started from another thread"
             };
             data.catalogue_note = Some(format!(
-                "The Codex app's own list of threads (sqlite/codex.db) {why}, {guess}"
+                "The Codex app's own list of threads (sqlite/codex.db) {why}. This list is the \
+                 monitor's guess: {guess}"
             ));
         }
     }
     Ok(data)
 }
 
+/// The app's catalogue (`CODEX_CATALOGUE_SQL`). A writer that reached the file while it was read
+/// immutable makes whatever the read gave, an error too, untrustworthy: it is then busy (the
+/// fourth review of #s387), and the next read tries again.
+#[cfg(target_os = "macos")]
+fn read_codex_catalogue(
+    path: &Path,
+    after_read: &dyn Fn(&Path),
+) -> rusqlite::Result<HashSet<String>> {
+    let c = AppDb::open(path)?;
+    let ids = c.conn.prepare(CODEX_CATALOGUE_SQL).and_then(|mut stmt| {
+        let ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<HashSet<String>>>();
+        ids
+    });
+    after_read(path);
+    if c.moved() {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            None,
+        ));
+    }
+    ids
+}
+
 /// The threads, projects and sections in the Codex app's database, and whether it names each
-/// thread's `source` (an older database has no such column: every thread then counts as listed).
+/// thread's `source` (an older database has no such column: no thread is then known to be a
+/// `codex exec` run).
 #[cfg(target_os = "macos")]
 fn read_codex_threads(conn: &rusqlite::Connection) -> Result<(CodexData, bool), String> {
     let unknown = |e: rusqlite::Error| {
@@ -1289,30 +1326,49 @@ fn read_codex_threads(conn: &rusqlite::Connection) -> Result<(CodexData, bool), 
             .map_err(failed)?;
         rows.collect::<Result<_, _>>().map_err(failed)
     };
+    // One read transaction, so every query below reads the same snapshot: a commit between two of
+    // them cannot pair a thread with edges from another moment (the fourth review of #s387).
+    let _snapshot = conn.unchecked_transaction().map_err(failed)?;
+    // The parts of the schema an older database lacks, asked of the database rather than guessed
+    // from an error: the sub-agent edges, each thread's `source` and its attached parent.
+    let columns = |table: &str| -> Result<HashSet<String>, String> {
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info(?1)")
+            .map_err(failed)?;
+        let names = stmt
+            .query_map([table], |row| row.get::<_, String>(0))
+            .map_err(failed)?
+            .collect::<Result<_, _>>()
+            .map_err(failed);
+        names
+    };
     let projects = pairs("SELECT id, name FROM projects ORDER BY position, id")?;
     let sections = pairs("SELECT id, name FROM thread_sections ORDER BY rowid")?;
-    // Sub-agent edges are optional: an older database has no table for them.
-    let parents: HashMap<String, String> =
-        pairs("SELECT child_thread_id, parent_thread_id FROM thread_spawn_edges")
-            .unwrap_or_default()
+    let parents: HashMap<String, String> = if columns("thread_spawn_edges")?.is_empty() {
+        HashMap::new()
+    } else {
+        pairs("SELECT child_thread_id, parent_thread_id FROM thread_spawn_edges")?
             .into_iter()
-            .collect();
-    let threads_sql = |source: &str| {
-        format!(
+            .collect()
+    };
+    let thread_columns = columns("threads")?;
+    let has_source = thread_columns.contains("source");
+    let source = if has_source { "source" } else { "NULL" };
+    let attached = if thread_columns.contains("attached_thread_parent_id") {
+        "NULLIF(attached_thread_parent_id, '')"
+    } else {
+        "NULL"
+    };
+    let mut stmt = conn
+        .prepare(&format!(
             "SELECT id, rollout_path, COALESCE(NULLIF(TRIM(name), ''), NULLIF(TRIM(title), '')), \
              NULLIF(project_id, ''), NULLIF(thread_section_id, ''), section_position, \
              is_pinned, archived, \
              COALESCE(NULLIF(recency_at_ms, 0), updated_at_ms, updated_at * 1000, 0), \
-             COALESCE(created_at_ms, created_at * 1000, 0), {source} \
+             COALESCE(created_at_ms, created_at * 1000, 0), {source}, {attached} \
              FROM threads"
-        )
-    };
-    // An older database names no thread's source: read without it (the third review of #s387).
-    let (mut stmt, has_source) = match conn.prepare(&threads_sql("source")) {
-        Ok(stmt) => (stmt, true),
-        Err(e) if !sqlite_busy(&e) => (conn.prepare(&threads_sql("NULL")).map_err(unknown)?, false),
-        Err(e) => return Err(unknown(e)),
-    };
+        ))
+        .map_err(unknown)?;
     let rows = stmt
         .query_map([], |row| {
             let id: String = row.get(0)?;
@@ -1323,7 +1379,6 @@ fn read_codex_threads(conn: &rusqlite::Connection) -> Result<(CodexData, bool), 
                     .as_deref()
                     .and_then(rollout_row_id)
                     .unwrap_or_else(|| id.clone()),
-                id,
                 title: row.get(2)?,
                 project: row.get(3)?,
                 section: row.get(4)?,
@@ -1332,8 +1387,9 @@ fn read_codex_threads(conn: &rusqlite::Connection) -> Result<(CodexData, bool), 
                 archived: row.get::<_, i64>(7)? != 0,
                 recency: row.get(8)?,
                 created: row.get(9)?,
-                parent: None,
+                parent: parents.get(&id).cloned().or(row.get(11)?),
                 headless: source.as_deref().is_some_and(codex_headless),
+                id,
             })
         })
         .map_err(failed)?;
@@ -1344,10 +1400,7 @@ fn read_codex_threads(conn: &rusqlite::Connection) -> Result<(CodexData, bool), 
     let mut unreadable = 0;
     for row in rows {
         match row {
-            Ok(mut t) => {
-                t.parent = parents.get(&t.id).cloned();
-                threads.push(t);
-            }
+            Ok(t) => threads.push(t),
             Err(e) if sqlite_row_type(&e) => unreadable += 1,
             Err(e) => return Err(failed(e)),
         }
@@ -1401,8 +1454,9 @@ fn immutable_uri(path: &Path) -> String {
 /// (measured: `{"subagent":{"thread_spawn":…}}` and `{"subagent":{"other":"guardian"}}`) or any
 /// other object — unless it is `{"custom": "<name>"}`. Every other string is listed: the app's own
 /// threads (`vscode`), the CLI's (`cli`), an app-server or MCP run, and `unknown`. The app also
-/// leaves out an ephemeral thread and one with a parent, which the database does not say alone, so
-/// without the catalogue this is a guess, and the note says so.
+/// leaves out a thread with a parent, which `CodexData::lists` reads from the database, and an
+/// ephemeral thread, which the database does not record: without the catalogue the list is a
+/// guess, and the note says so.
 #[cfg(target_os = "macos")]
 fn codex_headless(source: &str) -> bool {
     if source == "exec" {
@@ -2464,7 +2518,7 @@ mod tests {
             recency,
             ..Default::default()
         };
-        let data = CodexData {
+        let mut data = CodexData {
             projects: vec![
                 ("p2".into(), "notes-cli".into()),
                 ("p1".into(), "atlas".into()),
@@ -2511,6 +2565,9 @@ mod tests {
             ],
             ..Default::default()
         };
+        // The app's catalogue lists every thread here, the sub-agent too, so it nests under its
+        // parent. Without one, a thread with a parent is left out, as the app leaves it out.
+        data.listed = Some(data.threads.iter().map(|t| t.id.clone()).collect());
         let layout = codex_layout(&data);
         let shown: Vec<(String, Vec<String>)> = layout
             .sections
@@ -2560,13 +2617,16 @@ mod tests {
              CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, metadata TEXT NOT NULL DEFAULT '{}', position INTEGER NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
              CREATE TABLE thread_sections (id TEXT PRIMARY KEY, name TEXT NOT NULL, appearance TEXT);
              CREATE TABLE thread_spawn_edges (parent_thread_id TEXT NOT NULL, child_thread_id TEXT NOT NULL PRIMARY KEY, status TEXT NOT NULL);
-             CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, title TEXT NOT NULL, updated_at INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0, updated_at_ms INTEGER, recency_at_ms INTEGER NOT NULL DEFAULT 0, name TEXT, is_pinned INTEGER NOT NULL DEFAULT 0, thread_section_id TEXT, section_position INTEGER, project_id TEXT, created_at INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER, source TEXT NOT NULL);
+             CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, title TEXT NOT NULL, updated_at INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0, updated_at_ms INTEGER, recency_at_ms INTEGER NOT NULL DEFAULT 0, name TEXT, is_pinned INTEGER NOT NULL DEFAULT 0, thread_section_id TEXT, section_position INTEGER, project_id TEXT, created_at INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER, source TEXT NOT NULL, attached_thread_parent_id TEXT);
              INSERT INTO projects VALUES ('p1', 'atlas', '{}', 0, 0, 0);
              INSERT INTO thread_sections VALUES ('s1', 'Release', NULL);
-             INSERT INTO threads VALUES ('t1', '/h/.codex/sessions/2026/11/06/rollout-2026-11-06T01-02-03-t1.jsonl.zst', 'first prompt', 1, 0, NULL, 5000, 'Renamed', 0, NULL, NULL, 'p1', 1, NULL, 'vscode');
-             INSERT INTO threads VALUES ('t2', '', 'child', 1, 0, NULL, 4000, NULL, 0, NULL, NULL, NULL, 1, NULL, '{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"t1\",\"depth\":1}}}');
-             INSERT INTO threads VALUES ('t3', '/h/rollout-x-t3.jsonl', 'release', 1, 0, NULL, 0, '', 0, 's1', 1, NULL, 1, NULL, 'cli');
-             INSERT INTO threads VALUES ('t4', '/h/rollout-y-t4.jsonl', 'a codex exec run', 1, 0, NULL, 3000, NULL, 0, NULL, NULL, 'p1', 1, NULL, 'exec');
+             INSERT INTO threads VALUES ('t1', '/h/.codex/sessions/2026/11/06/rollout-2026-11-06T01-02-03-t1.jsonl.zst', 'first prompt', 1, 0, NULL, 5000, 'Renamed', 0, NULL, NULL, 'p1', 1, NULL, 'vscode', NULL);
+             INSERT INTO threads VALUES ('t2', '', 'child', 1, 0, NULL, 4000, NULL, 0, NULL, NULL, NULL, 1, NULL, '{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"t1\",\"depth\":1}}}', NULL);
+             INSERT INTO threads VALUES ('t3', '/h/rollout-x-t3.jsonl', 'release', 1, 0, NULL, 0, '', 0, 's1', 1, NULL, 1, NULL, 'cli', '');
+             INSERT INTO threads VALUES ('t4', '/h/rollout-y-t4.jsonl', 'a codex exec run', 1, 0, NULL, 3000, NULL, 0, NULL, NULL, 'p1', 1, NULL, 'exec', NULL);
+             INSERT INTO threads VALUES ('t5', '/h/rollout-z-t5.jsonl', 'attached', 1, 0, NULL, 2000, NULL, 0, NULL, NULL, 'p1', 1, NULL, 'vscode', 't1');
+             INSERT INTO threads VALUES ('t6', '/h/rollout-z-t6.jsonl', 'a custom run', 1, 0, NULL, 1000, NULL, 0, NULL, NULL, 'p1', 1, NULL, '{\"custom\":\"my-tool\"}', NULL);
+             INSERT INTO threads VALUES ('t7', '/h/rollout-z-t7.jsonl', 'bad name', 1, 0, NULL, 500, CAST(X'C328' AS TEXT), 0, NULL, NULL, 'p1', 1, NULL, 'vscode', NULL);
              INSERT INTO thread_spawn_edges VALUES ('t1', 't2', 'open');",
         )
         .unwrap();
@@ -2581,29 +2641,36 @@ mod tests {
             names
         };
         assert!(made(&root).is_empty(), "the fixture left {:?}", made(&root));
-        // No catalogue beside it (an app that keeps none): a `codex exec` run and a sub-agent are
-        // told apart by their source, and the note says the list is a guess.
+        // No catalogue beside it (an app that keeps none): a `codex exec` run (t4), a sub-agent
+        // (t2) and a thread attached to another (t5) are left out by their source and parent, a
+        // custom run (t6) is listed as the app lists it, and the note says the list is a guess.
         let data = read_codex(&db).unwrap();
         // The second review of #s387: a WAL database is read without making its `-shm` or `-wal`.
         assert!(made(&root).is_empty(), "the read made {:?}", made(&root));
         let layout = codex_layout(&data);
         assert_eq!(
             ids(&layout.sections[2].groups[0].entries),
-            vec!["rollout-2026-11-06T01-02-03-t1"]
+            vec!["rollout-2026-11-06T01-02-03-t1", "rollout-z-t6"]
         );
+        let note = layout.note.as_deref().unwrap();
+        assert!(note.contains("was not found"), "{note}");
+        // The fourth review of #s387: a name that is not UTF-8 costs its row (t7), counted and
+        // said, and never the whole read.
+        assert_eq!(data.unreadable, 1);
         assert!(
-            layout.note.as_deref().unwrap().contains("was not found"),
-            "{:?}",
-            layout.note
+            note.contains("1 thread in the Codex app's database could not be read"),
+            "{note}"
         );
-        // With the app's catalogue, it decides: here it lists the sub-agent too.
+        // With the app's catalogue, it decides: here it lists the sub-agent too. Only this
+        // machine's rows that its last scan still found count (the fourth review of #s387): t4 is
+        // a missing candidate here and t6 another host's.
         std::fs::create_dir_all(root.join("sqlite")).unwrap();
         let catalogue = rusqlite::Connection::open(root.join("sqlite/codex.db")).unwrap();
         catalogue
             .execute_batch(
                 "PRAGMA journal_mode=WAL;
-                 CREATE TABLE local_thread_catalog (host_id TEXT NOT NULL, thread_id TEXT NOT NULL);
-                 INSERT INTO local_thread_catalog VALUES ('local', 't1'), ('local', 't2'), ('local', 't3');",
+                 CREATE TABLE local_thread_catalog (host_id TEXT NOT NULL, thread_id TEXT NOT NULL, missing_candidate INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (host_id, thread_id));
+                 INSERT INTO local_thread_catalog VALUES ('local', 't1', 0), ('local', 't2', 0), ('local', 't3', 0), ('local', 't4', 1), ('chatgpt:acct', 't6', 0);",
             )
             .unwrap();
         drop(catalogue);
@@ -2624,7 +2691,10 @@ mod tests {
             layout.sections[1].entries[0].title.as_deref(),
             Some("release")
         );
-        assert!(layout.note.is_none(), "{:?}", layout.note);
+        assert_eq!(
+            layout.note.as_deref(),
+            Some("1 thread in the Codex app's database could not be read and is not shown")
+        );
         // A database of another shape says so rather than guessing.
         let other = root.join("other.sqlite");
         rusqlite::Connection::open(&other)
@@ -2684,7 +2754,7 @@ mod tests {
             recency,
             ..Default::default()
         };
-        let data = CodexData {
+        let mut data = CodexData {
             projects: vec![
                 ("srv-api".into(), "api".into()),
                 ("srv-web".into(), "web".into()),
@@ -2730,6 +2800,16 @@ mod tests {
             ],
             ..Default::default()
         };
+        // The app's catalogue lists every thread here, the sub-agent too, so it nests under its
+        // parent, and `t-gone`, which the database does not hold. Without a catalogue, a thread
+        // with a parent is left out, as the app leaves it out.
+        data.listed = Some(
+            data.threads
+                .iter()
+                .map(|t| t.id.clone())
+                .chain(["t-gone".to_string()])
+                .collect(),
+        );
         let sidebar = parse_codex_sidebar(&codex_state_json()).unwrap();
         let layout = codex_sidebar_layout(&data, &sidebar);
         let shown: Vec<(String, bool, Vec<String>)> = layout
@@ -3126,31 +3206,112 @@ mod tests {
         assert!(codex_headless("{}"));
     }
 
-    /// The third review of #s387: an immutable read that a writer reached is not trusted, and only a
-    /// value of the wrong type in a row is counted; any other error mid-scan fails the read.
+    /// The third and fourth reviews of #s387: a read a writer reached while it was read immutable
+    /// is busy — the thread database's and the catalogue's, after a whole scan or a failed query,
+    /// whether the writer left a `-wal` or only a new modification time. Only a value of the wrong
+    /// type in a row is counted; a scan SQLite cannot finish fails the read rather than keeping the
+    /// rows before the error.
     #[cfg(target_os = "macos")]
     #[test]
     fn a_codex_read_a_writer_reached_is_busy_and_a_failed_scan_is_no_list() {
         let root =
             std::env::temp_dir().join(format!("cm-layout-codex-moved-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
         let db = root.join("state_5.sqlite");
-        let conn = rusqlite::Connection::open(&db).unwrap();
-        conn.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE t (x);")
+        let catalogue = root.join("sqlite/codex.db");
+        std::fs::create_dir_all(catalogue.parent().unwrap()).unwrap();
+        let threads = "CREATE TABLE projects (id TEXT, name TEXT, position INTEGER);
+             CREATE TABLE thread_sections (id TEXT, name TEXT);
+             CREATE TABLE threads (id TEXT, rollout_path TEXT, title TEXT, updated_at INTEGER, archived INTEGER NOT NULL DEFAULT 0, updated_at_ms INTEGER, recency_at_ms INTEGER NOT NULL DEFAULT 0, name TEXT, is_pinned INTEGER NOT NULL DEFAULT 0, thread_section_id TEXT, section_position INTEGER, project_id TEXT, created_at INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER, source TEXT);";
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch(&format!(
+                "PRAGMA journal_mode=WAL; {threads}
+                 INSERT INTO threads (id, rollout_path, title, updated_at, source) VALUES ('a', '/h/rollout-x-a.jsonl', 'a', 1, 'vscode');"
+            ))
             .unwrap();
-        drop(conn);
+        rusqlite::Connection::open(&catalogue)
+            .unwrap()
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE local_thread_catalog (host_id TEXT NOT NULL, thread_id TEXT NOT NULL, missing_candidate INTEGER NOT NULL DEFAULT 0);
+                 INSERT INTO local_thread_catalog VALUES ('local', 'a', 0);",
+            )
+            .unwrap();
         let app = AppDb::open(&db).unwrap();
         assert!(app.immutable_at.is_some(), "a WAL database with no -wal");
-        assert!(!app.moved());
-        // A writer arrives: its -wal appears beside the database.
-        std::fs::write(root.join("state_5.sqlite-wal"), b"").unwrap();
-        assert!(app.moved());
         drop(app);
-        // Opened while a writer has it, the read is an ordinary one, and nothing moves it.
-        let app = AppDb::open(&db).unwrap();
-        assert!(app.immutable_at.is_none());
-        assert!(!app.moved());
-        drop(app);
+        let quiet = read_codex_with(&db, &|_| {}).unwrap();
+        assert_eq!(quiet.listed, Some(HashSet::from(["a".to_string()])));
+        // A writer that checkpoints changes the file's time; one that writes leaves a `-wal`.
+        let checkpoint = |at: &Path| {
+            let then = modified(at).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(at)
+                .unwrap()
+                .set_modified(then + Duration::from_secs(1))
+                .unwrap();
+        };
+        let write = |at: &Path| std::fs::write(AppDb::wal(at), b"").unwrap();
+        for (file, name) in [(&db, "thread database"), (&catalogue, "catalogue")] {
+            let reached = |at: &Path| {
+                if at == file.as_path() {
+                    checkpoint(at)
+                }
+            };
+            assert_eq!(
+                read_codex_with(&db, &reached).unwrap_err(),
+                CODEX_BUSY,
+                "a checkpoint reached the {name}"
+            );
+            let reached = |at: &Path| {
+                if at == file.as_path() {
+                    write(at)
+                }
+            };
+            assert_eq!(
+                read_codex_with(&db, &reached).unwrap_err(),
+                CODEX_BUSY,
+                "a write reached the {name}"
+            );
+            std::fs::remove_file(AppDb::wal(file)).unwrap();
+        }
+        // A catalogue whose query fails is a guess said in the note; the same failure in a read a
+        // writer reached is busy, since the writer may be why it failed.
+        rusqlite::Connection::open(&catalogue)
+            .unwrap()
+            .execute_batch("ALTER TABLE local_thread_catalog RENAME TO other;")
+            .unwrap();
+        let guess = read_codex_with(&db, &|_| {}).unwrap();
+        assert!(guess.listed.is_none());
+        let note = guess.note().unwrap();
+        assert!(note.contains("could not be read"), "{note}");
+        let reached = |at: &Path| {
+            if at == catalogue.as_path() {
+                checkpoint(at)
+            }
+        };
+        assert_eq!(read_codex_with(&db, &reached).unwrap_err(), CODEX_BUSY);
+        // A scan cut off part-way: the last page, which holds the last rows, is not a page.
+        let broken = root.join("broken.sqlite");
+        let conn = rusqlite::Connection::open(&broken).unwrap();
+        conn.execute_batch(&format!(
+            "{threads}
+             WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200)
+             INSERT INTO threads (id, rollout_path, title, updated_at, source)
+             SELECT 't' || i, '', hex(zeroblob(150)), 1, 'vscode' FROM n;"
+        ))
+        .unwrap();
+        let page: i64 = conn
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .unwrap();
+        drop(conn);
+        let mut bytes = std::fs::read(&broken).unwrap();
+        let at = bytes.len() - page as usize;
+        bytes[at..].fill(0xff);
+        std::fs::write(&broken, bytes).unwrap();
+        let err = read_codex(&broken).unwrap_err();
+        assert!(err.contains("could not be read"), "{err}");
         std::fs::remove_dir_all(&root).unwrap();
         assert!(sqlite_row_type(&rusqlite::Error::InvalidColumnType(
             0,
@@ -3164,7 +3325,8 @@ mod tests {
     }
 
     /// The third review of #s387: a database with no `source` column still reads; with no
-    /// catalogue every thread then counts, and the note says the database names no source.
+    /// catalogue every thread with no parent then counts, and the note says the database names no
+    /// source.
     #[cfg(target_os = "macos")]
     #[test]
     fn a_codex_database_without_sources_still_reads() {
@@ -3185,7 +3347,10 @@ mod tests {
         assert_eq!(data.threads.len(), 2);
         assert!(data.threads.iter().all(|t| data.lists(t)));
         let note = data.note().unwrap();
-        assert!(note.contains("names no thread's source"), "{note}");
+        assert!(
+            note.contains("does not say which threads are codex exec runs"),
+            "{note}"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 

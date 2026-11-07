@@ -408,6 +408,11 @@ function sectionMenuHtml(key, label) {
 }
 function placeSectionMenu() {
   if (!sectionMenu || sectionMenu.hidden || !sectionMenuAnchor) return;
+  // A popover is capped at the height the reader can SEE. Its stylesheet caps (74vh from
+  // `#app .navigator-options`) count iOS Safari's vh with the bars put away: held sideways on an
+  // iPhone 17 Pro that is the screen's 402px, and the menu was 297px tall on the 292px page beside
+  // the tab bar, its foot off the screen (the fourth review of #s387). The sheet keeps its own rule.
+  sectionMenu.style.maxHeight = sectionMenu.classList.contains("sheet") ? "" : `${Math.max(0, innerHeight - 16)}px`;
   const r = sectionMenuAnchor.getBoundingClientRect();
   const width = sectionMenu.offsetWidth, height = sectionMenu.offsetHeight;
   sectionMenu.style.left = `${Math.round(Math.max(8, Math.min(r.right - width, innerWidth - width - 8)))}px`;

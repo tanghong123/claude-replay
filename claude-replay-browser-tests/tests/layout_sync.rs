@@ -380,10 +380,11 @@ fn sqlite_side_files(dir: &std::path::Path) -> Vec<String> {
 
 /// The second review of #s387: "Like the Codex app" draws the threads the app lists, from its
 /// database and its sidebar state (built here with macOS's own `sqlite3`), under the app's own
-/// titles: its project folders, then Chats. A `codex exec` run the database holds is not drawn —
-/// by its source while the app's catalogue of threads is missing, which the line says, and by the
-/// catalogue once there is one, which then decides alone. Reading makes no file beside either
-/// database.
+/// titles: its project folders, then Chats. A `codex exec` run and a sub-agent the database holds
+/// are not drawn and a custom run is — by their source while the app's catalogue of threads is
+/// missing, which the line says, and by the catalogue once there is one, which then decides
+/// alone, by this machine's rows its last scan still found (the fourth review). Reading makes no
+/// file beside either database.
 #[cfg(target_os = "macos")]
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
@@ -391,12 +392,16 @@ fn arranged_like_the_codex_app_shows_the_threads_it_lists() {
     const X: &str = "5e000000-0000-4000-8000-000000000387";
     const Y: &str = "5f000000-0000-4000-8000-000000000387";
     const Z: &str = "60000000-0000-4000-8000-000000000387";
+    const W: &str = "61000000-0000-4000-8000-000000000387";
+    const V: &str = "62000000-0000-4000-8000-000000000387";
     let _serial = serial();
     let base = base("layout-codex");
     let stores = Stores::new(&base);
     let (x, x_path) = codex_rollout(&stores, X, "x prompt", 60);
     let (y, y_path) = codex_rollout(&stores, Y, "y prompt", 90);
     let (z, z_path) = codex_rollout(&stores, Z, "z prompt", 120);
+    let (w, w_path) = codex_rollout(&stores, W, "w prompt", 75);
+    let (v, v_path) = codex_rollout(&stores, V, "v prompt", 100);
     let app = stores.root.join("codex-app");
     std::fs::create_dir_all(&app).unwrap();
     sqlite(
@@ -406,11 +411,15 @@ fn arranged_like_the_codex_app_shows_the_threads_it_lists() {
              CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, position INTEGER NOT NULL);
              CREATE TABLE thread_sections (id TEXT PRIMARY KEY, name TEXT NOT NULL);
              CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, title TEXT NOT NULL, updated_at INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0, updated_at_ms INTEGER, recency_at_ms INTEGER NOT NULL DEFAULT 0, name TEXT, is_pinned INTEGER NOT NULL DEFAULT 0, thread_section_id TEXT, section_position INTEGER, project_id TEXT, created_at INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER, source TEXT NOT NULL);
+             CREATE TABLE thread_spawn_edges (parent_thread_id TEXT NOT NULL, child_thread_id TEXT NOT NULL PRIMARY KEY, status TEXT NOT NULL);
              INSERT INTO projects VALUES ('srv-api', 'api', 0);
              INSERT INTO threads (id, rollout_path, title, updated_at, recency_at_ms, name, project_id, source) VALUES
                ('{X}', '{x_path}', 'x prompt', 1, 3000, 'App thread X', 'srv-api', 'vscode'),
+               ('{V}', '{v_path}', 'v prompt', 1, 2800, NULL, 'srv-api', '{{\"subagent\":{{\"thread_spawn\":{{\"parent_thread_id\":\"{X}\",\"depth\":1}}}}}}'),
+               ('{W}', '{w_path}', 'w prompt', 1, 2500, 'App custom run W', 'srv-api', '{{\"custom\":\"my-tool\"}}'),
                ('{Y}', '{y_path}', 'y prompt', 1, 2000, NULL, 'srv-api', 'exec'),
-               ('{Z}', '{z_path}', 'z prompt', 1, 1000, 'App chat Z', NULL, 'vscode');"
+               ('{Z}', '{z_path}', 'z prompt', 1, 1000, 'App chat Z', NULL, 'vscode');
+             INSERT INTO thread_spawn_edges VALUES ('{X}', '{V}', 'open');"
         ),
     );
     let state = serde_json::json!({
@@ -446,7 +455,21 @@ fn arranged_like_the_codex_app_shows_the_threads_it_lists() {
         "document.getElementById('tree').innerText",
     );
     arrange(&tab, "codex-app");
-    // No catalogue yet: the exec run is left out by its source, and the line says so.
+    // The rows under one head, up to the next.
+    let under = |v: &serde_json::Value, head: &str| -> Vec<String> {
+        let mut rows = Vec::new();
+        let mut inside = false;
+        for i in v["items"].as_array().unwrap() {
+            if i[0] == "head" {
+                inside = i[1].as_str().unwrap_or("").eq_ignore_ascii_case(head);
+            } else if inside && i[0] == "row" {
+                rows.push(i[1].as_str().unwrap_or("").to_string());
+            }
+        }
+        rows
+    };
+    // No catalogue yet: the exec run and the sub-agent are left out by their source and the custom
+    // run is drawn, as the app draws it; the line says the list is a guess.
     let seen = wait_list(
         &tab,
         &|v| heads(v).contains(&"PROJECTS".to_string()),
@@ -457,7 +480,11 @@ fn arranged_like_the_codex_app_shows_the_threads_it_lists() {
         vec!["PROJECTS", "CHATS", "NOT IN THE CODEX APP"],
         "{seen}"
     );
-    assert_eq!(row_ids(&seen), vec![x.clone(), z.clone()], "{seen}");
+    assert_eq!(
+        row_ids(&seen),
+        vec![x.clone(), w.clone(), z.clone()],
+        "{seen}"
+    );
     let items = seen["items"].as_array().unwrap().clone();
     let title = |id: &str| {
         items
@@ -473,18 +500,23 @@ fn arranged_like_the_codex_app_shows_the_threads_it_lists() {
     click(&tab, "#tree .arranged-rest");
     let open = wait_list(
         &tab,
-        &|v| row_ids(v).contains(&y),
+        &|seen| row_ids(seen).contains(&y),
         "the exec run waits under Not in",
     );
-    assert_eq!(row_ids(&open).last(), Some(&y), "{open}");
-    // The catalogue appears and lists X alone: it decides, so Z goes too, and the line no longer
-    // calls the list a guess.
+    let mut rest = under(&open, "Not in the Codex app");
+    rest.sort();
+    let mut headless = vec![y.clone(), v.clone()];
+    headless.sort();
+    assert_eq!(rest, headless, "{open}");
+    // The catalogue appears and lists X alone: it decides, so W and Z go too, and the line no
+    // longer calls the list a guess. Z's rows are a missing candidate here and another host's
+    // row, neither of which the app lists.
     sqlite(
         &app.join("codex.db"),
         &format!(
             "PRAGMA journal_mode=WAL;
-             CREATE TABLE local_thread_catalog (host_id TEXT NOT NULL, thread_id TEXT NOT NULL);
-             INSERT INTO local_thread_catalog VALUES ('local', '{X}');"
+             CREATE TABLE local_thread_catalog (host_id TEXT NOT NULL, thread_id TEXT NOT NULL, missing_candidate INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (host_id, thread_id));
+             INSERT INTO local_thread_catalog VALUES ('local', '{X}', 0), ('local', '{Z}', 1), ('chatgpt:acct', '{Z}', 0);"
         ),
     );
     let listed = wait_list(
@@ -500,7 +532,7 @@ fn arranged_like_the_codex_app_shows_the_threads_it_lists() {
         vec!["PROJECTS", "NOT IN THE CODEX APP"],
         "{listed}"
     );
-    assert_eq!(row_ids(&listed).first(), Some(&x), "{listed}");
+    assert_eq!(under(&listed, "Projects"), vec![x.clone()], "{listed}");
     assert!(
         sqlite_side_files(&app).is_empty(),
         "the reads made {:?}",
@@ -585,7 +617,8 @@ fn arranged_like_herdr_shows_its_workspaces_and_tabs() {
 /// #s387 on a phone (the review: CLAUDE.md's phone rules): upright, the section menu opens as a
 /// sheet at the foot over a dim, from a 44px glyph, with 44px rows; a tap on the dim closes it and
 /// reaches nothing beneath; the line's ✕ is a 44px target; Arrange's two-line rows in the filter
-/// sheet hold their reason. Held sideways the menu is a popover at its glyph's side.
+/// sheet hold their reason. Held sideways the menu is a popover at its glyph's side, which ends on
+/// the screen when Safari's bars make the page shorter than its 100vh.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_sorts_an_arranged_section_from_a_sheet() {
@@ -726,5 +759,48 @@ fn a_phone_sorts_an_arranged_section_from_a_sheet() {
     assert!(
         pop[2].as_f64().unwrap() < 400.0,
         "a popover, not a band: {pop}"
+    );
+    // Held sideways in Safari with its tab bar (the fourth review's iOS walk, an iPhone 17 Pro):
+    // Safari's vh counts the screen's 402px with its bars put away, while the page shows 292px of
+    // it, as `innerHeight` says there. The popover ends on the page, and its last row can be
+    // scrolled to and reached.
+    harness::phone(&tab, 874, 402);
+    tab.navigate_to(url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    open_drawer(&tab);
+    eval(
+        &tab,
+        "Object.defineProperty(window, 'innerHeight', { configurable: true, get: () => 292 })",
+    );
+    let glyph = rect(&tab, "#tree .arranged-head [data-section-view]");
+    harness::finger_tap(
+        &tab,
+        glyph[0].as_f64().unwrap() + glyph[2].as_f64().unwrap() / 2.0,
+        glyph[1].as_f64().unwrap() + glyph[3].as_f64().unwrap() / 2.0,
+    );
+    until(
+        &tab,
+        "!document.getElementById('sectionViewMenu').hidden",
+        "the menu opens",
+        Duration::from_secs(10),
+        "document.getElementById('sectionViewMenu').className",
+    );
+    let pop = rect(&tab, "#sectionViewMenu");
+    let (top, bottom) = (
+        pop[1].as_f64().unwrap(),
+        pop[1].as_f64().unwrap() + pop[3].as_f64().unwrap(),
+    );
+    assert!(
+        top >= 0.0 && bottom <= 292.5,
+        "the popover ends on the 292px page: {pop}"
+    );
+    let last = eval(
+        &tab,
+        "(function () { var m = document.getElementById('sectionViewMenu'); m.scrollTop = m.scrollHeight; var r = m.querySelector('.section-menu-reset').getBoundingClientRect(); return r.top >= 0 && r.bottom <= 292.5; })()",
+    );
+    assert_eq!(
+        last,
+        serde_json::json!(true),
+        "the last row is reachable: {pop}"
     );
 }

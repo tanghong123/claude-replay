@@ -181,19 +181,23 @@ OpenAI 的 Codex 桌面应用；在被读取的机器上是 `/Applications/ChatG
 **app 列出哪些 thread。** app 自己有一份它所列 thread 的目录（catalogue，`~/.codex/sqlite/codex.db` 里的
 `local_thread_catalog`）。在那台机器上测得：81 个 `codex exec` 运行和 sub-agent thread（971 个 reviewer
 sub-agent，以及所有派生出来的子 thread）都在 threads 表里，但不在这份目录里，也没有一个被放进 section 或
-project。所以原型只画目录里有的 thread。
+project。所以原型只画目录里有的 thread，并且用 app 自己的过滤条件（它的 `readEntries` 查询）来读：只读本机的行
+（`host_id` 为 `local`；远程主机的 thread 有它们自己的行），并且是 app 上一轮扫描还看到的（`missing_candidate`
+为 0；扫描没再看到的 thread 先被标记并立即隐藏，之后才删除）。
 
 app 自己的代码说明了它怎样填这份目录（它的目录构建代码，2026-11-07 在 app 26.1103.31037 里读到）：它排除
 ephemeral（临时）的 thread、有父 thread 的 thread、`threadSource` 是三个内部值之一的 thread，以及 `source` 为
 `exec` 或不是字符串的 thread（`subagent` 对象，或除 `{"custom": "<name>"}` 以外的任何对象）。其他 source 都会
 列出：app 自己的 thread（`vscode`）、CLI 的（`cli`）、app-server 或 MCP 方式的运行，以及 `unknown`。
 
-目录不存在或读不了时（评审时读到的一台机器上就没有 `codex.db`），原型只应用这条规则里 threads 表能回答的
-部分——`source`——并在列表上方的说明行里说明这份列表是 monitor 的推测。ephemeral 的 thread 和有父 thread 的
-thread 单凭这张表分辨不出来：2026-11-07 在第一台机器上测得，推测得到 2,791 个未归档的 thread，目录列出 2,772
-个。多出的 19 个都是 `vscode` thread：9 个是 fork 出来的 thread，1 个在表里写明了父 thread；app 为什么不列出另外
-9 个，没有查清。没有 `source` 列的数据库（较旧的 app）仍然能读；
-这时如果没有目录，每个 thread 都算，note 里会说明。目录忙时，和数据库忙时一样，保留上一次读到的结果。
+目录不存在或读不了时（评审时读到的一台机器上就没有 `codex.db`），原型应用这条规则里数据库能回答的部分——
+`source`，以及父 thread（数据库里记为 sub-agent 边 `thread_spawn_edges`，或附着的父 thread
+`attached_thread_parent_id`）——并在列表上方的说明行里说明这份列表是 monitor 的推测。thread 是否 ephemeral，
+数据库没有记录。2026-11-07 在第一台机器上测得，推测得到 2,790 个未归档的 thread，目录列出 2,772 个。多出的
+18 个都是 `vscode` thread：9 个是从别的 thread fork 出来的（`thread_source` 为 `agent_forked_thread`；app 列出了
+另外 3 个这样的 thread），另外 9 个在数据库里看不出 app 为什么不列。没有 `source` 列的数据库（较旧的 app）
+仍然能读；这时如果没有目录，只排除有父 thread 的 thread，note 里会说明。目录忙时，和数据库忙时一样，保留
+上一次读到的结果。
 
 **sidebar 本身**只存在状态文件里，位于 `electron-persisted-atom-state` 下，2026-11-06 对照 app 自己的
 sidebar 核对过：
@@ -350,11 +354,14 @@ herdr 按读取线程自己的节奏去问，和 monitor 的 `HerdrReader` 一�
   `-shm` 和 `-wal`，读取者会创建它们，关闭后也不会删除（用 SQLite 3.54 测过）；所以没有 `-wal` 的 WAL 数据库
   （没有写入者打开它，所有已提交的页都在主文件里）以 immutable（不可变）方式打开，不创建任何文件；有写入者
   打开时，通过那个写入者自己的 `-wal` 读取。immutable 读取不持锁，所以读取过程中如果有写入者碰到了这个文件
-  （出现了 `-wal`，或文件变了），这次读取按 busy 处理，保留上一次的结果。实际上很少走到 immutable：monitor
+  （出现了 `-wal`，或文件变了），不管这次读取返回了什么（包括错误），都按 busy 处理，保留上一次的结果。
+  实际上很少走到 immutable：monitor
   自己的 Codex 标题读取器（在 agents crate 里，不属于这次改动）以普通只读方式打开同一个数据库，所以在运行
   monitor 的机器上，它的 `-wal` 和 `-shm` 通常已经在了；
-- 从不把列表的一部分当成整个列表：某一行的值类型不对时，计入 note，其余行照读；扫描中途出现的其他错误会让
-  这次读取失败；
+- 从不把列表的一部分当成整个列表：某一行的值类型不对，或文本不是合法的 UTF-8 时，计入 note，其余行照读；
+  扫描中途出现的其他错误会让这次读取失败。Codex 读取器在一个读事务里读它的几张表，所以两条查询之间的提交
+  不会让 thread 和另一个时刻的边配在一起；较旧的数据库缺哪些可选部分（sub-agent 边、`source`、附着的父
+  thread），它直接问数据库的 schema，而不是从错误里推断；
 - 跳过无法解析的记录，忽略不认识的键，和 #s340 的读取器一样；
 - 有一个环境变量可以改它读取的位置，让 browser case 在隔离的存储上运行，和这里其他每个存储一样；
 - 遇到不认识的格式时，在选项的原因说明和 monitor 的日志里说出来，这样 app 更新挪动了排列时会被注意到，
@@ -368,7 +375,7 @@ herdr 按读取线程自己的节奏去问，和 monitor 的 `HerdrReader` 一�
 | app 没有安装，或它的存储不存在 | 选项显示为不可用，原因作为它的提示和第二行文字。 |
 | 存储存在但读不了，或格式不认识 | 仍然可选，因为只有文件缺失才让来源不可选；第二行写 "Last read: …"，说明读取遇到了什么。选中后会重新读取，读不到时按下一行的方式退回。 |
 | 选中的来源在之后某次刷新时失败 | 列表退回被 app 替换掉的那种排列（"By agent and project" 或 "One list by activity"），列表顶部用琥珀色写着 "Showing by agent and project: the Claude app's list could not be read"，并给出原因。选择会被保留；下一次能读到来源的刷新会重新按它来画。读取线程上一次停止之前留下的失败结果显示为 "Reading …"，因为这个来源正在重新读取。 |
-| Codex app 没有它的 thread 目录，或目录读不了 | 列表照画，按 `source` 排除 `codex exec` 运行和 sub-agent（§3.2），说明行写明这份列表是 monitor 的推测。 |
+| Codex app 没有它的 thread 目录，或目录读不了 | 列表照画，按 `source` 和父 thread 排除 `codex exec` 运行、sub-agent 和从别的 thread 开出来的 thread（§3.2），说明行写明这份列表是 monitor 的推测。 |
 | app 写到一半的记录 | 这次刷新跳过；下一次再读。 |
 | 在手机或另一台桌面上看的人 | 看到的是 monitor 所在机器上的排列，也就是 session 运行的那台机器。 |
 
@@ -487,14 +494,34 @@ herdr 按读取线程自己的节奏去问，和 monitor 的 `HerdrReader` 一�
   对象不会）。
 - Codex 的 browser case 用 `-init /dev/null` 运行 `sqlite3`，不会读到 `~/.sqliterc`。
 
-没有运行的：iOS 模拟器（竖屏、横屏、浅色、深色）——这台机器上没有模拟器工具；Linux。Herdr 的 browser case
+**第四轮评审后补上的：**
+
+- 单元测试经过读取器本身，在每个文件读完后让一个写入者到来：checkpoint（修改时间变了）或写入（出现
+  `-wal`）碰到 thread 数据库或目录时，这次读取按 busy 处理，目录查询失败时也一样；没有写入者时目录查询失败，
+  按推测处理并写进 note。最后一页不是合法页的数据库让这次读取失败，而不是保留出错前读到的行。名字不是
+  UTF-8 的行只丢这一行，并计数。从真实的数据库读：没有目录时，exec 运行、sub-agent 和附着的 thread 被排除，
+  custom 运行照列；有目录时，missing candidate 和其他主机的行不列出。每条规则都关掉验证过，对应的用例会失败
+  （九条：两处 busy 检查、写入者检查里"修改时间"那一半、行错误规则、UTF-8、目录的两个过滤条件、父 thread
+  规则、附着的父 thread）。
+- Codex 的 browser case 加了一个 custom 运行（没有目录时画出来）和一个 sub-agent（从不画出来），目录里给 Z
+  放了一行 missing candidate 和一行其他主机的记录，Z 仍然不列出。
+- 手机用例在横屏 874 × 402、`innerHeight` 为 292 的条件下检查 section 菜单，这是 iPhone 17 Pro 上带标签栏的
+  Safari 的情况：它的 vh 按整个 402 px 算，页面只显示 292。弹出框的高度上限是 `innerHeight` 减 16 px，底部
+  落在页面内，最后一行能够到。去掉这个上限，用例失败，数字和走查一样（top 13，高 297 px：这是
+  `#app .navigator-options` 的 74vh 上限，它的优先级高于菜单自己的 `100vh` 规则）。
+
+iOS 模拟器走查由评审者在 6d7a9f98 上做了（iPhone 17 Pro，带标签栏的 Safari；竖屏、横屏、浅色、深色）：除了
+横屏的 section 菜单底部超出 292 px 的页面外都正常，上面的修复就是针对这一点。深色模式下分区标题很淡，原因
+早于这次改动（`.agent-label` 没有深色的值），在队列里另外跟进。
+
+没有运行的：Linux。Herdr 的 browser case
 里没有 monitor 关联到 pane 的行，所以"先按 pane 匹配"只由 node contract 覆盖。Codex 读取器的单元测试和它的
 browser case 只在 macOS 上编译，和 agents crate 的 Codex 读取器一样（Linux 构建不编译 C 依赖），所以 Linux 上
 的 CI 不运行它们。
 
 **发布前拟议的检查：**
 
-- iOS 模拟器上走一遍：竖屏、横屏、浅色、深色。
+- iOS 模拟器上横屏走一遍，确认 section 菜单的修复。
 - 一个协调者的 side session 在别的 project 里：在 "Like the Claude app" 下嵌在它下面，而 tree 保持不变。
 - 一个 node contract case：给定行和一个 layout，每一行恰好出现一次。
 
