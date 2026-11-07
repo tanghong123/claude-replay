@@ -123,8 +123,8 @@ pub(super) fn tcp_server_owner(stream: &TcpStream) -> Option<u32> {
 /// loaded machine the check refused a server of this very user, and nothing said whether the end
 /// stayed unaccepted or the lookups never ran. The line names no address. A refusal whose every
 /// lookup ran and found no holder is the common case of a port another account holds, retried
-/// every `OWNER_REFUSAL_PAUSE`, so it prints only in a test build, where it reaches the output of
-/// a failing case alone.
+/// every `OWNER_REFUSAL_PAUSE`, so it prints only where `trace_owner` asks: a test build, where
+/// it reaches the output of a failing case alone, and the browser suite's monitors.
 fn server_owner(
     stream: &TcpStream,
     answers: bool,
@@ -143,14 +143,26 @@ fn server_owner(
         std::thread::sleep,
     );
     let waited = started.elapsed();
-    if owner.is_none() && (cfg!(test) || !polls.unread.is_empty()) {
+    if owner.is_none() && (trace_owner() || !polls.unread.is_empty()) {
         eprintln!("{}", polls.summary(waited));
-    } else if cfg!(test) && waited > Duration::from_secs(1) {
+    } else if trace_owner() && waited > Duration::from_secs(1) {
         // A test's peer waits on this check before the request it reads, so a slow success is
         // what a read timeout in a fixture comes from.
         eprintln!("{}", polls.found_late(waited));
     }
     owner
+}
+
+/// Whether every owner wait that refuses, or succeeds only after a second, says so: in a test
+/// build, and in a monitor the browser suite starts (`AGENT_MONITOR_TRACE_OWNER`, which its
+/// harness sets and whose stderr it keeps beside a failed case), so a native-mode case that fails
+/// on a loaded machine names what the check saw (#s410, #s227).
+fn trace_owner() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    cfg!(test)
+        || *TRACE.get_or_init(|| {
+            std::env::var_os("AGENT_MONITOR_TRACE_OWNER").is_some_and(|v| !v.is_empty())
+        })
 }
 
 /// A real server holds its accepted connection within milliseconds; the bound is for a loaded

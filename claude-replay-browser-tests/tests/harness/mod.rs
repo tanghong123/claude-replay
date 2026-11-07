@@ -1426,6 +1426,9 @@ pub fn configure_monitor_environment(
     let state = base.join(format!("state-{port}"));
     let cache = base.join(format!("cache-{port}"));
     cmd.env("HOME", base.join("home"))
+        // Every owner wait of Codex native mode that refuses or runs long says so on stderr,
+        // which `Monitor::spawn` keeps in the case's root (#s410, #s227).
+        .env("AGENT_MONITOR_TRACE_OWNER", "1")
         .env_remove("CODEX_NATIVE_SERVER_URL")
         .env("XDG_CONFIG_HOME", base.join("config"))
         .env("XDG_DATA_HOME", base.join("data"))
@@ -1530,9 +1533,15 @@ impl Monitor {
         let state = base.join(format!("state-{port}"));
         std::fs::create_dir_all(&state).unwrap();
         let mut cmd = std::process::Command::new(&bin);
+        // The monitor's stderr goes to a file in the case's root, which a failed case keeps
+        // (#s142): its refusal lines and the owner waits of native mode (#s410) are the evidence
+        // a failure on a loaded machine needs, and were thrown away.
+        let stderr = std::fs::File::create(base.join(format!("monitor-{port}.stderr")))
+            .map(std::process::Stdio::from)
+            .unwrap_or_else(|_| std::process::Stdio::null());
         cmd.args(["--port", &port.to_string()])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+            .stderr(stderr);
         configure_monitor_environment(&mut cmd, base, port, stores);
         if paired {
             // The token alone admits (#366): on Linux the gate otherwise admits a same-user

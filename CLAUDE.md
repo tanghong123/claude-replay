@@ -1332,7 +1332,9 @@ harness's roots (`cr-browser-follow-<pid>-<case>`, `cr-browser-state-<pid>`,
 `chrome.noindex/cr-browser-chrome-<pid>-<n>`), one per case per run and ~0.3 GB for a walk over a long
 session. A case that PASSES removes its own as its `serial()` guard goes (#s142: a day's suites
 had left 741 of them, 13.6 GB); a failed case keeps its root for diagnosis, as `CR_KEEP_SCRATCH=1`
-keeps every root. What is left the sweep prunes by the LIVENESS of the pid in the name, not by
+keeps every root. The root holds each monitor's stderr (`monitor-<port>.stderr`, #s410): its
+refusal lines, and every owner wait of Codex native mode that refused or took over a second (the
+harness sets `AGENT_MONITOR_TRACE_OWNER`), which a native-mode case failing under load needs. What is left the sweep prunes by the LIVENESS of the pid in the name, not by
 age (#205: the age rule had kept 43 GB of them after one day's runs); a running suite's roots are
 never in range, so the sweep (or `scripts/sweep-scratch.sh` alone) is safe beside a live run. Everything else goes by age.
 Scratch inside the repo is scratch inside a GIT repo, so the same file sets
