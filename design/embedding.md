@@ -126,7 +126,13 @@ As with mdrev, a host can shape what it gets without forking it:
 - **which controls show:** each optional control can be switched off. The writes appear only when
   the host serves them;
 - **events out:** opening a session, opening a file, copying a link and a toast go to the host's
-  handlers;
+  handlers. The session view also tells its host its title, its current turn and a request to
+  open the session's Info, which a host's own top bar shows: the standalone app on a phone does
+  exactly this, as a host like any other;
+- **frames:** where the session view shows an agent's HTML page in a frame, the host may supply
+  that frame. A frame written from the page's own text takes the page's security policy, which a
+  strict host (the native app) does not allow scripts under, so such a host frames the page from
+  a source of its own;
 - **keys:** a component answers its keyboard shortcuts only while the reader is working in it,
   so they never take the host's keys.
 
@@ -181,13 +187,19 @@ by the native app (#s407). None can drift from the others.
 
 Each release publishes a kit beside its binaries, with its digest, as mdrev does. It holds:
 
-- the module: the two components and the detached page;
+- the module: the two components, and the detached page from a later kit;
 - its stylesheet;
 - type declarations;
 - the contract and the guide;
 - the conformance check.
 
 A host pins a version and upgrades on purpose.
+
+mdrev's viewer and the Mermaid runtime, which the session view uses for Markdown and diagrams,
+are not in the first kits: a host vendors its own, as the native app does with its own pinned
+mdrev. The kit takes them over if a second host needs them.
+
+The first kit ships without the detached page; a later kit adds it (steps 7 and 8 below).
 
 ## The first hosts
 
@@ -199,18 +211,24 @@ A host pins a version and upgrades on purpose.
 
 ## The order of the work
 
-1. **One request layer.** Every request the page makes goes through one module that knows the
-   host's contract prefix (stage 0 of `design/monitor-hub.md`).
+1. **One request layer.** Every request the page makes goes through a backend handle, one per
+   backend: the server's base (a page origin, a host's prefix, another origin, or a native host's
+   own scheme with whatever path it routes by), whether the reader is local to it, and where its
+   mdrev loads from. A page that holds several backends' sessions holds several handles, and a
+   handle may be answered by code in the page itself (the native app's merged source). This is
+   the first step of phase 0b in `design/monitor-hub.md` (#s416).
 2. **The contract written down and versioned.** The monitor already serves it; this step writes
    it, its version and its record format.
 3. **The backend as something a host mounts.** The route table answers under any prefix, from
    sessions the host names (stores on disk, or its own adapter), with the host's sign-in in front
    and no assumption that it owns the port.
-4. **The session view as a component**, with the app shell mounting it.
+4. **The session view as a component**, with the app shell mounting it. It reads what it needs
+   to know about its backend (paired, version, mdrev) from its handle, not the page's head, and
+   gains the title, turn and Info events and the frame hook from "Customizing".
 5. **The session list as a component**, with the app shell mounting it.
 6. **Layout by device and pane size**, with the width tests.
-7. **Detached views from the kit.**
-8. **The kit**, with its guide and conformance check, ready for the collaboration app.
+7. **The kit**, with its guide and conformance check, ready for the collaboration app.
+8. **Detached views**, in a later kit.
 
 Each step lands on its own, with the app working at every step.
 
