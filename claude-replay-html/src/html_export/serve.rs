@@ -5046,12 +5046,22 @@ mod tests {
         let handler: RouteHandler =
             std::sync::Arc::new(|_req: &Request| HttpResponse::ok("text/plain", b"ok".to_vec()));
         let trusted: HostCheck = std::sync::Arc::new(|h: &str| h == "box.tail0000.ts.net");
+        // A refusal the gate sends before the request has all arrived (past the second bound it
+        // stops reading) may reach the client as a reset: Linux resets a socket closed with bytes
+        // unread. Either way nothing was served, which is all these cases ask.
         let get_at = |port: u16, path: &str, head: &str| {
             let mut s = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
-            write!(s, "GET {path} HTTP/1.0\r\n{head}Connection: close\r\n\r\n").unwrap();
+            if let Err(e) = write!(s, "GET {path} HTTP/1.0\r\n{head}Connection: close\r\n\r\n") {
+                return format!("not served: the write failed ({e})");
+            }
             let mut resp = String::new();
-            s.read_to_string(&mut resp).unwrap();
-            resp
+            match s.read_to_string(&mut resp) {
+                Ok(_) => resp,
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
+                    format!("not served: reset after {} bytes", resp.len())
+                }
+                Err(e) => panic!("reading the reply: {e}"),
+            }
         };
         let get = |port: u16, host: &str, cookie: &str| {
             get_at(port, "/api/x", &format!("Host: {host}\r\n{cookie}"))
