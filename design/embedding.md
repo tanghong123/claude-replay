@@ -2,8 +2,9 @@
 
 > **DRAFT** (#s406, 2026-11-07). A proposal; nothing is built. The owner asked for agent-monitor
 > to be embeddable in another web app "natively (not as an iframe)", a team's collaboration app
-> first, design first. The decision it asks for is at the top. Its companion is #s407's design (one
-> app over many paired monitors), which owns the shared first stage named below.
+> first, design first. The decision it asks for is at the top. Its companion is
+> `design/monitor-hub.md` (#s407, one app over many paired monitors), which owns the shared first
+> stage named below.
 
 ## The decision
 
@@ -88,7 +89,7 @@ Agreed with #s407 so both designs build on one seam:
 - **The backend handle** is how MonitorSource reaches one monitor: its base address, how
   credentials ride (the ambient cookie, or a bearer token), whether the reader is local to it
   (reveal or download, windowed reading), and where to load mdrev's bundle from. Routing every
-  request through it is **stage 0**, written up in #s407's design. This design only cites it:
+  request through it is **stage 0**, written up in `design/monitor-hub.md`. This design only cites it:
   HostSource never uses a handle.
 
 ### What a host feeds in
@@ -226,7 +227,7 @@ A host pins a version and refreshes by a script like ours for mdrev: download th
 check the digest, refuse a version below the floor it knows. It takes no copy of our source tree
 and walks no imports.
 
-A host that talks to monitors (#s407's hub) does not need the kit: it serves the shell itself,
+A host that talks to monitors (the hub in `design/monitor-hub.md`) does not need the kit: it serves the shell itself,
 and the shell mounts the same view.
 
 ## Security
