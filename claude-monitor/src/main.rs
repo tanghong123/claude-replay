@@ -16,6 +16,7 @@ use claude_monitor::control::{
 use claude_monitor::index;
 
 use anyhow::{Context, Result};
+use claude_monitor::root_claim::{self, Claimed, Holder};
 use claude_replay_core::Agent;
 use claude_replay_html::{RootLock, ServiceConfig};
 use claude_replay_present::cache::Presentation;
@@ -24,58 +25,6 @@ use std::sync::Arc;
 
 /// The stable default port (§11): the monitor is a bookmarkable place.
 const DEFAULT_PORT: u16 = 2727;
-
-/// What claiming the cache root came to.
-#[derive(Debug)]
-enum Claimed {
-    /// The root is ours: stand the server up.
-    Ours,
-    /// A live monitor already serves this root, here. Hand off to it.
-    Served(String),
-}
-
-/// Take the cache root, or hand off to the monitor that already has it (#160, #166).
-///
-/// **One monitor per root.** The cache root is single-writer by construction (#96), and every
-/// entry a peer holds is one this process would be DENIED. Binding 2727 twice fails, but
-/// `--port` walks past it, so the lock is what actually enforces it.
-///
-/// Being second is not an error, though — it means the thing you asked for is already running.
-/// `claude-replay --html` has always handed a second invocation to the first
-/// ([`claude_replay_html::existing_server`]); this used to print a message and exit 1 instead,
-/// leaving the URL to be copied by hand. Now it opens the running monitor and quits, and prints
-/// that URL on stdout exactly where a normal start prints its own — a script capturing stdout to
-/// find the monitor gets an answer either way.
-///
-/// The URL comes from the note, published once the listener binds. A holder that has taken the
-/// lock but not bound yet is a real window, not a dead process — it counts as live, and it has no
-/// URL, so that one IS an error rather than a hand-off to nowhere. A dead holder is reclaimed by
-/// `acquire`, which is what makes a killed monitor's lock harmless. A lock we cannot WRITE is
-/// reported and ignored — a temp I/O fault should not stop the tool.
-fn claim_root(root: &std::path::Path) -> Result<Claimed> {
-    use claude_replay_present::cache::lock;
-    let holder = match lock::acquire::<serde_json::Value>(root, |h| {
-        lock::pid_alive(h.pid) && port_answers(note_port(h.note.as_ref()))
-    }) {
-        Ok(lock::Taken::Owned) => return Ok(Claimed::Ours),
-        Ok(lock::Taken::Held(h)) => h,
-        Err(e) => {
-            eprintln!(
-                "warning: could not take the root lock at {}: {e}",
-                root.display()
-            );
-            return Ok(Claimed::Ours);
-        }
-    };
-    match note_port(holder.note.as_ref()) {
-        Some(port) => Ok(Claimed::Served(format!("http://127.0.0.1:{port}/"))),
-        None => anyhow::bail!(
-            "agent-monitor is starting up in another process (pid {}) — it holds this cache \
-             root but has not published a port yet. Try again in a moment, or stop it first.",
-            holder.pid
-        ),
-    }
-}
 
 /// Open `url` in the default browser (best-effort; never fails the run). Both the normal start
 /// and the hand-off to a running monitor go through here — the user asked for a monitor, and
@@ -92,35 +41,6 @@ fn open_url(url: &str) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
-}
-
-/// Endpoint metadata is advisory after the listener has bound. A write failure must
-/// not turn a working Monitor into a failed startup.
-fn publish_runtime_note(root: &std::path::Path, ownership: serde_json::Value) {
-    if let Err(error) = claude_replay_present::cache::lock::publish(root, ownership) {
-        eprintln!(
-            "warning: publish Monitor endpoint and runtime identity to {}: {error:#}",
-            root.join("LOCK").display()
-        );
-    }
-}
-
-/// The port out of a root lock's note, which is plain JSON here — the monitor has no serde
-/// derive and needs exactly one field.
-fn note_port(note: Option<&serde_json::Value>) -> Option<u16> {
-    note?.get("port")?.as_u64().map(|p| p as u16)
-}
-
-/// Whether a holder's published port still answers. Same rule the html server's rendezvous
-/// uses: a pid alone is not enough (pids are recycled), and a holder that has taken the lock
-/// but not yet bound (`None`) counts as live.
-fn port_answers(port: Option<u16>) -> bool {
-    let Some(port) = port else { return true };
-    std::net::TcpStream::connect_timeout(
-        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
-        std::time::Duration::from_millis(150),
-    )
-    .is_ok()
 }
 
 /// Reclaim the scratch locations this crate used before #162, once.
@@ -322,7 +242,7 @@ fn main() -> Result<()> {
     // Before anything is opened: one monitor per root (#160) — and if another one has it, that
     // is where the user wants to go (#166), so open it and stop rather than fail. The hand-off
     // URL carries the token too: the second invocation is the same user, who can read the file.
-    if let Claimed::Served(url) = claim_root(&root)? {
+    if let Claimed::Served(url) = root_claim::claim(&root, Holder::Monitor)? {
         #[cfg(feature = "codex-native")]
         if native_options {
             let receipt: serde_json::Value =
@@ -358,7 +278,7 @@ fn main() -> Result<()> {
     // its LIFETIME, and the directory delivered neither.
     //
     // ONE directory, no pid (#162). The monitor's cache is a single entity under a single root
-    // lock: `claim_root` above has already established that no other monitor is running, so
+    // lock: the root claim above has already established that no other monitor is running, so
     // there is nobody to segregate from, and a wipe here cannot destroy a live peer's log. A
     // crashed run leaves scratch behind and the next start simply wipes it — which is why the
     // pid-keyed layout and its liveness sweep bought nothing but names to reap.
@@ -367,7 +287,7 @@ fn main() -> Result<()> {
     reclaim_legacy_scratch();
     // The session service at the MONITOR's root (§3/§10): same presentation namespace,
     // different root — a running `claude-replay --html` and this server cannot contend.
-    // `claim_root` above established this process as the root's ONLY writer, so the
+    // the root claim above established this process as the root's ONLY writer, so the
     // service takes no per-entry locks at all (#167 §4.3 c) — `SingleWriter` under the
     // monitor's claim, not `PerSession` re-proving exclusivity entry by entry.
     let service = Arc::new(claude_replay_html::SessionService::new(ServiceConfig {
@@ -460,7 +380,7 @@ fn main() -> Result<()> {
     let ownership = serde_json::json!({"port":bound,"native":native_runtime.identity()});
     #[cfg(not(feature = "codex-native"))]
     let ownership = serde_json::json!({"port":bound});
-    publish_runtime_note(&root, ownership);
+    root_claim::publish(&root, Holder::Monitor, ownership);
     let base = format!("http://127.0.0.1:{bound}/");
     // The token is printed only to a terminal (#s204): run as a LaunchAgent both streams are a
     // log file, which kept it at every restart. The browser is still opened with it.
@@ -510,18 +430,7 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-
-    #[test]
-    fn optional_runtime_note_failure_does_not_abort_a_bound_listener() {
-        let root = std::env::temp_dir().join(format!("monitor-note-file-{}", std::process::id()));
-        std::fs::write(&root, "a file cannot contain LOCK").unwrap();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        super::publish_runtime_note(&root, serde_json::json!({"port":address.port()}));
-        assert!(std::net::TcpStream::connect(address).is_ok());
-        assert!(root.is_file());
-        std::fs::remove_file(root).unwrap();
-    }
+    use claude_replay_core::Agent;
 
     /// The app shell is the page; the classic view and its `ui=` switch are retired (#s98).
     #[test]
@@ -582,67 +491,5 @@ mod tests {
             help.contains(&super::DEFAULT_PORT.to_string()),
             "the default port is stated, and comes from the constant"
         );
-    }
-    use super::*;
-    use claude_replay_present::cache::lock;
-
-    /// #166: being second is not an error — it means what you asked for is already running.
-    ///
-    /// Covers all four ways the root lock can read: free, held by a live monitor that published
-    /// where it serves (hand off), held by one that has taken the lock but not bound (no target,
-    /// so this one really is an error), and held by a dead pid (reclaimed).
-    #[test]
-    fn a_second_monitor_hands_off_instead_of_failing() {
-        let root = std::env::temp_dir().join(format!("cm-claim-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-
-        assert!(
-            matches!(claim_root(&root).unwrap(), Claimed::Ours),
-            "a free root is ours"
-        );
-        // Our own lock does not lock us out (`acquire` never denies its own pid).
-        assert!(matches!(claim_root(&root).unwrap(), Claimed::Ours));
-
-        // A peer that really exists: a live pid that is not ours, on a port that really answers.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let mut peer = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
-        let peer_pid = peer.id();
-        let hold = |note: serde_json::Value| {
-            std::fs::write(
-                lock::lock_path(&root),
-                serde_json::json!({"pid": peer_pid, "dir": root, "note": note}).to_string(),
-            )
-            .unwrap();
-        };
-
-        hold(serde_json::json!({ "port": port }));
-        match claim_root(&root).unwrap() {
-            Claimed::Served(url) => assert_eq!(url, format!("http://127.0.0.1:{port}/")),
-            Claimed::Ours => panic!("a live monitor's root must not be taken from it"),
-        }
-
-        // It holds the lock but has not bound: a real window, and no URL to send anyone to.
-        hold(serde_json::Value::Null);
-        let e = claim_root(&root).expect_err("no port ⇒ nowhere to hand off to");
-        assert!(
-            e.to_string().contains(&peer_pid.to_string()),
-            "the refusal names the holder: {e}"
-        );
-
-        // A dead holder is reclaimed, whoever holds that port now.
-        peer.kill().ok();
-        peer.wait().ok();
-        hold(serde_json::json!({ "port": port }));
-        assert!(
-            matches!(claim_root(&root).unwrap(), Claimed::Ours),
-            "a dead monitor does not keep the root"
-        );
-
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

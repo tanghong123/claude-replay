@@ -17,6 +17,7 @@ pub mod dialog;
 pub mod index;
 pub mod layout;
 pub mod pair_phone;
+pub mod root_claim;
 pub mod routes;
 pub mod state;
 pub mod ui;
