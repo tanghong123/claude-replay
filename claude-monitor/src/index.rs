@@ -392,6 +392,14 @@ pub struct Index {
     /// pair persisted `[]` over the developer's real `~/.local/state/…/ignored.json`. Holding
     /// the path makes that structurally impossible — an instance writes where it was told to.
     state_dir: PathBuf,
+    /// The stores to list (#s426, `design/backend-mount.md`): `None` is every agent's store on
+    /// this machine, as the process's environment and `$HOME` name them (the monitor); a host
+    /// that mounts the table names its own, each an agent and a store root.
+    stores: Option<Vec<(Agent, PathBuf)>>,
+    /// Whether scans read this machine's processes (`ps`, `lsof`), the Claude desktop app's
+    /// records, and through them herdr: what tells which session is live and in which pane.
+    /// A host whose sessions do not run on its own server turns them off (#s426).
+    probes: bool,
     state: std::sync::Mutex<State>,
 }
 
@@ -1093,12 +1101,55 @@ impl Index {
             cache_root,
             only,
             state_dir,
+            stores: None,
+            probes: true,
             state: std::sync::Mutex::new(State {
                 ignored,
                 started_by_edges,
                 ..Default::default()
             }),
         }
+    }
+
+    /// List only these stores, each an agent and a store root, instead of every agent's store on
+    /// this machine (#s426): what a host that mounts the route table serves. A store whose agent
+    /// cannot list a chosen root lists nothing, and says so once.
+    pub fn with_stores(mut self, stores: Vec<(Agent, PathBuf)>) -> Self {
+        self.stores = Some(stores);
+        self
+    }
+
+    /// Read none of this machine's processes, the desktop app's records or herdr (#s426). A
+    /// row then has no process: no `pid`, `term` or `target`, its state what its transcript
+    /// alone shows, and nothing to send into.
+    pub fn without_process_probes(mut self) -> Self {
+        self.probes = false;
+        self
+    }
+
+    /// The transcripts one agent's stores hold: the machine-wide store, or the roots this
+    /// index was given for that agent.
+    fn transcripts_of(&self, a: &dyn claude_replay_core::TranscriptAdapter) -> Vec<PathBuf> {
+        let Some(stores) = &self.stores else {
+            return a.store_transcripts();
+        };
+        let mut found = Vec::new();
+        for (agent, root) in stores.iter().filter(|(agent, _)| *agent == a.agent()) {
+            match a.store_transcripts_in(root) {
+                Some(paths) => found.extend(paths),
+                None => {
+                    static SAID: std::sync::Once = std::sync::Once::new();
+                    SAID.call_once(|| {
+                        eprintln!(
+                            "agent-monitor: {} cannot list a chosen store ({}); it lists nothing",
+                            agent.label(),
+                            root.display()
+                        )
+                    });
+                }
+            }
+        }
+        found
     }
 
     /// Install the host's live native ownership view without activating a runtime.
@@ -1230,7 +1281,7 @@ impl Index {
     /// move costs three `stat`s and nothing else.
     fn scan(&self, st: &mut State, register: &dyn Fn(&Path)) {
         // Liveness refresh on its own slower clock (§5.1).
-        if st.procs_at.is_none_or(|t| t.elapsed() > PROC_REFRESH) {
+        if self.probes && st.procs_at.is_none_or(|t| t.elapsed() > PROC_REFRESH) {
             st.procs = scan_procs();
             st.procs_at = Some(Instant::now());
             // #s340: which desktop session started which, on the same clock.
@@ -1248,7 +1299,7 @@ impl Index {
             {
                 continue;
             }
-            for path in a.store_transcripts() {
+            for path in self.transcripts_of(*a) {
                 let sid = stem_of(&path);
                 seen.push(sid.clone());
                 register(&path);
@@ -1411,6 +1462,12 @@ impl Index {
         let mut seen_sub_costs = HashSet::new();
         for a in adapters() {
             if !self.only.is_empty() && !self.only.contains(&a.agent()) {
+                continue;
+            }
+            // The adapters list sub-agents machine-wide only, so an index over chosen stores
+            // (#s426) banks none: it would read this machine's own stores, not the host's. Its
+            // rows' cost leaves out their sub-agents' spend.
+            if self.stores.is_some() {
                 continue;
             }
             let subs = a.store_subagent_transcripts();
@@ -5323,6 +5380,59 @@ mod tests {
     /// born from the card pass alone (unvisited, no counters — R7/§3); growth is a two-scan
     /// mtime diff, with the FIRST sighting never claiming growth; and a meta stream
     /// appearing at the monitor root turns the row visited with folded counters.
+    /// #s426: an index over chosen stores lists their sessions and none of this machine's, and
+    /// with process probing off a scan reads no processes at all.
+    #[test]
+    fn an_index_over_chosen_stores_lists_them_alone_and_probes_nothing() {
+        let base = std::env::temp_dir().join(format!("cm-index-stores-{}", std::process::id()));
+        let _env = StateEnv::set(base.join("state"));
+        let _ = std::fs::remove_dir_all(&base);
+        let machine = base.join("machine-projects");
+        let chosen = base.join("chosen-projects");
+        std::env::set_var("CLAUDE_PROJECTS_DIR", &machine);
+        std::env::set_var("QODERWORK_PROJECTS_DIR", base.join("qw"));
+        std::env::set_var("QWENWORK_PROJECTS_DIR", base.join("qwen"));
+        std::env::set_var("QODER_PROJECTS_DIR", base.join("qoder"));
+        std::env::set_var("CODEX_HOME", base.join("codex"));
+        let write = |store: &Path, sid: &str| {
+            let proj = store.join("-tmp-chosen-repo");
+            std::fs::create_dir_all(&proj).unwrap();
+            let ts = iso_utc(SystemTime::now() - Duration::from_secs(600));
+            std::fs::write(
+                proj.join(format!("{sid}.jsonl")),
+                format!(
+                    "{{\"sessionId\":\"x\",\"type\":\"user\",\"cwd\":\"/tmp/chosen-repo\",\"timestamp\":\"{ts}\",\"message\":{{\"role\":\"user\",\"content\":\"hello\"}}}}\n"
+                ),
+            )
+            .unwrap();
+        };
+        let on_machine = "aaaaaaaa-0000-4000-8000-000000000001";
+        let in_chosen = "bbbbbbbb-0000-4000-8000-000000000002";
+        write(&machine, on_machine);
+        write(&chosen, in_chosen);
+        let idx = Index::new(base.join("cache"), base.join("state"), Vec::new())
+            .with_stores(vec![(Agent::CLAUDE, chosen.clone())])
+            .without_process_probes();
+        let json: Value = serde_json::from_str(&idx.sessions_json(|_| {})).unwrap();
+        let ids: Vec<String> = json["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["rows"].as_array().unwrap().clone())
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            ids,
+            [in_chosen],
+            "the chosen store's session, and not the machine's"
+        );
+        assert!(
+            idx.state.lock().unwrap().procs_at.is_none(),
+            "no process was read"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn index_end_to_end_on_a_fixture_store() {
         // The store env vars are process-global: hold the same lock every env-setting test
