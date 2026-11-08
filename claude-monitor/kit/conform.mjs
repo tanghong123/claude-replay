@@ -1631,14 +1631,35 @@ async function main() {
   await rule("ignore.add-remove", S.ignore, "add and remove answer 200 {ok: true, ignored: <count>}", async () => {
     const row = ROUTES.find((r) => r.path === "/api/ignore");
     if (row.served !== true) return skip("not served");
-    const key = enc(`s:conform-check-${NONCE}`);
+    const plain = `s:conform-check-${NONCE}`;
+    const key = enc(plain);
     const problems = [];
-    for (const op of ["add", "remove"]) {
-      const reply = await ask("GET", `api/ignore?${op}=${key}`);
-      const body = reply.status === 200 ? reply.json() : null;
-      if (!body) problems.push(`${reply.what} answered ${reply.status}`);
-      else fields(body, { ok: oneOf(true), ignored: "number" }, `the ${op} reply`, problems);
+    const check = (reply, op) => {
+      if (reply.status !== 200) return problems.push(`${reply.what} answered ${reply.status}`);
+      let body;
+      try {
+        body = JSON.parse(reply.text());
+      } catch {
+        return problems.push(`the ${op} reply is not JSON: ${brief(reply.text())}`);
+      }
+      return fields(body, { ok: oneOf(true), ignored: "number" }, `the ${op} reply`, problems);
+    };
+    try {
+      check(await ask("GET", `api/ignore?add=${key}`), "add");
+    } catch (e) {
+      problems.push(e.message);
     }
+    // Whatever the add said, or if it went unanswered, the key is removed again; and if that
+    // fails, the host is told which key to remove.
+    let removed = false;
+    try {
+      const reply = await ask("GET", `api/ignore?remove=${key}`);
+      removed = reply.status === 200;
+      check(reply, "remove");
+    } catch (e) {
+      problems.push(e.message);
+    }
+    if (!removed) problems.unshift(`remove the key ${plain} from the host's hide list by hand`);
     return verdict(problems, "a key no session has, added and removed");
   });
 
