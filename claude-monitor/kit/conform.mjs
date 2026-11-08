@@ -703,11 +703,33 @@ function textOf(html) {
   return String(html).replace(/<[^>]*>/g, " ").replace(/&[a-z#0-9]+;/gi, " ");
 }
 
+/** A record's own body text: its parts' HTML and plain text, joined. */
+function partsText(rec) {
+  return (Array.isArray(rec?.body) ? rec.body : []).map((p) => (TYPES.object(p) ? (p.h ?? p.x ?? "") : "")).join(" ");
+}
+
+/** Everything a person could read in the session, lower-cased with its spaces closed up: the
+ * records' labels, heads and bodies, nested records included. */
+function sessionText(records) {
+  const out = [];
+  for (const [rec] of everyRecord(records)) {
+    if (!TYPES.object(rec)) continue;
+    for (const v of [rec.label, rec.src, ...Object.values(TYPES.object(rec.head) ? rec.head : {})]) {
+      if (typeof v === "string") out.push(v);
+    }
+    out.push(textOf(partsText(rec)));
+  }
+  return out.join(" ").toLowerCase().replace(/\s+/g, " ");
+}
+
 // -------------------------------------------------------------------------------- the page
 
+/** A tag's attributes, quoted either way or not at all. */
 function tagAttrs(tag) {
   const attrs = {};
-  for (const m of tag.matchAll(/([\w:-]+)\s*=\s*"([^"]*)"/g)) attrs[m[1].toLowerCase()] = m[2];
+  for (const m of tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g)) {
+    attrs[m[1].toLowerCase()] = m[2] ?? m[3] ?? m[4];
+  }
   return attrs;
 }
 
@@ -746,19 +768,25 @@ async function main() {
     "the reader's sign-in is accepted (the page reads a 401 as not paired)",
     async () => {
       listReply = await ask("GET", "api/sessions");
-      if (listReply.status === 401) {
+      const status = listReply.status;
+      if (status === 401) {
         fail(
           SIGNED_IN
-            ? "401: the server refused the sign-in given with --cookie or --header"
-            : "401: the server wants a sign-in; pass it with --cookie or --header",
+            ? "401: the server refused the sign-in given with --cookie or --header; nothing else was checked"
+            : "401: the server wants a sign-in; pass it with --cookie or --header; nothing else was checked",
         );
       }
-      return `GET /api/sessions answered ${listReply.status}`;
+      if (status >= 300 && status < 400) {
+        fail(`${status}, a redirect to ${redact(String(listReply.header("location") ?? "nowhere").slice(0, 60))}: the reply is the session list itself; nothing else was checked`);
+      }
+      if (status < 200 || status >= 300) fail(`${listReply.what} answered ${status}; nothing else was checked`);
+      return `${listReply.what} answered ${status}`;
     },
   );
   if (!signedIn) return finish();
 
   await rule("sessions.reply", S.sessions, "the reply is {groups: Group[], ignoredCount: number}", async () => {
+    if (listReply.status === 404) served("/api/sessions", false);
     if (listReply.status !== 200) fail(`${listReply.what} answered ${listReply.status}, not 200`);
     const body = listReply.json();
     const problems = [];
@@ -858,6 +886,7 @@ async function main() {
 
   await rule("ui.modules", S.index, "the page's modules are served under /monitor-ui/ (a core row)", async () => {
     const reply = await ask("GET", "monitor-ui/app.js");
+    if (reply.status === 404) served("/monitor-ui/", false);
     if (reply.status !== 200) fail(`${reply.what} answered ${reply.status}`);
     if (!reply.bytes.length) fail(`${reply.what} answered an empty body`);
     served("/monitor-ui/", true);
@@ -865,11 +894,14 @@ async function main() {
   });
 
   // ------------------------------------------------------------------------- one session
+  // Every request below is well formed but for what it is about, so a refusal of something else
+  // (a query that does not parse) cannot stand in for the one the rule asks.
+  const WELL_FORMED = `cursor=0.0.0.0&from=0&len=1&epoch=1&upto=1&q=${enc(JSON.stringify({ lc: "tern", whole: false, wanted: 0, tools: [] }))}`;
   await rule("session.bad-id", S.records, "an id holding / or .. gets 404, on all four routes", async () => {
     const problems = [];
     for (const route of ["pull", "records", "turn-index", "search"]) {
       for (const id of ["a/b", ".."]) {
-        const reply = await ask("GET", `${route}?session=${id}&cursor=0.0.0.0&from=0&len=1&epoch=1&upto=1&q=%7B%7D`);
+        const reply = await ask("GET", `${route}?session=${id}&${WELL_FORMED}`);
         if (reply.status !== 404) problems.push(`${reply.what} answered ${reply.status}`);
       }
     }
@@ -879,7 +911,7 @@ async function main() {
   await rule("session.empty-id", S.records, "an empty id gets 404 from /records, /turn-index and /search", async () => {
     const problems = [];
     for (const route of ["records", "turn-index", "search"]) {
-      const reply = await ask("GET", `${route}?session=&from=0&len=1&epoch=1&upto=1&q=%7B%7D`);
+      const reply = await ask("GET", `${route}?session=&${WELL_FORMED}`);
       if (reply.status !== 404) problems.push(`${reply.what} answered ${reply.status}`);
     }
     return verdict(problems, "3 requests, each 404");
@@ -902,8 +934,7 @@ async function main() {
       const problems = [];
       const notServed = [];
       for (const route of ["records", "turn-index", "search"]) {
-        const q = enc(JSON.stringify({ lc: "tern", whole: false, wanted: 0, tools: [] }));
-        const reply = await ask("GET", `${route}?session=${NO_SUCH_SESSION}&from=0&len=1&epoch=1&upto=1&q=${q}`);
+        const reply = await ask("GET", `${route}?session=${NO_SUCH_SESSION}&${WELL_FORMED}`);
         if (reply.status === 404 && route !== "records") notServed.push(route);
         else if (reply.status !== 409) problems.push(`${reply.what} answered ${reply.status}`);
       }
@@ -1261,9 +1292,9 @@ async function main() {
 
   await rule("search.reply", S.search, "the reply is {t: \"search\", epoch, upto, records: [[recordIndex, hits]], counts: {u, a, t, o}, total}", async () => {
     if (!haveLog()) return walk.ok ? skip("no committed log to search") : noWalk();
-    const prompt = walk.committed.find((r) => r.kind === "user");
-    const words = textOf((prompt?.body ?? []).map((p) => p?.h ?? p?.x ?? "").join(" ")).toLowerCase().match(/[a-z]{4,}/g);
-    const needle = words?.[0] ?? "the";
+    // A word of the person's first prompt: the search must find that record.
+    const at = walk.committed.findIndex((r) => r.kind === "user" && textOf(partsText(r)).match(/[a-z]{4,}/i));
+    const needle = at >= 0 ? textOf(partsText(walk.committed[at])).toLowerCase().match(/[a-z]{4,}/)[0] : "tern";
     const reply = await searchFor({ lc: needle, whole: false, wanted: 0, tools: [] });
     if (reply.status === 404) {
       se.served = false;
@@ -1280,13 +1311,18 @@ async function main() {
       if (!Array.isArray(hit) || hit.length !== 2 || !TYPES.number(hit[0]) || !TYPES.number(hit[1])) problems.push(`records[${i}] is ${show(hit)}, not [recordIndex, hits]`);
       else if (hit[0] < 0 || hit[0] >= body.upto) problems.push(`records[${i}] names record ${hit[0]}, not one below ${body.upto}`);
     }
+    if (at >= 0 && !body.records.some((hit) => Array.isArray(hit) && hit[0] === at && hit[1] >= 1)) {
+      problems.push(`"${needle}", a word of record ${at}, found no hit there (${plural(body.records.length, "record")} found)`);
+    }
     se.body = body;
     served("/search", true);
-    return verdict(problems, `"${needle}": ${plural(body.records.length, "record")}, total ${body.total}`);
+    return verdict(problems, `"${needle}": ${plural(body.records.length, "record")}, record ${at} among them, total ${body.total}`);
   });
 
   await rule("search.no-text", S.search, "the reply quotes no text", async () => {
     if (!se.body) return skip("no search reply to read");
+    // A reply may add fields; what it may not do is carry the session's own words.
+    const said = sessionText(records());
     const strings = [];
     const walkJson = (v) => {
       if (typeof v === "string") strings.push(v);
@@ -1294,14 +1330,20 @@ async function main() {
       else if (TYPES.object(v)) Object.values(v).forEach(walkJson);
     };
     walkJson(se.body);
-    const quoted = strings.filter((x) => x !== "search");
-    if (quoted.length) fail(`it carries ${plural(quoted.length, "string")}: ${quoted.slice(0, 3).map(brief).join(", ")}`);
-    return "no string but its t";
+    const quoted = strings.filter((x) => {
+      const s = x.trim().toLowerCase().replace(/\s+/g, " ");
+      return x !== se.body.t && s.length >= 4 && said.includes(s);
+    });
+    if (quoted.length) fail(`it carries ${plural(quoted.length, "string")} of the session's own text: ${quoted.slice(0, 3).map(brief).join(", ")}`);
+    return strings.length > 1 ? `${plural(strings.length - 1, "added string")}, none the session's text` : "no string but its t";
   });
 
   await rule("search.tool-filter", S.search, "an empty lc with tools is the tool filter: each record kept has 1 hit, and counts stay 0", async () => {
     if (!se.body) return skip("no search reply to read");
-    const name = Object.keys(ti.body?.tools ?? {})[0] ?? records().map((r) => r.tool).find((t) => typeof t === "string");
+    // A tool the turn index counted and a record names, so the filter has something to keep.
+    const called = new Set([...everyRecord(records())].map(([r]) => r?.tool).filter((t) => typeof t === "string"));
+    const counted = Object.entries(ti.body?.tools ?? {}).filter(([, n]) => TYPES.number(n) && n > 0).map(([t]) => t);
+    const name = counted.find((t) => called.has(t)) ?? [...called][0];
     if (!name) return skip("the session holds no tool call to filter on");
     const reply = await searchFor({ lc: "", whole: false, wanted: 0, tools: [{ name, prefix: false }] });
     if (reply.status !== 200) fail(`${reply.what} answered ${reply.status}: ${brief(reply.text())}`);
@@ -1310,6 +1352,7 @@ async function main() {
     if (!Array.isArray(body.records)) fail(`records is ${show(body.records)}`);
     for (const hit of body.records) if (!Array.isArray(hit) || hit[1] !== 1) problems.push(`record ${show(hit?.[0])} has ${show(hit?.[1])} hits, not 1`);
     for (const k of ["u", "a", "t", "o"]) if (body.counts?.[k] !== 0) problems.push(`counts.${k} is ${show(body.counts?.[k])}, not 0`);
+    if (counted.includes(name) && !body.records.length) problems.push(`the turn index counted ${name}, and the filter kept no record`);
     return verdict(problems, `${name}: ${plural(body.records.length, "record")} kept`);
   });
 
@@ -1620,8 +1663,8 @@ async function main() {
       body: JSON.stringify({ from: { path: held.path, cap: held.cap }, targets: ["other.md"] }),
       headers: { "content-type": "application/json" },
     });
-    if (reply.status === 404) return skip(`404: not served (${brief(reply.text())})`);
-    if (reply.status !== 200) fail(`${reply.what} answered ${reply.status}: ${brief(reply.text())}`);
+    // hold answered, so the prefix is served: resolve is one of its three routes.
+    if (reply.status !== 200) fail(`${reply.what} answered ${reply.status}: ${brief(reply.text())}, where hold was served${originHint(reply)}`);
     const body = reply.json();
     if (!("caps" in body)) fail(`the reply has no caps: ${brief(reply.text())}`);
     return "caps";
@@ -1632,6 +1675,8 @@ async function main() {
     if (!offered.length) return skip("the session offers no path with a file stamp");
     const o = offered[0];
     const reply = await ask("GET", `api/mdrev/open?path=${enc(o.path)}&sig=${enc(o.fsig)}`);
+    // A path /file served was offered: open may not call it one the page never was.
+    if (reply.status === 404 && fileOpened === o.path) fail(`${reply.what} answered 404 for a path /file served with the same stamp`);
     if ([401, 404, 415].includes(reply.status)) return skip(`${reply.status}: ${brief(reply.text())}`);
     if (reply.status !== 200) fail(`${reply.what} answered ${reply.status}: ${brief(reply.text())}`);
     const body = reply.json();
