@@ -27,6 +27,15 @@ pub const PUBLIC_ASSETS: &[&str] = &[
     "codex-workspace/icon-180.png",
 ];
 
+/// The largest body a request to a native build's route may carry (#s426): native mode's send 12
+/// MiB, and the rest as the route table says (`routes::body_limit`).
+pub fn body_limit(route: &str) -> usize {
+    match route {
+        "api/codex/send" => SEND_BODY_LIMIT,
+        _ => crate::routes::body_limit(route),
+    }
+}
+
 /// Compose inert native support with the unchanged reader routes.
 /// No runtime is activated by construction, assets, status or session reading.
 pub fn handler(
@@ -607,6 +616,17 @@ mod tests {
         assert_eq!(render_route(&request).code, "400 Bad Request");
         request.origin_ok = false;
         assert_eq!(render_route(&request).code, "403 Forbidden");
+    }
+
+    /// #s426: a native build's body limits: its send, and the table's for the rest.
+    #[test]
+    fn a_native_build_reads_its_body_limits_from_the_table() {
+        assert_eq!(body_limit("api/codex/send"), 12 * 1024 * 1024);
+        assert_eq!(
+            body_limit("api/send"),
+            crate::routes::body_limit("api/send")
+        );
+        assert_eq!(body_limit("api/codex/start"), 64 * 1024);
     }
 
     /// #s421: Codex native mode's rows of docs/backend-contract.md are answered by the handler a

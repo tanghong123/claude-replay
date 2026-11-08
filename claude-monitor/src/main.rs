@@ -436,14 +436,14 @@ fn main() -> Result<()> {
     .with_trusted_hosts(tailnet_hosts)
     .with_relay_check(tailnet_relay)
     // #s237: a send may carry images.
-    .with_body_limit("api/send", claude_monitor::control::SEND_BODY_LIMIT)?;
+    .with_body_limit("api/send", claude_monitor::routes::body_limit("api/send"))?;
     #[cfg(feature = "codex-native")]
     let bound = claude_replay_html::spawn_streaming_listener_gated(
         port,
         handler,
         gate.with_body_limit(
             "api/codex/send",
-            claude_monitor::codex_workspace::SEND_BODY_LIMIT,
+            claude_monitor::codex_workspace::body_limit("api/codex/send"),
         )?,
     )
     .with_context(|| format!("bind 127.0.0.1:{port} (is another monitor running?)"))?;

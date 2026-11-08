@@ -55,10 +55,10 @@ pub use bundle::{dump_all_html, dump_html};
 pub use mdrev::{install as install_mdrev, version as mdrev_version, Kit as MdrevKit};
 pub use serve::{
     existing_server, finish_reply, get_request, handoff_url, mint_token, query_get, serve,
-    service_routes, spawn_listener, spawn_listener_gated, spawn_streaming_listener_gated,
-    start_server, AuthGate, EventStream, HostCheck, HttpReply, HttpResponse, LiveServer,
-    RelayCheck, ReplyClient, Request, RootLock, RouteHandler, ServiceConfig, SessionService,
-    StaleEpoch, StreamingRouteHandler,
+    service_body_limit, service_routes, spawn_listener, spawn_listener_gated,
+    spawn_streaming_listener_gated, start_server, AuthGate, EventStream, HostCheck, HttpReply,
+    HttpResponse, LiveServer, RelayCheck, ReplyClient, Request, RootLock, RouteHandler,
+    ServiceConfig, SessionService, StaleEpoch, StreamingRouteHandler,
 };
 
 const CSS: &str = include_str!("../html/export.css");

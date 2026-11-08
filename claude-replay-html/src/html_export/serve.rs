@@ -2347,6 +2347,18 @@ fn set_cookie_line(token: &str) -> String {
 /// The largest POST body the server will read (#133): a prompt, not a payload.
 const MAX_BODY_BYTES: usize = 64 * 1024;
 
+/// The largest body a request to one of the session service's routes may carry (#s426): mdrev's
+/// `hold` takes a whole document, every other route 64 KiB. A body over it is refused with 413,
+/// never cut. A host that mounts the route table enforces it before the route reads the body, as
+/// the monitor's listener does; the monitor's own routes add theirs (`routes::body_limit`).
+pub fn service_body_limit(route: &str) -> usize {
+    if route == "api/mdrev/hold" {
+        super::mdrev::HOLD_BODY_LIMIT
+    } else {
+        MAX_BODY_BYTES
+    }
+}
+
 /// The largest artifact `/file` will hand over. The route exists so a click can SHOW a file
 /// the agent touched; anything bigger is a download, and the page falls back to revealing it
 /// Whether a candidate containment root is so broad that admitting it says nothing.
@@ -2646,10 +2658,8 @@ fn serve_connection<R: Into<HttpReply>>(
     let limit = if let Some((_, limit)) = gate.body_limits.iter().find(|(route, _)| *route == name)
     {
         *limit
-    } else if name == "api/mdrev/hold" {
-        super::mdrev::HOLD_BODY_LIMIT
     } else {
-        MAX_BODY_BYTES
+        service_body_limit(name)
     };
     let declared = header_value(&headers, "content-length")
         .and_then(|v| v.parse::<usize>().ok())

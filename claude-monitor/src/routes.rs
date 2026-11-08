@@ -64,6 +64,17 @@ fn ensure_known(backend: &Backend, id: &str) {
 /// `<body data-contract>`, and the document's own version line must agree: a test reads both.
 pub const CONTRACT_VERSION: u16 = 1;
 
+/// The largest body a request to this table's route may carry (#s426, `design/backend-mount.md`):
+/// a send with images 12 MiB, mdrev's `hold` a whole document, every other route 64 KiB. A host
+/// that mounts the table refuses a larger body with 413 before the route reads it, as the
+/// monitor's listener does (`main.rs` gives the listener the same numbers).
+pub fn body_limit(route: &str) -> usize {
+    match route {
+        "api/send" => control::SEND_BODY_LIMIT,
+        _ => claude_replay_html::service_body_limit(route),
+    }
+}
+
 /// What the app shell's page names: the build, and whether the monitor is paired.
 pub struct Frontend {
     pub version: &'static str,
@@ -428,6 +439,15 @@ mod tests {
         let text = body(reply);
         (reply.code == "403 Forbidden" && text == "forbidden")
             || (reply.code == "404 Not Found" && text == "not found")
+    }
+
+    /// #s426: the body limits a host that mounts the table enforces, the contract's numbers.
+    #[test]
+    fn a_host_reads_each_routes_body_limit_from_the_table() {
+        assert_eq!(body_limit("api/send"), 12 * 1024 * 1024);
+        assert_eq!(body_limit("api/mdrev/hold"), 8 * 1024 * 1024 + 64 * 1024);
+        assert_eq!(body_limit("api/consent"), 64 * 1024);
+        assert_eq!(body_limit("api/answer"), 64 * 1024);
     }
 
     /// #s421: every route `docs/backend-contract.md` documents is one the table answers. Each row's
