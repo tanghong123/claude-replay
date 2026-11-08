@@ -1485,7 +1485,7 @@ pub struct HttpResponse {
     /// A file streamed from disk after the head, with its length (#374) — `body` is then empty.
     /// Only `/file` sets it, for a download over its 8 MB viewer cap: a viewer reads what it
     /// shows into memory, but a download is not viewing, and a phone has no other way to fetch a
-    /// 19 MB video an agent sent it. Never gzipped, and masked only by refusal (`mask_for`).
+    /// 19 MB video an agent sent it. Never gzipped, and masked only by refusal (`mask_when`).
     pub stream: Option<(PathBuf, u64)>,
 }
 
@@ -1639,8 +1639,8 @@ pub struct Request<'a> {
     /// `Origin`; a DNS-rebound one carries a foreign `Host`; both are refused here even if
     /// they somehow held a token.
     pub origin_ok: bool,
-    /// What this client is sent is masked (`mask_for`'s own question: the mask policy, and whether
-    /// the `Host` is the loopback). A route that answers from text it does not send — search on the
+    /// What this client is sent is masked (the mask policy, and whether the `Host` is the
+    /// loopback; `finish_reply` masks by it). A route that answers from text it does not send — search on the
     /// server (#s278) — asks it of what it reads, or its counts would see a secret the page cannot.
     pub masked: bool,
 }
@@ -2881,9 +2881,15 @@ const GZIP_MIN_BYTES: usize = 16 * 1024;
 /// at 5 MB/s level 3 saves ~0.6 s over level 1 for 0.13 s more CPU — so level 3.
 const GZIP_LEVEL: u32 = 3;
 
+/// [`identity_when`] as the listener read it from a request's headers.
+#[cfg(test)]
+fn identity_for(r: HttpResponse, headers: &str) -> HttpResponse {
+    identity_when(r, accepts_gzip(headers))
+}
+
 /// A route can keep immutable assets precompressed. Decode only when gzip is not accepted,
 /// before masking and normal network compression, so those adapters still see identity bytes.
-fn identity_for(mut r: HttpResponse, headers: &str) -> HttpResponse {
+fn identity_when(mut r: HttpResponse, accepts_gzip: bool) -> HttpResponse {
     use std::io::Read;
     let gzip = r.headers.iter().any(|header| {
         header.split_once(':').is_some_and(|(name, value)| {
@@ -2891,7 +2897,7 @@ fn identity_for(mut r: HttpResponse, headers: &str) -> HttpResponse {
                 && value.trim().eq_ignore_ascii_case("gzip")
         })
     });
-    if !gzip || accepts_gzip(headers) || r.stream.is_some() {
+    if !gzip || accepts_gzip || r.stream.is_some() {
         return r;
     }
     let mut body = Vec::new();
@@ -2914,6 +2920,17 @@ fn identity_for(mut r: HttpResponse, headers: &str) -> HttpResponse {
     r
 }
 
+/// [`gzip_when`] as the listener read it from a request's headers.
+#[cfg(test)]
+fn gzip_for(r: HttpResponse, method: &str, headers: &str) -> HttpResponse {
+    gzip_when(
+        r,
+        method,
+        accepts_gzip(headers),
+        !host_is_local(header_value(headers, "host")),
+    )
+}
+
 /// Gzip a reply for a client ACROSS A NETWORK (#313). Opening a session sends every record it
 /// has — 3 MB for an 8 MB transcript, 24 MB for 70 MB, 32 MB for 107 MB — and a phone reaching
 /// the monitor through `tailscale serve` paid for each byte; gzip makes them 25-43%, and the
@@ -2922,7 +2939,9 @@ fn identity_for(mut r: HttpResponse, headers: &str) -> HttpResponse {
 /// `Host` names the loopback — or names nothing — is answered as it always was. Only whole
 /// successful text bodies over [`GZIP_MIN_BYTES`] of a GET, to a client that accepts gzip, and
 /// never a body a route already encoded.
-fn gzip_for(mut r: HttpResponse, method: &str, headers: &str) -> HttpResponse {
+///
+/// The facts: the method, whether the client accepts gzip, and whether it is across a network.
+fn gzip_when(mut r: HttpResponse, method: &str, accepts_gzip: bool, remote: bool) -> HttpResponse {
     use std::io::Write;
     let text = r.content_type.starts_with("text/")
         || r.content_type.starts_with("application/json")
@@ -2937,8 +2956,8 @@ fn gzip_for(mut r: HttpResponse, method: &str, headers: &str) -> HttpResponse {
         || r.body.len() < GZIP_MIN_BYTES
         || !text
         || encoded
-        || !accepts_gzip(headers)
-        || host_is_local(header_value(headers, "host"))
+        || !accepts_gzip
+        || !remote
     {
         return r;
     }
@@ -2958,23 +2977,23 @@ fn gzip_for(mut r: HttpResponse, method: &str, headers: &str) -> HttpResponse {
     r
 }
 
-/// Mask the secrets in a response to a client the mask policy covers (#365, `mask-policy.json`):
-/// with `remote`, a phone over the tailnet — a `Host` that is not the loopback, as `gzip_for`
-/// tells it — and never the desktop. Before gzip, and only a whole, unencoded, successful body.
-fn mask_for(r: HttpResponse, headers: &str) -> HttpResponse {
-    mask_under(r, headers, super::mask::policy())
+/// [`mask_when`] as the listener reads it, from a request's `Host` under a mask policy.
+fn mask_under(r: HttpResponse, headers: &str, policy: super::mask::MaskPolicy) -> HttpResponse {
+    mask_when(
+        r,
+        policy.masks(host_is_local(header_value(headers, "host"))),
+    )
 }
 
-/// [`mask_for`] under a given policy — the policy is fixed to `off` in a test build.
-fn mask_under(mut r: HttpResponse, headers: &str, policy: super::mask::MaskPolicy) -> HttpResponse {
+/// Mask the secrets in a response to a client the mask policy covers (#365, `mask-policy.json`):
+/// with `remote`, a phone over the tailnet, and never the desktop; the caller has decided which
+/// (`masked`, the request's own fact). Before gzip, and only a whole, unencoded, successful body.
+fn mask_when(mut r: HttpResponse, masked: bool) -> HttpResponse {
     let encoded = r
         .headers
         .iter()
         .any(|h| h.to_ascii_lowercase().starts_with("content-encoding:"));
-    if !r.code.starts_with("200")
-        || encoded
-        || !policy.masks(host_is_local(header_value(headers, "host")))
-    {
+    if !r.code.starts_with("200") || encoded || !masked {
         return r;
     }
     // A streamed file cannot be masked, so one that may carry a secret is refused (#374). The
@@ -3126,12 +3145,64 @@ fn mask_reply_under(reply: HttpReply, headers: &str, policy: super::mask::MaskPo
     }
 }
 
+/// What finishing a reply needs to know about its client (#s426, `design/backend-mount.md`): the
+/// facts the monitor's listener reads off the request, which a host that mounts the route table
+/// in its own server gives from its own request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReplyClient<'a> {
+    /// The request's method. Only a GET's reply is compressed.
+    pub method: &'a str,
+    /// The client accepts gzip (`Accept-Encoding`).
+    pub accepts_gzip: bool,
+    /// The client is across a network, where compressing pays. The monitor counts a `Host` that is
+    /// not the loopback as remote.
+    pub remote: bool,
+    /// Secrets are masked in this client's replies: the request's `masked` fact.
+    pub masked: bool,
+}
+
+impl<'a> ReplyClient<'a> {
+    /// The monitor listener's reading of a request's headers, under a mask policy.
+    fn from_headers(method: &'a str, headers: &str, policy: super::mask::MaskPolicy) -> Self {
+        let local = host_is_local(header_value(headers, "host"));
+        Self {
+            method,
+            accepts_gzip: accepts_gzip(headers),
+            remote: !local,
+            masked: policy.masks(local),
+        }
+    }
+}
+
+/// Finish a route's reply for its client, as the monitor's listener does (#s426), so a host that
+/// mounts the route table in its own server sends what the monitor sends:
+/// - a body the route keeps gzipped is decoded for a client that does not accept gzip;
+/// - secrets are masked for a client the mask policy covers, and a large text file that would be
+///   streamed to one is refused, since a stream cannot be masked;
+/// - a GET's text reply to a client across a network is gzipped;
+/// - a reply that sets no `Cache-Control` gets `no-store`.
+///
+/// The host then writes the reply's status, content type, every header line, and its body, or the
+/// file it names in `stream`, from disk.
+pub fn finish_reply(response: HttpResponse, client: ReplyClient<'_>) -> HttpResponse {
+    let response = identity_when(response, client.accepts_gzip);
+    let response = mask_when(response, client.masked);
+    let mut response = gzip_when(response, client.method, client.accepts_gzip, client.remote);
+    let own_cache = response
+        .headers
+        .iter()
+        .any(|h| h.to_ascii_lowercase().starts_with("cache-control:"));
+    if !own_cache {
+        response.headers.push("Cache-Control: no-store".to_string());
+    }
+    response
+}
+
 fn prepare_reply(reply: HttpReply, headers: &str, method: &str) -> HttpReply {
     match reply {
-        HttpReply::Buffered(response) => gzip_for(
-            mask_for(identity_for(response, headers), headers),
-            method,
-            headers,
+        HttpReply::Buffered(response) => finish_reply(
+            response,
+            ReplyClient::from_headers(method, headers, super::mask::policy()),
         )
         .into(),
         events => mask_reply_under(events, headers, super::mask::policy()),
@@ -7501,5 +7572,154 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// #s426: `finish_reply` is what a host that mounts the route table runs on each reply, and
+    /// what the monitor's own listener runs: the same reply for the same client. A remote masked
+    /// client's JSON is masked, then gzipped, and gets `no-store`; the desktop's is sent as the
+    /// route wrote it; a route's own `Cache-Control` stands; a body the route kept gzipped is
+    /// decoded for a client that does not accept gzip; and a large text file to a masked client is
+    /// refused rather than streamed unmasked.
+    #[test]
+    fn a_reply_is_finished_for_its_client_as_the_listener_finishes_it() {
+        use std::io::Read;
+        let key = format!("sk-ant-api03-{}", "A".repeat(40));
+        let json = |pad: usize| {
+            HttpResponse::json(format!(
+                r#"{{"token":"{key}","pad":"{}"}}"#,
+                "p".repeat(pad)
+            ))
+        };
+        let phone = ReplyClient {
+            method: "GET",
+            accepts_gzip: true,
+            remote: true,
+            masked: true,
+        };
+        let desk = ReplyClient {
+            method: "GET",
+            accepts_gzip: true,
+            remote: false,
+            masked: false,
+        };
+
+        let r = finish_reply(json(GZIP_MIN_BYTES), phone);
+        assert!(
+            r.headers.iter().any(|h| h == "Content-Encoding: gzip"),
+            "{:?}",
+            r.headers
+        );
+        assert!(
+            r.headers.iter().any(|h| h == "Cache-Control: no-store"),
+            "{:?}",
+            r.headers
+        );
+        let mut text = String::new();
+        flate2::read::GzDecoder::new(r.body.as_slice())
+            .read_to_string(&mut text)
+            .unwrap();
+        assert!(!text.contains(&key), "the secret is masked before gzip");
+        assert!(
+            text.contains(&"*".repeat(key.len())),
+            "with `*` of the same length"
+        );
+
+        let r = finish_reply(json(10), desk);
+        assert!(
+            String::from_utf8_lossy(&r.body).contains(&key),
+            "the desktop gets it as it is"
+        );
+        assert!(!r.headers.iter().any(|h| h.starts_with("Content-Encoding")));
+        assert_eq!(
+            r.headers
+                .iter()
+                .filter(|h| h.starts_with("Cache-Control"))
+                .count(),
+            1
+        );
+
+        let mut cached = HttpResponse::ok("text/javascript", b"x".to_vec());
+        cached
+            .headers
+            .push("Cache-Control: public, max-age=31536000, immutable".into());
+        let r = finish_reply(cached, phone);
+        assert_eq!(
+            r.headers
+                .iter()
+                .filter(|h| h.starts_with("Cache-Control"))
+                .collect::<Vec<_>>(),
+            ["Cache-Control: public, max-age=31536000, immutable"],
+            "a route's own cache header stands"
+        );
+
+        let mut kept = HttpResponse::ok("text/javascript", Vec::new());
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut enc, b"window.ran = 1;").unwrap();
+        kept.body = enc.finish().unwrap();
+        kept.headers.push("Content-Encoding: gzip".into());
+        let r = finish_reply(
+            kept,
+            ReplyClient {
+                accepts_gzip: false,
+                ..desk
+            },
+        );
+        assert_eq!(
+            r.body, b"window.ran = 1;",
+            "decoded for a client without gzip"
+        );
+        assert!(!r.headers.iter().any(|h| h.starts_with("Content-Encoding")));
+
+        let dir = std::env::temp_dir().join(format!("cr-finish-reply-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.txt");
+        std::fs::write(&big, b"plain text").unwrap();
+        let mut streamed = HttpResponse::ok("application/octet-stream", Vec::new());
+        streamed.stream = Some((big.clone(), 10));
+        assert_eq!(
+            finish_reply(streamed, phone).code,
+            "413 Content Too Large",
+            "a stream cannot be masked"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #s426: the listener finishes every routed reply through `finish_reply`, reading the facts
+    /// off the request's headers as it always did, so the bytes it writes are what they were.
+    #[test]
+    fn the_listener_reads_a_reply_client_off_the_headers() {
+        use super::super::mask::MaskPolicy;
+        let remote = "Host: phone.example.ts.net\r\nAccept-Encoding: gzip, br\r\n";
+        assert_eq!(
+            ReplyClient::from_headers("GET", remote, MaskPolicy::Remote),
+            ReplyClient {
+                method: "GET",
+                accepts_gzip: true,
+                remote: true,
+                masked: true
+            }
+        );
+        let local = "Host: 127.0.0.1:2727\r\n";
+        assert_eq!(
+            ReplyClient::from_headers("POST", local, MaskPolicy::Remote),
+            ReplyClient {
+                method: "POST",
+                accepts_gzip: false,
+                remote: false,
+                masked: false
+            }
+        );
+        assert!(ReplyClient::from_headers("GET", local, MaskPolicy::Always).masked);
+        let r = HttpResponse::json("{}".into());
+        let head = response_head(
+            &finish_reply(r, ReplyClient::from_headers("GET", local, MaskPolicy::Off)),
+            "",
+        );
+        assert_eq!(
+            head.matches("Cache-Control: no-store\r\n").count(),
+            1,
+            "{head}"
+        );
     }
 }

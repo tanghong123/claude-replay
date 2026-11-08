@@ -12,12 +12,12 @@ pub use html_export::shared::{shared_source, SHARED};
 /// One-time phone pairing codes (#11) — the monitor CLI mints them; the listener redeems them.
 pub use html_export::pairing;
 pub use html_export::{
-    display_title, dump_all_html, dump_html, existing_server, get_request, handoff_url,
-    install_mdrev, mdrev_version, mermaid_runtime_path, mint_token, query_get, serve,
+    display_title, dump_all_html, dump_html, existing_server, finish_reply, get_request,
+    handoff_url, install_mdrev, mdrev_version, mermaid_runtime_path, mint_token, query_get, serve,
     service_routes, spawn_listener, spawn_listener_gated, spawn_streaming_listener_gated,
     start_server, AuthGate, EventStream, HostCheck, HttpReply, HttpResponse, LiveServer, MdrevKit,
-    RelayCheck, Request, RootLock, RouteHandler, ServiceConfig, SessionService, StaleEpoch,
-    StreamingRouteHandler,
+    RelayCheck, ReplyClient, Request, RootLock, RouteHandler, ServiceConfig, SessionService,
+    StaleEpoch, StreamingRouteHandler,
 };
 
 pub use html_export::render_markdown;
