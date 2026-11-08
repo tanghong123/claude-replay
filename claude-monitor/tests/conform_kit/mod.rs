@@ -17,6 +17,7 @@ pub fn script() -> PathBuf {
 pub struct Outcome {
     pub code: Option<i32>,
     pub report: Value,
+    pub stdout: String,
     pub stderr: String,
 }
 
@@ -81,11 +82,27 @@ impl Outcome {
 /// node is not a build dependency of this workspace, so a machine without it skips, as
 /// `ui_contract.rs` does, and CI, where node is always present, runs it.
 pub fn run(base: &str, args: &[&str]) -> Option<Outcome> {
+    let mut all = args.to_vec();
+    all.push("--json");
+    let (code, stdout, stderr) = run_text(base, &all)?;
+    let report: Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!("the check printed no JSON report ({e}): {stdout}\nstderr: {stderr}")
+    });
+    Some(Outcome {
+        code,
+        report,
+        stdout,
+        stderr,
+    })
+}
+
+/// Run the check as a person would, its lines as printed: the exit code, stdout and stderr. `None`
+/// where there is no node, as [`run`].
+pub fn run_text(base: &str, args: &[&str]) -> Option<(Option<i32>, String, String)> {
     let out = match std::process::Command::new("node")
         .arg(script())
         .arg(base)
         .args(args)
-        .arg("--json")
         .stdin(std::process::Stdio::null())
         .output()
     {
@@ -96,16 +113,11 @@ pub fn run(base: &str, args: &[&str]) -> Option<Outcome> {
         }
         Err(e) => panic!("could not run node: {e}"),
     };
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    let report: Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
-        panic!("the check printed no JSON report ({e}): {stdout}\nstderr: {stderr}")
-    });
-    Some(Outcome {
-        code: out.status.code(),
-        report,
-        stderr,
-    })
+    Some((
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    ))
 }
 
 /// The node binary this test process runs, resolved with the REAL environment
