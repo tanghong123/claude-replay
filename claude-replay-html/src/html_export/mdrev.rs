@@ -63,20 +63,41 @@ pub(super) struct Release {
     kit: Option<Kit>,
     dir: PathBuf,
     cli: OnceLock<Option<Vec<OsString>>>,
+    /// mdrev's state directory, where its viewer and notes keys are (#s426): this user's for the
+    /// monitor, a host's own or none. Its files are read on every request; only the place is fixed.
+    #[cfg_attr(any(test, feature = "hermetic-tests"), allow(dead_code))]
+    state: Option<PathBuf>,
 }
 
 static INSTALLED: OnceLock<Release> = OnceLock::new();
 
-/// Serve `kit`, writing its CLI under `dir` when a route first needs it. Once per process: a
-/// binary carries exactly one kit, so a second call is ignored.
-pub fn install(kit: Kit, dir: PathBuf) {
+/// Serve `kit`, writing its CLI under `dir` when a route first needs it, with mdrev's keys read
+/// from `state` ([`this_users_state_dir`] for the monitor; `None` files no notes and serves no
+/// shared review). Once per process: a binary carries exactly one kit, so a second call is ignored.
+pub fn install(kit: Kit, dir: PathBuf, state: Option<PathBuf>) {
     let _ = INSTALLED.set(Release {
         version: kit.version,
         bundle: kit.bundle,
         kit: Some(kit),
         dir,
         cli: OnceLock::new(),
+        state,
     });
+}
+
+/// This user's mdrev state directory: `MDREV_STATE_DIR` when absolute, else `~/.mdrev`.
+pub fn this_users_state_dir() -> Option<PathBuf> {
+    state_dir_from(
+        std::env::var_os("MDREV_STATE_DIR"),
+        std::env::var_os("HOME"),
+    )
+}
+
+fn state_dir_from(named: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    named
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.map(|h| PathBuf::from(h).join(".mdrev")))
 }
 
 /// The kit this process serves. `None` in a server that installed none (`agent-replay --html`),
@@ -241,18 +262,15 @@ fn shares(viewer: Option<&Viewer>) -> bool {
     viewer.is_some_and(|v| v.kind == KeyKind::Viewer)
 }
 
-/// mdrev's state directory: `MDREV_STATE_DIR` when absolute, else `~/.mdrev`.
+/// mdrev's state directory, as installed with the kit: none without a kit.
 #[cfg(not(any(test, feature = "hermetic-tests")))]
 fn state_dir() -> Option<PathBuf> {
-    std::env::var_os("MDREV_STATE_DIR")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".mdrev")))
+    release()?.state.clone()
 }
 
 /// The viewer key, read on every request to the review prefix (mdrev mints it on its first run,
-/// which may come after the monitor's): `MDREV_STATE_DIR` when absolute, else `~/.mdrev`, file
-/// `token`. `None` without one. Fixed to `None` in a test build, which hands its own to
+/// which may come after the monitor's): file `token` in the state directory installed with the
+/// kit. `None` without one. Fixed to `None` in a test build, which hands its own to
 /// [`contract`] and never reads this machine's, and in a dependent's test build
 /// (`hermetic-tests`, #s421): claude-monitor's tests reach the review prefix through the route
 /// table, and the notes key below would otherwise be minted into this machine's `~/.mdrev`.
@@ -1689,8 +1707,30 @@ mod tests {
                 kit: None,
                 dir: PathBuf::new(),
                 cli: OnceLock::from(argv),
+                state: None,
             }
         }
+    }
+
+    /// #s426: this user's mdrev state directory is `MDREV_STATE_DIR` when it is absolute, else
+    /// `~/.mdrev`; with neither, none. The monitor installs it; a host passes its own or none.
+    #[test]
+    fn this_users_mdrev_state_is_the_named_directory_or_home_s() {
+        let os = |s: &str| Some(OsString::from(s));
+        assert_eq!(
+            state_dir_from(os("/srv/mdrev"), os("/Users/tern")),
+            Some(PathBuf::from("/srv/mdrev"))
+        );
+        assert_eq!(
+            state_dir_from(os("relative/mdrev"), os("/Users/tern")),
+            Some(PathBuf::from("/Users/tern/.mdrev")),
+            "a relative name is not taken"
+        );
+        assert_eq!(
+            state_dir_from(None, os("/Users/tern")),
+            Some(PathBuf::from("/Users/tern/.mdrev"))
+        );
+        assert_eq!(state_dir_from(None, None), None);
     }
 
     /// An executable script at `at` — the stand-in CLI, or a stand-in node.

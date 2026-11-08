@@ -148,18 +148,56 @@ pub struct Frontend {
 /// and where a relayed message's key is read (#s272), because this is the one constructor the
 /// monitor goes through.
 pub fn handler(backend: Arc<Backend>, front: Frontend) -> RouteHandler {
-    install_mdrev(&backend.scratch);
-    claude_replay_core::claude_inbox::install_key_source(
-        claude_replay_core::claude_inbox::key_from_state_dir,
-    );
+    mounted(backend, front, OtherTools::this_users())
+}
+
+/// The table over `backend`, reading `tools` of other tools' state on the machine (#s426). The
+/// monitor reads this user's ([`handler`]); a host passes its own or [`OtherTools::NONE`]. Both
+/// are installed once per process, as the file-stamp key and the render and mask policies are, so
+/// a process mounts one table.
+pub fn mounted(backend: Arc<Backend>, front: Frontend, tools: OtherTools) -> RouteHandler {
+    install_mdrev(&backend.scratch, tools.mdrev_state);
+    claude_replay_core::claude_inbox::install_key_source(tools.relay_key.unwrap_or(no_relay_key));
     Arc::new(move |req: &Request| dispatch(&backend, &front, req))
+}
+
+/// What a table reads of other tools' state on its machine, outside the state directory its
+/// index is given (#s426, `design/backend-mount.md`).
+pub struct OtherTools {
+    /// mdrev's state directory, where its viewer and notes keys are. `None`: the preview pane
+    /// files no notes, and the shared-review prefix serves what the pane's does.
+    pub mdrev_state: Option<PathBuf>,
+    /// Where a relayed message's signing key is read from (aries-inbox's, for the monitor).
+    /// `None`: nothing verifies, and a relayed message shows as the text it is.
+    pub relay_key: Option<claude_replay_core::claude_inbox::KeySource>,
+}
+
+impl OtherTools {
+    /// Neither: a host whose sessions are not this machine's user's.
+    pub const NONE: Self = Self {
+        mdrev_state: None,
+        relay_key: None,
+    };
+
+    /// This user's, as the monitor reads them: mdrev's `MDREV_STATE_DIR` or `~/.mdrev`, and
+    /// aries-inbox's key.
+    pub fn this_users() -> Self {
+        Self {
+            mdrev_state: claude_replay_html::mdrev_state_dir(),
+            relay_key: Some(claude_replay_core::claude_inbox::key_from_state_dir),
+        }
+    }
+}
+
+fn no_relay_key() -> Option<claude_replay_core::claude_inbox::InboxKey> {
+    None
 }
 
 /// mdrev's embedded viewer for the preview pane (#270), PINNED (#274): the release vendored at
 /// `vendor/mdrev`, built into this binary — no mdrev installed on the machine is looked for. Its
 /// bundle is served from memory; its CLI is written under `scratch` when a route first needs it,
 /// and run with node.
-pub fn install_mdrev(scratch: &Path) {
+pub fn install_mdrev(scratch: &Path, state: Option<PathBuf>) {
     claude_replay_html::install_mdrev(
         claude_replay_html::MdrevKit {
             version: mdrev::VERSION,
@@ -168,6 +206,7 @@ pub fn install_mdrev(scratch: &Path) {
             package_json: mdrev::PACKAGE_JSON,
         },
         scratch.join("mdrev"),
+        state,
     );
 }
 

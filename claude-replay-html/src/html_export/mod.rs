@@ -52,7 +52,10 @@ pub mod shared;
 pub(crate) mod sig; // capability signatures for the local-file routes
 mod turn_index; // the record log's map: turns and summaries for a page awaiting its head (#s276)
 pub use bundle::{dump_all_html, dump_html};
-pub use mdrev::{install as install_mdrev, version as mdrev_version, Kit as MdrevKit};
+pub use mdrev::{
+    install as install_mdrev, this_users_state_dir as mdrev_state_dir, version as mdrev_version,
+    Kit as MdrevKit,
+};
 pub use serve::{
     existing_server, finish_reply, get_request, handoff_url, mint_token, query_get, serve,
     service_body_limit, service_routes, spawn_listener, spawn_listener_gated,
