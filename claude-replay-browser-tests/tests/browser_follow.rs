@@ -6851,12 +6851,12 @@ fn app_shell_favicon(kind: Kind, port: u16, label: &str) {
         std::time::Duration::from_secs(30),
         "document.readyState + ' ' + document.head.innerHTML.length",
     );
-    let href = harness::eval(
-        &tab,
-        "document.querySelector('link[rel~=\"icon\"]').getAttribute('href')",
-    );
+    // The page writes its links relative to where it was served (#s426), so a host's prefix
+    // keeps them; what the browser resolves the link to is the served icon.
+    let href = harness::eval(&tab, "document.querySelector('link[rel~=\"icon\"]').href");
     assert_eq!(
-        href, "/favicon.svg",
+        href,
+        format!("http://127.0.0.1:{port}/favicon.svg").as_str(),
         "{label}: the link points at the served icon"
     );
     for name in ["/favicon.svg", "/favicon.ico"] {
@@ -6932,16 +6932,19 @@ fn home_screen_icon(kind: Kind, port: u16, label: &str) {
     );
     let seen = harness::eval(
         &tab,
-        "(async function(){ var q = function (s) { var e = document.querySelector(s); return e ? (e.getAttribute('href') || e.getAttribute('content')) : null; }; var load = function (src) { return new Promise(function (ok) { var i = new Image(); i.onload = function () { ok(i.naturalWidth + 'x' + i.naturalHeight); }; i.onerror = function () { ok('error'); }; i.src = src; }); }; var touch = q('link[rel=\"apple-touch-icon\"]'), manifest = q('link[rel=\"manifest\"]'); var m = manifest ? await (await fetch(manifest)).json() : null; var sizes = []; for (var icon of (m ? m.icons : [])) sizes.push(icon.sizes + '=' + await load(icon.src)); return JSON.stringify({ touch: touch, touchLoads: touch ? await load(touch) : null, manifest: manifest, name: m && m.name, display: m && m.display, icons: sizes, title: q('meta[name=\"apple-mobile-web-app-title\"]'), standalone: !!document.querySelector('meta[name=\"apple-mobile-web-app-capable\"], meta[name=\"mobile-web-app-capable\"]') }); })()",
+        "(async function(){ var q = function (s) { var e = document.querySelector(s); return e ? (e.href || e.getAttribute('content')) : null; }; var load = function (src) { return new Promise(function (ok) { var i = new Image(); i.onload = function () { ok(i.naturalWidth + 'x' + i.naturalHeight); }; i.onerror = function () { ok('error'); }; i.src = src; }); }; var touch = q('link[rel=\"apple-touch-icon\"]'), manifest = q('link[rel=\"manifest\"]'); var m = manifest ? await (await fetch(manifest)).json() : null; var sizes = []; for (var icon of (m ? m.icons : [])) sizes.push(icon.sizes + '=' + await load(icon.src)); return JSON.stringify({ touch: touch, touchLoads: touch ? await load(touch) : null, manifest: manifest, name: m && m.name, display: m && m.display, icons: sizes, title: q('meta[name=\"apple-mobile-web-app-title\"]'), standalone: !!document.querySelector('meta[name=\"apple-mobile-web-app-capable\"], meta[name=\"mobile-web-app-capable\"]') }); })()",
     );
     let seen: serde_json::Value = serde_json::from_str(seen.as_str().unwrap()).unwrap();
+    // Written relative to where the page was served (#s426); resolved, they are the root's.
     assert_eq!(
-        seen["touch"], "/apple-touch-icon.png",
+        seen["touch"],
+        format!("http://127.0.0.1:{port}/apple-touch-icon.png").as_str(),
         "{label} {ui}: {seen}"
     );
     assert_eq!(seen["touchLoads"], "180x180", "{label} {ui}: {seen}");
     assert_eq!(
-        seen["manifest"], "/manifest.webmanifest",
+        seen["manifest"],
+        format!("http://127.0.0.1:{port}/manifest.webmanifest").as_str(),
         "{label} {ui}: {seen}"
     );
     assert_eq!(seen["name"], "Agent Monitor", "{label} {ui}: {seen}");
