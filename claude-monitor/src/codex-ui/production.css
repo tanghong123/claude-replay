@@ -331,9 +331,9 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
    reported). What #173 removes is `.transcript code`: it swept in INLINE backticks in prose,
    which have no line identity, are not a wrap surface, and had their whitespace rewritten. */
 #sessionView.wrap-code .transcript pre,#sessionView.wrap-code [data-code]:not([data-wrap]){white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow-x:hidden}
-#app:not(.wrap-code) .transcript pre,#app:not(.wrap-code) [data-code]:not([data-wrap]){white-space:pre;overflow-x:auto}
+#sessionView:not(.wrap-code) .transcript pre,#sessionView:not(.wrap-code) [data-code]:not([data-wrap]){white-space:pre;overflow-x:auto}
 #sessionView.wrap-code [data-code]:not([data-wrap]){--code-track:0}
-#app:not(.wrap-code) [data-code]:not([data-wrap]){--code-track:max-content}
+#sessionView:not(.wrap-code) [data-code]:not([data-wrap]){--code-track:max-content}
 /* …and the RAIL is never wrapped, in either state (#266). Both selectors, and placed after the
    rules above, because this has to WIN: `#sessionView.wrap-code [data-code]:not([data-wrap])` is
    (1,3,0) and a bare `.line>.ln` is (0,2,0), so the tidier rule simply lost and the number kept
@@ -341,7 +341,7 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
    two snapshots — a property that changes at all is a property the control governs, and an
    exemption on one side only moves the failure rather than removing it. */
 #sessionView.wrap-code .line>.ln,#sessionView.wrap-code .line>.mark,
-#app:not(.wrap-code) .line>.ln,#app:not(.wrap-code) .line>.mark{white-space:pre;overflow-wrap:normal;word-break:normal}
+#sessionView:not(.wrap-code) .line>.ln,#sessionView:not(.wrap-code) .line>.mark{white-space:pre;overflow-wrap:normal;word-break:normal}
 /* The NEUTRALIZER, and it is required (#161, the lesson above): the UA stylesheet sets
    `white-space` EXPLICITLY on `pre`, and reference.css:161 sets it on `.codecell` and a font
    SHORTHAND on `.lines` — an explicit declaration beats an inherited author value at ANY
@@ -1658,7 +1658,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app{--sidebar:280px}
   #app:not(.phone-column-off){display:grid;grid-template-columns:calc(var(--sidebar) + env(safe-area-inset-left,0px)) minmax(0,1fr)}
   #app:not(.phone-column-off)>.sidebar{position:relative;inset:auto;transform:none;width:auto;height:100dvh;grid-column:1;grid-row:1;box-shadow:1px 0 0 var(--line);transition:none}
-  #app:not(.phone-column-off)>.workspace{grid-column:2;grid-row:1;min-width:0}
+  #app:not(.phone-column-off)>:where(.session-view)>.workspace{grid-column:2;grid-row:1;min-width:0}
   #app.phone-column-off>.sidebar{display:none}
   #app>.drawer-scrim{display:none}
   /* `flex:none`: the column is a flex column, and a long pane squeezed its head to 11px, the glyphs cut
@@ -1731,8 +1731,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    the whole screen as before. */
 .preview-expand{display:none}
 @media(pointer:coarse) and (max-height:500px){
-  #app:not(.preview-off)>.workspace{width:50%}
-  #app:not(.preview-off)>.preview{left:50%;right:0;width:auto;padding-left:0;box-shadow:-1px 0 0 var(--line)}
+  #app:not(.preview-off)>:where(.session-view)>.workspace{width:50%}
+  #app:not(.preview-off)>:where(.session-view)>.preview{left:50%;right:0;width:auto;padding-left:0;box-shadow:-1px 0 0 var(--line)}
   #app:not(.preview-off) .transcript{padding-right:0}
   #app:not(.preview-off) .workspace>.topbar{padding-right:6px}
   #app:not(.preview-off) .phone-dock{right:calc(50% + 12px)}
@@ -1744,13 +1744,13 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 }
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
   #app:not(.preview-off) .reading-cluster>.reading-options,#app:not(.preview-off) .phone-pane-menu:not([hidden]){right:calc(50% + 12px)}
-  #app:not(.phone-column-off):not(.preview-off)>.workspace{width:auto}
-  #app:not(.phone-column-off):not(.preview-off)>.preview{left:calc(var(--sidebar) + env(safe-area-inset-left,0px))}
+  #app:not(.phone-column-off):not(.preview-off)>:where(.session-view)>.workspace{width:auto}
+  #app:not(.phone-column-off):not(.preview-off)>:where(.session-view)>.preview{left:calc(var(--sidebar) + env(safe-area-inset-left,0px))}
   #app:not(.phone-column-off):not(.preview-off) .phone-dock{display:none}
   /* The handle by the title stays reachable over the pane (it hides the list, which turns the pane
      into the second column), the pane's head making room for it; at the whole screen it waits. */
   #app:not(.phone-column-off):not(.preview-off):not(.preview-full) .drawer-handle{z-index:56}
-  #app:not(.phone-column-off):not(.preview-off):not(.preview-full)>.preview .preview-head{padding-left:52px}
+  #app:not(.phone-column-off):not(.preview-off):not(.preview-full)>:where(.session-view)>.preview .preview-head{padding-left:52px}
   /* …and the session under it keeps its width exactly, so opening the pane there remeasures nothing. */
   #app:not(.phone-column-off):not(.preview-off) .transcript{padding-right:env(safe-area-inset-right,0px)}
   #app:not(.phone-column-off):not(.preview-off) .workspace>.topbar{padding-right:calc(6px + env(safe-area-inset-right,0px))}
@@ -1772,8 +1772,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    now covers the whole session area beside the sidebar. Not on a phone, whose preview is its own sheet:
    the query is "tall enough, or a fine pointer", the complement of a landscape phone. */
 @media(min-width:761px) and (max-width:1180px) and (min-height:501px),(min-width:761px) and (max-width:1180px) and (pointer:fine){
-  .app:not(.preview-off)>.preview{left:calc(var(--sidebar) + 10px);width:auto}
-  .app.sidebar-off:not(.preview-off)>.preview{left:10px}
+  .app:not(.preview-off)>:where(.session-view)>.preview{left:calc(var(--sidebar) + 10px);width:auto}
+  .app.sidebar-off:not(.preview-off)>:where(.session-view)>.preview{left:10px}
 }
 
 /* #313 — while a session loads: a veil over the session area (below the top bars, which already

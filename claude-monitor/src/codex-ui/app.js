@@ -4467,7 +4467,7 @@ var phoneDock;
   dockPill.setAttribute("aria-label", "Session tools");
   dockPill.append(...panes.map(p => p.button));
   dock.append(dockPill);
-  app.append(dock);
+  sessionView.append(dock);
   phoneDock = dock;
   const searchCluster = viewRoot.$(".header-search-cluster");
   // While the find pill holds the dock, a glass ✕ beside it ENDS the search — the query and its marks
