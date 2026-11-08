@@ -161,7 +161,7 @@ pub fn handler(
         let mut reply = legacy(request);
         if reply.content_type.starts_with("text/html") && reply.stream.is_none() {
             if let Ok(html) = String::from_utf8(reply.body.clone()) {
-                if html.contains("src=\"/monitor-ui/app.js\"") {
+                if html.contains("src=\"monitor-ui/app.js\"") {
                     reply.body = native_reader_page(html).into_bytes();
                 }
             }
@@ -259,7 +259,7 @@ fn render_route(request: &Request<'_>) -> HttpResponse {
 
 /// The extension advertises capability; the browser still starts in ordinary reader mode.
 fn native_reader_page(page: String) -> String {
-    page.replace("</head>", "<link rel=\"stylesheet\" href=\"/monitor-ui/native-entry.css\"><script type=\"module\" src=\"/monitor-ui/native-entry.js\"></script></head>")
+    page.replace("</head>", "<link rel=\"stylesheet\" href=\"monitor-ui/native-entry.css\"><script type=\"module\" src=\"monitor-ui/native-entry.js\"></script></head>")
 }
 
 fn monitor_page() -> String {
@@ -500,9 +500,9 @@ mod tests {
             "id=\"transcript\"",
             "id=\"composeInput\"",
             "id=\"navigatorTurns\"",
-            "src=\"/monitor-ui/app.js\"",
-            "src=\"/monitor-ui/native-entry.js\"",
-            "href=\"/monitor-ui/native-entry.css\"",
+            "src=\"monitor-ui/app.js\"",
+            "src=\"monitor-ui/native-entry.js\"",
+            "href=\"monitor-ui/native-entry.css\"",
         ] {
             assert!(
                 page.contains(marker),

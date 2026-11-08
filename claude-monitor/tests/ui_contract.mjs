@@ -3497,11 +3497,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // iOS looks for a Home Screen icon; the property — the production layer, not the extracted
   // shell, points at the served icon — is the same.
   const head = readFileSync(new URL("../../claude-monitor/src/codex-ui/page-head.html", import.meta.url), "utf8");
-  assert.match(head, /<link rel="icon" type="image\/svg\+xml" href="\/favicon\.svg">/, "…so the production page head links the served icon");
+  assert.match(head, /<link rel="icon" type="image\/svg\+xml" href="favicon\.svg">/, "…so the production page head links the served icon, relative to the page (#s426)");
   assert.doesNotMatch(app, /icon\.href = "\/favicon\.svg"/, "…and nothing injects a second one");
   for (const [page, text] of [["page-head.html", head]]) {
-    assert.match(text, /<link rel="apple-touch-icon" href="\/apple-touch-icon\.png">/, `#320: ${page} names the Home Screen icon`);
-    assert.match(text, /<link rel="manifest" href="\/manifest\.webmanifest">/, `#320: ${page} names the manifest`);
+    assert.match(text, /<link rel="apple-touch-icon" href="apple-touch-icon\.png">/, `#320: ${page} names the Home Screen icon`);
+    assert.match(text, /<link rel="manifest" href="manifest\.webmanifest">/, `#320: ${page} names the manifest`);
+    // #s426: every link the page writes is relative to it, so a page a host serves under a prefix
+    // of its own loads its modules, styles and icons from under that prefix.
+    assert.doesNotMatch(text, /(?:href|src)="\//, `#s426: ${page} writes no root path`);
     assert.match(text, /<meta name="apple-mobile-web-app-title" content="Agent Monitor">/, `#320: ${page} gives the Home Screen label`);
     assert.doesNotMatch(text, /web-app-capable/, `#320: ${page} asks for no standalone mode (it would open unpaired on iOS)`);
   }
@@ -3953,7 +3956,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // always did; a host's prefix, an absolute origin and a native host's own scheme each join a server
 // path the same way; locality and mdrev's base are the handle's, not the page's.
 {
-  const { backendHandle, backend, useBackend } = await import("../../claude-monitor/src/codex-ui/backend.js");
+  const { backendHandle, backend, useBackend, pageBase } = await import("../../claude-monitor/src/codex-ui/backend.js");
+  // #s426: the page's own handle is based where the page was served: the root for the monitor's,
+  // a host's prefix for a page it serves under one, its detached tabs included.
+  assert.equal(pageBase(), "", "node has no location: the root");
+  assert.equal(pageBase("http://127.0.0.1:2727/?session=s1"), "");
+  assert.equal(pageBase("http://127.0.0.1:2727/markdown?root=held&path=a.md"), "");
+  assert.equal(pageBase("https://host.example/agents/monitor/?session=s1#b4"), "/agents/monitor");
+  assert.equal(pageBase("https://host.example/agents/monitor/image?path=a.png"), "/agents/monitor");
+  assert.equal(backend().base, "", "the page's handle in node is the root's");
   const page = backendHandle();
   assert.equal(page.base, "");
   assert.equal(page.url("/api/sessions"), "/api/sessions", "the page's own handle changes nothing");

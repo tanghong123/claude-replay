@@ -436,7 +436,7 @@ mod tests {
     #[test]
     fn the_app_shell_is_the_page_and_help_names_no_second_interface() {
         let app = claude_monitor::ui::page("test", false);
-        assert!(app.contains("/monitor-ui/app.js"));
+        assert!(app.contains(r#"src="monitor-ui/app.js""#));
         assert!(!app.contains("data-ui-default"));
         assert!(claude_monitor::ui::asset("monitor-ui/record-store.js").is_some());
         assert!(claude_monitor::ui::asset("monitor-ui/components.js").is_some());

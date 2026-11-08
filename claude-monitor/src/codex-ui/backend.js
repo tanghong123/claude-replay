@@ -54,7 +54,21 @@ export function backendHandle({ base = "", credentials = "same-origin", local, m
   });
 }
 
-let current = backendHandle();
+/** The base of the server that served this page: the directory its address names. "" for a page
+ *  at the root (the monitor's), "/agents/monitor" for one a host serves at "/agents/monitor/"
+ *  (#s426), and for that host's detached tabs ("/agents/monitor/markdown?…") alike. The page's own
+ *  links are written relative to it for the same reason. A page served at a prefix with no trailing
+ *  slash names its parent: a host serves it at the slash. */
+export function pageBase(href = typeof location === "undefined" ? "" : location.href) {
+  if (!href) return "";
+  try {
+    return new URL(".", href).pathname.replace(/\/+$/, "");
+  } catch (_) {
+    return "";
+  }
+}
+
+let current = backendHandle({ base: pageBase() });
 
 /** The handle the page's components use now. */
 export const backend = () => current;

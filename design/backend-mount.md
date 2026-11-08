@@ -1,7 +1,7 @@
 # Mounting agent-monitor's backend in another server
 
 > **DRAFT 2** (#s426, 2026-11-08). Step 3 of `design/embedding.md` ("The order of the work").
-> Steps 1 to 5 of "The order" are built; step 6, the mount base in the page, is not.
+> Every step of "The order" is built.
 
 ## What it is for
 
@@ -110,6 +110,12 @@ and the manifest. Under a host's prefix they load from the host's root.
 `<body data-base>`, and the default backend handle reads it. That adds to the contract, so its
 version stays 1. A host that mounts the components (steps 4 and 5) instead of serving the page does
 not need it.
+
+**Built, with no new key:** the page writes those links relative to itself, and its default backend
+handle is based at the directory the page was served from (`pageBase` in `backend.js`). At the root,
+the monitor's, both resolve exactly as before; at `/agents/monitor/`, everything loads from under
+it. A host serves the page at a path ending in a slash. The same holds for a monitor whose page
+another server relays under a prefix.
 
 ### 7. A host's sign-in refuses requests from other sites, GETs included
 

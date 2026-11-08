@@ -432,7 +432,7 @@ mod tests {
         assert_eq!(page.code, "200 OK");
         let html = body(&page);
         assert!(html.contains(&format!("data-mdrev=\"{}\"", mdrev::VERSION)));
-        assert!(html.contains(r#"src="/monitor-ui/markdown-page.js""#));
+        assert!(html.contains(r#"src="monitor-ui/markdown-page.js""#));
         for reflected in ["alert(1)", "<img", "%3Cscript", "src=x"] {
             assert!(
                 !html.contains(reflected),
@@ -479,7 +479,8 @@ mod tests {
         let backend = make_backend("table");
         for query in ["", "ui=app", "ui=classic", "ui=classic&session=s1"] {
             assert!(
-                body(&dispatch(&backend, &front, &get("", query))).contains("/monitor-ui/app.js"),
+                body(&dispatch(&backend, &front, &get("", query)))
+                    .contains(r#"src="monitor-ui/app.js""#),
                 "{query}"
             );
         }
@@ -488,7 +489,7 @@ mod tests {
             &front,
             &get("index.html", "ui=classic")
         ))
-        .contains("/monitor-ui/app.js"));
+        .contains(r#"src="monitor-ui/app.js""#));
         assert_eq!(
             dispatch(&backend, &front, &get("api/ui", "set=classic")).code,
             "404 Not Found",

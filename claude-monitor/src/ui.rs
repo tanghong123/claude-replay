@@ -308,9 +308,9 @@ mod tests {
     fn the_page_names_its_home_screen_icon() {
         let page = page("test", false);
         for tag in [
-            r#"<link rel="icon" type="image/svg+xml" href="/favicon.svg">"#,
-            r#"<link rel="apple-touch-icon" href="/apple-touch-icon.png">"#,
-            r#"<link rel="manifest" href="/manifest.webmanifest">"#,
+            r#"<link rel="icon" type="image/svg+xml" href="favicon.svg">"#,
+            r#"<link rel="apple-touch-icon" href="apple-touch-icon.png">"#,
+            r#"<link rel="manifest" href="manifest.webmanifest">"#,
             r#"<meta name="apple-mobile-web-app-title" content="Agent Monitor">"#,
         ] {
             assert!(page.contains(tag), "{tag}");
@@ -319,11 +319,28 @@ mod tests {
         assert!(!page.contains("mobile-web-app-capable"));
     }
 
+    /// #s426: every page the table serves writes its links relative to itself, so a host that
+    /// serves it under a prefix of its own (at `/agents/monitor/`, say) has it load its modules,
+    /// styles and icons from under that prefix, with nothing to rewrite.
+    #[test]
+    fn no_page_writes_a_root_path() {
+        for (name, html) in [
+            ("the app shell", page("test", false)),
+            ("the paired app shell", page("test", true)),
+            ("the Markdown tab", markdown_page()),
+            ("the image tab", image_page().to_string()),
+        ] {
+            for root in [r#"href="/"#, r#"src="/"#] {
+                assert!(!html.contains(root), "{name} writes {root}…");
+            }
+        }
+    }
+
     #[test]
     fn page_is_the_reference_shell_without_mock_runtime() {
         let page = page("test", false);
         assert!(page.contains(REFERENCE_SHELL));
-        assert!(page.contains("/monitor-ui/app.js"));
+        assert!(page.contains(r#"src="monitor-ui/app.js""#));
         assert!(!page.contains("sample-transcript-data.js"));
         assert!(!page.contains("REAL_TRANSCRIPT"));
     }

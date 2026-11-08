@@ -356,7 +356,8 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
         ("404 Not Found", "not this host's")
     );
 
-    // The page, at the host's path, speaks the contract's version.
+    // The page, at the host's path, speaks the contract's version, and every link it writes loads
+    // from under that path: its modules, styles, icons and manifest, and its tabs' modules.
     let page = get("");
     assert_eq!(page.code, "200 OK");
     assert!(
@@ -364,6 +365,31 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
         "{}",
         page.text()
     );
+    let mut linked = 0;
+    for tab in ["", "markdown", "image"] {
+        let html = get(tab).text();
+        for attr in ["href=\"", "src=\""] {
+            for link in html
+                .split(attr)
+                .skip(1)
+                .filter_map(|rest| rest.split('"').next())
+            {
+                assert!(
+                    !link.starts_with('/') && !link.contains("://"),
+                    "/{tab} links {link} outside the page's own path"
+                );
+                let asset = get(link);
+                assert_eq!(
+                    asset.code,
+                    "200 OK",
+                    "/{tab} links {link}: {}",
+                    asset.text()
+                );
+                linked += 1;
+            }
+        }
+    }
+    assert!(linked >= 7, "only {linked} links");
 
     // The host's sessions and not the environment's, and nothing read off this machine's
     // processes: the agent beside the session is not linked to it.

@@ -531,8 +531,11 @@ A host that serves the monitor's page, or mounts its parts, supplies these with 
 The page itself (`/`, `/index.html`) and its icons and manifest (`/favicon.svg`,
 `/apple-touch-icon.png`, `/manifest.webmanifest`, which the listener answers unpaired) are the
 monitor's own page, not something the parts read, so the route index leaves them out. The page's
-head links (`/monitor-ui/…`, the icons and the manifest) are written into it as root paths; a host
-that mounts the parts serves or rewrites them. Step 4 of `design/embedding.md` moves
+head links (`monitor-ui/…`, the icons and the manifest) are written relative to the page, and the
+page's own backend handle is based at the directory the page was served from. So a host that
+serves the page at a prefix of its own, at a path ending in a slash (`/agents/monitor/`), has it
+load its parts and reach its routes under that prefix, its Markdown and image tabs too, with
+nothing to rewrite. Step 4 of `design/embedding.md` moves
 what the page reads about its backend (paired, version, mdrev) from the head to the backend handle.
 
 ## How this document is held to the code
