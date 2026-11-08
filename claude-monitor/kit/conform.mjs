@@ -10,8 +10,9 @@
 // --cookie and --header carry the reader's sign-in (a cookie, or `Authorization: Bearer <token>`
 // for a paired agent-monitor); neither is ever printed. --origin is the origin of the page the
 // components are mounted in, sent as `Origin` on every request but a GET (the base's own origin
-// unless given). --session names the session to read (else the list's first). --json prints the
-// results as one JSON object instead of lines.
+// unless given). --session names the session to read (else a finished one with the fewest turns,
+// which is least likely to grow while it is read). --json prints the results as one JSON object
+// instead of lines.
 //
 // Each rule prints as passed (✓), failed (✗) or skipped (–), under the contract section it comes
 // from. A route of an optional tier the host does not serve answers 404, and its rules are skipped,
@@ -20,7 +21,15 @@
 // What it never does, because a host runs it against a real server: send a prompt (every write it
 // makes is refused before it names a session), grant or revoke a pane, answer a dialog, file a note,
 // or reveal a file (`/__reveal` only ever gets a stamp nobody minted, for a path that does not
-// exist). The one change it makes is to the hide list: a key no session has, added and removed.
+// exist). Nor does it send the reader's sign-in anywhere but under the base URL. What it does
+// change on the server:
+//   - the hide list: a key no session has, added and removed again (if the removal fails, it says
+//     which key to remove);
+//   - mdrev's held store: it holds two small documents there, among the most recent the store
+//     keeps (agent-monitor keeps 64);
+//   - the session it reads, and one of its sub-agents: both are pulled (the session several times,
+//     from a fresh cursor and its own), and agent-monitor writes a durable cache entry for each,
+//     which marks the row visited. No other session is pulled.
 //
 // No dependencies: node 20 or later.
 
@@ -550,6 +559,8 @@ async function askWithLength(method, path, length) {
 // ------------------------------------------------------------------------------------ results
 
 const results = [];
+// Whether a session's records were read, and if not why: the last line says what went unchecked.
+const READ = { session: false, why: "the session list did not answer" };
 const SKIP = Symbol("skip");
 const skip = (why) => ({ [SKIP]: why });
 class Fail extends Error {}
@@ -799,9 +810,22 @@ async function main() {
     return verdict(problems, plural(hiddenGroups.length, "hidden group"));
   });
 
-  // The session to read: the one named, else the list's first that is not a worker.
+  // The session to read: the one named, else the one least likely to grow while it is read, a
+  // finished session with the fewest turns (a worker last, since the page lists it elsewhere).
   const listed = rows.filter((r) => TYPES.object(r) && typeof r.id === "string");
-  const sid = ARGS.session ?? (listed.find((r) => !r.startedBy) ?? listed[0])?.id ?? null;
+  const quietFirst = (r) => [
+    r.state === "finished" ? 0 : r.state === "idle" ? 1 : 2,
+    r.startedBy ? 1 : 0,
+    TYPES.number(r.turns) ? r.turns : Number.MAX_SAFE_INTEGER,
+  ];
+  const order = (a, b) => {
+    const [x, y] = [quietFirst(a), quietFirst(b)];
+    return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
+  };
+  const sid = ARGS.session ?? [...listed].sort(order)[0]?.id ?? null;
+  // Whether the named session is one the list shows (taken as so when the list could not be read).
+  const named = !ARGS.session || !list || listed.some((r) => r.id === ARGS.session);
+  const unlisted = named ? "" : ` (--session ${ARGS.session.slice(0, 40)} is not among the list's ${plural(listed.length, "row")})`;
 
   await rule(
     "sessions.before-list",
@@ -809,6 +833,7 @@ async function main() {
     "a session route answers an id before the list is asked for it",
     async () => {
       if (!ARGS.session) return skip("pass --session <id> to check it, against a server that has not listed it yet");
+      if (!named) return skip(`--session ${ARGS.session.slice(0, 40)} is not among the list's rows, and an id the list would never show stays unknown`);
       if (early instanceof Error) throw early;
       if (early.status !== 200) fail(`${early.what} answered ${early.status} before the list was asked`);
       const body = early.json();
@@ -816,19 +841,6 @@ async function main() {
       return `t ${body.t}`;
     },
   );
-
-  await rule("sessions.each-pulls", S.sessions, "the session routes answer for the ids this list shows", async () => {
-    if (!listed.length) return skip("the list holds no row");
-    const some = listed.slice(0, 5);
-    const problems = [];
-    for (const r of some) {
-      const reply = await ask("GET", `pull?session=${enc(r.id)}&cursor=0.0.0.0`);
-      const body = reply.status === 200 ? reply.json() : null;
-      if (!body || (body.t !== "pull" && body.t !== "redirect")) problems.push(`${reply.what} answered ${reply.status}${body ? ` t ${show(body.t)}` : ""}`);
-    }
-    served("/pull", problems.length ? null : true);
-    return verdict(problems, `${some.length} of ${plural(listed.length, "row")} pulled`);
-  });
 
   // ------------------------------------------------------------------------ the page itself
   let page = null;
@@ -904,7 +916,15 @@ async function main() {
   await rule("pull.reply", S.pull, "a fresh pull answers the envelope {t: \"pull\", epoch, committed_from, committed_ext, provisional_gen, provisional_from, provisional, meta}", async () => {
     if (!sid) return skip("the list holds no session to read");
     const reply = await ask("GET", `pull?session=${enc(sid)}&cursor=0.0.0.0`);
-    if (reply.status !== 200) fail(`${reply.what} answered ${reply.status}: ${brief(reply.text())}`);
+    if (reply.status !== 200) {
+      // A 404 the route answers says {t: "error"}; any other is no route at all.
+      let t = null;
+      try {
+        t = JSON.parse(reply.text())?.t ?? null;
+      } catch {}
+      if (reply.status === 404 && t !== "error") served("/pull", false);
+      fail(`${reply.what} answered ${reply.status}: ${brief(reply.text())}${unlisted}`);
+    }
     const body = reply.json();
     if (body.t === "redirect") {
       walk.redirect = body.url;
@@ -919,6 +939,32 @@ async function main() {
     return `epoch ${body.epoch}, committed ${body.committed_ext ? `${body.committed_ext.len} bytes from record ${body.committed_from}` : "none"}, ${plural(body.provisional.length, "provisional record")}`;
   });
   const noWalk = () => skip(walk.redirect ? "the session is served elsewhere" : sid ? "the pull did not answer" : "the list holds no session to read");
+  READ.session = walk.ok;
+  READ.why = walk.redirect ? "the session is served elsewhere" : sid ? `the pull of ${sid.slice(0, 40)} did not answer${unlisted}` : "the list holds no session";
+
+  await rule("sessions.each-pulls", S.sessions, "the session routes answer for the ids this list shows", async () => {
+    if (!sid) return skip("the list holds no row");
+    if (!named) return skip(`--session ${ARGS.session.slice(0, 40)} is not among the list's rows`);
+    if (!walk.ok && !walk.redirect) fail(`the list shows ${sid.slice(0, 40)}, and its pull did not answer`);
+    return `${sid.slice(0, 40)}, as listed, pulled (the one session the check reads)`;
+  });
+
+  // Whether the session grew since the walk's pull: asked at the reader's own cursor before a rule
+  // that compares two requests calls a difference a failure.
+  const grew = async () => {
+    const p = walk.pull;
+    const cursor = `${p.epoch}.${committedCount()}.${p.provisional_gen}.${p.provisional_from + p.provisional.length}`;
+    const reply = await ask("GET", `pull?session=${enc(sid)}&cursor=${cursor}`).catch(() => null);
+    if (!reply || reply.status !== 200) return false;
+    let body;
+    try {
+      body = JSON.parse(reply.text());
+    } catch {
+      return false;
+    }
+    return body.epoch !== p.epoch || body.committed_ext !== null || (body.provisional?.length ?? 0) > 0 || body.provisional_gen !== p.provisional_gen;
+  };
+  const GREW = "the session grew between the requests, so the two cannot be compared";
 
   await rule("pull.fresh", S.pull, "a fresh reader (epoch 0, which never matches) gets everything, and the session's facts", async () => {
     if (!walk.ok) return noWalk();
@@ -1051,6 +1097,7 @@ async function main() {
       said.push(`tail=${tail}: from record ${k}`);
     }
     if (!said.some((x) => x.includes("from record"))) said.push("no budget the log allows was honoured");
+    if (problems.length && (await grew())) return skip(GREW);
     return verdict(problems, said.join(", "));
   });
 
@@ -1090,13 +1137,19 @@ async function main() {
     verdict(problems);
     if (body.epoch !== walk.epoch) problems.push(`epoch is ${body.epoch}, not ${walk.epoch}`);
     if (body.upto !== upto) problems.push(`upto is ${body.upto}, not ${upto} as asked`);
-    if (body.records !== committedCount()) problems.push(`records is ${body.records} where the log holds ${committedCount()}`);
-    if (body.bytes !== walk.logLen) problems.push(`bytes is ${body.bytes} where the log is ${walk.logLen} bytes`);
     for (const [name, count] of Object.entries(body.tools)) if (!TYPES.number(count)) problems.push(`tools.${name} is ${show(count)}, not a count`);
     ti.served = true;
     ti.body = body;
     served("/turn-index", true);
-    return verdict(problems, `${plural(body.turns.length, "turn")} below ${upto}`);
+    // The log "now": the walk's, unless the session grew since.
+    const now = [];
+    if (body.records !== committedCount()) now.push(`records is ${body.records} where the log holds ${committedCount()}`);
+    if (body.bytes !== walk.logLen) now.push(`bytes is ${body.bytes} where the log is ${walk.logLen} bytes`);
+    if (now.length && !problems.length && (await grew())) {
+      ti.grew = true;
+      return skip(GREW);
+    }
+    return verdict([...problems, ...now], `${plural(body.turns.length, "turn")} below ${upto}`);
   });
 
   await rule("turn-index.facts", S.turnIndex, "facts holds one [kind, id] per record below upto, [kind, id, 1] for an assistant's commentary", async () => {
@@ -1156,6 +1209,8 @@ async function main() {
         problems.push(`turn ${first.turn}'s span ${reply.what} did not read back as records ${first.r} to ${first.last}`);
       }
     }
+    // The last turn runs to the log's end, which moves when the session grows.
+    if (problems.length && (ti.grew || (await grew()))) return skip(GREW);
     return verdict(problems, `${plural(turns.length, "turn")}, each at its records and bytes`);
   });
 
@@ -1186,7 +1241,9 @@ async function main() {
     const reply = await ask("GET", `turn-index?session=${enc(sid)}&epoch=${walk.epoch}&upto=${asked}`);
     if (reply.status !== 200) fail(`${reply.what} answered ${reply.status}`);
     const body = reply.json();
-    if (body.upto !== ti.body.records) fail(`asked for ${asked}, upto is ${show(body.upto)}, not the record count ${ti.body.records}`);
+    // Read against the record count in the same reply, so a session that grew meanwhile still reads.
+    const most = TYPES.number(body.records) ? Math.min(asked, body.records) : ti.body.records;
+    if (body.upto !== most) fail(`asked for ${asked}, upto is ${show(body.upto)}, not the record count ${most}`);
     return `asked ${asked}, answered ${body.upto}`;
   });
 
@@ -1430,13 +1487,11 @@ async function main() {
     if (!all.length) return noRecords();
     const ids = [...new Set(all.map(([r]) => r?.head?.child_id).filter((x) => typeof x === "string"))];
     if (!ids.length) return skip("the session starts no sub-agent");
-    const problems = [];
-    for (const id of ids.slice(0, 3)) {
-      const reply = await ask("GET", `pull?session=${enc(id)}&cursor=0.0.0.0`);
-      const body = reply.status === 200 ? reply.json() : null;
-      if (!body || (body.t !== "pull" && body.t !== "redirect")) problems.push(`${reply.what} answered ${reply.status}`);
-    }
-    return verdict(problems, plural(Math.min(ids.length, 3), "sub-agent"));
+    // One sub-agent of the session read, and no other session.
+    const reply = await ask("GET", `pull?session=${enc(ids[0])}&cursor=0.0.0.0`);
+    const body = reply.status === 200 ? reply.json() : null;
+    if (!body || (body.t !== "pull" && body.t !== "redirect")) fail(`${reply.what} answered ${reply.status}`);
+    return `the first of ${plural(ids.length, "sub-agent")} pulled`;
   });
 
   // ----------------------------------------------------------------------- the facts (meta)
@@ -1894,10 +1949,13 @@ function finish() {
   const counts = { pass: 0, fail: 0, skip: 0 };
   for (const r of results) counts[r.status]++;
   const conforms = counts.fail === 0;
+  // What a run that read no session could not say anything about.
+  const note = READ.session
+    ? null
+    : `no session was read (${READ.why}), so the routes that read one (/pull, /records, /turn-index, /search, /file) and the record format went unchecked`;
   if (ARGS.json) {
-    process.stdout.write(
-      `${JSON.stringify({ contract: CONTRACT, base: `${BASE.origin}${BASE.pathname}`, conforms, counts, results, routes: ROUTES }, null, 2)}\n`,
-    );
+    const report = { contract: CONTRACT, base: `${BASE.origin}${BASE.pathname}`, conforms, counts, note, results, routes: ROUTES };
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   } else {
     process.stdout.write("\nRoutes: ");
     process.stdout.write(
@@ -1912,6 +1970,7 @@ function finish() {
       process.stdout.write(`does not conform to contract ${CONTRACT}: ${plural(counts.fail, "rule")} failed, ${counts.pass} passed, ${counts.skip} skipped\n`);
       for (const r of results.filter((x) => x.status === "fail")) process.stdout.write(`  ✗ ${r.id} (${r.section})\n`);
     }
+    if (note) process.stdout.write(`Not checked: ${note}.\n`);
   }
   process.exitCode = conforms ? 0 : 1;
 }
