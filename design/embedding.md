@@ -221,7 +221,8 @@ The first kit ships without the detached page; a later kit adds it (steps 7 and 
    it, its version and its record format.
 3. **The backend as something a host mounts.** The route table answers under any prefix, from
    sessions the host names (stores on disk, or its own adapter), with the host's sign-in in front
-   and no assumption that it owns the port.
+   and no assumption that it owns the port. `design/backend-mount.md` has what that takes and
+   the order to build it in (#s426).
 4. **The session view as a component**, with the app shell mounting it. It reads what it needs
    to know about its backend (paired, version, mdrev) from its handle, not the page's head, and
    gains the title, turn and Info events and the frame hook from "Customizing".

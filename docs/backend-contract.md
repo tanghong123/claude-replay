@@ -70,17 +70,18 @@ The tiers say what a host must serve:
 
 - **Paths are relative to the backend's base.** The page joins every path to its backend handle's
   base (`codex-ui/backend.js`): the monitor's own origin, a prefix a host chose, another origin,
-  or a native app's own scheme. Nothing in this document assumes the routes sit at the root,
-  with one exception today: the page loads the Mermaid runtime from the path the page head names,
-  as written, so a host that serves the routes under a prefix rewrites that path (#s423 moves it
-  behind the handle).
+  or a native app's own scheme. Nothing in this document assumes the routes sit at the root:
+  the Mermaid runtime's path, which the page head names, is joined to the base too.
 - **Credentials.** The page sends its cookies with every request (`credentials: "same-origin"` by
   default; a handle may say otherwise) and asks for `cache: "no-store"` on almost every read.
 - **Pairing belongs to the listener, not to the routes.** The monitor's listener checks every
   request before a route sees it. A request it refuses gets 401: an HTML page load gets a page
   that reloads itself once and then says how to pair; anything else gets plain text. The page reads
   a 401 as "not paired". `/pair` and `/api/pair` are the listener's own and not part of this
-  contract. A host puts its own sign-in in front instead.
+  contract. A host puts its own sign-in in front instead. That sign-in must refuse a request
+  another site started, whatever its method: `/api/ignore` and a stamped `/__reveal` act on a
+  GET, and a request another site makes (an image, say) carries no `Origin` for the routes' own
+  origin check to see. The monitor's `SameSite=Strict` cookie is what refuses it there.
 - **Three facts per request.** Routes decide by what the listener tells them: whether the request is
   paired, whether its origin is the page's own (no foreign `Host` or `Origin`), and whether its
   replies must have secrets masked (a client across a network when the owner chose `remote`
