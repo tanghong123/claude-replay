@@ -76,19 +76,22 @@ impl Serves {
 
     /// Whether a `method` request for `name` with `query` is inside the ceiling. mdrev's routes
     /// read a file unless their `root` is `held` (text the transcript carries), so with files off
-    /// only `hold` and held text are served there; and any of them but a GET or `hold` files or
-    /// changes a note, which is a write. So is anything but a GET under shared review's prefix.
+    /// only `hold` and held text are served there; and any of them but a GET, `hold` or `resolve`
+    /// files or changes a note, which is a write. So is anything but a GET or `resolve` under
+    /// shared review's prefix. `resolve` is a POST that only reads: the stamps of the documents a
+    /// document links to (#s434 found a reads-only host refusing it).
     pub fn admits(&self, method: &str, name: &str, query: &str) -> bool {
+        let reads = |rest: &str| method == "GET" || rest == "resolve";
         match name {
             "api/send" | "api/consent" | "api/dialog" | "api/answer" => self.writes,
             "file" => self.files,
             "__reveal" => self.reveal,
             _ if name.starts_with("api/mdrev-review/") => {
-                self.review && (method == "GET" || self.writes)
+                self.review && (reads(&name["api/mdrev-review/".len()..]) || self.writes)
             }
             _ => match name.strip_prefix("api/mdrev/") {
                 Some("hold") => true,
-                Some(_) if method != "GET" && !self.writes => false,
+                Some(rest) if !reads(rest) && !self.writes => false,
                 Some(_) if !self.files => {
                     query_get(query, "root")
                         .map(index::percent_decode)
@@ -660,6 +663,22 @@ mod tests {
             "held text is not a file"
         );
         assert!(reads.admits("GET", "api/mdrev/text", "root=held&path=h%2Fa.md&cap=x"));
+        assert!(
+            reads.admits("POST", "api/mdrev/resolve", "root=held"),
+            "resolving held text's links only reads"
+        );
+        assert!(
+            !reads.admits("POST", "api/mdrev/resolve", "root=%2Frepo"),
+            "a file's are a file's"
+        );
+        assert!(
+            host.admits("POST", "api/mdrev/resolve", "root=%2Frepo"),
+            "with files, a file's links resolve though writes are off"
+        );
+        assert!(
+            review_reads.admits("POST", "api/mdrev-review/resolve", "root=%2Frepo"),
+            "so do they under shared review's prefix"
+        );
         assert!(
             reads.admits("GET", "mdrev/1.1.77/mdrev.js", ""),
             "the bundle"
