@@ -23,7 +23,7 @@ import { agentRecordTargets, currentTurnIndex, escapeText, peerHue, peerLabelRes
 import { Viewport } from "./viewport.js";
 import { sharedKeyboardFrame } from "./phone-keyboard.js";
 import { revealMermaidSource, useMermaidRuntime } from "./shared/mermaid.js";
-import { page, view } from "./view-root.js";
+import { page, viewRoot } from "./view-root.js";
 
 // The outline row currently marked (#52) — declared ahead of the init code below, which
 // renders the navigator before the module's later statements have run.
@@ -31,7 +31,7 @@ let outlineCurrent = null;
 // Whether the Turns pane follows the session (#s207) — declared here for the same reason.
 let turnsFollow = true;
 
-const byId = view.byId;
+const byId = viewRoot.byId;
 const app = page.byId("app");
 const tree = page.byId("tree");
 // What `renderTree` last wrote into the list, so an unchanged refresh leaves the rows in place (#s72).
@@ -54,7 +54,7 @@ for (const [id, icon, label] of [["themeBtn", "moon", "Toggle light and dark"], 
   button.setAttribute("aria-label", label);
   if (id !== "sidebarCollapse") button.title = label;
 }
-const filterIcon = view.$("#filterTranscriptBtn [data-icon]");
+const filterIcon = viewRoot.$("#filterTranscriptBtn [data-icon]");
 if (filterIcon) filterIcon.innerHTML = svg("filterLines");
 page.$(".brand small").textContent = `v${page.body().dataset.version || "dev"}`;
 // The tab's icon (#203) and the Home Screen's (#320) are declared by the production page head
@@ -77,8 +77,8 @@ sessionTitle.setAttribute("role", "button");
 sessionTitle.setAttribute("aria-haspopup", "menu");
 sessionTitle.setAttribute("aria-expanded", "false");
 sessionTitle.title = "Copy the session id or the transcript path";
-const infoCardLabel = view.$('[data-nav-card="session"] .outline-card-head strong');
-const infoRailButton = view.$('[data-nav-card-open="session"]');
+const infoCardLabel = viewRoot.$('[data-nav-card="session"] .outline-card-head strong');
+const infoRailButton = viewRoot.$('[data-nav-card-open="session"]');
 if (infoCardLabel) infoCardLabel.textContent = "Info";
 if (infoRailButton) infoRailButton.title = "Info";
 
@@ -91,7 +91,7 @@ function setSessionCopyMenu(open) {
 function scheduleSessionCopyClose() {
   clearTimeout(sessionCopyCloseTimer);
   sessionCopyCloseTimer = setTimeout(() => {
-    if (!sessionCopyMenu.contains(view.active()) && view.active() !== sessionTitle) setSessionCopyMenu(false);
+    if (!sessionCopyMenu.contains(viewRoot.active()) && viewRoot.active() !== sessionTitle) setSessionCopyMenu(false);
   }, 120);
 }
 // #330: a finger or a pen LEAVES when it lifts, so its leave is no reason to close — on iOS the
@@ -105,7 +105,7 @@ sessionTitle.addEventListener("focus", () => setSessionCopyMenu(true));
 sessionTitle.addEventListener("blur", scheduleSessionCopyClose);
 sessionTitle.addEventListener("click", () => setSessionCopyMenu(true));
 // #s37: on a phone the turn's subtitle under the title is the same target (see `turnSubtitle`).
-view.$(".topbar .session-heading").addEventListener("click", event => { if (event.target.closest("#turnSubtitle")) setSessionCopyMenu(true); });
+viewRoot.$(".topbar .session-heading").addEventListener("click", event => { if (event.target.closest("#turnSubtitle")) setSessionCopyMenu(true); });
 sessionTitle.addEventListener("keydown", event => {
   if (["Enter", " ", "ArrowDown"].includes(event.key)) {
     event.preventDefault(); setSessionCopyMenu(true);
@@ -127,7 +127,7 @@ async function copyText(text) {
   try {
     const field = document.createElement("textarea");
     field.value = text; field.style.cssText = "position:fixed;top:-1000px;opacity:0";
-    view.layer().appendChild(field); field.select();
+    viewRoot.layer().appendChild(field); field.select();
     const copied = document.execCommand("copy"); field.remove(); return copied;
   } catch (_) { return false; }
 }
@@ -191,7 +191,7 @@ const turnSubtitle = document.createElement("span");
 turnSubtitle.className = "turn-subtitle";
 turnSubtitle.id = "turnSubtitle";
 turnSubtitle.hidden = true;
-view.$(".topbar .session-heading").append(turnSubtitle);
+viewRoot.$(".topbar .session-heading").append(turnSubtitle);
 bindComponentEvents(transcript, recordState, {
   // #185: `bindComponentEvents` is a CLICK handler, so everything that reaches `rerender` is the
   // reader reshaping the page themselves — a fold, a cap, a prompt expanded, a raw toggle. Parked
@@ -2109,9 +2109,9 @@ function renderNavigator() {
   // (#217), so on any real session its target was past the end and the click did nothing at all.
   recordState.shownTaskRows = taskShown.flatMap(group => group.rows);
   renderSessionInfo(turnCount, allAgents);
-  view.$$("[data-nav-card]").forEach(card => card.classList.toggle("open", uiState.navCards.has(card.dataset.navCard)));
+  viewRoot.$$("[data-nav-card]").forEach(card => card.classList.toggle("open", uiState.navCards.has(card.dataset.navCard)));
   stackOutlineHeads();
-  view.$(".workspace").classList.toggle("navigator-off", !uiState.navigatorOpen);
+  viewRoot.$(".workspace").classList.toggle("navigator-off", !uiState.navigatorOpen);
   mobileShell?.counts(turnCount, counted.length, allAgents);
 }
 /** The control an emptied pane carries (#s356): it clears the same remembered filter the Outline
@@ -2322,7 +2322,7 @@ function activeScopeSet() {
  *  its count and its arrows (production.css), so the reader still sees how many and can step.
  *  Looked up here, not held: this runs during the module's first render. */
 function markQuery() {
-  view.$(".header-searchbox")?.classList.toggle("has-query", !!boxQuery());
+  viewRoot.$(".header-searchbox")?.classList.toggle("has-query", !!boxQuery());
 }
 function updateSearch(reset) {
   // #s278: text typed but not submitted (search on Enter) is not searched by a fill, a pull or an
@@ -2615,7 +2615,7 @@ function searchFloor(view) {
   over(phoneDock);
   const composer = byId("composer");
   if (composer.classList.contains("production-show")) over(composer);
-  over(view.$(".shared-runtime"));
+  over(viewRoot.$(".shared-runtime"));
   return floor;
 }
 /** Scroll the nearest horizontally scrolling block holding `mark` so the mark sits in it, with a
@@ -2813,16 +2813,16 @@ searchChips.insertAdjacentElement("beforebegin", searchField);
 searchField.append(searchChips, byId("transcriptSearchInput"));
 var fieldMeasure = document.createElement("span");
 fieldMeasure.className = "search-field-measure"; fieldMeasure.setAttribute("aria-hidden", "true");
-view.$(".header-search-cluster").appendChild(fieldMeasure);
+viewRoot.$(".header-search-cluster").appendChild(fieldMeasure);
 searchSuggest = document.createElement("div");
 searchSuggest.className = "search-suggest"; searchSuggest.id = "searchSuggest"; searchSuggest.hidden = true;
 searchSuggest.setAttribute("role", "listbox");
-view.$(".header-search-cluster").appendChild(searchSuggest);
+viewRoot.$(".header-search-cluster").appendChild(searchSuggest);
 /** Size the field to its text while the phone's box is open, and keep the end in view (#353). */
 function fitSearchField() {
   if (!searchField || !fieldMeasure) return;
   const input = byId("transcriptSearchInput");
-  if (!view.$(".header-searchbox")?.classList.contains("phone-open")) { input.style.width = ""; return; }
+  if (!viewRoot.$(".header-searchbox")?.classList.contains("phone-open")) { input.style.width = ""; return; }
   const cs = getComputedStyle(input);
   fieldMeasure.style.font = cs.font; fieldMeasure.style.letterSpacing = cs.letterSpacing;
   // With chips the placeholder is not shown (#355), so an empty field takes no room of its own.
@@ -2838,7 +2838,7 @@ addEventListener("resize", () => fitSearchField());
 // surfaces (the box, the drop-down, the filter popover) or Escape — never on blur, since a touch
 // browser does not focus a tapped button and the steps would vanish under the finger. The query,
 // its count and its marks outlive the box closing, as they outlive a blur on a wider window.
-const phoneSearch = matchMedia(PHONE_QUERY), searchBox = view.$(".header-searchbox");
+const phoneSearch = matchMedia(PHONE_QUERY), searchBox = viewRoot.$(".header-searchbox");
 function setPhoneSearch(open) {
   if (!open && byId("navigatorOptions").classList.contains("open")) setPopover(null);
   searchBox.classList.toggle("phone-open", open && phoneSearch.matches);
@@ -2974,7 +2974,7 @@ function suggestRows() {
 }
 function renderSuggest() {
   if (!searchSuggest) return;
-  const tok = view.active() === byId("transcriptSearchInput") ? tokenAtCaret() : null;
+  const tok = viewRoot.active() === byId("transcriptSearchInput") ? tokenAtCaret() : null;
   if (!tok) { searchSuggest.hidden = true; suggestState = null; return; }
   const chosen = new Set(resolveTools(tok.value));
   const rows = suggestRows();
@@ -3445,7 +3445,7 @@ function saveHistory() {
   const url = URL.createObjectURL(new Blob([JSON.stringify(out)], { type: "application/json" }));
   const a = document.createElement("a");
   a.href = url; a.download = `viewport-history-app-${stamp}.json`;
-  view.layer().append(a); a.click(); a.remove();
+  viewRoot.layer().append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 // …and every control the reader presses outside the transcript is an action in it, by id.
@@ -3836,7 +3836,7 @@ function setPanesMenu(open) {
 function schedulePanesClose() {
   clearTimeout(panesCloseTimer);
   panesCloseTimer = setTimeout(() => {
-    if (!panesMenu.contains(view.active()) && view.active() !== panesTrigger) setPanesMenu(false);
+    if (!panesMenu.contains(viewRoot.active()) && viewRoot.active() !== panesTrigger) setPanesMenu(false);
   }, 120);
 }
 panesMenu.onclick = event => {
@@ -3906,7 +3906,7 @@ panesMenu.onclick = event => {
   // and neither must the pane selector, which lists panes the reader can turn off.
   const nav = byId("sessionNavigator");
   const infoCard = nav.querySelector(':scope > [data-nav-card="session"]');
-  const infoBody = view.byId("navigatorSession"); // in the shell, but it MOVES here
+  const infoBody = viewRoot.byId("navigatorSession"); // in the shell, but it MOVES here
   const popover = document.createElement("div");
   popover.className = "info-popover";
   popover.id = "infoPopover";
@@ -3930,7 +3930,7 @@ panesMenu.onclick = event => {
     if (pinned) return;
     clearTimeout(closeTimer);
     closeTimer = setTimeout(() => {
-      if (!popover.contains(view.active()) && view.active() !== trigger) show(false);
+      if (!popover.contains(viewRoot.active()) && viewRoot.active() !== trigger) show(false);
     }, 140);
   };
   for (const type of ["pointerenter", "focus"]) trigger.addEventListener(type, peek);
@@ -3994,7 +3994,7 @@ const taskScrim = document.createElement("div");
 taskScrim.className = "task-scrim";
 taskScrim.id = "taskScrim";
 taskScrim.hidden = true;
-view.layer().append(taskScrim, taskPopover);
+viewRoot.layer().append(taskScrim, taskPopover);
 let taskPopoverOpener = null;
 function closeTaskPopover(restoreFocus = true) {
   if (taskPopover.hidden) return;
@@ -4058,7 +4058,7 @@ tasksCenter.id = "tasksCenter";
 tasksCenter.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none"/><path d="M8 0.8v2.4M8 12.8v2.4M0.8 8h2.4M12.8 8h2.4"/></svg>';
 tasksCenter.title = `Center the pane on the running tasks — or on the boundary between done and pending  ( ${hintFor("tasks-center")} )`;
 tasksCenter.setAttribute("aria-label", tasksCenter.title);
-view.$('[data-nav-card="tasks"] .outline-card-head').insertAdjacentElement("afterend", tasksCenter);
+viewRoot.$('[data-nav-card="tasks"] .outline-card-head').insertAdjacentElement("afterend", tasksCenter);
 
 // #186's live-only control USED to be a dot on each card's head. It moved into the panes menu in
 // #215, on the owner's report: the dot was indistinguishable from the decorative dots the counts
@@ -4085,7 +4085,7 @@ function centerTasks() {
   // room from the others, so the column exceeds its viewport and the sticky cards ride over one
   // another. The control scrolls the pane and does nothing else; on a shut drawer there is nothing
   // to scroll and nothing happens, which is the honest answer rather than acting at a distance.
-  const row = view.$$("#navigatorWork .work-task")[target.index];
+  const row = viewRoot.$$("#navigatorWork .work-task")[target.index];
   if (!row) return false;
   const pane = paneScroller(row);
   if (!pane) return false;
@@ -4224,12 +4224,12 @@ function revealInPane(row) {
   const card = row.closest(".outline-card");
   if (card && (drawers.open.get(card.dataset.navCard) ?? 1) < 1) return;
   let pane = row.parentElement;
-  while (pane && pane !== view.layer()) {
+  while (pane && pane !== viewRoot.layer()) {
     const overflow = getComputedStyle(pane).overflowY;
     if ((overflow === "auto" || overflow === "scroll") && pane.scrollHeight > pane.clientHeight) break;
     pane = pane.parentElement;
   }
-  if (!pane || pane === view.layer() || pane.contains(transcript)) return;
+  if (!pane || pane === viewRoot.layer() || pane.contains(transcript)) return;
   const bounds = pane.getBoundingClientRect(); const rect = row.getBoundingClientRect();
   if (rect.top < bounds.top) pane.scrollTop -= bounds.top - rect.top;
   else if (rect.bottom > bounds.bottom) pane.scrollTop += rect.bottom - bounds.bottom;
@@ -4247,7 +4247,7 @@ function revealInPane(row) {
 // list says which state it is in.
 function turnsScroller() {
   let pane = byId("navigatorTurns");
-  while (pane && pane !== view.layer()) {
+  while (pane && pane !== viewRoot.layer()) {
     const overflow = getComputedStyle(pane).overflowY;
     if ((overflow === "auto" || overflow === "scroll") && pane.scrollHeight > pane.clientHeight) return pane;
     pane = pane.parentElement;
@@ -4296,7 +4296,7 @@ function stepTurn(delta) {
 function stepHead(delta) {
   const heads = [...transcript.querySelectorAll("button.renderer-head")].filter(head => head.offsetParent !== null);
   if (!heads.length) return;
-  const at = heads.indexOf(view.active());
+  const at = heads.indexOf(viewRoot.active());
   const next = at < 0 ? (delta > 0 ? 0 : heads.length - 1) : Math.max(0, Math.min(heads.length - 1, at + delta));
   heads[next].focus({ preventScroll: true });
   // The classic page's rule (its `stepHead`): a head clear of the top chrome and of the bottom
@@ -4309,7 +4309,7 @@ function stepHead(delta) {
 }
 function stepList(delta) {
   const rows = [...tree.querySelectorAll(".tree-row.session")];
-  const at = rows.indexOf(view.active()); if (at < 0) return;
+  const at = rows.indexOf(viewRoot.active()); if (at < 0) return;
   const next = Math.max(0, Math.min(rows.length - 1, at + delta));
   rows[next].focus(); selectSession(rows[next].dataset.session, true);
 }
@@ -4355,7 +4355,7 @@ var sessionLoading;
   veil.hidden = true;
   veil.setAttribute("role", "status");
   veil.innerHTML = '<div class="session-loading-card"><span class="session-loading-spinner" aria-hidden="true"></span><span class="session-loading-text">Loading session…</span><span class="session-loading-bar" hidden><i></i></span></div>';
-  view.$(".session-main").append(veil);
+  viewRoot.$(".session-main").append(veil);
   const text = veil.querySelector(".session-loading-text"), bar = veil.querySelector(".session-loading-bar"), fill = bar.querySelector("i");
   let slow = 0, downloading = false;
   const size = n => (n >= 1e6 ? `${(n / 1e6).toFixed(n < 1e7 ? 1 : 0)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
@@ -4400,7 +4400,7 @@ var phoneDock;
 {
   const PHONE = matchMedia(PHONE_QUERY);
   const WIDE = matchMedia(WIDE_PHONE_QUERY);
-  const topbar = view.$(".topbar");
+  const topbar = viewRoot.$(".topbar");
   const handle = document.createElement("button");
   handle.type = "button";
   handle.className = "drawer-handle";
@@ -4457,7 +4457,7 @@ var phoneDock;
   dock.append(dockPill);
   app.append(dock);
   phoneDock = dock;
-  const searchCluster = view.$(".header-search-cluster");
+  const searchCluster = viewRoot.$(".header-search-cluster");
   // While the find pill holds the dock, a glass ✕ beside it ENDS the search — the query and its marks
   // go, the keyboard goes down and the toolbar pill comes back — the way an iOS 26 search closes
   // beside its field. The field's own small ✕ only clears it to type again: one control, one meaning.
@@ -4558,7 +4558,7 @@ var phoneDock;
     dockCompose.setAttribute("aria-label", asks ? "Claude is asking: answer it" : draft ? "Write to this session — a draft is waiting" : "Write to this session");
     const keyboardOpen = innerHeight - (window.visualViewport?.height || innerHeight) > 80;
     // Moving a pending button on focus would move it between pointerdown and click.
-    const sharedFocus = !!controls.nativeActive && (view.active() === composeInput || keyboardOpen && (composer.contains(view.active()) || controls.runtimePanel?.contains(view.active())));
+    const sharedFocus = !!controls.nativeActive && (viewRoot.active() === composeInput || keyboardOpen && (composer.contains(viewRoot.active()) || controls.runtimePanel?.contains(viewRoot.active())));
     app.classList.toggle("composing", PHONE.matches && composer.classList.contains("production-show") && (!controls.nativeActive || sharedFocus));
     if (controls.nativeActive) { controls.fitComposer(); placeDeskCompose(); return; }
     // #s236: the phone's note is the same one line the desktop's caption shows (`composeTargetLine`).
@@ -4799,9 +4799,9 @@ var phoneDock;
   const place = () => {
     const box = app.getBoundingClientRect();
     const bottom = Math.round(topbar.getBoundingClientRect().bottom - box.top);
-    if (bottom > 0) view.styleRoot().style.setProperty("--phone-top", `${bottom}px`);
+    if (bottom > 0) viewRoot.styleRoot().style.setProperty("--phone-top", `${bottom}px`);
     const rise = Math.round(box.bottom - dock.getBoundingClientRect().top);
-    if (getComputedStyle(dock).display !== "none" && rise > 0) view.styleRoot().style.setProperty("--phone-bottom", `${rise}px`);
+    if (getComputedStyle(dock).display !== "none" && rise > 0) viewRoot.styleRoot().style.setProperty("--phone-bottom", `${rise}px`);
   };
   new ResizeObserver(place).observe(topbar);
   new ResizeObserver(place).observe(dock);
@@ -4820,7 +4820,7 @@ var phoneDock;
   // transform makes the app the box its fixed children are placed in, which is the screen's box here.
   const viewport2 = window.visualViewport;
   if (viewport2) {
-    const root = view.styleRoot();
+    const root = viewRoot.styleRoot();
     const ride = () => {
       if (controls.nativeActive && PHONE.matches) {
         const frame = sharedKeyboardFrame(app.getBoundingClientRect().height, viewport2);

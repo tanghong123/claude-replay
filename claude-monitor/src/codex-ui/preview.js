@@ -6,9 +6,9 @@ import { createImageView } from "./shared/image-view.js";
 import { isMarkdownName, mdrevVersion, mountMarkdown } from "./mdrev-pane.js";
 import { besideAction, onPhone, RASTER_FILE } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
-import { page, view } from "./view-root.js";
+import { page, viewRoot } from "./view-root.js";
 
-const byId = view.byId;
+const byId = viewRoot.byId;
 
 /** An image in a tab of its own (#s11), from the pane: `/image`, reading a
  *  FILE by the path and stamp it was offered under (`/file` serves it there, under the same rules —
@@ -115,7 +115,7 @@ export class Preview {
     resizer.onpointerdown = event => {
       resizer.setPointerCapture(event.pointerId); resizer.classList.add("dragging"); page.byId("app").classList.add("resizing");
       resizer.onpointermove = move => this.setWidth(innerWidth - move.clientX, false);
-      resizer.onpointerup = () => { resizer.classList.remove("dragging"); page.byId("app").classList.remove("resizing"); resizer.onpointermove = null; localStorage.setItem("am-demo-preview", parseFloat(getComputedStyle(view.styleRoot()).getPropertyValue("--preview")) || 420); };
+      resizer.onpointerup = () => { resizer.classList.remove("dragging"); page.byId("app").classList.remove("resizing"); resizer.onpointermove = null; localStorage.setItem("am-demo-preview", parseFloat(getComputedStyle(viewRoot.styleRoot()).getPropertyValue("--preview")) || 420); };
     };
     resizer.ondblclick = () => this.setWidth(420, true);
   }
@@ -130,7 +130,7 @@ export class Preview {
     this.expandBtn.setAttribute("aria-label", words);
     this.expandBtn.setAttribute("aria-pressed", String(full));
   }
-  setWidth(value, persist) { const width = Math.max(340, Math.min(680, Number(value) || 420)); view.styleRoot().style.setProperty("--preview", `${width}px`); if (persist) localStorage.setItem("am-demo-preview", width); this.actions.layoutChanged?.(); }
+  setWidth(value, persist) { const width = Math.max(340, Math.min(680, Number(value) || 420)); viewRoot.styleRoot().style.setProperty("--preview", `${width}px`); if (persist) localStorage.setItem("am-demo-preview", width); this.actions.layoutChanged?.(); }
   restoreWidth() { this.setWidth(localStorage.getItem("am-demo-preview") || 420, false); }
   setSession(sessionId) {
     if (sessionId === this.sessionId) return;
@@ -365,7 +365,7 @@ export class Preview {
     sheet.setAttribute("role", "dialog");
     sheet.setAttribute("aria-label", `Review ${item.name || "document"}`);
     sheet.innerHTML = `<div class="review-sheet-head"><button type="button" class="review-sheet-close" data-review-close aria-label="Close the review">${svg("x")}</button><strong>${escapeText(item.name || "document")}</strong></div><div class="review-sheet-body mdrev-pane"></div>`;
-    (page.byId("app") || view.layer()).append(sheet);
+    (page.byId("app") || viewRoot.layer()).append(sheet);
     const state = { sheet, handle: null };
     this.reviewSheet = state;
     const close = () => {

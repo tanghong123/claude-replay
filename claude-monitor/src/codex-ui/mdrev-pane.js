@@ -21,7 +21,7 @@
 // own (#271): `/markdown` serves the viewer as the whole page, at the reader's document and range.
 
 import { backend } from "./backend.js";
-import { page, view } from "./view-root.js";
+import { page, viewRoot } from "./view-root.js";
 
 const CONTRACT = "/api/mdrev";
 // #s10: the detached tab mounts the guest under a prefix of its own, which ALSO answers mdrev's
@@ -49,7 +49,7 @@ function importBundle(version) {
   const link = document.createElement("link");
   link.rel = "stylesheet";
   link.href = backend().mdrevUrl(`/mdrev/${version}/mdrev.css`);
-  view.sheets().appendChild(link);
+  viewRoot.sheets().appendChild(link);
   return import(backend().mdrevUrl(`/mdrev/${version}/mdrev.js`)).catch(error => { link.remove(); throw error; });
 }
 
@@ -95,7 +95,7 @@ function takeUpdate() {
   return version;
 }
 
-const theme = () => view.theme();
+const theme = () => viewRoot.theme();
 
 /** The collection name for Markdown the transcript carries (the monitor's `held` store). */
 const HELD = "held";
@@ -195,7 +195,7 @@ function mountAt(mountMdrev, el, facts, moved, contract = backend().mdrevUrl(CON
   show();
   mount();
   const watch = new MutationObserver(() => { mounted?.unmount(); mount(); });
-  watch.observe(view.styleRoot(), { attributes: true, attributeFilter: ["data-theme"] });
+  watch.observe(viewRoot.styleRoot(), { attributes: true, attributeFilter: ["data-theme"] });
   return {
     place,
     unmount() { watch.disconnect(); mounted?.unmount(); mounted = null; },

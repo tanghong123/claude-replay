@@ -5,9 +5,9 @@ import { backend } from "./backend.js";
 // answer means.
 import { consentQuery, grantOutcome, runRevoke, runSend } from "./shared/control-protocol.js";
 import { DialogCard } from "./dialog-card.js";
-import { page, view } from "./view-root.js";
+import { page, viewRoot } from "./view-root.js";
 
-const byId = view.byId;
+const byId = viewRoot.byId;
 
 // #s236 (Hong: the box said too much, and "writes to live tmux" for a herdr pane): ONE line says
 // where a message goes — a live pane by its host's own name, or a resume of an idle session.
@@ -239,7 +239,7 @@ export class ControlStore {
   }
   closeConfirm() { byId("confirmLayer").classList.remove("production-open"); this.afterGrant = null; }
   async grantAndSend() {
-    const passcode = view.$(".passcode-input")?.value || "";
+    const passcode = viewRoot.$(".passcode-input")?.value || "";
     const then = this.afterGrant;
     this.closeConfirm();
     if (then) { await this.grant(passcode, then); return; }
@@ -325,7 +325,7 @@ export class ControlStore {
         input.value = "";
         input.dispatchEvent(new Event("input", { bubbles: true }));
         if (controlState.row && selectedRow()?.id !== controlState.row.id) this.close();
-        else if (controlState.row && !matchMedia("(pointer: coarse)").matches && view.active() !== input) input.focus();
+        else if (controlState.row && !matchMedia("(pointer: coarse)").matches && viewRoot.active() !== input) input.focus();
       }
       this.actions.toast(mode === "tmux" ? (images.length ? `Sent to the pane with ${images.length === 1 ? "an image" : `${images.length} images`}` : "Sent to the pane") : "Resuming the session");
       this.actions.refreshIndex();

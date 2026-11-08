@@ -376,7 +376,7 @@ mod tests {
                 for pattern in PAGE_READS {
                     assert!(
                         !line.contains(pattern),
-                        "{name}:{} reads {pattern}… directly; go through `view` or `page` \
+                        "{name}:{} reads {pattern}… directly; go through `viewRoot` or `page` \
                          (view-root.js)",
                         n + 1
                     );

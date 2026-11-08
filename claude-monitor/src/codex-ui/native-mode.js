@@ -1,9 +1,9 @@
 import { appendDesktopHelp, mountNativeMenu, renderNativeMenu, renderNativeServerStatus, positionNativeMenu, readNativeStatus, ownsNativeServer, confirmNativeShutdown } from "./native-menu.js";
 import { backend } from "./backend.js";
-import { page, view } from "./view-root.js";
+import { page, viewRoot } from "./view-root.js";
 import { controlState, indexState, selectedRow } from "./state.js";
 
-const byId = view.byId;
+const byId = viewRoot.byId;
 import { isCodexSession, usesNativeControls } from "./native-policy.js";
 
 /** Own only the presentation changes made by the optional native controller. */

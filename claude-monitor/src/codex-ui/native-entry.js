@@ -3,9 +3,9 @@ import { mountNativeMenu, renderNativeMenu, renderNativeServerStatus, positionNa
 import { backend } from "./backend.js";
 import { controlState } from "./state.js";
 import { installNativeController } from "./app.js";
-import { page, view } from "./view-root.js";
+import { page, viewRoot } from "./view-root.js";
 
-const byId = view.byId;
+const byId = viewRoot.byId;
 const { button, menu } = mountNativeMenu(() => openMenu());
 const originalSwitch = page.byId("writeSwitch").onclick;
 page.byId("writeSwitch").onclick = event => {
@@ -20,7 +20,7 @@ function nativeStyles() {
   return new Promise((resolve, reject) => {
     const link = document.createElement("link"); link.id = "codexNativeStyles"; link.rel = "stylesheet"; link.href = backend().url("/codex-workspace/monitor.css");
     link.onload = resolve; link.onerror = () => { link.remove(); reject(new Error("Cannot load native controls. Retry activation.")); };
-    view.sheets().append(link);
+    viewRoot.sheets().append(link);
   });
 }
 const position = () => positionNativeMenu(menu, button);

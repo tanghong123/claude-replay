@@ -8,7 +8,7 @@
 // place later (stage 6). One view per page: the native app gives each window a page of its own.
 //
 // What belongs to the app around the view (the session list, the theme toggle, the brand, the
-// session search, the toast) reaches the page through `page` instead, so the two are told apart
+// session search, the toast) reaches the page through `page` instead (and the view through `viewRoot`), so the two are told apart
 // before the app shell's code is split from the view's (stage 3). A test holds every module of the
 // shell to these two: no `document` lookup anywhere else.
 
@@ -21,7 +21,7 @@ const at = () => root || doc();
 const rootElement = () => root?.host || doc()?.documentElement;
 
 /** The session view's root and its lookups. */
-export const view = Object.freeze({
+export const viewRoot = Object.freeze({
   /** The root itself: the page, or the shadow root the view draws in. */
   root: () => at(),
   /** One of the view's elements by id. */

@@ -1,4 +1,4 @@
-import { page, view } from "./view-root.js";
+import { page, viewRoot } from "./view-root.js";
 
 /** Read-only discovery shared by the enabling control and the active native menu. */
 export async function readNativeStatus(fetcher, { timeoutMs = 30_000, schedule = setTimeout, cancel = clearTimeout } = {}) {
@@ -57,7 +57,7 @@ export function confirmNativeShutdown(document, returnFocus, { owned = true, act
     dialog.addEventListener("close", () => settle(false), { once: true });
     dialog.addEventListener("cancel", event => { event.preventDefault(); settle(false); });
     cancel.onclick = () => settle(false); stop.onclick = () => settle(true);
-    view.layer().append(dialog); dialog.showModal(); cancel.focus();
+    viewRoot.layer().append(dialog); dialog.showModal(); cancel.focus();
   });
 }
 /** Keep the shared-server benefit and setup prompt before launcher-dependent steps. */
