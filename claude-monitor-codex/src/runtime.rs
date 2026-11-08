@@ -899,7 +899,7 @@ mod tests {
             for status in [401, 403] {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .set_read_timeout(Some(crate::transport::PEER_READ_TIMEOUT))
                     .unwrap();
                 let mut request = Vec::new();
                 while !request.ends_with(b"\r\n\r\n") {

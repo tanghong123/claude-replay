@@ -1047,7 +1047,7 @@ mod tests {
     fn authenticated(listener: &TcpListener) -> WebSocket<TcpStream> {
         let (probe, _) = listener.accept().unwrap();
         probe
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(crate::transport::PEER_READ_TIMEOUT))
             .unwrap();
         assert!(tungstenite::accept_hdr(
             probe,
@@ -1062,7 +1062,7 @@ mod tests {
         .is_err());
         let (stream, _) = listener.accept().unwrap();
         stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(crate::transport::PEER_READ_TIMEOUT))
             .unwrap();
         tungstenite::accept_hdr(
             stream,
@@ -2538,7 +2538,7 @@ mod tests {
         let fixture = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             stream
-                .set_read_timeout(Some(Duration::from_secs(3)))
+                .set_read_timeout(Some(crate::transport::PEER_READ_TIMEOUT))
                 .unwrap();
             let mut socket = tungstenite::accept(stream).unwrap();
             assert!(matches!(socket.read(), Ok(Message::Close(_))));
@@ -2554,7 +2554,7 @@ mod tests {
             for status in [401, 403] {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .set_read_timeout(Some(crate::transport::PEER_READ_TIMEOUT))
                     .unwrap();
                 let mut request = [0_u8; 4096];
                 let count = stream.read(&mut request).unwrap();
@@ -2653,7 +2653,7 @@ mod tests {
                 for _ in 0..2 {
                     let (mut stream, _) = listener.accept().unwrap();
                     stream
-                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .set_read_timeout(Some(crate::transport::PEER_READ_TIMEOUT))
                         .unwrap();
                     let mut request = [0_u8; 4096];
                     let count = stream.read(&mut request).unwrap_or(0);

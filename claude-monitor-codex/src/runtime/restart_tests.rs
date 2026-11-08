@@ -116,7 +116,7 @@ fn fixture_server() {
 fn serve_fixture(stream: crate::transport::NativeStream, token: Option<String>) {
     std::thread::spawn(move || {
         stream
-            .set_read_timeout(Some(Duration::from_secs(3)))
+            .set_read_timeout(Some(crate::transport::PEER_READ_TIMEOUT))
             .unwrap();
         #[allow(clippy::result_large_err)] // tungstenite fixes the callback error type.
         let socket = tungstenite::accept_hdr(

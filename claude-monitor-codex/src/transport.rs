@@ -179,6 +179,14 @@ const OWNER_WAIT: Duration = Duration::from_secs(5);
 /// own server. Given the rest of the wait, a slow `lsof` finishes and is the answer.
 const LOOKUP_FLOOR: Duration = Duration::from_secs(2);
 
+/// How long a test's peer waits to read what the client sends (#s427). The client sends its
+/// handshake only after the owner check, which may take the whole `OWNER_WAIT` and then one more
+/// lookup as slow as the slowest before it: on a box at a load of 100 on 12 cores, one `lsof` took
+/// up to 5 s, and peers that read for 3 s timed out while the client was still checking. A peer's
+/// timeout only stops a test that would hang, so it is long.
+#[cfg(test)]
+pub(crate) const PEER_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// What the lookups of one wait saw: how many ran, how many read the table and found no process
 /// holding the end, why each of the others read nothing, and how long the lookups themselves took
 /// (in all, and the slowest), which tells a slow lookup from an end nobody holds.
@@ -237,7 +245,10 @@ impl OwnerPolls {
 /// Read the owner until a process holds the end or the deadline passes, and return the answer
 /// with what the lookups saw. A lookup that could not read the table counts as no owner yet.
 /// Each lookup is told how long it may take: the rest of the wait, never less than
-/// `LOOKUP_FLOOR`.
+/// `LOOKUP_FLOOR`, nor less than the slowest lookup before it (#s427). On a box at a load of 100,
+/// a first `lsof` took 3.6 to 4.3 s to find no holder yet (the server had not accepted), and the
+/// second, given the 2 s floor, was killed before it could find the server; a lookup that follows
+/// a slow one is given as long as that one took.
 fn poll_owner(
     mut lookup: impl FnMut(Duration) -> Result<Option<u32>, &'static str>,
     deadline: std::time::Instant,
@@ -248,7 +259,12 @@ fn poll_owner(
     loop {
         polls.lookups += 1;
         let asked = std::time::Instant::now();
-        let answer = lookup(deadline.saturating_duration_since(asked).max(LOOKUP_FLOOR));
+        let answer = lookup(
+            deadline
+                .saturating_duration_since(asked)
+                .max(LOOKUP_FLOOR)
+                .max(polls.slowest),
+        );
         let took = asked.elapsed();
         polls.looking += took;
         polls.slowest = polls.slowest.max(took);
@@ -634,6 +650,33 @@ mod owner_tests {
         );
         assert_eq!(polls.lookups, 1, "{polls:?}");
         assert!(started.elapsed() < OWNER_WAIT, "{:?}", started.elapsed());
+    }
+
+    /// #s427, without loading the CPU: a lookup that takes 4 s, as `lsof` did at a load of 100,
+    /// first finds no holder (the server has not accepted yet) and then the holder. The second
+    /// lookup is given as long as the first took, not the 2 s floor, so it answers.
+    #[test]
+    fn a_slow_no_holder_answer_gives_the_next_lookup_as_long() {
+        const SLOW: Duration = Duration::from_secs(4);
+        let mut calls = 0;
+        let started = std::time::Instant::now();
+        let (owner, polls) = poll_owner(
+            |bound| {
+                calls += 1;
+                std::thread::sleep(SLOW.min(bound));
+                if bound < SLOW {
+                    Err("lsof ran past its bound")
+                } else if calls == 1 {
+                    Ok(None)
+                } else {
+                    Ok(Some(501))
+                }
+            },
+            started + OWNER_WAIT,
+            |_| (),
+        );
+        assert_eq!(owner, Some(501), "{polls:?}");
+        assert_eq!((polls.lookups, polls.no_holder), (2, 1), "{polls:?}");
     }
 
     /// #s410: a wait says what its lookups saw, so a refusal on a loaded machine tells an end
