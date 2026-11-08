@@ -11,9 +11,10 @@ exist only inside the app shell's one page. This step makes them one component w
 point, and rebuilds the app shell to mount it the same way. The app's browser suite runs against
 the app at every stage, and it stays green. That proves nothing changed for the app.
 
-What a host may change (colours, which controls show, the events it gets, its own frame for an
-agent's page) waits on the owner's decision, #s436. This step builds those as options the app shell
-uses, and the kit (step 7) publishes them once he has answered.
+What a host may change is the owner's decision (#s436): light or dark, which optional controls
+show, the events it gets, and its keys kept to the component. No colour settings for now. The
+native app alone frames an agent's page from a source of its own. This step builds those as
+options the app shell uses, and the kit (step 7) publishes them.
 
 ## What the session view is today
 
@@ -63,7 +64,7 @@ Its options name the backend handle, and the handlers for what the view tells it
 - a link copied;
 - a toast.
 
-The options are one object, so the ones #s436 decides join it without changing anything else.
+The rest of the options are light or dark and the optional controls to switch off (#s436).
 
 ### The shadow root, and how the app reaches it
 
@@ -134,9 +135,9 @@ pane, so step 6 also makes the view's root what they are placed against.
    - keys and focus followed through the event's composed path;
    - the harness's lookup into open shadow roots;
    - the hostile test host page (`design/embedding.md`, the isolation test).
-7. **Events out and the frame hook,** as options the app shell uses: the title, the turn, Info, a
-   file, a link and a toast, and a host-supplied frame for an agent's page. The kit publishes them
-   after #s436.
+7. **Events out and the options,** as the app shell uses them: the title, the turn, Info, a file, a
+   link and a toast; light or dark; the optional controls switched off. Also the native app's own
+   frame for an agent's page, which is not offered to other hosts (#s436).
 8. **The app shell in the shadow root.** The app passes `isolate: true` like any host, and the whole
    suite and the Simulator walk run against it that way. Then the `isolate` option goes.
 

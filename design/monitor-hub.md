@@ -603,6 +603,11 @@ is built in its own repository, and starts with what it can learn before the kit
 handle per backend in the request layer; the session view's top-bar events and frame hook; the kit
 before detached views; each host vendoring mdrev and the diagram runtime at first.
 
+**Decided by the owner on what hosts may change** (#s436, 2026-11-08): light or dark and no colour
+settings for now, the optional controls, the events and keys kept to the component. The frame for
+an agent's page is this app's alone, not offered to other hosts, since the owner controls both
+sides and they are kept consistent.
+
 **Still open,** each asked when the phase it holds up comes near, not before:
 
 1. **The session list beyond one backend** (section 5, phase 1): the merged source in the kit and an

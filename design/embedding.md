@@ -119,22 +119,26 @@ a finger stay with the device.
 
 ## Customizing
 
-As with mdrev, a host can shape what it gets without forking it:
+A host gets little to change, by the owner's choice (#s436): tuning a reading experience is hard,
+so the components are designed to work well in every pane, on every device, rather than handing
+their look to each host. What a host can do:
 
-- **theme:** light or dark, and the colour tokens (background, ink, accent and the rest), set on
-  the host's element;
+- **theme:** light or dark. No colour settings for now; they may come once the components have
+  been used for a while;
 - **which controls show:** each optional control can be switched off. The writes appear only when
   the host serves them;
 - **events out:** opening a session, opening a file, copying a link and a toast go to the host's
   handlers. The session view also tells its host its title, its current turn and a request to
   open the session's Info, which a host's own top bar shows: the standalone app on a phone does
   exactly this, as a host like any other;
-- **frames:** where the session view shows an agent's HTML page in a frame, the host may supply
-  that frame. A frame written from the page's own text takes the page's security policy, which a
-  strict host (the native app) does not allow scripts under, so such a host frames the page from
-  a source of its own;
 - **keys:** a component answers its keyboard shortcuts only while the reader is working in it,
   so they never take the host's keys.
+
+Where the session view shows an agent's HTML page in a frame, it writes the frame from the page's
+text, and such a frame takes the security policy of the page around it. The native app's policy
+allows no scripts under it, so the native app frames the page from a source of its own. That is
+an arrangement between the components and the native app, which are built together; it is not
+offered to hosts.
 
 Styles are kept apart both ways: the host's CSS cannot reach into a component, and a component's
 CSS cannot reach the host page.
@@ -225,7 +229,7 @@ The first kit ships without the detached page; a later kit adds it (steps 7 and 
    the order to build it in (#s426).
 4. **The session view as a component**, with the app shell mounting it. It reads what it needs
    to know about its backend (paired, version, mdrev) from its handle, not the page's head, and
-   gains the title, turn and Info events and the frame hook from "Customizing".
+   gains the title, turn and Info events from "Customizing", and the native app's frame.
 5. **The session list as a component**, with the app shell mounting it.
 6. **Layout by device and pane size**, with the width tests.
 7. **The kit**, with its guide and conformance check, ready for the collaboration app.
