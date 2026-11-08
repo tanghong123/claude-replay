@@ -1127,6 +1127,13 @@ impl Index {
         self
     }
 
+    /// Whether this index reads this machine's processes, the Claude desktop app's records and
+    /// herdr ([`Index::without_process_probes`]). The route table leaves the Arrange choice's
+    /// readers out with them.
+    pub fn probes(&self) -> bool {
+        self.probes
+    }
+
     /// The pane grants in this index's state directory (#s426): what a row's `consented` reads,
     /// and what a send, a dialog and a grant ask. A host's index keeps its own, never the
     /// monitor's beside it.

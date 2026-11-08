@@ -177,7 +177,10 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
     if let Some(asset) = ui::asset(name) {
         return asset;
     }
-    if !backend.serves.admits(name, query) {
+    // An index that leaves this machine alone reads no other app's session list either: the
+    // Arrange choice's readers are the Claude and Codex apps' and herdr's (#s426).
+    let arranges = name != "api/layout" || backend.idx.probes();
+    if !backend.serves.admits(name, query) || !arranges {
         return HttpResponse::not_found("not served by this host");
     }
     match name {
@@ -269,6 +272,10 @@ mod tests {
     }
 
     fn make_backend_serving(tag: &str, serves: Serves) -> Arc<Backend> {
+        make_backend_with(tag, serves, |idx| idx)
+    }
+
+    fn make_backend_with(tag: &str, serves: Serves, idx: fn(Index) -> Index) -> Arc<Backend> {
         let root = std::env::temp_dir().join(format!("cm-routes-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
@@ -285,7 +292,11 @@ mod tests {
         );
         Arc::new(Backend {
             service,
-            idx: Arc::new(Index::new(root.clone(), root.join("state"), Vec::new())),
+            idx: Arc::new(idx(Index::new(
+                root.clone(),
+                root.join("state"),
+                Vec::new(),
+            ))),
             scratch,
             attempts: Mutex::new(Attempts::default()),
             rescanned: Mutex::new(None),
@@ -589,6 +600,23 @@ mod tests {
             ("404 Not Found", "not served by this host")
         );
         assert!(body(&dispatch(&backend, &front, &get("api/sessions", ""))).contains("\"groups\""));
+        assert_eq!(
+            dispatch(&backend, &front, &get("api/layout", "")).code,
+            "200 OK",
+            "an index that reads this machine offers the Arrange choice"
+        );
+
+        // An index that leaves this machine alone reads no other app's list either.
+        let alone = make_backend_with("serves-alone", host, Index::without_process_probes);
+        for query in ["", "source=claude"] {
+            let layout = dispatch(&alone, &front, &get("api/layout", query));
+            assert_eq!(
+                (layout.code, body(&layout).as_str()),
+                ("404 Not Found", "not served by this host"),
+                "{query}"
+            );
+        }
+        assert!(body(&dispatch(&alone, &front, &get("api/sessions", ""))).contains("\"groups\""));
     }
 
     /// #s426: the body limits a host that mounts the table enforces, the contract's numbers.
