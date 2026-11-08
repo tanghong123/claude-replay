@@ -30,7 +30,12 @@ const GRANT_TTL_SECS: u64 = 8 * 3600;
 
 /// `<state_dir>/consent.json` — beside `ignored.json` and `auth-token` (#197), not the cache.
 pub fn consent_path() -> PathBuf {
-    crate::index::state_dir().join("consent.json")
+    consent_file(&crate::index::state_dir())
+}
+
+/// The grants file in a given state directory: an index reads the one in its own (#s426).
+pub fn consent_file(state_dir: &Path) -> PathBuf {
+    state_dir.join("consent.json")
 }
 
 /// One authorisation to inject into a specific pane running a specific process.
@@ -303,7 +308,12 @@ const PASS_ITERS: u32 = 100_000;
 
 /// `<state_dir>/passcode` — the salted hash of the injection passcode (never the passcode).
 pub fn passcode_path() -> PathBuf {
-    crate::index::state_dir().join("passcode")
+    passcode_file(&crate::index::state_dir())
+}
+
+/// The passcode file in a given state directory: an index reads the one in its own (#s426).
+pub fn passcode_file(state_dir: &Path) -> PathBuf {
+    state_dir.join("passcode")
 }
 
 fn random_bytes(n: usize) -> Vec<u8> {

@@ -1127,6 +1127,18 @@ impl Index {
         self
     }
 
+    /// The pane grants in this index's state directory (#s426): what a row's `consented` reads,
+    /// and what a send, a dialog and a grant ask. A host's index keeps its own, never the
+    /// monitor's beside it.
+    pub fn consent(&self) -> crate::consent::ConsentStore {
+        crate::consent::ConsentStore::new(crate::consent::consent_file(&self.state_dir))
+    }
+
+    /// The pane passcode in this index's state directory (#s426), which a grant asks for.
+    pub fn passcode(&self) -> crate::consent::Passcode {
+        crate::consent::Passcode::new(crate::consent::passcode_file(&self.state_dir))
+    }
+
     /// The transcripts one agent's stores hold: the machine-wide store, or the roots this
     /// index was given for that agent.
     fn transcripts_of(&self, a: &dyn claude_replay_core::TranscriptAdapter) -> Vec<PathBuf> {
@@ -1846,7 +1858,7 @@ impl Index {
         // `consented` by matching its own `(sock, pane, sid, pid)` against these — the same
         // quadruple the send re-checks — so the badge never claims consent a send would then
         // refuse (e.g. after a restart mints a new pid).
-        let grants = crate::consent::ConsentStore::open().active_grants();
+        let grants = self.consent().active_grants();
         // #s234: a grant that follows a herdr restore (same session, pane and server, the new
         // process naming the session itself) covers the row too, as the send would find.
         let consented = |sock: Option<&str>, pane: &str, sid: &str, pid: u32, follows: bool| {
@@ -9054,7 +9066,7 @@ n/Users/x/proj
         row.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(now - 5));
         row.last_event = Some(now - 5);
         st.rows.insert("h1".into(), row);
-        crate::consent::ConsentStore::open()
+        idx.consent()
             .grant(None, "w1:p2", "h1", 700)
             .expect("a tmux-keyed grant");
         let mut facts = Vec::new();
@@ -9088,7 +9100,7 @@ n/Users/x/proj
                 pane: "w1:p2".into(),
             })
         );
-        crate::consent::ConsentStore::open()
+        idx.consent()
             .grant(
                 Some("herdr:/Users/x/.config/herdr/sessions/trial/herdr.sock"),
                 "w1:p2",
@@ -9098,6 +9110,79 @@ n/Users/x/proj
             .expect("the herdr grant");
         let snapshot = idx.assemble(&st, &mut Vec::new());
         assert_eq!(find(&snapshot, "h1").expect("the row")["consented"], true);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// #s426: an index keeps its pane grants and passcode in the state directory it was given,
+    /// so a host's index beside a monitor never reads the monitor's grants. A grant in the
+    /// environment's directory marks no row of an index given another, and a passcode set
+    /// there asks nothing of it.
+    #[test]
+    fn an_index_reads_its_grants_and_passcode_from_its_own_state_directory() {
+        let scratch = std::env::temp_dir().join(format!("cm-own-state-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("monitor-state"));
+        let own = scratch.join("host-state");
+        let idx = Index::new(scratch.join("cache"), own.clone(), Vec::new());
+        let socket = "/Users/x/.config/herdr/sessions/trial/herdr.sock";
+        let mut procs = parse_ps("  700 claude --resume\n");
+        apply_tty(&mut procs, "  700 ttys004 10:00\n", 1_791_400_000);
+        apply_env(
+            &mut procs,
+            &format!("  700 claude HERDR_ENV=1 HERDR_PANE_ID=w1:p2 HERDR_SOCKET_PATH={socket}\n"),
+        );
+        apply_nesting(
+            &mut procs,
+            "  1 0 launchd\n  60 1 herdr\n  61 60 zsh\n  700 61 claude\n",
+        );
+        apply_lsof(&mut procs, "p700\nfcwd\nn/w/harbor\n");
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        let now = 1_791_400_000u64;
+        let mut row = growth_row("/w/harbor", false);
+        row.first_event = Some(now - 600);
+        row.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(now - 5));
+        row.last_event = Some(now - 5);
+        st.rows.insert("h1".into(), row);
+        let consented = |st: &State| {
+            fn find<'a>(v: &'a Value, id: &str) -> Option<&'a Value> {
+                match v {
+                    Value::Object(m) if m.get("id").and_then(|i| i.as_str()) == Some(id) => Some(v),
+                    Value::Object(m) => m.values().find_map(|c| find(c, id)),
+                    Value::Array(a) => a.iter().find_map(|c| find(c, id)),
+                    _ => None,
+                }
+            }
+            let snapshot = idx.assemble(st, &mut Vec::new());
+            find(&snapshot, "h1").expect("the row")["consented"].clone()
+        };
+        let herdr = format!("herdr:{socket}");
+
+        crate::consent::ConsentStore::open()
+            .grant(Some(&herdr), "w1:p2", "h1", 700)
+            .expect("a grant in the environment's state directory");
+        assert_eq!(
+            consented(&st),
+            false,
+            "the environment's grant is not this index's"
+        );
+        crate::consent::Passcode::open()
+            .set("monitor's code")
+            .expect("a passcode in the environment's state directory");
+        assert!(
+            !idx.passcode().is_set(),
+            "nor is the environment's passcode"
+        );
+
+        idx.consent()
+            .grant(Some(&herdr), "w1:p2", "h1", 700)
+            .expect("a grant in the index's own");
+        assert_eq!(consented(&st), true, "its own grant marks the row");
+        assert!(own.join("consent.json").is_file());
+        idx.passcode().set("host's code").expect("its own passcode");
+        assert!(idx.passcode().verify("host's code"));
+        assert!(!idx.passcode().verify("monitor's code"));
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
@@ -9865,7 +9950,7 @@ n/Users/x/proj
             st
         };
         // The grant was made for the process before the restore.
-        crate::consent::ConsentStore::open()
+        idx.consent()
             .grant(Some(&format!("herdr:{socket}")), "w1:p2", sid, 700)
             .expect("the grant");
         let consented = |st: &State| {
