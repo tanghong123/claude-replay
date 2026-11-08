@@ -2368,8 +2368,20 @@ fn a_phone_prints_the_document_alone_and_keeps_mdrevs_menu_on_screen() {
         Duration::from_secs(30),
         PANE,
     );
-    eval(&tab, "(function(){ var a = [...document.querySelectorAll('#preview .mdrev-host a')].find(function (a) { return /decisions/.test(a.getAttribute('href') || ''); }); a.click(); return 1; })()");
-    until(&tab, "/Decisions/.test((document.querySelector('#preview .mdrev-host h1') || {}).textContent || '')", "the long-named document", Duration::from_secs(20), PANE);
+    // mdrev draws a link before it has finished preparing it, and a click that lands first follows
+    // nothing; since 1.1.79 (#s428) the guide takes longer to prepare its links, so the reader
+    // clicks again until the pane moves, as `mdrev_follows_the_reader_to_another_document…` does.
+    let moved = "/Decisions/.test((document.querySelector('#preview .mdrev-host h1') || {}).textContent || '')";
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while eval(&tab, moved).as_bool() != Some(true) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for the long-named document: {}",
+            eval(&tab, PANE)
+        );
+        eval(&tab, "(function(){ var a = [...document.querySelectorAll('#preview .mdrev-host a')].find(function (a) { return /decisions/.test(a.getAttribute('href') || ''); }); if (a) a.click(); return 1; })()");
+        std::thread::sleep(Duration::from_millis(1500));
+    }
 
     // The owner's document was a memory file outside any checkout: mdrev gave it its READER toolbar,
     // four controls in a row at the LEFT, and hung the menu from the Aa button, so it ran off the
