@@ -29,6 +29,69 @@ pub struct Backend {
     /// The Claude app's, the Codex app's and Herdr's session lists (#s387), for the app shell's
     /// Arrange choice: each read by a thread of its own while a page follows it, never by a request.
     pub layouts: crate::layout::Layouts,
+    /// The routes this table serves beyond reading (#s426): the monitor serves all of them, and a
+    /// host that mounts the table declares its own ceiling.
+    pub serves: Serves,
+}
+
+/// The routes a table serves beyond reading its sessions (#s426, `design/backend-mount.md`): a
+/// host declares them, and the declaration is a ceiling. One fact, "paired", used to open all of
+/// them at once, so a host that let its readers open files would also have let them start an
+/// agent turn on its own machine. A route outside the ceiling answers 404, as a route a host never
+/// serves does (`docs/backend-contract.md`'s optional tiers). Reading the sessions, their records,
+/// the turn index and search is always served.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Serves {
+    /// Reading a local file a transcript offers: `/file`, and mdrev's routes on a file rather than
+    /// on text the transcript carries.
+    pub files: bool,
+    /// Opening the file manager on the serving machine: `/__reveal`.
+    pub reveal: bool,
+    /// Sending a prompt, granting a pane, and reading and answering a dialog.
+    pub writes: bool,
+    /// mdrev's shared review: the detached Markdown tab's prefix, `/api/mdrev-review/`.
+    pub review: bool,
+}
+
+impl Serves {
+    /// Every route, as the monitor binary serves them.
+    pub const ALL: Self = Self {
+        files: true,
+        reveal: true,
+        writes: true,
+        review: true,
+    };
+
+    /// What a host's table serves unless it says otherwise: reading, and the files a transcript
+    /// offers. No writes, no reveal on the serving machine, no shared review.
+    pub const HOST_DEFAULT: Self = Self {
+        files: true,
+        reveal: false,
+        writes: false,
+        review: false,
+    };
+
+    /// Whether a request for `name` with `query` is inside the ceiling. mdrev's routes read a file
+    /// unless their `root` is `held` (text the transcript carries), so with files off only `hold`
+    /// and held text are served there.
+    pub fn admits(&self, name: &str, query: &str) -> bool {
+        match name {
+            "api/send" | "api/consent" | "api/dialog" | "api/answer" => self.writes,
+            "file" => self.files,
+            "__reveal" => self.reveal,
+            _ if name.starts_with("api/mdrev-review/") => self.review,
+            _ => match name.strip_prefix("api/mdrev/") {
+                Some(route) if !self.files => {
+                    route == "hold"
+                        || query_get(query, "root")
+                            .map(index::percent_decode)
+                            .as_deref()
+                            == Some("held")
+                }
+                _ => true,
+            },
+        }
+    }
 }
 
 /// How often an unknown id may trigger a rescan (#309).
@@ -113,6 +176,9 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
     let (name, query) = (req.name, req.query);
     if let Some(asset) = ui::asset(name) {
         return asset;
+    }
+    if !backend.serves.admits(name, query) {
+        return HttpResponse::not_found("not served by this host");
     }
     match name {
         // The app shell, whatever `?ui=` says: `?ui=classic` and a `ui.json` that remembered the
@@ -199,6 +265,10 @@ mod tests {
     use claude_replay_present::cache::Presentation;
 
     fn make_backend(tag: &str) -> Arc<Backend> {
+        make_backend_serving(tag, Serves::ALL)
+    }
+
+    fn make_backend_serving(tag: &str, serves: Serves) -> Arc<Backend> {
         let root = std::env::temp_dir().join(format!("cm-routes-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
@@ -220,6 +290,7 @@ mod tests {
             attempts: Mutex::new(Attempts::default()),
             rescanned: Mutex::new(None),
             layouts: Default::default(),
+            serves,
         })
     }
 
@@ -439,6 +510,85 @@ mod tests {
         let text = body(reply);
         (reply.code == "403 Forbidden" && text == "forbidden")
             || (reply.code == "404 Not Found" && text == "not found")
+    }
+
+    /// #s426: the ceiling a table serves under. The monitor serves everything; a host's default is
+    /// reading and files, with no writes, no reveal on the serving machine and no shared review;
+    /// with files off, mdrev serves only text the transcript carries.
+    #[test]
+    fn a_table_serves_only_the_routes_its_ceiling_admits() {
+        let host = Serves::HOST_DEFAULT;
+        for name in [
+            "api/send",
+            "api/consent",
+            "api/dialog",
+            "api/answer",
+            "__reveal",
+            "api/mdrev-review/review",
+        ] {
+            assert!(Serves::ALL.admits(name, ""), "{name}");
+            assert!(!host.admits(name, ""), "{name} is outside a host's default");
+        }
+        for name in [
+            "api/sessions",
+            "pull",
+            "records",
+            "turn-index",
+            "search",
+            "file",
+            "api/mdrev/open",
+        ] {
+            assert!(host.admits(name, ""), "{name}");
+        }
+        let reads = Serves {
+            files: false,
+            ..host
+        };
+        assert!(!reads.admits("file", "path=%2Fa&sig=x"));
+        assert!(!reads.admits("api/mdrev/open", "path=%2Fa&sig=x"));
+        assert!(!reads.admits("api/mdrev/text", "root=%2Frepo&path=a.md&cap=x"));
+        assert!(
+            !reads.admits("api/mdrev/stat", ""),
+            "no root is a file's, refused"
+        );
+        assert!(
+            reads.admits("api/mdrev/hold", ""),
+            "held text is not a file"
+        );
+        assert!(reads.admits("api/mdrev/text", "root=held&path=h%2Fa.md&cap=x"));
+        assert!(reads.admits("mdrev/1.1.77/mdrev.js", ""), "the bundle");
+
+        // Through the table: the writes answer 404 before the route runs, and a read is answered.
+        let state = std::env::temp_dir().join(format!("cm-routes-serves-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&state);
+        std::fs::create_dir_all(&state).unwrap();
+        let _env = crate::index::StateEnv::set(&state);
+        for var in [
+            "CLAUDE_PROJECTS_DIR",
+            "QODERWORK_PROJECTS_DIR",
+            "QWENWORK_PROJECTS_DIR",
+            "QODER_PROJECTS_DIR",
+            "CODEX_HOME",
+        ] {
+            std::env::set_var(var, state.join(var.to_ascii_lowercase()));
+        }
+        let backend = make_backend_serving("serves", host);
+        let front = Frontend {
+            version: "0.0.0-test",
+            paired: false,
+        };
+        let send = Request {
+            method: "POST",
+            body: b"hello",
+            authenticated: true,
+            ..get("api/send", "target=s1")
+        };
+        let refused = dispatch(&backend, &front, &send);
+        assert_eq!(
+            (refused.code, body(&refused).as_str()),
+            ("404 Not Found", "not served by this host")
+        );
+        assert!(body(&dispatch(&backend, &front, &get("api/sessions", ""))).contains("\"groups\""));
     }
 
     /// #s426: the body limits a host that mounts the table enforces, the contract's numbers.

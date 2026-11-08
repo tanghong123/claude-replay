@@ -404,6 +404,8 @@ fn main() -> Result<()> {
         attempts: std::sync::Mutex::new(Attempts::default()),
         rescanned: std::sync::Mutex::new(None),
         layouts: Default::default(),
+        // The monitor serves every route; a host that mounts the table declares its own (#s426).
+        serves: claude_monitor::routes::Serves::ALL,
     });
     let handler = claude_monitor::routes::handler(
         backend,

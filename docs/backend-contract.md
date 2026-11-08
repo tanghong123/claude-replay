@@ -88,6 +88,9 @@ The tiers say what a host must serve:
   masking, every client when they chose `always`).
 - **The write gate.** Every write, and the dialog read, checks in this order: 405 for the wrong
   method, 403 for a foreign origin, 401 when not paired.
+- **A host serves a ceiling.** A route of an optional tier that a host does not serve answers 404
+  (the monitor's table says `not served by this host`); reading the sessions and their records is
+  always served. The monitor serves every route.
 - **Bodies** are at most 64 KiB, except `/api/send` (12 MiB) and mdrev's `hold` (8 MiB plus 64
   KiB, one limit). A larger body gets 413, except from a client that is not paired, which gets
   401: the listener reads no more of it.
