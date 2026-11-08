@@ -34,6 +34,18 @@ let turnsFollow = true;
 const byId = viewRoot.byId;
 const app = page.byId("app");
 const tree = page.byId("tree");
+// The session view's own element (#s429, design/session-view-component.md, stage 2): its three
+// parts (the workspace, the pane's resizer and the artifact pane) and the state it keeps for itself
+// (composing, a phone sheet open, the keyboard up, wrapped code, a wide transcript). In the app it is
+// `display: contents`, so the three stay columns of `#app`'s grid; the pane's open, full and resizing
+// states are copied onto `#app` too, since the app's grid follows them (`paneLayout`).
+const sessionView = Object.assign(document.createElement("div"), { id: "sessionView", className: "session-view" });
+{
+  const workspace = viewRoot.$(".workspace");
+  workspace.before(sessionView);
+  sessionView.append(workspace, byId("resizer"), byId("preview"));
+  sessionView.classList.toggle("preview-off", app.classList.contains("preview-off"));
+}
 // What `renderTree` last wrote into the list, so an unchanged refresh leaves the rows in place (#s72).
 let treeWritten = null;
 const transcript = byId("transcript");
@@ -244,7 +256,7 @@ const paneLayoutChanged = () => {
   paneLaidOutWidth = width;
   viewport.remeasure();
 };
-const preview = new Preview({ layoutChanged: paneLayoutChanged, toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") });
+const preview = new Preview({ layoutChanged: paneLayoutChanged, paneLayout: (name, on) => app.classList.toggle(name, on), toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") });
 const attachmentViewer = new AttachmentViewer({ toast });
 const controlActions = { renderTree, recordSnapshot: () => ({ session: recordState.session, records: recordState.records }), toast, refreshIndex: loadSessions, pauseIndex: () => sessionIndex.stop(), resumeIndex: () => sessionIndex.start(), selectSession, refreshEmpty: () => recordStore.refreshEmpty() };
 const ordinaryControls = new ControlStore(controlActions);
@@ -3420,7 +3432,7 @@ function applyReading() {
   if (rawChanged) recordState.rawTurns.clear(); // a global change clears per-turn overrides, as the classic page does
   if (rawChanged && recordState.records.length) viewport.rerender();
   for (const [name, value] of Object.entries(readingVars(prefs))) app.style.setProperty(name, value);
-  app.classList.toggle("wrap-code", !!prefs.wrap); app.classList.toggle("wide", !!prefs.wide);
+  sessionView.classList.toggle("wrap-code", !!prefs.wrap); sessionView.classList.toggle("wide", !!prefs.wide);
   for (const toggle of readingSection.querySelectorAll("[data-reading-toggle]")) toggle.setAttribute("aria-checked", String(!!prefs[toggle.dataset.readingToggle]));
   // The per-pane bars (#115) mirror the baseline in place — no re-render for a label — but only
   // for the blocks that have no override of their own (#173).
@@ -4559,7 +4571,7 @@ var phoneDock;
     const keyboardOpen = innerHeight - (window.visualViewport?.height || innerHeight) > 80;
     // Moving a pending button on focus would move it between pointerdown and click.
     const sharedFocus = !!controls.nativeActive && (viewRoot.active() === composeInput || keyboardOpen && (composer.contains(viewRoot.active()) || controls.runtimePanel?.contains(viewRoot.active())));
-    app.classList.toggle("composing", PHONE.matches && composer.classList.contains("production-show") && (!controls.nativeActive || sharedFocus));
+    sessionView.classList.toggle("composing", PHONE.matches && composer.classList.contains("production-show") && (!controls.nativeActive || sharedFocus));
     if (controls.nativeActive) { controls.fitComposer(); placeDeskCompose(); return; }
     // #s236: the phone's note is the same one line the desktop's caption shows (`composeTargetLine`).
     composeNote.textContent = byId("composeTarget").textContent;
@@ -4597,7 +4609,7 @@ var phoneDock;
   const paneScrim = document.createElement("div");
   paneScrim.className = "pane-scrim";
   paneScrim.setAttribute("aria-hidden", "true");
-  app.append(paneScrim, menu);
+  sessionView.append(paneScrim, menu);
   const menuBody = menu.querySelector(".phone-pane-body");
   const jumps = menu.querySelector(".phone-pane-jumps");
   let openPane = null, home = null;
@@ -4630,7 +4642,7 @@ var phoneDock;
     openPane = null;
     home = null;
     menu.hidden = true;
-    app.classList.remove("pane-open");
+    sessionView.classList.remove("pane-open");
     renderJumps();
   };
   const showPane = pane => {
@@ -4643,7 +4655,7 @@ var phoneDock;
     openPane = pane;
     pane.button.setAttribute("aria-expanded", "true");
     menu.hidden = false;
-    app.classList.add("pane-open");
+    sessionView.classList.add("pane-open");
     renderJumps();
     menuBody.scrollTop = 0;
     // The current turn in the middle of the list — by moving the drop-down's OWN scroller, never
@@ -4826,7 +4838,7 @@ var phoneDock;
         const frame = sharedKeyboardFrame(app.getBoundingClientRect().height, viewport2);
         // Keep one containing block even at zero offset; Safari pans during keyboard animation.
         app.style.transform = Math.abs(viewport2.scale - 1) < 0.01 ? `translateY(${frame.shift}px)` : "";
-        app.classList.toggle("keyboard-up", frame.keyboardOpen);
+        sessionView.classList.toggle("keyboard-up", frame.keyboardOpen);
         root.style.setProperty("--phone-kb", `${frame.inset}px`);
         place();
         // The shared listener can run first; fit again after applying the current viewport frame.
@@ -4839,7 +4851,7 @@ var phoneDock;
       // Once the keyboard is down there is nothing to fight: the page goes back to the top.
       if (steady && !covered && shift) scrollTo(0, 0);
       app.style.transform = shift ? `translateY(${shift}px)` : "";
-      app.classList.toggle("keyboard-up", covered > 0);
+      sessionView.classList.toggle("keyboard-up", covered > 0);
       root.style.setProperty("--phone-kb", `${covered}px`);
       place();
     };

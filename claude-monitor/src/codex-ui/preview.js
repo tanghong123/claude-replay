@@ -81,7 +81,7 @@ export class Preview {
     // to the whole screen and back. Only a phone held sideways shows it; elsewhere the pane is a
     // column with a resizer (a desktop) or the whole screen already (a phone upright).
     this.expandBtn = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn preview-expand" });
-    this.expandBtn.onclick = () => this.setFull(!page.byId("app").classList.contains("preview-full"));
+    this.expandBtn.onclick = () => this.setFull(!viewRoot.element()?.classList.contains("preview-full"));
     this.setFull(false);
     byId("closePreview").before(this.revealBtn, this.downloadBtn, this.printBtn, this.newTab, this.reviewBtn, this.expandBtn);
     // #337, the owner: with many files open the strip squeezed every tab to a few letters and the
@@ -113,15 +113,18 @@ export class Preview {
     const resizer = byId("resizer");
     resizer.setAttribute("role", "separator"); resizer.setAttribute("aria-orientation", "vertical"); resizer.tabIndex = 0;
     resizer.onpointerdown = event => {
-      resizer.setPointerCapture(event.pointerId); resizer.classList.add("dragging"); page.byId("app").classList.add("resizing");
+      resizer.setPointerCapture(event.pointerId); resizer.classList.add("dragging"); this.paneState("resizing", true);
       resizer.onpointermove = move => this.setWidth(innerWidth - move.clientX, false);
-      resizer.onpointerup = () => { resizer.classList.remove("dragging"); page.byId("app").classList.remove("resizing"); resizer.onpointermove = null; localStorage.setItem("am-demo-preview", parseFloat(getComputedStyle(viewRoot.styleRoot()).getPropertyValue("--preview")) || 420); };
+      resizer.onpointerup = () => { resizer.classList.remove("dragging"); this.paneState("resizing", false); resizer.onpointermove = null; localStorage.setItem("am-demo-preview", parseFloat(getComputedStyle(viewRoot.styleRoot()).getPropertyValue("--preview")) || 420); };
     };
     resizer.ondblclick = () => this.setWidth(420, true);
   }
-  setOpen(open) { uiState.preview = open; page.byId("app").classList.toggle("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (!open) this.setFull(false); if (open) this.render(); this.actions.layoutChanged?.(); }
+  /** The pane's open, full and resizing states: the view's own, and its host's, whose layout follows
+   *  them (the app's grid, #s429). */
+  paneState(name, on) { viewRoot.element()?.classList.toggle(name, on); this.actions.paneLayout?.(name, on); }
+  setOpen(open) { uiState.preview = open; this.paneState("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (!open) this.setFull(false); if (open) this.render(); this.actions.layoutChanged?.(); }
   setFull(full) {
-    page.byId("app").classList.toggle("preview-full", full);
+    this.paneState("preview-full", full);
     this.expandBtn.innerHTML = full
       ? '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>'
       : '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>';
@@ -365,7 +368,7 @@ export class Preview {
     sheet.setAttribute("role", "dialog");
     sheet.setAttribute("aria-label", `Review ${item.name || "document"}`);
     sheet.innerHTML = `<div class="review-sheet-head"><button type="button" class="review-sheet-close" data-review-close aria-label="Close the review">${svg("x")}</button><strong>${escapeText(item.name || "document")}</strong></div><div class="review-sheet-body mdrev-pane"></div>`;
-    (page.byId("app") || viewRoot.layer()).append(sheet);
+    (viewRoot.element() || viewRoot.layer()).append(sheet);
     const state = { sheet, handle: null };
     this.reviewSheet = state;
     const close = () => {

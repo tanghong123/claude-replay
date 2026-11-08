@@ -12514,7 +12514,7 @@ fn drawer_world(
 
 /// #s33: where the session view and the drawer are, and whether the drawer's list can be reached:
 /// the first session row wholly on screen is hit-tested at its middle.
-const DRAWER_FACTS: &str = "(function(){ var app = document.getElementById('app'); var ws = document.querySelector('#app>.workspace').getBoundingClientRect(); var sb = document.querySelector('#app>.sidebar'); var s = sb.getBoundingClientRect(); var tree = sb.querySelector('.tree'); var rows = [...sb.querySelectorAll('.tree-row.session')]; var row = rows.find(function (r) { var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 0 && b.bottom <= innerHeight && b.left >= 0; }); var hit = false; if (row) { var b = row.getBoundingClientRect(); var e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); hit = !!e && row.contains(e); } var title = document.getElementById('sessionTitle').getBoundingClientRect(); var th = document.elementFromPoint(title.left + Math.min(title.width / 2, 20), title.top + title.height / 2); return JSON.stringify({ open: !app.classList.contains('mobile-detail'), rail: app.classList.contains('sidebar-off'), wsTop: Math.round(ws.top), wsLeft: Math.round(ws.left), wsHeight: Math.round(ws.height), h: innerHeight, sbPosition: getComputedStyle(sb).position, sbRight: Math.round(s.right), rowHit: hit, treeShown: !!tree && getComputedStyle(tree).display !== 'none', treeScroll: tree ? tree.scrollHeight - tree.clientHeight : -1, treeTop: tree ? tree.scrollTop : -1, titleOnTop: !!th && document.getElementById('sessionTitle').contains(th) }); })()";
+const DRAWER_FACTS: &str = "(function(){ var app = document.getElementById('app'); var ws = document.querySelector('#sessionView>.workspace').getBoundingClientRect(); var sb = document.querySelector('#app>.sidebar'); var s = sb.getBoundingClientRect(); var tree = sb.querySelector('.tree'); var rows = [...sb.querySelectorAll('.tree-row.session')]; var row = rows.find(function (r) { var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 0 && b.bottom <= innerHeight && b.left >= 0; }); var hit = false; if (row) { var b = row.getBoundingClientRect(); var e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); hit = !!e && row.contains(e); } var title = document.getElementById('sessionTitle').getBoundingClientRect(); var th = document.elementFromPoint(title.left + Math.min(title.width / 2, 20), title.top + title.height / 2); return JSON.stringify({ open: !app.classList.contains('mobile-detail'), rail: app.classList.contains('sidebar-off'), wsTop: Math.round(ws.top), wsLeft: Math.round(ws.left), wsHeight: Math.round(ws.height), h: innerHeight, sbPosition: getComputedStyle(sb).position, sbRight: Math.round(s.right), rowHit: hit, treeShown: !!tree && getComputedStyle(tree).display !== 'none', treeScroll: tree ? tree.scrollHeight - tree.clientHeight : -1, treeTop: tree ? tree.scrollTop : -1, titleOnTop: !!th && document.getElementById('sessionTitle').contains(th) }); })()";
 
 fn drawer_facts(tab: &headless_chrome::Tab) -> serde_json::Value {
     serde_json::from_str(harness::eval(tab, DRAWER_FACTS).as_str().unwrap_or("{}"))
@@ -12930,7 +12930,7 @@ fn a_wide_phone_held_sideways_shows_the_session_list_beside_the_session() {
     harness::finger_tap(&tab, handle[0], handle[1]);
     harness::until(
         &tab,
-        "document.getElementById('app').classList.contains('phone-column-off') && document.querySelector('#app>.workspace').getBoundingClientRect().left === 0",
+        "document.getElementById('app').classList.contains('phone-column-off') && document.querySelector('#sessionView>.workspace').getBoundingClientRect().left === 0",
         "the column hidden and the session across the screen",
         Duration::from_secs(10),
         DRAWER_FACTS,
@@ -12993,7 +12993,7 @@ fn a_wide_phone_held_sideways_shows_the_session_list_beside_the_session() {
     harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
     harness::until(
         &tab,
-        "innerWidth === 956 && document.getElementById('app').classList.contains('phone-column-off') && document.querySelector('#app>.workspace').getBoundingClientRect().left === 0",
+        "innerWidth === 956 && document.getElementById('app').classList.contains('phone-column-off') && document.querySelector('#sessionView>.workspace').getBoundingClientRect().left === 0",
         "sideways again, the column still hidden",
         Duration::from_secs(10),
         DRAWER_FACTS,
@@ -13002,7 +13002,7 @@ fn a_wide_phone_held_sideways_shows_the_session_list_beside_the_session() {
     harness::finger_tap(&tab, handle[0], handle[1]);
     harness::until(
         &tab,
-        "!document.getElementById('app').classList.contains('phone-column-off') && document.querySelector('#app>.workspace').getBoundingClientRect().left > 300",
+        "!document.getElementById('app').classList.contains('phone-column-off') && document.querySelector('#sessionView>.workspace').getBoundingClientRect().left > 300",
         "the handle shows the column again",
         Duration::from_secs(10),
         DRAWER_FACTS,
@@ -13134,7 +13134,7 @@ fn a_phone_held_sideways_opens_the_pane_as_a_second_column() {
         8,
         Some(harness::SIDEWAYS_INSETS),
     );
-    let facts = "(function(){ var w = document.querySelector('#app>.workspace').getBoundingClientRect(), p = document.getElementById('preview').getBoundingClientRect(), s = document.querySelector('#app>.sidebar').getBoundingClientRect(), d = document.getElementById('phoneDock'), e = document.querySelector('.preview-expand'); return JSON.stringify({ ws: Math.round(w.width), pane: Math.round(p.left), paneW: Math.round(p.width), col: Math.round(s.right), dock: getComputedStyle(d).display === 'none' ? -1 : Math.round(d.getBoundingClientRect().right), w: innerWidth, expand: getComputedStyle(e).display, full: document.getElementById('app').classList.contains('preview-full') }); })()";
+    let facts = "(function(){ var w = document.querySelector('#sessionView>.workspace').getBoundingClientRect(), p = document.getElementById('preview').getBoundingClientRect(), s = document.querySelector('#app>.sidebar').getBoundingClientRect(), d = document.getElementById('phoneDock'), e = document.querySelector('.preview-expand'); return JSON.stringify({ ws: Math.round(w.width), pane: Math.round(p.left), paneW: Math.round(p.width), col: Math.round(s.right), dock: getComputedStyle(d).display === 'none' ? -1 : Math.round(d.getBoundingClientRect().right), w: innerWidth, expand: getComputedStyle(e).display, full: document.getElementById('app').classList.contains('preview-full') }); })()";
     let read = || -> serde_json::Value {
         serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
             .unwrap_or_default()
@@ -13361,7 +13361,7 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
     phone_tap(&tab, "#dockCompose");
     harness::until(
         &tab,
-        "document.getElementById('app').classList.contains('composing') && document.getElementById('composer').classList.contains('production-show')",
+        "document.getElementById('sessionView').classList.contains('composing') && document.getElementById('composer').classList.contains('production-show')",
         "✎ to open the reply box",
         Duration::from_secs(5),
         "document.getElementById('app').className",
@@ -13400,7 +13400,7 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
     phone_tap(&tab, "#closeComposer");
     harness::until(
         &tab,
-        "!document.getElementById('app').classList.contains('composing') && document.getElementById('dockCompose').classList.contains('has-draft') && getComputedStyle(document.querySelector('#dockCompose .dock-compose-dot')).display !== 'none'",
+        "!document.getElementById('sessionView').classList.contains('composing') && document.getElementById('dockCompose').classList.contains('has-draft') && getComputedStyle(document.querySelector('#dockCompose .dock-compose-dot')).display !== 'none'",
         "✕ to close the box, the dock back with a draft dot on ✎",
         Duration::from_secs(5),
         "document.getElementById('app').className + ' ' + document.getElementById('dockCompose').className",
@@ -13408,7 +13408,7 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
     phone_tap(&tab, "#dockCompose");
     harness::until(
         &tab,
-        "document.getElementById('app').classList.contains('composing') && /^Run the tests again/.test(document.getElementById('composeInput').value)",
+        "document.getElementById('sessionView').classList.contains('composing') && /^Run the tests again/.test(document.getElementById('composeInput').value)",
         "✎ to reopen the box with the draft",
         Duration::from_secs(5),
         "document.getElementById('composeInput').value.slice(0, 20)",
@@ -13419,7 +13419,7 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
     phone_tap(&tab, "#sendBtn");
     harness::until(
         &tab,
-        "window.__sends === 1 && !document.getElementById('sendBtn').disabled && document.getElementById('app').classList.contains('composing') && /^Run the tests again/.test(document.getElementById('composeInput').value)",
+        "window.__sends === 1 && !document.getElementById('sendBtn').disabled && document.getElementById('sessionView').classList.contains('composing') && /^Run the tests again/.test(document.getElementById('composeInput').value)",
         "a refused send to keep the box and the draft",
         Duration::from_secs(5),
         "window.__sends + ' ' + document.getElementById('composeInput').value.slice(0, 20)",
@@ -13428,7 +13428,7 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
     phone_tap(&tab, "#sendBtn");
     harness::until(
         &tab,
-        "window.__sends === 2 && document.getElementById('composeInput').value === '' && document.getElementById('app').classList.contains('composing') && document.getElementById('composer').classList.contains('production-show')",
+        "window.__sends === 2 && document.getElementById('composeInput').value === '' && document.getElementById('sessionView').classList.contains('composing') && document.getElementById('composer').classList.contains('production-show')",
         "a sent message to empty the field and keep the box open",
         Duration::from_secs(5),
         "window.__sends + ' ' + document.getElementById('app').className",
@@ -14798,7 +14798,7 @@ fn a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_wh
         Duration::from_secs(10),
         "document.querySelector('.jump-to-bottom').className",
     );
-    let jump = harness::eval(&tab, "(function(){ var j = document.querySelector('.jump-to-bottom').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(), w = document.querySelector('#app>.workspace').getBoundingClientRect(); return JSON.stringify({ dy: Math.round(Math.abs((j.top + j.bottom) / 2 - (d.top + d.bottom) / 2)), dx: Math.round(Math.abs((j.left + j.right) / 2 - (w.left + w.right) / 2)) }); })()");
+    let jump = harness::eval(&tab, "(function(){ var j = document.querySelector('.jump-to-bottom').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(), w = document.querySelector('#sessionView>.workspace').getBoundingClientRect(); return JSON.stringify({ dy: Math.round(Math.abs((j.top + j.bottom) / 2 - (d.top + d.bottom) / 2)), dx: Math.round(Math.abs((j.left + j.right) / 2 - (w.left + w.right) / 2)) }); })()");
     let jump: serde_json::Value = serde_json::from_str(jump.as_str().unwrap_or("{}")).unwrap();
     assert!(
         jump["dy"].as_i64().unwrap_or(99) <= 4 && jump["dx"].as_i64().unwrap_or(99) <= 2,
@@ -15263,7 +15263,7 @@ fn a_phone_dims_behind_a_pane_sheet_and_keeps_a_margin_upright() {
     phone_tap(&tab, "#phonePane-turns");
     harness::until(
         &tab,
-        "!document.getElementById('phonePaneMenu').hidden && getComputedStyle(document.querySelector('#app>.pane-scrim')).opacity === '1'",
+        "!document.getElementById('phonePaneMenu').hidden && getComputedStyle(document.querySelector('#sessionView>.pane-scrim')).opacity === '1'",
         "the Turns sheet, the session dimmed",
         Duration::from_secs(5),
         "document.getElementById('app').className",
@@ -15280,11 +15280,11 @@ fn a_phone_dims_behind_a_pane_sheet_and_keeps_a_margin_upright() {
     );
     // Another pane's icon switches the sheet, through the dim.
     phone_tap(&tab, "#phonePane-tasks");
-    harness::until(&tab, "document.querySelector('#phonePaneMenu .phone-pane-head strong').textContent === 'Tasks' && document.getElementById('app').classList.contains('pane-open')", "the Tasks sheet, still dimmed", Duration::from_secs(5), "document.querySelector('#phonePaneMenu .phone-pane-head strong').textContent");
+    harness::until(&tab, "document.querySelector('#phonePaneMenu .phone-pane-head strong').textContent === 'Tasks' && document.getElementById('sessionView').classList.contains('pane-open')", "the Tasks sheet, still dimmed", Duration::from_secs(5), "document.querySelector('#phonePaneMenu .phone-pane-head strong').textContent");
     // A tap on the dim closes the sheet, and reaches nothing beneath it.
     harness::eval(&tab, "(function(){ window.__clicked = 0; document.querySelector('#app .transcript').addEventListener('click', function () { window.__clicked++; }, true); return 1; })()");
     harness::finger_tap(&tab, 220.0, 200.0);
-    harness::until(&tab, "document.getElementById('phonePaneMenu').hidden && !document.getElementById('app').classList.contains('pane-open')", "the sheet closed by a tap on the dim", Duration::from_secs(5), "document.getElementById('app').className");
+    harness::until(&tab, "document.getElementById('phonePaneMenu').hidden && !document.getElementById('sessionView').classList.contains('pane-open')", "the sheet closed by a tap on the dim", Duration::from_secs(5), "document.getElementById('app').className");
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
         harness::eval(&tab, "window.__clicked"),
@@ -15296,13 +15296,13 @@ fn a_phone_dims_behind_a_pane_sheet_and_keeps_a_margin_upright() {
     phone_tap(&tab, "#phonePane-turns");
     harness::until(
         &tab,
-        "document.getElementById('app').classList.contains('pane-open')",
+        "document.getElementById('sessionView').classList.contains('pane-open')",
         "the Turns sheet again",
         Duration::from_secs(5),
         "document.getElementById('app').className",
     );
     harness::finger_tap_late_click(&tab, 220.0, 200.0, Duration::from_millis(600));
-    harness::until(&tab, "document.getElementById('phonePaneMenu').hidden && !document.getElementById('app').classList.contains('pane-open')", "the sheet closed by a tap on the dim", Duration::from_secs(5), "document.getElementById('app').className");
+    harness::until(&tab, "document.getElementById('phonePaneMenu').hidden && !document.getElementById('sessionView').classList.contains('pane-open')", "the sheet closed by a tap on the dim", Duration::from_secs(5), "document.getElementById('app').className");
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
         harness::eval(&tab, "window.__clicked"),
@@ -15312,7 +15312,7 @@ fn a_phone_dims_behind_a_pane_sheet_and_keeps_a_margin_upright() {
     assert_eq!(
         harness::eval(
             &tab,
-            "document.querySelector('#app>.pane-scrim').classList.contains('catching')"
+            "document.querySelector('#sessionView>.pane-scrim').classList.contains('catching')"
         ),
         serde_json::json!(false),
         "and the dim let go once that click had passed"
@@ -15324,7 +15324,7 @@ fn a_phone_dims_behind_a_pane_sheet_and_keeps_a_margin_upright() {
     phone_tap(&tab, "[data-reading-toggle=\"wide\"]");
     harness::until(
         &tab,
-        "document.getElementById('app').classList.contains('wide')",
+        "document.getElementById('sessionView').classList.contains('wide')",
         "wide on",
         Duration::from_secs(5),
         "document.getElementById('app').className",

@@ -8,6 +8,9 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    dark-scheme selection (a slate band under dark text), scrollbars and form controls. */
 :root{color-scheme:light}:root[data-theme="dark"]{color-scheme:dark}
 .transcript{scroll-behavior:auto}
+/* #s429 stage 2: the session view's own element, which carries its state. In the app it draws no box,
+   so its workspace, resizer and pane stay columns of #app's grid. */
+.session-view{display:contents}
 .markdown-table-scroll{width:100%;max-width:100%;margin:14px 0 18px;overflow-x:auto;border-radius:10px}.markdown-table-scroll>table{display:table!important;width:100%!important;min-width:100%;margin:0!important;overflow:visible!important}
 .transcript{overflow-anchor:none}.virtual-pad{width:1px;pointer-events:none}.virtual-window{display:block}.monitor-empty{min-height:280px;display:grid;place-content:center;justify-items:center;gap:6px;padding:32px;color:var(--faint);text-align:center}.monitor-empty[hidden]{display:none!important}.monitor-empty strong{color:var(--sub);font-size:13px}.monitor-empty span{max-width:430px;font-size:11px}.monitor-error{color:var(--red)}.monitor-disabled{opacity:.48;cursor:not-allowed!important}.monitor-disabled-note{margin:7px 0;padding:9px 11px;border:1px solid var(--process-content-border,var(--line));border-radius:8px;background:var(--process-control-bg,var(--panel));color:var(--faint);font-size:11px}.fallback-raw{max-height:260px;overflow:auto;white-space:pre-wrap}.search-scope-note{padding:8px 10px;color:var(--faint);font-size:10.5px}.preview-error{min-height:240px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:7px;padding:28px;color:var(--sub);font-size:12px}.preview-error strong{color:var(--ink);font-size:14px}.preview-error>span{max-width:340px;line-height:1.6}.preview-error-actions{display:flex;gap:7px;margin-top:7px}.artifact-text{white-space:pre-wrap;font:12px/1.7 var(--mono)}.artifact-image{display:block;max-width:100%;height:auto;margin:0 auto}.artifact-html-frame{display:block;width:100%;height:100%;min-height:420px;border:0;background:#fff}.outline-placeholder{padding:9px 11px;color:var(--faint);font-size:10.5px}.session-state.inferred{box-shadow:0 0 0 1px currentColor;background:transparent}.process-surface[data-prod-sticky="true"] .process-surface-headbar{position:sticky;top:0;z-index:3}.write-help.show{display:block}.composer.production-show{display:block}.confirm-layer.production-open,.search-layer.production-open{display:grid}.search-layer.production-open{display:flex}.preview-body.production-loading{display:grid;place-items:center;color:var(--faint)}.passcode-input{width:100%;height:38px;margin:-7px 0 14px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);outline:0}.passcode-input:focus{border-color:var(--blue)}.production-revoke{margin-left:auto;border:0;background:transparent;color:var(--faint);font:10px var(--sans);cursor:pointer}.production-revoke:hover{color:var(--red)}
 /* #s236 (Hong: the compose box said too much, and "writes to live tmux" for a herdr pane): the head is the
@@ -327,17 +330,17 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
    inside it computed `pre` — the "wrap long lines does not apply to bash output" the owner
    reported). What #173 removes is `.transcript code`: it swept in INLINE backticks in prose,
    which have no line identity, are not a wrap surface, and had their whitespace rewritten. */
-#app.wrap-code .transcript pre,#app.wrap-code [data-code]:not([data-wrap]){white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow-x:hidden}
+#sessionView.wrap-code .transcript pre,#sessionView.wrap-code [data-code]:not([data-wrap]){white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow-x:hidden}
 #app:not(.wrap-code) .transcript pre,#app:not(.wrap-code) [data-code]:not([data-wrap]){white-space:pre;overflow-x:auto}
-#app.wrap-code [data-code]:not([data-wrap]){--code-track:0}
+#sessionView.wrap-code [data-code]:not([data-wrap]){--code-track:0}
 #app:not(.wrap-code) [data-code]:not([data-wrap]){--code-track:max-content}
 /* …and the RAIL is never wrapped, in either state (#266). Both selectors, and placed after the
-   rules above, because this has to WIN: `#app.wrap-code [data-code]:not([data-wrap])` is
+   rules above, because this has to WIN: `#sessionView.wrap-code [data-code]:not([data-wrap])` is
    (1,3,0) and a bare `.line>.ln` is (0,2,0), so the tidier rule simply lost and the number kept
    breaking. Both states, because the audit reads a control's reach as the difference between
    two snapshots — a property that changes at all is a property the control governs, and an
    exemption on one side only moves the failure rather than removing it. */
-#app.wrap-code .line>.ln,#app.wrap-code .line>.mark,
+#sessionView.wrap-code .line>.ln,#sessionView.wrap-code .line>.mark,
 #app:not(.wrap-code) .line>.ln,#app:not(.wrap-code) .line>.mark{white-space:pre;overflow-wrap:normal;word-break:normal}
 /* The NEUTRALIZER, and it is required (#161, the lesson above): the UA stylesheet sets
    `white-space` EXPLICITLY on `pre`, and reference.css:161 sets it on `.codecell` and a font
@@ -368,7 +371,7 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
    The two sets are MUTUALLY EXCLUSIVE, not ranked — the page-wide branches above carry
    `:not([data-wrap])`, so an element is matched by exactly one of them and no tie has to be
    broken. Ranking them was the first draft and it was wrong twice over: an attribute weighs the
-   same as a class, so `#app [data-code][data-wrap="1"]` and `#app.wrap-code [data-code]` are
+   same as a class, so `#app [data-code][data-wrap="1"]` and `#sessionView.wrap-code [data-code]` are
    BOTH (1,2,0), and the override won only by sitting later in the file — which a later edit that
    merely regroups these rules would have silently reversed, with no test able to see it.
    Ephemeral: in memory, keyed by record, never written to storage. */
@@ -1310,7 +1313,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app>.sidebar{right:auto;width:min(86vw,360px);background:var(--side);box-shadow:1px 0 0 var(--line),14px 0 36px -20px rgba(20,26,40,.5)}
   #app.mobile-detail>.sidebar{box-shadow:none}
   #app .sidebar-mini,#app .sidebar-resizer,#app #mobileBack,#app #sidebarReopen,#app #sidebarCollapse{display:none!important}
-  #app>.workspace{isolation:isolate}
+  #sessionView>.workspace{isolation:isolate}
   .drawer-scrim{display:block;position:fixed;inset:0;z-index:15;background:rgba(14,19,31,.42);opacity:0;pointer-events:none;transition:opacity .22s}
   #app:not(.mobile-detail)>.drawer-scrim{opacity:1;pointer-events:auto}
   .drawer-handle{display:grid;place-items:center;position:fixed;z-index:22;left:4px;top:calc(env(safe-area-inset-top,0px) + 2px);width:44px;height:44px;border-radius:10px;background:transparent;color:var(--ink);cursor:pointer}
@@ -1372,8 +1375,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      under the dock (z 14), so its pane icons still switch panes and Aa and search stay in reach; a
      tap on it closes the sheet, as a tap outside always did. */
   .pane-scrim{display:block;position:fixed;inset:0;z-index:13;background:rgba(14,19,31,.32);opacity:0;pointer-events:none;transition:opacity .22s}
-  #app.pane-open>.pane-scrim,#app>.pane-scrim.catching{pointer-events:auto}
-  #app.pane-open>.pane-scrim{opacity:1}
+  #sessionView.pane-open>.pane-scrim,#sessionView>.pane-scrim.catching{pointer-events:auto}
+  #sessionView.pane-open>.pane-scrim{opacity:1}
   .phone-pane-menu:not([hidden]){display:flex;flex-direction:column;position:fixed;z-index:17;left:8px;right:8px;top:auto;bottom:calc(var(--phone-bottom,var(--phone-dock-h)) + 8px);max-height:calc(100dvh - var(--phone-top,100px) - var(--phone-bottom,var(--phone-dock-h)) - 72px);border:1px solid var(--line);border-radius:14px;background:var(--bg);box-shadow:0 18px 44px -12px rgba(20,26,40,.35);overflow:hidden}
   .phone-pane-head{display:flex;align-items:center;justify-content:space-between;flex:none;padding:0 2px 0 16px;border-bottom:1px solid var(--line)}
   .phone-pane-head strong{font-size:14px;color:var(--ink)}
@@ -1417,7 +1420,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   /* #s55, the owner: upright the transcript keeps a margin on either side; the Reading menu's Wide
      transcript gives it the whole width (a 13px gutter, #310's edge to edge). */
   #app .session-main .transcript-inner{width:calc(100% - 48px);padding-top:16px}
-  #app.wide .session-main .transcript-inner{width:calc(100% - 26px)}
+  #sessionView.wide .session-main .transcript-inner{width:calc(100% - 26px)}
   #app .turn-stickybar{margin:0 8px}
   #app .turn.user{flex-wrap:wrap}
   #app .turn.user .user-prompt{max-width:100%}
@@ -1487,7 +1490,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .session-main .transcript-inner{width:min(500px,calc(100% - 26px))}
   /* …and the Reading menu's Wide transcript widens it to the whole width, as on a desktop (for
      source code, a wide table), and upright too since #s55. */
-  #app.wide .session-main .transcript-inner{width:calc(100% - 26px)}
+  #sessionView.wide .session-main .transcript-inner{width:calc(100% - 26px)}
   /* #s41: the jump to the latest sits at the FOOT, on the dock's row, centred in the session (the
      owner: "should move to the bottom") — sideways the dock leaves the middle of that row free (its
      pill at one end, search at the other), where upright the pill reaches the middle. */
@@ -1578,8 +1581,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .phone-dock:has(.header-searchbox:is(.phone-open,.has-query))>.dock-compose{display:none}
   /* #s298: the session waits on an answer the reply box can give. */
   #app .dock-compose.asks .dock-compose-dot{display:block;position:absolute;top:11px;right:12px;width:9px;height:9px;border-radius:50%;background:var(--amber);box-shadow:0 0 0 2px var(--bg)}
-  #app.composing .phone-dock,#app.composing .jump-to-bottom{display:none!important}
-  #app.composing .session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 110px)}
+  #sessionView.composing .phone-dock,#sessionView.composing .jump-to-bottom{display:none!important}
+  #sessionView.composing .session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 110px)}
   #app .workspace .composer.production-show{position:fixed;z-index:14;left:calc(12px + env(safe-area-inset-left,0px));right:calc(12px + env(safe-area-inset-right,0px));top:auto;bottom:max(calc(8px + env(safe-area-inset-bottom,0px)),calc(var(--phone-kb,0px) + 8px));width:auto;max-width:none;min-height:0;transform:none;display:grid;grid-template-columns:48px minmax(0,1fr);grid-template-areas:"note note" "close field";align-items:end;column-gap:8px;row-gap:6px;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
   #app .composer.production-show>.composer-head,#app .composer.production-show>.compose-foot{display:contents}
   #app .composer.production-show>.composer-head>span,#app .composer.production-show #composerTitle,#app .composer.production-show #composeTarget,#app .composer.production-show .risk{display:none}
@@ -1635,7 +1638,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .header-search-cluster>.navigator-options,#app .reading-cluster>.reading-options,#app .header-search-cluster>.search-suggest,.phone-pane-menu:not([hidden]),#app .info-popover{left:calc(8px + env(safe-area-inset-left,0px));right:calc(8px + env(safe-area-inset-right,0px))}
   #taskPopover.task-popover{left:calc(8px + env(safe-area-inset-left,0px))!important;right:calc(8px + env(safe-area-inset-right,0px))}
   /* The full-screen sheets pad themselves, so their heads clear the status bar and the island. */
-  #app>.preview,.review-sheet{padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)}
+  #sessionView>.preview,.review-sheet{padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)}
 }
 
 /* #s37 (design/phone-landscape.md §3.2) — a WIDE phone held sideways (`WIDE_PHONE_QUERY`: the Plus
@@ -1753,7 +1756,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app:not(.phone-column-off):not(.preview-off) .workspace>.topbar{padding-right:calc(6px + env(safe-area-inset-right,0px))}
 }
 @media(pointer:coarse) and (max-height:500px){
-  #app.preview-full:not(.preview-off)>.preview{left:0;padding-left:env(safe-area-inset-left,0px);box-shadow:none}
+  #sessionView.preview-full:not(.preview-off)>.preview{left:0;padding-left:env(safe-area-inset-left,0px);box-shadow:none}
   #app.preview-full:not(.preview-off) .drawer-handle{display:none}
   /* #s242: the dock's own sheets (Aa, the filter, the suggestions) live inside the dock, whose z 14
      caps whatever z they carry, so held sideways, risen over the top bar (#s41), they met the handle

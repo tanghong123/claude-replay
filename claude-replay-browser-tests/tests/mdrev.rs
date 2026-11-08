@@ -2555,7 +2555,7 @@ fn probe_pane_print_pdf() {
         },
     )
     .unwrap();
-    println!("BG: {}", eval(&tab, "(function(){ var out = []; [document.documentElement, document.body, document.getElementById('app'), document.querySelector('#app>.workspace'), document.getElementById('preview'), document.querySelector('#preview .preview-body'), document.querySelector('#preview .mdrev-host')].forEach(function (e) { if (!e) return; var c = getComputedStyle(e); out.push((e.id || e.className || e.tagName).toString().slice(0, 30) + ' bg=' + c.backgroundColor + ' vis=' + c.visibility + ' pos=' + c.position + ' h=' + Math.round(e.getBoundingClientRect().height)); }); return out.join(' | '); })()"));
+    println!("BG: {}", eval(&tab, "(function(){ var out = []; [document.documentElement, document.body, document.getElementById('app'), document.querySelector('#sessionView>.workspace'), document.getElementById('preview'), document.querySelector('#preview .preview-body'), document.querySelector('#preview .mdrev-host')].forEach(function (e) { if (!e) return; var c = getComputedStyle(e); out.push((e.id || e.className || e.tagName).toString().slice(0, 30) + ' bg=' + c.backgroundColor + ' vis=' + c.visibility + ' pos=' + c.position + ' h=' + Math.round(e.getBoundingClientRect().height)); }); return out.join(' | '); })()"));
     tab.call_method(
         headless_chrome::protocol::cdp::Emulation::SetEmulatedMedia {
             media: Some(String::new()),

@@ -1213,7 +1213,7 @@ fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
     eval(tab, "(()=>{Object.defineProperty(visualViewport,'height',{configurable:true,get:()=>innerHeight-Math.min(300,innerHeight/3)});visualViewport.dispatchEvent(new Event('resize'));return true;})()");
     wait(
         tab,
-        "document.getElementById('app').classList.contains('keyboard-up')",
+        "document.getElementById('sessionView').classList.contains('keyboard-up')",
     );
     // Model Safari's page scroll AND viewport offsets, including the observed 337 px.
     // All assertions use the app box, as do the shell's phone-top/phone-bottom rules.
@@ -1293,7 +1293,7 @@ fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
         wait(tab, "document.getElementById('composer').dataset.sharedInputOnly==='false' && document.getElementById('sendBtn').checkVisibility()");
     }
     eval(tab, "(()=>{Object.defineProperty(visualViewport,'scale',{configurable:true,get:()=>2});Object.defineProperty(visualViewport,'pageTop',{configurable:true,get:()=>120});visualViewport.dispatchEvent(new Event('scroll'));return true;})()");
-    wait(tab, "document.getElementById('app').style.transform==='' && !document.getElementById('app').classList.contains('keyboard-up')");
+    wait(tab, "document.getElementById('app').style.transform==='' && !document.getElementById('sessionView').classList.contains('keyboard-up')");
     eval(tab, "(()=>{delete visualViewport.height;delete visualViewport.scale;delete visualViewport.pageTop;delete visualViewport.offsetTop;document.activeElement.blur();visualViewport.dispatchEvent(new Event('resize'));return true;})()");
 }
 /// Reload uses the real browser journal and gateway receipts, including an accepted

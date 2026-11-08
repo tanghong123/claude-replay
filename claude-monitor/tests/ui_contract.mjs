@@ -986,7 +986,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // #173: wrap is still a class on the app root, but its DOMAIN is now derived rather than
   // enumerated — every `pre` in the transcript, plus whatever carries the code marker. The old
   // pin named `.markdown pre`, one entry of the list this change deleted.
-  assert.match(productionCss, /#app\.wrap-code \.transcript pre,#app\.wrap-code \[data-code\]/, "wrap reaches the transcript's pre elements and the code marker");
+  assert.match(productionCss, /#sessionView\.wrap-code \.transcript pre,#sessionView\.wrap-code \[data-code\]/, "wrap reaches the transcript's pre elements and the code marker");
   // The contract's explicit DROP: `.transcript code` swept inline backtick code into a code
   // control, forcing pre-wrap on prose. Inline code has no line identity and is not a wrap surface.
   assert.doesNotMatch(productionCss, /wrap-code[^{]*\.transcript code/, "inline code is not a wrap surface");

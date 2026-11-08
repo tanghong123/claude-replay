@@ -3291,7 +3291,7 @@ fn scenario_wrap_reaches_every_rendering(
         // by keyboard only (`w`, shared/keymap.js:21), which is the route this drives; the bars on
         // the blocks set per-block overrides and would answer only for their own block.
         Surface::AppShell => {
-            if eval(tab, "document.getElementById('app').classList.contains('wrap-code')")
+            if eval(tab, "document.getElementById('sessionView').classList.contains('wrap-code')")
                 .as_bool()
                 != Some(true)
             {
@@ -3299,7 +3299,7 @@ fn scenario_wrap_reaches_every_rendering(
                 key(tab, "w", false);
                 settle();
             }
-            eval(tab, "document.getElementById('app').classList.contains('wrap-code') ? 'wrapping' : 'still off'")
+            eval(tab, "document.getElementById('sessionView').classList.contains('wrap-code') ? 'wrapping' : 'still off'")
         }
     };
     assert_eq!(
@@ -7586,7 +7586,7 @@ fn scenario_wide_is_one_click_from_the_header(
 fn wide_is_on(tab: &headless_chrome::Tab, surface: Surface) -> bool {
     let js = match surface {
         Surface::Classic => "(function(){ var m = document.getElementById('main'); return { on: !!m && m.style.maxWidth === 'none' }; })()",
-        Surface::AppShell => "(function(){ var a = document.getElementById('app'); return { on: !!a && a.classList.contains('wide') }; })()",
+        Surface::AppShell => "(function(){ var a = document.getElementById('sessionView'); return { on: !!a && a.classList.contains('wide') }; })()",
     };
     probe(tab, js)["on"].as_bool().unwrap_or(false)
 }

@@ -24,6 +24,8 @@ const rootElement = () => root?.host || doc()?.documentElement;
 export const viewRoot = Object.freeze({
   /** The root itself: the page, or the shadow root the view draws in. */
   root: () => at(),
+  /** The view's own element, which carries its state (`#sessionView`, stage 2). */
+  element: () => at()?.getElementById("sessionView") ?? null,
   /** One of the view's elements by id. */
   byId: id => at().getElementById(id),
   /** The first of the view's elements a selector matches. */
