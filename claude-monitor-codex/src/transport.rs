@@ -128,7 +128,11 @@ pub(super) fn tcp_server_owner(stream: &TcpStream) -> Option<u32> {
 fn server_owner(
     stream: &TcpStream,
     answers: bool,
-    lookup: impl Fn(std::net::SocketAddr, std::net::SocketAddr) -> Result<Option<u32>, &'static str>,
+    lookup: impl Fn(
+        std::net::SocketAddr,
+        std::net::SocketAddr,
+        Duration,
+    ) -> Result<Option<u32>, &'static str>,
 ) -> Option<u32> {
     if !answers {
         return None;
@@ -138,7 +142,7 @@ fn server_owner(
     };
     let started = std::time::Instant::now();
     let (owner, polls) = poll_owner(
-        || lookup(server, client),
+        |bound| lookup(server, client, bound),
         started + OWNER_WAIT,
         std::thread::sleep,
     );
@@ -168,6 +172,12 @@ fn trace_owner() -> bool {
 /// A real server holds its accepted connection within milliseconds; the bound is for a loaded
 /// machine (#s227 saw a handshake take over 2 s), and it is spent in full only on a refusal.
 const OWNER_WAIT: Duration = Duration::from_secs(5);
+
+/// The least time one lookup is given, even when the wait has less left (#s410). A lookup gets
+/// the rest of the wait: on a loaded Mac one `lsof` took up to 1.9 s to answer, and one killed at
+/// a fixed 2 s answered nothing, so three such kills spent the whole wait and refused this user's
+/// own server. Given the rest of the wait, a slow `lsof` finishes and is the answer.
+const LOOKUP_FLOOR: Duration = Duration::from_secs(2);
 
 /// What the lookups of one wait saw: how many ran, how many read the table and found no process
 /// holding the end, why each of the others read nothing, and how long the lookups themselves took
@@ -226,8 +236,10 @@ impl OwnerPolls {
 
 /// Read the owner until a process holds the end or the deadline passes, and return the answer
 /// with what the lookups saw. A lookup that could not read the table counts as no owner yet.
+/// Each lookup is told how long it may take: the rest of the wait, never less than
+/// `LOOKUP_FLOOR`.
 fn poll_owner(
-    mut lookup: impl FnMut() -> Result<Option<u32>, &'static str>,
+    mut lookup: impl FnMut(Duration) -> Result<Option<u32>, &'static str>,
     deadline: std::time::Instant,
     mut sleep: impl FnMut(Duration),
 ) -> (Option<u32>, OwnerPolls) {
@@ -236,7 +248,7 @@ fn poll_owner(
     loop {
         polls.lookups += 1;
         let asked = std::time::Instant::now();
-        let answer = lookup();
+        let answer = lookup(deadline.saturating_duration_since(asked).max(LOOKUP_FLOOR));
         let took = asked.elapsed();
         polls.looking += took;
         polls.slowest = polls.slowest.max(took);
@@ -319,6 +331,7 @@ mod tcp_owner {
     pub(super) fn lookup(
         server: SocketAddr,
         client: SocketAddr,
+        _bound: std::time::Duration,
     ) -> Result<Option<u32>, &'static str> {
         let mut read = false;
         for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
@@ -343,6 +356,7 @@ mod tcp_owner {
     pub(super) fn lookup(
         server: SocketAddr,
         client: SocketAddr,
+        bound: std::time::Duration,
     ) -> Result<Option<u32>, &'static str> {
         let host = match client {
             SocketAddr::V4(a) => a.ip().to_string(),
@@ -356,7 +370,7 @@ mod tcp_owner {
             .stderr(std::process::Stdio::null())
             .spawn()
             .map_err(|_| "lsof did not start")?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + bound;
         loop {
             match child.try_wait() {
                 Ok(Some(_)) => break,
@@ -367,7 +381,7 @@ mod tcp_owner {
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(if waited.is_ok() {
-                        "lsof ran past its 2 s bound"
+                        "lsof ran past its bound"
                     } else {
                         "lsof could not be waited on"
                     });
@@ -385,6 +399,7 @@ mod tcp_owner {
     pub(super) fn lookup(
         _server: SocketAddr,
         _client: SocketAddr,
+        _bound: std::time::Duration,
     ) -> Result<Option<u32>, &'static str> {
         Ok(None)
     }
@@ -533,7 +548,7 @@ mod owner_tests {
         let mut sleeps = 0;
         assert_eq!(
             poll_owner(
-                || Ok(answers.next().flatten()),
+                |_| Ok(answers.next().flatten()),
                 now + OWNER_WAIT,
                 |_| sleeps += 1
             )
@@ -545,7 +560,7 @@ mod owner_tests {
         let mut reads = 0;
         assert_eq!(
             poll_owner(
-                || {
+                |_| {
                     reads += 1;
                     Ok(None)
                 },
@@ -558,15 +573,44 @@ mod owner_tests {
         assert_eq!(reads, 1, "past the deadline, one read and no more");
     }
 
+    /// #s410: each lookup is given the rest of the wait, never less than the floor, so a slow
+    /// `lsof` on a loaded machine finishes rather than being killed at a fixed bound.
+    #[test]
+    fn a_lookup_is_given_the_rest_of_the_wait() {
+        let now = std::time::Instant::now();
+        let mut bounds = Vec::new();
+        let (owner, _) = poll_owner(
+            |bound| {
+                bounds.push(bound);
+                Ok(None)
+            },
+            now + Duration::from_secs(4),
+            |_| (),
+        );
+        assert_eq!(owner, None);
+        // The first lookup is given (nearly) the whole wait, more than the floor.
+        assert!(bounds[0] > LOOKUP_FLOOR, "{bounds:?}");
+        assert!(bounds[0] <= Duration::from_secs(4), "{bounds:?}");
+        // And past the deadline, the floor.
+        let (_, polls) = poll_owner(
+            |bound| {
+                assert_eq!(bound, LOOKUP_FLOOR, "a late lookup still gets the floor");
+                Ok(None)
+            },
+            now,
+            |_| panic!("no wait past the deadline"),
+        );
+        assert_eq!(polls.lookups, 1);
+    }
+
     /// #s410: a wait says what its lookups saw, so a refusal on a loaded machine tells an end
     /// nobody accepted from lookups that never read the table. The line names no address.
     #[test]
     fn a_wait_counts_what_its_lookups_saw() {
         let now = std::time::Instant::now();
-        let mut answers =
-            vec![Ok(None), Err("lsof ran past its 2 s bound"), Ok(Some(0))].into_iter();
+        let mut answers = vec![Ok(None), Err("lsof ran past its bound"), Ok(Some(0))].into_iter();
         let (owner, polls) = poll_owner(
-            || {
+            |_| {
                 std::thread::sleep(Duration::from_millis(2));
                 answers.next().unwrap()
             },
@@ -576,7 +620,7 @@ mod owner_tests {
         assert_eq!(owner, Some(0));
         assert_eq!(
             (polls.lookups, polls.no_holder, polls.unread.clone()),
-            (3, 1, vec!["lsof ran past its 2 s bound"])
+            (3, 1, vec!["lsof ran past its bound"])
         );
         assert!(polls.slowest >= Duration::from_millis(2), "{polls:?}");
         assert!(polls.looking >= polls.slowest * 3 / 2, "{polls:?}");
@@ -584,9 +628,9 @@ mod owner_tests {
             lookups: 5,
             no_holder: 2,
             unread: vec![
-                "lsof ran past its 2 s bound",
+                "lsof ran past its bound",
                 "lsof did not start",
-                "lsof ran past its 2 s bound",
+                "lsof ran past its bound",
             ],
             looking: Duration::from_millis(4180),
             slowest: Duration::from_millis(2003),
@@ -594,7 +638,7 @@ mod owner_tests {
         assert_eq!(
             polls.summary(Duration::from_millis(5004)),
             format!(
-                "agent-monitor: no owner for the Codex server's end after 5 lookups over 5004 ms (the lookups took 4180 ms, the slowest 2003 ms): 2 found no process holding it, and of the rest, 2 lsof ran past its 2 s bound, 1 lsof did not start; {CREDENTIAL_WITHHELD}"
+                "agent-monitor: no owner for the Codex server's end after 5 lookups over 5004 ms (the lookups took 4180 ms, the slowest 2003 ms): 2 found no process holding it, and of the rest, 2 lsof ran past its bound, 1 lsof did not start; {CREDENTIAL_WITHHELD}"
             )
         );
         let polls = OwnerPolls {
@@ -678,7 +722,7 @@ mod owner_tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let started = std::time::Instant::now();
-        let owner = server_owner(&client, false, |_, _| {
+        let owner = server_owner(&client, false, |_, _, _| {
             panic!("a platform with no lookup asks none")
         });
         assert_eq!(owner, None);
@@ -697,7 +741,12 @@ mod owner_tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (server, local) = (client.peer_addr().unwrap(), client.local_addr().unwrap());
-        assert_eq!(tcp_owner::lookup(server, local), Ok(None));
+        // A test asks for the answer, not the timing: a generous bound, so a loaded machine's slow
+        // `lsof` still answers (#s410).
+        assert_eq!(
+            tcp_owner::lookup(server, local, Duration::from_secs(30)),
+            Ok(None)
+        );
         drop(listener);
     }
 
