@@ -38,6 +38,57 @@ pub fn serve_bases(serve: &Value, dns_name: &str, port: u16) -> Vec<String> {
     out
 }
 
+/// The port a serve target names, whatever its scheme, host or path (#s422): tailscale keeps a
+/// web target's path (`http://127.0.0.1:2727/x`) and takes hosts other than the loopback
+/// (`0.0.0.0:2727` reaches a loopback listener too), so the relay check counts any target on the
+/// monitor's port. Wider than [`targets_monitor`] on purpose: counting a target too many only
+/// refuses more.
+fn target_port(target: &str) -> Option<u16> {
+    let target = target.trim();
+    // Only a leading scheme tailscale knows is one; anything else it dials as `http://` and the
+    // value, so a `://` later in it (`localhost:2727/x://y`) is part of the path, not a scheme.
+    let (scheme, rest) = match target.split_once("://") {
+        Some((s, r))
+            if matches!(
+                s.to_ascii_lowercase().as_str(),
+                "http" | "https" | "https+insecure" | "tcp"
+            ) =>
+        {
+            (s.to_ascii_lowercase(), r)
+        }
+        _ => ("http".to_string(), target),
+    };
+    // The authority ends at the path, the query or the fragment, whichever comes first: tailscale
+    // keeps a target's query (`http://localhost:2727?x`), and `serve set-raw` takes any URL.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if let Ok(port) = authority.parse::<u16>() {
+        return Some(port);
+    }
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let port_text = match host.strip_prefix('[') {
+        // `[::1]:2727`, or `[::1]` with no port.
+        Some(bracketed) => bracketed
+            .split_once(']')
+            .and_then(|(_, after)| after.strip_prefix(':')),
+        None => host.rsplit_once(':').map(|(_, p)| p),
+    };
+    match port_text {
+        // A port that is not a number (a service name, `127.0.0.1:mgcp-callagent`, which is
+        // 2727) is not known: `None`, which the relay check counts as the monitor's.
+        Some(p) => p.parse().ok(),
+        None => default_port(&scheme),
+    }
+}
+
+/// The port a scheme means when a target names none.
+fn default_port(scheme: &str) -> Option<u16> {
+    match scheme {
+        "http" => Some(80),
+        "https" | "https+insecure" => Some(443),
+        _ => None,
+    }
+}
+
 /// Whether a serve target (a web handler's `Proxy`, a TCP entry's `TCPForward`) is this monitor
 /// at 127.0.0.1:`port`.
 fn targets_monitor(target: &str, port: u16) -> bool {
@@ -229,19 +280,39 @@ pub fn listed_hosts(value: &str) -> Vec<String> {
 /// Only a check in the first 2 s after this call (`FIRST_WAIT`) waits for the first read, and no
 /// longer; a read that failed or timed out keeps the names read before it (#s170).
 pub fn trusted_hosts(port: u16) -> claude_replay_html::HostCheck {
+    tailnet_checks(port, false).0
+}
+
+/// [`trusted_hosts`], and from the same background read, whether a relay reaches `port` now
+/// (#s422): any name `tailscale serve` relays to it, or one `AGENT_MONITOR_TRUSTED_HOSTS` lists.
+/// The gate asks it before admitting a loopback peer it cannot verify on an unpaired monitor. Until
+/// the first read has finished (bounded by the same first wait) it answers that one does: a
+/// monitor just started refuses an unverified peer for those moments rather than admit one a
+/// relay may have brought.
+pub fn tailnet_checks(
+    port: u16,
+    unpaired: bool,
+) -> (
+    claude_replay_html::HostCheck,
+    claude_replay_html::RelayCheck,
+) {
     let listed = std::env::var("AGENT_MONITOR_TRUSTED_HOSTS")
         .map(|v| listed_hosts(&v))
         .unwrap_or_default();
     trusted_hosts_from(
         listed,
-        std::sync::Arc::new(move || tailnet_hosts(port)),
+        std::sync::Arc::new(move || tailnet_read(port)),
         REFRESH_AFTER,
         FIRST_WAIT,
+        unpaired.then_some(RETRY_UNKNOWN),
     )
 }
 
 /// How old the tailnet's names may be before a miss reads them again.
 const REFRESH_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+/// How soon an unpaired monitor reads the tailnet again while no read has yet said whether a relay
+/// reaches its port (#s422): it refuses every peer it cannot verify until one has.
+const RETRY_UNKNOWN: std::time::Duration = std::time::Duration::from_secs(5);
 /// How long a check made just after startup waits for the first read of the tailnet's names.
 const FIRST_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// How long one `tailscale` status read may take before it is abandoned (#s151). Measured on
@@ -250,7 +321,17 @@ const TAILSCALE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3)
 
 /// A lookup of the tailnet's names: `None` when a read failed or timed out, which keeps the names
 /// read before (#s170: a `tailscale` restarting must not cost the phone its writes for 30 s).
-type Lookup = std::sync::Arc<dyn Fn() -> Option<Vec<String>> + Send + Sync>;
+type Lookup = std::sync::Arc<dyn Fn() -> Option<TailnetRead> + Send + Sync>;
+
+/// One read of the tailnet: the names the gate trusts as the monitor's own (#331, private relays
+/// that serve the monitor alone), and whether any relay at all reaches the port (#s422: Funnel or
+/// not, shared or not, at any path), which is what the relay check answers.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct TailnetRead {
+    /// `None`: this read says nothing about the names, and the ones before it stay (#s170).
+    hosts: Option<Vec<String>>,
+    relayed: bool,
+}
 
 struct Tailnet {
     state: std::sync::Mutex<TailnetState>,
@@ -260,6 +341,9 @@ struct Tailnet {
 #[derive(Default)]
 struct TailnetState {
     hosts: Vec<String>,
+    /// Whether a relay reaches the port, from the last read that succeeded; `None` until one has
+    /// (#s422), which the relay check takes as a relay, as it does a read that failed before it.
+    relayed: Option<bool>,
     /// When the last read finished; `None` before the first.
     read_at: Option<std::time::Instant>,
     reading: bool,
@@ -275,12 +359,15 @@ impl Tailnet {
         let (tailnet, lookup) = (self.clone(), lookup.clone());
         std::thread::spawn(move || {
             // A read that panicked is one that gave no names; `reading` must still clear.
-            let hosts = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lookup()))
+            let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lookup()))
                 .ok()
                 .flatten();
             let mut state = tailnet.state.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(hosts) = hosts {
-                state.hosts = hosts;
+            if let Some(read) = read {
+                if let Some(hosts) = read.hosts {
+                    state.hosts = hosts;
+                }
+                state.relayed = Some(read.relayed);
             }
             state.read_at = Some(std::time::Instant::now());
             state.reading = false;
@@ -289,13 +376,17 @@ impl Tailnet {
     }
 }
 
-/// [`trusted_hosts`] over any lookup and timings, which is what the cases drive.
+/// [`tailnet_checks`] over any lookup and timings, which is what the cases drive.
 fn trusted_hosts_from(
     listed: Vec<String>,
     lookup: Lookup,
     refresh_after: std::time::Duration,
     first_wait: std::time::Duration,
-) -> claude_replay_html::HostCheck {
+    fresh: Option<std::time::Duration>,
+) -> (
+    claude_replay_html::HostCheck,
+    claude_replay_html::RelayCheck,
+) {
     let tailnet = std::sync::Arc::new(Tailnet {
         state: std::sync::Mutex::new(TailnetState::default()),
         read: std::sync::Condvar::new(),
@@ -305,7 +396,53 @@ fn trusted_hosts_from(
         let mut state = tailnet.state.lock().unwrap_or_else(|e| e.into_inner());
         tailnet.refresh(&mut state, &lookup);
     }
-    std::sync::Arc::new(move |host: &str| {
+    // #s422: an unpaired monitor's relay answer is kept fresh on a clock of its own, so a relay
+    // set up while nobody asked is seen within one interval and no reply ever waits on `tailscale`
+    // (#s151). Until a read has said whether a relay is there, it tries again every `retry`.
+    if let Some(retry) = fresh {
+        let (tailnet, lookup) = (tailnet.clone(), lookup.clone());
+        std::thread::spawn(move || loop {
+            let wait = {
+                let state = tailnet.state.lock().unwrap_or_else(|e| e.into_inner());
+                if state.relayed.is_none() {
+                    retry
+                } else {
+                    refresh_after
+                }
+            };
+            std::thread::sleep(wait.max(std::time::Duration::from_millis(10)));
+            let mut state = tailnet.state.lock().unwrap_or_else(|e| e.into_inner());
+            tailnet.refresh(&mut state, &lookup);
+        });
+    }
+    let relay: claude_replay_html::RelayCheck = {
+        let (tailnet, lookup, listed_any) = (tailnet.clone(), lookup.clone(), !listed.is_empty());
+        std::sync::Arc::new(move || {
+            if listed_any {
+                return true;
+            }
+            let mut state = tailnet.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state
+                .read_at
+                .is_some_and(|at| at.elapsed() >= refresh_after)
+            {
+                tailnet.refresh(&mut state, &lookup);
+            }
+            while state.read_at.is_none() {
+                let left = first_by.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                state = tailnet
+                    .read
+                    .wait_timeout(state, left)
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0;
+            }
+            state.relayed.unwrap_or(true)
+        })
+    };
+    let hosts: claude_replay_html::HostCheck = std::sync::Arc::new(move |host: &str| {
         if listed.iter().any(|h| h == host) {
             return true;
         }
@@ -331,27 +468,84 @@ fn trusted_hosts_from(
                 .0;
         }
         state.hosts.iter().any(|h| h == host)
-    })
+    });
+    (hosts, relay)
 }
 
 /// The hosts this machine's `tailscale serve` relays to 127.0.0.1:`port` — none when Tailscale is
 /// not here, is logged out, or serves nothing to this port; `None` when a read failed or timed
 /// out, so the names read before stay (#s170).
-fn tailnet_hosts(port: u16) -> Option<Vec<String>> {
-    let Some(bin) = tailscale() else {
-        return Some(Vec::new());
+fn tailnet_read(port: u16) -> Option<TailnetRead> {
+    tailnet_read_with(tailscale().as_deref(), port, TAILSCALE_TIMEOUT)
+}
+
+/// [`tailnet_read`] with the `tailscale` to run and its time limit, which is what the cases drive.
+fn tailnet_read_with(
+    bin: Option<&std::path::Path>,
+    port: u16,
+    limit: std::time::Duration,
+) -> Option<TailnetRead> {
+    let none = || TailnetRead {
+        hosts: Some(Vec::new()),
+        relayed: false,
     };
-    let status = tailscale_json_within(&bin, &["status", "--json"], TAILSCALE_TIMEOUT)?;
+    let Some(bin) = bin else {
+        return Some(none());
+    };
+    let status = match tailscale_json_read(bin, &["status", "--json"], limit) {
+        Ok(status) => status,
+        // A `tailscale` that answers at once with a failure has no daemon it can reach, so
+        // nothing relays (#s422): Tailscale installed and stopped is no relay. It says nothing
+        // about the names, which stay for when it is back (#s170). One that does not answer in
+        // time, or prints no JSON, says nothing at all.
+        Err(ReadFail::Exited) => {
+            return Some(TailnetRead {
+                hosts: None,
+                relayed: false,
+            })
+        }
+        Err(ReadFail::TimedOut | ReadFail::Unreadable) => return None,
+    };
     let dns = status
         .pointer("/Self/DNSName")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
     if dns.is_empty() {
-        return Some(Vec::new());
+        return Some(none());
     }
-    let serve = tailscale_json_within(&bin, &["serve", "status", "--json"], TAILSCALE_TIMEOUT)?;
-    Some(hosts_of(&trusted_bases(&serve, &dns, port)))
+    let serve = tailscale_json_read(bin, &["serve", "status", "--json"], limit).ok()?;
+    Some(TailnetRead {
+        hosts: Some(hosts_of(&trusted_bases(&serve, &dns, port))),
+        relayed: relays_to(&serve, port),
+    })
+}
+
+/// Whether `tailscale serve` relays anything to 127.0.0.1:`port` (#s422): any `Proxy` (a web
+/// handler, at any path) or `TCPForward` (a raw forward) anywhere in its setup that is the monitor,
+/// in the background setup, a foreground one or any section a newer `tailscale` adds, open to
+/// Funnel or not, beside another app or not. Wider than [`trusted_bases`] on purpose: the gate
+/// trusts only a private relay that serves the monitor alone, but any relay at all may bring a
+/// stranger's connection in from the loopback.
+fn relays_to(serve: &Value, port: u16) -> bool {
+    match serve {
+        Value::Object(map) => map.iter().any(|(key, value)| {
+            matches!(key.as_str(), "Proxy" | "TCPForward")
+                && value.as_str().is_some_and(|t| {
+                    // Read as a URL (a web target) and as a dial address (a TCP forward, whose port
+                    // follows its last colon whatever comes before it, an IPv6 zone with a `/`
+                    // included); either one naming the port, or none being readable, counts.
+                    target_port(t).is_none_or(|p| p == port)
+                        || t.trim()
+                            .rsplit_once(':')
+                            .and_then(|(_, p)| p.parse::<u16>().ok())
+                            == Some(port)
+                })
+                || relays_to(value, port)
+        }),
+        Value::Array(items) => items.iter().any(|v| relays_to(v, port)),
+        _ => false,
+    }
 }
 
 /// The serve this tool recommends: tailnet `port` → localhost `port`, over HTTPS when the tailnet
@@ -388,9 +582,15 @@ fn tailscale_places(
     let mut dirs = split(path);
     dirs.push(PathBuf::from("/opt/homebrew/bin"));
     dirs.push(PathBuf::from("/usr/local/bin"));
+    dirs.push(PathBuf::from("/opt/local/bin"));
+    dirs.push(PathBuf::from("/run/current-system/sw/bin"));
     dirs.extend(gobin.map(PathBuf::from));
     dirs.extend(split(gopath).into_iter().map(|d| d.join("bin")));
-    dirs.extend(home.map(|h| PathBuf::from(h).join("go/bin")));
+    dirs.extend(home.as_ref().map(|h| PathBuf::from(h).join("go/bin")));
+    dirs.extend(
+        home.as_ref()
+            .map(|h| PathBuf::from(h).join(".nix-profile/bin")),
+    );
     let mut places: Vec<PathBuf> = Vec::new();
     for bin in dirs
         .into_iter()
@@ -404,6 +604,9 @@ fn tailscale_places(
     places.push(PathBuf::from(
         "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
     ));
+    if let Some(h) = home {
+        places.push(PathBuf::from(h).join("Applications/Tailscale.app/Contents/MacOS/Tailscale"));
+    }
     places
 }
 
@@ -417,11 +620,31 @@ fn tailscale_json(bin: &std::path::Path, args: &[&str]) -> Option<Value> {
 
 /// [`tailscale_json`] bounded by `limit` (#s151): the JSON it printed, or `None` when the read
 /// failed, printed no JSON, or did not finish in time (the process is then killed and reaped).
+#[cfg(test)]
 fn tailscale_json_within(
     bin: &std::path::Path,
     args: &[&str],
     limit: std::time::Duration,
 ) -> Option<Value> {
+    tailscale_json_read(bin, args, limit).ok()
+}
+
+/// Why a `tailscale` read gave no JSON (#s422): it ran past its limit, it exited with a failure,
+/// or it could not be started or printed something else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReadFail {
+    TimedOut,
+    Exited,
+    Unreadable,
+}
+
+/// One `tailscale` read bounded by `limit` (#s151): the JSON it printed, or why there is none
+/// (#s422). A read past its limit has its process killed and reaped.
+fn tailscale_json_read(
+    bin: &std::path::Path,
+    args: &[&str],
+    limit: std::time::Duration,
+) -> Result<Value, ReadFail> {
     use std::io::Read;
     use std::process::Stdio;
     let Ok(mut child) = std::process::Command::new(bin)
@@ -431,12 +654,12 @@ fn tailscale_json_within(
         .stderr(Stdio::null())
         .spawn()
     else {
-        return None;
+        return Err(ReadFail::Unreadable);
     };
     let Some(mut stdout) = child.stdout.take() else {
         let _ = child.kill();
         let _ = child.wait();
-        return None;
+        return Err(ReadFail::Unreadable);
     };
     let reader = std::thread::spawn(move || {
         let mut out = Vec::new();
@@ -452,15 +675,19 @@ fn tailscale_json_within(
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return None;
+                return Err(ReadFail::TimedOut);
             }
         }
     };
-    let out = reader.join().ok().and_then(Result::ok)?;
+    let out = reader
+        .join()
+        .ok()
+        .and_then(Result::ok)
+        .ok_or(ReadFail::Unreadable)?;
     if !status.success() {
-        return None;
+        return Err(ReadFail::Exited);
     }
-    serde_json::from_slice(&out).ok()
+    serde_json::from_slice(&out).map_err(|_| ReadFail::Unreadable)
 }
 
 /// A QR code for `text`, drawn with half-block characters so it fits a terminal. With `paint`,
@@ -661,10 +888,10 @@ mod tests {
     /// as a hung `tailscale` would; `reads` counts the reads started.
     fn driven_lookup() -> (
         Lookup,
-        std::sync::mpsc::Sender<Option<Vec<String>>>,
+        std::sync::mpsc::Sender<Option<TailnetRead>>,
         std::sync::Arc<AtomicUsize>,
     ) {
-        let (send, answers) = std::sync::mpsc::channel::<Option<Vec<String>>>();
+        let (send, answers) = std::sync::mpsc::channel::<Option<TailnetRead>>();
         let answers = std::sync::Mutex::new(answers);
         let reads = std::sync::Arc::new(AtomicUsize::new(0));
         let counted = reads.clone();
@@ -673,6 +900,14 @@ mod tests {
             answers.lock().unwrap().recv().ok().flatten()
         });
         (lookup, send, reads)
+    }
+
+    /// A read that found `hosts`, relayed exactly when it found any.
+    fn names(hosts: &[&str]) -> Option<TailnetRead> {
+        Some(TailnetRead {
+            hosts: Some(hosts.iter().map(|h| h.to_string()).collect()),
+            relayed: !hosts.is_empty(),
+        })
     }
 
     fn eventually(what: &str, mut done: impl FnMut() -> bool) {
@@ -688,11 +923,12 @@ mod tests {
     #[test]
     fn a_hung_tailscale_holds_no_check_past_the_first_wait() {
         let (lookup, send, reads) = driven_lookup();
-        let check = trusted_hosts_from(
+        let (check, _) = trusted_hosts_from(
             vec!["listed.example".into()],
             lookup,
             Duration::from_secs(30),
             Duration::from_millis(300),
+            None,
         );
         assert!(check("listed.example"), "a listed host needs no read");
         let started = Instant::now();
@@ -714,8 +950,7 @@ mod tests {
             1,
             "one read, started with the gate"
         );
-        send.send(Some(vec!["box.tail0.ts.net:2727".into()]))
-            .unwrap();
+        send.send(names(&["box.tail0.ts.net:2727"])).unwrap();
         eventually("the names count once read", || {
             check("box.tail0.ts.net:2727")
         });
@@ -726,8 +961,14 @@ mod tests {
     #[test]
     fn a_stale_miss_reads_again_in_the_background_and_a_timed_out_read_keeps_the_names() {
         let (lookup, send, reads) = driven_lookup();
-        send.send(Some(vec!["a.ts.net".into()])).unwrap();
-        let check = trusted_hosts_from(Vec::new(), lookup, Duration::ZERO, Duration::from_secs(2));
+        send.send(names(&["a.ts.net"])).unwrap();
+        let (check, _) = trusted_hosts_from(
+            Vec::new(),
+            lookup,
+            Duration::ZERO,
+            Duration::from_secs(2),
+            None,
+        );
         assert!(check("a.ts.net"), "the first read's names");
         assert_eq!(reads.load(Ordering::SeqCst), 1, "a hit reads nothing");
 
@@ -756,9 +997,219 @@ mod tests {
             reads.load(Ordering::SeqCst) == 3
         });
         assert!(check("a.ts.net"), "the timed-out read kept the names");
-        send.send(Some(vec!["a.ts.net".into(), "b.ts.net".into()]))
-            .unwrap();
+        send.send(names(&["a.ts.net", "b.ts.net"])).unwrap();
         eventually("a name served later counts once read", || check("b.ts.net"));
+    }
+
+    /// #s422: any relay to the port counts, whatever the gate would trust: a TCP forward open to
+    /// Funnel, a web handler on a sub-path, one beside another app, a foreground setup's. Another
+    /// port's relay, or nothing, is no relay.
+    #[test]
+    fn every_relay_to_the_port_counts_whatever_the_gate_trusts() {
+        let tcp_funnel = serde_json::json!({
+            "TCP": {"2727": {"TCPForward": "127.0.0.1:2727"}},
+            "AllowFunnel": {"box.tail0.ts.net:2727": true}
+        });
+        assert!(relays_to(&tcp_funnel, 2727));
+        assert!(trusted_bases(&tcp_funnel, "box.tail0.ts.net.", 2727).is_empty());
+        let sub_path = serde_json::json!({
+            "Web": {"box.tail0.ts.net:443": {"Handlers": {
+                "/": {"Proxy": "http://127.0.0.1:3000"},
+                "/monitor": {"Proxy": "http://127.0.0.1:2727"}
+            }}}
+        });
+        assert!(relays_to(&sub_path, 2727));
+        let foreground = serde_json::json!({"Foreground": {"s1": {
+            "TCP": {"8443": {"TCPForward": "localhost:2727", "TerminateTLS": "box.tail0.ts.net"}}
+        }}});
+        assert!(relays_to(&foreground, 2727));
+        let other = serde_json::json!({
+            "Web": {"box.tail0.ts.net:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:3000"}}}},
+            "TCP": {"22": {"TCPForward": "127.0.0.1:22"}}
+        });
+        assert!(!relays_to(&other, 2727));
+        assert!(!relays_to(&serde_json::json!({}), 2727));
+        // A target with a path, or on another host of this machine, is still the port's relay.
+        for proxy in [
+            "http://127.0.0.1:2727/x",
+            "https+insecure://localhost:2727/",
+            "http://0.0.0.0:2727",
+            "http://[::1]:2727/m",
+            "2727",
+            "http://localhost:2727?x",
+            "http://127.0.0.1:2727#x",
+            "http://user@127.0.0.1:2727/",
+            "tcp://127.0.0.1:2727",
+        ] {
+            let web = serde_json::json!({"Web": {"box.tail0.ts.net:443": {"Handlers": {
+                "/m": {"Proxy": proxy}
+            }}}});
+            assert!(relays_to(&web, 2727), "{proxy}");
+        }
+        assert!(!relays_to(
+            &serde_json::json!({"TCP": {"443": {"TCPForward": "127.0.0.1:27270"}}}),
+            2727
+        ));
+        // A `://` past the start is part of the path, as tailscale reads it; a scheme is read in
+        // any case; a port that is not a number is not known, and counts.
+        assert_eq!(target_port("localhost:2727/x://y"), Some(2727));
+        assert_eq!(target_port("127.0.0.1:2727?r=http://a"), Some(2727));
+        assert_eq!(target_port("HTTP://127.0.0.1:2727"), Some(2727));
+        assert_eq!(target_port(" 127.0.0.1:2727 "), Some(2727));
+        assert_eq!(target_port("127.0.0.1:mgcp-callagent"), None);
+        // A TCP forward is dialled as written: its port follows the last colon, even where a
+        // zone holds a `/` that a URL reading stops at.
+        assert!(relays_to(
+            &serde_json::json!({"TCP": {"9000": {"TCPForward": "[::ffff:127.0.0.1%a/b]:2727"}}}),
+            2727
+        ));
+        assert!(relays_to(
+            &serde_json::json!({"TCP": {"9000": {"TCPForward": "127.0.0.1:mgcp-callagent"}}}),
+            2727
+        ));
+        // A target with no port means its scheme's, and with no scheme tailscale's `http://`.
+        assert_eq!(target_port("localhost"), Some(80));
+        assert_eq!(target_port("http://localhost/x"), Some(80));
+        assert_eq!(target_port("https+insecure://[::1]"), Some(443));
+        assert_eq!(target_port("http://[::1]:8080?y"), Some(8080));
+        // A section a newer `tailscale` adds is scanned too.
+        let services = serde_json::json!({"Services": {"svc:mon": {
+            "TCP": {"9000": {"TCPForward": "127.0.0.1:2727"}}
+        }}});
+        assert!(relays_to(&services, 2727));
+    }
+
+    /// #s422: an unpaired monitor's tailnet answer is read again on its own clock, with nothing
+    /// asking: a relay set up while nobody connects is seen within one interval.
+    #[test]
+    fn an_unpaired_monitor_reads_the_tailnet_again_with_nothing_asking() {
+        let (lookup, send, reads) = driven_lookup();
+        let (_, relayed) = trusted_hosts_from(
+            Vec::new(),
+            lookup,
+            Duration::from_millis(50),
+            Duration::from_millis(100),
+            Some(Duration::from_millis(20)),
+        );
+        send.send(names(&[])).unwrap();
+        eventually("the first read is in", || reads.load(Ordering::SeqCst) >= 2);
+        send.send(names(&["box.tail0.ts.net:2727"])).unwrap();
+        eventually("the clock read it again, nobody asking", || {
+            reads.load(Ordering::SeqCst) >= 3
+        });
+        assert!(relayed(), "the relay set up meanwhile is seen");
+    }
+
+    /// #s422: what one read of the tailnet makes of each answer `tailscale` gives: a failure
+    /// at once is no relay and keeps the names; a read past its limit says nothing; a raw TCP
+    /// forward open to Funnel is a relay the gate does not trust; no `tailscale` is no relay.
+    #[cfg(unix)]
+    #[test]
+    fn a_tailnet_read_tells_a_stopped_tailscale_from_one_that_hangs() {
+        let dir = std::env::temp_dir().join(format!("cr-tailnet-read-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("tailscale");
+        let quick = Duration::from_secs(5);
+        crate::write_script(&bin, "#!/bin/sh\nexit 1\n");
+        assert_eq!(
+            tailnet_read_with(Some(&bin), 2727, quick),
+            Some(TailnetRead {
+                hosts: None,
+                relayed: false
+            }),
+            "stopped: no relay, and the names before stay"
+        );
+        crate::write_script(&bin, "#!/bin/sh\nexec sleep 30\n");
+        assert_eq!(
+            tailnet_read_with(Some(&bin), 2727, Duration::from_millis(200)),
+            None,
+            "a read past its limit says nothing"
+        );
+        crate::write_script(
+            &bin,
+            concat!(
+                "#!/bin/sh\n",
+                "if [ \"$1\" = status ]; then echo '{\"Self\":{\"DNSName\":\"box.tail0.ts.net.\"}}'; exit 0; fi\n",
+                "echo '{\"TCP\":{\"2727\":{\"TCPForward\":\"127.0.0.1:2727\"}},",
+                "\"AllowFunnel\":{\"box.tail0.ts.net:2727\":true}}'\n",
+            ),
+        );
+        assert_eq!(
+            tailnet_read_with(Some(&bin), 2727, quick),
+            Some(TailnetRead {
+                hosts: Some(Vec::new()),
+                relayed: true
+            }),
+            "a Funnel TCP relay is a relay, and no trusted name"
+        );
+        assert_eq!(
+            tailnet_read_with(None, 2727, quick),
+            Some(TailnetRead {
+                hosts: Some(Vec::new()),
+                relayed: false
+            })
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #s422: the relay check reads the trusted hosts' own background state. Before the first read
+    /// it says a relay may be there (after the first wait as well, while the read is still out);
+    /// names found mean a relay, none mean none, a listed host means one with no read at all, and a
+    /// relay set up later is seen once its names are read again.
+    #[test]
+    fn the_relay_check_answers_from_the_trusted_hosts_reads() {
+        let (lookup, send, reads) = driven_lookup();
+        let (hosts, relayed) = trusted_hosts_from(
+            Vec::new(),
+            lookup,
+            Duration::ZERO,
+            Duration::from_millis(200),
+            None,
+        );
+        assert!(relayed(), "no read finished yet: a relay may be there");
+        send.send(None).unwrap();
+        eventually(
+            "the failed first read is in, and the check has started another",
+            || {
+                relayed();
+                reads.load(Ordering::SeqCst) >= 2
+            },
+        );
+        assert!(relayed(), "a failed first read leaves a relay assumed");
+        send.send(names(&[])).unwrap();
+        eventually("no names, no relay", || !relayed());
+        send.send(names(&["box.tail0.ts.net:2727"])).unwrap();
+        eventually("a relay set up later is seen", || relayed());
+        assert!(
+            hosts("box.tail0.ts.net:2727"),
+            "the same names the host check answers from"
+        );
+        // A relay the gate does not trust (open to Funnel, or beside another app) is still a
+        // relay: no names, relayed.
+        send.send(Some(TailnetRead {
+            hosts: Some(Vec::new()),
+            relayed: true,
+        }))
+        .unwrap();
+        eventually("an untrusted relay's read is in", || {
+            !hosts("box.tail0.ts.net:2727")
+        });
+        assert!(relayed(), "an untrusted relay is a relay");
+        assert!(reads.load(Ordering::SeqCst) >= 2);
+
+        let (lookup, _send, reads) = driven_lookup();
+        let (_, listed) = trusted_hosts_from(
+            vec!["phone.test:2805".into()],
+            lookup,
+            Duration::from_secs(30),
+            Duration::from_secs(2),
+            None,
+        );
+        assert!(listed(), "a listed host is a relay with no read");
+        eventually("one read, started with the gate", || {
+            reads.load(Ordering::SeqCst) == 1
+        });
     }
 
     /// #s170: tailscale is found where a service launchd started can't see it on PATH — Homebrew,
@@ -778,16 +1229,20 @@ mod tests {
             "/bin",
             "/opt/homebrew/bin",
             "/usr/local/bin",
+            "/opt/local/bin",
+            "/run/current-system/sw/bin",
             "/g/bin",
             "/p1/bin",
             "/p2/bin",
             "/Users/someone/go/bin",
+            "/Users/someone/.nix-profile/bin",
         ]
         .iter()
         .map(|d| PathBuf::from(d).join("tailscale"))
-        .chain([PathBuf::from(
-            "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
-        )])
+        .chain([
+            PathBuf::from("/Applications/Tailscale.app/Contents/MacOS/Tailscale"),
+            PathBuf::from("/Users/someone/Applications/Tailscale.app/Contents/MacOS/Tailscale"),
+        ])
         .collect();
         assert_eq!(places, expect);
         let launchd = tailscale_places(
@@ -820,6 +1275,10 @@ mod tests {
         let started = Instant::now();
         let read = tailscale_json_within(&bin, &["status", "--json"], Duration::from_millis(200));
         assert!(read.is_none(), "a read past its limit gives no names");
+        assert_eq!(
+            tailscale_json_read(&bin, &["status", "--json"], Duration::from_millis(200)),
+            Err(ReadFail::TimedOut)
+        );
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "{:?}",
@@ -840,6 +1299,11 @@ mod tests {
         assert_eq!(
             read, None,
             "a failed read gives no names, so the names before it stay (#s170)"
+        );
+        assert_eq!(
+            tailscale_json_read(&bin, &["status", "--json"], Duration::from_secs(5)),
+            Err(ReadFail::Exited),
+            "a tailscale that exits with a failure is told from one that timed out (#s422)"
         );
         crate::write_script(&bin, "#!/bin/sh\necho 'not json'\n");
         let read = tailscale_json_within(&bin, &["status", "--json"], Duration::from_secs(5));

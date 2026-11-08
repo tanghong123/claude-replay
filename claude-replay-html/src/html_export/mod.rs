@@ -56,8 +56,8 @@ pub use mdrev::{install as install_mdrev, version as mdrev_version, Kit as Mdrev
 pub use serve::{
     existing_server, get_request, handoff_url, mint_token, query_get, serve, service_routes,
     spawn_listener, spawn_listener_gated, spawn_streaming_listener_gated, start_server, AuthGate,
-    EventStream, HostCheck, HttpReply, HttpResponse, LiveServer, Request, RootLock, RouteHandler,
-    ServiceConfig, SessionService, StaleEpoch, StreamingRouteHandler,
+    EventStream, HostCheck, HttpReply, HttpResponse, LiveServer, RelayCheck, Request, RootLock,
+    RouteHandler, ServiceConfig, SessionService, StaleEpoch, StreamingRouteHandler,
 };
 
 const CSS: &str = include_str!("../html/export.css");

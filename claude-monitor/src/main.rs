@@ -422,6 +422,8 @@ fn main() -> Result<()> {
     #[cfg(feature = "codex-native")]
     let handler = claude_monitor::codex_workspace::handler(handler, native_runtime.clone(), idx);
     // #196 §4.2: paired ⇒ the token gate (same-user OR the token); unpaired ⇒ D3b same-user.
+    let (tailnet_hosts, tailnet_relay) =
+        claude_monitor::pair_phone::tailnet_checks(port, token.is_none());
     let gate = match &token {
         Some(t) => claude_replay_html::AuthGate::with_token(t.as_str())
             .with_pair_codes(index::state_dir().join(claude_monitor::pair_phone::PAIR_CODES_FILE)),
@@ -429,8 +431,10 @@ fn main() -> Result<()> {
     }
     // #320: the icons and the manifest, which a phone reads to put the page on its Home Screen.
     .with_public(public_assets)
-    // #331: the tailnet name `tailscale serve` relays to this port is the monitor's own too.
-    .with_trusted_hosts(claude_monitor::pair_phone::trusted_hosts(port))
+    // #331: the tailnet name `tailscale serve` relays to this port is the monitor's own too; and
+    // while a relay reaches the port, an unpaired monitor admits no peer it cannot verify (#s422).
+    .with_trusted_hosts(tailnet_hosts)
+    .with_relay_check(tailnet_relay)
     // #s237: a send may carry images.
     .with_body_limit("api/send", claude_monitor::control::SEND_BODY_LIMIT)?;
     #[cfg(feature = "codex-native")]

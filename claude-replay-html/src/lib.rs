@@ -16,7 +16,7 @@ pub use html_export::{
     install_mdrev, mdrev_version, mermaid_runtime_path, mint_token, query_get, serve,
     service_routes, spawn_listener, spawn_listener_gated, spawn_streaming_listener_gated,
     start_server, AuthGate, EventStream, HostCheck, HttpReply, HttpResponse, LiveServer, MdrevKit,
-    Request, RootLock, RouteHandler, ServiceConfig, SessionService, StaleEpoch,
+    RelayCheck, Request, RootLock, RouteHandler, ServiceConfig, SessionService, StaleEpoch,
     StreamingRouteHandler,
 };
 

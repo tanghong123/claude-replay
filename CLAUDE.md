@@ -287,8 +287,24 @@ its blank line) or a `Host` that is not a loopback name (parsed: `127.evil.examp
 monitor behind it gave every device on the tailnet its reads, and the GETs with side effects
 (`/api/ignore`, a stamped `/__reveal`), with no token. The refusal names pairing; a tunnel's
 `Host` is a loopback one, a public file stays public, and a gate trusting no tailnet name
-(`agent-replay --html`) is unchanged. A raw relay (`tailscale serve --tcp`) sends no headers and
-is closed only by pairing (`an_unpaired_gate_refuses_a_request_relayed_under_a_tailnet_name`). The pairing
+(`agent-replay --html`) is unchanged (`an_unpaired_gate_refuses_a_request_relayed_under_a_tailnet_name`).
+A raw relay (`tailscale serve --tcp`) sends no headers, so **while any relay reaches the port an
+unpaired gate admits no loopback peer it cannot verify** (#s422, Hong's choice on #s419): on macOS
+that is every peer, the Mac's own browser included, so a monitor `tailscale serve` relays to must be
+paired to be read at all. The relay check (`AuthGate::with_relay_check`, from
+`pair_phone::tailnet_checks`) answers from the same background read as the trusted hosts, but counts
+every relay to the port, which the trusted names do not (`relays_to`: any `Proxy` or `TCPForward`
+anywhere in the serve setup, at any path, open to Funnel or not, beside another app or not, each
+target read as tailscale reads it, with a known scheme or as `http://` plus the value, its port
+after the last colon for a dial, and one whose port is not a number counting as a relay; the one
+miss left is a target the owner writes that reads as another valid port both ways), or a name
+`AGENT_MONITOR_TRUSTED_HOSTS` lists (the browser harness removes it from every monitor but the ones
+that set it). Until a read has succeeded it says a relay may be there, and a read that timed out
+keeps what the last one found; a `tailscale` that exits at once with a failure (Tailscale stopped)
+is no relay and keeps the trusted names (#s170). An unpaired monitor reads the tailnet again on a
+clock of its own (every 30 s, every 5 s until a read has said), so a relay set up while nobody
+connects is seen within one interval and no reply waits on `tailscale` (#s151). A verified peer (Linux) and a paired gate are unchanged
+(`an_unpaired_gate_refuses_an_unverified_peer_while_a_relay_reaches_its_port`). The pairing
 cookie is named for the token it carries — `cmauth-` and eight hex digits of the token's SHA-256
 (`cookie_name`, #350) — because a cookie is scoped to the HOST, not the port: while every gate wrote
 `cmauth`, agent-metrics' `serve --phone` (this gate since #317, a token of its own) replaced the

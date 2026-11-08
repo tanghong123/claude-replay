@@ -1430,6 +1430,10 @@ pub fn configure_monitor_environment(
         // which `Monitor::spawn` keeps in the case's root (#s410, #s227).
         .env("AGENT_MONITOR_TRACE_OWNER", "1")
         .env_remove("CODEX_NATIVE_SERVER_URL")
+        // A name listed here is a relay to the monitor (#s422), and an unpaired monitor on macOS
+        // then admits no browser at all: none may leak in from the shell that runs the suite.
+        // A case that wants one sets it (`Monitor::spawn_remote`).
+        .env_remove("AGENT_MONITOR_TRUSTED_HOSTS")
         .env("XDG_CONFIG_HOME", base.join("config"))
         .env("XDG_DATA_HOME", base.join("data"))
         .env("XDG_STATE_HOME", base.join("xdg-state"))

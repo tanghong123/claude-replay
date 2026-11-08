@@ -1823,6 +1823,10 @@ fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
 /// and that name is as much its own as `127.0.0.1` is.
 pub type HostCheck = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
+/// Whether a relay on this machine reaches the server's port now (#s422): `tailscale serve`, which
+/// connects from the loopback, so a peer the gate cannot verify may be anyone on the tailnet.
+pub type RelayCheck = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// Whether the request's `Host`/`Origin` are the server's own origin at `port`: the write verdict
 /// [`foreign_header`] gives, as a yes or no, for the cases that pin it.
 #[cfg(test)]
@@ -1904,6 +1908,11 @@ pub struct AuthGate {
     /// admits a `Host`/`Origin` this says yes to. None unless
     /// [`with_trusted_hosts`](Self::with_trusted_hosts) gives one.
     trusted_hosts: Option<HostCheck>,
+    /// Whether a relay reaches this port (#s422). While one does, an UNPAIRED gate admits no
+    /// loopback peer it cannot verify (macOS: every one), since a raw TCP relay brings a
+    /// tailnet device's connection in from the loopback with nothing to tell it by. None unless
+    /// [`with_relay_check`](Self::with_relay_check) gives one: no relay.
+    relay: Option<RelayCheck>,
     /// A PAIRED gate that admits the token alone (#366): the same-user loopback leg is off, so
     /// the owner's own browser needs the cookie too — on Linux as on macOS, where the peer
     /// cannot be verified anyway. Set by `AGENT_MONITOR_TOKEN_ONLY` (any value but `0`) when the
@@ -1940,6 +1949,7 @@ impl AuthGate {
             pair_command: super::pairing::DEFAULT_PAIR_COMMAND,
             public: &[],
             trusted_hosts: None,
+            relay: None,
             token_only: false,
             body_limits: Vec::new(),
         }
@@ -1956,6 +1966,7 @@ impl AuthGate {
             pair_command: super::pairing::DEFAULT_PAIR_COMMAND,
             public: &[],
             trusted_hosts: None,
+            relay: None,
             token_only: std::env::var_os("AGENT_MONITOR_TOKEN_ONLY").is_some_and(|v| v != "0"),
             body_limits: Vec::new(),
         }
@@ -2000,6 +2011,33 @@ impl AuthGate {
         self
     }
 
+    /// Ask `check` whether a relay reaches this port (#s422, the owner's choice on #s419): while
+    /// one does, an unpaired gate refuses every loopback peer it cannot verify, so the monitor must
+    /// be paired to be read at all, the machine's own browser included.
+    pub fn with_relay_check(mut self, check: RelayCheck) -> Self {
+        self.relay = Some(check);
+        self
+    }
+
+    /// The unverifiable loopback leg of an unpaired gate: admitted only while no relay reaches
+    /// the port (#s422). A paired gate never admits it.
+    fn unverified_admits(&self) -> bool {
+        if self.token.is_some() {
+            return false;
+        }
+        let relayed = self.relay.as_ref().is_some_and(|relayed| relayed());
+        if relayed {
+            static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!(
+                    "a relay reaches this unpaired server's port, so a connection it cannot \
+                     verify is refused until it is paired (#s422)"
+                );
+            }
+        }
+        !relayed
+    }
+
     /// The command the pairing page tells a person to run (#376), for a host other than the
     /// monitor. Plain words only (letters, digits, space and `. _ / -`), so the page needs no
     /// escaping; anything else is a programming error.
@@ -2032,6 +2070,7 @@ impl AuthGate {
             pair_command: super::pairing::DEFAULT_PAIR_COMMAND,
             public: &[],
             trusted_hosts: None,
+            relay: None,
             token_only: false,
             body_limits: Vec::new(),
         }
@@ -2084,14 +2123,15 @@ impl AuthGate {
             (std::net::SocketAddr::V4(p), std::net::SocketAddr::V4(l)) => {
                 match peer_uid_v4(*p.ip(), p.port(), *l.ip(), l.port()) {
                     Some(uid) => self.euid == Some(uid),
-                    // Unverifiable: same-machine ONLY when unpaired. A paired monitor on
-                    // macOS refuses an unverifiable peer that lacks the token — the whole
-                    // point of pairing a shared Mac.
-                    None => self.token.is_none(),
+                    // Unverifiable: same-machine ONLY when unpaired, and only while no relay
+                    // brings other machines' connections in from the loopback (#s422). A paired
+                    // monitor on macOS refuses an unverifiable peer that lacks the token — the
+                    // whole point of pairing a shared Mac.
+                    None => self.unverified_admits(),
                 }
             }
-            // v6 loopback: unverified; same-machine only when unpaired.
-            _ => self.token.is_none(),
+            // v6 loopback: unverified; same-machine only when unpaired and unrelayed (#s422).
+            _ => self.unverified_admits(),
         };
         if same_user {
             Access::Ok
@@ -2583,7 +2623,7 @@ fn serve_connection<R: Into<HttpReply>>(
     // relay's own headers, which a client cannot remove (`X-Forwarded-For`, `X-Forwarded-Host`,
     // `Forwarded`, `Tailscale-User-Login`), and a `Host` that is not a loopback name. Either is
     // refused, and the refusal names pairing. A raw TCP relay (`tailscale serve --tcp`) sends no
-    // headers and is not caught here; pairing closes it.
+    // headers and is not caught here: the relay check is (#s422, `unverified_admits`).
     let access = if gate.token.is_none()
         && gate.trusted_hosts.is_some()
         && !public
@@ -3928,6 +3968,49 @@ mod tests {
         // Here the matcher finds no /proc row → unverifiable → unpaired admits, paired denies.
         let unpaired = AuthGate::for_test(None);
         assert!(matches!(unpaired.decide(lo, srv, None, false), Access::Ok));
+    }
+
+    /// #s422 (the owner's choice on #s419): while a relay reaches the port, an unpaired gate
+    /// refuses a loopback peer it cannot verify, since a raw TCP relay (`tailscale serve --tcp`)
+    /// brings a tailnet device in from the loopback with no header or `Host` to tell it by; with
+    /// no relay it admits it, as before. A paired gate is unchanged: the token decides. The
+    /// relay is asked at each decision, so one set up or taken down is seen.
+    #[test]
+    fn an_unpaired_gate_refuses_an_unverified_peer_while_a_relay_reaches_its_port() {
+        let lo = std::net::SocketAddr::from(([127, 0, 0, 1], 5000));
+        let srv = std::net::SocketAddr::from(([127, 0, 0, 1], 2727));
+        let relayed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let check: RelayCheck = {
+            let relayed = relayed.clone();
+            std::sync::Arc::new(move || relayed.load(std::sync::atomic::Ordering::SeqCst))
+        };
+        let unpaired = AuthGate::for_test(None).with_relay_check(check.clone());
+        assert!(matches!(
+            unpaired.decide(lo, srv, None, false),
+            Access::Denied
+        ));
+        let v6 = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 5000));
+        let v6_srv = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 2727));
+        assert!(matches!(
+            unpaired.decide(v6, v6_srv, None, false),
+            Access::Denied
+        ));
+        relayed.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(unpaired.decide(lo, srv, None, false), Access::Ok));
+        assert!(matches!(
+            unpaired.decide(v6, v6_srv, None, false),
+            Access::Ok
+        ));
+        relayed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let paired = AuthGate::for_test(Some("secret-422")).with_relay_check(check);
+        assert!(matches!(
+            paired.decide(lo, srv, None, false),
+            Access::Denied
+        ));
+        assert!(matches!(
+            paired.decide(lo, srv, Some("secret-422"), true),
+            Access::Ok
+        ));
     }
 
     /// #317: every plain-text reply names its charset — the refusal and the error texts carry an
