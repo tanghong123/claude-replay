@@ -1541,7 +1541,7 @@ async function main() {
       served("/api/mdrev/", false);
       return skip("404: not served (the pane shows text plainly)");
     }
-    if (reply.status !== 200) fail(`${reply.what} answered ${reply.status}: ${brief(reply.text())}`);
+    if (reply.status !== 200) fail(`${reply.what} answered ${reply.status}: ${brief(reply.text())}${originHint(reply)}`);
     const body = reply.json();
     const problems = [];
     fields(body, { root: oneOf("held"), path: "string", cap: "string", name: "string" }, "the reply", problems);
@@ -1722,15 +1722,17 @@ async function main() {
 
   // ------------------------------------------------------------------------------- writes
   // Every write below is refused before it names a session: no target, no prompt, no answer.
-  const writes = { served: null, paired: null };
-  {
+  const writes = { served: null, paired: null, why: null };
+  try {
     const reply = await ask("POST", "api/consent", { body: "" });
     if (reply.status === 404) writes.served = false;
     else if (reply.status === 401) Object.assign(writes, { served: true, paired: false });
     else Object.assign(writes, { served: true, paired: true });
     for (const w of WRITES) served(w.path, writes.served);
+  } catch (e) {
+    writes.why = `the write probe (POST /api/consent, no target) got no answer: ${e.message}`;
   }
-  const noWrites = () => skip("404: not served (the page draws no compose box and no answer buttons)");
+  const noWrites = () => skip(writes.why ?? "404: not served (the page draws no compose box and no answer buttons)");
 
   await rule("writes.method", S.request, "the write gate: the wrong method gets 405", async () => {
     if (!writes.served) return noWrites();
@@ -1771,7 +1773,7 @@ async function main() {
     for (const w of WRITES) {
       const reply = await ask(w.method, w.path, { body: w.method === "GET" ? undefined : (w.body ?? "") });
       if (reply.status !== 200 && reply.status !== 409) {
-        problems.push(`${reply.what} answered ${reply.status}`);
+        problems.push(`${reply.what} answered ${reply.status}${originHint(reply)}`);
         continue;
       }
       const body = reply.json();
@@ -1783,10 +1785,15 @@ async function main() {
   });
 
   await rule("request.body-limit", S.request, "a body over 64 KiB gets 413 (401 from a client that is not paired)", async () => {
-    const reply = await askWithLength("POST", "api/sessions", 64 * 1024 + 1);
-    if (reply.status === 401) return "401: the reader is not paired";
+    // A route the contract gives a body, asked about nothing: an answer to no session's dialog, or
+    // the links of a held document.
+    const route = writes.served ? `api/answer?target=${NO_SUCH_SESSION}` : held.path ? "api/mdrev/resolve?root=held" : null;
+    if (!route) return skip("neither the writes nor mdrev's routes are served, and no other route takes a body");
+    const reply = await askWithLength("POST", route, 64 * 1024 + 1);
+    if (reply.status === 404) return skip(`${reply.what} answered 404: not served`);
+    if (reply.status === 401) return `${reply.what}: 401, the reader is not paired`;
     if (reply.status !== 413) fail(`${reply.what} with ${64 * 1024 + 1} bytes answered ${reply.status ?? `nothing (${reply.why})`}`);
-    return "65,537 bytes: 413";
+    return `${reply.what} with 65,537 bytes: 413`;
   });
 
   await rule("request.hold-limit", S.request, "mdrev's hold takes a body over 64 KiB (its limit is 8 MiB plus 64 KiB)", async () => {
@@ -1794,7 +1801,7 @@ async function main() {
     const text = "tern ".repeat(14_000);
     const reply = await ask("POST", "api/mdrev/hold", { body: JSON.stringify({ name: "large.md", text }), headers: { "content-type": "application/json" } });
     if (reply.status === 413) fail(`${reply.what} with ${text.length} bytes answered 413`);
-    if (reply.status !== 200) fail(`${reply.what} answered ${reply.status}: ${brief(reply.text())}`);
+    if (reply.status !== 200) fail(`${reply.what} answered ${reply.status}: ${brief(reply.text())}${originHint(reply)}`);
     return `${text.length.toLocaleString("en")} bytes held`;
   });
 
@@ -1865,6 +1872,13 @@ async function main() {
   });
 
   return finish();
+}
+
+/** What a 403 to a write of the page's own may mean, when no --origin was given. */
+function originHint(reply) {
+  return reply.status === 403 && !ARGS.origin
+    ? ` (a 403 here can mean the page is on another origin than the routes: name it with --origin)`
+    : "";
 }
 
 function isUtf8(bytes) {
