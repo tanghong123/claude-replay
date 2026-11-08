@@ -19,7 +19,7 @@ import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
 import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, querySpans, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, prefixOf, CLASS_ORDER, wholeAt, toolMatches, recordHasTool, toolLetters as sessionToolLetters, resolveTools as resolveToolSpec } from "./shared/search.js";
 import { parseJumpQuery } from "./jump-query.js";
-import { agentRecordTargets, currentTurnIndex, escapeText, peerHue, peerLabelRest, plainText, recordForSearch, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick, replyContext } from "./view-model.js";
+import { agentName, agentRecordTargets, currentTurnIndex, escapeText, peerHue, peerLabelRest, plainText, recordForSearch, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick, replyContext } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 import { sharedKeyboardFrame } from "./phone-keyboard.js";
 import { revealMermaidSource, useMermaidRuntime } from "./shared/mermaid.js";
@@ -372,7 +372,6 @@ function sessionWorkers(id = recordState.session) {
   return [...indexState.rows.values()].filter(row => row.startedBy === id).sort((a, b) => (a.startTs || 0) - (b.startTs || 0) || String(a.id).localeCompare(String(b.id)));
 }
 const workerRunning = row => displayState(row).state !== "idle";
-const agentName = id => ({ claude: "Claude Code", codex: "Codex", qoder: "Qoder", qoderwork: "QoderWork", qwenwork: "Qwenwork" })[id] || id;
 const SIDEBAR_SESSION_LIMIT = 5;
 /** The agent's mark on a flat row (#s206): one colour, the row's muted text colour, as the agent
  *  lists that show several agents side by side draw it (Zed's and JetBrains' shared registry
