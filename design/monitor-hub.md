@@ -195,24 +195,34 @@ it:
   `app-frame://`, a scheme the relay is not on: the app answers it from the HTML the page hands it
   (through a handler that takes HTML and returns only the frame's address), once, under today's
   frame policy (`connect-src 'none'`, `img-src data: blob:`, `form-action 'none'`) as its header.
-  The frame never sees the key. The navigation delegate refuses any frame's navigation to `app://`,
-  and any other navigation of a frame unless it is a link the reader tapped, which opens in the
-  browser: a script in an agent's page must not open Safari or another app's URL with no tap. If the
-  spike finds WebKit cannot tell a tap from a script's `click()`, the app refuses every navigation
-  out of a frame, or asks first in a sheet naming the address. The
-  session view lets its host supply that frame ("Customizing", frames, step 4).
-- **The main frame never loads a page under `/k/`**: the navigation delegate refuses it. A
-  navigation the page asks to save (a file over 64 MB is saved through an `<a download>` link to
-  `/file`) becomes a download, never a page load. A main-frame navigation out of the app's schemes
-  opens in the browser only when the reader tapped a link, as for a frame: a machine's answer can
-  ask the page to navigate (the record store follows a `/pull` reply of `{"t":"redirect"}` with
+  The frame never sees the key. The navigation delegate refuses any frame's navigation to `app://`.
+  A script in an agent's page must not open Safari or another app's URL with no tap, and WebKit
+  cannot tell a tap from a script's `click()`: both reach the delegate as `.linkActivated`, by the
+  user (#s418, measured). So no navigation out of a frame goes ahead by itself: the app asks first,
+  in a sheet naming the address, and opens it in the browser only on the reader's yes. The session
+  view lets its host supply that frame ("Customizing", frames, step 4).
+- **The main frame never loads a page under `/k/`**: the navigation delegate refuses it. A file the
+  page saves is never a WebKit download of an `app://` address: WebKit's download path does not use
+  the scheme handler, and such a download fails at once with an unsupported URL (#s418, measured,
+  `NSURLErrorDomain` -1002). So when the page asks to save `/file` (a file over 64 MB is saved
+  through an `<a download>` link to it), the delegate cancels the navigation and the app fetches the
+  file itself through the relay's session, under the relay's own checks (the key, a paired machine,
+  read-only's rules), to a file on disk rather than memory, then hands it to the share sheet (a save
+  panel on a Mac).
+  A `blob:` download, which the page makes of a smaller file, is WebKit's own and works. A
+  main-frame navigation out of the app's schemes is asked first, as for a frame: a machine's answer
+  can ask the page to navigate (the record store follows a `/pull` reply of `{"t":"redirect"}` with
   `location.assign`), so the request layer refuses such an answer from a relayed machine.
 - **The key stays out of what is kept**: the web view keeps no history across launches, and the
   page loads nothing from outside the app, which its policy enforces (below).
 
-Whether WebKit behaves as described here (the frame on its own scheme with its policy as a header,
-the delegate's refusals, a download leaving the web view, CORS on a custom scheme) is a phase 0a
-spike.
+Phase 0a measured these on the iOS Simulator (#s418, the app repository's `docs/phase-0a.md`): the
+frame on its own scheme runs its scripts with its header's policy present (that the policy's limits
+hold there is not yet measured); a frame's navigation to `app://` reaches the delegate and is
+cancelled; a sandboxed frame's fetch of `app://` fails, and no request from an opaque origin reached
+the handler; the key script is in the main frame and not in a frame, and the handler measured sees
+`isMainFrame` false for a frame, an opaque one included; and a page request outside the key's prefix
+(a root path) does reach the handler, so the relay must refuse it, as above.
 
 **The app's own page is the boundary that is new.** Each monitor exposes nothing more than today,
 but one page now holds the key and draws records from every paired machine. A rendering bug that
@@ -232,15 +242,23 @@ the diagram runtime (`/mermaid/<version>.js`, found today through the page head'
 
 ### D4 — Pairing and revoking
 
-**Add a machine**: on that machine, `agent-monitor --pair-phone` shows its QR as today. The app scans
-it, or takes the pairing link or code typed or pasted (a Mac has no camera pointed at its own
+**Add a machine**: on that machine, `agent-monitor --pair-phone` shows its QR as today. The app
+scans it, or takes the pairing link or code typed or pasted (a Mac has no camera pointed at its own
 screen), reads the address and the code, redeems the code with `POST /api/pair` on the relay's
 session with no cookie store (the answer's lasting `Set-Cookie` would otherwise be saved to disk),
 takes the token from that header, and keeps it in the Keychain with the machine's name, address and
 identity. Nothing is added to the monitor. The Keychain entry is kept on this device only, so each
 of the reader's devices pairs each machine once. `--pair-phone` can hand out an `http://` address,
-which App Transport Security refuses to a named host unless the app declares an exception; which
-the app declares is a phase 0a spike. **Forget a machine**: delete it in the app.
+and App Transport Security refuses plain http to a tailnet machine: `NSAllowsLocalNetworking` does
+not cover the tailnet's `100.x` addresses (#s418, measured, -1022). The app declares an
+`NSExceptionDomains` entry for `ts.net`, with its subdomains and insecure loads, which lets plain
+http to a MagicDNS name through; an address cannot be named in such an exception. So a plain-http
+pairing address across the tailnet must be the machine's `*.ts.net` name, and the app refuses a
+plain-http tailnet address given by number, saying to pair by name (or by the `https://` address
+`tailscale serve` gives by default). A loopback address (This Mac, D8; a tunnel's local end, D10) is
+not refused: on a Mac the sandboxed app reached `http://127.0.0.1` with no ATS exception declared
+at all (#s418, measured).
+**Forget a machine**: delete it in the app.
 
 **A lost device**: every device paired with a monitor holds that monitor's token. The quickest step
 is to remove the device from the tailnet, which cuts it off from every machine reached over the
@@ -344,7 +362,9 @@ through the handle. mdrev's guest already works with hosts that answer less (a r
 turns its feature off), so a machine whose monitor pins an older mdrev should lose only what it
 lacks. That is checked, not assumed: the app's guest against the oldest monitor version the kit
 reads, by mdrev's own conformance check. mdrev's guest makes its own requests with no header of the
-host's, which is why the key rides in the base (D3) rather than in a header.
+host's, which is why the key rides in the base (D3) rather than in a header; under the key, its
+bundle, every chunk it imports and its contract calls all reached the relay prefixed, and held text
+rendered (#s418, measured on the iOS Simulator).
 
 **Locality is per handle.** On a Mac, the app pairs "This Mac" on the loopback, with the code that
 `agent-monitor --pair-phone --url http://127.0.0.1:<port>` shows: that machine alone is local, and
@@ -358,7 +378,9 @@ lists twice, as D4 says.
 **Detached views** ("Detached views"): on a Mac, a session or an artifact opens in a window of its
 own, the kit's detached page entry in a second web view on the same scheme and handle. Today's
 detached tab gets held text through `sessionStorage`, which `window.open` copies into the tab it
-makes; whether a second `WKWebView` gets it the same way is a phase 0a spike. On a phone the view's
+makes, and a second `WKWebView` opened by `window.open` reads its opener's `sessionStorage` the same
+way when it is built from the configuration WebKit hands to `createWebViewWith` (#s418, measured on
+the iOS Simulator). On a phone the view's
 own full-screen sheets stand in for a window, as they do in the monitor's page today.
 
 ### D9 — Writes across machines
@@ -384,10 +406,13 @@ writes is no worse than a lost paired phone today, and its tokens are replaced a
 
 Today some machines are reached only by ssh, through the fleet's tunnels (`design/fleet-pairing.md`,
 D1). An iOS app cannot run those tunnels. A Mac build sent through TestFlight runs in the App
-Sandbox, which most likely cannot run `ssh` with the reader's keys and config; a phase 0a spike
-settles it. So the plan: the fleet's binary stays on the Mac as the tunnel helper, outside the
-sandbox, opening and re-opening the tunnels as today, and the Mac app reaches each tunnelled monitor
-at the loopback port the helper opened:
+Sandbox, and a sandboxed app cannot run `ssh` with the reader's keys (#s418, measured on macOS 27
+with only `network.client`): `/usr/bin/ssh` starts but inherits the sandbox, cannot load
+`~/.ssh/id_rsa` ("Operation not permitted") and cannot write `known_hosts`, and the app itself
+cannot list `~/.ssh`. A
+sandboxed app does reach a monitor on the loopback. So the plan: the fleet's binary stays on the Mac
+as the tunnel helper, outside the sandbox, opening and re-opening the tunnels as today, and the Mac
+app reaches each tunnelled monitor at the loopback port the helper opened:
 
 - **Running the helper**: the reader installs and runs the fleet as today, on a fixed `--port` the
   app is told once; a sandboxed app cannot start it.
@@ -401,10 +426,13 @@ at the loopback port the helper opened:
 - **The `Host` a tunnelled monitor wants**: its gate compares `Host` with its own port, which is not
   the tunnel's local one, so files and writes would be refused. The fleet's own probe sends the
   monitor's port in `Host` for this reason (#s150), but the fleet keeps that port to itself, and
-  `URLSession` reserves `Host`. So the relay speaks HTTP/1.1 itself over the Network framework for a
-  tunnelled machine, and either sends the monitor's port, which the fleet would have to publish (a
-  fleet change), or sends no `Host`, which the gate lets pass today. Section 5 weighs the two; a
-  phase 0a spike measures both.
+  `URLSession` reserves `Host`. Measured (#s418, a write with the token's cookie over the Network
+  framework by hand): `Host: 127.0.0.1:<the monitor's port>` is answered 200, a `Host` naming
+  another port (a tunnel's local end, by address or as `localhost`) 403, and no `Host` 200; a read
+  of `/api/sessions` is 200 whatever the `Host` (file reads check it, like writes). So the relay
+  speaks HTTP/1.1 itself over the Network framework for a tunnelled machine, and either sends the
+  monitor's port, which the fleet would have to publish (a fleet change), or sends no `Host`.
+  Section 5 weighs the two.
 - **Admission**, as the fleet's tabs are admitted today: an unpaired Linux monitor admits the tunnel
   as its own user, with no token: its list and its transcripts, but not `/file` (files, images by
   path, mdrev on a file, the HTML preview) and no writes, as D8 says of an unpaired This Mac. A
@@ -419,9 +447,12 @@ at the loopback port the helper opened:
   this narrows the first, and neither is closed. The app is for a Mac its reader does not share.
 
 So on a Mac every machine the fleet reaches today is in the list, and on a phone only the machines
-on the tailnet. The alternatives: a Mac build signed outside TestFlight that runs `ssh` itself, which
-changes #s413 and is the owner's; or one machine relaying for the others, the remote point the owner
-ruled out.
+on the tailnet. The alternatives: a Mac build signed outside TestFlight (Developer ID, no sandbox)
+that runs `ssh` itself, which changes #s413 and is the owner's; inside the sandbox, `~/.ssh` granted
+by the reader through an open panel and kept as a security-scoped bookmark (whether a child `ssh`
+may then read it is not measured), or a key of the app's own in its container that the reader
+authorizes on each machine; or one machine relaying for the others, the remote point the owner ruled
+out.
 
 ### D11 — Notifications: the owner's choice
 
@@ -438,8 +469,9 @@ Recommended for the first release: none.
 
 Once the Mac app covers what the tabs did, the fleet's page could be retired, with a migration
 note, in the way the classic view was (#s98). Its binary stays as the Mac app's tunnel helper (D10),
-unless the spike finds the app can run the tunnels itself; then the binary and its formula could
-retire too. Removing a feature is the owner's (section 5).
+unless a later build runs the tunnels itself (outside the sandbox, or with `~/.ssh` granted or a key
+of its own, D10; phase 0a found a sandboxed app cannot use the reader's keys); then the binary and
+its formula could retire too. Removing a feature is the owner's (section 5).
 
 ## 4. Security
 
@@ -455,11 +487,11 @@ retire too. Removing a feature is the owner's (section 5).
   (D3). An agent's HTML page runs only in its sandboxed frame on its own scheme.
 - **Only the app's own page uses the relay**: the key is in its requests' path and nowhere else, and
   reaches the page by a main-frame script, never a handler (D3). A navigation out of the app's
-  schemes, from the main frame or a frame, opens in the browser only when the reader tapped a link,
-  and is refused otherwise. A download from the main frame passes without a tap when it is of a
-  `blob:` address (the page saves a smaller file through a script-clicked `<a download>` of one) or
-  of the relay's own `/file` (a file over 64 MB). Any other download, and every download from a
-  frame, is a navigation under the tap rule.
+  schemes, from the main frame or a frame, opens in the browser only after the reader says yes in a
+  sheet naming the address, since WebKit cannot tell a tap from a script's click (#s418). A
+  download from the main frame of a `blob:` address passes; one of the relay's `/file` is fetched by
+  the app itself and handed to the share sheet; every other download, and every download from a
+  frame, is refused.
 - **No token on disk but the Keychain's**: pairing and the relay use a session with no cookie store
   (D3, D4).
 - **Reveal is relayed only to this Mac's own monitor** (D8).
@@ -539,9 +571,9 @@ is built in its own repository, and starts with what it can learn before the kit
 
 | Phase | Where | Ships | Accept |
 |---|---|---|---|
-| 0a | the app's repo | Spikes: a `WKURLSchemeHandler` relaying POST bodies and streaming a large `/records` range, with the gate's cookie set by hand and no cookie store (D3); a gzipped answer through the relay (D3); the key in the path reaching every kind of request the page makes, an agent's page framed from its own scheme with its policy as a header, refusing a frame's navigation, CORS on a custom scheme, and the page's strict policy (D3); a download from the page and the share sheet (D3, R3); the web view's storage for a custom scheme (the components keep their preferences in `localStorage`); whether a custom scheme is a secure context for the APIs the components use; a second web view getting `sessionStorage` from `window.open` (D8); App Transport Security and an `http://` pairing address (D4); and on a Mac, whether a sandboxed app can run `ssh`, reach a monitor on the loopback, and speak HTTP/1.1 to a tunnelled monitor with its port or with no `Host` (D10). Most can be measured with today's monitor page loaded whole through the scheme from one machine, an exception to D3 for the spike alone. | Each answered by measurement on the iOS Simulator, a device and a Mac, written down |
+| 0a | the app's repo | Spikes: a `WKURLSchemeHandler` relaying POST bodies and streaming a large `/records` range, with the gate's cookie set by hand and no cookie store (D3); a gzipped answer through the relay (D3); the key in the path reaching every kind of request the page makes, an agent's page framed from its own scheme with its policy as a header, refusing a frame's navigation, CORS on a custom scheme, and the page's strict policy (D3); a download from the page and the share sheet (D3, R3); the web view's storage for a custom scheme (the components keep their preferences in `localStorage`); whether a custom scheme is a secure context for the APIs the components use; a second web view getting `sessionStorage` from `window.open` (D8); App Transport Security and an `http://` pairing address (D4); and on a Mac, whether a sandboxed app can run `ssh`, reach a monitor on the loopback, and speak HTTP/1.1 to a tunnelled monitor with its port or with no `Host` (D10). Most can be measured with today's monitor page loaded whole through the scheme from one machine, an exception to D3 for the spike alone. The answers are in the app repository's `docs/phase-0a.md` (#s418): the iOS Simulator's and the Mac's are in (an event stream held open, mdrev's guest under the key and the share sheet among them, each confirming the design); the Mac reached the loopback over plain http with no ATS exception; only a physical device is still to come. | Each answered by measurement on the iOS Simulator, a device and a Mac, written down |
 | 0b | claude-replay | Embedding's steps 1 (the request layer, #s416), 2 (the contract), 4 and 5 (the two components, with the app shell mounting them), 6 (layout by pane size, which the iPad and the Mac need side by side) and 7 (the kit). | Embedding's own: the app shell's browser suite green at every step, a Simulator walk |
-| 1 | both | claude-replay: the merged source and the row's `machine` field (after the owner's yes, section 5). The app: the iOS app, with pairing by QR, the Keychain, the relay and its key, the session list over the merged source, and the session view on each row's machine, files and mdrev included, read-only | Paired with two machines, the app lists both; an offline machine costs only its own rows; a session on each, its files and its Markdown read as on its own machine; an agent's page runs its scripts, and its navigation to `app://`, an untapped navigation out and a call to each of the app's handlers are each refused; a page-issued `/api/send` or `/api/codex/send` is refused by the relay |
+| 1 | both | claude-replay: the merged source and the row's `machine` field (after the owner's yes, section 5). The app: the iOS app, with pairing by QR, the Keychain, the relay and its key, the session list over the merged source, and the session view on each row's machine, files and mdrev included, read-only | Paired with two machines, the app lists both; an offline machine costs only its own rows; a session on each, its files and its Markdown read as on its own machine; an agent's page runs its scripts, and its navigation to `app://`, a navigation out before the sheet's yes and a call to each of the app's handlers are each refused; a page-issued `/api/send` or `/api/codex/send` is refused by the relay |
 | 2 | claude-replay | "By device" in the session list | The list arranged by machine, each arranged as the reader chose, on a phone and side by side on an iPad |
 | 3 | both | Writes across machines (or in 1, by the owner's choice) | The compose box, a dialog and a pane grant on another machine's session, each refused where today's rules refuse it; a frame's write refused by the relay |
 | 4 | both | The Mac app: the two components side by side, This Mac on the loopback, detached windows (embedding's step 8, in a later kit); the fleet's answer and its tunnels as the helper; the fleet's page retired | A machine reached only by ssh appears in the Mac app's list; a session opens in a window of its own; reveal works on This Mac only |
@@ -578,8 +610,9 @@ before detached views; each host vendoring mdrev and the diagram runtime at firs
 2. **How the app learns a monitor's contract version** (section 5, embedding's step 2).
 3. **Writes** (D9, phase 3): in the first release with the rest, or read-only first (recommended).
 4. **Machines reachable only by ssh** (D10, phase 4): the fleet's binary as the Mac app's tunnel
-   helper (recommended, if the spike confirms the sandbox stops `ssh`), or a Mac build signed outside
-   TestFlight; and with the helper, the monitor's port in `/api/fleet` (recommended) or no `Host`.
-   Then whether the fleet's page retires (D12).
+   helper (recommended: phase 0a found a sandboxed app's `ssh` cannot use the reader's keys), a Mac
+   build signed outside TestFlight, `~/.ssh` granted through an open panel, or a key of the app's
+   own; and with the helper, the monitor's port in `/api/fleet` (recommended) or no `Host`. Then
+   whether the fleet's page retires (D12).
 5. **Notifications** (D11, phase 5): none in the first release (recommended), or pushes sent by each
    monitor.
