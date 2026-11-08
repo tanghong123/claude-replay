@@ -161,6 +161,8 @@ fn the_conformance_check_passes_against_a_paired_agent_monitor() {
         "record.kinds",
         "record.parts",
         "record.shapes",
+        "record.chips",
+        "pull.sub-agent",
         "meta.fields",
         "file.offered",
         "file.not-offered",
@@ -188,6 +190,32 @@ fn the_conformance_check_passes_against_a_paired_agent_monitor() {
             Some("pass"),
             "{id} passes against the monitor:\n{}",
             out.listing()
+        );
+    }
+    // The kinds' rules were held against every kind the fixture writes, not only a prompt and a
+    // reply: what a host's own records are checked against has passed on the reference server's.
+    let kinds = out.result("record.kinds")["detail"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for kind in [
+        "act",
+        "agent",
+        "assistant",
+        "attachment",
+        "bash",
+        "command",
+        "compaction",
+        "edit",
+        "read",
+        "think",
+        "tool",
+        "user",
+        "write",
+    ] {
+        assert!(
+            kinds.split([' ', ',']).any(|k| k == kind),
+            "the session holds a {kind} record: {kinds}"
         );
     }
     // A bearer token is not a cookie a browser withholds: the check cannot see the monitor's
