@@ -1708,6 +1708,15 @@ const TOOL_RESULT_KNOWN_IGNORED: &[&str] = &[
     "durationMs",
     "durationSeconds",
     "error",
+    // #s424, ToolSearch (client 2.1.319; in its output schema since at least 2.1.317): the MCP
+    // servers that failed to connect, each `{name, error}`. One result on aries-black,
+    // 2026-11-07, three entries, beside an empty `matches`. The result's text names each failed
+    // server with its error, and the card shows that text. REVISIT if a result carrying it draws
+    // text that does not name the servers (the two error classes the client words otherwise were
+    // not read: a RENDER question, whether the card should say which servers failed), if an entry
+    // carries `errorCode` or another key, and judge `pending_mcp_servers` (same schema, never met
+    // in a record) when one carries it.
+    "failed_mcp_servers",
     "file",
     "filePath",
     // #285, Grep, and Glob (#349): the files it matched, which its result text lists.
@@ -8468,6 +8477,35 @@ mod tests {
                 "{name} is a known shape"
             );
         }
+    }
+
+    /// #s424: a ToolSearch result naming the MCP servers that failed to connect, as client 2.1.319
+    /// writes it; `pending_mcp_servers`, in the same schema and never met in a record, is still
+    /// reported.
+    #[test]
+    fn a_tool_search_result_with_failed_mcp_servers_is_known() {
+        let unknown = |v: &Value| -> Vec<String> {
+            unknown_tool_result_keys(v)
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        };
+        let failed = serde_json::json!({"matches": [], "query": "select:x",
+            "total_deferred_tools": 33,
+            "failed_mcp_servers": [{"name": "a", "error": "timed out"},
+                {"name": "b", "error": "refused"}, {"name": "c", "error": "exited"}]});
+        assert_eq!(
+            unknown(&failed),
+            Vec::<String>::new(),
+            "a ToolSearch result with failed servers, known: {failed}"
+        );
+        let mut pending = failed.clone();
+        pending["pending_mcp_servers"] = serde_json::json!([{"name": "d"}]);
+        assert_eq!(
+            unknown(&pending),
+            vec!["pending_mcp_servers".to_string()],
+            "a pending server is judged when a record carries it"
+        );
     }
 
     /// #s367: a count-mode Grep that stopped at its time limit, as client 2.1.318 writes it.
