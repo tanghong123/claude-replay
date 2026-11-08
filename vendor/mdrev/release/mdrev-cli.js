@@ -18684,7 +18684,7 @@ var segmenter;
 function getSegmenter() {
   return segmenter ??= new Intl.Segmenter(void 0, { granularity: "word" });
 }
-var WORD_RE = /(\s+|[A-Za-z0-9_]+|￼|.)/gsu;
+var WORD_RE = /(\s+|\d+(?:\.\d+)+|[A-Za-z0-9_]+|￼|.)/gsu;
 function tokenize2(text9) {
   const out = [];
   if (!hasCJK(text9)) {

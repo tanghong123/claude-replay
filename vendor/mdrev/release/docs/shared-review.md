@@ -851,7 +851,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.77",
+  "mdrev": "1.1.79",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
@@ -1241,7 +1241,7 @@ mdrev-cli's own), a link to the service's page at the thread on its branch in
 place of the project's `link`, the people who turned the service's
 messages off (still told of what a colleague's machine tells with its own
 channels), and the channels it tells people through, whatever the project's
-`.mdrev.json` names — DingTalk and email, the company's, so notifications are
+`.mdrev.json` names — chat and email, the organisation's, so notifications are
 simply on there (#s186, #s187) — and the pusher's own name, from single sign-on,
 which every message says it is from ("Hong Tang", not the pairing's
 "Hong-on-service", #s223). A tool's protocol does not change; the page shows "telling…", then
@@ -1278,7 +1278,7 @@ nobody.
 machine tells people through:
 
 ```
-mdrev --channels dingtalk,email     # every project here tells people through these
+mdrev --channels chat,email         # every project here tells people through these
 mdrev --channels none               # and tells nobody again
 mdrev --channels                    # what is set, and the tools this machine has
 ```
@@ -1324,7 +1324,7 @@ agent. A bare `mdrev --channels` only reads, and anyone may run it.
 **The hint.** On a machine whose channels are not named, the first push or
 pairing in a project whose file names none says, once for the machine, with
 the channels it has a tool for: "this machine tells nobody of your pushes;
-`mdrev --channels dingtalk,email` turns it on for every project here" — to an
+`mdrev --channels chat,email` turns it on for every project here" — to an
 agent, "ask your person which channels, then run it". A machine with no channel tools says
 nothing. Where a project names no channels, `--review-status`, a bare
 `--review-pointer`, pairing at a terminal and the viewer's subscribe panel
@@ -1332,7 +1332,7 @@ offer `mdrev --channels` while the machine names none, and the project's
 `--review-pointer --notify` beside it.
 
 **What shows it.** `--review-status` names where a project's channels come
-from ("through dingtalk, email — this machine's: the project names none"),
+from ("through chat, email — this machine's: the project names none"),
 and the viewer's subscribe panel stops saying nobody is told where the
 machine names channels. An organisation's plugin may suggest the command
 when it is installed (its formula's caveats); mdrev itself names no channel,

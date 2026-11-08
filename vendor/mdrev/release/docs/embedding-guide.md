@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.77/
+mdrev-embed-1.1.79/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -180,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.77`, with two tarballs: `mdrev-1.1.77-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.77.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.79`, with two tarballs: `mdrev-1.1.79-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.79.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.77/mdrev-embed-1.1.77.tar.gz
-tar xzf mdrev-embed-1.1.77.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.77
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.79/mdrev-embed-1.1.79.tar.gz
+tar xzf mdrev-embed-1.1.79.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.79
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.77/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.79/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -196,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.77/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.77.tar.gz
-cd mdrev-embed-1.1.77
+tar xzf mdrev-embed-1.1.79.tar.gz
+cd mdrev-embed-1.1.79
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -207,7 +207,7 @@ It starts **one** background host and reuses it: every later `mdrev-v2 <file>`, 
 
 What bounds it is the `allow` list in that same `roots.json`: entries a reader put there themselves, which no automatically-added folder can widen. Set one and a document outside it is refused however it is spelled; leave it empty and the boundary is the folders the reader has opened. That is the sample standing in for the permissions your own application already has — §8.
 
-Open the address it printed — it carries a **one-time code**, good for ten minutes, which becomes a cookie; the address without it works from then on (the sample has no sessions, so this key is how it knows its user; §8). The page is the host's and it is bare: mdrev fills it, because on this host mdrev *is* the application. You get the newest change to the document as a redline, a range picker at the top to widen it, change bars in the margin, and a rail of the other files the range touched. **Your host is the one that will have a header and a navigation of its own** — this one deliberately has none left, so that anything you see on the page came from the guest and you can tell at a glance which side any bug is on. §10 says which parts of the sample to copy and which exist only because the sample became the product. Select a sentence, press `a` (or click the pen that appears beside the selection), type a note, save it with ⌘↩. The chip that appears is a note in mdrev's own store:
+Open the address it printed — it carries a **one-time code**, good for ten minutes, which becomes a cookie; the address without it works from then on (the sample has no sessions, so this key is how it knows its user; §8). The page is the host's and it is bare: mdrev fills it, because on this host mdrev *is* the application. You get the document's last three changes as a redline (with no range it opens as it stands), a range picker at the top to widen it, change bars in the margin, and a rail of the other files the range touched. **Your host is the one that will have a header and a navigation of its own** — this one deliberately has none left, so that anything you see on the page came from the guest and you can tell at a glance which side any bug is on. §10 says which parts of the sample to copy and which exist only because the sample became the product. Select a sentence, press `a` (or click the pen that appears beside the selection), type a note, save it with ⌘↩. The chip that appears is a note in mdrev's own store:
 
 ```bash
 ./mdrev-cli notes list --root ~/src/your-docs
@@ -293,6 +293,9 @@ mounted.open('guides/deploy.md');
 // the same page. The reader keeps the tree they opened and the notes they
 // left; only the document changes. `cap` is the capability the row carried,
 // and `isGit` — if you know it — spares the viewer a round trip to find out.
+// The range on screen belongs to the history being left, so with none given
+// this opens the document as a plain mount would: as it stands, or as this
+// reader last read it.
 mounted.open('README.md', undefined, {root: otherRoot, cap, isGit: true});
 
 // print the document, from your own menu or shortcut:
@@ -325,7 +328,7 @@ The options, all of them:
 |---|---|---|
 | `contract` | the prefix your routes answer under; every fetch the viewer makes goes to `{contract}/…` on the same origin | required |
 | `path` | the document, in whatever form your `/text` route accepts | required |
-| `range` | what to show first: `{last: N}` — from the Nth most recent revision to the document as it stands; or `{from, to}` with revision ids from your `/revisions`; `from: null` reads the document plainly; `to` left out means "as it stands" | a plain read |
+| `range` | what to show first: `{last: N}` — from the Nth most recent revision to the document as it stands; or `{from, to}` with revision ids from your `/revisions`; `from: null` reads the document plainly; `to` left out means "as it stands" | a plain read, unless this reader last read the document in redline: then that, at the range they last picked there, or its newest change; with a `note` or `hash` named, ending at the document as it stands, so what the link points at is there |
 | `rangeAsked` | the reader asked for `range` **just now**, in so many words — a command line, a "what changed since Tuesday" control. mdrev remembers the mode each document was last read in, and that memory outranks the range a page opens with: right for a reload, a bookmark or a shared link, wrong for a range a reader named a second ago, which came up clean and read as "nothing changed". The viewer cannot tell those apart — both arrive as nothing but a range — so this is you saying which you have. Leave it out for a page that is merely showing a range it was holding. Read once, at mount: a move to another document goes back to that document's own preference. Setting it also makes the viewer call your `onNavigate` once at mount, with the very path and range you passed — that is how the claim is spent, so the address you keep no longer carries it into a reload | `false` |
 | `note` | the comment to open at — a shared record's `shr-` id, or a note's `ann-` id — when your address names one (a link from an unread list or a notification). The viewer scrolls to it, opens its card and marks read what that draws. Read once, at mount, never written back: the next move leaves it, so keep it out of the address you write after `onNavigate` | none |
 | `onNavigate(path, range)` | the reader chose another range or document. `range` is `{from, to}`; `to === 'WORKTREE'` is "as it stands", `from === 'EMPTY'` is "before the first revision", `from === null` a plain read. The viewer never touches your URL — this is how you keep it in step | — |
