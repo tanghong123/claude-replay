@@ -80,6 +80,11 @@ and that the declaration is a ceiling.
 
 **Build:** the table takes the routes it serves: reading (always), files, reveal, writes, shared
 review, Codex native. A route outside the ceiling answers 404, as a route a host never serves does.
+Filing, editing or removing an mdrev note writes into a repository on the serving machine, so it
+is a write, and so is anything but a read under shared review's prefix. A table whose index has
+the probes off (2) serves no writes whatever its ceiling says: a write acts on a session running
+on the serving machine, and without the probes every session reads as finished, so a send would
+resume one that is still running.
 The monitor binary serves them all, as today. A host's table serves reading and files unless it
 says otherwise. The page learns the ceiling in step 4, from its backend handle; until then a host
 whose table serves no writes says `paired=false` in its page.

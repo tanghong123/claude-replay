@@ -55,7 +55,10 @@ pub enum Claimed {
 /// WRITE is reported and ignored: a temp I/O fault should not stop the tool.
 ///
 /// A host's claim writes its note at once (it publishes no port), so a monitor started over the
-/// same root is told a host holds it, never sent to the host's server.
+/// same root is told a host holds it, never sent to the host's server. With no port to probe, a
+/// host's claim lasts as long as its pid is alive: if a host dies and another process of the same
+/// user is given its pid, the root stays refused until that process exits too, and the refusal
+/// names the pid.
 pub fn claim(root: &Path, who: Holder) -> Result<Claimed> {
     let holder = match lock::acquire::<serde_json::Value>(root, |h| {
         lock::pid_alive(h.pid) && port_answers(note_port(h.note.as_ref()))

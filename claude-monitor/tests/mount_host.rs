@@ -209,6 +209,32 @@ fn ask(port: u16, method: &str, path: &str, headers: &[&str], body: &[u8]) -> Re
     }
 }
 
+/// A process named `claude` waiting in `cwd`: what the monitor's probes would link to the lone
+/// session there. Stopped when dropped.
+struct StandIn(std::process::Child);
+
+impl StandIn {
+    fn spawn(bin: &Path, cwd: &Path) -> Self {
+        std::fs::create_dir_all(bin).unwrap();
+        // A link, not a copy: macOS kills a copied system binary for its signature.
+        let exe = bin.join("claude");
+        std::os::unix::fs::symlink("/bin/sleep", &exe).unwrap();
+        let child = std::process::Command::new(&exe)
+            .arg("600")
+            .current_dir(cwd)
+            .spawn()
+            .unwrap();
+        Self(child)
+    }
+}
+
+impl Drop for StandIn {
+    fn drop(&mut self) {
+        self.0.kill().ok();
+        self.0.wait().ok();
+    }
+}
+
 /// A one-prompt Claude session in `store`, in the project at `cwd`.
 fn write_session(store: &Path, cwd: &str, sid: &str) {
     let project = store.join(cwd.replace('/', "-"));
@@ -270,7 +296,12 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
     // The host's own world: its sessions, its cache root, its state.
     let store = base.join("host-projects");
     let hosted = "5a5a5a5a-0000-4000-8000-000000004260";
-    write_session(&store, "/tmp/tern-harbour", hosted);
+    let harbour = base.join("tern-harbour");
+    std::fs::create_dir_all(&harbour).unwrap();
+    write_session(&store, harbour.to_str().unwrap(), hosted);
+    // An agent process in the session's directory, which the monitor's own index would link to
+    // it (a lone agent in a session's directory is that session's): this host never looks.
+    let _agent = StandIn::spawn(&base.join("bin"), &harbour);
     let root = base.join("host-cache");
     let state = base.join("host-state");
     std::fs::create_dir_all(&root).unwrap();
@@ -315,7 +346,8 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
     serve(listener, table);
     let get = |path: &str| ask(port, "GET", &format!("{PREFIX}{path}"), &[SIGNED_IN], b"");
 
-    // Signed out, the host refuses before the table runs; outside its path, the table is not there.
+    // The host's own sign-in and its own path are the host's, in front of the table: what the
+    // contract asks of a host, shown working with the table behind it.
     let out = ask(port, "GET", &format!("{PREFIX}api/sessions"), &[], b"");
     assert_eq!(out.code, "401 Unauthorized", "{}", out.text());
     let beside = ask(port, "GET", "/api/sessions", &[SIGNED_IN], b"");
@@ -333,7 +365,8 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
         page.text()
     );
 
-    // The host's sessions and not the environment's, with nothing read off this machine's processes.
+    // The host's sessions and not the environment's, and nothing read off this machine's
+    // processes: the agent beside the session is not linked to it.
     let list = get("api/sessions");
     assert_eq!(list.code, "200 OK", "{}", list.text());
     let list: serde_json::Value = serde_json::from_slice(&list.body).unwrap();
@@ -413,7 +446,7 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
     }
 
     // Another site's request is refused by the host's sign-in, a GET with a side effect
-    // included, and the hide list is never written.
+    // included (the table cannot tell one from the page's own), and the hide list is never written.
     let hide = format!("{PREFIX}api/ignore?add=s%3A{hosted}");
     for from in [
         "Sec-Fetch-Site: cross-site",
@@ -438,7 +471,19 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
         "and never the environment's"
     );
 
-    // Each route's body limit is the table's: one byte over is refused before it is read.
+    // Each route's body limit is the table's, read by route: `hold` takes a document far larger
+    // than any other route's body, and one byte over its own is refused before it is read.
+    let general = routes::body_limit("api/sessions");
+    assert!(routes::body_limit("api/mdrev/hold") > general);
+    let large = vec![b' '; general + 1];
+    let held = ask(
+        port,
+        "POST",
+        &format!("{PREFIX}api/mdrev/hold"),
+        &[SIGNED_IN],
+        &large,
+    );
+    assert_ne!(held.code, "413 Payload Too Large", "{}", held.text());
     let over = routes::body_limit("api/mdrev/hold") + 1;
     let length = format!("Content-Length: {over}");
     let big = ask(
@@ -470,7 +515,8 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
     assert_eq!(packed.header("content-encoding"), Some("gzip"));
     assert!(packed.body.starts_with(&[0x1f, 0x8b]));
 
-    // The host's root says a host holds it, so a monitor started over it is refused, not sent here.
+    // The host's root says a host holds it, which is what refuses a monitor started over it
+    // (`root_claim`'s own test holds the refusal).
     let lock: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("LOCK")).unwrap()).unwrap();
     assert_eq!(lock["note"]["holder"], "host", "{lock}");

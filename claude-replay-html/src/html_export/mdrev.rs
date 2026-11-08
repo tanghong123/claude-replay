@@ -247,7 +247,7 @@ pub(super) struct Viewer {
     kind: KeyKind,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum KeyKind {
     /// The review prefix's: shared review — threads, hide, Share, pairing, Push.
     Viewer,
@@ -262,7 +262,8 @@ fn shares(viewer: Option<&Viewer>) -> bool {
     viewer.is_some_and(|v| v.kind == KeyKind::Viewer)
 }
 
-/// mdrev's state directory, as installed with the kit: none without a kit.
+/// mdrev's state directory, as installed with the kit: none without a kit, or when the host
+/// gave none.
 #[cfg(not(any(test, feature = "hermetic-tests")))]
 fn state_dir() -> Option<PathBuf> {
     release()?.state.clone()
@@ -276,7 +277,17 @@ fn state_dir() -> Option<PathBuf> {
 /// table, and the notes key below would otherwise be minted into this machine's `~/.mdrev`.
 #[cfg(not(any(test, feature = "hermetic-tests")))]
 fn viewer() -> Option<Viewer> {
-    let state_dir = state_dir()?;
+    viewer_in(state_dir()?)
+}
+
+#[cfg(any(test, feature = "hermetic-tests"))]
+fn viewer() -> Option<Viewer> {
+    None
+}
+
+/// The viewer key in `state_dir`, if mdrev has made one there.
+#[cfg_attr(all(feature = "hermetic-tests", not(test)), allow(dead_code))]
+fn viewer_in(state_dir: PathBuf) -> Option<Viewer> {
     let key = std::fs::read_to_string(state_dir.join("token")).ok()?;
     let key = key.trim().to_string();
     (!key.is_empty()).then_some(Viewer {
@@ -286,22 +297,27 @@ fn viewer() -> Option<Viewer> {
     })
 }
 
+/// The notes key, read on every request to the pane's prefix: file `notes-token` in mdrev's state
+/// directory ([`notes_key_in`]). Fixed to `None` in a test build, like [`viewer`].
+#[cfg(not(any(test, feature = "hermetic-tests")))]
+fn notes_key() -> Option<Viewer> {
+    notes_key_in(state_dir()?)
+}
+
 #[cfg(any(test, feature = "hermetic-tests"))]
-fn viewer() -> Option<Viewer> {
+fn notes_key() -> Option<Viewer> {
     None
 }
 
-/// The notes key, read on every request to the pane's prefix: file `notes-token` in mdrev's state
-/// directory. mdrev's own viewer makes it beside the viewer key; where mdrev has a state directory
-/// and none is there yet, the host makes it the contract's way — 32 random bytes as 64 lowercase
-/// hex characters and a newline, mode 0600, never replacing one (`create_new`, so a race with
-/// mdrev leaves whichever came first). No state directory, no key: mdrev has not run here, and the
-/// pane stays keyless as before. Fixed to `None` in a test build, like [`viewer`].
-#[cfg(not(any(test, feature = "hermetic-tests")))]
-fn notes_key() -> Option<Viewer> {
+/// The notes key in `state_dir`. mdrev's own viewer makes it beside the viewer key; where mdrev
+/// has a state directory and none is there yet, the host makes it the contract's way — 32 random
+/// bytes as 64 lowercase hex characters and a newline, mode 0600, never replacing one
+/// (`create_new`, so a race with mdrev leaves whichever came first). No such directory, no key:
+/// mdrev has not run here, and the pane stays keyless as before.
+#[cfg_attr(all(feature = "hermetic-tests", not(test)), allow(dead_code))]
+fn notes_key_in(state_dir: PathBuf) -> Option<Viewer> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
-    let state_dir = state_dir()?;
     let file = state_dir.join("notes-token");
     if !file.exists() && state_dir.is_dir() {
         if let Some(fresh) = super::serve::mint_token() {
@@ -322,11 +338,6 @@ fn notes_key() -> Option<Viewer> {
         key,
         kind: KeyKind::Notes,
     })
-}
-
-#[cfg(any(test, feature = "hermetic-tests"))]
-fn notes_key() -> Option<Viewer> {
-    None
 }
 
 /// The largest body `hold` takes: a document at the artifact cap, plus its JSON framing.
@@ -1710,6 +1721,35 @@ mod tests {
                 state: None,
             }
         }
+    }
+
+    /// #s426: the keys come from the state directory given at install, and from nowhere else. A
+    /// directory mdrev has run in gives its viewer key and a notes key, made there once; one it
+    /// has not (no such directory) gives neither and makes nothing.
+    #[test]
+    fn the_keys_come_from_the_given_state_directory() {
+        let dir = scratch("keys");
+        let state = dir.join("state");
+        assert!(viewer_in(state.clone()).is_none());
+        assert!(notes_key_in(state.clone()).is_none());
+        assert!(!state.exists(), "no directory is made");
+
+        std::fs::create_dir_all(&state).unwrap();
+        assert!(viewer_in(state.clone()).is_none(), "no token yet");
+        std::fs::write(state.join("token"), "viewer-key\n").unwrap();
+        let viewer = viewer_in(state.clone()).expect("the viewer key");
+        assert_eq!(
+            (viewer.key.as_str(), viewer.kind),
+            ("viewer-key", KeyKind::Viewer)
+        );
+        assert_eq!(viewer.state_dir, state);
+
+        let notes = notes_key_in(state.clone()).expect("a notes key, made");
+        assert_eq!(notes.kind, KeyKind::Notes);
+        assert_eq!(notes.key.len(), 64, "{}", notes.key);
+        let again = notes_key_in(state.clone()).expect("the same one");
+        assert_eq!(again.key, notes.key, "never replaced");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #s426: this user's mdrev state directory is `MDREV_STATE_DIR` when it is absolute, else

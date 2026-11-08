@@ -47,7 +47,10 @@ pub struct Serves {
     pub files: bool,
     /// Opening the file manager on the serving machine: `/__reveal`.
     pub reveal: bool,
-    /// Sending a prompt, granting a pane, and reading and answering a dialog.
+    /// Sending a prompt, granting a pane, reading and answering a dialog, and filing, editing or
+    /// removing an mdrev note (which writes into a repository on the serving machine). A table
+    /// whose index leaves this machine's processes alone serves none of them: a write acts on a
+    /// session running here, and without the process probes every session reads as finished.
     pub writes: bool,
     /// mdrev's shared review: the detached Markdown tab's prefix, `/api/mdrev-review/`.
     pub review: bool,
@@ -71,22 +74,26 @@ impl Serves {
         review: false,
     };
 
-    /// Whether a request for `name` with `query` is inside the ceiling. mdrev's routes read a file
-    /// unless their `root` is `held` (text the transcript carries), so with files off only `hold`
-    /// and held text are served there.
-    pub fn admits(&self, name: &str, query: &str) -> bool {
+    /// Whether a `method` request for `name` with `query` is inside the ceiling. mdrev's routes
+    /// read a file unless their `root` is `held` (text the transcript carries), so with files off
+    /// only `hold` and held text are served there; and any of them but a GET or `hold` files or
+    /// changes a note, which is a write. So is anything but a GET under shared review's prefix.
+    pub fn admits(&self, method: &str, name: &str, query: &str) -> bool {
         match name {
             "api/send" | "api/consent" | "api/dialog" | "api/answer" => self.writes,
             "file" => self.files,
             "__reveal" => self.reveal,
-            _ if name.starts_with("api/mdrev-review/") => self.review,
+            _ if name.starts_with("api/mdrev-review/") => {
+                self.review && (method == "GET" || self.writes)
+            }
             _ => match name.strip_prefix("api/mdrev/") {
-                Some(route) if !self.files => {
-                    route == "hold"
-                        || query_get(query, "root")
-                            .map(index::percent_decode)
-                            .as_deref()
-                            == Some("held")
+                Some("hold") => true,
+                Some(_) if method != "GET" && !self.writes => false,
+                Some(_) if !self.files => {
+                    query_get(query, "root")
+                        .map(index::percent_decode)
+                        .as_deref()
+                        == Some("held")
                 }
                 _ => true,
             },
@@ -153,19 +160,26 @@ pub fn handler(backend: Arc<Backend>, front: Frontend) -> RouteHandler {
 
 /// The table over `backend`, reading `tools` of other tools' state on the machine (#s426). The
 /// monitor reads this user's ([`handler`]); a host passes its own or [`OtherTools::NONE`]. Both
-/// are installed once per process, as the file-stamp key and the render and mask policies are, so
-/// a process mounts one table.
+/// are installed once per process, as the file-stamp key and the render and mask policies are:
+/// the first table's hold, and a process mounts one table.
 pub fn mounted(backend: Arc<Backend>, front: Frontend, tools: OtherTools) -> RouteHandler {
-    install_mdrev(&backend.scratch, tools.mdrev_state);
-    claude_replay_core::claude_inbox::install_key_source(tools.relay_key.unwrap_or(no_relay_key));
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        install_mdrev(&backend.scratch, tools.mdrev_state);
+        claude_replay_core::claude_inbox::install_key_source(
+            tools.relay_key.unwrap_or(no_relay_key),
+        );
+    });
     Arc::new(move |req: &Request| dispatch(&backend, &front, req))
 }
 
 /// What a table reads of other tools' state on its machine, outside the state directory its
 /// index is given (#s426, `design/backend-mount.md`).
 pub struct OtherTools {
-    /// mdrev's state directory, where its viewer and notes keys are. `None`: the preview pane
-    /// files no notes, and the shared-review prefix serves what the pane's does.
+    /// mdrev's state directory, where its viewer and notes keys are. `None`: no key is read or
+    /// made, so the shared-review prefix serves what the pane's does, and a note the pane files
+    /// goes without the notes key. Filing a note is a write, which only a ceiling with `writes`
+    /// serves ([`Serves`]); mdrev-cli itself runs in the host's environment either way.
     pub mdrev_state: Option<PathBuf>,
     /// Where a relayed message's signing key is read from (aries-inbox's, for the monitor).
     /// `None`: nothing verifies, and a relayed message shows as the text it is.
@@ -216,10 +230,16 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
     if let Some(asset) = ui::asset(name) {
         return asset;
     }
-    // An index that leaves this machine alone reads no other app's session list either: the
-    // Arrange choice's readers are the Claude and Codex apps' and herdr's (#s426).
-    let arranges = name != "api/layout" || backend.idx.probes();
-    if !backend.serves.admits(name, query) || !arranges {
+    // An index that leaves this machine alone (#s426) serves no writes, whatever its ceiling says:
+    // a write acts on a session running here, which it cannot see. Nor does it read another app's
+    // session list: the Arrange choice's readers are the Claude and Codex apps' and herdr's.
+    let probes = backend.idx.probes();
+    let ceiling = Serves {
+        writes: backend.serves.writes && probes,
+        ..backend.serves
+    };
+    let arranges = name != "api/layout" || probes;
+    if !ceiling.admits(req.method, name, query) || !arranges {
         return HttpResponse::not_found("not served by this host");
     }
     match name {
@@ -576,8 +596,11 @@ mod tests {
             "__reveal",
             "api/mdrev-review/review",
         ] {
-            assert!(Serves::ALL.admits(name, ""), "{name}");
-            assert!(!host.admits(name, ""), "{name} is outside a host's default");
+            assert!(Serves::ALL.admits("POST", name, ""), "{name}");
+            assert!(
+                !host.admits("POST", name, ""),
+                "{name} is outside a host's default"
+            );
         }
         for name in [
             "api/sessions",
@@ -588,25 +611,58 @@ mod tests {
             "file",
             "api/mdrev/open",
         ] {
-            assert!(host.admits(name, ""), "{name}");
+            assert!(host.admits("GET", name, ""), "{name}");
         }
+        // A note filed, edited or removed writes into a repository on the serving machine.
+        for (method, route) in [
+            ("POST", "api/mdrev/annotations"),
+            ("PATCH", "api/mdrev/annotations/n1"),
+            ("DELETE", "api/mdrev/annotations/n1"),
+            ("POST", "api/mdrev/annotations/n1/replies"),
+        ] {
+            assert!(Serves::ALL.admits(method, route, ""), "{method} {route}");
+            assert!(
+                !host.admits(method, route, ""),
+                "{method} {route} is a write"
+            );
+        }
+        let review_reads = Serves {
+            review: true,
+            ..host
+        };
+        assert!(review_reads.admits("GET", "api/mdrev-review/review", ""));
+        assert!(
+            !review_reads.admits("POST", "api/mdrev-review/review/push", ""),
+            "a push is a write"
+        );
+        assert!(
+            host.admits("GET", "api/mdrev/annotations", ""),
+            "reading notes"
+        );
+        assert!(
+            host.admits("POST", "api/mdrev/hold", ""),
+            "holding text writes nothing"
+        );
         let reads = Serves {
             files: false,
             ..host
         };
-        assert!(!reads.admits("file", "path=%2Fa&sig=x"));
-        assert!(!reads.admits("api/mdrev/open", "path=%2Fa&sig=x"));
-        assert!(!reads.admits("api/mdrev/text", "root=%2Frepo&path=a.md&cap=x"));
+        assert!(!reads.admits("GET", "file", "path=%2Fa&sig=x"));
+        assert!(!reads.admits("GET", "api/mdrev/open", "path=%2Fa&sig=x"));
+        assert!(!reads.admits("GET", "api/mdrev/text", "root=%2Frepo&path=a.md&cap=x"));
         assert!(
-            !reads.admits("api/mdrev/stat", ""),
+            !reads.admits("GET", "api/mdrev/stat", ""),
             "no root is a file's, refused"
         );
         assert!(
-            reads.admits("api/mdrev/hold", ""),
+            reads.admits("POST", "api/mdrev/hold", ""),
             "held text is not a file"
         );
-        assert!(reads.admits("api/mdrev/text", "root=held&path=h%2Fa.md&cap=x"));
-        assert!(reads.admits("mdrev/1.1.77/mdrev.js", ""), "the bundle");
+        assert!(reads.admits("GET", "api/mdrev/text", "root=held&path=h%2Fa.md&cap=x"));
+        assert!(
+            reads.admits("GET", "mdrev/1.1.77/mdrev.js", ""),
+            "the bundle"
+        );
 
         // Through the table: the writes answer 404 before the route runs, and a read is answered.
         let state = std::env::temp_dir().join(format!("cm-routes-serves-{}", std::process::id()));
@@ -656,6 +712,35 @@ mod tests {
             );
         }
         assert!(body(&dispatch(&alone, &front, &get("api/sessions", ""))).contains("\"groups\""));
+
+        // Nor does it serve writes, even under a ceiling that says it does: without the probes
+        // every session reads as finished, and a send would resume one that is still running.
+        let blind = make_backend_with("serves-blind", Serves::ALL, Index::without_process_probes);
+        for (method, name) in [
+            ("POST", "api/send"),
+            ("POST", "api/consent"),
+            ("GET", "api/dialog"),
+            ("POST", "api/mdrev/annotations"),
+        ] {
+            let write = Request {
+                method,
+                body: b"{}",
+                authenticated: true,
+                ..get(name, "target=s1")
+            };
+            let refused = dispatch(&blind, &front, &write);
+            assert_eq!(
+                (refused.code, body(&refused).as_str()),
+                ("404 Not Found", "not served by this host"),
+                "{method} {name}"
+            );
+        }
+        let file = dispatch(&blind, &front, &get("file", "path=%2Fnone&sig=x"));
+        assert_ne!(
+            body(&file),
+            "not served by this host",
+            "its files are still served"
+        );
     }
 
     /// #s426: the body limits a host that mounts the table enforces, the contract's numbers.
