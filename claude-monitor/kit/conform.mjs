@@ -362,17 +362,44 @@ if (ARGS.origin) {
 }
 
 // The reader's sign-in: sent with every request but the ones that ask what happens without it.
+// Checked once here, and never quoted: a header's value is the reader's credential.
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f]/;
 const AUTH = {};
-for (const line of ARGS.headers) {
+for (const [i, line] of ARGS.headers.entries()) {
   const at = line.indexOf(":");
-  if (at <= 0) usage(`--header takes "Name: value", not ${JSON.stringify(line.slice(0, 20))}`);
-  AUTH[line.slice(0, at).trim().toLowerCase()] = line.slice(at + 1).trim();
+  const name = at > 0 ? line.slice(0, at).trim() : "";
+  if (!HEADER_NAME.test(name)) usage(`--header ${i + 1} is not "Name: value" (its text is not shown)`);
+  const value = line.slice(at + 1).trim();
+  if (CONTROL.test(value)) usage(`--header ${i + 1} holds a line break or another control character (its value is not shown)`);
+  AUTH[name.toLowerCase()] = value;
 }
-if (ARGS.cookies.length) {
-  for (const c of ARGS.cookies) if (!c.includes("=")) usage("--cookie takes name=value");
-  AUTH.cookie = [AUTH.cookie, ...ARGS.cookies].filter(Boolean).join("; ");
+for (const [i, c] of ARGS.cookies.entries()) {
+  const at = c.indexOf("=");
+  if (at <= 0 || !HEADER_NAME.test(c.slice(0, at).trim())) usage(`--cookie ${i + 1} is not name=value (its text is not shown)`);
+  if (CONTROL.test(c) || c.includes(";")) usage(`--cookie ${i + 1} holds a control character or a ";" (its value is not shown)`);
+}
+if (ARGS.cookies.length) AUTH.cookie = [AUTH.cookie, ...ARGS.cookies].filter(Boolean).join("; ");
+try {
+  new Headers(AUTH);
+} catch {
+  usage("a --header or --cookie is not one a request can carry (its value is not shown)");
 }
 const SIGNED_IN = Object.keys(AUTH).length > 0;
+
+// Every value the sign-in carries, to keep out of anything printed.
+const SECRETS = Object.values(AUTH)
+  .flatMap((v) => [v, ...v.split(/[;,\s=]+/)])
+  .map((v) => v.trim())
+  .filter((v) => v.length >= 6);
+
+/** A line fit to print: no part of the sign-in, and no stamp a URL or a reply carried. */
+function redact(text) {
+  let s = String(text);
+  for (const secret of SECRETS) s = s.split(secret).join("<sign-in>");
+  return s.replace(/((?:^|[?&\s"'{,])(?:att_)?(?:f?sig|cap)["']?\s*[=:]\s*["']?)[^&\s"',}]+/g, "$1<stamp>");
+}
 
 // -------------------------------------------------------------------------------------- HTTP
 
@@ -405,22 +432,56 @@ class Reply {
   }
 }
 
+/** `path` joined to the base, or null where it leaves it (an absolute URL, `//host`, `\\host`, or
+ * `..` past the base): nothing is ever sent there, the reader's sign-in least of all. */
+function underBase(path) {
+  let url;
+  try {
+    url = new URL(String(path).replace(/^\/+/, ""), BASE);
+  } catch {
+    return null;
+  }
+  return url.origin === BASE.origin && url.href.startsWith(BASE.href) ? url : null;
+}
+
+/** A request as a line fit to print: the path under the base, its stamps left out. */
+function described(method, url) {
+  return redact(`${method} /${url.href.slice(BASE.href.length)}`);
+}
+
 /** One request to the base, as the page would make it: relative to the base, cookies and the
- * reader's sign-in sent, and the page's own origin on anything but a GET. */
-async function ask(method, path, { body, headers = {}, signedIn = true } = {}) {
-  const url = new URL(path.replace(/^\/+/, ""), BASE);
+ * reader's sign-in sent, and the page's own origin on anything but a GET. With `noDownload`, a
+ * reply that is a download (`application/octet-stream`) is not read: its headers are kept and its
+ * body cancelled. */
+async function ask(method, path, { body, headers = {}, signedIn = true, noDownload = false } = {}) {
+  const url = underBase(path);
+  if (!url) fail(`${redact(String(path).slice(0, 60))} is outside the base: nothing is sent there`);
   const h = new Headers(signedIn ? AUTH : {});
   for (const [k, v] of Object.entries(headers)) h.set(k, v);
   if (method !== "GET" && method !== "HEAD" && !h.has("origin")) h.set("origin", ORIGIN);
-  const what = `${method} /${url.href.slice(BASE.href.length)}`;
+  const what = described(method, url);
   let res;
   try {
     res = await fetch(url, { method, headers: h, body, redirect: "manual", signal: AbortSignal.timeout(TIMEOUT_MS) });
   } catch (e) {
-    fail(`${what}: no answer (${e.cause?.code ?? e.cause?.message ?? e.message})`);
+    fail(`${what}: no answer (${e.cause?.code ?? e.name})`);
   }
-  const bytes = Buffer.from(await res.arrayBuffer());
+  if (noDownload && mediaType(res.headers.get("content-type")) === "application/octet-stream") {
+    await res.body?.cancel().catch(() => {});
+    return new Reply(what, res.status, res.headers, Buffer.alloc(0));
+  }
+  let bytes;
+  try {
+    bytes = Buffer.from(await res.arrayBuffer());
+  } catch (e) {
+    fail(`${what}: the reply was cut off (${e.cause?.code ?? e.name})`);
+  }
   return new Reply(what, res.status, res.headers, bytes);
+}
+
+/** A content type's media type, lower-cased, without its parameters. */
+function mediaType(type) {
+  return String(type ?? "").split(";")[0].trim().toLowerCase();
 }
 
 /** The page at the base, loaded as a browser loads it: a redirect within the base is followed, at
@@ -452,8 +513,9 @@ async function loadPage() {
  * that refused it unread may reset the connection before its answer is read. */
 async function askWithLength(method, path, length) {
   const { connect } = await import(BASE.protocol === "https:" ? "node:tls" : "node:net");
-  const url = new URL(path.replace(/^\/+/, ""), BASE);
-  const what = `${method} /${url.href.slice(BASE.href.length)}`;
+  const url = underBase(path);
+  if (!url) fail("a path outside the base: nothing is sent there");
+  const what = described(method, url);
   const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
   return new Promise((resolve) => {
     let got = Buffer.alloc(0);
@@ -524,6 +586,7 @@ async function rule(id, section, says, fn) {
     status = "fail";
     detail = e instanceof Fail ? e.message : `${e.name}: ${e.message}`;
   }
+  detail = redact(detail);
   results.push({ id, section, rule: says, status, detail });
   if (!ARGS.json) {
     if (section !== printedSection) {
@@ -881,9 +944,10 @@ async function main() {
       return skip("the pull pointed at no committed records");
     }
     const reply = await ask("GET", `records?session=${enc(sid)}&from=${ext.offset}&len=${ext.len}&epoch=${walk.epoch}`);
+    if (reply.status === 404) served("/records", false);
     if (reply.status !== 200) fail(`${reply.what} answered ${reply.status}: ${brief(reply.text())}`);
     const problems = [];
-    if (!/^application\/json\b/i.test(reply.header("content-type") ?? "")) problems.push(`its type is ${show(reply.header("content-type"))}`);
+    if (mediaType(reply.header("content-type")) !== "application/json") problems.push(`its type is ${show(reply.header("content-type"))}`);
     if (reply.bytes.length !== ext.len) problems.push(`it is ${reply.bytes.length} bytes where the pointer said ${ext.len}`);
     const lines = splitLines(reply.bytes);
     let at = ext.offset;
@@ -1399,11 +1463,14 @@ async function main() {
 
   // -------------------------------------------------------------------------------- files
   const offered = all.flatMap(([rec]) => offers(rec)).filter((o) => typeof o.fsig === "string" && o.fsig);
+  // The path /file served whole, which mdrev's open must then open too.
+  let fileOpened = null;
   await rule("file.offered", S.file, "an offered path with its file stamp answers a status the table lists, and every 200 carries nosniff and the sandbox policy", async () => {
     if (!walk.ok) return noWalk();
     if (!offered.length) return skip("the session offers no path with a file stamp");
     const o = offered[0];
-    const reply = await ask("GET", `file?path=${enc(o.path)}&sig=${enc(o.fsig)}`);
+    // A download is not read: its headers say what the rule asks, and it may be large.
+    const reply = await ask("GET", `file?path=${enc(o.path)}&sig=${enc(o.fsig)}`, { noDownload: true });
     if (reply.status === 404) {
       served("/file", false);
       return skip("404: not served (a path can only be copied), or the path was never offered");
@@ -1411,17 +1478,19 @@ async function main() {
     served("/file", true);
     if ([401, 403, 410, 413, 415].includes(reply.status)) return `${reply.status}: ${brief(reply.text())}`;
     if (reply.status !== 200) fail(`${reply.what} answered ${reply.status}`);
-    const type = (reply.header("content-type") ?? "").toLowerCase();
+    fileOpened = o.path;
+    const raw = reply.header("content-type") ?? "";
+    const type = mediaType(raw);
     const problems = [];
     const image = /^image\/(png|jpeg|gif|webp|bmp|x-icon|avif)$/.test(type);
-    const text = type === "text/plain; charset=utf-8";
+    const text = type === "text/plain" && /;\s*charset\s*=\s*"?utf-8"?\s*(;|$)/i.test(raw);
     const download = type === "application/octet-stream";
-    if (!image && !text && !download) problems.push(`its type is ${show(type)}`);
+    if (!image && !text && !download) problems.push(`its type is ${show(raw)}`);
     if (download && !/^attachment\b/i.test(reply.header("content-disposition") ?? "")) problems.push("a download without Content-Disposition: attachment");
     if (text && !isUtf8(reply.bytes)) problems.push("served as text but its bytes are not UTF-8");
     if ((reply.header("x-content-type-options") ?? "").toLowerCase() !== "nosniff") problems.push(`X-Content-Type-Options is ${show(reply.header("x-content-type-options"))}`);
     if (!/(^|[;,]\s*)sandbox\b/i.test(reply.header("content-security-policy") ?? "")) problems.push(`Content-Security-Policy is ${show(reply.header("content-security-policy"))}`);
-    return verdict(problems, `200 ${type}`);
+    return verdict(problems, `200 ${raw}`);
   });
 
   await rule("file.not-offered", S.file, "no path, or a path with a stamp nobody minted, gets 404 (401 when not paired)", async () => {
@@ -1532,6 +1601,9 @@ async function main() {
   await rule("mermaid.runtime", S.mermaid, "the Mermaid runtime the page head names is served, joined to the base", async () => {
     if (!page) return skip("the base serves no page to name the runtime");
     if (!page.mermaid) return skip("the page names no runtime (<meta name=\"mermaid-runtime\">)");
+    // The page joins the path to its base; one that leaves the base is never asked for, since the
+    // reader's sign-in would go with it.
+    if (!underBase(page.mermaid)) fail("the page names a runtime outside the base: nothing was sent there");
     const reply = await ask("GET", page.mermaid);
     if (reply.status === 404) {
       served("/mermaid/", false);
@@ -1810,6 +1882,6 @@ function finish() {
 }
 
 main().catch((e) => {
-  process.stderr.write(`conform: ${e instanceof Fail ? e.message : e.stack ?? e}\n`);
+  process.stderr.write(`conform: the check stopped: ${redact(e instanceof Fail ? e.message : (e.stack ?? e))}\n`);
   process.exitCode = 2;
 });
