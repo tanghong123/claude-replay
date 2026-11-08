@@ -5,7 +5,11 @@ import vm from "node:vm";
 
 const controlSource = await readFile(new URL("../src/codex-ui/control-store.js", import.meta.url), "utf8");
 const nativeSource = await readFile(new URL("../src/codex-ui/native-mode.js", import.meta.url), "utf8");
-const loadClass = (source, name, context) => vm.runInNewContext(source.replace(/^import .*\n/gm, "").replace(`export class ${name}`, `class ${name}`) + `\n${name}`, context);
+// #s429: the modules reach the page through view-root.js, whose import is stripped below; the real
+// module runs in the same context, over this context's own document.
+const viewRootSource = await readFile(new URL("../src/codex-ui/view-root.js", import.meta.url), "utf8");
+const VIEW_ROOT = `const { viewRoot, page } = (() => { ${viewRootSource.replace(/^export /gm, "")}\n  return { viewRoot, page };\n})();\n`;
+const loadClass = (source, name, context) => vm.runInNewContext(VIEW_ROOT + source.replace(/^import .*\n/gm, "").replace(`export class ${name}`, `class ${name}`) + `\n${name}`, context);
 
 function fixture() {
   const input = { value: "Claude send", focused: 0, dispatchEvent() {}, focus() { this.focused++; } }, send = { disabled: false };

@@ -26,13 +26,14 @@ export function ownsNativeServer(status) {
 }
 
 /** Cancel and Escape keep the server running. The caller sends Stop only after confirmation. */
-export function confirmNativeShutdown(document, returnFocus, { owned = true, activeTurns = [] } = {}) {
-  const dialog = document.createElement("dialog");
+/** `host` is the document the dialog opens in (the page's; a test passes its own). */
+export function confirmNativeShutdown(host, returnFocus, { owned = true, activeTurns = [] } = {}) {
+  const dialog = host.createElement("dialog");
   dialog.id = "nativeStopDialog"; dialog.className = "production-native-stop";
   dialog.setAttribute("aria-labelledby", "nativeStopTitle");
   dialog.setAttribute("aria-describedby", "nativeStopDescription");
-  const title = document.createElement("h2"); title.id = "nativeStopTitle"; title.textContent = owned ? "Stop Codex server?" : "Disconnect Codex native?";
-  const description = document.createElement("p"); description.id = "nativeStopDescription";
+  const title = host.createElement("h2"); title.id = "nativeStopTitle"; title.textContent = owned ? "Stop Codex server?" : "Disconnect Codex native?";
+  const description = host.createElement("p"); description.id = "nativeStopDescription";
   const turns = activeTurns.map(turn => turn.turnId
     ? `Turn ${turn.turnId} in ${turn.threadName || turn.threadId}`
     : `Active conversation ${turn.threadName || turn.threadId} (turn identity unavailable)`);
@@ -40,9 +41,9 @@ export function confirmNativeShutdown(document, returnFocus, { owned = true, act
   description.textContent = running + (owned
     ? "Connected Codex apps will disconnect, and running tasks will be interrupted. Saved conversation history will remain available."
     : "Monitor will disconnect while native work is active or pending. The external server and its turns keep running. In-flight sends may have an uncertain result; check their receipts before sending again.");
-  const actions = document.createElement("div"); actions.className = "production-native-stop-actions";
-  const cancel = document.createElement("button"); cancel.type = "button"; cancel.id = "nativeStopCancel"; cancel.textContent = "Cancel"; cancel.autofocus = true;
-  const stop = document.createElement("button"); stop.type = "button"; stop.id = "nativeStopConfirm"; stop.textContent = owned ? "Stop server" : "Disconnect";
+  const actions = host.createElement("div"); actions.className = "production-native-stop-actions";
+  const cancel = host.createElement("button"); cancel.type = "button"; cancel.id = "nativeStopCancel"; cancel.textContent = "Cancel"; cancel.autofocus = true;
+  const stop = host.createElement("button"); stop.type = "button"; stop.id = "nativeStopConfirm"; stop.textContent = owned ? "Stop server" : "Disconnect";
   actions.append(cancel, stop); dialog.append(title, description, actions);
   return new Promise(resolve => {
     let settled = false;
@@ -57,7 +58,7 @@ export function confirmNativeShutdown(document, returnFocus, { owned = true, act
     dialog.addEventListener("close", () => settle(false), { once: true });
     dialog.addEventListener("cancel", event => { event.preventDefault(); settle(false); });
     cancel.onclick = () => settle(false); stop.onclick = () => settle(true);
-    viewRoot.layer().append(dialog); dialog.showModal(); cancel.focus();
+    host.body.append(dialog); dialog.showModal(); cancel.focus();
   });
 }
 /** Keep the shared-server benefit and setup prompt before launcher-dependent steps. */

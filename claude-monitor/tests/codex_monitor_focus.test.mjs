@@ -20,6 +20,9 @@ for (const shared of [false, true]) test(`${shared ? "shared" : "ordinary"} phon
       composeFab: { classList: { contains: () => false } },
       dockCompose: { classList: { toggle() {} }, setAttribute() {} },
       app: { classList: { toggle: (name, value) => calls.push([name, value]) } },
+      // #s429: the view's state is on its own element, and its focus is read through its root.
+      sessionView: { classList: { toggle: (name, value) => calls.push([name, value]) } },
+      viewRoot: { active: () => active }, page: { body: () => ({ dataset: {} }) },
       byId: () => ({ textContent: "Session" }), composeNote: {}, fitCompose: () => calls.push("ordinary-fit"),
       placeDeskCompose: () => calls.push("desk-place"),
     };

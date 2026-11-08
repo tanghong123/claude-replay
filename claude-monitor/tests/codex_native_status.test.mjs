@@ -5,6 +5,10 @@ import vm from "node:vm";
 import { appendDesktopHelp, renderNativeMenu, renderNativeServerStatus, nativeServerPresentation, positionNativeMenu, readNativeStatus } from "../src/codex-ui/native-menu.js";
 
 const source = await readFile(new URL("../src/codex-ui/native-mode.js", import.meta.url), "utf8");
+// #s429: the modules reach the page through view-root.js, whose import is stripped below; the real
+// module runs in the same context, over this context's own document.
+const viewRootSource = await readFile(new URL("../src/codex-ui/view-root.js", import.meta.url), "utf8");
+const VIEW_ROOT = `const { viewRoot, page } = (() => { ${viewRootSource.replace(/^export /gm, "")}\n  return { viewRoot, page };\n})();\n`;
 const available = { ok: true, serverListening: true, runtime: "available" };
 
 function fixture(initial, clipboard) {
@@ -20,7 +24,7 @@ function fixture(initial, clipboard) {
     usesNativeControls: () => false, isCodexSession: () => false, fetch: async (path, options) => { calls.push({ path, options }); return response; },
     // #s416: the page reaches its server through the backend handle; here it is this context's fetch.
     backend: () => ({ fetch: (path, init) => context.fetch(path, init), url: path => path }) };
-  const NativeMode = vm.runInNewContext(source.replace(/^import .*\n/gm, "").replace("export class NativeModeControls", "class NativeModeControls") + "\nNativeModeControls", context);
+  const NativeMode = vm.runInNewContext(VIEW_ROOT + source.replace(/^import .*\n/gm, "").replace("export class NativeModeControls", "class NativeModeControls") + "\nNativeModeControls", context);
   const controller = Object.assign(Object.create(NativeMode.prototype), { mode: "off", view: "ordinary", ordinary: { paint() {} },
     actions: { toast(message) { toasts.push(message); } },
     choice: node(), button: node(), newButton: node(), menu: Object.assign(node(), { ownerDocument: document }), appendDesktopHelp() {}, positionMenu() {},

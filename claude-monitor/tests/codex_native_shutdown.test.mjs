@@ -5,6 +5,10 @@ import vm from "node:vm";
 import { confirmNativeShutdown, ownsNativeServer, readNativeStatus } from "../src/codex-ui/native-menu.js";
 
 const source = await readFile(new URL("../src/codex-ui/native-mode.js", import.meta.url), "utf8");
+// #s429: the modules reach the page through view-root.js, whose import is stripped below; the real
+// module runs in the same context, over this context's own document.
+const viewRootSource = await readFile(new URL("../src/codex-ui/view-root.js", import.meta.url), "utf8");
+const VIEW_ROOT = `const { viewRoot, page } = (() => { ${viewRootSource.replace(/^export /gm, "")}\n  return { viewRoot, page };\n})();\n`;
 const external = { ok: true, runtime: "activated", serverListening: true, homeProvenance: "configured", ownedServerPid: null };
 const owned = { ...external, homeProvenance: "monitor-started", ownedServerPid: 123 };
 const tick = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
@@ -34,7 +38,7 @@ function fixture(status = owned) {
     fetch: async () => { calls.push({ route: "status" }); if (statusError) throw statusError; return { ok: true, json: async () => status }; },
     // #s416: the page reaches its server through the backend handle; here it is this context's fetch.
     backend: () => ({ fetch: (path, init) => context.fetch(path, init), url: path => path }) };
-  const NativeMode = vm.runInNewContext(source.replace(/^import .*\n/gm, "").replace("export class NativeModeControls", "class NativeModeControls")
+  const NativeMode = vm.runInNewContext(VIEW_ROOT + source.replace(/^import .*\n/gm, "").replace("export class NativeModeControls", "class NativeModeControls")
     .replaceAll('await import(backend().url("/codex-workspace/api.js"))', 'await Promise.resolve({ GatewayApi: globalThis.GatewayApi })') + "\nNativeModeControls", context);
   NativeMode.prototype.paint = function () { button.disabled = this.pending; };
   const controller = new NativeMode({ actions: {} }, {
