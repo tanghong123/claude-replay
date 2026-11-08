@@ -6,6 +6,16 @@ let nextId = 0;
 let themeObserver = null;
 const generations = new WeakMap();
 const bound = new WeakSet();
+// Where the runtime the page head names is loaded from (#s423). A shared module cannot import the
+// app shell's backend handle, so the shell hands its join in (`useMermaidRuntime`), and an embedded
+// view or the native app loads the runtime from its own backend; the offline page loads the path
+// as the head writes it.
+let runtimeUrl = path => path;
+
+/** The app shell's way to the runtime: `resolve` turns the head's root path into the URL to load. */
+function useMermaidRuntime(resolve) {
+  runtimeUrl = resolve;
+}
 
 function loadMermaid() {
   if (loading) return loading;
@@ -36,7 +46,7 @@ function loadMermaid() {
         reject(new Error("The page does not declare its Mermaid runtime"));
         return;
       }
-      script.src = path;
+      script.src = runtimeUrl(path);
       document.head.append(script);
     }
   }).catch(error => { loading = null; throw error; });
@@ -236,4 +246,4 @@ function renderMermaid(root, readerReshaped) {
   }
 }
 
-export { renderMermaid, revealMermaidSource };
+export { renderMermaid, revealMermaidSource, useMermaidRuntime };

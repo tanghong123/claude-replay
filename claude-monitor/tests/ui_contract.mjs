@@ -3992,3 +3992,17 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   useBackend(before);
   console.log("#s416 backend handle cases passed");
 }
+
+// #s423: the Mermaid runtime the page head names loads through the backend handle too. The shared
+// module cannot import the handle (it is inlined into the offline page as well), so it loads the
+// head's path through a resolver, which the app shell sets to the handle's join and the offline
+// page leaves as the path itself.
+{
+  const mermaid = readFileSync(new URL("../../claude-replay-html/src/html/shared/mermaid.js", import.meta.url), "utf8");
+  assert.equal((mermaid.match(/script\.src\s*=/g) || []).length, 1, "the runtime is loaded in one place");
+  assert.match(mermaid, /script\.src = runtimeUrl\(path\);/, "that place goes through the resolver");
+  assert.match(mermaid, /let runtimeUrl = path => path;/, "the offline page loads the head's path as written");
+  const app = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  assert.match(app, /^useMermaidRuntime\(path => backend\(\)\.url\(path\)\);$/m, "the app shell's resolver is its handle");
+  console.log("#s423 Mermaid runtime cases passed");
+}

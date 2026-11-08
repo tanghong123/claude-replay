@@ -22,7 +22,7 @@ import { parseJumpQuery } from "./jump-query.js";
 import { agentRecordTargets, currentTurnIndex, escapeText, peerHue, peerLabelRest, plainText, recordForSearch, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick, replyContext } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 import { sharedKeyboardFrame } from "./phone-keyboard.js";
-import { revealMermaidSource } from "./shared/mermaid.js";
+import { revealMermaidSource, useMermaidRuntime } from "./shared/mermaid.js";
 
 // The outline row currently marked (#52) — declared ahead of the init code below, which
 // renders the navigator before the module's later statements have run.
@@ -275,6 +275,9 @@ const sessionIndex = new SessionIndexStore({
 // #s277 (design/slow-links.md §6.7, D3): a reader across a network — the test gzip and masking use —
 // reads a tail-first open's head turn by turn, in the order the view needs it; the desktop reads it
 // whole (stage 1). `?windowed=1|0` picks either path for a case.
+// The Mermaid runtime the page head names loads through the backend handle, as every other
+// request the page makes does (#s423).
+useMermaidRuntime(path => backend().url(path));
 const WINDOWED = (() => { const q = new URLSearchParams(location.search).get("windowed"); return q === "1" ? true : q === "0" ? false : !backend().local; })();
 const recordStore = new RecordStore({
   reset: () => { lastRecordCount = -1; heldRecords = null; heldTurnJump = null; fillWaiting = false; recordState.headIndex = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; projection.stub = null; projection.upto = Infinity; hashWait = null; remoteSearch = null; remoteFilter = null; stepWhenFound = null; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
