@@ -5,8 +5,9 @@ import { backend } from "./backend.js";
 // answer means.
 import { consentQuery, grantOutcome, runRevoke, runSend } from "./shared/control-protocol.js";
 import { DialogCard } from "./dialog-card.js";
+import { page, view } from "./view-root.js";
 
-const byId = id => document.getElementById(id);
+const byId = view.byId;
 
 // #s236 (Hong: the box said too much, and "writes to live tmux" for a herdr pane): ONE line says
 // where a message goes — a live pane by its host's own name, or a resume of an idle session.
@@ -43,13 +44,13 @@ export class ControlStore {
     this.revokeButton.textContent = "Revoke pane grant";
     this.revokeButton.onclick = () => this.revoke();
     byId("closeComposer").before(this.revokeButton);
-    byId("writeSwitch").onclick = () => {
+    page.byId("writeSwitch").onclick = () => {
       if (!controlState.paired) { this.showPairHelp(); return; }
       controlState.write = !controlState.write;
       this.paint();
     };
-    byId("writeBtn").onclick = event => { if (!event.target.closest("button")) byId("writeSwitch").click(); };
-    byId("writeInfo").onclick = event => { event.stopPropagation(); this.showPairHelp(); };
+    page.byId("writeBtn").onclick = event => { if (!event.target.closest("button")) page.byId("writeSwitch").click(); };
+    page.byId("writeInfo").onclick = event => { event.stopPropagation(); this.showPairHelp(); };
     byId("composeFab").onclick = () => this.open();
     byId("closeComposer").onclick = () => this.close();
     byId("sendBtn").onclick = () => this.attempt();
@@ -101,7 +102,7 @@ export class ControlStore {
     };
   }
   // Codex native mode shares #composer and sends its own images: none of this one's there.
-  imagesAllowed(row = controlState.row) { return controlState.mode === "tmux" && !!row?.sendsImages && !document.body.dataset.sharedCodex; }
+  imagesAllowed(row = controlState.row) { return controlState.mode === "tmux" && !!row?.sendsImages && !page.body().dataset.sharedCodex; }
   imagesFor(target = controlState.row?.id) { return this.images.get(target) || []; }
   async addImages(files) {
     const target = controlState.row?.id;
@@ -155,7 +156,7 @@ export class ControlStore {
     byId("composer").dispatchEvent(new Event("compose-images"));
   }
   showPairHelp() {
-    const help = byId("writeHelp");
+    const help = page.byId("writeHelp");
     help.innerHTML = controlState.paired
       ? "<b>Monitor is paired</b><p>With write mode on, a writable session shows a compose box. A live terminal still needs its own grant.</p>"
       : "<b>Write mode needs a paired monitor</b><p>Stop the monitor and run this in a terminal:</p><code>agent-monitor --pair</code>";
@@ -165,10 +166,10 @@ export class ControlStore {
     const row = selectedRow();
     const available = canCompose(row);
     byId("sendBtn").disabled = !!this.pendingSends?.has(controlState.row?.id);
-    byId("writeSwitch").setAttribute("aria-checked", String(controlState.write));
-    byId("writeBtn").classList.toggle("on", controlState.write);
-    byId("sidebarMiniWrite").classList.toggle("on", controlState.write);
-    byId("writeInfo").hidden = controlState.paired;
+    page.byId("writeSwitch").setAttribute("aria-checked", String(controlState.write));
+    page.byId("writeBtn").classList.toggle("on", controlState.write);
+    page.byId("sidebarMiniWrite").classList.toggle("on", controlState.write);
+    page.byId("writeInfo").hidden = controlState.paired;
     byId("composeFab").classList.toggle("show", controlState.write && available && !byId("composer").classList.contains("production-show"));
     // #s298: the button says when the session waits on an answer the box can give.
     byId("composeFab").classList.toggle("asks", !!row?.dialog && canInject(row));
@@ -238,7 +239,7 @@ export class ControlStore {
   }
   closeConfirm() { byId("confirmLayer").classList.remove("production-open"); this.afterGrant = null; }
   async grantAndSend() {
-    const passcode = document.querySelector(".passcode-input")?.value || "";
+    const passcode = view.$(".passcode-input")?.value || "";
     const then = this.afterGrant;
     this.closeConfirm();
     if (then) { await this.grant(passcode, then); return; }
@@ -324,7 +325,7 @@ export class ControlStore {
         input.value = "";
         input.dispatchEvent(new Event("input", { bubbles: true }));
         if (controlState.row && selectedRow()?.id !== controlState.row.id) this.close();
-        else if (controlState.row && !matchMedia("(pointer: coarse)").matches && document.activeElement !== input) input.focus();
+        else if (controlState.row && !matchMedia("(pointer: coarse)").matches && view.active() !== input) input.focus();
       }
       this.actions.toast(mode === "tmux" ? (images.length ? `Sent to the pane with ${images.length === 1 ? "an image" : `${images.length} images`}` : "Sent to the pane") : "Resuming the session");
       this.actions.refreshIndex();

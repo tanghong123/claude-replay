@@ -1176,11 +1176,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // checkboxes and Include hidden, no All (Everything in the head is the way back, and it
   // leaves Include hidden alone), the demo's two controls removed, the set never empty and
   // remembered with every bucket by default.
-  assert.match(appSource, /byId\("sidebarCollapse"\)\.insertAdjacentElement\("beforebegin", filterBtn\)/, "the glyph sits before the sidebar collapse");
-  assert.match(appSource, /byId\("collapseBtn"\)\.insertAdjacentElement\("afterend", expandBtn\)/, "…and Expand every group after Collapse every group, so the filter follows expand");
+  assert.match(appSource, /page\.byId\("sidebarCollapse"\)\.insertAdjacentElement\("beforebegin", filterBtn\)/, "the glyph sits before the sidebar collapse");
+  assert.match(appSource, /page\.byId\("collapseBtn"\)\.insertAdjacentElement\("afterend", expandBtn\)/, "…and Expand every group after Collapse every group, so the filter follows expand");
   assert.match(appSource, /filterBtn\.className = "iconbtn session-filter"/, "…as an iconbtn like its neighbours");
-  assert.match(appSource, /document\.querySelector\("\.side-head"\)\.appendChild\(filterSheet\)/, "the sheet hangs under the sidebar's head");
-  assert.match(appSource, /byId\("attentionBtn"\)\.remove\(\);\nbyId\("sidebarMiniAttention"\)\.remove\(\);/, "the demo's Needs attention button and the rail's bell are gone");
+  assert.match(appSource, /page\.\$\("\.side-head"\)\.appendChild\(filterSheet\)/, "the sheet hangs under the sidebar's head");
+  assert.match(appSource, /page\.byId\("attentionBtn"\)\.remove\(\);\npage\.byId\("sidebarMiniAttention"\)\.remove\(\);/, "the demo's Needs attention button and the rail's bell are gone");
   assert.doesNotMatch(appSource, /hiddenBtn|"Show Hidden"/, "…and the Show Hidden control with them");
   assert.match(appSource, /visibleTree\(agents, \{ showHidden: indexState\.showHidden, buckets: filtered \? indexState\.buckets : null, bucketsOf \}\)/, "the tree is filtered by the shared cover — every bucket chosen is no filter");
   assert.match(appSource, /indexState\.buckets = set\.size \? set : new Set\(FILTER_BUCKETS\);/, "the bucket set is never empty");
@@ -1194,7 +1194,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /data-include-hidden/, "and Include hidden");
   assert.match(appSource, /title="\$\{BLOCKED_SUMMARY\}"/, "the Blocked checkbox explains itself with the predicate's sentence");
   assert.match(appSource, /\$\{FILTER_LABELS\.recent\}/, "the checkbox is labelled from the shared table (Active recently)");
-  assert.match(appSource, /byId\("sidebarMiniSearch"\)\.insertAdjacentElement\("afterend", filterMini\)/, "the rail's filter glyph sits after search");
+  assert.match(appSource, /page\.byId\("sidebarMiniSearch"\)\.insertAdjacentElement\("afterend", filterMini\)/, "the rail's filter glyph sits after search");
   // #300 (the owner): collapsed, the glyph opens the sidebar's own sheet in a flyout beside the rail
   // rather than expanding the sidebar — pointed at, or clicked to pin it.
   assert.match(appSource, /filterMini\.onclick = \(\) => \{ [^\n]*openRailFlyout\("filter", filterMini, true\)/, "…and a click opens the sheet in the rail's flyout");
@@ -1516,8 +1516,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(resolveKey(ev("\\"), "list").action, "sidebar-toggle", "from the list too");
   assert.equal(resolveKey(ev("\\"), "view", { tagName: "INPUT" }), null, "never while typing");
   assert.match(appSource, /"sidebar-toggle": \(\) => toggleSidebar\(!indexState\.sidebarOpen\)/, "the shell acts on it");
-  assert.match(appSource, /byId\("sidebarMiniWrite"\)\.onclick = \(\) => byId\("writeSwitch"\)\.click\(\);/, "the rail's write button reaches the switch");
-  assert.match(appSource, /byId\("sidebarMiniSearch"\)\.onclick = openGlobalSearch;/, "…its search button the global search");
+  assert.match(appSource, /page\.byId\("sidebarMiniWrite"\)\.onclick = \(\) => page\.byId\("writeSwitch"\)\.click\(\);/, "the rail's write button reaches the switch");
+  assert.match(appSource, /page\.byId\("sidebarMiniSearch"\)\.onclick = openGlobalSearch;/, "…its search button the global search");
   assert.match(appSource, /filterMini\.onclick = \(\) => \{ [^\n]*openRailFlyout\("filter", filterMini, true\)/, "…its filter glyph the session filter, in the rail's flyout (#202 replaced the attention button; #300 the flyout)");
   const prodCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   // #91 → #202: the one control that changes what the list shows is lit when it does — the
@@ -1929,7 +1929,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // #77: expand-all beside collapse-all.
 {
   assert.match(appSource, /expandBtn\.onclick = \(\) => \{ indexState\.collapsed\.clear\(\); persist\(\); renderTree\(\); \};/, "expand-all clears every fold and remembers it");
-  assert.match(appSource, /byId\("collapseBtn"\)\.insertAdjacentElement\("afterend", expandBtn\);/, "…beside collapse-all");
+  assert.match(appSource, /page\.byId\("collapseBtn"\)\.insertAdjacentElement\("afterend", expandBtn\);/, "…beside collapse-all");
   assert.match(appSource, /expandBtn\.innerHTML = svg\("expandStack"\);/, "…with a glyph the sprite has");
   const iconsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/icons.js", import.meta.url), "utf8");
   assert.ok(iconsSrc.includes("expandStack:'"), "the expandStack glyph exists");
@@ -3477,7 +3477,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(classic, /if \(b && b\.id\) vw\.noteAction\("control", b\.id\);/, "every top-bar control pressed is an action, by id");
   assert.match(shell, /describeAt\(index\) \{\n\s*const unit = this\.units\[index\];/, "the shell describes a unit by its type, turn and record range");
   assert.match(shell, /return \{ kind: unit\.type, turn: unit\.turn == null \? null : unit\.turn, from: unit\.from, to: unit\.to, kinds \};/, "…with the kinds of the records it spans");
-  assert.match(shell, /page: "app",\n\s*version: document\.body\.dataset\.version \|\| null,/, "the shell names itself and its version in the export");
+  assert.match(shell, /page: "app",\n\s*version: backend\(\)\.version,/, "the shell names itself and its version in the export");
   assert.match(app, /note: \(kind, target\) => viewport\.noteAction\(kind, target\),/, "what a component knows reaches the history through `note`");
   assert.match(components, /state\.processFolds\.set\(key, !process\.classList\.contains\("closed"\)\);\n\s*actions\.note\?\.\("fold", \{ key, open: process\.classList\.contains\("closed"\) \}\);/, "a process fold names itself");
   assert.match(components, /state\.folds\.set\(id, !next\.open\);\n\s*actions\.note\?\.\("fold", \{ key: id, open: next\.open \}\);/, "…and so does a renderer head");
@@ -3945,7 +3945,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     ["/api/send?target=s1", "text only"],
   ]);
   const store = readFileSync(new URL("../../claude-monitor/src/codex-ui/control-store.js", import.meta.url), "utf8");
-  assert.match(store, /imagesAllowed\(row = controlState\.row\) \{ return controlState\.mode === "tmux" && !!row\?\.sendsImages && !document\.body\.dataset\.sharedCodex; \}/, "images only for a live pane whose row takes them, never in native mode's composer");
+  assert.match(store, /imagesAllowed\(row = controlState\.row\) \{ return controlState\.mode === "tmux" && !!row\?\.sendsImages && !page\.body\(\)\.dataset\.sharedCodex; \}/, "images only for a live pane whose row takes them, never in native mode's composer");
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.ok(css.includes("body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!important}"), "native mode never shows them");
   assert.match(store, /images: images\.map\(item => item\.url\)/, "the send carries the strip's images");

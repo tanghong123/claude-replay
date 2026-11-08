@@ -6,8 +6,9 @@ import { createImageView } from "./shared/image-view.js";
 import { isMarkdownName, mdrevVersion, mountMarkdown } from "./mdrev-pane.js";
 import { besideAction, onPhone, RASTER_FILE } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
+import { page, view } from "./view-root.js";
 
-const byId = id => document.getElementById(id);
+const byId = view.byId;
 
 /** An image in a tab of its own (#s11), from the pane: `/image`, reading a
  *  FILE by the path and stamp it was offered under (`/file` serves it there, under the same rules —
@@ -80,7 +81,7 @@ export class Preview {
     // to the whole screen and back. Only a phone held sideways shows it; elsewhere the pane is a
     // column with a resizer (a desktop) or the whole screen already (a phone upright).
     this.expandBtn = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn preview-expand" });
-    this.expandBtn.onclick = () => this.setFull(!byId("app").classList.contains("preview-full"));
+    this.expandBtn.onclick = () => this.setFull(!page.byId("app").classList.contains("preview-full"));
     this.setFull(false);
     byId("closePreview").before(this.revealBtn, this.downloadBtn, this.printBtn, this.newTab, this.reviewBtn, this.expandBtn);
     // #337, the owner: with many files open the strip squeezed every tab to a few letters and the
@@ -112,15 +113,15 @@ export class Preview {
     const resizer = byId("resizer");
     resizer.setAttribute("role", "separator"); resizer.setAttribute("aria-orientation", "vertical"); resizer.tabIndex = 0;
     resizer.onpointerdown = event => {
-      resizer.setPointerCapture(event.pointerId); resizer.classList.add("dragging"); byId("app").classList.add("resizing");
+      resizer.setPointerCapture(event.pointerId); resizer.classList.add("dragging"); page.byId("app").classList.add("resizing");
       resizer.onpointermove = move => this.setWidth(innerWidth - move.clientX, false);
-      resizer.onpointerup = () => { resizer.classList.remove("dragging"); byId("app").classList.remove("resizing"); resizer.onpointermove = null; localStorage.setItem("am-demo-preview", parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--preview")) || 420); };
+      resizer.onpointerup = () => { resizer.classList.remove("dragging"); page.byId("app").classList.remove("resizing"); resizer.onpointermove = null; localStorage.setItem("am-demo-preview", parseFloat(getComputedStyle(view.styleRoot()).getPropertyValue("--preview")) || 420); };
     };
     resizer.ondblclick = () => this.setWidth(420, true);
   }
-  setOpen(open) { uiState.preview = open; byId("app").classList.toggle("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (!open) this.setFull(false); if (open) this.render(); this.actions.layoutChanged?.(); }
+  setOpen(open) { uiState.preview = open; page.byId("app").classList.toggle("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (!open) this.setFull(false); if (open) this.render(); this.actions.layoutChanged?.(); }
   setFull(full) {
-    byId("app").classList.toggle("preview-full", full);
+    page.byId("app").classList.toggle("preview-full", full);
     this.expandBtn.innerHTML = full
       ? '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>'
       : '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>';
@@ -129,7 +130,7 @@ export class Preview {
     this.expandBtn.setAttribute("aria-label", words);
     this.expandBtn.setAttribute("aria-pressed", String(full));
   }
-  setWidth(value, persist) { const width = Math.max(340, Math.min(680, Number(value) || 420)); document.documentElement.style.setProperty("--preview", `${width}px`); if (persist) localStorage.setItem("am-demo-preview", width); this.actions.layoutChanged?.(); }
+  setWidth(value, persist) { const width = Math.max(340, Math.min(680, Number(value) || 420)); view.styleRoot().style.setProperty("--preview", `${width}px`); if (persist) localStorage.setItem("am-demo-preview", width); this.actions.layoutChanged?.(); }
   restoreWidth() { this.setWidth(localStorage.getItem("am-demo-preview") || 420, false); }
   setSession(sessionId) {
     if (sessionId === this.sessionId) return;
@@ -364,7 +365,7 @@ export class Preview {
     sheet.setAttribute("role", "dialog");
     sheet.setAttribute("aria-label", `Review ${item.name || "document"}`);
     sheet.innerHTML = `<div class="review-sheet-head"><button type="button" class="review-sheet-close" data-review-close aria-label="Close the review">${svg("x")}</button><strong>${escapeText(item.name || "document")}</strong></div><div class="review-sheet-body mdrev-pane"></div>`;
-    (byId("app") || document.body).append(sheet);
+    (page.byId("app") || view.layer()).append(sheet);
     const state = { sheet, handle: null };
     this.reviewSheet = state;
     const close = () => {
@@ -440,7 +441,7 @@ export class Preview {
       return;
     }
     const html = /\.html?$/i.test(item.name || "");
-    if (html && document.body.dataset.paired === "true") { body.innerHTML = '<iframe class="artifact-html-frame" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>'; body.querySelector("iframe").srcdoc = sandboxDocument(text || ""); return; }
+    if (html && backend().paired) { body.innerHTML = '<iframe class="artifact-html-frame" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>'; body.querySelector("iframe").srcdoc = sandboxDocument(text || ""); return; }
     // The file's place above its text; revealing it is the head's control (#272), one for every view.
     body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="artifact-surface"><pre class="artifact-text"></pre></div>`;
     body.querySelector("pre").textContent = text || "";

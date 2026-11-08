@@ -14,6 +14,7 @@
 // themselves (`/pull`, `/records`, `/file`…) stay the contract's names, built by the shared modules
 // and the callers as before; a test refuses a request or URL built from one anywhere but here.
 import { revealHere } from "./shared/capabilities.js";
+import { page } from "./view-root.js";
 
 /** Whether a base names this machine: a loopback host, the test the server applies too (#313). */
 function loopbackBase(base) {
@@ -31,8 +32,14 @@ function loopbackBase(base) {
  *  - `local`: whether the reader is at the server's machine. By default: for the page's own origin,
  *    `revealHere()`; for an absolute base, whether it is a loopback host; otherwise not.
  *  - `mdrev`: the base that serves this server's pinned mdrev (`/mdrev/<version>/…`, `/markdown`,
- *    `/api/mdrev…`); the handle's own base unless a host serves mdrev elsewhere. */
-export function backendHandle({ base = "", credentials = "same-origin", local, mdrev } = {}) {
+ *    `/api/mdrev…`); the handle's own base unless a host serves mdrev elsewhere.
+ *  - `mdrevVersion`: the mdrev release that server pins ("" for one that carries none), or a
+ *    function that reads it where it is kept. A page that finds its server serving another since it
+ *    loaded (#s352) moves it with `mdrevMoved`, which `onMdrevMoved` hears when given.
+ *  - `paired`: whether that server gates its readers behind pairing, which decides what an agent's
+ *    page may run in the artifact pane (#s429: read from the handle, not the page).
+ *  - `version`: the server's own version, when it says (a saved viewport history names it). */
+export function backendHandle({ base = "", credentials = "same-origin", local, mdrev, mdrevVersion = "", onMdrevMoved, paired = false, version = null } = {}) {
   const root = String(base || "").replace(/\/+$/, "");
   const mdrevRoot = mdrev == null ? root : String(mdrev).replace(/\/+$/, "");
   const join = (prefix, path) => {
@@ -40,9 +47,19 @@ export function backendHandle({ base = "", credentials = "same-origin", local, m
     return prefix + path;
   };
   const near = local != null ? !!local : root === "" || root.startsWith("/") ? revealHere() : loopbackBase(root);
+  let pinned = typeof mdrevVersion === "function" ? null : String(mdrevVersion || "");
   return Object.freeze({
     base: root,
     local: near,
+    paired: !!paired,
+    version: version || null,
+    /** The mdrev release this server serves now. */
+    mdrevVersion: () => (pinned == null ? String(mdrevVersion() || "") : pinned),
+    /** The server was found serving another mdrev release than the page was given (#s352). */
+    mdrevMoved: version => {
+      if (pinned != null) pinned = String(version || "");
+      onMdrevMoved?.(String(version || ""));
+    },
     /** The URL of a server path (`/file?path=…`), to fetch, link or load. */
     url: path => join(root, path),
     /** `fetch` of a server path, with the handle's credentials; `init` as `fetch` takes it. */
@@ -68,7 +85,21 @@ export function pageBase(href = typeof location === "undefined" ? "" : location.
   }
 }
 
-let current = backendHandle({ base: pageBase() });
+/** The handle for the server that served this page, with what the page says of it: whether it is
+ *  paired (`data-paired` on the page's body), its version (`data-version`) and its pinned mdrev (`data-mdrev`), which the page
+ *  keeps, so a move the page finds (#s352) is written there too. */
+export function pageHandle() {
+  const facts = () => page.body()?.dataset || {};
+  return backendHandle({
+    base: pageBase(),
+    paired: facts().paired === "true",
+    version: facts().version || null,
+    mdrevVersion: () => facts().mdrev || "",
+    onMdrevMoved: version => { const body = page.body(); if (body) body.dataset.mdrev = version; },
+  });
+}
+
+let current = pageHandle();
 
 /** The handle the page's components use now. */
 export const backend = () => current;

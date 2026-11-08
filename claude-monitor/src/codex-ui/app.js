@@ -23,6 +23,7 @@ import { agentRecordTargets, currentTurnIndex, escapeText, peerHue, peerLabelRes
 import { Viewport } from "./viewport.js";
 import { sharedKeyboardFrame } from "./phone-keyboard.js";
 import { revealMermaidSource, useMermaidRuntime } from "./shared/mermaid.js";
+import { page, view } from "./view-root.js";
 
 // The outline row currently marked (#52) — declared ahead of the init code below, which
 // renders the navigator before the module's later statements have run.
@@ -30,9 +31,9 @@ let outlineCurrent = null;
 // Whether the Turns pane follows the session (#s207) — declared here for the same reason.
 let turnsFollow = true;
 
-const byId = id => document.getElementById(id);
-const app = byId("app");
-const tree = byId("tree");
+const byId = view.byId;
+const app = page.byId("app");
+const tree = page.byId("tree");
 // What `renderTree` last wrote into the list, so an unchanged refresh leaves the rows in place (#s72).
 let treeWritten = null;
 const transcript = byId("transcript");
@@ -42,7 +43,7 @@ let landedHash = "";
 // #s277: a link waiting for its turn to arrive, and when it began to wait (`landOnHash`).
 let hashWait = null;
 
-document.querySelectorAll("[data-icon]").forEach(element => { element.innerHTML = svg(element.dataset.icon); });
+page.$$("[data-icon]").forEach(element => { element.innerHTML = svg(element.dataset.icon); });
 // The sidebar head's controls (#75, #76): the generated shell gives the theme toggle and
 // collapse-all no glyph — an empty 34px button each, invisible until hovered — and the sidebar
 // collapse beside them was easy to miss in that company. Each is named and drawn here.
@@ -53,9 +54,9 @@ for (const [id, icon, label] of [["themeBtn", "moon", "Toggle light and dark"], 
   button.setAttribute("aria-label", label);
   if (id !== "sidebarCollapse") button.title = label;
 }
-const filterIcon = document.querySelector("#filterTranscriptBtn [data-icon]");
+const filterIcon = view.$("#filterTranscriptBtn [data-icon]");
 if (filterIcon) filterIcon.innerHTML = svg("filterLines");
-document.querySelector(".brand small").textContent = `v${document.body.dataset.version || "dev"}`;
+page.$(".brand small").textContent = `v${page.body().dataset.version || "dev"}`;
 // The tab's icon (#203) and the Home Screen's (#320) are declared by the production page head
 // (`page-head.html`), not injected here: iOS reads the head to find the icon for a Home Screen
 // shortcut, and the extracted shell — the hand-written demo, kept byte-identical — declares none.
@@ -76,8 +77,8 @@ sessionTitle.setAttribute("role", "button");
 sessionTitle.setAttribute("aria-haspopup", "menu");
 sessionTitle.setAttribute("aria-expanded", "false");
 sessionTitle.title = "Copy the session id or the transcript path";
-const infoCardLabel = document.querySelector('[data-nav-card="session"] .outline-card-head strong');
-const infoRailButton = document.querySelector('[data-nav-card-open="session"]');
+const infoCardLabel = view.$('[data-nav-card="session"] .outline-card-head strong');
+const infoRailButton = view.$('[data-nav-card-open="session"]');
 if (infoCardLabel) infoCardLabel.textContent = "Info";
 if (infoRailButton) infoRailButton.title = "Info";
 
@@ -90,7 +91,7 @@ function setSessionCopyMenu(open) {
 function scheduleSessionCopyClose() {
   clearTimeout(sessionCopyCloseTimer);
   sessionCopyCloseTimer = setTimeout(() => {
-    if (!sessionCopyMenu.contains(document.activeElement) && document.activeElement !== sessionTitle) setSessionCopyMenu(false);
+    if (!sessionCopyMenu.contains(view.active()) && view.active() !== sessionTitle) setSessionCopyMenu(false);
   }, 120);
 }
 // #330: a finger or a pen LEAVES when it lifts, so its leave is no reason to close — on iOS the
@@ -104,7 +105,7 @@ sessionTitle.addEventListener("focus", () => setSessionCopyMenu(true));
 sessionTitle.addEventListener("blur", scheduleSessionCopyClose);
 sessionTitle.addEventListener("click", () => setSessionCopyMenu(true));
 // #s37: on a phone the turn's subtitle under the title is the same target (see `turnSubtitle`).
-document.querySelector(".topbar .session-heading").addEventListener("click", event => { if (event.target.closest("#turnSubtitle")) setSessionCopyMenu(true); });
+view.$(".topbar .session-heading").addEventListener("click", event => { if (event.target.closest("#turnSubtitle")) setSessionCopyMenu(true); });
 sessionTitle.addEventListener("keydown", event => {
   if (["Enter", " ", "ArrowDown"].includes(event.key)) {
     event.preventDefault(); setSessionCopyMenu(true);
@@ -126,7 +127,7 @@ async function copyText(text) {
   try {
     const field = document.createElement("textarea");
     field.value = text; field.style.cssText = "position:fixed;top:-1000px;opacity:0";
-    document.body.appendChild(field); field.select();
+    view.layer().appendChild(field); field.select();
     const copied = document.execCommand("copy"); field.remove(); return copied;
   } catch (_) { return false; }
 }
@@ -190,7 +191,7 @@ const turnSubtitle = document.createElement("span");
 turnSubtitle.className = "turn-subtitle";
 turnSubtitle.id = "turnSubtitle";
 turnSubtitle.hidden = true;
-document.querySelector(".topbar .session-heading").append(turnSubtitle);
+view.$(".topbar .session-heading").append(turnSubtitle);
 bindComponentEvents(transcript, recordState, {
   // #185: `bindComponentEvents` is a CLICK handler, so everything that reaches `rerender` is the
   // reader reshaping the page themselves — a fold, a cap, a prompt expanded, a raw toggle. Parked
@@ -333,7 +334,7 @@ const recordStore = new RecordStore({
 }, { tailBudget: Number(new URLSearchParams(location.search).get("tailBudget")) || 512 * 1024, headPieceBytes: Number(new URLSearchParams(location.search).get("headPiece")) || 0, keepBytes: Number(new URLSearchParams(location.search).get("keepBytes")) || 0, windowed: WINDOWED, emptySession: null, sessionFailure: null });
 
 function toast(message) {
-  const element = byId("toast"); element.textContent = message; element.classList.add("show");
+  const element = page.byId("toast"); element.textContent = message; element.classList.add("show");
   clearTimeout(toastTimer); toastTimer = setTimeout(() => element.classList.remove("show"), 1900);
 }
 
@@ -712,9 +713,9 @@ function renderTree() {
 
   // Redrawn on every index refresh; a focused mark would be replaced under the reader and the focus
   // dropped to <body> (#300 caught it handing focus back after Escape), so it is carried across.
-  const focusedMark = document.activeElement?.closest?.("#sidebarMiniAgents [data-mini-agent]")?.dataset.miniAgent;
-  byId("sidebarMiniAgents").innerHTML = agents.map(agent => { const first = agent.projects.flatMap(project => project.sessions).find(row => !row.hidden); return first ? `<button class="sidebar-mini-agent ${agent.projects.some(project => project.sessions.some(row => row.id === indexState.selected)) ? "selected" : ""}" data-mini-agent="${escapeText(agent.id)}" title="${escapeText(agent.name)}" aria-haspopup="true" aria-expanded="${railFlyoutFor === agent.id}">${agentLogo(agent.id)}</button>` : ""; }).join("");
-  if (focusedMark) byId("sidebarMiniAgents").querySelector(`[data-mini-agent="${CSS.escape(focusedMark)}"]`)?.focus();
+  const focusedMark = page.active()?.closest?.("#sidebarMiniAgents [data-mini-agent]")?.dataset.miniAgent;
+  page.byId("sidebarMiniAgents").innerHTML = agents.map(agent => { const first = agent.projects.flatMap(project => project.sessions).find(row => !row.hidden); return first ? `<button class="sidebar-mini-agent ${agent.projects.some(project => project.sessions.some(row => row.id === indexState.selected)) ? "selected" : ""}" data-mini-agent="${escapeText(agent.id)}" title="${escapeText(agent.name)}" aria-haspopup="true" aria-expanded="${railFlyoutFor === agent.id}">${agentLogo(agent.id)}</button>` : ""; }).join("");
+  if (focusedMark) page.byId("sidebarMiniAgents").querySelector(`[data-mini-agent="${CSS.escape(focusedMark)}"]`)?.focus();
 }
 
 // The session filter (#202, the owner's shape): a glyph in the head-actions row — between
@@ -730,14 +731,14 @@ function renderTree() {
 // Include hidden checkboxes are those two by name — and the collapsed rail's bell with them;
 // the rail gets a filter glyph that opens the sidebar and the sheet. Layered at runtime so the
 // extracted demo markup stays exact.
-byId("attentionBtn").remove();
-byId("sidebarMiniAttention").remove();
+page.byId("attentionBtn").remove();
+page.byId("sidebarMiniAttention").remove();
 const filterBtn = document.createElement("button");
 filterBtn.type = "button"; filterBtn.className = "iconbtn session-filter"; filterBtn.id = "filterBtn";
 filterBtn.innerHTML = svg("filterLines");
 filterBtn.setAttribute("aria-label", "Filter the sessions");
 filterBtn.setAttribute("aria-expanded", "false"); filterBtn.setAttribute("aria-haspopup", "true"); filterBtn.setAttribute("aria-controls", "sessionFilter");
-byId("sidebarCollapse").insertAdjacentElement("beforebegin", filterBtn);
+page.byId("sidebarCollapse").insertAdjacentElement("beforebegin", filterBtn);
 const filterSheet = document.createElement("div");
 filterSheet.className = "navigator-options session-filter-options"; filterSheet.id = "sessionFilter"; filterSheet.hidden = true;
 filterSheet.setAttribute("role", "group"); filterSheet.setAttribute("aria-label", "Show sessions");
@@ -758,13 +759,13 @@ filterSheet.innerHTML = `<div class="scope-menu-head"><strong>SHOW</strong><butt
 <button class="scope-option" type="button" role="radio" aria-checked="false" data-arrange="flat" data-flat title="One list, most recent activity first, without the agent and project groups: each session names its project and agent"><span class="scope-check"></span><span>One list by activity</span></button>
 ${ARRANGE_SOURCES.map(key => `<button class="scope-option arrange-app" type="button" role="radio" aria-checked="false" data-arrange="${key}" title="${escapeText(`The sessions ${ARRANGE_LABELS[key]} shows, in its sections and order, following it as it changes; everything else under “Not in ${ARRANGE_LABELS[key]}”`)}"><span class="scope-check"></span><span class="arrange-text"><span>Like ${escapeText(ARRANGE_LABELS[key])}</span><small class="arrange-note" data-arrange-note="${key}"></small></span></button>`).join("")}
 </div>`;
-document.querySelector(".side-head").appendChild(filterSheet);
+page.$(".side-head").appendChild(filterSheet);
 const filterMini = document.createElement("button");
 filterMini.className = "sidebar-mini-button filter-mini"; filterMini.id = "sidebarMiniFilter"; filterMini.type = "button"; filterMini.title = "Filter the sessions";
 filterMini.setAttribute("aria-label", "Filter the sessions");
 filterMini.setAttribute("aria-haspopup", "true"); filterMini.setAttribute("aria-expanded", "false");
 filterMini.innerHTML = svg("filterLines");
-byId("sidebarMiniSearch").insertAdjacentElement("afterend", filterMini);
+page.byId("sidebarMiniSearch").insertAdjacentElement("afterend", filterMini);
 /** Whether the bucket set leaves anything out. */
 const bucketFilterActive = () => FILTER_BUCKETS.some(bucket => !indexState.buckets.has(bucket));
 /** Set the buckets shown — never an empty set — and repaint everything that reads them. */
@@ -827,7 +828,7 @@ const RAIL_OPEN_MS = 140, RAIL_GRACE_MS = 280;
 railFlyout = document.createElement("div");
 railFlyout.className = "rail-flyout"; railFlyout.id = "railFlyout"; railFlyout.hidden = true;
 railFlyout.setAttribute("role", "group");
-document.body.appendChild(railFlyout);
+page.body().appendChild(railFlyout);
 function railFlyoutBody() {
   if (railFlyoutFor === "filter") return null;
   const agent = lastShownAgents.find(item => item.id === railFlyoutFor);
@@ -868,7 +869,7 @@ function openRailFlyout(kind, anchor, pinned) {
 function closeRailFlyout(refocus) {
   clearTimeout(railOpenTimer); clearTimeout(railCloseTimer);
   if (railFlyoutFor === "filter" && filterSheet.parentElement === railFlyout) {
-    filterSheet.hidden = true; document.querySelector(".side-head").appendChild(filterSheet);
+    filterSheet.hidden = true; page.$(".side-head").appendChild(filterSheet);
     filterMini.setAttribute("aria-expanded", "false");
   }
   // The marks are redrawn whenever the index refreshes, so the element that opened the flyout may
@@ -891,7 +892,7 @@ function railFlyoutLeave() {
   clearTimeout(railCloseTimer);
   railCloseTimer = setTimeout(() => closeRailFlyout(false), RAIL_GRACE_MS);
 }
-const railMarks = byId("sidebarMiniAgents");
+const railMarks = page.byId("sidebarMiniAgents");
 railMarks.addEventListener("pointerover", event => { const mark = event.target.closest("[data-mini-agent]"); if (mark) railFlyoutHover(mark.dataset.miniAgent, mark); });
 railMarks.addEventListener("pointerenter", event => { const mark = event.target.closest?.("[data-mini-agent]"); if (mark) railFlyoutHover(mark.dataset.miniAgent, mark); }, true);
 railMarks.addEventListener("pointerleave", railFlyoutLeave, true);
@@ -1047,13 +1048,13 @@ tree.onclick = event => {
 tree.onkeydown = event => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); event.target.click(); } };
 // A mark's click PINS its flyout (#300) — it used to jump to the agent's newest session, which the
 // flyout now lists first under its project. Enter and Space are the same click; ArrowRight too.
-byId("sidebarMiniAgents").onclick = event => {
+page.byId("sidebarMiniAgents").onclick = event => {
   const mark = event.target.closest("[data-mini-agent]"); if (!mark) return;
   if (!railFlyout.hidden && railFlyoutFor === mark.dataset.miniAgent && railFlyoutPinned) { closeRailFlyout(false); return; }
   openRailFlyout(mark.dataset.miniAgent, mark, true);
   if (event.detail === 0) railFlyout.querySelector("[role=treeitem]")?.focus();
 };
-byId("sidebarMiniAgents").onkeydown = event => { if (event.key === "ArrowRight") { const mark = event.target.closest("[data-mini-agent]"); if (mark) { event.preventDefault(); mark.click(); } } };
+page.byId("sidebarMiniAgents").onkeydown = event => { if (event.key === "ArrowRight") { const mark = event.target.closest("[data-mini-agent]"); if (mark) { event.preventDefault(); mark.click(); } } };
 
 function sessionUrl(id) {
   const url = new URL(location.href); url.searchParams.set("session", id);
@@ -2108,9 +2109,9 @@ function renderNavigator() {
   // (#217), so on any real session its target was past the end and the click did nothing at all.
   recordState.shownTaskRows = taskShown.flatMap(group => group.rows);
   renderSessionInfo(turnCount, allAgents);
-  document.querySelectorAll("[data-nav-card]").forEach(card => card.classList.toggle("open", uiState.navCards.has(card.dataset.navCard)));
+  view.$$("[data-nav-card]").forEach(card => card.classList.toggle("open", uiState.navCards.has(card.dataset.navCard)));
   stackOutlineHeads();
-  document.querySelector(".workspace").classList.toggle("navigator-off", !uiState.navigatorOpen);
+  view.$(".workspace").classList.toggle("navigator-off", !uiState.navigatorOpen);
   mobileShell?.counts(turnCount, counted.length, allAgents);
 }
 /** The control an emptied pane carries (#s356): it clears the same remembered filter the Outline
@@ -2321,7 +2322,7 @@ function activeScopeSet() {
  *  its count and its arrows (production.css), so the reader still sees how many and can step.
  *  Looked up here, not held: this runs during the module's first render. */
 function markQuery() {
-  document.querySelector(".header-searchbox")?.classList.toggle("has-query", !!boxQuery());
+  view.$(".header-searchbox")?.classList.toggle("has-query", !!boxQuery());
 }
 function updateSearch(reset) {
   // #s278: text typed but not submitted (search on Enter) is not searched by a fill, a pull or an
@@ -2614,7 +2615,7 @@ function searchFloor(view) {
   over(phoneDock);
   const composer = byId("composer");
   if (composer.classList.contains("production-show")) over(composer);
-  over(document.querySelector(".shared-runtime"));
+  over(view.$(".shared-runtime"));
   return floor;
 }
 /** Scroll the nearest horizontally scrolling block holding `mark` so the mark sits in it, with a
@@ -2751,7 +2752,7 @@ byId("transcriptSearchInput").onkeydown = event => {
 function noLineAboveFindPill() {
   const visible = window.visualViewport;
   if (!visible || !phoneDock || Math.abs(visible.scale - 1) >= 0.01) return false;
-  if (visible.height >= document.documentElement.clientHeight) return false;
+  if (visible.height >= page.html().clientHeight) return false;
   return phoneDock.getBoundingClientRect().top - viewport.scroller.getBoundingClientRect().top < 64;
 }
 // Whole words: production-only chrome, layered beside the box at runtime so the extracted demo
@@ -2812,16 +2813,16 @@ searchChips.insertAdjacentElement("beforebegin", searchField);
 searchField.append(searchChips, byId("transcriptSearchInput"));
 var fieldMeasure = document.createElement("span");
 fieldMeasure.className = "search-field-measure"; fieldMeasure.setAttribute("aria-hidden", "true");
-document.querySelector(".header-search-cluster").appendChild(fieldMeasure);
+view.$(".header-search-cluster").appendChild(fieldMeasure);
 searchSuggest = document.createElement("div");
 searchSuggest.className = "search-suggest"; searchSuggest.id = "searchSuggest"; searchSuggest.hidden = true;
 searchSuggest.setAttribute("role", "listbox");
-document.querySelector(".header-search-cluster").appendChild(searchSuggest);
+view.$(".header-search-cluster").appendChild(searchSuggest);
 /** Size the field to its text while the phone's box is open, and keep the end in view (#353). */
 function fitSearchField() {
   if (!searchField || !fieldMeasure) return;
   const input = byId("transcriptSearchInput");
-  if (!document.querySelector(".header-searchbox")?.classList.contains("phone-open")) { input.style.width = ""; return; }
+  if (!view.$(".header-searchbox")?.classList.contains("phone-open")) { input.style.width = ""; return; }
   const cs = getComputedStyle(input);
   fieldMeasure.style.font = cs.font; fieldMeasure.style.letterSpacing = cs.letterSpacing;
   // With chips the placeholder is not shown (#355), so an empty field takes no room of its own.
@@ -2837,7 +2838,7 @@ addEventListener("resize", () => fitSearchField());
 // surfaces (the box, the drop-down, the filter popover) or Escape — never on blur, since a touch
 // browser does not focus a tapped button and the steps would vanish under the finger. The query,
 // its count and its marks outlive the box closing, as they outlive a blur on a wider window.
-const phoneSearch = matchMedia(PHONE_QUERY), searchBox = document.querySelector(".header-searchbox");
+const phoneSearch = matchMedia(PHONE_QUERY), searchBox = view.$(".header-searchbox");
 function setPhoneSearch(open) {
   if (!open && byId("navigatorOptions").classList.contains("open")) setPopover(null);
   searchBox.classList.toggle("phone-open", open && phoneSearch.matches);
@@ -2973,7 +2974,7 @@ function suggestRows() {
 }
 function renderSuggest() {
   if (!searchSuggest) return;
-  const tok = document.activeElement === byId("transcriptSearchInput") ? tokenAtCaret() : null;
+  const tok = view.active() === byId("transcriptSearchInput") ? tokenAtCaret() : null;
   if (!tok) { searchSuggest.hidden = true; suggestState = null; return; }
   const chosen = new Set(resolveTools(tok.value));
   const rows = suggestRows();
@@ -3444,7 +3445,7 @@ function saveHistory() {
   const url = URL.createObjectURL(new Blob([JSON.stringify(out)], { type: "application/json" }));
   const a = document.createElement("a");
   a.href = url; a.download = `viewport-history-app-${stamp}.json`;
-  document.body.append(a); a.click(); a.remove();
+  view.layer().append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 // …and every control the reader presses outside the transcript is an action in it, by id.
@@ -3462,7 +3463,7 @@ byId("navigatorOptions").onclick = event => { const scope = event.target.closest
 byId("selectAllScopes").onclick = () => { uiState.searchScopes = new Set(ALL_SCOPES); uiState.searchWhole = false; uiState.chips.tools = []; applyScopeFromMenu(); };
 byId("clearTranscriptFilters").onclick = () => { setToolFacets([]); };
 
-function openGlobalSearch() { byId("searchLayer").classList.add("production-open"); byId("searchInput").value = ""; renderGlobalSearch(); byId("searchInput").focus(); }
+function openGlobalSearch() { page.byId("searchLayer").classList.add("production-open"); page.byId("searchInput").value = ""; renderGlobalSearch(); page.byId("searchInput").focus(); }
 /** ⌘K is a JUMP-TO (#294, design/global-search.md): agents, projects and sessions by name, ranked
  *  by recency. Finding text inside the open session is the top bar's job — the Transcript tab that
  *  used to do it here, badly (plain substring, no scopes, no stepping, and it had to apologise for
@@ -3523,17 +3524,17 @@ function globalRows(raw) {
   return rows.filter(match).sort((a, b) => b.ts - a.ts || a.label.localeCompare(b.label));
 }
 function renderGlobalSearch() {
-  const query = byId("searchInput").value.trim();
+  const query = page.byId("searchInput").value.trim();
   const rows = globalRows(query).slice(0, 80);
   uiState.globalResults = rows; uiState.globalIndex = Math.min(uiState.globalIndex, Math.max(0, rows.length - 1));
-  byId("searchResults").innerHTML = rows.map((row, index) => `<button class="search-result ${index === uiState.globalIndex ? "active" : ""}${row.why.length ? " search-result-stale" : ""}" data-global-index="${index}"${row.why.length ? ` title="The sidebar is not showing this (${escapeText(row.why.join(", "))}) — opening it shows it there again"` : ""}><span class="result-copy"><b>${escapeText(row.label)}</b><small>${escapeText(row.meta)}</small></span>${row.why.length ? `<span class="result-why">${escapeText(row.why.join(" · "))}</span>` : ""}<span class="result-kind">${escapeText(row.kind)}</span></button>`).join("") || '<div class="no-results">No matches</div>';
+  page.byId("searchResults").innerHTML = rows.map((row, index) => `<button class="search-result ${index === uiState.globalIndex ? "active" : ""}${row.why.length ? " search-result-stale" : ""}" data-global-index="${index}"${row.why.length ? ` title="The sidebar is not showing this (${escapeText(row.why.join(", "))}) — opening it shows it there again"` : ""}><span class="result-copy"><b>${escapeText(row.label)}</b><small>${escapeText(row.meta)}</small></span>${row.why.length ? `<span class="result-why">${escapeText(row.why.join(" · "))}</span>` : ""}<span class="result-kind">${escapeText(row.kind)}</span></button>`).join("") || '<div class="no-results">No matches</div>';
 }
-byId("searchBtn").onclick = openGlobalSearch; byId("sidebarMiniSearch").onclick = openGlobalSearch;
-byId("searchInput").oninput = () => { uiState.globalIndex = 0; renderGlobalSearch(); };
+page.byId("searchBtn").onclick = openGlobalSearch; page.byId("sidebarMiniSearch").onclick = openGlobalSearch;
+page.byId("searchInput").oninput = () => { uiState.globalIndex = 0; renderGlobalSearch(); };
 /** Go to a ⌘K row — by click, or Enter on the highlighted one. */
 function chooseGlobal(index) {
   const row = uiState.globalResults[index]; if (!row) return;
-  byId("searchLayer").classList.remove("production-open");
+  page.byId("searchLayer").classList.remove("production-open");
   // A row the sidebar is not showing: opening it clears what hides it — the bucket filter to All
   // (owner, 2026-09-26), and Include hidden for a hidden one — or the reader lands in a session
   // the list beside them does not show.
@@ -3541,10 +3542,10 @@ function chooseGlobal(index) {
   if (row.why.some(why => why !== "hidden")) setBuckets(FILTER_BUCKETS);
   if (row.sid) selectSession(row.sid, true);
 }
-byId("searchResults").onclick = event => { const item = event.target.closest("[data-global-index]"); if (item) chooseGlobal(Number(item.dataset.globalIndex)); };
+page.byId("searchResults").onclick = event => { const item = event.target.closest("[data-global-index]"); if (item) chooseGlobal(Number(item.dataset.globalIndex)); };
 // A jump-to is done from the keyboard: ↑/↓ move the highlight, Enter goes. The demo's own handler
 // never runs here, so without this Enter did nothing (#294's gap, found by #296's case).
-byId("searchInput").onkeydown = event => {
+page.byId("searchInput").onkeydown = event => {
   const n = uiState.globalResults.length;
   if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     event.preventDefault(); if (!n) return;
@@ -3552,7 +3553,7 @@ byId("searchInput").onkeydown = event => {
     renderGlobalSearch();
     // Keep the highlight in view by moving the LIST's own offset — never scrollIntoView, which the
     // contract bans from this file because the browser may move the transcript with it.
-    const list = byId("searchResults"), active = list.querySelector(".search-result.active");
+    const list = page.byId("searchResults"), active = list.querySelector(".search-result.active");
     if (active) {
       const r = active.getBoundingClientRect(), l = list.getBoundingClientRect();
       if (r.top < l.top) list.scrollTop -= l.top - r.top;
@@ -3560,7 +3561,7 @@ byId("searchInput").onkeydown = event => {
     }
   } else if (event.key === "Enter") { event.preventDefault(); chooseGlobal(uiState.globalIndex); }
 };
-byId("searchLayer").onclick = event => { if (event.target === byId("searchLayer")) byId("searchLayer").classList.remove("production-open"); };
+page.byId("searchLayer").onclick = event => { if (event.target === page.byId("searchLayer")) page.byId("searchLayer").classList.remove("production-open"); };
 
 /** `shown` is what the CLICKED card was already displaying (#144). The card rendered from data
  *  the view held, so that src is the truthful source; the record lookup below is an ENRICHMENT —
@@ -3672,8 +3673,8 @@ function paintJump() {
 byId("jumpToBottom").onclick = () => { setTurnsFollow(true); viewport.follow(); };
 function updateStickyHeaders() { const top = transcript.getBoundingClientRect().top; viewport.window.querySelectorAll("[data-process-surface]").forEach(surface => { const rect = surface.getBoundingClientRect(); surface.dataset.prodSticky = String(rect.top < top && rect.bottom > top + 40); }); }
 
-byId("themeBtn").onclick = () => { const dark = document.documentElement.dataset.theme !== "dark"; document.documentElement.dataset.theme = dark ? "dark" : ""; localStorage.setItem("am-demo-theme", dark ? "dark" : "light"); };
-if (localStorage.getItem("am-demo-theme") === "dark") document.documentElement.dataset.theme = "dark";
+page.byId("themeBtn").onclick = () => { const dark = page.html().dataset.theme !== "dark"; page.html().dataset.theme = dark ? "dark" : ""; localStorage.setItem("am-demo-theme", dark ? "dark" : "light"); };
+if (localStorage.getItem("am-demo-theme") === "dark") page.html().dataset.theme = "dark";
 // #s33: the collapsed rail is the DESKTOP's. On a phone the sidebar is the drawer, and the rail's
 // rules hide its head, its nav and its list: a phone that had the rail stored (1.355 drew a phone
 // held sideways as a desktop, and the owner collapsed it there) opened a blank drawer with no
@@ -3681,13 +3682,13 @@ if (localStorage.getItem("am-demo-theme") === "dark") document.documentElement.d
 // window grown past the phone wears it again.
 function applySidebar() { app.classList.toggle("sidebar-off", !indexState.sidebarOpen && !matchMedia(PHONE_QUERY).matches); }
 function toggleSidebar(open) { if (open && !railFlyout.hidden) closeRailFlyout(false); indexState.sidebarOpen = open; applySidebar(); persist(); viewport.remeasure(); }
-byId("sidebarCollapse").onclick = () => toggleSidebar(false); byId("sidebarMiniExpand").onclick = () => toggleSidebar(true); byId("sidebarReopen").onclick = () => toggleSidebar(true);
+page.byId("sidebarCollapse").onclick = () => toggleSidebar(false); page.byId("sidebarMiniExpand").onclick = () => toggleSidebar(true); byId("sidebarReopen").onclick = () => toggleSidebar(true);
 // The rail's write button reaches the write switch itself (#54): the demo clicks the write
 // BUTTON, whose handler ignores a click that lands on a button — a programmatic click does.
 // Shared Controls already binds this rail action to native session creation.
-if (!controls.nativeActive) byId("sidebarMiniWrite").onclick = () => byId("writeSwitch").click();
-byId("sidebarCollapse").title = `Collapse the sidebar into its icon rail  ( ${hintFor("sidebar-toggle")} )`;
-byId("sidebarMiniExpand").title = `Expand the sidebar  ( ${hintFor("sidebar-toggle")} )`;
+if (!controls.nativeActive) page.byId("sidebarMiniWrite").onclick = () => page.byId("writeSwitch").click();
+page.byId("sidebarCollapse").title = `Collapse the sidebar into its icon rail  ( ${hintFor("sidebar-toggle")} )`;
+page.byId("sidebarMiniExpand").title = `Expand the sidebar  ( ${hintFor("sidebar-toggle")} )`;
 // #96: the session list is resizable, the way the preview pane is — a handle on the sidebar's
 // own right edge. The width is the viewer's: it is written to `--sidebar-user` (production.css
 // feeds it to the grid only above the mobile breakpoint, so a phone keeps its full-width
@@ -3706,16 +3707,16 @@ sidebarResizer.setAttribute("aria-label", "Resize the session list");
 sidebarResizer.setAttribute("aria-valuemin", String(SIDEBAR_MIN));
 sidebarResizer.setAttribute("aria-valuemax", String(SIDEBAR_MAX));
 sidebarResizer.tabIndex = 0;
-document.querySelector(".sidebar").append(sidebarResizer);
+page.$(".sidebar").append(sidebarResizer);
 function sidebarWidth() {
-  return Math.round(document.querySelector(".sidebar").getBoundingClientRect().width) || SIDEBAR_DEFAULT;
+  return Math.round(page.$(".sidebar").getBoundingClientRect().width) || SIDEBAR_DEFAULT;
 }
 function setSidebarWidth(value, remember) {
   // A drag that reaches x=0 is a drag to the minimum, not a request for the default: 0 is a
   // width, so only a value that is not a number at all falls back.
   const asked = Number(value);
   const width = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.round(Number.isFinite(asked) ? asked : SIDEBAR_DEFAULT)));
-  document.documentElement.style.setProperty("--sidebar-user", `${width}px`);
+  page.html().style.setProperty("--sidebar-user", `${width}px`);
   // Below `SIDEBAR_TIGHT` the head's own row — the shell switch and five glyphs — is wider than
   // the sidebar, and the last of them (the sidebar collapse) would sit outside it. The CSS class
   // squeezes the glyphs and the head's padding so every control stays reachable at the narrowest
@@ -3835,7 +3836,7 @@ function setPanesMenu(open) {
 function schedulePanesClose() {
   clearTimeout(panesCloseTimer);
   panesCloseTimer = setTimeout(() => {
-    if (!panesMenu.contains(document.activeElement) && document.activeElement !== panesTrigger) setPanesMenu(false);
+    if (!panesMenu.contains(view.active()) && view.active() !== panesTrigger) setPanesMenu(false);
   }, 120);
 }
 panesMenu.onclick = event => {
@@ -3905,7 +3906,7 @@ panesMenu.onclick = event => {
   // and neither must the pane selector, which lists panes the reader can turn off.
   const nav = byId("sessionNavigator");
   const infoCard = nav.querySelector(':scope > [data-nav-card="session"]');
-  const infoBody = document.getElementById("navigatorSession"); // in the shell, but it MOVES here
+  const infoBody = view.byId("navigatorSession"); // in the shell, but it MOVES here
   const popover = document.createElement("div");
   popover.className = "info-popover";
   popover.id = "infoPopover";
@@ -3929,7 +3930,7 @@ panesMenu.onclick = event => {
     if (pinned) return;
     clearTimeout(closeTimer);
     closeTimer = setTimeout(() => {
-      if (!popover.contains(document.activeElement) && document.activeElement !== trigger) show(false);
+      if (!popover.contains(view.active()) && view.active() !== trigger) show(false);
     }, 140);
   };
   for (const type of ["pointerenter", "focus"]) trigger.addEventListener(type, peek);
@@ -3993,7 +3994,7 @@ const taskScrim = document.createElement("div");
 taskScrim.className = "task-scrim";
 taskScrim.id = "taskScrim";
 taskScrim.hidden = true;
-document.body.append(taskScrim, taskPopover);
+view.layer().append(taskScrim, taskPopover);
 let taskPopoverOpener = null;
 function closeTaskPopover(restoreFocus = true) {
   if (taskPopover.hidden) return;
@@ -4057,7 +4058,7 @@ tasksCenter.id = "tasksCenter";
 tasksCenter.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none"/><path d="M8 0.8v2.4M8 12.8v2.4M0.8 8h2.4M12.8 8h2.4"/></svg>';
 tasksCenter.title = `Center the pane on the running tasks — or on the boundary between done and pending  ( ${hintFor("tasks-center")} )`;
 tasksCenter.setAttribute("aria-label", tasksCenter.title);
-document.querySelector('[data-nav-card="tasks"] .outline-card-head').insertAdjacentElement("afterend", tasksCenter);
+view.$('[data-nav-card="tasks"] .outline-card-head').insertAdjacentElement("afterend", tasksCenter);
 
 // #186's live-only control USED to be a dot on each card's head. It moved into the panes menu in
 // #215, on the owner's report: the dot was indistinguishable from the decorative dots the counts
@@ -4084,7 +4085,7 @@ function centerTasks() {
   // room from the others, so the column exceeds its viewport and the sticky cards ride over one
   // another. The control scrolls the pane and does nothing else; on a shut drawer there is nothing
   // to scroll and nothing happens, which is the honest answer rather than acting at a distance.
-  const row = document.querySelectorAll("#navigatorWork .work-task")[target.index];
+  const row = view.$$("#navigatorWork .work-task")[target.index];
   if (!row) return false;
   const pane = paneScroller(row);
   if (!pane) return false;
@@ -4096,7 +4097,7 @@ function centerTasks() {
 }
 tasksCenter.onclick = event => { event.stopPropagation(); centerTasks(); };
 byId("sessionFoldAll").onclick = () => { const close = recordState.units.some(unit => unit.type === "process" && !recordState.processFolds.get(unit.key)); for (const unit of recordState.units) if (unit.type === "process") recordState.processFolds.set(unit.key, close); viewport.rerender(); };
-byId("collapseBtn").onclick = () => { for (const agent of groupedSessions()) { indexState.collapsed.add(`a:${agent.id}`); for (const project of agent.projects) indexState.collapsed.add(`p:${project.id}`); } persist(); renderTree(); };
+page.byId("collapseBtn").onclick = () => { for (const agent of groupedSessions()) { indexState.collapsed.add(`a:${agent.id}`); for (const project of agent.projects) indexState.collapsed.add(`p:${project.id}`); } persist(); renderTree(); };
 // Expand-all (#77, parity item 12): the counterpart of collapse-all — every agent and project
 // group open again, remembered like the folds are. Runtime chrome beside its counterpart.
 const expandBtn = document.createElement("button");
@@ -4106,7 +4107,7 @@ expandBtn.id = "expandBtn";
 expandBtn.innerHTML = svg("expandStack");
 expandBtn.title = "Expand every group";
 expandBtn.setAttribute("aria-label", "Expand every group");
-byId("collapseBtn").insertAdjacentElement("afterend", expandBtn);
+page.byId("collapseBtn").insertAdjacentElement("afterend", expandBtn);
 expandBtn.onclick = () => { indexState.collapsed.clear(); persist(); renderTree(); };
 byId("mobileBack").onclick = () => app.classList.remove("mobile-detail");
 addEventListener("popstate", () => { const id = new URLSearchParams(location.search).get("session"); if (id && id !== indexState.selected) selectSession(id, false); });
@@ -4223,12 +4224,12 @@ function revealInPane(row) {
   const card = row.closest(".outline-card");
   if (card && (drawers.open.get(card.dataset.navCard) ?? 1) < 1) return;
   let pane = row.parentElement;
-  while (pane && pane !== document.body) {
+  while (pane && pane !== view.layer()) {
     const overflow = getComputedStyle(pane).overflowY;
     if ((overflow === "auto" || overflow === "scroll") && pane.scrollHeight > pane.clientHeight) break;
     pane = pane.parentElement;
   }
-  if (!pane || pane === document.body || pane.contains(transcript)) return;
+  if (!pane || pane === view.layer() || pane.contains(transcript)) return;
   const bounds = pane.getBoundingClientRect(); const rect = row.getBoundingClientRect();
   if (rect.top < bounds.top) pane.scrollTop -= bounds.top - rect.top;
   else if (rect.bottom > bounds.bottom) pane.scrollTop += rect.bottom - bounds.bottom;
@@ -4246,7 +4247,7 @@ function revealInPane(row) {
 // list says which state it is in.
 function turnsScroller() {
   let pane = byId("navigatorTurns");
-  while (pane && pane !== document.body) {
+  while (pane && pane !== view.layer()) {
     const overflow = getComputedStyle(pane).overflowY;
     if ((overflow === "auto" || overflow === "scroll") && pane.scrollHeight > pane.clientHeight) return pane;
     pane = pane.parentElement;
@@ -4268,7 +4269,7 @@ function readerMoves(event) {
   const target = event.target, type = event.type;
   // The session first, reading no layout: wheels and touchmoves over the transcript arrive at the
   // engine's own rate, and a glide is no place to make the browser lay out the outline (#372).
-  if (transcript.contains(target) || (type === "keydown" && target === document.body)) {
+  if (transcript.contains(target) || (type === "keydown" && target === page.body())) {
     if (type === "wheel" || type === "touchmove" || (type === "pointerdown" && target === transcript) || (type === "keydown" && SCROLL_KEYS.has(event.key) && !editable(target))) setTurnsFollow(true);
     return;
   }
@@ -4295,7 +4296,7 @@ function stepTurn(delta) {
 function stepHead(delta) {
   const heads = [...transcript.querySelectorAll("button.renderer-head")].filter(head => head.offsetParent !== null);
   if (!heads.length) return;
-  const at = heads.indexOf(document.activeElement);
+  const at = heads.indexOf(view.active());
   const next = at < 0 ? (delta > 0 ? 0 : heads.length - 1) : Math.max(0, Math.min(heads.length - 1, at + delta));
   heads[next].focus({ preventScroll: true });
   // The classic page's rule (its `stepHead`): a head clear of the top chrome and of the bottom
@@ -4308,7 +4309,7 @@ function stepHead(delta) {
 }
 function stepList(delta) {
   const rows = [...tree.querySelectorAll(".tree-row.session")];
-  const at = rows.indexOf(document.activeElement); if (at < 0) return;
+  const at = rows.indexOf(view.active()); if (at < 0) return;
   const next = Math.max(0, Math.min(rows.length - 1, at + delta));
   rows[next].focus(); selectSession(rows[next].dataset.session, true);
 }
@@ -4336,7 +4337,7 @@ byId("findPrev").title = `Previous match (${hintFor("hit-prev")})`; byId("findNe
 byId("turnPrev").title = `Previous turn (${hintFor("turn-prev")})`; byId("turnNext").title = `Next turn (${hintFor("turn-next")})`;
 // The header's own turn steppers were in the design but never bound; they step the same way the keys do.
 byId("turnPrev").onclick = () => stepTurn(-1); byId("turnNext").onclick = () => stepTurn(1);
-addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openGlobalSearch(); } else if (event.key === "Escape") { setSessionCopyMenu(false); byId("searchLayer").classList.remove("production-open"); setPopover(null); } });
+addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openGlobalSearch(); } else if (event.key === "Escape") { setSessionCopyMenu(false); page.byId("searchLayer").classList.remove("production-open"); setPopover(null); } });
 
 // #313 — while a session loads, a veil over the session area says so. It dims what is below the top
 // bars, which already name the new session, and speaks in three phases: loading; after
@@ -4354,7 +4355,7 @@ var sessionLoading;
   veil.hidden = true;
   veil.setAttribute("role", "status");
   veil.innerHTML = '<div class="session-loading-card"><span class="session-loading-spinner" aria-hidden="true"></span><span class="session-loading-text">Loading session…</span><span class="session-loading-bar" hidden><i></i></span></div>';
-  document.querySelector(".session-main").append(veil);
+  view.$(".session-main").append(veil);
   const text = veil.querySelector(".session-loading-text"), bar = veil.querySelector(".session-loading-bar"), fill = bar.querySelector("i");
   let slow = 0, downloading = false;
   const size = n => (n >= 1e6 ? `${(n / 1e6).toFixed(n < 1e7 ? 1 : 0)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
@@ -4399,7 +4400,7 @@ var phoneDock;
 {
   const PHONE = matchMedia(PHONE_QUERY);
   const WIDE = matchMedia(WIDE_PHONE_QUERY);
-  const topbar = document.querySelector(".topbar");
+  const topbar = view.$(".topbar");
   const handle = document.createElement("button");
   handle.type = "button";
   handle.className = "drawer-handle";
@@ -4456,7 +4457,7 @@ var phoneDock;
   dock.append(dockPill);
   app.append(dock);
   phoneDock = dock;
-  const searchCluster = document.querySelector(".header-search-cluster");
+  const searchCluster = view.$(".header-search-cluster");
   // While the find pill holds the dock, a glass ✕ beside it ENDS the search — the query and its marks
   // go, the keyboard goes down and the toolbar pill comes back — the way an iOS 26 search closes
   // beside its field. The field's own small ✕ only clears it to type again: one control, one meaning.
@@ -4506,7 +4507,7 @@ var phoneDock;
   const workspace = composer.closest(".workspace"), transcriptInner = byId("transcriptInner");
   let deskRoom = null, deskFrame = 0;
   const placeDeskCompose = () => {
-    const open = composer.classList.contains("production-show") && !PHONE.matches && !controls.nativeActive && !document.body.dataset.sharedCodex;
+    const open = composer.classList.contains("production-show") && !PHONE.matches && !controls.nativeActive && !page.body().dataset.sharedCodex;
     const was = deskRoom;
     workspace.classList.toggle("desk-composing", open);
     if (open) {
@@ -4557,7 +4558,7 @@ var phoneDock;
     dockCompose.setAttribute("aria-label", asks ? "Claude is asking: answer it" : draft ? "Write to this session — a draft is waiting" : "Write to this session");
     const keyboardOpen = innerHeight - (window.visualViewport?.height || innerHeight) > 80;
     // Moving a pending button on focus would move it between pointerdown and click.
-    const sharedFocus = !!controls.nativeActive && (document.activeElement === composeInput || keyboardOpen && (composer.contains(document.activeElement) || controls.runtimePanel?.contains(document.activeElement)));
+    const sharedFocus = !!controls.nativeActive && (view.active() === composeInput || keyboardOpen && (composer.contains(view.active()) || controls.runtimePanel?.contains(view.active())));
     app.classList.toggle("composing", PHONE.matches && composer.classList.contains("production-show") && (!controls.nativeActive || sharedFocus));
     if (controls.nativeActive) { controls.fitComposer(); placeDeskCompose(); return; }
     // #s236: the phone's note is the same one line the desktop's caption shows (`composeTargetLine`).
@@ -4756,7 +4757,7 @@ var phoneDock;
   const columnPane = document.createElement("div");
   columnPane.className = "column-pane phone-pane-body";
   columnPane.id = "columnPane";
-  const sideHead = document.querySelector("#app>.sidebar>.side-head");
+  const sideHead = page.$("#app>.sidebar>.side-head");
   sideHead.querySelector(".head-actions").before(columnSwitch);
   sideHead.after(columnPane);
   let columnNode = null, columnHome = null;
@@ -4798,9 +4799,9 @@ var phoneDock;
   const place = () => {
     const box = app.getBoundingClientRect();
     const bottom = Math.round(topbar.getBoundingClientRect().bottom - box.top);
-    if (bottom > 0) document.documentElement.style.setProperty("--phone-top", `${bottom}px`);
+    if (bottom > 0) view.styleRoot().style.setProperty("--phone-top", `${bottom}px`);
     const rise = Math.round(box.bottom - dock.getBoundingClientRect().top);
-    if (getComputedStyle(dock).display !== "none" && rise > 0) document.documentElement.style.setProperty("--phone-bottom", `${rise}px`);
+    if (getComputedStyle(dock).display !== "none" && rise > 0) view.styleRoot().style.setProperty("--phone-bottom", `${rise}px`);
   };
   new ResizeObserver(place).observe(topbar);
   new ResizeObserver(place).observe(dock);
@@ -4819,7 +4820,7 @@ var phoneDock;
   // transform makes the app the box its fixed children are placed in, which is the screen's box here.
   const viewport2 = window.visualViewport;
   if (viewport2) {
-    const root = document.documentElement;
+    const root = view.styleRoot();
     const ride = () => {
       if (controls.nativeActive && PHONE.matches) {
         const frame = sharedKeyboardFrame(app.getBoundingClientRect().height, viewport2);
@@ -4874,7 +4875,7 @@ var phoneDock;
 
 applySidebar();
 tree.innerHTML = '<div class="no-results">Scanning sessions…</div>'; treeWritten = null;
-byId("sidebarMiniAgents").innerHTML = "";
+page.byId("sidebarMiniAgents").innerHTML = "";
 renderHeader(); renderNavigator(); paintJump(); sessionIndex.start();
 // #114: a reload, a close or the tab going to the background saves the reader's choices with
 // the position (the debounced save may not have run yet).

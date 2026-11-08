@@ -169,6 +169,10 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/viewport.js").as_slice(),
         ),
+        "monitor-ui/view-root.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/view-root.js").as_slice(),
+        ),
         "monitor-ui/native-policy.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/native-policy.js").as_slice(),
@@ -336,6 +340,52 @@ mod tests {
         }
     }
 
+    /// #s429 (design/session-view-component.md, stage 1): the shell's modules find what they draw
+    /// in through `view-root.js`, the session view's root or the app's page, never through
+    /// `document` itself. In a shadow root a `document` lookup finds nothing the view drew, a
+    /// popover on `document.body` takes none of its styles, and `document.activeElement` names the
+    /// host's element. Read from the directory, so a new module is held to it too. The tabs' own
+    /// pages (`/markdown`, `/image`) are pages, not the view.
+    #[test]
+    fn the_shell_reaches_the_page_only_through_its_root() {
+        const PAGE_READS: &[&str] = &[
+            "document.getElementById(",
+            "document.querySelector(",
+            "document.querySelectorAll(",
+            "document.activeElement",
+            "document.body",
+            "document.documentElement",
+            "document.head",
+        ];
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/codex-ui");
+        let mut read = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if !name.ends_with(".js")
+                || matches!(
+                    name.as_str(),
+                    "view-root.js" | "image-page.js" | "markdown-page.js"
+                )
+            {
+                continue;
+            }
+            read += 1;
+            let source = std::fs::read_to_string(&path).unwrap();
+            for (n, line) in source.lines().enumerate() {
+                for pattern in PAGE_READS {
+                    assert!(
+                        !line.contains(pattern),
+                        "{name}:{} reads {pattern}… directly; go through `view` or `page` \
+                         (view-root.js)",
+                        n + 1
+                    );
+                }
+            }
+        }
+        assert!(read > 20, "read {read} modules from {}", dir.display());
+    }
+
     #[test]
     fn page_is_the_reference_shell_without_mock_runtime() {
         let page = page("test", false);
@@ -479,6 +529,7 @@ mod tests {
             ("state.js", include_str!("codex-ui/state.js")),
             ("view-memory.js", include_str!("codex-ui/view-memory.js")),
             ("view-model.js", include_str!("codex-ui/view-model.js")),
+            ("view-root.js", include_str!("codex-ui/view-root.js")),
             ("viewport.js", include_str!("codex-ui/viewport.js")),
             (
                 "phone-keyboard.js",

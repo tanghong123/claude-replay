@@ -21,6 +21,7 @@
 // own (#271): `/markdown` serves the viewer as the whole page, at the reader's document and range.
 
 import { backend } from "./backend.js";
+import { page, view } from "./view-root.js";
 
 const CONTRACT = "/api/mdrev";
 // #s10: the detached tab mounts the guest under a prefix of its own, which ALSO answers mdrev's
@@ -35,7 +36,7 @@ const MARKDOWN = /\.(md|markdown|mdown|mkd)$/i;
 export const isMarkdownName = name => MARKDOWN.test(String(name || ""));
 
 /** The pinned mdrev release's version, or "" from a server that carries none. */
-export const mdrevVersion = () => document.body?.dataset.mdrev || "";
+export const mdrevVersion = () => backend().mdrevVersion();
 
 let loading = null;
 /** The version this page found the monitor serving in place of the one it was loaded with (#s352),
@@ -48,7 +49,7 @@ function importBundle(version) {
   const link = document.createElement("link");
   link.rel = "stylesheet";
   link.href = backend().mdrevUrl(`/mdrev/${version}/mdrev.css`);
-  document.head.appendChild(link);
+  view.sheets().appendChild(link);
   return import(backend().mdrevUrl(`/mdrev/${version}/mdrev.js`)).catch(error => { link.remove(); throw error; });
 }
 
@@ -78,7 +79,7 @@ function loadMdrev(version) {
       const now = await servedVersion();
       if (!now || now === version) throw error;
       const module = await importBundle(now);
-      document.body.dataset.mdrev = now;
+      backend().mdrevMoved(now);
       updatedTo = now;
       return module;
     }).catch(error => { loading = null; throw error; });
@@ -94,7 +95,7 @@ function takeUpdate() {
   return version;
 }
 
-const theme = () => (document.documentElement.dataset.theme === "dark" ? "dark" : "light");
+const theme = () => view.theme();
 
 /** The collection name for Markdown the transcript carries (the monitor's `held` store). */
 const HELD = "held";
@@ -194,7 +195,7 @@ function mountAt(mountMdrev, el, facts, moved, contract = backend().mdrevUrl(CON
   show();
   mount();
   const watch = new MutationObserver(() => { mounted?.unmount(); mount(); });
-  watch.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  watch.observe(view.styleRoot(), { attributes: true, attributeFilter: ["data-theme"] });
   return {
     place,
     unmount() { watch.disconnect(); mounted?.unmount(); mounted = null; },
@@ -308,7 +309,7 @@ export async function mountStandalone(el, search = location.search) {
   const version = mdrevVersion();
   if (!version) throw new Unavailable("This server carries no Markdown viewer.");
   if (!want.root || !want.path) throw new Unavailable("This address names no document.");
-  const follow = () => { document.documentElement.dataset.theme = localStorage.getItem("am-demo-theme") === "dark" ? "dark" : ""; };
+  const follow = () => { page.html().dataset.theme = localStorage.getItem("am-demo-theme") === "dark" ? "dark" : ""; };
   follow();
   addEventListener("storage", event => { if (event.key === "am-demo-theme") follow(); });
   const [{ mountMdrev }, facts] = await Promise.all([loadMdrev(version), standaloneMount(want)]);

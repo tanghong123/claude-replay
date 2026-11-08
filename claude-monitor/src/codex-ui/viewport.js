@@ -5,6 +5,7 @@ import { clampPrompts, renderUnit } from "./components.js";
 import { VirtualWindow, elementFrame, mountEverythingRequested } from "./shared/virtual-window.js";
 import { renderMermaid } from "./shared/mermaid.js";
 import { placeholderUnit } from "./view-model.js";
+import { backend } from "./backend.js";
 
 export function revealNavigationContext(units, index, state, recordIndex, reveal = "record") {
   const unit = units[index];
@@ -104,7 +105,7 @@ export class Viewport extends VirtualWindow {
       renderAll: () => mountEverythingRequested(),
       defaultKind: "process",
       page: "app",
-      version: document.body.dataset.version || null,
+      version: backend().version,
     });
     this.scroller = scroller;
     this.inner = inner;

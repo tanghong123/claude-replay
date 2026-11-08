@@ -1,5 +1,6 @@
 import { revealQuery } from "./shared/capabilities.js";
 import { backend } from "./backend.js";
+import { view } from "./view-root.js";
 
 const escapeName = value => String(value || "attachment").replace(/[\\/:*?"<>|]/g, "-");
 
@@ -99,7 +100,7 @@ export class AttachmentViewer {
   /** A link the browser follows as a download: the bytes, or /file's stream, saved under `name`. */
   save(href, name) {
     const link = document.createElement("a");
-    link.href = href; link.download = name; document.body.append(link); link.click(); link.remove();
+    link.href = href; link.download = name; view.layer().append(link); link.click(); link.remove();
   }
 
   /** The system share sheet for `file`. True once shared or dismissed by the reader; "ready" when the

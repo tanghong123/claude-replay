@@ -1,6 +1,7 @@
 import { DEFAULT_READING, READING_KEY, parseReading } from "./shared/reading.js";
 import { composeCapability } from "./shared/control-protocol.js";
 import { PHONE_QUERY } from "./shared/capabilities.js";
+import { backend } from "./backend.js";
 
 const json = (key, fallback) => {
   try { return JSON.parse(localStorage.getItem(key) || "") || fallback; }
@@ -122,7 +123,7 @@ export const uiState = {
 };
 
 export const controlState = {
-  paired: document.body.dataset.paired === "true", write: false,
+  get paired() { return backend().paired; }, write: false,
   row: null, mode: "resume", consented: false, pending: ""
 };
 

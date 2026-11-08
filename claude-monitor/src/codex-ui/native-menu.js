@@ -1,3 +1,5 @@
+import { page, view } from "./view-root.js";
+
 /** Read-only discovery shared by the enabling control and the active native menu. */
 export async function readNativeStatus(fetcher, { timeoutMs = 30_000, schedule = setTimeout, cancel = clearTimeout } = {}) {
   const controller = new AbortController(); let timer;
@@ -55,7 +57,7 @@ export function confirmNativeShutdown(document, returnFocus, { owned = true, act
     dialog.addEventListener("close", () => settle(false), { once: true });
     dialog.addEventListener("cancel", event => { event.preventDefault(); settle(false); });
     cancel.onclick = () => settle(false); stop.onclick = () => settle(true);
-    document.body.append(dialog); dialog.showModal(); cancel.focus();
+    view.layer().append(dialog); dialog.showModal(); cancel.focus();
   });
 }
 /** Keep the shared-server benefit and setup prompt before launcher-dependent steps. */
@@ -88,17 +90,17 @@ export function positionNativeMenu(menu, button) {
 
 /** Keep optional native mode inside the existing Write row, before and after activation. */
 export function mountNativeMenu(onOpen) {
-  const row = document.getElementById("writeBtn");
+  const row = page.byId("writeBtn");
   const button = document.createElement("button");
   button.type = "button"; button.id = "codexNativeButton"; button.className = "production-native-trigger";
   button.setAttribute("aria-label", "Write mode options"); button.setAttribute("aria-haspopup", "dialog");
   button.setAttribute("aria-expanded", "false"); button.setAttribute("aria-controls", "codexNativeMenu");
   button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>';
   button.onclick = () => menu.matches(":popover-open") ? menu.hidePopover() : onOpen();
-  row.insertBefore(button, document.getElementById("writeInfo"));
+  row.insertBefore(button, page.byId("writeInfo"));
   const menu = document.createElement("div"); menu.className = "production-native-menu";
   menu.id = "codexNativeMenu"; menu.setAttribute("popover", "auto"); menu.setAttribute("role", "dialog");
-  menu.setAttribute("aria-label", "Write mode options"); document.body.append(menu);
+  menu.setAttribute("aria-label", "Write mode options"); page.body().append(menu);
   menu.addEventListener("toggle", event => button.setAttribute("aria-expanded", String(event.newState === "open")));
   menu.addEventListener("keydown", event => {
     if (event.key !== "Escape") return;

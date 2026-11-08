@@ -1,8 +1,9 @@
 import { appendDesktopHelp, mountNativeMenu, renderNativeMenu, renderNativeServerStatus, positionNativeMenu, readNativeStatus, ownsNativeServer, confirmNativeShutdown } from "./native-menu.js";
 import { backend } from "./backend.js";
+import { page, view } from "./view-root.js";
 import { controlState, indexState, selectedRow } from "./state.js";
 
-const byId = id => document.getElementById(id);
+const byId = view.byId;
 import { isCodexSession, usesNativeControls } from "./native-policy.js";
 
 /** Own only the presentation changes made by the optional native controller. */
@@ -10,19 +11,19 @@ class NativePresentation {
   constructor() {
     this.input = byId("composeInput");
     this.parent = this.input.parentNode; this.next = this.input.nextSibling;
-    this.nodes = new Set(document.querySelectorAll("*"));
+    this.nodes = new Set(page.$$("*"));
     this.saved = ["writeBtn", "writeNotice", "composeFab", "closeComposer", "sidebarMiniWrite", "sendBtn", "composeInput", "composer"].map(id => {
       const node = byId(id);
       return { node, attributes: [...node.attributes].map(attribute => [attribute.name, attribute.value]),
         events: Object.fromEntries(["onclick", "oninput", "onkeydown", "onpaste"].map(key => [key, node[key]])) };
     });
-    this.viewport = document.querySelector("meta[name=viewport]"); this.viewportContent = this.viewport.content;
+    this.viewport = page.$("meta[name=viewport]"); this.viewportContent = this.viewport.content;
   }
   capture() {
     this.native = this.saved.map(({ node }) => ({ node, attributes: [...node.attributes].map(attribute => [attribute.name, attribute.value]),
       events: Object.fromEntries(["onclick", "oninput", "onkeydown", "onpaste"].map(key => [key, node[key]])) }));
     this.nativeParent = this.input.parentNode;
-    this.owned = [...document.querySelectorAll("*")].filter(node => !this.nodes.has(node) && this.nodes.has(node.parentNode))
+    this.owned = [...page.$$("*")].filter(node => !this.nodes.has(node) && this.nodes.has(node.parentNode))
       .map(node => ({ node, hidden: node.hidden }));
     for (const { node } of this.owned) node.classList.add("codex-native-only");
   }
@@ -37,7 +38,7 @@ class NativePresentation {
     this.apply(this.native);
     this.nativeParent.append(this.input);
     for (const { node, hidden } of this.owned) node.hidden = hidden;
-    document.body.dataset.sharedCodex = "true";
+    page.body().dataset.sharedCodex = "true";
   }
   hide() {
     for (const { node } of this.owned) {
@@ -47,11 +48,11 @@ class NativePresentation {
     }
     this.parent.insertBefore(this.input, this.next);
     this.apply(this.saved);
-    delete document.body.dataset.sharedCodex; delete document.body.dataset.sharedReaderOpen;
+    delete page.body().dataset.sharedCodex; delete page.body().dataset.sharedReaderOpen;
     this.viewport.content = this.viewportContent;
     const composer = byId("composer"); composer.removeAttribute("data-shared-constrained");
     composer.classList.remove("production-show"); controlState.row = null;
-    document.body.style.removeProperty("--shared-composer-height");
+    page.body().style.removeProperty("--shared-composer-height");
     byId("transcript").style.paddingBottom = "";
   }
 }
@@ -68,14 +69,14 @@ export class NativeModeControls {
     new ResizeObserver(() => this.positionMenu()).observe(this.menu);
     visualViewport?.addEventListener("resize", () => this.positionMenu());
     visualViewport?.addEventListener("scroll", () => this.positionMenu());
-    const originalSwitch = byId("writeSwitch").onclick;
-    byId("writeSwitch").onclick = async event => {
+    const originalSwitch = page.byId("writeSwitch").onclick;
+    page.byId("writeSwitch").onclick = async event => {
       if (this.pending) return;
       if (controlState.write && this.enabled && !await this.disable()) return;
       originalSwitch(event); this.paint();
     };
-    const originalMiniWrite = byId("sidebarMiniWrite").onclick;
-    byId("sidebarMiniWrite").onclick = event => this.enabled && controlState.write && (!selectedRow() || isCodexSession(selectedRow()))
+    const originalMiniWrite = page.byId("sidebarMiniWrite").onclick;
+    page.byId("sidebarMiniWrite").onclick = event => this.enabled && controlState.write && (!selectedRow() || isCodexSession(selectedRow()))
       ? this.newSession() : originalMiniWrite(event);
     byId("composeInput").addEventListener("input", () => {
       const session = controlState.row?.id || indexState.selected;
@@ -197,7 +198,7 @@ export class NativeModeControls {
   }
   async disable() {
     if (this.pending || !this.enabled) return false;
-    const returnFocus = document.activeElement?.id === "writeSwitch" ? byId("writeSwitch") : this.button;
+    const returnFocus = page.active()?.id === "writeSwitch" ? page.byId("writeSwitch") : this.button;
     let paused = false;
     this.mode = "confirming";
     this.paint();
@@ -238,7 +239,7 @@ export class NativeModeControls {
       const presentation = new NativePresentation();
       if (indexState.selected) this.drafts.set(indexState.selected, byId("composeInput").value);
       this.presentation = presentation;
-      document.body.dataset.sharedCodex = "true";
+      page.body().dataset.sharedCodex = "true";
       this.native = new MonitorControls({ ...this.actions, backend: backend(), nativeManaged: true,
         nativeDisabled: () => { if (this.mode !== "disabling") this.finishDisable(); },
         nativeNewClosed: () => { this.intent = "none"; this.paint(); } });
