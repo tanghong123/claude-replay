@@ -2491,6 +2491,34 @@ pub fn until_preview_parked(tab: &headless_chrome::Tab) {
     );
 }
 
+/// Click a control once a reader could (#s437): the whole control lies inside the window (the
+/// viewport half of the test headless_chrome's `scroll_into_view` applies before it scrolls), its
+/// centre hit-tests to the control itself, it stood at the same place on the poll before, and no finite
+/// transition or animation is running on it or on anything that holds it. headless_chrome's
+/// `click` reads the control's midpoint once and then presses there, so a control still on its way
+/// presses whatever is under that point. The pane's ↗ was "shown" (not hidden, 32px wide) while
+/// the pane was still 0px wide, the button hanging off the window's edge, and moved 204px as the
+/// pane opened; a click in that window landed on `div.app`, no `window.open` ran, and the case
+/// read "no tab at /image?" (5 of 14 runs on one Mac, on main and on a branch alike).
+pub fn click_when_settled(tab: &headless_chrome::Tab, selector: &str, what: &str) {
+    let sel = serde_json::to_string(selector).unwrap();
+    eval(tab, "delete window.__clickSettled; 1");
+    until(
+        tab,
+        &format!(
+            "(function(){{ var b = document.querySelector({sel}); if (!b || b.hidden) {{ window.__clickSettled = ''; return false; }} var r = b.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2; var at = [r.left, r.top, r.width, r.height].join(','); var still = window.__clickSettled === at; window.__clickSettled = at; if (!still || r.width < 1 || r.height < 1 || r.left < 0 || r.top < 0 || r.right > innerWidth || r.bottom > innerHeight) return false; var hit = document.elementFromPoint(x, y); if (!hit || !b.contains(hit)) return false; for (var a of document.getAnimations()) {{ var t = a.effect && a.effect.target; if (a.playState === 'running' && t && t.contains && t.contains(b) && isFinite(a.effect.getComputedTiming().endTime)) return false; }} return true; }})()"
+        ),
+        what,
+        Duration::from_secs(20),
+        &format!(
+            "(function(){{ var b = document.querySelector({sel}); if (!b) return 'no such control'; var r = b.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2; var hit = document.elementFromPoint(x, y); return JSON.stringify({{ hidden: b.hidden, rect: [r.left, r.top, r.width, r.height].map(Math.round), window: [innerWidth, innerHeight], hit: hit ? hit.tagName.toLowerCase() + '.' + String(hit.getAttribute('class') || '').split(' ')[0] : null, running: document.getAnimations().filter(function (a) {{ return a.playState === 'running'; }}).map(function (a) {{ var t = a.effect && a.effect.target; return (a.transitionProperty || a.animationName || 'animation') + '@' + (t ? t.tagName.toLowerCase() + (t.id ? '#' + t.id : '') : '?'); }}) }}); }})()"
+        ),
+    );
+    tab.find_element(selector)
+        .and_then(|e| e.click().map(|_| ()))
+        .unwrap_or_else(|e| panic!("pressing {what} ({selector}): {e}"));
+}
+
 /// The tab a page opened (`window.open`) once its address holds `want`, within `timeout`
 /// (#s343). headless_chrome registers a new tab from Chrome's `Target.targetCreated` in its own
 /// event loop, and that loop stops for good when a tab's setup calls fail (each waits up to its

@@ -1042,10 +1042,11 @@ fn an_image_opens_in_a_tab_of_its_own_from_the_pane() {
         Duration::from_secs(20),
         PANE,
     );
-    tab.find_element("#previewHead .preview-newtab")
-        .unwrap()
-        .click()
-        .unwrap();
+    harness::click_when_settled(
+        &tab,
+        "#previewHead .preview-newtab",
+        "the pane's ↗ to hold still where a reader can press it",
+    );
     let own = opened("/image?");
     until(
         &own,
@@ -1075,10 +1076,11 @@ fn an_image_opens_in_a_tab_of_its_own_from_the_pane() {
         Duration::from_secs(20),
         PANE,
     );
-    tab.find_element("#previewHead .preview-newtab")
-        .unwrap()
-        .click()
-        .unwrap();
+    harness::click_when_settled(
+        &tab,
+        "#previewHead .preview-newtab",
+        "the pane's ↗ to hold still where a reader can press it, for the pasted image",
+    );
     let held = opened("held=");
     until(
         &held,

@@ -468,10 +468,11 @@ fn open_in_a_tab(tab: &headless_chrome::Tab) {
         Duration::from_secs(10),
         PANE,
     );
-    tab.find_element("#previewHead .preview-newtab")
-        .unwrap()
-        .click()
-        .unwrap();
+    harness::click_when_settled(
+        tab,
+        "#previewHead .preview-newtab",
+        "the pane's open-in-a-tab control to hold still where a reader can press it",
+    );
 }
 
 /// The tab the pane opened, once it has its address.
