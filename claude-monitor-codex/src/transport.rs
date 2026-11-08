@@ -603,6 +603,39 @@ mod owner_tests {
         assert_eq!(polls.lookups, 1);
     }
 
+    /// #s410's reproduction, without loading the CPU: a lookup that behaves as `lsof` did on the
+    /// loaded Mac, answering only after 2.3 s and killed (no answer) when its bound is shorter.
+    /// Killed at the old fixed 2 s, every run within the wait read nothing and the server of this
+    /// very user was refused; given the rest of the wait, the first run answers.
+    #[test]
+    fn a_probe_slower_than_two_seconds_still_finds_this_users_server() {
+        const SLOW: Duration = Duration::from_millis(2300);
+        let slow_lsof = |bound: Duration| {
+            std::thread::sleep(SLOW.min(bound));
+            if bound < SLOW {
+                Err("lsof ran past its bound")
+            } else {
+                Ok(Some(501))
+            }
+        };
+        let (before, polls) = poll_owner(
+            |_| slow_lsof(Duration::from_secs(2)),
+            std::time::Instant::now() + OWNER_WAIT,
+            |_| (),
+        );
+        assert_eq!(before, None, "a fixed 2 s bound refused it: {polls:?}");
+        assert!(polls.lookups >= 2 && polls.no_holder == 0, "{polls:?}");
+        let started = std::time::Instant::now();
+        let (after, polls) = poll_owner(slow_lsof, started + OWNER_WAIT, |_| ());
+        assert_eq!(
+            after,
+            Some(501),
+            "the rest of the wait lets it answer: {polls:?}"
+        );
+        assert_eq!(polls.lookups, 1, "{polls:?}");
+        assert!(started.elapsed() < OWNER_WAIT, "{:?}", started.elapsed());
+    }
+
     /// #s410: a wait says what its lookups saw, so a refusal on a loaded machine tells an end
     /// nobody accepted from lookups that never read the table. The line names no address.
     #[test]
