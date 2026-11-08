@@ -5,11 +5,13 @@
 // URL, the address its routes sit under, and learns rule by rule where its replies differ:
 //
 //   node conform.mjs <base-url> [--cookie name=value]... [--header "Name: value"]...
-//                    [--session <id>] [--json]
+//                    [--origin <page-origin>] [--session <id>] [--json]
 //
 // --cookie and --header carry the reader's sign-in (a cookie, or `Authorization: Bearer <token>`
-// for a paired agent-monitor); neither is ever printed. --session names the session to read
-// (else the list's first). --json prints the results as one JSON object instead of lines.
+// for a paired agent-monitor); neither is ever printed. --origin is the origin of the page the
+// components are mounted in, sent as `Origin` on every request but a GET (the base's own origin
+// unless given). --session names the session to read (else the list's first). --json prints the
+// results as one JSON object instead of lines.
 //
 // Each rule prints as passed (✓), failed (✗) or skipped (–), under the contract section it comes
 // from. A route of an optional tier the host does not serve answers 404, and its rules are skipped,
@@ -25,7 +27,7 @@
 const CONTRACT = 1;
 
 const USAGE = `usage: node conform.mjs <base-url> [--cookie name=value]... [--header "Name: value"]...
-                         [--session <id>] [--json]`;
+                         [--origin <page-origin>] [--session <id>] [--json]`;
 
 // ------------------------------------------------------------------------------- the contract
 
@@ -310,7 +312,7 @@ function usage(why) {
 }
 
 function parseArgs(argv) {
-  const o = { base: null, cookies: [], headers: [], session: null, json: false };
+  const o = { base: null, cookies: [], headers: [], origin: null, session: null, json: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const value = () => {
@@ -320,6 +322,7 @@ function parseArgs(argv) {
     if (a === "--cookie") o.cookies.push(value());
     else if (a === "--header") o.headers.push(value());
     else if (a === "--session") o.session = value();
+    else if (a === "--origin") o.origin = value();
     else if (a === "--json") o.json = true;
     else if (a === "--help" || a === "-h") {
       process.stdout.write(`${USAGE}\n`);
@@ -340,13 +343,23 @@ let BASE;
 try {
   BASE = new URL(ARGS.base);
 } catch {
-  usage(`not a URL: ${ARGS.base}`);
+  usage("the base is not a URL");
 }
 if (BASE.protocol !== "http:" && BASE.protocol !== "https:") usage("the base URL must be http or https");
+// A sign-in belongs in --header or --cookie, which are never printed; the base is printed.
+if (BASE.username || BASE.password) usage("put the sign-in in --header or --cookie, not in the base URL");
 BASE.search = "";
 BASE.hash = "";
 if (!BASE.pathname.endsWith("/")) BASE.pathname += "/";
-const ORIGIN = BASE.origin;
+// The page's own origin, as a browser names it on a request that is not a GET.
+let ORIGIN = BASE.origin;
+if (ARGS.origin) {
+  try {
+    ORIGIN = new URL(ARGS.origin).origin;
+  } catch {
+    usage("--origin takes a URL, such as https://app.example");
+  }
+}
 
 // The reader's sign-in: sent with every request but the ones that ask what happens without it.
 const AUTH = {};
@@ -426,7 +439,7 @@ async function loadPage() {
     const to = reply.header("location");
     if (!to) return reply;
     const next = new URL(to, new URL(path, BASE));
-    if (next.origin !== ORIGIN || !next.href.startsWith(BASE.href)) return reply;
+    if (next.origin !== BASE.origin || !next.href.startsWith(BASE.href)) return reply;
     for (const line of reply.headers.getSetCookie?.() ?? []) jar.push(line.split(";")[0].trim());
     path = next.href.slice(BASE.href.length);
   }
@@ -1776,7 +1789,7 @@ function finish() {
   const conforms = counts.fail === 0;
   if (ARGS.json) {
     process.stdout.write(
-      `${JSON.stringify({ contract: CONTRACT, base: BASE.href, conforms, counts, results, routes: ROUTES }, null, 2)}\n`,
+      `${JSON.stringify({ contract: CONTRACT, base: `${BASE.origin}${BASE.pathname}`, conforms, counts, results, routes: ROUTES }, null, 2)}\n`,
     );
   } else {
     process.stdout.write("\nRoutes: ");
