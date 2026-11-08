@@ -6,11 +6,14 @@
 //! What it holds: the host's sessions are listed and the environment's are not; every route the
 //! contract documents is answered, except the ones this host leaves out, which answer exactly the
 //! ceiling's 404; and the host's sign-in, body limits and finished replies behave as the contract
-//! asks.
+//! asks. The kit's conformance check (#s434, `kit/conform.mjs`) passes against it, and against a
+//! second listener over the same table that breaks rules on purpose it fails those rules by name.
 //!
 //! One test, in a binary of its own: the table installs mdrev's state and the relayed-message key
 //! once per process, and the store variables are process-wide.
 
+#[path = "conform_kit/mod.rs"]
+mod conform_kit;
 #[path = "contract_index/mod.rs"]
 mod contract_index;
 
@@ -297,8 +300,8 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
     let store = base.join("host-projects");
     let hosted = "5a5a5a5a-0000-4000-8000-000000004260";
     let harbour = base.join("tern-harbour");
-    std::fs::create_dir_all(&harbour).unwrap();
-    write_session(&store, harbour.to_str().unwrap(), hosted);
+    // Three turns, a file read and a command: enough for every rule of the conformance check.
+    conform_kit::write_session(&store, &harbour, hosted);
     // An agent process in the session's directory, which the monitor's own index would link to
     // it (a lone agent in a session's directory is that session's): this host never looks.
     let _agent = StandIn::spawn(&base.join("bin"), &harbour);
@@ -343,7 +346,7 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
     );
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    serve(listener, table);
+    serve(listener, table.clone());
     let get = |path: &str| ask(port, "GET", &format!("{PREFIX}{path}"), &[SIGNED_IN], b"");
 
     // The host's own sign-in and its own path are the host's, in front of the table: what the
@@ -546,6 +549,156 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
     let lock: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("LOCK")).unwrap()).unwrap();
     assert_eq!(lock["note"]["holder"], "host", "{lock}");
+
+    // The kit's conformance check, run as a host would run it against its own base URL with its
+    // reader's sign-in: it conforms. What this host leaves out (the writes, the files, the Arrange
+    // choice) is skipped, never failed, and the rest of the session's rules ran.
+    let at = format!("http://127.0.0.1:{port}{PREFIX}");
+    let cookie = ["--cookie", "host-session=fixture"];
+    if let Some(out) = conform_kit::run(&at, &cookie) {
+        assert_eq!(
+            out.failed(),
+            Vec::<String>::new(),
+            "the host breaks no rule:\n{}",
+            out.listing()
+        );
+        assert_eq!(out.code, Some(0), "{}", out.listing());
+        let statuses = out.statuses();
+        for id in [
+            "page.contract",
+            "page.paired",
+            "ui.modules",
+            "sessions.row",
+            "pull.reply",
+            "pull.own-cursor",
+            "pull.tail",
+            "records.reply",
+            "records.not-a-start",
+            "turn-index.turns",
+            "search.tool-filter",
+            "record.kinds",
+            "meta.fields",
+            "reveal.forged",
+            "mdrev.hold",
+            "mermaid.runtime",
+            "request.cross-site",
+            "request.body-limit",
+            "tabs.static",
+            "index.core",
+        ] {
+            assert_eq!(
+                statuses.get(id).map(String::as_str),
+                Some("pass"),
+                "{id}:\n{}",
+                out.listing()
+            );
+        }
+        // `resolve` on held text among them: the ceiling counts every mdrev POST but `hold` as a
+        // write (`Serves::admits`), so a table that serves no writes answers it 404 (#s434's
+        // report).
+        for id in [
+            "file.offered",
+            "mdrev.open",
+            "mdrev.resolve",
+            "layout.sources",
+            "writes.method",
+            "writes.refusal",
+        ] {
+            assert_eq!(
+                statuses.get(id).map(String::as_str),
+                Some("skip"),
+                "{id} is left out by this host's ceiling:\n{}",
+                out.listing()
+            );
+        }
+        conform_kit::assert_sections_are_headings(&out, &doc);
+
+        // A host that breaks rules: a second listener over the same table, its replies changed
+        // after the table answers. Each change breaks one rule, which fails by its name and the
+        // section it comes from; the rules beside it still pass.
+        let breaks = |req: &Request, mut reply: HttpResponse| {
+            let json = |reply: &HttpResponse| -> serde_json::Value {
+                serde_json::from_slice(&reply.body).unwrap()
+            };
+            match req.name {
+                // The list without its ignoredCount.
+                "api/sessions" => {
+                    let mut v = json(&reply);
+                    v.as_object_mut().unwrap().remove("ignoredCount");
+                    reply.body = v.to_string().into_bytes();
+                }
+                // A range that starts inside a record, answered as though it did not.
+                "records" if reply.code.starts_with("400") => reply.code = "200 OK",
+                // A search that quotes the text it found.
+                "search" if reply.code.starts_with("200") => {
+                    let mut v = json(&reply);
+                    v["snippet"] = serde_json::json!("terns on the harbour wall");
+                    reply.body = v.to_string().into_bytes();
+                }
+                // Provisional records without their `t`.
+                "pull" if reply.code.starts_with("200") => {
+                    let mut v = json(&reply);
+                    for rec in v["provisional"].as_array_mut().into_iter().flatten() {
+                        rec.as_object_mut().unwrap().remove("t");
+                    }
+                    reply.body = v.to_string().into_bytes();
+                }
+                _ => {}
+            }
+            reply
+        };
+        let honest = table.clone();
+        let broken: RouteHandler = Arc::new(move |req: &Request| breaks(req, honest(req)));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let broken_at = format!(
+            "http://127.0.0.1:{}{PREFIX}",
+            listener.local_addr().unwrap().port()
+        );
+        serve(listener, broken);
+        let out = conform_kit::run(&broken_at, &[cookie[0], cookie[1], "--session", hosted])
+            .expect("node ran the first time");
+        assert_eq!(out.code, Some(1), "a rule failed:\n{}", out.listing());
+        assert_eq!(out.report["conforms"], false);
+        let broken_rules = [
+            ("sessions.reply", "The session list › GET /api/sessions"),
+            (
+                "records.not-a-start",
+                "One session's records › GET /records",
+            ),
+            ("search.no-text", "One session's records › GET /search"),
+            ("record.fields", "The record format › Every record"),
+        ];
+        assert_eq!(
+            out.failed(),
+            {
+                let mut ids: Vec<String> =
+                    broken_rules.iter().map(|(id, _)| id.to_string()).collect();
+                ids.sort();
+                ids
+            },
+            "exactly the broken rules fail:\n{}",
+            out.listing()
+        );
+        for (id, section) in broken_rules {
+            assert_eq!(out.result(id)["section"], section, "{}", out.listing());
+        }
+        assert!(
+            out.result("sessions.reply")["detail"]
+                .as_str()
+                .unwrap()
+                .contains("ignoredCount is missing"),
+            "{}",
+            out.listing()
+        );
+        for id in [
+            "pull.reply",
+            "records.reply",
+            "search.reply",
+            "turn-index.facts",
+        ] {
+            assert_eq!(out.result(id)["status"], "pass", "{id}:\n{}", out.listing());
+        }
+    }
 
     let _ = std::fs::remove_dir_all(&base);
 }
