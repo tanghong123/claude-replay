@@ -461,31 +461,63 @@ function described(method, url) {
 /** One request to the base, as the page would make it: relative to the base, cookies and the
  * reader's sign-in sent, and the page's own origin on anything but a GET. With `noDownload`, a
  * reply that is a download (`application/octet-stream`) is not read: its headers are kept and its
- * body cancelled. */
+ * connection closed.
+ *
+ * Over `node:http`, not `fetch`: Node 22's fetch (undici) dies on an internal assertion
+ * (`assert(!this.paused)`) when a server closes a keep-alive connection while a reply's body is not
+ * yet read, which the monitor and many hosts do, and which no rule can catch. */
 async function ask(method, path, { body, headers = {}, signedIn = true, noDownload = false } = {}) {
   const url = underBase(path);
   if (!url) fail(`${redact(String(path).slice(0, 60))} is outside the base: nothing is sent there`);
   const h = new Headers(signedIn ? AUTH : {});
   for (const [k, v] of Object.entries(headers)) h.set(k, v);
   if (method !== "GET" && method !== "HEAD" && !h.has("origin")) h.set("origin", ORIGIN);
+  const payload = body == null ? null : Buffer.isBuffer(body) ? body : Buffer.from(String(body));
+  if (payload) h.set("content-length", String(payload.length));
   const what = described(method, url);
-  let res;
-  try {
-    res = await fetch(url, { method, headers: h, body, redirect: "manual", signal: AbortSignal.timeout(TIMEOUT_MS) });
-  } catch (e) {
-    fail(`${what}: no answer (${e.cause?.code ?? e.name})`);
-  }
-  if (noDownload && mediaType(res.headers.get("content-type")) === "application/octet-stream") {
-    await res.body?.cancel().catch(() => {});
-    return new Reply(what, res.status, res.headers, Buffer.alloc(0));
-  }
-  let bytes;
-  try {
-    bytes = Buffer.from(await res.arrayBuffer());
-  } catch (e) {
-    fail(`${what}: the reply was cut off (${e.cause?.code ?? e.name})`);
-  }
-  return new Reply(what, res.status, res.headers, bytes);
+  const { request } = await import(url.protocol === "https:" ? "node:https" : "node:http");
+  const outcome = await new Promise((resolve) => {
+    const req = request(url, { method, headers: Object.fromEntries(h), signal: AbortSignal.timeout(TIMEOUT_MS) }, (res) => {
+      const got = new Headers();
+      for (let i = 0; i + 1 < res.rawHeaders.length; i += 2) got.append(res.rawHeaders[i], res.rawHeaders[i + 1]);
+      if (noDownload && mediaType(got.get("content-type")) === "application/octet-stream") {
+        res.destroy();
+        resolve({ reply: new Reply(what, res.statusCode, got, Buffer.alloc(0)) });
+        return;
+      }
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("error", (e) => resolve({ cut: e.code ?? e.name }));
+      res.on("end", () => {
+        let bytes = Buffer.concat(chunks);
+        try {
+          bytes = decoded(bytes, got.get("content-encoding"));
+        } catch (e) {
+          resolve({ cut: `undecodable ${got.get("content-encoding")}: ${e.code ?? e.name}` });
+          return;
+        }
+        resolve({ reply: new Reply(what, res.statusCode, got, bytes) });
+      });
+      res.on("aborted", () => resolve({ cut: "aborted" }));
+    });
+    req.on("error", (e) => resolve({ none: e.code ?? e.name }));
+    req.end(payload ?? undefined);
+  });
+  if (outcome.none) fail(`${what}: no answer (${outcome.none})`);
+  if (outcome.cut) fail(`${what}: the reply was cut off (${outcome.cut})`);
+  return outcome.reply;
+}
+
+const zlib = await import("node:zlib");
+
+/** A reply's bytes as the page would read them: a browser undoes the content encoding. */
+function decoded(bytes, encoding) {
+  const e = String(encoding ?? "").trim().toLowerCase();
+  if (!e || e === "identity") return bytes;
+  if (e === "gzip" || e === "x-gzip") return zlib.gunzipSync(bytes);
+  if (e === "deflate") return zlib.inflateSync(bytes);
+  if (e === "br") return zlib.brotliDecompressSync(bytes);
+  throw Object.assign(new Error(e), { code: "an unknown encoding" });
 }
 
 /** A content type's media type, lower-cased, without its parameters. */
