@@ -692,8 +692,17 @@ fn run_sized(mobile: bool, unix: bool, width: u32, height: u32) {
         &tab,
         "document.getElementById('transcript').innerText.includes('Start this session')",
     );
+    // The session opened above while the index read it triggers is still to come: creation
+    // calls refreshIndex after opening it, which reads /api/sessions (not held) before it asks
+    // for the threads (held). So wait for that read to be held, then check the created session
+    // is still the one open, with its read unanswered (#s227: on a loaded machine
+    // /api/sessions was still out when the case asserted at once, and found no read held).
+    wait(&tab, "window.heldNativeScans.length > 0");
     assert_eq!(
-        eval(&tab, "window.heldNativeScans.length > 0"),
+        eval(
+            &tab,
+            "new URL(location.href).searchParams.get('session') === 'rollout-native-created' && document.getElementById('transcript').innerText.includes('Start this session') && window.heldNativeScans.length > 0"
+        ),
         true,
         "Creation finished while its index read was held"
     );
