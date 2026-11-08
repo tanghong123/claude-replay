@@ -1,7 +1,7 @@
 # Mounting agent-monitor's backend in another server
 
-> **DRAFT 1** (#s426, 2026-11-08). Step 3 of `design/embedding.md` ("The order of the work").
-> Nothing in it is built yet.
+> **DRAFT 2** (#s426, 2026-11-08). Step 3 of `design/embedding.md` ("The order of the work").
+> Steps 1 to 5 of "The order" are built; step 6, the mount base in the page, is not.
 
 ## What it is for
 
@@ -60,6 +60,12 @@ machine's `~/.mdrev`.
 **Build:** one state directory, the one the index is already given, used for all of it. mdrev's
 state directory is given too, or none (then the pane files no notes, and the shared-review prefix
 is not served). The relayed-message key source is given, or none.
+
+**Built:** the hide list, the pane grants and the passcode are read from the index's state
+directory. `routes::mounted` takes `OtherTools`: mdrev's state directory and the relayed-message
+key source, each or none; `routes::handler` mounts with this user's, as the monitor always did.
+The pairing token stays the monitor binary's: it is its listener's sign-in, which a host replaces,
+and the table never reads it.
 
 The key and the two policies stay one per process for now: a host mounts one table per process.
 Two tables in one process is a later change.
@@ -123,6 +129,10 @@ be handed off to.
 **Build:** the claim moves into a library call both use, and its note says whether the holder is a
 monitor that can be handed off to. A host takes a root of its own.
 
+**Built:** `root_claim::claim(root, Holder::Monitor | Holder::Host)`. The note names its holder. A
+second monitor still hands off to a monitor; a host is never handed off, and a monitor started
+over a host's root is refused, each told to take a root of its own.
+
 ## The order
 
 Each lands on its own, with the monitor working at every step:
@@ -133,8 +143,10 @@ Each lands on its own, with the monitor working at every step:
 4. One configuration for a mounted table: the stores (1), the probes switch (2), the state (3) and
    the root claim (8). The monitor builds its own from today's defaults.
 5. A test host that mounts the table under `/agents/monitor/`, with stores of its own, the probes
-   off, its own request facts and reads only. The contract tests (the route index, every documented
-   row answered) run against it.
+   off, its own request facts and reads only. The route index runs against it: every documented
+   route is answered, except those its ceiling leaves out, which answer the ceiling's 404, and no
+   core route is left out. `claude-monitor/tests/mount_host.rs`, which uses the crates' public API
+   alone.
 6. The mount base in the page (6).
 
 ## Left for later
