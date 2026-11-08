@@ -242,30 +242,13 @@ impl Drop for StandIn {
 fn write_session(store: &Path, cwd: &str, sid: &str) {
     let project = store.join(cwd.replace('/', "-"));
     std::fs::create_dir_all(&project).unwrap();
-    let ts = {
-        let secs = std::time::SystemTime::now()
+    let ts = conform_kit::rfc3339(
+        std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs()
-            - 600;
-        let (days, rest) = (secs / 86_400, secs % 86_400);
-        // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
-        let z = days as i64 + 719_468;
-        let era = z.div_euclid(146_097);
-        let doe = z - era * 146_097;
-        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let day = doy - (153 * mp + 2) / 5 + 1;
-        let month = if mp < 10 { mp + 3 } else { mp - 9 };
-        let year = yoe + era * 400 + i64::from(month <= 2);
-        format!(
-            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-            rest / 3600,
-            rest % 3600 / 60,
-            rest % 60
-        )
-    };
+            - 600,
+    );
     std::fs::write(
         project.join(format!("{sid}.jsonl")),
         format!(
@@ -300,7 +283,7 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
     let store = base.join("host-projects");
     let hosted = "5a5a5a5a-0000-4000-8000-000000004260";
     let harbour = base.join("tern-harbour");
-    // Three turns, a file read and a command: enough for every rule of the conformance check.
+    // The conformance check's session: every record kind it reads, a sub-agent and a compaction.
     conform_kit::write_session(&store, &harbour, hosted);
     // An agent process in the session's directory, which the monitor's own index would link to
     // it (a lone agent in a session's directory is that session's): this host never looks.
@@ -575,12 +558,15 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
             "records.reply",
             "records.not-a-start",
             "turn-index.turns",
+            "search.reply",
             "search.tool-filter",
             "record.kinds",
             "meta.fields",
             "reveal.forged",
             "mdrev.hold",
+            "mdrev.resolve",
             "mermaid.runtime",
+            "ignore.add-remove",
             "request.cross-site",
             "request.body-limit",
             "tabs.static",
@@ -593,13 +579,9 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
                 out.listing()
             );
         }
-        // `resolve` on held text among them: the ceiling counts every mdrev POST but `hold` as a
-        // write (`Serves::admits`), so a table that serves no writes answers it 404 (#s434's
-        // report).
         for id in [
             "file.offered",
             "mdrev.open",
-            "mdrev.resolve",
             "layout.sources",
             "writes.method",
             "writes.refusal",
@@ -612,11 +594,30 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
             );
         }
         conform_kit::assert_sections_are_headings(&out, &doc);
+        // The key it hid is gone from the host's hide list, and its sign-in is in nothing it said.
+        let ignored = std::fs::read_to_string(state.join("ignored.json")).unwrap_or_default();
+        assert!(!ignored.contains("conform-check"), "{ignored}");
+        assert!(
+            ignored.contains(hosted),
+            "the host's own hide stays: {ignored}"
+        );
+        for said in [&out.stdout, &out.stderr] {
+            assert!(!said.contains("fixture"), "the cookie is never printed");
+        }
 
         // A host that breaks rules: a second listener over the same table, its replies changed
         // after the table answers. Each change breaks one rule, which fails by its name and the
-        // section it comes from; the rules beside it still pass.
-        let breaks = |req: &Request, mut reply: HttpResponse| {
+        // section it comes from; the rules beside it still pass. Its page names a Mermaid runtime
+        // on another host, written the way that escapes a naive join (`\\host/…`): a listener there
+        // must never be asked, since the reader's cookie would go with the request.
+        let elsewhere = TcpListener::bind("127.0.0.1:0").unwrap();
+        elsewhere.set_nonblocking(true).unwrap();
+        let outside = format!(
+            "\\\\127.0.0.1:{}/mermaid.js",
+            elsewhere.local_addr().unwrap().port()
+        );
+        let runtime = format!("content=\"{}\"", claude_replay_html::mermaid_runtime_path());
+        let breaks = move |req: &Request, mut reply: HttpResponse| {
             let json = |reply: &HttpResponse| -> serde_json::Value {
                 serde_json::from_slice(&reply.body).unwrap()
             };
@@ -643,6 +644,13 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
                     }
                     reply.body = v.to_string().into_bytes();
                 }
+                // The page, naming a runtime outside the base.
+                "" => {
+                    let page = String::from_utf8_lossy(&reply.body).into_owned();
+                    reply.body = page
+                        .replace(&runtime, &format!("content=\"{outside}\""))
+                        .into_bytes();
+                }
                 _ => {}
             }
             reply
@@ -667,6 +675,10 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
             ),
             ("search.no-text", "One session's records › GET /search"),
             ("record.fields", "The record format › Every record"),
+            (
+                "mermaid.runtime",
+                "Markdown and diagrams › /mermaid/<version>.js",
+            ),
         ];
         assert_eq!(
             out.failed(),
@@ -690,6 +702,21 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
             "{}",
             out.listing()
         );
+        assert!(
+            out.result("mermaid.runtime")["detail"]
+                .as_str()
+                .unwrap()
+                .contains("names a runtime outside the base"),
+            "{}",
+            out.listing()
+        );
+        assert!(
+            matches!(elsewhere.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "nothing was sent outside the base"
+        );
+        for said in [&out.stdout, &out.stderr] {
+            assert!(!said.contains("fixture"), "the cookie is never printed");
+        }
         for id in [
             "pull.reply",
             "records.reply",
