@@ -664,6 +664,80 @@ mod tests {
         );
     }
 
+    /// #s442: stage 2 moved the view's own states from `#app` to `#sessionView`, and Codex native
+    /// mode kept reading two of them, `composing` and `keyboard-up`, on `#app`, where nothing sets
+    /// them any more: on a phone the status chip stayed up beside the keyboard, the sheets rose from
+    /// the dock's place under the open composer, and the transcript kept room for a dock that the
+    /// composer hides. Every class session-view.js sets on its own element is read there by native
+    /// mode too, in its stylesheet and in its scripts.
+    #[test]
+    fn native_mode_reads_the_view_s_states_on_the_view() {
+        let view = include_str!("codex-ui/session-view.js");
+        let mut states = Vec::new();
+        for call in ["toggle", "add", "remove"] {
+            for rest in view
+                .split(&format!("sessionView.classList.{call}(\""))
+                .skip(1)
+            {
+                let state = rest.split('"').next().unwrap();
+                if !states.contains(&state) {
+                    states.push(state);
+                }
+            }
+        }
+        assert!(
+            states.contains(&"composing") && states.contains(&"keyboard-up"),
+            "session-view.js sets its states on #sessionView: {states:?}"
+        );
+        let css = include_str!("codex-workspace/monitor.css");
+        let selectors = style_selectors(css);
+        assert!(selectors.len() > 100, "read {} selectors", selectors.len());
+        for (line, selector) in &selectors {
+            let mut rest = selector.as_str();
+            while !rest.is_empty() {
+                let (compound, after) = leading_compound(rest);
+                let names = selector_names(compound);
+                if let Some(state) = states
+                    .iter()
+                    .find(|s| names.contains(&format!(".{s}").as_str()))
+                {
+                    assert!(
+                        !names.contains(&"#app"),
+                        "codex-workspace/monitor.css:{line}: `{selector}` reads the view's state \
+                         `{state}` on #app; the view sets it on #sessionView"
+                    );
+                }
+                rest = after;
+            }
+        }
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/codex-workspace");
+        let mut scripts = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "js") {
+                continue;
+            }
+            scripts += 1;
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (at, _) in text.match_indices(".classList.") {
+                let receiver = &text[..at];
+                let on_app = receiver.ends_with("(\"app\")") || receiver.ends_with("('app')");
+                let state = text[at..]
+                    .split_once('(')
+                    .and_then(|(_, arg)| arg.get(1..))
+                    .and_then(|arg| arg.split(['"', '\'']).next())
+                    .unwrap_or("");
+                assert!(
+                    !(on_app && states.contains(&state)),
+                    "codex-workspace/{}: reads the view's state `{state}` on #app; the view sets \
+                     it on #sessionView",
+                    path.file_name().unwrap().to_string_lossy()
+                );
+            }
+        }
+        assert!(scripts >= 5, "read {scripts} scripts in {}", dir.display());
+    }
+
     #[test]
     fn page_is_the_reference_shell_without_mock_runtime() {
         let page = page("test", false);

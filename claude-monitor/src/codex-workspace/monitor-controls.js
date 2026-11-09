@@ -253,7 +253,7 @@ export class MonitorControls {
   }
   reserveComposerSpace(height) {
     document.body.style.setProperty("--shared-composer-height", `${height}px`);
-    const extra = matchMedia(PHONE_QUERY).matches ? document.body.hasAttribute("data-shared-reader-open") && !byId("app").classList.contains("composing") ? 100 : 24 : 30;
+    const extra = matchMedia(PHONE_QUERY).matches ? document.body.hasAttribute("data-shared-reader-open") && !byId("sessionView").classList.contains("composing") ? 100 : 24 : 30;
     byId("transcript").style.paddingBottom = `${height + extra}px`;
   }
   open() { byId("composer").classList.add("production-show"); byId("composer").classList.remove("live"); byId("composeFab").classList.remove("show"); byId("composeFab").hidden = true; }

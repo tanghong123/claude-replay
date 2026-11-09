@@ -41,8 +41,8 @@ body[data-shared-codex] button:disabled{opacity:.45;cursor:default}
  body[data-shared-codex] #app #composer #sharedInterrupt{grid-column:3;grid-row:1;display:grid;place-items:center;width:44px;padding:0;color:var(--sub)}
  body[data-shared-codex] #app #composer #sharedInterrupt[hidden],body[data-shared-codex] #app #composer #sharedSteer,body[data-shared-codex] #app #composer:has(#sharedInterrupt:not([hidden])) #sharedFastMode{display:none!important}
  .shared-stop-icon{display:block;width:16px;height:16px;fill:currentColor}.shared-stop>span{display:none}
- body[data-shared-codex] #app.keyboard-up{--shared-keyboard-safe-bottom:0px}
- body[data-shared-codex] #app.keyboard-up .session-heading>.status-chip{display:none}
+ body[data-shared-codex] #sessionView.keyboard-up{--shared-keyboard-safe-bottom:0px}
+ body[data-shared-codex] #sessionView.keyboard-up .session-heading>.status-chip{display:none}
  body[data-shared-codex] #app #composer #sendBtn{grid-area:1 / 4;justify-self:end;align-self:center;margin:0!important;position:static;width:44px;height:44px}
  .shared-model-pill{max-width:none;width:100%;padding:3px 6px;font-size:12px;line-height:17px}.shared-model-name,.shared-model-effort{display:block;white-space:nowrap}.shared-model-effort{font-size:11px;color:var(--faint)}.shared-model-separator{display:none}.shared-fast-pill,.shared-attach{width:44px}
  .shared-model-pill,.shared-fast-pill,.shared-steer,.shared-stop,.shared-attach,.shared-new,.shared-project-filter,.shared-project-trigger,#sharedArchiveHistory,.shared-dialog-head button,.shared-primary,.ws-primary,.ws-request-actions button,.shared-queue button,.shared-image-remove,.shared-picker-head button{min-width:44px;min-height:44px}
@@ -59,8 +59,8 @@ body[data-shared-codex] button:disabled{opacity:.45;cursor:default}
  #sharedReaderTools[aria-expanded="true"]{background:var(--primary-soft);color:var(--primary)}
  .shared-picker-session{display:block;width:100%;min-height:44px;margin-top:6px;padding:8px;border:0;border-top:1px solid var(--line);background:transparent;color:var(--sub);text-align:left;font-size:13px;cursor:pointer}
  body[data-shared-codex] #app .phone-dock{bottom:calc(var(--shared-composer-height,116px) + calc(var(--shared-keyboard-safe-bottom,env(safe-area-inset-bottom,0px)) + var(--phone-kb,0px)) + 16px)}
- body[data-shared-codex] #app.composing .shared-runtime{bottom:calc(var(--shared-composer-height,116px) + calc(var(--shared-keyboard-safe-bottom,env(safe-area-inset-bottom,0px)) + var(--phone-kb,0px)) + 16px)}
- body[data-shared-codex] #app.composing{--phone-bottom:calc(var(--shared-composer-height,116px) + 16px)!important}
+ body[data-shared-codex] #sessionView.composing .shared-runtime{bottom:calc(var(--shared-composer-height,116px) + calc(var(--shared-keyboard-safe-bottom,env(safe-area-inset-bottom,0px)) + var(--phone-kb,0px)) + 16px)}
+ body[data-shared-codex] #sessionView.composing{--phone-bottom:calc(var(--shared-composer-height,116px) + 16px)!important}
  body[data-shared-codex]:has(.shared-settings-popover:popover-open) #app .phone-dock{display:none!important}
 }
 
@@ -89,14 +89,14 @@ body[data-shared-codex] #app #composer[data-shared-constrained="true"]>.compose-
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){.shared-control-status>button{min-width:44px;min-height:44px}}
 body:not([data-shared-codex="true"]) .codex-native-only{display:none!important}
 /* A constrained keyboard viewport gives the draft and images one row; the footer stays separate. */
-body[data-shared-codex] #app.keyboard-up #composer[data-shared-constrained="true"] .shared-compose-body{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:8px;min-height:44px}
-body[data-shared-codex] #app.keyboard-up #composer[data-shared-constrained="true"] .shared-error,
-body[data-shared-codex] #app.keyboard-up #composer[data-shared-constrained="true"] .shared-control-status{display:none}
-body[data-shared-codex] #app.keyboard-up #composer[data-shared-constrained="true"] .shared-images{grid-area:1 / 1;max-width:120px;margin:0;padding:0;max-height:44px;overflow-y:hidden}
-body[data-shared-codex] #app.keyboard-up #composer[data-shared-constrained="true"] .shared-image{width:44px;height:44px}
-body[data-shared-codex] #app.keyboard-up #composer[data-shared-constrained="true"] #composeInput{grid-area:1 / 2;min-width:0}
-body[data-shared-codex] #app.keyboard-up #composer[data-shared-constrained="true"] .shared-compose-body:not(:has(.shared-image)){grid-template-columns:minmax(0,1fr)}
-body[data-shared-codex] #app.keyboard-up #composer[data-shared-constrained="true"] .shared-compose-body:not(:has(.shared-image)) #composeInput{grid-area:1 / 1}
+body[data-shared-codex] #sessionView.keyboard-up #composer[data-shared-constrained="true"] .shared-compose-body{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:8px;min-height:44px}
+body[data-shared-codex] #sessionView.keyboard-up #composer[data-shared-constrained="true"] .shared-error,
+body[data-shared-codex] #sessionView.keyboard-up #composer[data-shared-constrained="true"] .shared-control-status{display:none}
+body[data-shared-codex] #sessionView.keyboard-up #composer[data-shared-constrained="true"] .shared-images{grid-area:1 / 1;max-width:120px;margin:0;padding:0;max-height:44px;overflow-y:hidden}
+body[data-shared-codex] #sessionView.keyboard-up #composer[data-shared-constrained="true"] .shared-image{width:44px;height:44px}
+body[data-shared-codex] #sessionView.keyboard-up #composer[data-shared-constrained="true"] #composeInput{grid-area:1 / 2;min-width:0}
+body[data-shared-codex] #sessionView.keyboard-up #composer[data-shared-constrained="true"] .shared-compose-body:not(:has(.shared-image)){grid-template-columns:minmax(0,1fr)}
+body[data-shared-codex] #sessionView.keyboard-up #composer[data-shared-constrained="true"] .shared-compose-body:not(:has(.shared-image)) #composeInput{grid-area:1 / 1}
 /* An occupied session remains readable; replace the unusable composer with one recovery state. */
 body[data-shared-codex] #app #composer[data-session-conflict="true"] .compose-foot,
 body[data-shared-codex] #app #composer[data-session-conflict="true"] #composeInput,
