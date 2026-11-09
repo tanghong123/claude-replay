@@ -396,6 +396,274 @@ mod tests {
         assert!(read > 20, "read {read} modules from {}", dir.display());
     }
 
+    /// Every style rule's selectors in `css`, one per comma, each with its line, whitespace
+    /// collapsed: comments out, `@media` and `@supports` read through, other at-rules skipped.
+    fn style_selectors(css: &str) -> Vec<(usize, String)> {
+        let mut text = String::with_capacity(css.len());
+        let mut rest = css;
+        while let Some(at) = rest.find("/*") {
+            text.push_str(&rest[..at]);
+            let end = rest[at + 2..].find("*/").map_or(rest.len(), |e| at + 4 + e);
+            text.extend(rest[at..end].chars().filter(|&c| c == '\n'));
+            rest = &rest[end..];
+        }
+        text.push_str(rest);
+        fn walk(text: &str, base_line: usize, out: &mut Vec<(usize, String)>) {
+            let mut i = 0;
+            while let Some(open) = text[i..].find('{').map(|at| i + at) {
+                let (mut depth, mut close) = (1, open + 1);
+                for (k, c) in text[open + 1..].char_indices() {
+                    depth += match c {
+                        '{' => 1,
+                        '}' => -1,
+                        _ => 0,
+                    };
+                    if depth == 0 {
+                        close = open + 1 + k;
+                        break;
+                    }
+                }
+                let head = &text[i..open];
+                let lead = head.len() - head.trim_start().len();
+                let line = base_line + text[..i + lead].matches('\n').count();
+                let prelude = head.trim();
+                if prelude.starts_with("@media") || prelude.starts_with("@supports") {
+                    let inner = base_line + text[..open + 1].matches('\n').count();
+                    walk(&text[open + 1..close], inner, out);
+                } else if !prelude.starts_with('@') {
+                    let (mut depth, mut start) = (0, 0);
+                    let mut push = |piece: &str| {
+                        out.push((line, piece.split_whitespace().collect::<Vec<_>>().join(" ")));
+                    };
+                    for (k, c) in prelude.char_indices() {
+                        match c {
+                            '(' | '[' => depth += 1,
+                            ')' | ']' => depth -= 1,
+                            ',' if depth == 0 => {
+                                push(&prelude[start..k]);
+                                start = k + 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                    push(&prelude[start..]);
+                }
+                i = close + 1;
+            }
+        }
+        let mut out = Vec::new();
+        walk(&text, 1, &mut out);
+        out
+    }
+
+    /// The class and id names a selector carries (`.x`, `#x`), wherever they sit in it.
+    fn selector_names(selector: &str) -> Vec<&str> {
+        let mut names = Vec::new();
+        let bytes = selector.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'.' || bytes[i] == b'#' {
+                let end = selector[i + 1..]
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                    .map_or(selector.len(), |e| i + 1 + e);
+                if end > i + 1 {
+                    names.push(&selector[i..end]);
+                }
+                i = end.max(i + 1);
+            } else {
+                i += 1;
+            }
+        }
+        names
+    }
+
+    /// A selector's first compound, and what follows it after the combinator.
+    fn leading_compound(selector: &str) -> (&str, &str) {
+        let mut depth = 0;
+        for (k, c) in selector.char_indices() {
+            match c {
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth -= 1,
+                ' ' | '>' | '+' | '~' if depth == 0 => {
+                    return (
+                        &selector[..k],
+                        selector[k..].trim_start_matches([' ', '>', '+', '~']),
+                    )
+                }
+                _ => {}
+            }
+        }
+        (selector, "")
+    }
+
+    /// #s429 stage 5a (design/session-view-component.md): the session view's rules hang on its
+    /// own element, `#sessionView`, so they hold in a host's page, where no `#app` surrounds it.
+    /// Every selector in production.css that names something OUTSIDE the view — `#app`, `.app`,
+    /// `body`, `html`, `:root`, `[data-theme]` — is one of the kinds below, each for its reason. A
+    /// new one fails, named with its line, until it hangs on `#sessionView` or is listed here.
+    #[test]
+    fn the_view_s_styles_hang_on_its_own_element() {
+        // The app's own chrome, which the app draws around the view (app-shell.html, app.js): a
+        // rule naming one of these is the app's, whatever it hangs on.
+        const APP_CHROME: &[&str] = &[
+            ".sidebar",
+            ".side-head",
+            ".head-actions",
+            ".brand",
+            ".tree",
+            ".tree-row",
+            ".tree-project-more",
+            ".agent-label",
+            ".sidebar-mini",
+            ".sidebar-resizer",
+            "#sidebarCollapse",
+            "#collapseBtn",
+            "#expandBtn",
+            "#filterBtn",
+            ".nav",
+            ".navbtn",
+            ".arrange-strip",
+            ".arrange-strip-close",
+            ".arranged-view",
+            ".section-view-scrim",
+            ".section-view-menu",
+            ".section-menu-name",
+            ".session-filter-options",
+            ".drawer-handle",
+            ".drawer-scrim",
+            ".column-switch",
+            ".column-pane",
+        ];
+        // The app's states, kept on `#app`: the app placing or styling the view from outside —
+        // its rail, the drawer, a wide phone's column and its pane, the list's arrangement, and
+        // the artifact pane's state copied onto `#app` for its grid. Stage 6 lays the view out by
+        // its own pane's size instead.
+        const APP_STATES: &[&str] = &[
+            ".sidebar-off",
+            ".sidebar-tight",
+            ".mobile-detail",
+            ".phone-column-off",
+            ".column-pane-on",
+            ".sessions-flat",
+            ".sessions-arranged",
+            ".preview-off",
+            ".preview-full",
+        ];
+        // What `:is(#sessionView,#app)` may reach: elements the app's chrome shares with the view
+        // (the glyph button, the session filter's and section menu's popover rows) and the lists
+        // a wide phone's column borrows from the outline into the app's sidebar
+        // (`PHONE_PANES`, `#columnPane.phone-pane-body`). In the app both hooks match; in a host,
+        // `#sessionView` alone.
+        const SHARED: &[&str] = &[
+            ".iconbtn",
+            ".navigator-options",
+            ".scope-option",
+            ".scope-menu-action",
+            ".navbtn",
+            ".phone-pane-body",
+            ".activity-empty",
+            ".activity-empty-show",
+            ".outline-agent",
+            ".outline-turn-row",
+            ".outline-number",
+            ".outline-label",
+            ".outline-epoch",
+            ".outline-peer",
+            ".outline-peer-from",
+            ".outline-peer-glyph",
+            ".outline-quote-marker",
+            ".outline-quoted",
+            ".outline-reply-count",
+            ".outline-turn-pending",
+        ];
+        const SHARED_HOOK: &str = ":is(#sessionView,#app)";
+        // `body`, `html` or `:root` as an element or pseudo-class (never a class like `.body`).
+        let bare = |selector: &str, word: &str| {
+            let ident = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '#');
+            selector.match_indices(word).any(|(at, _)| {
+                !selector[..at].ends_with(ident) && !selector[at + word.len()..].starts_with(ident)
+            })
+        };
+        let outside = |names: &[&str], selector: &str| {
+            names.iter().any(|n| *n == "#app" || *n == ".app")
+                || ["body", "html", ":root"].iter().any(|w| bare(selector, w))
+        };
+        let css = include_str!("codex-ui/production.css");
+        let mut counts = std::collections::BTreeMap::<&str, usize>::new();
+        let selectors = style_selectors(css);
+        for (line, selector) in &selectors {
+            let mut rest = selector.as_str();
+            // The page's theme and its tokens (`:root`, `html`, `[data-theme]`), which the view
+            // reads from its root element once it draws in a shadow root (stage 6); and native
+            // mode's mark on `body`, which `backend.js` reads. The rest of such a selector is held
+            // to the same rules.
+            let (lead, after) = leading_compound(rest);
+            if lead.starts_with(":root")
+                || lead.starts_with(":where(:root")
+                || lead.starts_with("[data-theme")
+                || lead == "html"
+            {
+                *counts.entry("theme and tokens").or_default() += 1;
+                rest = after;
+            } else if lead == "body[data-shared-codex]" || lead == "body:not([data-shared-codex])" {
+                *counts.entry("native mode's mark").or_default() += 1;
+                rest = after;
+            }
+            if rest.is_empty() {
+                continue;
+            }
+            let names = selector_names(rest);
+            let (lead, after) = leading_compound(rest);
+            let whose = if lead == SHARED_HOOK {
+                // …or every `button`, the app's among them (a long press selects no glyph).
+                (names.iter().any(|n| SHARED.contains(n)) || bare(after, "button"))
+                    .then_some("shared")
+            } else if lead.starts_with("#app") || lead.starts_with(".app") {
+                if (lead == "#app" || lead == ".app") && after.is_empty() {
+                    // The view's tokens set on the app's grid (`--code-size`, `--measure`, which
+                    // `applyReading` writes there; `--phone-dock-h`, `--phone-glass`) and the
+                    // app's own `--sidebar`.
+                    Some("tokens on the app's grid")
+                } else if selector_names(lead).iter().any(|n| APP_STATES.contains(n)) {
+                    Some("an app state")
+                } else if names.iter().any(|n| APP_CHROME.contains(n)) {
+                    Some("the app's chrome")
+                } else {
+                    None
+                }
+            } else if !outside(&names, rest) {
+                Some(if lead.starts_with("#sessionView") {
+                    "the view's"
+                } else {
+                    "hangs on nothing outside"
+                })
+            } else {
+                None
+            };
+            let Some(whose) = whose else {
+                panic!(
+                    "production.css:{line}: `{selector}` hangs on the page around the session \
+                     view. A rule of the view's hangs on `#sessionView`; one for what a wide \
+                     phone's column borrows or the app's chrome shares hangs on `{SHARED_HOOK}` \
+                     and names it in SHARED; the app's own names its chrome or its state \
+                     (design/session-view-component.md, stage 5a)"
+                );
+            };
+            *counts.entry(whose).or_default() += 1;
+        }
+        let count = |k: &str| counts.get(k).copied().unwrap_or(0);
+        assert!(
+            selectors.len() > 1000
+                && count("the view's") >= 250
+                && count("shared") >= 20
+                && count("the app's chrome") >= 20
+                && count("an app state") >= 40
+                && count("tokens on the app's grid") >= 3,
+            "read {} selectors: {counts:?}",
+            selectors.len()
+        );
+    }
+
     #[test]
     fn page_is_the_reference_shell_without_mock_runtime() {
         let page = page("test", false);
