@@ -2322,9 +2322,9 @@
 :where(#sessionView) .preview-review{flex:none;min-height:44px}
 :where(#sessionView) .renderer-note-file{color:var(--blue);cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px;overflow-wrap:anywhere}
 :where(#sessionView).session-view{--peer:#2b6f8e}
-:where(#sessionView)[data-theme="dark"]{--peer:#7ab8d6}
+:where(#sessionView).session-view[data-theme="dark"]{--peer:#7ab8d6}
 :where(#sessionView).session-view{--inbox:#9a5b00}
-:where(#sessionView)[data-theme="dark"]{--inbox:#f0b45c}
+:where(#sessionView).session-view[data-theme="dark"]{--inbox:#f0b45c}
 :where(#sessionView) .turn.user.inbox .user-prompt{display:flex;flex-direction:column;align-items:flex-end}
 :where(#sessionView) .turn.user.inbox .user-prompt>.prompt-copy-shell,:where(#sessionView) .turn.user.inbox .user-prompt>.prompt-attachments{align-self:stretch}
 :where(#sessionView) .turn.user.inbox .body,:where(#sessionView).session-view[data-theme="dark"] .turn.user.inbox .body{box-shadow:inset 3px 0 0 var(--inbox)}

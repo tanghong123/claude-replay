@@ -665,9 +665,9 @@ input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea,select{f
 .app.sidebar-off:not(.preview-off)>:where(.session-view)>.preview{left:10px}
 }
 :root{--peer:#2b6f8e}
-[data-theme="dark"]{--peer:#7ab8d6}
+:root[data-theme="dark"]{--peer:#7ab8d6}
 :root{--inbox:#9a5b00}
-[data-theme="dark"]{--inbox:#f0b45c}
+:root[data-theme="dark"]{--inbox:#f0b45c}
 :is(#sessionView,#app) .outline-peer{--peer:hsl(var(--peer-hue) 58% 33%)}
 :root[data-theme="dark"] :is(#sessionView,#app) .outline-peer{--peer:hsl(var(--peer-hue) 68% 70%)}
 :is(#sessionView,#app) .outline-turn-row.outline-peer{grid-template-columns:minmax(24px,max-content) auto minmax(0,1fr)}

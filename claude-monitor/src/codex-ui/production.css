@@ -1831,11 +1831,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 /* #s79. Another session's message — the card from the left (Hong's choice), a third voice beside
    the person's right-hand bubble and the agent's prose: a rule in the peer hue down its left edge,
    its sender above the message. */
-:root{--peer:#2b6f8e}[data-theme="dark"]{--peer:#7ab8d6}
+:root{--peer:#2b6f8e}:root[data-theme="dark"]{--peer:#7ab8d6}
 /* #s272: a relayed message from the person, verified — their bubble, marked in its own hue, what
    the relay says of it as chips above it, the words it answers quoted, the relay's instructions
    folded below. */
-:root{--inbox:#9a5b00}[data-theme="dark"]{--inbox:#f0b45c}
+:root{--inbox:#9a5b00}:root[data-theme="dark"]{--inbox:#f0b45c}
 .turn.user.inbox .user-prompt{display:flex;flex-direction:column;align-items:flex-end}
 .turn.user.inbox .user-prompt>.prompt-copy-shell,.turn.user.inbox .user-prompt>.prompt-attachments{align-self:stretch}
 .turn.user.inbox .body,:root[data-theme="dark"] .turn.user.inbox .body{box-shadow:inset 3px 0 0 var(--inbox)}
