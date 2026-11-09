@@ -561,8 +561,9 @@ document.addEventListener("keydown", event => { if (event.key === "Escape" && !f
 // the filter it HOSTS the sidebar's filter sheet (the element itself, moved in and back), so there
 // is one menu, one set of handlers and one remembered choice. Pointing opens it after a beat and it
 // survives the trip from the mark into it (a grace period on leaving either); a click pins it;
-// Escape, a click outside, or expanding the sidebar closes it. `var`, not `const`: renderTree runs
-// during module evaluation and reaches `refreshRailFlyout` before this block has run.
+// Escape, a click outside, or expanding the sidebar closes it. `var`, not `const`, so a renderTree
+// that reached `refreshRailFlyout` before this block ran would find it declared; renderTree runs
+// only after the view is mounted (it reads `viewHandle.controls`).
 var lastShownAgents = [];
 var railFlyout = null, railFlyoutFor = null, railFlyoutAnchor = null, railFlyoutPinned = false, railOpenTimer = 0, railCloseTimer = 0;
 const RAIL_OPEN_MS = 140, RAIL_GRACE_MS = 280;

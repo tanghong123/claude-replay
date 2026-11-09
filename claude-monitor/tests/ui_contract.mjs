@@ -4022,3 +4022,26 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSrc, /^useMermaidRuntime\(path => backend\(\)\.url\(path\)\);$/m, "the app shell's resolver is its handle");
   console.log("#s423 Mermaid runtime cases passed");
 }
+
+// #s429 stage 3: the app and the session view call each other by NAME, the view's options and the
+// handle it returns. Most options are optional callbacks (`options.paneCount?.(…)`), so a rename on
+// one side would fail silently: a wide phone's pane counts, or a deep-linked child's Back. So every
+// option the view reads is one the app passes, every option passed is read, and every member of the
+// handle the app calls is one the view returns.
+{
+  const call = /viewHandle = mountSessionView\(viewRoot\.element\(\), \{\n([\s\S]*?)\n\}\);/.exec(appSource);
+  assert.ok(call, "the app mounts the view in one call with an options literal");
+  const passed = new Set([...call[1].matchAll(/^  ([A-Za-z]+)(?=[:,])/gm)].map(m => m[1]));
+  const destructured = /^const \{ ([A-Za-z, ]+) \} = options;$/m.exec(viewSource);
+  assert.ok(destructured, "the view takes its plain options by destructuring");
+  const read = new Set([...viewSource.matchAll(/\boptions\.([A-Za-z]+)/g)].map(m => m[1]));
+  for (const name of destructured[1].split(/,\s*/)) read.add(name);
+  assert.deepEqual([...read].sort(), [...passed].sort(), "the options the view reads are exactly the ones the app passes");
+  const at = viewSource.lastIndexOf("\nreturn {\n");
+  assert.ok(at > 0, "the view returns its handle as an object literal at the end of mountSessionView");
+  const handle = viewSource.slice(at);
+  const members = new Set([...handle.matchAll(/^  (?:get |async )?([A-Za-z]+)(?=[(:])/gm)].map(m => m[1]));
+  const called = new Set([...appSource.matchAll(/\bviewHandle\??\.([A-Za-z]+)/g)].map(m => m[1]));
+  for (const name of called) assert.ok(members.has(name), `the app calls viewHandle.${name}, which the view's handle has`);
+  console.log("#s429 mount interface cases passed");
+}

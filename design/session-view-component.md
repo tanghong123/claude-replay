@@ -137,6 +137,14 @@ pane, so step 6 also makes the view's root what they are placed against.
 
    The function's body is the view's old top-level code moved line for line, so it sits at the
    margin. A whitespace-only commit can indent it once stages 4 to 6 stop rewriting it.
+
+   Not yet passed in: `state.js`'s stores. The view still imports `persist` (which writes the
+   app's settings with its own), `uiState` (which also holds the session search's results) and
+   `controlState`; `control-store.js` reads `selectedRow()` and native mode `indexState.selected`
+   from there. `state.js` says which side owns each field. Each moves behind an option when the
+   kit's host needs it, at stage 7 at the latest. The names the two sides call each other by are
+   held by a contract check (`#s429 mount interface`), since most options are optional callbacks
+   a rename would silence.
 4. **The view's markup from its own template.** The entry point builds its three parts inside the
    element, so a host page carries no markup of ours. The extraction script cuts the template from
    the demo, so the generated files stay exact.

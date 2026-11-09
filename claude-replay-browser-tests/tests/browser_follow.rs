@@ -944,7 +944,7 @@ fn the_app_shell_hides_and_restores_a_session() {
     let painted = eval(&tab, "JSON.stringify({filterBtn: !!document.getElementById('filterBtn'), tree: (document.getElementById('tree')||{innerHTML:''}).innerHTML.slice(0, 160), modules: performance.getEntriesByType('resource').filter(e => e.name.includes('/monitor-ui/')).map(e => [e.name.split('/').pop(), e.responseStatus])})");
     assert!(
         !first.is_empty(),
-        "the store has {store_rows} rows but the app shell painted none in 30s — did app.js throw? {painted}"
+        "the store has {store_rows} rows but the app shell painted none in 30s — did app.js or session-view.js throw? {painted}"
     );
     let row = format!("document.querySelector('.tree-row.session[data-session=\"{first}\"]')");
     let before = eval(

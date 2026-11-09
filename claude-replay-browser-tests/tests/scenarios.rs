@@ -7579,7 +7579,7 @@ fn scenario_wide_is_one_click_from_the_header(
 ///
 /// The two pages express it differently and neither is guessable from geometry: the classic page
 /// sets `#main`'s inline `max-width` ("820px" off, "none" on — `applyWide` in export.js); the app
-/// shell toggles a `wide` class on its root (`applyReading` in app.js) and caps nothing with
+/// shell toggles a `wide` class on its root (`applyReading` in session-view.js) and caps nothing with
 /// max-width at all. Walking the ancestry for a max-width change found "none" at every level in
 /// both states, which is how that assertion passed on one page and failed on the other while
 /// both controls were working perfectly.
