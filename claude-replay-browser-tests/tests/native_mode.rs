@@ -1220,9 +1220,11 @@ fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
     // own narrow rule hides it already, so this bites sideways) and the composer drops the
     // keyboard's safe-area inset. While the reader composes, `--phone-bottom`, where the sheets rise
     // from (Info's foot among them), is just above the composer on the keyboard; it is read beside
-    // the sheets, on the view's own element. And with the reader's tools opened (a tap that leaves
-    // the field its focus, as iOS does) the transcript keeps no room for their dock, which composing
-    // hides.
+    // the sheets, on the view's own element. And with the reader's tools opened while the field
+    // keeps its focus, the transcript keeps no room for their dock, which composing hides. On the
+    // iOS 26.4 Simulator (#s442's walk) a tap on that control kept the field's focus sideways only;
+    // upright it took focus off the field and the keyboard went down, so there this state is a
+    // script's.
     let states = "(()=>{const v=document.getElementById('sessionView'),p=document.createElement('div');p.style.cssText='position:absolute;visibility:hidden;width:1px;height:var(--phone-bottom)';v.append(p);const rise=p.getBoundingClientRect().height;p.remove();const c=document.getElementById('composer').getBoundingClientRect();return {chip:getComputedStyle(document.getElementById('statusChip')).display,safe:getComputedStyle(document.getElementById('composer')).getPropertyValue('--shared-keyboard-safe-bottom').trim(),composing:v.classList.contains('composing'),rise,lift:document.getElementById('app').getBoundingClientRect().bottom-c.top,height:c.height,padding:parseFloat(document.getElementById('transcript').style.paddingBottom),reader:document.body.hasAttribute('data-shared-reader-open'),focus:document.activeElement===document.getElementById('composeInput')};})()";
     until(
         tab,
