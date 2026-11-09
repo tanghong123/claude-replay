@@ -69,6 +69,46 @@ const { SESSION_VIEW_MARKUP } = await import("../src/codex-ui/session-view-marku
   assert.equal(appShell.replace(placeholder, SESSION_VIEW_MARKUP), referenceShell, "the two together are the whole shell");
   console.log("#s429 view markup cases passed");
 }
+// #s429 stage 5b: the page loads two stylesheets, both derived from reference.css and production.css
+// by the extraction script (scripts/session-view-css.mjs): the app's chrome and the page's, then the
+// session view's, every rule of which hangs on #sessionView. They are derived again here and must
+// agree byte for byte. The classifier's lists name what the app draws; every class or id the app's
+// shell, app.js and session-list.js draw that a selector uses is in one of them, and every name the
+// app's lists hold is one the app draws, so a list cannot drift from the app it describes.
+{
+  const styles = await import("../../scripts/session-view-css.mjs");
+  const derived = styles.deriveStylesheets({ reference: referenceCss, production: productionCss });
+  const read = name => readFileSync(new URL(`../../claude-monitor/src/codex-ui/${name}`, import.meta.url), "utf8");
+  assert.equal(read("session-view.css"), derived.view, "session-view.css is derived from reference.css and production.css (run scripts/extract-agent-monitor-demo.mjs)");
+  assert.equal(read("app-shell.css"), derived.app, "app-shell.css is derived from reference.css and production.css (run scripts/extract-agent-monitor-demo.mjs)");
+  const head = read("page-head.html");
+  const links = [...head.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map(m => m[1]);
+  assert.deepEqual(links, ["monitor-ui/app-shell.css", "monitor-ui/session-view.css"], "the page loads the app's stylesheet, then the view's, and nothing else of ours");
+  // What the app draws: the class and id names in its shell and its scripts (the quoted words of a
+  // template's pieces too), and the names its own lookups use.
+  const appText = [appShell, appSource, read("session-list.js")].join("\n");
+  const drawn = new Set();
+  const words = s => `${s.replace(/\$\{[^}]*\}/g, " ")} ${(s.match(/\$\{[^}]*\}/g) || []).flatMap(d => d.match(/"[^"]*"|'[^']*'/g) || []).join(" ")}`.split(/[\s"'`\\]+/).filter(w => /^-?[A-Za-z_][A-Za-z0-9_-]*$/.test(w));
+  for (const m of appText.matchAll(/class=\\?["']((?:[^"'\\$]|\$\{[^}]*\}|\\.)*)\\?["']/g)) for (const w of words(m[1])) drawn.add(`.${w}`);
+  for (const m of appText.matchAll(/className\s*=\s*(["'`])((?:(?!\1).)*)\1/g)) for (const w of words(m[2])) drawn.add(`.${w}`);
+  for (const m of appText.matchAll(/classList\.(?:add|remove|toggle|contains|replace)\(([^)]*)\)/g)) for (const q of m[1].matchAll(/["']([A-Za-z0-9_-]+)["']/g)) drawn.add(`.${q[1]}`);
+  for (const m of appText.matchAll(/(?:\bid=\\?["']|\.id\s*=\s*["'])([A-Za-z0-9_-]+)/g)) drawn.add(`#${m[1]}`);
+  for (const m of appText.matchAll(/(?:querySelector(?:All)?|closest|matches|\$\$?)\(\s*["'`]([^"'`]+)["'`]/g)) for (const n of m[1].match(/[.#]-?[A-Za-z_][A-Za-z0-9_-]*/g) || []) drawn.add(n);
+  const used = new Set();
+  const visit = nodes => { for (const node of nodes) { if (node.kind === "group") visit(node.children); else if (node.kind === "rule") for (const n of node.prelude.match(/[.#]-?[A-Za-z_][A-Za-z0-9_-]*/g) || []) used.add(n); } };
+  for (const css of [referenceCss, productionCss]) visit(styles.parseCss(styles.stripComments(css)));
+  const isOutside = n => styles.OUTSIDE.some(prefix => n === prefix || n.startsWith(`${prefix}-`));
+  const listed = new Set([...styles.APP_CHROME, ...styles.APP_STATES, ...styles.SHARED, ...styles.ROOT_CLASSES, "#app", ".app", "#sessionView"]);
+  const unlisted = [...drawn].filter(n => used.has(n) && !listed.has(n) && !isOutside(n)).sort();
+  assert.deepEqual(unlisted, [], "every name the app draws that a selector uses is in one of the classifier's lists (scripts/session-view-css.mjs)");
+  const stale = [...styles.APP_CHROME, ...styles.APP_STATES].filter(n => !drawn.has(n) && !new RegExp(`["'\\s.#]${n.slice(1)}(?![\\w-])`).test(appText)).sort();
+  assert.deepEqual(stale, [], "every name the app's lists hold is one the app draws");
+  // Every selector the view's file writes weighs what its source did (the derivation checks it as it
+  // goes); and the shell's own copy of a rule the view shares is in the app's file, which loads first.
+  assert.ok(derived.report.kinds["the view's"] > 1500 && derived.report.kinds["the app's"] > 300, `the split read the stylesheets: ${JSON.stringify(derived.report.kinds)}`);
+  assert.deepEqual(derived.report.ties, [], "no app rule that reaches into the view weighs the same as a view rule it used to follow on the same element");
+  console.log("#s429 stylesheet cases passed");
+}
 assert.match(productionCss, /\.monitor-empty\[hidden\]\{display:none!important\}/, "a loaded session must not retain the loading placeholder in layout");
 assert.match(viewportSource, /USER_INTENT_MS/, "follow state must distinguish user scroll intent");
 assert.match(viewportSource, /captureDomAnchor/, "window changes must preserve a real DOM anchor");

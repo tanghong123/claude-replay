@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
-// Copy the immutable design reference into production assets without hand-editing it.
-// Run from anywhere; paths are resolved from this script. The generated files are tracked.
+// Copy the immutable design reference into production assets without hand-editing it, and derive the
+// two stylesheets the page loads from it and production.css. Run from anywhere (after an edit to the
+// demo or to production.css); paths are resolved from this script. The generated files are tracked.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { deriveStylesheets } from "./session-view-css.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourcePath = resolve(root, "design/agent-monitor-codex-demo.html");
@@ -48,3 +50,11 @@ await writeFile(resolve(out, "reference-shell.html"), shell);
 await writeFile(resolve(out, "app-shell.html"), appShell);
 await writeFile(resolve(out, "session-view-markup.js"), markupModule);
 await writeFile(resolve(out, "icons.js"), icons);
+
+// The session view's stylesheet and the app's (#s429 stage 5b), derived from reference.css and
+// production.css, which stay the sources: every rule of the view's hangs on its element, and the
+// app's chrome and the page keep the rest (`session-view-css.mjs` says how it decides).
+const production = await readFile(resolve(out, "production.css"), "utf8");
+const styles = deriveStylesheets({ reference: css, production });
+await writeFile(resolve(out, "session-view.css"), styles.view);
+await writeFile(resolve(out, "app-shell.css"), styles.app);

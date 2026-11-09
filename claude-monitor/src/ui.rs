@@ -118,13 +118,16 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
         "icon-192.png" => ("image/png", include_bytes!("icons/icon-192.png").as_slice()),
         "icon-512.png" => ("image/png", include_bytes!("icons/icon-512.png").as_slice()),
         "manifest.webmanifest" => ("application/manifest+json", MANIFEST.as_bytes()),
-        "monitor-ui/reference.css" => (
+        // The page's two stylesheets (#s429 stage 5b), both derived from reference.css and
+        // production.css by the extraction script: the app's chrome and the page's, then the session
+        // view's, every rule of which hangs on `#sessionView`. The page links them in that order.
+        "monitor-ui/app-shell.css" => (
             "text/css; charset=utf-8",
-            include_bytes!("codex-ui/reference.css").as_slice(),
+            include_bytes!("codex-ui/app-shell.css").as_slice(),
         ),
-        "monitor-ui/production.css" => (
+        "monitor-ui/session-view.css" => (
             "text/css; charset=utf-8",
-            include_bytes!("codex-ui/production.css").as_slice(),
+            include_bytes!("codex-ui/session-view.css").as_slice(),
         ),
         "monitor-ui/app.js" => (
             "text/javascript; charset=utf-8",
@@ -808,6 +811,62 @@ mod tests {
         }
     }
 
+    /// #s429 stage 5b (design/session-view-component.md): the session view's stylesheet names
+    /// nothing outside its own element, so a host's page can load it beside its own and lose
+    /// nothing to it. Every selector in session-view.css starts at the view's element —
+    /// `:where(#sessionView)`, which weighs nothing, or `#sessionView` (stage 5a's rules, which keep
+    /// their id) — and none names the page or the app around it; only a `@keyframes` block, global
+    /// by nature, is outside a selector. The page loads it after the app's own, app-shell.css.
+    #[test]
+    fn the_view_s_stylesheet_names_nothing_outside_its_element() {
+        let css = include_str!("codex-ui/session-view.css");
+        // `body`, `html` or `:root` as an element or pseudo-class (never a class like `.body`).
+        let bare = |selector: &str, word: &str| {
+            let ident = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '#');
+            selector.match_indices(word).any(|(at, _)| {
+                !selector[..at].ends_with(ident) && !selector[at + word.len()..].starts_with(ident)
+            })
+        };
+        let selectors = style_selectors(css);
+        for (line, selector) in &selectors {
+            let rooted = [":where(#sessionView)", "#sessionView"].iter().any(|root| {
+                selector.strip_prefix(root).is_some_and(|rest| {
+                    !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+                })
+            });
+            let outside = selector_names(selector)
+                .iter()
+                .any(|n| matches!(*n, "#app" | ".app"))
+                || ["body", "html", ":root"].iter().any(|w| bare(selector, w));
+            assert!(
+                rooted && !outside,
+                "session-view.css:{line}: `{selector}` reaches outside the session view's element. \
+                 Every rule of the view's hangs on #sessionView; change reference.css or \
+                 production.css and run scripts/extract-agent-monitor-demo.mjs \
+                 (design/session-view-component.md, stage 5b)"
+            );
+        }
+        // Every rule of the file is a selector's or a keyframe's: nothing else at the top.
+        let at_rules: Vec<&str> = css
+            .lines()
+            .filter(|line| line.starts_with('@'))
+            .filter(|line| !line.starts_with("@media") && !line.starts_with("@keyframes"))
+            .collect();
+        assert!(at_rules.is_empty(), "session-view.css holds {at_rules:?}");
+        assert!(
+            selectors.len() > 2000,
+            "read {} selectors of session-view.css",
+            selectors.len()
+        );
+        let head = PAGE_HEAD;
+        let app = head.find(r#"href="monitor-ui/app-shell.css""#);
+        let view = head.find(r#"href="monitor-ui/session-view.css""#);
+        assert!(
+            matches!((app, view), (Some(a), Some(v)) if a < v),
+            "the page links app-shell.css, then session-view.css"
+        );
+    }
+
     #[test]
     fn page_is_the_reference_shell_without_mock_runtime() {
         let page = page("test", false);
@@ -1076,10 +1135,10 @@ mod tests {
         let mut wides = 0;
         let mut wide_phones = 0;
         for (name, css) in [
-            ("monitor-ui/reference.css", body("monitor-ui/reference.css")),
+            ("monitor-ui/app-shell.css", body("monitor-ui/app-shell.css")),
             (
-                "monitor-ui/production.css",
-                body("monitor-ui/production.css"),
+                "monitor-ui/session-view.css",
+                body("monitor-ui/session-view.css"),
             ),
             (
                 "monitor-ui/native-entry.css",

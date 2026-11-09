@@ -555,7 +555,7 @@ mod tests {
             assert!(asset(name).is_some());
             assert!(!PUBLIC_ASSETS.contains(&name));
         }
-        for name in ["monitor-ui/reference.css", "monitor-ui/production.css"] {
+        for name in ["monitor-ui/app-shell.css", "monitor-ui/session-view.css"] {
             assert!(!PUBLIC_ASSETS.contains(&name));
         }
         assert!(asset("codex-workspace/sw.js")
