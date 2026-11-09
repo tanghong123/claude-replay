@@ -207,9 +207,13 @@ The first kit ships without the detached page; a later kit adds it (steps 7 and 
 
 ## The first hosts
 
-- **The collaboration app** mounts the session view in its right pane. It may mount the list
-  later. Its server answers the contract from its own agent streams. What it changes on its side
-  is its lead's to schedule.
+- **The collaboration app** gives the session view a rectangular pane that the view's own code
+  controls entirely, and may mount the list later. Its server mounts this repository's backend
+  module (`design/backend-mount.md`), so the caching and the file serving are ours too, over the
+  sessions it names (the owner, #s440). It takes no lower layer of ours: no renderer of its own
+  fed with records. Its styles stay out of the pane (the owner, #s438: ours are prefixed under the
+  view's element, and the host keeps blanket rules out of its own page). What it changes on its
+  side is its lead's to schedule.
 - **The native app** (#s407) mounts both components in its own window, reaching each paired
   monitor through the backend handle that `design/monitor-hub.md` describes.
 
