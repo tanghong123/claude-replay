@@ -35,6 +35,20 @@ behind is ignored, and `/api/ui` answers 404. Stage 4 (#s99) took `/session`, th
 the classic hosts framed, which answers 404 now, with its `PageChrome` options and export.js's
 artifacts mode. "The classic page" below means export.js, the offline viewer's page (`agent-replay --html`,
 `--dump-html`), which stays and is the browser suite's reference.
+**The session view is a module of its own** (#s429, `design/session-view-component.md`, embedding's
+step 4): `session-view.js` holds the transcript, the turn bar and search, the outline panes, the
+artifact pane, the compose box and the phone dock and sheets, behind `mountSessionView(element,
+options)`; `app.js` keeps the app around it (the session list, the drawer and rail, the brand, the
+theme, the session search and the toast) and mounts it. Two rules hold every shell module (`ui.rs`
+`the_shell_reaches_the_page_only_through_its_root`): the view finds its elements, focus, floating
+layers, stylesheets, measured properties and theme through `viewRoot`, and the app's chrome through
+`page` (`view-root.js`), never `document` itself, so the view can move into a shadow root; and the
+view keeps its own state as classes on its element `#sessionView` (`display: contents` in the app, so
+its parts stay columns of `#app`'s grid), a rule's negated twin reading `#sessionView` too, with the
+pane's open, full and resizing states copied onto `#app` for the app's grid. Its server's facts
+(paired, version, the mdrev pin) come from the backend handle. The native frontend tests
+(`codex_*.test.mjs`) run module SOURCE with imports stripped, so a new import needs the real module
+in their context (`VIEW_ROOT` there) and only the workspace `cargo test` runs them.
 **The sidebar head is TWO LINES by construction** (#223): the brand takes the first, the controls
 take the second and wrap within it. They never share a row, at any width. Below `SIDEBAR_TIGHT`
 (272px) the shell wears `sidebar-tight`, which squeezes the head's padding, the gaps and the glyphs
@@ -113,7 +127,7 @@ its output); the prompt is never sent twice (`a_resume_that_fails_as_it_starts_t
 a fake `claude` on the monitor's PATH).
 **On a desktop the open box keeps to the session's reading column** (#s245, Hong: it was centred on the
 whole workspace, so with the right pane open it lay over the outline, and stood 169px tall over the
-transcript's end): `placeDeskCompose` (`app.js`) sets its edges from the transcript's text width inside
+transcript's end): `placeDeskCompose` (`session-view.js`) sets its edges from the transcript's text width inside
 its column; it is one caption line (name, target, a pane grant's revoke, ✕; the name gives way first)
 over ONE line of field that grows with the draft, at the box's current width, to a cap (a share of the
 column) and then scrolls; the transcript's end is padded above it (`--compose-room`), a reader following
@@ -1590,7 +1604,7 @@ swinging 444↔405) replays in `sandbox_phone_jitter_app_replays`; a touch gestu
 iOS-style glide (`harness::touch_glide`: offset writes from the glide's own position with a scroll
 event per frame — without that event a headless tab hears the glide lazily, which invents failures).
 The preview pane remeasures the transcript only when it changes the transcript's WIDTH (#s25,
-`paneLayoutChanged` in `app.js`): on a phone and below 1180px it is an overlay, and a remeasure there
+`paneLayoutChanged` in `session-view.js`): on a phone and below 1180px it is an overlay, and a remeasure there
 only threw every measured height away (`a_phone_reader_who_opens_a_file_and_closes_the_pane_…`).
 While the head is still coming the phone's Turns count is the highest turn NUMBER drawn (#342). The
 classic page never asks for a tail and is unchanged. **The head comes in ranges** (#s274, Hong on a
