@@ -411,7 +411,8 @@ export function classify(selector) {
  *  `select` beside them, and a `code` as the browser draws it, so a host's own rules for those
  *  reach nothing of the view's. First in the file, so every rule of the view's wins over it; each
  *  value is what the app's page already computes, so nothing in it changes. A button's background
- *  is not pinned: one of the view's buttons wears the browser's own (measured). */
+ *  is not pinned: five of the view's buttons keep the browser's own (`#tasksBtn`, `#agentsBtn`, a
+ *  phone pane's close, the dock's ✎ and its search's ✕; measured). */
 const RESET = [
   ":where(#sessionView) select{font:inherit;color:inherit}",
   ":where(#sessionView) code{font-family:monospace;color:inherit;background:transparent;border:0}",
