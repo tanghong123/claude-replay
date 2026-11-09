@@ -173,6 +173,10 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/view-root.js").as_slice(),
         ),
+        "monitor-ui/session-view.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/session-view.js").as_slice(),
+        ),
         "monitor-ui/native-policy.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/native-policy.js").as_slice(),
@@ -530,6 +534,7 @@ mod tests {
             ("view-memory.js", include_str!("codex-ui/view-memory.js")),
             ("view-model.js", include_str!("codex-ui/view-model.js")),
             ("view-root.js", include_str!("codex-ui/view-root.js")),
+            ("session-view.js", include_str!("codex-ui/session-view.js")),
             ("viewport.js", include_str!("codex-ui/viewport.js")),
             (
                 "phone-keyboard.js",

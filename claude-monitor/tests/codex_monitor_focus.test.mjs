@@ -4,7 +4,7 @@ import vm from "node:vm";
 import { test } from "node:test";
 
 // Execute the production layout callback with ordinary/shared DOM dependencies, including a keyboard.
-const source = await readFile(new URL("../src/codex-ui/app.js", import.meta.url), "utf8");
+const source = await readFile(new URL("../src/codex-ui/session-view.js", import.meta.url), "utf8");
 const match = source.match(/  const paintCompose = \(\) => \{([\s\S]*?)\n  \};\n  new MutationObserver\(paintCompose\)/);
 assert(match, "Production phone layout callback discovered");
 const callback = `const paintCompose = () => {${match[1]}\n}; paintCompose();`;

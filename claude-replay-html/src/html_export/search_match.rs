@@ -868,7 +868,7 @@ mod tests {
     /// modules, under node, over the rendering audit's corpus and the records above, for every query
     /// above — any difference fails. The page's side is `recordTextParts(recordForSearch(r),
     /// stripTags, toLowerCase)` and `countRecord`, as `updateSearch` runs them, and the filter's
-    /// chain as `filterChain` is written (it lives in app.js, which node cannot import). Skipped
+    /// chain as `filterChain` is written (it lives in session-view.js, which node cannot import). Skipped
     /// without node, as the frontend contract is; CI has it.
     #[test]
     fn parity_with_the_page() {
