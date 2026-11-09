@@ -1215,6 +1215,35 @@ fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
         tab,
         "document.getElementById('sessionView').classList.contains('keyboard-up')",
     );
+    // #s442: native mode reads the view's states where the view sets them, on #sessionView (stage
+    // 2 moved them off #app). With the keyboard up the status chip gives way and the composer drops
+    // the keyboard's safe-area inset; while the reader composes, the sheets rise from above the
+    // composer, and with the reader's tools opened (a tap that leaves the field its focus, as iOS
+    // does) the transcript keeps no room for their dock, which composing hides.
+    let states = "(()=>{const v=document.getElementById('sessionView'),p=document.createElement('div');p.style.cssText='position:absolute;visibility:hidden;width:1px;height:var(--phone-bottom)';v.querySelector('.workspace').append(p);const rise=p.getBoundingClientRect().height;p.remove();return {chip:getComputedStyle(document.getElementById('statusChip')).display,safe:getComputedStyle(document.getElementById('composer')).getPropertyValue('--shared-keyboard-safe-bottom').trim(),composing:v.classList.contains('composing'),rise,composer:parseFloat(document.body.style.getPropertyValue('--shared-composer-height')),height:document.getElementById('composer').getBoundingClientRect().height,padding:parseFloat(document.getElementById('transcript').style.paddingBottom),reader:document.body.hasAttribute('data-shared-reader-open'),focus:document.activeElement===document.getElementById('composeInput')};})()";
+    until(
+        tab,
+        &format!("(()=>{{const s={states};return s.chip==='none' && s.safe==='0px' && s.composing && s.focus && Math.abs(s.rise-(s.composer+16))<=1;}})()"),
+        "the keyboard hides the status chip and the composer's inset, and the sheets rise above the composer",
+        Duration::from_secs(10),
+        &format!("JSON.stringify({states})"),
+    );
+    eval(
+        tab,
+        "document.getElementById('sharedReaderTools').click();true",
+    );
+    until(
+        tab,
+        &format!("(()=>{{const s={states};return s.reader && s.composing && s.focus && Math.abs(s.padding-(s.height+24))<=1;}})()"),
+        "the transcript keeps no room for the reader's dock while the reader composes",
+        Duration::from_secs(10),
+        &format!("JSON.stringify({states})"),
+    );
+    eval(
+        tab,
+        "document.getElementById('composeInput').dispatchEvent(new Event('focus'));true",
+    );
+    wait(tab, "!document.body.hasAttribute('data-shared-reader-open') && document.getElementById('composer').dataset.sharedCollapsed==='false'");
     // Model Safari's page scroll AND viewport offsets, including the observed 337 px.
     // All assertions use the app box, as do the shell's phone-top/phone-bottom rules.
     eval(tab, "(()=>{Object.defineProperty(visualViewport,'offsetTop',{configurable:true,get:()=>337});Object.defineProperty(visualViewport,'pageTop',{configurable:true,get:()=>337});visualViewport.dispatchEvent(new Event('scroll'));return true;})()");
