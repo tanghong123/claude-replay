@@ -8,6 +8,14 @@ const json = (key, fallback) => {
   catch (_) { return fallback; }
 };
 
+// The stores both halves of the shell read (#s429, design/session-view-component.md, stage 3): each
+// says whose its fields are. The app is app.js (the session list, the drawer, the chrome); the view
+// is session-view.js (one session) and the modules under it.
+
+/** The app's: the session index and the list's choices. session-view.js asks for the selection, a
+ *  row and a session's workers through `selectedId`, `sessionRow` and `sessionWorkers`; the compose
+ *  box (control-store.js) still reads `selectedRow()` here, and native mode, the monitor's own,
+ *  reads `selected`. */
 export const indexState = {
   groups: [], rows: new Map(), selected: "",
   collapsed: new Set(json("am-demo-collapsed", [])), ignoredCount: 0, showHidden: false,
@@ -44,6 +52,7 @@ export const indexState = {
   read: json("am-prod-read", {})
 };
 
+/** The view's: the open session's records and how they are drawn. */
 export const recordState = {
   session: "", records: [], meta: null, units: [], generation: 0,
   cursor: { epoch: 0, committed: 0, gen: 0, index: 0 },
@@ -81,6 +90,7 @@ export const recordState = {
   taskTargets: new Map(), agentTargets: new Map()
 };
 
+/** The view's, but for `globalResults` and `globalIndex`, which are the app's session search layer. */
 export const uiState = {
   preview: false, previewTabs: [], previewId: null,
   // Until the reader chooses, the outline starts open — except on a phone (#310), where it is an
@@ -122,11 +132,13 @@ export const uiState = {
   readingChosen: localStorage.getItem(READING_KEY) != null
 };
 
+/** The view's: the compose box (native-entry.js reads `write`). */
 export const controlState = {
   get paired() { return backend().paired; }, write: false,
   row: null, mode: "resume", consented: false, pending: ""
 };
 
+/** Remember both halves' choices: either half calls it after changing its own. */
 export function persist() {
   localStorage.setItem("am-demo-collapsed", JSON.stringify([...indexState.collapsed]));
   localStorage.setItem("am-prod-expanded-projects", JSON.stringify([...indexState.expandedProjects]));
