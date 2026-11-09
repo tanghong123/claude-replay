@@ -669,7 +669,9 @@ mod tests {
     /// them any more: on a phone the status chip stayed up beside the keyboard, the sheets rose from
     /// the dock's place under the open composer, and the transcript kept room for a dock that the
     /// composer hides. Every class session-view.js sets on its own element is read there by native
-    /// mode too, in its stylesheet and in its scripts.
+    /// mode too: no selector in its stylesheets names one on the app (`#app` or `.app`, outside a
+    /// `:has(…)`, which looks below), no `classList` call in its scripts touches one on anything but
+    /// the view's element, and no selector string in them names one on the app.
     #[test]
     fn native_mode_reads_the_view_s_states_on_the_view() {
         let view = include_str!("codex-ui/session-view.js");
@@ -689,53 +691,121 @@ mod tests {
             states.contains(&"composing") && states.contains(&"keyboard-up"),
             "session-view.js sets its states on #sessionView: {states:?}"
         );
-        let css = include_str!("codex-workspace/monitor.css");
-        let selectors = style_selectors(css);
-        assert!(selectors.len() > 100, "read {} selectors", selectors.len());
-        for (line, selector) in &selectors {
-            let mut rest = selector.as_str();
-            while !rest.is_empty() {
-                let (compound, after) = leading_compound(rest);
-                let names = selector_names(compound);
-                if let Some(state) = states
-                    .iter()
-                    .find(|s| names.contains(&format!(".{s}").as_str()))
-                {
-                    assert!(
-                        !names.contains(&"#app"),
-                        "codex-workspace/monitor.css:{line}: `{selector}` reads the view's state \
-                         `{state}` on #app; the view sets it on #sessionView"
-                    );
+        // A compound without its `:has(…)` parts: `#app:has(#sessionView.composing)` reads the
+        // state on the view.
+        let outside_has = |compound: &str| {
+            let (mut out, mut rest) = (String::new(), compound);
+            while let Some(at) = rest.find(":has(") {
+                out.push_str(&rest[..at]);
+                let (mut depth, mut end) = (0, rest.len());
+                for (k, c) in rest[at + 4..].char_indices() {
+                    match c {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = at + 4 + k + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
-                rest = after;
+                rest = &rest[end..];
+            }
+            out.push_str(rest);
+            out
+        };
+        for (name, css) in [
+            (
+                "codex-workspace/monitor.css",
+                include_str!("codex-workspace/monitor.css"),
+            ),
+            (
+                "codex-ui/native-entry.css",
+                include_str!("codex-ui/native-entry.css"),
+            ),
+        ] {
+            for (line, selector) in &style_selectors(css) {
+                let mut rest = selector.as_str();
+                while !rest.is_empty() {
+                    let (compound, after) = leading_compound(rest);
+                    let compound = outside_has(compound);
+                    let names = selector_names(&compound);
+                    if let Some(state) = states
+                        .iter()
+                        .find(|s| names.contains(&format!(".{s}").as_str()))
+                    {
+                        assert!(
+                            !names.contains(&"#app") && !names.contains(&".app"),
+                            "{name}:{line}: `{selector}` reads the view's state `{state}` on the \
+                             app; the view sets it on #sessionView"
+                        );
+                    }
+                    rest = after;
+                }
             }
         }
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/codex-workspace");
-        let mut scripts = 0;
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().is_none_or(|e| e != "js") {
-                continue;
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut scripts = Vec::new();
+        for (dir, prefix) in [("codex-workspace", ""), ("codex-ui", "native-")] {
+            for entry in std::fs::read_dir(src.join(dir)).unwrap() {
+                let path = entry.unwrap().path();
+                let file = path.file_name().unwrap().to_string_lossy().into_owned();
+                if file.starts_with(prefix) && file.ends_with(".js") {
+                    scripts.push((
+                        format!("{dir}/{file}"),
+                        std::fs::read_to_string(&path).unwrap(),
+                    ));
+                }
             }
-            scripts += 1;
-            let text = std::fs::read_to_string(&path).unwrap();
-            for (at, _) in text.match_indices(".classList.") {
-                let receiver = &text[..at];
-                let on_app = receiver.ends_with("(\"app\")") || receiver.ends_with("('app')");
+        }
+        assert!(
+            scripts.len() >= 8
+                && scripts
+                    .iter()
+                    .any(|(n, _)| n.ends_with("monitor-controls.js")),
+            "read {:?}",
+            scripts.iter().map(|(n, _)| n).collect::<Vec<_>>()
+        );
+        let boundary = |c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        for (name, text) in &scripts {
+            for (at, _) in text.match_indices("classList.") {
+                let receiver = text[..at].trim_end_matches('.').trim_end_matches('?');
                 let state = text[at..]
                     .split_once('(')
                     .and_then(|(_, arg)| arg.get(1..))
                     .and_then(|arg| arg.split(['"', '\'']).next())
                     .unwrap_or("");
+                let on_view = [
+                    "(\"sessionView\")",
+                    "('sessionView')",
+                    "sessionView",
+                    "viewRoot.element()",
+                ]
+                .iter()
+                .any(|r| receiver.ends_with(r));
                 assert!(
-                    !(on_app && states.contains(&state)),
-                    "codex-workspace/{}: reads the view's state `{state}` on #app; the view sets \
-                     it on #sessionView",
-                    path.file_name().unwrap().to_string_lossy()
+                    on_view || !states.contains(&state),
+                    "{name}: `…{}.classList.{}` touches the view's state `{state}` on another \
+                     element; the view sets it on #sessionView",
+                    &receiver[receiver.len().saturating_sub(30)..],
+                    text[at + 10..].split(')').next().unwrap_or("")
                 );
             }
+            for state in &states {
+                for app in ["#app", ".app"] {
+                    let wrong = format!("{app}.{state}");
+                    for (at, _) in text.match_indices(&wrong) {
+                        assert!(
+                            text[at + wrong.len()..].starts_with(|c: char| !boundary(c)),
+                            "{name}: a selector string names the view's state `{state}` on the \
+                             app (`{wrong}`); the view sets it on #sessionView"
+                        );
+                    }
+                }
+            }
         }
-        assert!(scripts >= 5, "read {scripts} scripts in {}", dir.display());
     }
 
     #[test]
