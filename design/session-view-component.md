@@ -121,7 +121,9 @@ pane, so step 6 also makes the view's root what they are placed against.
    `body` to the view's root element, and the CSS rules that read them move with them. The few
    browser cases that read those classes change in the same commit. Each assertion stays as it is,
    reading another element. This is the one place the suite's text changes, and only in where it
-   looks.
+   looks. Codex native mode's own stylesheet and script were missed: they read `composing` and
+   `keyboard-up` on `#app` until #s442, and a static test (`ui.rs`,
+   `native_mode_reads_the_view_s_states_on_the_view`) now holds native mode to the view's element.
 3. **The split of `app.js`.** The view's code moves to `session-view.js`, behind the entry point.
    `app.js` keeps what belongs to the app: the list, the drawer, pairing, the theme, the session
    search and placing the two. It calls `mountSessionView(…, {isolate: false})`, and shared state
