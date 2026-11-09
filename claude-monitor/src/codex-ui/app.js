@@ -923,6 +923,9 @@ page.byId("searchLayer").onclick = event => { if (event.target === page.byId("se
 // The theme is the app's: its chrome reads it on the page's root, and the view, which carries its own
 // on its element (#s429 stage 5b), is told.
 page.byId("themeBtn").onclick = () => { const dark = page.html().dataset.theme !== "dark"; page.html().dataset.theme = dark ? "dark" : ""; viewHandle?.setTheme(dark ? "dark" : "light"); localStorage.setItem("am-demo-theme", dark ? "dark" : "light"); };
+// The page's theme is the root's `data-theme`, however it changes (the toggle, a script): the view
+// follows it, as everything on the page did while the view read the root's.
+new MutationObserver(() => viewHandle?.setTheme(page.html().dataset.theme === "dark" ? "dark" : "light")).observe(page.html(), { attributes: true, attributeFilter: ["data-theme"] });
 if (localStorage.getItem("am-demo-theme") === "dark") page.html().dataset.theme = "dark";
 // #s33: the collapsed rail is the DESKTOP's. On a phone the sidebar is the drawer, and the rail's
 // rules hide its head, its nav and its list: a phone that had the rail stored (1.355 drew a phone
