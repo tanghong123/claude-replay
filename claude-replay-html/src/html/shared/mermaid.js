@@ -17,11 +17,15 @@ function useMermaidRuntime(resolve) {
   runtimeUrl = resolve;
 }
 
-// The element whose `data-theme` the diagrams are drawn in and follow: the page's root, unless the
-// session view says its own element carries its theme (#s429 stage 5b), as it does in a host's page.
+// The element whose `data-theme` the diagrams are drawn in and follow, and whose tokens (`--ink`,
+// `--primary`, `--sans`…) colour them: the page's root, unless the session view says its own element
+// carries its theme and tokens (#s429 stage 5b), as it does in a host's page, where the root has
+// neither. `observed` is the element the theme observer watches.
 let themeElement = () => document.documentElement;
+let observed = null;
+const themeSource = () => themeElement() || document.documentElement;
 
-/** The session view's theme element: `element()` returns it. Called before the first diagram. */
+/** The session view's theme element: `element()` returns it. The next diagram drawn watches it. */
 function useMermaidTheme(element) {
   themeElement = element;
 }
@@ -63,12 +67,12 @@ function loadMermaid() {
 }
 
 function diagramTheme() {
-  return themeElement()?.dataset.theme === "dark" ? "dark" : "light";
+  return themeSource().dataset.theme === "dark" ? "dark" : "light";
 }
 
 function diagramPalette(theme) {
   const dark = theme === "dark";
-  const host = getComputedStyle(document.documentElement);
+  const host = getComputedStyle(themeSource());
   return {
     darkMode: dark,
     background: dark ? "#1d212b" : "#f8f9fc",
@@ -239,9 +243,14 @@ function renderMermaid(root, readerReshaped) {
   const cards = [...root.querySelectorAll("[data-mermaid]")];
   if (root.matches?.("[data-mermaid]")) cards.unshift(root);
   if (!cards.length) return;
-  if (!themeObserver) {
-    themeObserver = new MutationObserver(() => renderMermaid(document));
-    themeObserver.observe(themeElement(), { attributes: true, attributeFilter: ["data-theme"] });
+  // Watch the element the theme comes from; when it is another one now (a view mounted again),
+  // watch that one instead.
+  const source = themeSource();
+  if (observed !== source) {
+    if (themeObserver) themeObserver.disconnect();
+    else themeObserver = new MutationObserver(() => renderMermaid(document));
+    themeObserver.observe(source, { attributes: true, attributeFilter: ["data-theme"] });
+    observed = source;
   }
   const theme = diagramTheme();
   for (const card of cards) {
