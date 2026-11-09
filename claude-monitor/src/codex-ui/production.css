@@ -11,53 +11,60 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 /* #s429 stage 2: the session view's own element, which carries its state. In the app it draws no box,
    so its workspace, resizer and pane stay columns of #app's grid. */
 .session-view{display:contents}
+/* #s429 stage 5a: the view's rules hang on its element, `#sessionView`, never on the app's `#app`, so
+   they hold wherever a host mounts it. Two kinds still name `#app`, both on purpose:
+   `:is(#sessionView,#app)` for what the app's chrome shares (`.iconbtn`, `button`, the session
+   filter's popover rows) or a wide phone's column borrows (the outline's turn, task and agent lists);
+   and the rules that read an APP state (`sidebar-off`, `phone-column-off`, the pane's `preview-off`
+   copied onto #app for its grid…), which stage 6 replaces. `ui.rs` holds the list
+   (`the_view_s_styles_hang_on_its_own_element`). */
 .markdown-table-scroll{width:100%;max-width:100%;margin:14px 0 18px;overflow-x:auto;border-radius:10px}.markdown-table-scroll>table{display:table!important;width:100%!important;min-width:100%;margin:0!important;overflow:visible!important}
 .transcript{overflow-anchor:none}.virtual-pad{width:1px;pointer-events:none}.virtual-window{display:block}.monitor-empty{min-height:280px;display:grid;place-content:center;justify-items:center;gap:6px;padding:32px;color:var(--faint);text-align:center}.monitor-empty[hidden]{display:none!important}.monitor-empty strong{color:var(--sub);font-size:13px}.monitor-empty span{max-width:430px;font-size:11px}.monitor-error{color:var(--red)}.monitor-disabled{opacity:.48;cursor:not-allowed!important}.monitor-disabled-note{margin:7px 0;padding:9px 11px;border:1px solid var(--process-content-border,var(--line));border-radius:8px;background:var(--process-control-bg,var(--panel));color:var(--faint);font-size:11px}.fallback-raw{max-height:260px;overflow:auto;white-space:pre-wrap}.search-scope-note{padding:8px 10px;color:var(--faint);font-size:10.5px}.preview-error{min-height:240px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:7px;padding:28px;color:var(--sub);font-size:12px}.preview-error strong{color:var(--ink);font-size:14px}.preview-error>span{max-width:340px;line-height:1.6}.preview-error-actions{display:flex;gap:7px;margin-top:7px}.artifact-text{white-space:pre-wrap;font:12px/1.7 var(--mono)}.artifact-image{display:block;max-width:100%;height:auto;margin:0 auto}.artifact-html-frame{display:block;width:100%;height:100%;min-height:420px;border:0;background:#fff}.outline-placeholder{padding:9px 11px;color:var(--faint);font-size:10.5px}.session-state.inferred{box-shadow:0 0 0 1px currentColor;background:transparent}.process-surface[data-prod-sticky="true"] .process-surface-headbar{position:sticky;top:0;z-index:3}.write-help.show{display:block}.composer.production-show{display:block}.confirm-layer.production-open,.search-layer.production-open{display:grid}.search-layer.production-open{display:flex}.preview-body.production-loading{display:grid;place-items:center;color:var(--faint)}.passcode-input{width:100%;height:38px;margin:-7px 0 14px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);outline:0}.passcode-input:focus{border-color:var(--blue)}.production-revoke{margin-left:auto;border:0;background:transparent;color:var(--faint);font:10px var(--sans);cursor:pointer}.production-revoke:hover{color:var(--red)}
 /* #s236 (Hong: the compose box said too much, and "writes to live tmux" for a herdr pane): the head is the
    session's name alone, the foot ONE line from `composeTargetLine` (amber for a live pane; on a
    desktop it sits in the caption row beside the name, #s245), and the
    reference's static "· writes to live tmux" and its inert "＋" are gone. */
-#app .composer>.composer-head>span,#app .composer .risk,#app .composer .compose-foot:before{display:none}
-#app .composer.live #composeTarget{color:var(--amber)}
+#sessionView .composer>.composer-head>span,#sessionView .composer .risk,#sessionView .composer .compose-foot:before{display:none}
+#sessionView .composer.live #composeTarget{color:var(--amber)}
 /* #s237: images for a Claude session in a herdr pane: the attach control leads the foot (inside the field at its left, on a desktop as on a phone, #s245), the strip sits above the field. */
-#app .composer .compose-attach{flex:none;width:30px;height:30px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--sub);display:grid;place-items:center;cursor:pointer}
-#app .composer .compose-attach:hover{background:var(--hover);color:var(--ink)}
-#app .composer .compose-attach[hidden]{display:none}
-#app .composer .compose-attach .icon{width:18px;height:18px}
-#app .compose-images:empty{display:none}
+#sessionView .composer .compose-attach{flex:none;width:30px;height:30px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--sub);display:grid;place-items:center;cursor:pointer}
+#sessionView .composer .compose-attach:hover{background:var(--hover);color:var(--ink)}
+#sessionView .composer .compose-attach[hidden]{display:none}
+#sessionView .composer .compose-attach .icon{width:18px;height:18px}
+#sessionView .compose-images:empty{display:none}
 /* #s298 (Hong's Way 1 on #s299): a dialog the session holds in its herdr pane — a question, a
    permission prompt, a plan — shown in the compose box above its field, its choices as buttons
    (dialog-card.js). The box keeps its place on a desktop and is the dock's reply box on a phone. */
-#app .compose-dialog[hidden]{display:none}
-#app .compose-dialog{display:grid;grid-auto-rows:max-content;gap:6px;min-width:0;padding:6px 0 8px;color:var(--ink);font-size:13px;line-height:1.4}
-#app .compose-dialog .dialog-body{display:grid;gap:6px;min-width:0}
-#app .compose-dialog.answering{opacity:.6;pointer-events:none}
-#app .compose-dialog p{margin:0}
-#app .compose-dialog .dialog-head{display:flex;align-items:baseline;gap:8px;min-width:0}
-#app .compose-dialog .dialog-kind{flex:none;color:var(--amber);font-size:11px;font-weight:650}
-#app .compose-dialog .dialog-title{min-width:0;color:var(--sub);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#app .compose-dialog .dialog-text{font-weight:600;overflow-wrap:anywhere}
-#app .compose-dialog :is(.dialog-note,.dialog-hint,.dialog-wait){color:var(--sub);font-size:12px}
-#app .compose-dialog .dialog-detail{margin:0;max-height:min(200px,28vh);overflow:auto;padding:6px 8px;border-radius:8px;background:color-mix(in srgb,var(--line) 40%,transparent);font:12px/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
-#app .compose-dialog .dialog-tabs{display:flex;flex-wrap:wrap;gap:4px}
-#app .compose-dialog .dialog-tab{padding:1px 7px;border-radius:9px;background:color-mix(in srgb,var(--line) 50%,transparent);color:var(--sub);font-size:11px}
-#app .compose-dialog .dialog-tab.done{color:var(--ink)}
-#app .compose-dialog .dialog-choices{display:flex;flex-wrap:wrap;gap:6px}
-#app .compose-dialog .dialog-choice{display:grid;gap:1px;min-height:30px;max-width:100%;box-sizing:border-box;padding:5px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;text-align:left;cursor:pointer}
-#app .compose-dialog .dialog-choice b{font-weight:600;overflow-wrap:anywhere}
-#app .compose-dialog .dialog-desc{color:var(--sub);font-size:11.5px}
-#app .compose-dialog .dialog-choice.primary{background:var(--primary);border-color:var(--primary);color:#fff}
-#app .compose-dialog .dialog-tick{grid-template-columns:auto minmax(0,1fr);align-items:start;column-gap:8px}
-#app .compose-dialog .dialog-tick input{margin:3px 0 0}
-#app .compose-dialog .dialog-words{display:grid;gap:1px}
-@media(hover:hover){#app .compose-dialog .dialog-choice:not(.primary):hover{background:var(--hover)}}
-#app .compose-fab.asks .fab-dot{background:var(--amber)}
-body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!important}
-#app .compose-images{display:flex;gap:8px;overflow-x:auto;padding:4px 2px 6px}
-#app .compose-image{position:relative;flex:none;width:76px;height:64px;border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden}
-#app .compose-image img{display:block;width:100%;height:100%;object-fit:cover}
-#app .compose-image-loading{display:grid;place-content:center;height:100%;font-size:10px;color:var(--sub)}
-#app .compose-image-remove{position:absolute;right:0;top:0;width:24px;height:24px;padding:0;border:0;border-radius:0 0 0 8px;background:var(--bg);color:var(--ink);font-size:18px;line-height:1;cursor:pointer}
+#sessionView .compose-dialog[hidden]{display:none}
+#sessionView .compose-dialog{display:grid;grid-auto-rows:max-content;gap:6px;min-width:0;padding:6px 0 8px;color:var(--ink);font-size:13px;line-height:1.4}
+#sessionView .compose-dialog .dialog-body{display:grid;gap:6px;min-width:0}
+#sessionView .compose-dialog.answering{opacity:.6;pointer-events:none}
+#sessionView .compose-dialog p{margin:0}
+#sessionView .compose-dialog .dialog-head{display:flex;align-items:baseline;gap:8px;min-width:0}
+#sessionView .compose-dialog .dialog-kind{flex:none;color:var(--amber);font-size:11px;font-weight:650}
+#sessionView .compose-dialog .dialog-title{min-width:0;color:var(--sub);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#sessionView .compose-dialog .dialog-text{font-weight:600;overflow-wrap:anywhere}
+#sessionView .compose-dialog :is(.dialog-note,.dialog-hint,.dialog-wait){color:var(--sub);font-size:12px}
+#sessionView .compose-dialog .dialog-detail{margin:0;max-height:min(200px,28vh);overflow:auto;padding:6px 8px;border-radius:8px;background:color-mix(in srgb,var(--line) 40%,transparent);font:12px/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+#sessionView .compose-dialog .dialog-tabs{display:flex;flex-wrap:wrap;gap:4px}
+#sessionView .compose-dialog .dialog-tab{padding:1px 7px;border-radius:9px;background:color-mix(in srgb,var(--line) 50%,transparent);color:var(--sub);font-size:11px}
+#sessionView .compose-dialog .dialog-tab.done{color:var(--ink)}
+#sessionView .compose-dialog .dialog-choices{display:flex;flex-wrap:wrap;gap:6px}
+#sessionView .compose-dialog .dialog-choice{display:grid;gap:1px;min-height:30px;max-width:100%;box-sizing:border-box;padding:5px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+#sessionView .compose-dialog .dialog-choice b{font-weight:600;overflow-wrap:anywhere}
+#sessionView .compose-dialog .dialog-desc{color:var(--sub);font-size:11.5px}
+#sessionView .compose-dialog .dialog-choice.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+#sessionView .compose-dialog .dialog-tick{grid-template-columns:auto minmax(0,1fr);align-items:start;column-gap:8px}
+#sessionView .compose-dialog .dialog-tick input{margin:3px 0 0}
+#sessionView .compose-dialog .dialog-words{display:grid;gap:1px}
+@media(hover:hover){#sessionView .compose-dialog .dialog-choice:not(.primary):hover{background:var(--hover)}}
+#sessionView .compose-fab.asks .fab-dot{background:var(--amber)}
+body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){display:none!important}
+#sessionView .compose-images{display:flex;gap:8px;overflow-x:auto;padding:4px 2px 6px}
+#sessionView .compose-image{position:relative;flex:none;width:76px;height:64px;border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden}
+#sessionView .compose-image img{display:block;width:100%;height:100%;object-fit:cover}
+#sessionView .compose-image-loading{display:grid;place-content:center;height:100%;font-size:10px;color:var(--sub)}
+#sessionView .compose-image-remove{position:absolute;right:0;top:0;width:24px;height:24px;padding:0;border:0;border-radius:0 0 0 8px;background:var(--bg);color:var(--ink);font-size:18px;line-height:1;cursor:pointer}
 /* #s245 (Hong, 2026-10-25, at about 2000px): on a desktop the open box was centred on the whole
    workspace, so it lay over the outline column, and stood 169px tall over the transcript's last
    lines. It keeps to the session's reading column now (`--compose-x`/`-w`/`-bottom`, measured by
@@ -67,22 +74,22 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
    over its scrollbar; and the transcript ends above it (`--compose-room`, never less than the 140px
    it keeps without the box), pushed up rather than covered. Native mode lays out its own. */
 @media(min-width:761px) and (min-height:501px),(min-width:761px) and (pointer:fine){
-  body:not([data-shared-codex]) #app .workspace .composer.production-show{left:var(--compose-x,50%);bottom:var(--compose-bottom,17px);width:var(--compose-w,min(880px,calc(100% - 44px)));max-width:none;min-height:0;display:grid;grid-template-columns:fit-content(25%) minmax(0,1fr) auto auto;grid-template-areas:"title target revoke close" "images images images images" "field field field field";align-items:center;column-gap:8px;row-gap:1px;padding:4px 7px 7px 13px;border-radius:14px}
-  body:not([data-shared-codex]) #app .composer.production-show>:is(.composer-head,.compose-foot){display:contents}
-  body:not([data-shared-codex]) #app .composer.production-show>.compose-note{display:none}
-  body:not([data-shared-codex]) #app .composer.production-show #composerTitle{grid-area:title;min-width:0;font-size:11px}
-  body:not([data-shared-codex]) #app .composer.production-show #composeTarget{grid-area:target;min-width:0;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  body:not([data-shared-codex]) #app .composer.production-show .production-revoke{grid-area:revoke}
-  body:not([data-shared-codex]) #app .composer.production-show #closeComposer{grid-area:close;width:24px;height:24px}
-  body:not([data-shared-codex]) #app .composer.production-show .compose-images{grid-area:images}
-  body:not([data-shared-codex]) #app .composer.production-show .compose-dialog{grid-area:dialog}
-  body:not([data-shared-codex]) #app .composer.production-show:has(.compose-dialog:not([hidden])){grid-template-areas:"title target revoke close" "dialog dialog dialog dialog" "images images images images" "field field field field"}
-  body:not([data-shared-codex]) #app .composer.production-show textarea{grid-area:field;box-sizing:border-box;width:auto;min-height:0;max-height:var(--compose-cap,min(264px,32vh));margin-right:38px;padding:6px 4px 6px 0;font-size:14px;line-height:21px;overflow-y:auto}
-  body:not([data-shared-codex]) #app .composer.production-show.attachable textarea{padding-left:32px}
-  body:not([data-shared-codex]) #app .composer.production-show #sendBtn{grid-area:field;justify-self:end;align-self:end;width:30px;height:30px;margin:0 0 1px}
-  body:not([data-shared-codex]) #app .composer.production-show .compose-attach{grid-area:field;justify-self:start;align-self:end;margin:0 0 1px -6px}
-  body:not([data-shared-codex]) #app .workspace.desk-composing .transcript-inner{padding-bottom:max(140px,calc(var(--compose-room,140px) + 24px))}
-  body:not([data-shared-codex]) #app .workspace.desk-composing .jump-to-bottom{bottom:var(--compose-lift,150px)}
+  body:not([data-shared-codex]) #sessionView .workspace .composer.production-show{left:var(--compose-x,50%);bottom:var(--compose-bottom,17px);width:var(--compose-w,min(880px,calc(100% - 44px)));max-width:none;min-height:0;display:grid;grid-template-columns:fit-content(25%) minmax(0,1fr) auto auto;grid-template-areas:"title target revoke close" "images images images images" "field field field field";align-items:center;column-gap:8px;row-gap:1px;padding:4px 7px 7px 13px;border-radius:14px}
+  body:not([data-shared-codex]) #sessionView .composer.production-show>:is(.composer-head,.compose-foot){display:contents}
+  body:not([data-shared-codex]) #sessionView .composer.production-show>.compose-note{display:none}
+  body:not([data-shared-codex]) #sessionView .composer.production-show #composerTitle{grid-area:title;min-width:0;font-size:11px}
+  body:not([data-shared-codex]) #sessionView .composer.production-show #composeTarget{grid-area:target;min-width:0;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  body:not([data-shared-codex]) #sessionView .composer.production-show .production-revoke{grid-area:revoke}
+  body:not([data-shared-codex]) #sessionView .composer.production-show #closeComposer{grid-area:close;width:24px;height:24px}
+  body:not([data-shared-codex]) #sessionView .composer.production-show .compose-images{grid-area:images}
+  body:not([data-shared-codex]) #sessionView .composer.production-show .compose-dialog{grid-area:dialog}
+  body:not([data-shared-codex]) #sessionView .composer.production-show:has(.compose-dialog:not([hidden])){grid-template-areas:"title target revoke close" "dialog dialog dialog dialog" "images images images images" "field field field field"}
+  body:not([data-shared-codex]) #sessionView .composer.production-show textarea{grid-area:field;box-sizing:border-box;width:auto;min-height:0;max-height:var(--compose-cap,min(264px,32vh));margin-right:38px;padding:6px 4px 6px 0;font-size:14px;line-height:21px;overflow-y:auto}
+  body:not([data-shared-codex]) #sessionView .composer.production-show.attachable textarea{padding-left:32px}
+  body:not([data-shared-codex]) #sessionView .composer.production-show #sendBtn{grid-area:field;justify-self:end;align-self:end;width:30px;height:30px;margin:0 0 1px}
+  body:not([data-shared-codex]) #sessionView .composer.production-show .compose-attach{grid-area:field;justify-self:start;align-self:end;margin:0 0 1px -6px}
+  body:not([data-shared-codex]) #sessionView .workspace.desk-composing .transcript-inner{padding-bottom:max(140px,calc(var(--compose-room,140px) + 24px))}
+  body:not([data-shared-codex]) #sessionView .workspace.desk-composing .jump-to-bottom{bottom:var(--compose-lift,150px)}
 }
 
 /* Explicit session debug identities, revealed from the header title without changing the demo shell. */
@@ -209,14 +216,14 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
    old touch). An open control says so by its own state — and a LIT one (`.on`, the session filter
    leaving something out) keeps its own fill: Linux's headless Chrome reports `hover: none` too,
    and the browser job caught the open filter losing its tint. */
-@media(hover:none){#app .header-filter:hover:not(.on){background:transparent;color:var(--faint)}}
+@media(hover:none){#sessionView .header-filter:hover:not(.on){background:transparent;color:var(--faint)}}
 /* The same for every control a phone keeps on screen after a tap and whose resting background is
    clear (each checked: transparent at rest): the search box's steps, clear and chip ✕ (the owner saw
    ↓ keep a grey shade after stepping), the transcript's fold heads and toggles, Aa's size steps, the
    preview's tabs, the outline's rows, the sidebar's rows, the session title and the reply box's ✕.
    A selected or open one keeps its own state. */
-@media(hover:none){#app :is(.find-nav,.search-clear,.search-chip-remove,.scope-chip,.reading-step button,.renderer-head,.process-surface-head,.command-head,.activity-row:not(.expanded),.renderer-children-toggle,.process-children-toggle,.process-section-toggle,.process-bulk-toggle,.composer-close,.preview-tab:not(.on),.preview-tab-close,.outline-turn-row:not(.current),.outline-turn-head,.outline-agent,.filter-option,.artifact-row,.navbtn:not(.on),.prompt-expand,.session-heading>#sessionTitle:not([aria-expanded="true"])):hover{background:transparent}}
-@media(hover:none){#app .iconbtn:hover:not(.on):not(.active){background:transparent}#app .iconbtn[aria-expanded="true"]:not(.active):not(.on){background:var(--hover);color:var(--ink)}}
+@media(hover:none){:is(#sessionView,#app) :is(.find-nav,.search-clear,.search-chip-remove,.scope-chip,.reading-step button,.renderer-head,.process-surface-head,.command-head,.activity-row:not(.expanded),.renderer-children-toggle,.process-children-toggle,.process-section-toggle,.process-bulk-toggle,.composer-close,.preview-tab:not(.on),.preview-tab-close,.outline-turn-row:not(.current),.outline-turn-head,.outline-agent,.filter-option,.artifact-row,.navbtn:not(.on),.prompt-expand,.session-heading>#sessionTitle:not([aria-expanded="true"])):hover{background:transparent}}
+@media(hover:none){:is(#sessionView,#app) .iconbtn:hover:not(.on):not(.active){background:transparent}:is(#sessionView,#app) .iconbtn[aria-expanded="true"]:not(.active):not(.on){background:var(--hover);color:var(--ink)}}
 .tree-row.project .tree-action{margin-left:auto}
 .tree-row.is-hidden{opacity:.55}
 .tree-row.is-hidden.selected{opacity:.8}
@@ -318,7 +325,7 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
    terminal output and a raw turn as well; those are STREAMS, and a reader who wanted the code
    smaller got the whole page smaller. `--code-size` is the app root's property, so a block that
    sets its own (the per-block override below) simply shadows it. */
-#app [data-code]{font-size:var(--code-size)}
+#sessionView [data-code]{font-size:var(--code-size)}
 /* #161 + #173. Wrap is WIDER than code: it is a verbatim-TEXT control — every run of text that
    keeps its own line breaks. That is every `pre` in the transcript (a markdown block, bash
    output inside a terminal, a raw turn — `code` inside a `pre` inherits from it) plus the marked
@@ -345,9 +352,9 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
 /* The NEUTRALIZER, and it is required (#161, the lesson above): the UA stylesheet sets
    `white-space` EXPLICITLY on `pre`, and reference.css:161 sets it on `.codecell` and a font
    SHORTHAND on `.lines` — an explicit declaration beats an inherited author value at ANY
-   specificity. So the marked container's descendants are told to inherit. `#app [data-code] *`
+   specificity. So the marked container's descendants are told to inherit. `#sessionView [data-code] *`
    is (1,1,0), which beats `.lines.wrap .codecell` (0,2,0) and `.codecell` (0,1,0). */
-#app [data-code] *{font:inherit;white-space:inherit}
+#sessionView [data-code] *{font:inherit;white-space:inherit}
 /* …and the FLOOR under the text column, which is what makes wrapping visible at all. A code row
    is a grid whose text column is `minmax(max-content,1fr)` (reference.css:161, and the numbered
    shape in rule 1 of the reconciliation below, #146) — and max-content ignores every soft-wrap
@@ -356,7 +363,7 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
    SCROLLED — the wrap control was a no-op on code whatever the class said. The floor rides a
    property the wrap rules set, so the two shapes (with a mark, without) are stated once each
    here instead of once per wrap state. */
-#app [data-code] /* #266: the line-number rail sizes to the number it holds, with 38px as the floor. It was a
+#sessionView [data-code] /* #266: the line-number rail sizes to the number it holds, with 38px as the floor. It was a
    FIXED 38px, which is four digits and eight pixels of padding — so a diff deep in a big
    file (13145) had nowhere to put the fifth, and with wrap on the rail broke the number
    across two lines: measured 22px tall becoming 43px, three lines at a larger code size.
@@ -365,19 +372,19 @@ body[data-shared-codex] #app :is(.compose-attach,.compose-images){display:none!i
 /* …and the rail is NOT verbatim text, whatever the wrap control says. Wrap exists for long
    lines of code; a line NUMBER has no break worth taking, and `word-break:break-word` on
    the code container was reaching it and snapping 13145 into 1314/5. */
-#app [data-code] .line:not(:has(> .mark)){grid-template-columns:38px minmax(var(--code-track,max-content),1fr)}
+#sessionView [data-code] .line:not(:has(> .mark)){grid-template-columns:38px minmax(var(--code-track,max-content),1fr)}
 /* The per-block override (#173): the pane's own A− / A+ / wrap. Size shadows `--code-size` on
    the marked container (inline, so no rule of its own); wrap is `data-wrap`.
    The two sets are MUTUALLY EXCLUSIVE, not ranked — the page-wide branches above carry
    `:not([data-wrap])`, so an element is matched by exactly one of them and no tie has to be
    broken. Ranking them was the first draft and it was wrong twice over: an attribute weighs the
-   same as a class, so `#app [data-code][data-wrap="1"]` and `#sessionView.wrap-code [data-code]` are
+   same as a class, so `#sessionView [data-code][data-wrap="1"]` and `#sessionView.wrap-code [data-code]` are
    BOTH (1,2,0), and the override won only by sitting later in the file — which a later edit that
    merely regroups these rules would have silently reversed, with no test able to see it.
    Ephemeral: in memory, keyed by record, never written to storage. */
-#app [data-code][data-wrap="1"]{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow-x:hidden;--code-track:0}
-#app [data-code][data-wrap="0"]{white-space:pre;overflow-x:auto;--code-track:max-content}
-#app .transcript-inner{width:min(var(--measure),calc(100% - 64px))}
+#sessionView [data-code][data-wrap="1"]{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow-x:hidden;--code-track:0}
+#sessionView [data-code][data-wrap="0"]{white-space:pre;overflow-x:auto;--code-track:max-content}
+#sessionView .transcript-inner{width:min(var(--measure),calc(100% - 64px))}
 .reading-row{height:30px;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;color:var(--sub);font-size:11.5px}
 .reading-step{display:inline-flex;align-items:center;gap:4px}
 .reading-step button{width:22px;height:22px;padding:0;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--sub);font:600 13px/1 var(--mono);cursor:pointer}
@@ -484,7 +491,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .image-thumb:hover,.image-thumb:focus-visible{border-color:var(--sub);outline:0}
 /* #s221 on a touch screen: iOS keeps :hover on the last thing tapped, so a tapped thumbnail or Open
    all kept its hover edge after the pane closed (the walk's screenshot). */
-@media(hover:none){#app :is(.image-thumb,.image-run-open-all,.renderer-open-all):hover:not(:focus-visible){border-color:var(--line);color:var(--sub)}}
+@media(hover:none){#sessionView :is(.image-thumb,.image-run-open-all,.renderer-open-all):hover:not(:focus-visible){border-color:var(--line);color:var(--sub)}}
 .image-thumb-name{display:block;padding:6px 10px;color:var(--sub);font:11.5px/1.4 var(--mono)}
 .image-run{display:flex;flex-direction:column;gap:6px;padding:3px 2px}
 .image-run-head{display:flex;align-items:baseline;gap:10px}
@@ -523,8 +530,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    LIST is the unbounded part, so it scrolls first and the sections around it stay put; the
    popover keeps its own cap as a backstop for a short window. `overscroll-behavior` stops the
    transcript scrolling once the list hits its end. */
-#app .navigator-options{max-height:min(74vh,640px);overflow-y:auto;overscroll-behavior:contain}
-#app .tool-type-list{max-height:min(38vh,320px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-gutter:stable}
+:is(#sessionView,#app) .navigator-options{max-height:min(74vh,640px);overflow-y:auto;overscroll-behavior:contain}
+#sessionView .tool-type-list{max-height:min(38vh,320px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-gutter:stable}
 /* #88: the outline column is an ACCORDION. Each card sticks at its own slot — the caption plus
    the heads above it, measured in app.js because only the page knows how tall a head is — with a
    z-index rising down the column and an opaque background, so a card the scroll has carried up
@@ -941,7 +948,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .activity-empty .activity-empty-show:hover { border-color: color-mix(in srgb, var(--primary) 46%, var(--line)); }
 .activity-empty .activity-empty-show:focus-visible { outline: 2px solid color-mix(in srgb, var(--primary) 48%, transparent); outline-offset: 2px; }
 .activity-empty .activity-empty-hint { display: block; margin-top: 8px; color: var(--faint); font-size: 10.5px; }
-@media(hover:none){#app .activity-empty .activity-empty-show:hover{border-color:color-mix(in srgb,var(--primary) 26%,var(--line))}}
+@media(hover:none){:is(#sessionView,#app) .activity-empty .activity-empty-show:hover{border-color:color-mix(in srgb,var(--primary) 26%,var(--line))}}
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){.activity-empty .activity-empty-show{min-height:44px;min-width:44px;padding:0 20px;font-size:15px}}
 /* #s358: a phone has no Outline menu, so its Agents list opens on a row for the same filter: the
    row's whole width is the target, as a reading row's is, in the accent colour and larger than the
@@ -1312,7 +1319,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   :root{--sidebar:min(86vw,360px)}
   #app>.sidebar{right:auto;width:min(86vw,360px);background:var(--side);box-shadow:1px 0 0 var(--line),14px 0 36px -20px rgba(20,26,40,.5)}
   #app.mobile-detail>.sidebar{box-shadow:none}
-  #app .sidebar-mini,#app .sidebar-resizer,#app #mobileBack,#app #sidebarReopen,#app #sidebarCollapse{display:none!important}
+  #app .sidebar-mini,#app .sidebar-resizer,#sessionView #mobileBack,#sessionView #sidebarReopen,#app #sidebarCollapse{display:none!important}
   #sessionView>.workspace{isolation:isolate}
   .drawer-scrim{display:block;position:fixed;inset:0;z-index:15;background:rgba(14,19,31,.42);opacity:0;pointer-events:none;transition:opacity .22s}
   #app:not(.mobile-detail)>.drawer-scrim{opacity:1;pointer-events:auto}
@@ -1335,41 +1342,41 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .session-filter-options .scope-option.arrange-app{height:auto;min-height:44px;padding-top:6px;padding-bottom:6px}
   #app .section-view-menu .section-menu-name{max-width:60%;font-size:12px}
 
-  #app .workspace{grid-template-rows:auto minmax(0,1fr)}
-  #app .workspace.info-open{grid-template-rows:auto minmax(210px,44vh) minmax(0,1fr)}
-  #app .workspace>.topbar{height:auto;min-height:0;flex-wrap:nowrap;align-items:center;justify-content:space-between;column-gap:2px;row-gap:0;padding:env(safe-area-inset-top,0px) 6px 2px;position:relative}
-  #app .workspace>.topbar>.top-spacer,#app .workspace>.topbar>.header-divider,#app #sessionFoldAll{display:none}
-  #app .workspace>.topbar>.session-heading{order:1;flex:1 1 0;min-width:0;max-width:none;height:auto;min-height:48px;padding-left:44px;flex-wrap:wrap;align-content:center;column-gap:8px;row-gap:0}
-  #app .session-heading>:is(.header-divider,.crumb){display:none}
-  #app .session-heading>.status-chip{height:auto;min-height:0;padding:0;line-height:1.25;font-size:12.5px}
-  #app .session-heading>.turn-subtitle:not([hidden]){display:block;flex:0 0 100%;min-width:0;padding:1px 0 0;color:var(--faint);font:12.5px/1.25 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
-  #app .turn-stickybar{display:none}
-  #app .transcript{scroll-padding-top:12px}
-  #app .workspace>.topbar>.session-heading>#sessionTitle{max-width:none;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px}
+  #sessionView .workspace{grid-template-rows:auto minmax(0,1fr)}
+  #sessionView .workspace.info-open{grid-template-rows:auto minmax(210px,44vh) minmax(0,1fr)}
+  #sessionView .workspace>.topbar{height:auto;min-height:0;flex-wrap:nowrap;align-items:center;justify-content:space-between;column-gap:2px;row-gap:0;padding:env(safe-area-inset-top,0px) 6px 2px;position:relative}
+  #sessionView .workspace>.topbar>.top-spacer,#sessionView .workspace>.topbar>.header-divider,#sessionView #sessionFoldAll{display:none}
+  #sessionView .workspace>.topbar>.session-heading{order:1;flex:1 1 0;min-width:0;max-width:none;height:auto;min-height:48px;padding-left:44px;flex-wrap:wrap;align-content:center;column-gap:8px;row-gap:0}
+  #sessionView .session-heading>:is(.header-divider,.crumb){display:none}
+  #sessionView .session-heading>.status-chip{height:auto;min-height:0;padding:0;line-height:1.25;font-size:12.5px}
+  #sessionView .session-heading>.turn-subtitle:not([hidden]){display:block;flex:0 0 100%;min-width:0;padding:1px 0 0;color:var(--faint);font:12.5px/1.25 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+  #sessionView .turn-stickybar{display:none}
+  #sessionView .transcript{scroll-padding-top:12px}
+  #sessionView .workspace>.topbar>.session-heading>#sessionTitle{max-width:none;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px}
   /* #322: the way back to a parent session was the one control the rows did not place, so it kept
      order 0 and sat under the handle. It takes the slot after the handle — the heading gives up the
      room it held there, keeping 6px so the title's box (drawn 5px outside its text) stays clear —
      as a 44px back arrow without its words, so the title keeps its room. */
-  #app .workspace>.topbar>#sessionParent.is-live{order:0;margin-left:44px;width:44px;height:44px;padding:0;border:0;justify-content:center}
-  #app .workspace>.topbar>#sessionParent.is-live .session-parent-label{display:none}
-  #app .workspace>.topbar>#sessionParent.is-live .icon{width:20px;height:20px}
-  #app .workspace>.topbar:has(>#sessionParent.is-live)>.session-heading{padding-left:6px}
-  #app .workspace>.topbar>.phone-info{order:2}
-  #app .workspace>.topbar>#previewBtn{order:3}
-  #app .phone-only{display:grid}
-  #app .workspace>.topbar .iconbtn{width:44px;height:44px;flex:none}
-  #app .phone-pane{position:relative}
-  #app .phone-pane-count{position:absolute;right:1px;top:3px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--hover);color:var(--sub);font:600 9.5px/16px var(--mono);text-align:center}
-  #app .header-searchbox:not(.phone-open){width:80px;height:44px;padding:0 4px 0 12px}
-  #app .header-searchbox:not(.phone-open) input,#app .header-searchbox:not(.phone-open) .find-count,#app .header-searchbox:not(.phone-open) .find-nav{display:none!important}
-  #app .header-searchbox.phone-open{position:absolute;left:6px;right:6px;bottom:2px;top:auto;width:auto;height:44px;z-index:6;padding:0 4px 0 12px;background:var(--panel);box-shadow:0 0 0 1px var(--line),0 8px 20px -12px rgba(34,43,73,.25)}
-  #app .header-searchbox.phone-open input{display:block!important;flex:1 1 auto;min-width:0}
-  #app .header-searchbox.phone-open .find-count{display:block!important;flex:none}
-  #app .header-searchbox.phone-open .find-nav{display:grid!important;flex:none;width:34px;height:40px}
-  #app .header-filter{width:40px;height:40px}
-  #app .header-search-cluster>.navigator-options,#app .reading-cluster>.reading-options,#app .header-search-cluster>.search-suggest{position:fixed;left:8px;right:8px;top:auto;bottom:calc(var(--phone-bottom,var(--phone-dock-h)) + 8px);width:auto;max-height:calc(100dvh - var(--phone-top,100px) - var(--phone-bottom,var(--phone-dock-h)) - 72px);overflow:auto;background:var(--bg);transition:none;animation:none}
-  #app .navigator-options .scope-option,#app .navigator-options .tool-type-option,#app .reading-options .reading-row{height:44px;font-size:14px}
-  #app .navigator-options .scope-menu-action{min-height:36px;padding:0 8px}
+  #sessionView .workspace>.topbar>#sessionParent.is-live{order:0;margin-left:44px;width:44px;height:44px;padding:0;border:0;justify-content:center}
+  #sessionView .workspace>.topbar>#sessionParent.is-live .session-parent-label{display:none}
+  #sessionView .workspace>.topbar>#sessionParent.is-live .icon{width:20px;height:20px}
+  #sessionView .workspace>.topbar:has(>#sessionParent.is-live)>.session-heading{padding-left:6px}
+  #sessionView .workspace>.topbar>.phone-info{order:2}
+  #sessionView .workspace>.topbar>#previewBtn{order:3}
+  #sessionView .phone-only{display:grid}
+  #sessionView .workspace>.topbar .iconbtn{width:44px;height:44px;flex:none}
+  #sessionView .phone-pane{position:relative}
+  #sessionView .phone-pane-count{position:absolute;right:1px;top:3px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--hover);color:var(--sub);font:600 9.5px/16px var(--mono);text-align:center}
+  #sessionView .header-searchbox:not(.phone-open){width:80px;height:44px;padding:0 4px 0 12px}
+  #sessionView .header-searchbox:not(.phone-open) input,#sessionView .header-searchbox:not(.phone-open) .find-count,#sessionView .header-searchbox:not(.phone-open) .find-nav{display:none!important}
+  #sessionView .header-searchbox.phone-open{position:absolute;left:6px;right:6px;bottom:2px;top:auto;width:auto;height:44px;z-index:6;padding:0 4px 0 12px;background:var(--panel);box-shadow:0 0 0 1px var(--line),0 8px 20px -12px rgba(34,43,73,.25)}
+  #sessionView .header-searchbox.phone-open input{display:block!important;flex:1 1 auto;min-width:0}
+  #sessionView .header-searchbox.phone-open .find-count{display:block!important;flex:none}
+  #sessionView .header-searchbox.phone-open .find-nav{display:grid!important;flex:none;width:34px;height:40px}
+  #sessionView .header-filter{width:40px;height:40px}
+  #sessionView .header-search-cluster>.navigator-options,#sessionView .reading-cluster>.reading-options,#sessionView .header-search-cluster>.search-suggest{position:fixed;left:8px;right:8px;top:auto;bottom:calc(var(--phone-bottom,var(--phone-dock-h)) + 8px);width:auto;max-height:calc(100dvh - var(--phone-top,100px) - var(--phone-bottom,var(--phone-dock-h)) - 72px);overflow:auto;background:var(--bg);transition:none;animation:none}
+  :is(#sessionView,#app) .navigator-options .scope-option,#sessionView .navigator-options .tool-type-option,#sessionView .reading-options .reading-row{height:44px;font-size:14px}
+  :is(#sessionView,#app) .navigator-options .scope-menu-action{min-height:36px;padding:0 8px}
 
   /* #s55, the owner: "darken the background when any of the outline panes are open". The dim lies
      under the dock (z 14), so its pane icons still switch panes and Aa and search stay in reach; a
@@ -1408,75 +1415,75 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      dims both, and a tap on it closes the card. */
   .task-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:59;background:rgba(14,19,31,.42)}
 
-  #app .session-main,#app .workspace.navigator-off .session-main{grid-template-columns:0 minmax(0,1fr)}
-  #app .session-navigator{display:none!important}
-  #app .outline-footer{position:fixed;left:0;top:0;z-index:30;width:0;height:0;min-height:0;padding:0;margin:0;overflow:visible}
-  #app .outline-footer>:not(.info-popover){display:none!important}
-  #app .info-popover{position:fixed;left:8px;right:8px;top:calc(var(--phone-top,100px) + 4px);bottom:auto;width:auto;max-height:calc(100dvh - var(--phone-top,100px) - 16px);font-size:13px;background:var(--bg);transition:none}
-  #app .info-popover:before{display:none}
+  #sessionView .session-main,#sessionView .workspace.navigator-off .session-main{grid-template-columns:0 minmax(0,1fr)}
+  #sessionView .session-navigator{display:none!important}
+  #sessionView .outline-footer{position:fixed;left:0;top:0;z-index:30;width:0;height:0;min-height:0;padding:0;margin:0;overflow:visible}
+  #sessionView .outline-footer>:not(.info-popover){display:none!important}
+  #sessionView .info-popover{position:fixed;left:8px;right:8px;top:calc(var(--phone-top,100px) + 4px);bottom:auto;width:auto;max-height:calc(100dvh - var(--phone-top,100px) - 16px);font-size:13px;background:var(--bg);transition:none}
+  #sessionView .info-popover:before{display:none}
   #taskPopover.task-popover{left:8px!important;right:8px;top:auto!important;bottom:calc(8px + env(safe-area-inset-bottom,0px));width:auto;max-height:70dvh}
   #taskPopover .task-popover-close{width:44px;height:44px}
 
   /* #s55, the owner: upright the transcript keeps a margin on either side; the Reading menu's Wide
      transcript gives it the whole width (a 13px gutter, #310's edge to edge). */
-  #app .session-main .transcript-inner{width:calc(100% - 48px);padding-top:16px}
+  #sessionView .session-main .transcript-inner{width:calc(100% - 48px);padding-top:16px}
   #sessionView.wide .session-main .transcript-inner{width:calc(100% - 26px)}
-  #app .turn-stickybar{margin:0 8px}
-  #app .turn.user{flex-wrap:wrap}
-  #app .turn.user .user-prompt{max-width:100%}
-  #app .turn.user .turn-time{flex-basis:100%;order:2;margin:4px 2px 0 0;text-align:right}
-  #app .spot-link,#app .renderer>.renderer-spot{display:none!important}
+  #sessionView .turn-stickybar{margin:0 8px}
+  #sessionView .turn.user{flex-wrap:wrap}
+  #sessionView .turn.user .user-prompt{max-width:100%}
+  #sessionView .turn.user .turn-time{flex-basis:100%;order:2;margin:4px 2px 0 0;text-align:right}
+  #sessionView .spot-link,#sessionView .renderer>.renderer-spot{display:none!important}
 
   /* #332: the jump to the latest at the bottom CENTRE of the session, finger-sized — the corner was hard
      to hit — and since #s37 just above the dock, never on it (the owner kept the centre over the
      mockups' right). `translate`, not `transform`, which its show/hide animation owns. */
-  #app .jump-to-bottom{right:auto;left:50%;translate:-50% 0;min-width:44px;height:44px;bottom:calc(var(--phone-dock-h) + 10px)}
-  #app .jump-to-bottom:not(.has-new){width:44px}
-  #app .jump-to-bottom.has-new{border-radius:22px}
+  #sessionView .jump-to-bottom{right:auto;left:50%;translate:-50% 0;min-width:44px;height:44px;bottom:calc(var(--phone-dock-h) + 10px)}
+  #sessionView .jump-to-bottom:not(.has-new){width:44px}
+  #sessionView .jump-to-bottom.has-new{border-radius:22px}
   /* #333: a query outlives the box closing, and so do its count and its steps — in the room the
      scope filter and whole-words leave (both are in the open box), so the row stays one row. */
-  #app .header-searchbox.has-query:not(.phone-open){width:auto;padding:0 2px 0 12px}
-  #app .header-searchbox.has-query:not(.phone-open) .find-count{display:block!important;flex:none;max-width:64px;margin:0 2px 0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
-  #app .header-searchbox.has-query:not(.phone-open) :is(#findPrev,#findNext){display:grid!important;flex:none;width:30px;height:44px}
-  #app .header-searchbox.has-query:not(.phone-open) :is(.find-whole,#filterTranscriptBtn){display:none!important}
+  #sessionView .header-searchbox.has-query:not(.phone-open){width:auto;padding:0 2px 0 12px}
+  #sessionView .header-searchbox.has-query:not(.phone-open) .find-count{display:block!important;flex:none;max-width:64px;margin:0 2px 0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+  #sessionView .header-searchbox.has-query:not(.phone-open) :is(#findPrev,#findNext){display:grid!important;flex:none;width:30px;height:44px}
+  #sessionView .header-searchbox.has-query:not(.phone-open) :is(.find-whole,#filterTranscriptBtn){display:none!important}
   /* #352, #s37: the closed box never wraps the dock (the owner's toolbar did, with a chip in it): it
      holds its count and steps and gives way — its count ellipsizes — and the chips, which the count
      already names ("3 hits in u"), wait in the open box with the clear control. */
-  #app .header-searchbox.has-query:not(.phone-open){max-width:100%;min-width:0}
-  #app .header-searchbox.has-query:not(.phone-open) .find-count{flex:0 1 auto;min-width:0;max-width:none}
-  #app .header-searchbox:not(.phone-open) :is(.search-chips,.search-clear){display:none!important}
-  #app .header-searchbox.phone-open .search-clear{width:36px;height:40px}
+  #sessionView .header-searchbox.has-query:not(.phone-open){max-width:100%;min-width:0}
+  #sessionView .header-searchbox.has-query:not(.phone-open) .find-count{flex:0 1 auto;min-width:0;max-width:none}
+  #sessionView .header-searchbox:not(.phone-open) :is(.search-chips,.search-clear){display:none!important}
+  #sessionView .header-searchbox.phone-open .search-clear{width:36px;height:40px}
   /* The open box on a phone holds the glass, the chips, the field, the clear control, the count, both
      steps and the filter — measured, with two chips that was ~460px in a 378px box and the field got
      4px. So the gaps tighten, whole-words leaves (the filter's Scope list carries "Whole words", and
      `w:` types it), and the count is what gives way, never the field or a chip. */
-  #app .header-searchbox.phone-open{column-gap:2px}
-  #app .header-searchbox.phone-open .find-whole{display:none!important}
+  #sessionView .header-searchbox.phone-open{column-gap:2px}
+  #sessionView .header-searchbox.phone-open .find-whole{display:none!important}
   /* #353: the strip scrolls rather than squeezing — the chips keep their whole width, the field is as
      wide as its text (app.js), and the count leaves the row for a tag beside the box — above the find
      pill at its left since #s37 (the dock's rule below) — so it is never cut ("0 hi…") and never
      costs the strip a pixel. It yields to the facet suggestions, which rise in the same place. */
-  #app .header-searchbox.phone-open .search-field{gap:4px}
+  #sessionView .header-searchbox.phone-open .search-field{gap:4px}
   /* The OPEN box stacks above the transcript's layers, so its count's tag is never painted over —
      still under the facet suggestions (49), the task card (59, 60) and the drawer handle's own layer
      once a tap outside has closed the box. */
-  #app .header-searchbox.phone-open{z-index:27}
-  #app .header-searchbox.phone-open .search-field input{flex:none;min-width:48px}
-  #app .header-searchbox.phone-open .search-field>.search-chips{flex:none;max-width:none;overflow:visible}
-  #app .header-searchbox:not(.phone-open) .search-field{display:none}
-  #app .header-searchbox.phone-open .find-count{position:absolute;top:auto;bottom:calc(100% + 6px);right:8px;max-width:calc(100% - 16px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 9px;border-radius:11px;background:var(--panel);box-shadow:0 0 0 1px var(--line),0 6px 14px -10px rgba(34,43,73,.3);color:var(--sub);font-size:11.5px;line-height:16px;z-index:7}
-  #app .header-searchbox.phone-open .find-count:empty,#app .header-search-cluster:has(#searchSuggest:not([hidden])) .header-searchbox.phone-open .find-count{display:none!important}
-  #app .header-searchbox .find-nav .icon{width:18px;height:18px}
+  #sessionView .header-searchbox.phone-open{z-index:27}
+  #sessionView .header-searchbox.phone-open .search-field input{flex:none;min-width:48px}
+  #sessionView .header-searchbox.phone-open .search-field>.search-chips{flex:none;max-width:none;overflow:visible}
+  #sessionView .header-searchbox:not(.phone-open) .search-field{display:none}
+  #sessionView .header-searchbox.phone-open .find-count{position:absolute;top:auto;bottom:calc(100% + 6px);right:8px;max-width:calc(100% - 16px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 9px;border-radius:11px;background:var(--panel);box-shadow:0 0 0 1px var(--line),0 6px 14px -10px rgba(34,43,73,.3);color:var(--sub);font-size:11.5px;line-height:16px;z-index:7}
+  #sessionView .header-searchbox.phone-open .find-count:empty,#sessionView .header-search-cluster:has(#searchSuggest:not([hidden])) .header-searchbox.phone-open .find-count{display:none!important}
+  #sessionView .header-searchbox .find-nav .icon{width:18px;height:18px}
   /* #334: an option of a question card stacks — label, then description — rather than squeezing its
      label into a column a word wide. */
-  #app .input-answer{flex-direction:column;align-items:flex-start;gap:2px;width:100%}
-  #app .input-answer span{overflow:visible;overflow-wrap:break-word}
+  #sessionView .input-answer{flex-direction:column;align-items:flex-start;gap:2px;width:100%}
+  #sessionView .input-answer span{overflow:visible;overflow-wrap:break-word}
   /* #335: the pane's ↗ opens a page with no way back on a phone. (A reveal is not a question of
      width since #s29 — the shells offer it to a reader at this machine and nobody else.) */
-  #app .preview-newtab{display:none!important}
-  #app .preview-tab-step{width:40px;height:44px}
+  #sessionView .preview-newtab{display:none!important}
+  #sessionView .preview-tab-step{width:40px;height:44px}
   /* #s30: the head's file controls are a finger's target on a phone too. */
-  #app .preview-head .preview-print,#app .preview-head .preview-download,#app .preview-head .preview-reveal{width:40px;height:44px}
+  #sessionView .preview-head .preview-print,#sessionView .preview-head .preview-download,#sessionView .preview-head .preview-reveal{width:40px;height:44px}
 
   input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea,select{font-size:16px!important}
 }
@@ -1487,14 +1494,14 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   /* #s37 (design/phone-landscape.md §3.3): held sideways the transcript is a reading column — about
      75 characters of prose a line (measured: 580px still set 88), where the full width ran to ~119 —
      and the spare width is margin. */
-  #app .session-main .transcript-inner{width:min(500px,calc(100% - 26px))}
+  #sessionView .session-main .transcript-inner{width:min(500px,calc(100% - 26px))}
   /* …and the Reading menu's Wide transcript widens it to the whole width, as on a desktop (for
      source code, a wide table), and upright too since #s55. */
   #sessionView.wide .session-main .transcript-inner{width:calc(100% - 26px)}
   /* #s41: the jump to the latest sits at the FOOT, on the dock's row, centred in the session (the
      owner: "should move to the bottom") — sideways the dock leaves the middle of that row free (its
      pill at one end, search at the other), where upright the pill reaches the middle. */
-  #app .jump-to-bottom{bottom:calc(14px + env(safe-area-inset-bottom,0px))}
+  #sessionView .jump-to-bottom{bottom:calc(14px + env(safe-area-inset-bottom,0px))}
 }
 
 /* #s37 (design/phone-landscape.md §3.5a, the owner's idea) — the dock: the toolbar floats in a glass
@@ -1513,104 +1520,104 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      it the containing block of the fixed sheets inside it (Aa's), pinning them to the pill. */
   .dock-pill{position:relative;isolation:isolate;display:flex;align-items:center;gap:2px;height:56px;padding:0 6px;border-radius:28px}
   .dock-pill::before{content:"";position:absolute;inset:0;z-index:-1;border-radius:inherit;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38)}
-  #app .dock-pill .iconbtn{width:48px;height:48px;border-radius:24px}
-  #app .dock-pill .phone-pane-count{top:2px;right:2px}
-  #app .dock-pill>.reading-cluster{position:static}
-  #app .phone-dock>.header-search-cluster{margin-left:auto;position:relative;min-width:0}
-  #app .phone-dock .header-searchbox{height:56px;border-radius:28px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38)}
-  #app .phone-dock .header-searchbox:not(.phone-open):not(.has-query){width:56px;padding:0;justify-content:center}
-  #app .phone-dock .header-searchbox:not(.phone-open):not(.has-query) #filterTranscriptBtn{display:none!important}
-  #app .phone-dock:has(.header-searchbox:is(.phone-open,.has-query))>.dock-pill{display:none}
-  #app .phone-dock:has(.header-searchbox:is(.phone-open,.has-query))>.header-search-cluster{flex:1 1 auto;margin-left:0}
-  #app .phone-dock .header-searchbox:is(.phone-open,.has-query){position:relative;left:auto;right:auto;bottom:auto;flex:1 1 auto;width:auto;min-width:0;max-width:none;padding:0 6px 0 16px}
+  #sessionView .dock-pill .iconbtn{width:48px;height:48px;border-radius:24px}
+  #sessionView .dock-pill .phone-pane-count{top:2px;right:2px}
+  #sessionView .dock-pill>.reading-cluster{position:static}
+  #sessionView .phone-dock>.header-search-cluster{margin-left:auto;position:relative;min-width:0}
+  #sessionView .phone-dock .header-searchbox{height:56px;border-radius:28px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38)}
+  #sessionView .phone-dock .header-searchbox:not(.phone-open):not(.has-query){width:56px;padding:0;justify-content:center}
+  #sessionView .phone-dock .header-searchbox:not(.phone-open):not(.has-query) #filterTranscriptBtn{display:none!important}
+  #sessionView .phone-dock:has(.header-searchbox:is(.phone-open,.has-query))>.dock-pill{display:none}
+  #sessionView .phone-dock:has(.header-searchbox:is(.phone-open,.has-query))>.header-search-cluster{flex:1 1 auto;margin-left:0}
+  #sessionView .phone-dock .header-searchbox:is(.phone-open,.has-query){position:relative;left:auto;right:auto;bottom:auto;flex:1 1 auto;width:auto;min-width:0;max-width:none;padding:0 6px 0 16px}
   /* The count hangs above the find pill at its LEFT, clear of the jump to the latest in the middle. */
-  #app .phone-dock .header-searchbox.phone-open .find-count{left:16px;right:auto}
+  #sessionView .phone-dock .header-searchbox.phone-open .find-count{left:16px;right:auto}
   .phone-search-done{display:none}
-  #app .phone-dock:has(.header-searchbox:is(.phone-open,.has-query))>.phone-search-done{display:grid;place-items:center;flex:none;width:48px;height:48px;padding:0;border-radius:24px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38);color:var(--ink);cursor:pointer}
-  #app .phone-search-done .icon{width:20px;height:20px}
+  #sessionView .phone-dock:has(.header-searchbox:is(.phone-open,.has-query))>.phone-search-done{display:grid;place-items:center;flex:none;width:48px;height:48px;padding:0;border-radius:24px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38);color:var(--ink);cursor:pointer}
+  #sessionView .phone-search-done .icon{width:20px;height:20px}
   /* While the field has the keyboard the magnifier gives way, so the chips and the word being typed
      keep their room. The funnel never does (#s41): hidden while typing, it was hidden whenever the
      search was open on iOS — which focuses the field as it opens — and the owner found no filter in
      either orientation. The strip scrolls as a whole (#353), so the funnel costs it no chip. */
-  #app .phone-dock .header-searchbox.phone-open:focus-within>[data-icon="search"]{display:none!important}
-  #app .phone-dock .header-searchbox:is(.phone-open,.has-query) #filterTranscriptBtn{display:grid!important;flex:none;width:44px;height:44px;border-radius:22px}
+  #sessionView .phone-dock .header-searchbox.phone-open:focus-within>[data-icon="search"]{display:none!important}
+  #sessionView .phone-dock .header-searchbox:is(.phone-open,.has-query) #filterTranscriptBtn{display:grid!important;flex:none;width:44px;height:44px;border-radius:22px}
   /* The funnel changes only when a filter is ON — narrowing the search (#s49, the owner: "the filter
      icon may only get visual changes when it is on … no visual feedback whether menu is open or
      closed") — and then reads as selected, round like the dock's other controls. The grey square the
      owner saw was iOS's sticky :hover on the funnel's own hover rule, which no tap clears. */
-  #app .phone-dock #filterTranscriptBtn.on{background:var(--primary-soft);color:var(--primary);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary) 55%,transparent)}
+  #sessionView .phone-dock #filterTranscriptBtn.on{background:var(--primary-soft);color:var(--primary);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary) 55%,transparent)}
   /* …and the jump to the latest steps aside while the find pill holds the dock (the owner): over the
      keyboard it floated on the text, and the arrows step through the matches anyway. */
-  #app:has(.phone-dock .header-searchbox:is(.phone-open,.has-query)) .jump-to-bottom{display:none!important}
+  #sessionView:has(.phone-dock .header-searchbox:is(.phone-open,.has-query)) .jump-to-bottom{display:none!important}
   /* A sheet hanging from the bar stops above the dock, which is drawn over it. */
-  #app .info-popover{max-height:calc(100dvh - var(--phone-top,100px) - var(--phone-bottom,var(--phone-dock-h)) - 12px)}
+  #sessionView .info-popover{max-height:calc(100dvh - var(--phone-top,100px) - var(--phone-bottom,var(--phone-dock-h)) - 12px)}
   /* Touch polish (#s41): a long press on a control is not a text selection — iOS selected a button's
      glyph ("Aa", a count) and showed its loupe — and the toast and the preview's close clear the dock
      and take a finger. */
-  #app button{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
-  #app .preview-head #closePreview{width:44px;height:44px}
-  #app .search-suggest-row{min-height:44px}
+  :is(#sessionView,#app) button{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+  #sessionView .preview-head #closePreview{width:44px;height:44px}
+  #sessionView .search-suggest-row{min-height:44px}
   /* A file the transcript offers is a finger's target (#s41): at 11px a delivered file's name was 14px
      tall, and WebKit's tap adjustment gave the tap to the row's head 12px above it, which folded the
      row rather than opening the file (measured on iOS 26: pointerdown on the file, click on the head).
      Delivered files are chips here; an inline path keeps its line and widens its hit area with
      vertical padding, which an inline box hit-tests without moving the line. */
-  #app .renderer-delivered{align-items:center;gap:6px;margin:4px 0 10px}
-  #app .renderer-delivered-file{display:inline-flex;align-items:center;min-height:36px;padding:0 12px;border-radius:18px;background:var(--hover);color:var(--ink);text-decoration:none}
-  #app :is(.renderer-target-link,.pointer-run-file[data-reference-path]){padding:10px 0}
+  #sessionView .renderer-delivered{align-items:center;gap:6px;margin:4px 0 10px}
+  #sessionView .renderer-delivered-file{display:inline-flex;align-items:center;min-height:36px;padding:0 12px;border-radius:18px;background:var(--hover);color:var(--ink);text-decoration:none}
+  #sessionView :is(.renderer-target-link,.pointer-run-file[data-reference-path]){padding:10px 0}
   /* #s221/#s222 on a phone: a thumbnail, Open all and the pane's zoom bar are finger targets. */
-  #app .image-thumb img{height:56px}
-  #app .image-thumb{min-height:44px;min-width:44px}
-  #app .artifact-stage .image-zoom-btn,#app .artifact-stage .image-zoom-level{height:40px;min-width:44px}
-  #app .image-run-open-all{min-height:36px;padding:0 14px;border-radius:18px}
-  #app .renderer-open-all{display:inline-flex;align-items:center;min-height:32px;padding:0 12px;border-radius:16px}
-  #app .image-run-strip{gap:8px}
+  #sessionView .image-thumb img{height:56px}
+  #sessionView .image-thumb{min-height:44px;min-width:44px}
+  #sessionView .artifact-stage .image-zoom-btn,#sessionView .artifact-stage .image-zoom-level{height:40px;min-width:44px}
+  #sessionView .image-run-open-all{min-height:36px;padding:0 14px;border-radius:18px}
+  #sessionView .renderer-open-all{display:inline-flex;align-items:center;min-height:32px;padding:0 12px;border-radius:16px}
+  #sessionView .image-run-strip{gap:8px}
   .toast{bottom:calc(max(calc(64px + env(safe-area-inset-bottom,0px)),calc(var(--phone-kb,0px) + 64px)) + 10px)}
-  #app .session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 16px)}
+  #sessionView .session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 16px)}
   /* #s39 (design/phone-landscape.md §3.5c, approved by the owner): the compose box is the dock's third
      mode. A ✎ circle in the dock replaces the floating compose button; open, the box takes the dock's
      place — ✕ at the left, the field (growing with its text, ↑ inside it) beside it, the target and
      its warning above — and rides the keyboard by the same `--phone-kb`. The toolbar, search and the
      jump to the latest step aside while it is open; a dot on ✎ says a draft is waiting. */
-  #app .compose-fab{display:none!important}
+  #sessionView .compose-fab{display:none!important}
   .dock-compose,.compose-note{display:none}
-  #app .phone-dock>.dock-compose:not([hidden]){display:grid;place-items:center;position:relative;flex:none;width:56px;height:56px;padding:0;border-radius:28px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38);color:var(--primary);cursor:pointer}
-  #app .phone-dock>.dock-compose .icon{width:22px;height:22px}
-  #app .dock-compose.has-draft .dock-compose-dot{display:block;position:absolute;top:11px;right:12px;width:9px;height:9px;border-radius:50%;background:var(--primary);box-shadow:0 0 0 2px var(--bg)}
+  #sessionView .phone-dock>.dock-compose:not([hidden]){display:grid;place-items:center;position:relative;flex:none;width:56px;height:56px;padding:0;border-radius:28px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38);color:var(--primary);cursor:pointer}
+  #sessionView .phone-dock>.dock-compose .icon{width:22px;height:22px}
+  #sessionView .dock-compose.has-draft .dock-compose-dot{display:block;position:absolute;top:11px;right:12px;width:9px;height:9px;border-radius:50%;background:var(--primary);box-shadow:0 0 0 2px var(--bg)}
   .dock-compose-dot{display:none}
-  #app .phone-dock:has(.header-searchbox:is(.phone-open,.has-query))>.dock-compose{display:none}
+  #sessionView .phone-dock:has(.header-searchbox:is(.phone-open,.has-query))>.dock-compose{display:none}
   /* #s298: the session waits on an answer the reply box can give. */
-  #app .dock-compose.asks .dock-compose-dot{display:block;position:absolute;top:11px;right:12px;width:9px;height:9px;border-radius:50%;background:var(--amber);box-shadow:0 0 0 2px var(--bg)}
+  #sessionView .dock-compose.asks .dock-compose-dot{display:block;position:absolute;top:11px;right:12px;width:9px;height:9px;border-radius:50%;background:var(--amber);box-shadow:0 0 0 2px var(--bg)}
   #sessionView.composing .phone-dock,#sessionView.composing .jump-to-bottom{display:none!important}
   #sessionView.composing .session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 110px)}
-  #app .workspace .composer.production-show{position:fixed;z-index:14;left:calc(12px + env(safe-area-inset-left,0px));right:calc(12px + env(safe-area-inset-right,0px));top:auto;bottom:max(calc(8px + env(safe-area-inset-bottom,0px)),calc(var(--phone-kb,0px) + 8px));width:auto;max-width:none;min-height:0;transform:none;display:grid;grid-template-columns:48px minmax(0,1fr);grid-template-areas:"note note" "close field";align-items:end;column-gap:8px;row-gap:6px;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
-  #app .composer.production-show>.composer-head,#app .composer.production-show>.compose-foot{display:contents}
-  #app .composer.production-show>.composer-head>span,#app .composer.production-show #composerTitle,#app .composer.production-show #composeTarget,#app .composer.production-show .risk{display:none}
-  #app .composer.production-show .compose-note{display:flex;align-items:center;gap:6px;grid-area:note;justify-self:start;max-width:100%;min-width:0;padding:4px 10px;border-radius:12px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);color:var(--sub);font:600 12px/1.3 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  #app .composer.production-show.live .compose-note{color:var(--amber)}
-  #app .composer.production-show.live .compose-note:before{content:"";flex:none;width:7px;height:7px;border-radius:50%;background:var(--amber)}
-  #app .composer.production-show .production-revoke{grid-area:note;justify-self:end;min-height:28px;padding:0 8px;border-radius:12px;background:var(--phone-glass);font-size:11.5px}
-  #app .composer.production-show #closeComposer{grid-area:close;width:48px;height:48px;margin:0 0 4px;border-radius:24px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38);color:var(--ink)}
-  #app .composer.production-show #closeComposer .icon{width:20px;height:20px}
-  #app .composer.production-show textarea{grid-area:field;box-sizing:border-box;width:100%;min-height:56px;max-height:none;padding:16px 54px 16px 18px;border-radius:28px;background:var(--bg);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38);color:var(--ink);font-size:16px;line-height:1.35;overflow-y:auto}
-  #app .composer.production-show .compose-foot:before{display:none}
-  #app .composer.production-show #sendBtn{grid-area:field;justify-self:end;align-self:end;margin:0 11px 11px 0;width:34px;height:34px;background:var(--primary);color:#fff}
-  #app .composer.production-show #sendBtn .icon{width:18px;height:18px}
-  #app .composer.production-show:has(.compose-images:not(:empty)){grid-template-areas:"note note" "images images" "close field"}
-  #app .composer.production-show .compose-images{grid-area:images;padding:0 2px}
-  #app .composer.production-show .compose-image-remove{width:32px;height:32px;font-size:22px}
+  #sessionView .workspace .composer.production-show{position:fixed;z-index:14;left:calc(12px + env(safe-area-inset-left,0px));right:calc(12px + env(safe-area-inset-right,0px));top:auto;bottom:max(calc(8px + env(safe-area-inset-bottom,0px)),calc(var(--phone-kb,0px) + 8px));width:auto;max-width:none;min-height:0;transform:none;display:grid;grid-template-columns:48px minmax(0,1fr);grid-template-areas:"note note" "close field";align-items:end;column-gap:8px;row-gap:6px;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+  #sessionView .composer.production-show>.composer-head,#sessionView .composer.production-show>.compose-foot{display:contents}
+  #sessionView .composer.production-show>.composer-head>span,#sessionView .composer.production-show #composerTitle,#sessionView .composer.production-show #composeTarget,#sessionView .composer.production-show .risk{display:none}
+  #sessionView .composer.production-show .compose-note{display:flex;align-items:center;gap:6px;grid-area:note;justify-self:start;max-width:100%;min-width:0;padding:4px 10px;border-radius:12px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);color:var(--sub);font:600 12px/1.3 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #sessionView .composer.production-show.live .compose-note{color:var(--amber)}
+  #sessionView .composer.production-show.live .compose-note:before{content:"";flex:none;width:7px;height:7px;border-radius:50%;background:var(--amber)}
+  #sessionView .composer.production-show .production-revoke{grid-area:note;justify-self:end;min-height:28px;padding:0 8px;border-radius:12px;background:var(--phone-glass);font-size:11.5px}
+  #sessionView .composer.production-show #closeComposer{grid-area:close;width:48px;height:48px;margin:0 0 4px;border-radius:24px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38);color:var(--ink)}
+  #sessionView .composer.production-show #closeComposer .icon{width:20px;height:20px}
+  #sessionView .composer.production-show textarea{grid-area:field;box-sizing:border-box;width:100%;min-height:56px;max-height:none;padding:16px 54px 16px 18px;border-radius:28px;background:var(--bg);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38);color:var(--ink);font-size:16px;line-height:1.35;overflow-y:auto}
+  #sessionView .composer.production-show .compose-foot:before{display:none}
+  #sessionView .composer.production-show #sendBtn{grid-area:field;justify-self:end;align-self:end;margin:0 11px 11px 0;width:34px;height:34px;background:var(--primary);color:#fff}
+  #sessionView .composer.production-show #sendBtn .icon{width:18px;height:18px}
+  #sessionView .composer.production-show:has(.compose-images:not(:empty)){grid-template-areas:"note note" "images images" "close field"}
+  #sessionView .composer.production-show .compose-images{grid-area:images;padding:0 2px}
+  #sessionView .composer.production-show .compose-image-remove{width:32px;height:32px;font-size:22px}
   /* #s298: the dialog rises above the field as a glass card; its choices are rows a finger hits. */
-  #app .composer.production-show .compose-dialog{grid-area:dialog;max-height:calc(100dvh - var(--phone-kb,0px) - var(--phone-top,56px) - 100px);overflow:auto;box-sizing:border-box;padding:12px 14px;border-radius:20px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px color-mix(in srgb,var(--line) 70%,transparent),0 8px 28px rgba(0,0,0,.14);font-size:15px}
-  #app .composer.production-show:has(.compose-dialog:not([hidden])){grid-template-areas:"note note" "dialog dialog" "close field"}
-  #app .composer.production-show:has(.compose-dialog:not([hidden])):has(.compose-images:not(:empty)){grid-template-areas:"note note" "dialog dialog" "images images" "close field"}
-  #app .compose-dialog .dialog-choices{flex-direction:column}
-  #app .compose-dialog .dialog-choice{width:100%;min-height:44px;padding:8px 14px;border-radius:12px}
-  #app .compose-dialog .dialog-tick input{width:20px;height:20px}
-  #app .compose-dialog :is(.dialog-kind,.dialog-title){font-size:12.5px}
-  #app .compose-dialog :is(.dialog-note,.dialog-hint,.dialog-wait,.dialog-desc){font-size:13px}
-  #app .composer.production-show .compose-attach{grid-area:field;justify-self:start;align-self:end;margin:0 0 11px 9px;width:34px;height:34px;border-radius:17px;color:var(--sub)}
-  #app .composer.production-show .compose-attach .icon{width:20px;height:20px}
-  #app .composer.production-show.attachable textarea{padding-left:50px}
+  #sessionView .composer.production-show .compose-dialog{grid-area:dialog;max-height:calc(100dvh - var(--phone-kb,0px) - var(--phone-top,56px) - 100px);overflow:auto;box-sizing:border-box;padding:12px 14px;border-radius:20px;background:var(--phone-glass);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 0 0 1px color-mix(in srgb,var(--line) 70%,transparent),0 8px 28px rgba(0,0,0,.14);font-size:15px}
+  #sessionView .composer.production-show:has(.compose-dialog:not([hidden])){grid-template-areas:"note note" "dialog dialog" "close field"}
+  #sessionView .composer.production-show:has(.compose-dialog:not([hidden])):has(.compose-images:not(:empty)){grid-template-areas:"note note" "dialog dialog" "images images" "close field"}
+  #sessionView .compose-dialog .dialog-choices{flex-direction:column}
+  #sessionView .compose-dialog .dialog-choice{width:100%;min-height:44px;padding:8px 14px;border-radius:12px}
+  #sessionView .compose-dialog .dialog-tick input{width:20px;height:20px}
+  #sessionView .compose-dialog :is(.dialog-kind,.dialog-title){font-size:12.5px}
+  #sessionView .compose-dialog :is(.dialog-note,.dialog-hint,.dialog-wait,.dialog-desc){font-size:13px}
+  #sessionView .composer.production-show .compose-attach{grid-area:field;justify-self:start;align-self:end;margin:0 0 11px 9px;width:34px;height:34px;border-radius:17px;color:var(--sub)}
+  #sessionView .composer.production-show .compose-attach .icon{width:20px;height:20px}
+  #sessionView .composer.production-show.attachable textarea{padding-left:50px}
 }
 /* A wide phone held sideways: the column holds Sessions, Turns, Tasks and Agents, so the pill keeps
    Aa beside the search, at the transcript's foot on the right — and takes the panes back while the
@@ -1631,11 +1638,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    top inset). Backgrounds still run to the edges. Portrait's side insets are 0, so this moves nothing
    there. */
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){
-  #app .workspace>.topbar{padding-left:calc(6px + env(safe-area-inset-left,0px));padding-right:calc(6px + env(safe-area-inset-right,0px))}
+  #sessionView .workspace>.topbar{padding-left:calc(6px + env(safe-area-inset-left,0px));padding-right:calc(6px + env(safe-area-inset-right,0px))}
   .drawer-handle{left:calc(4px + env(safe-area-inset-left,0px))}
   #app>.sidebar{width:calc(min(86vw,360px) + env(safe-area-inset-left,0px));padding-top:env(safe-area-inset-top,0px);padding-left:env(safe-area-inset-left,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
-  #app .transcript{padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inset-right,0px)}
-  #app .header-search-cluster>.navigator-options,#app .reading-cluster>.reading-options,#app .header-search-cluster>.search-suggest,.phone-pane-menu:not([hidden]),#app .info-popover{left:calc(8px + env(safe-area-inset-left,0px));right:calc(8px + env(safe-area-inset-right,0px))}
+  #sessionView .transcript{padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inset-right,0px)}
+  #sessionView .header-search-cluster>.navigator-options,#sessionView .reading-cluster>.reading-options,#sessionView .header-search-cluster>.search-suggest,.phone-pane-menu:not([hidden]),#sessionView .info-popover{left:calc(8px + env(safe-area-inset-left,0px));right:calc(8px + env(safe-area-inset-right,0px))}
   #taskPopover.task-popover{left:calc(8px + env(safe-area-inset-left,0px))!important;right:calc(8px + env(safe-area-inset-right,0px))}
   /* The full-screen sheets pad themselves, so their heads clear the status bar and the island. */
   #sessionView>.preview,.review-sheet{padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)}
@@ -1691,12 +1698,12 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    pill's end — the left on a narrow phone, the right on a wide one, whose dock sits right — the
    find pill's (the filter, the facets) at its right, by the funnel, and Info hangs under Info. */
 @media(pointer:coarse) and (max-height:500px){
-  #app .reading-cluster>.reading-options,.phone-pane-menu:not([hidden]){left:calc(12px + env(safe-area-inset-left,0px));right:auto;width:min(380px,calc(100vw - 24px - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px)))}
-  #app .header-search-cluster>.navigator-options,#app .header-search-cluster>.search-suggest{left:auto;right:calc(12px + env(safe-area-inset-right,0px));width:min(380px,calc(100vw - 24px - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px)))}
-  #app .info-popover{left:auto;right:calc(8px + env(safe-area-inset-right,0px));width:min(420px,calc(100vw - 16px - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px)))}
+  #sessionView .reading-cluster>.reading-options,.phone-pane-menu:not([hidden]){left:calc(12px + env(safe-area-inset-left,0px));right:auto;width:min(380px,calc(100vw - 24px - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px)))}
+  #sessionView .header-search-cluster>.navigator-options,#sessionView .header-search-cluster>.search-suggest{left:auto;right:calc(12px + env(safe-area-inset-right,0px));width:min(380px,calc(100vw - 24px - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px)))}
+  #sessionView .info-popover{left:auto;right:calc(8px + env(safe-area-inset-right,0px));width:min(420px,calc(100vw - 16px - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px)))}
   /* The height is what is short here (330px in Safari with its tab bar showing), so a sheet rising
      from the dock may cover the top bar rather than show two rows of four. */
-  #app .reading-cluster>.reading-options,.phone-pane-menu:not([hidden]),#app .header-search-cluster>.navigator-options,#app .header-search-cluster>.search-suggest{max-height:calc(100dvh - var(--phone-bottom,var(--phone-dock-h)) - 16px - env(safe-area-inset-top,0px))}
+  #sessionView .reading-cluster>.reading-options,.phone-pane-menu:not([hidden]),#sessionView .header-search-cluster>.navigator-options,#sessionView .header-search-cluster>.search-suggest{max-height:calc(100dvh - var(--phone-bottom,var(--phone-dock-h)) - 16px - env(safe-area-inset-top,0px))}
   /* #s121: risen over the top bar, a pane's sheet meets the drawer handle (z 22) at the bar's left
      end, where its heading is; it sits above the handle while open. (Aa's sheet does not by its own
      z: it lives in the dock, whose z 14 caps it — #s242 below.) */
@@ -1706,18 +1713,18 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      width, which is what is spare: a question's choices side by side under it (each with its
      description), a permission's, a plan's or a review's few short choices beside the command or
      the plan they answer, which keeps them in sight however long that is. */
-  #app .composer.production-show:has(.compose-dialog:not([hidden])){z-index:23}
-  #app .composer.production-show .compose-dialog{max-height:calc(100dvh - var(--phone-kb,0px) - 120px - env(safe-area-inset-bottom,0px))}
-  #app .compose-dialog .dialog-choices{flex-direction:row}
-  #app .compose-dialog .dialog-choice{width:auto;flex:1 1 160px}
-  #app .composer.production-show .compose-dialog:is([data-kind=permission],[data-kind=plan],[data-kind=review]){grid-template-columns:minmax(0,1fr) minmax(200px,34%);column-gap:14px;align-items:start}
-  #app .compose-dialog:is([data-kind=permission],[data-kind=plan],[data-kind=review])>.dialog-body{grid-column:1;grid-row:1}
-  #app .compose-dialog:is([data-kind=permission],[data-kind=plan],[data-kind=review])>.dialog-hint{grid-column:1;grid-row:2}
-  #app .compose-dialog:is([data-kind=permission],[data-kind=plan],[data-kind=review])>.dialog-choices{grid-column:2;grid-row:1/span 2}
-  #app .compose-dialog:is([data-kind=permission],[data-kind=plan],[data-kind=review]) .dialog-choice{flex:1 1 auto}
+  #sessionView .composer.production-show:has(.compose-dialog:not([hidden])){z-index:23}
+  #sessionView .composer.production-show .compose-dialog{max-height:calc(100dvh - var(--phone-kb,0px) - 120px - env(safe-area-inset-bottom,0px))}
+  #sessionView .compose-dialog .dialog-choices{flex-direction:row}
+  #sessionView .compose-dialog .dialog-choice{width:auto;flex:1 1 160px}
+  #sessionView .composer.production-show .compose-dialog:is([data-kind=permission],[data-kind=plan],[data-kind=review]){grid-template-columns:minmax(0,1fr) minmax(200px,34%);column-gap:14px;align-items:start}
+  #sessionView .compose-dialog:is([data-kind=permission],[data-kind=plan],[data-kind=review])>.dialog-body{grid-column:1;grid-row:1}
+  #sessionView .compose-dialog:is([data-kind=permission],[data-kind=plan],[data-kind=review])>.dialog-hint{grid-column:1;grid-row:2}
+  #sessionView .compose-dialog:is([data-kind=permission],[data-kind=plan],[data-kind=review])>.dialog-choices{grid-column:2;grid-row:1/span 2}
+  #sessionView .compose-dialog:is([data-kind=permission],[data-kind=plan],[data-kind=review]) .dialog-choice{flex:1 1 auto}
 }
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
-  #app .reading-cluster>.reading-options,.phone-pane-menu:not([hidden]){left:auto;right:calc(12px + env(safe-area-inset-right,0px))}
+  #sessionView .reading-cluster>.reading-options,.phone-pane-menu:not([hidden]){left:auto;right:calc(12px + env(safe-area-inset-right,0px))}
 }
 
 /* #s49 — held sideways the right pane is a second COLUMN, not a sheet over everything (the owner:
@@ -1740,7 +1747,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app:not(.preview-off) .header-search-cluster>.navigator-options,#app:not(.preview-off) .header-search-cluster>.search-suggest{right:calc(50% + 12px);width:min(380px,calc(50% - 24px - env(safe-area-inset-left,0px)))}
   #app:not(.preview-off) .info-popover{right:calc(50% + 8px);width:min(420px,calc(50% - 16px - env(safe-area-inset-left,0px)))}
   #app:not(.preview-off) .reading-cluster>.reading-options,#app:not(.preview-off) .phone-pane-menu:not([hidden]){width:min(380px,calc(50% - 24px - env(safe-area-inset-left,0px)))}
-  #app .preview-head .preview-expand{display:grid;place-items:center;width:44px;height:44px}
+  #sessionView .preview-head .preview-expand{display:grid;place-items:center;width:44px;height:44px}
 }
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
   #app:not(.preview-off) .reading-cluster>.reading-options,#app:not(.preview-off) .phone-pane-menu:not([hidden]){right:calc(50% + 12px)}
@@ -1801,10 +1808,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .pending-head-spinner{flex:none;width:18px;height:18px;border-radius:50%;border:2px solid color-mix(in srgb,var(--primary) 22%,transparent);border-top-color:var(--primary);animation:session-loading-spin .8s linear infinite}
 @media(prefers-reduced-motion:reduce){.pending-head-spinner{animation:none}}
 /* #s277 (design/slow-links.md §6.2): a unit still on its way. The engine sets its height (its height in the sums); nothing inside may change it. */
-#app .turn.unit-placeholder{box-sizing:border-box;overflow:hidden;display:flex;align-items:flex-start;gap:8px;padding:10px 0;color:var(--faint);font:13px/1.35 var(--sans);font-variant-numeric:tabular-nums}
-#app .turn.unit-placeholder.placeholder-user{justify-content:flex-end}
-#app .unit-placeholder .placeholder-turn{flex:none;color:var(--faint)}
-#app .unit-placeholder.placeholder-user .placeholder-label{min-width:0;max-width:80%;padding:8px 12px;border-radius:14px;background:var(--panel);box-shadow:0 0 0 1px var(--line);color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#sessionView .turn.unit-placeholder{box-sizing:border-box;overflow:hidden;display:flex;align-items:flex-start;gap:8px;padding:10px 0;color:var(--faint);font:13px/1.35 var(--sans);font-variant-numeric:tabular-nums}
+#sessionView .turn.unit-placeholder.placeholder-user{justify-content:flex-end}
+#sessionView .unit-placeholder .placeholder-turn{flex:none;color:var(--faint)}
+#sessionView .unit-placeholder.placeholder-user .placeholder-label{min-width:0;max-width:80%;padding:8px 12px;border-radius:14px;background:var(--panel);box-shadow:0 0 0 1px var(--line);color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* #s12: the phone's REVIEW SHEET — the pane's Markdown full-screen over the whole app, on the review
    prefix (shared review), above the drawer and the bars, below the toasts; a close control back to
    exactly where the reader was. The pane's own Review control is a phone's alone. */
@@ -1857,31 +1864,31 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 /* #s138, Hong: each sender in a hue of its own — a stable hash of its name (view-model.js peerHue),
    so it is the same in every session — on the card's rule and name and on its Turns pane row, where
    the sender is a chip before the label. The person's own rows are unchanged. */
-.turn.peer[style*="--peer-hue"],#app .outline-peer{--peer:hsl(var(--peer-hue) 58% 33%)}
-:root[data-theme="dark"] .turn.peer[style*="--peer-hue"],:root[data-theme="dark"] #app .outline-peer{--peer:hsl(var(--peer-hue) 68% 70%)}
-#app .outline-turn-row.outline-peer{grid-template-columns:minmax(24px,max-content) auto minmax(0,1fr)}
-#app .outline-peer-from{max-width:9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:1px 6px 1px 5px;border-radius:5px;background:color-mix(in srgb,var(--peer) 12%,transparent);color:var(--peer);font-size:10.5px;font-weight:650;line-height:1.35}
-#app .outline-peer-glyph{margin-right:3px}
-#app .phone-pane-body .outline-peer-from{font-size:13px}
+.turn.peer[style*="--peer-hue"],:is(#sessionView,#app) .outline-peer{--peer:hsl(var(--peer-hue) 58% 33%)}
+:root[data-theme="dark"] .turn.peer[style*="--peer-hue"],:root[data-theme="dark"] :is(#sessionView,#app) .outline-peer{--peer:hsl(var(--peer-hue) 68% 70%)}
+:is(#sessionView,#app) .outline-turn-row.outline-peer{grid-template-columns:minmax(24px,max-content) auto minmax(0,1fr)}
+:is(#sessionView,#app) .outline-peer-from{max-width:9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:1px 6px 1px 5px;border-radius:5px;background:color-mix(in srgb,var(--peer) 12%,transparent);color:var(--peer);font-size:10.5px;font-weight:650;line-height:1.35}
+:is(#sessionView,#app) .outline-peer-glyph{margin-right:3px}
+:is(#sessionView,#app) .phone-pane-body .outline-peer-from{font-size:13px}
 
 
 /* Border, typography and spacing are the existing .markdown blockquote/p rules.
    Native selections and responses keep literal whitespace within those elements. */
-#app .quoted-reply{white-space:pre-wrap}
-#app .outline-quote-marker{flex:none;color:var(--sub);font-size:15px;line-height:1}
-#app .outline-quoted .outline-label{min-width:0}
-#app .outline-reply-count{flex:none;color:var(--faint);font:11px var(--mono);margin-left:auto}
+#sessionView .quoted-reply{white-space:pre-wrap}
+:is(#sessionView,#app) .outline-quote-marker{flex:none;color:var(--sub);font-size:15px;line-height:1}
+:is(#sessionView,#app) .outline-quoted .outline-label{min-width:0}
+:is(#sessionView,#app) .outline-reply-count{flex:none;color:var(--faint);font:11px var(--mono);margin-left:auto}
 
-#app .outline-turn-row.outline-quoted{grid-template-columns:minmax(24px,max-content) 7px minmax(0,1fr) auto}
+:is(#sessionView,#app) .outline-turn-row.outline-quoted{grid-template-columns:minmax(24px,max-content) 7px minmax(0,1fr) auto}
 /* #s276: a turn the turn index lists whose records are still coming reads as the other rows, in
    the quieter text colour, until they arrive; a tap on it is held until then. */
-#app .outline-turn-pending .outline-label,#app .outline-turn-pending .outline-number,#app .outline-epoch.outline-turn-pending{color:var(--faint)}
+:is(#sessionView,#app) .outline-turn-pending .outline-label,:is(#sessionView,#app) .outline-turn-pending .outline-number,:is(#sessionView,#app) .outline-epoch.outline-turn-pending{color:var(--faint)}
 /* #s292: the number column fits the session's widest turn number. "150 ·" is about 29px in the
    number's 9.5px mono, and the 24px column wrapped every row from turn 100 into two lines. The list
    says how many digits (--outline-digits, app.js) and every number takes that width in its own
    font, so the labels stay in line; a session under 100 turns keeps its 24px column. */
-#app .outline-turn-row{grid-template-columns:minmax(24px,max-content) minmax(0,1fr) auto}
-#app .outline-turn-row .outline-number{white-space:nowrap;min-width:calc((var(--outline-digits,2) + 2) * 1ch)}
+:is(#sessionView,#app) .outline-turn-row{grid-template-columns:minmax(24px,max-content) minmax(0,1fr) auto}
+:is(#sessionView,#app) .outline-turn-row .outline-number{white-space:nowrap;min-width:calc((var(--outline-digits,2) + 2) * 1ch)}
 /* #s305: a reply the person cut off mid-stream ends with a note saying so. Inside an assistant reply
    it is one quiet line, as the classic page draws it (the result mark and the words, dim mono),
    never the bordered card a note is elsewhere, and it sits close under the prose it ends. */
@@ -1893,6 +1900,6 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 /* #s296: a file changed on disk that the client told the agent about, drawn after a prompt as a
    line of its own below the turn, from the left: it is the client speaking, never the person's
    attachment (`promptNoticesHtml`). The prompt's row wraps to take it. */
-#app .turn.user:has(> .turn-notice){flex-wrap:wrap}
-#app .turn-notice{flex:0 0 100%;order:3;margin:6px 0 0;color:var(--faint);font:12px/1.45 var(--sans);text-align:left}
-#app .turn-notice-file{padding:0;border:0;background:none;color:var(--sub);font:inherit;cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px}
+#sessionView .turn.user:has(> .turn-notice){flex-wrap:wrap}
+#sessionView .turn-notice{flex:0 0 100%;order:3;margin:6px 0 0;color:var(--faint);font:12px/1.45 var(--sans);text-align:left}
+#sessionView .turn-notice-file{padding:0;border:0;background:none;color:var(--sub);font:inherit;cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px}
