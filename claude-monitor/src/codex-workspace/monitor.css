@@ -60,7 +60,7 @@ body[data-shared-codex] button:disabled{opacity:.45;cursor:default}
  .shared-picker-session{display:block;width:100%;min-height:44px;margin-top:6px;padding:8px;border:0;border-top:1px solid var(--line);background:transparent;color:var(--sub);text-align:left;font-size:13px;cursor:pointer}
  body[data-shared-codex] #app .phone-dock{bottom:calc(var(--shared-composer-height,116px) + calc(var(--shared-keyboard-safe-bottom,env(safe-area-inset-bottom,0px)) + var(--phone-kb,0px)) + 16px)}
  body[data-shared-codex] #sessionView.composing .shared-runtime{bottom:calc(var(--shared-composer-height,116px) + calc(var(--shared-keyboard-safe-bottom,env(safe-area-inset-bottom,0px)) + var(--phone-kb,0px)) + 16px)}
- body[data-shared-codex] #sessionView.composing{--phone-bottom:calc(var(--shared-composer-height,116px) + 16px)!important}
+ body[data-shared-codex] #sessionView.composing{--phone-bottom:calc(var(--shared-composer-height,116px) + var(--shared-keyboard-safe-bottom,env(safe-area-inset-bottom,0px)) + var(--phone-kb,0px) + 16px)!important}
  body[data-shared-codex]:has(.shared-settings-popover:popover-open) #app .phone-dock{display:none!important}
 }
 
