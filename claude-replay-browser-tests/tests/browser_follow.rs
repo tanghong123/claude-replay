@@ -14412,13 +14412,16 @@ fn a_herdr_session_takes_images_from_the_compose_box() {
     );
     // Codex native mode shares the composer and sends its own images: neither control shows.
     let shown = "(function(){ var v = function (id) { var e = document.getElementById(id); return getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0; }; return v('composeAttach') + '|' + v('composeImages'); })()";
-    harness::eval(&desk, "document.body.dataset.sharedCodex = 'true'; 'ok'");
+    // Native mode marks the page's body and the view's own element (`markShared`): since #s429 stage
+    // 5b the view's stylesheet reads the mark on #sessionView, the app and native mode's own rules on
+    // body. The case marks both, as native mode does.
+    harness::eval(&desk, "document.body.dataset.sharedCodex = 'true'; document.getElementById('sessionView').dataset.sharedCodex = 'true'; 'ok'");
     assert_eq!(
         harness::eval(&desk, shown).as_str(),
         Some("false|false"),
         "hidden under native mode"
     );
-    harness::eval(&desk, "delete document.body.dataset.sharedCodex; 'ok'");
+    harness::eval(&desk, "delete document.body.dataset.sharedCodex; delete document.getElementById('sessionView').dataset.sharedCodex; 'ok'");
     assert_eq!(harness::eval(&desk, shown).as_str(), Some("true|true"));
     // And a desktop send carries both images and leaves the box open and empty.
     harness::eval(&desk, "(function(){ window.__sent = []; document.getElementById('sendBtn').click(); return 'ok'; })()");
