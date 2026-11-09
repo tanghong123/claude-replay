@@ -11,6 +11,7 @@
 // only commit can indent it once the stages that rewrite it (the template, the styles, the shadow
 // root) are done.
 import { svg } from "./icons.js";
+import { SESSION_VIEW_MARKUP } from "./session-view-markup.js";
 import { backend, useBackend } from "./backend.js";
 import { AttachmentViewer } from "./attachment-viewer.js";
 import { bindComponentEvents, fleetHtml, pendingHeadText } from "./components.js";
@@ -66,6 +67,10 @@ export const PHONE_PANES = Object.freeze([["turns", "Turns", "navigatorTurns"], 
 export function mountSessionView(element, options) {
 if (options.isolate !== false) throw new Error("mountSessionView draws into the page only, for now: pass isolate: false (design/session-view-component.md, stage 6)");
 if (options.backend) useBackend(options.backend);
+// The view builds its three parts inside its element from its own markup (stage 4), so a host's
+// page carries none of ours, and draws the glyphs that markup names.
+if (!element.firstElementChild) element.innerHTML = SESSION_VIEW_MARKUP;
+element.querySelectorAll("[data-icon]").forEach(glyph => { glyph.innerHTML = svg(glyph.dataset.icon); });
 const { toast, selectSession } = options;
 const grid = options.grid;
 // The view's own element: its three parts, and the state it keeps for itself (stage 2).

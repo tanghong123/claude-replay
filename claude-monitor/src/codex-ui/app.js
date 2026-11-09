@@ -21,24 +21,18 @@ import { page, viewRoot } from "./view-root.js";
 let viewHandle = null;
 const app = page.byId("app");
 const tree = page.byId("tree");
-// The session view's own element (#s429, design/session-view-component.md, stage 2): its three
-// parts (the workspace, the pane's resizer and the artifact pane) and the state it keeps for itself
-// (composing, a phone sheet open, the keyboard up, wrapped code, a wide transcript). In the app it is
-// `display: contents`, so the three stay columns of `#app`'s grid; the pane's open, full and resizing
-// states are copied onto `#app` too, since the app's grid follows them (`paneLayout`).
-const sessionView = Object.assign(document.createElement("div"), { id: "sessionView", className: "session-view" });
-{
-  const workspace = viewRoot.$(".workspace");
-  workspace.before(sessionView);
-  sessionView.append(workspace, viewRoot.byId("resizer"), viewRoot.byId("preview"));
-  sessionView.classList.toggle("preview-off", app.classList.contains("preview-off"));
-}
+// The session view's own element (#s429, design/session-view-component.md): where the view builds
+// its three parts from its own markup (the workspace, the pane's resizer and the artifact pane,
+// stage 4) and the state it keeps for itself (stage 2: composing, a phone sheet open, the keyboard up,
+// wrapped code, a wide transcript). The page's shell (`app-shell.html`) carries it empty. In the app
+// it is `display: contents`, so the three stay columns of `#app`'s grid; the pane's open, full and
+// resizing states are copied onto `#app` too, since the app's grid follows them (`paneLayout`).
+const sessionView = page.byId("sessionView");
 // What `renderTree` last wrote into the list, so an unchanged refresh leaves the rows in place (#s72).
 let treeWritten = null;
 let toastTimer = 0;
 
-// Every glyph the shell's markup names, the session view's too: in the page they are one document
-// (the view draws its own once it builds its markup from a template, stage 4).
+// Every glyph the app's markup names (the session view draws its own as it builds its markup).
 page.$$("[data-icon]").forEach(element => { element.innerHTML = svg(element.dataset.icon); });
 // The sidebar head's controls (#75, #76): the generated shell gives the theme toggle and
 // collapse-all no glyph — an empty 34px button each, invisible until hovered — and the sidebar

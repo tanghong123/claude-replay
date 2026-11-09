@@ -6,7 +6,9 @@
 use claude_replay_html::HttpResponse;
 
 const PAGE_HEAD: &str = include_str!("codex-ui/page-head.html");
-const REFERENCE_SHELL: &str = include_str!("codex-ui/reference-shell.html");
+/// The demo's shell with an empty `#sessionView` where the session view's markup was: the view builds
+/// itself there from `session-view-markup.js` (#s429 stage 4). Both are generated from the demo.
+const APP_SHELL: &str = include_str!("codex-ui/app-shell.html");
 const PAGE_TAIL: &str = include_str!("codex-ui/page-tail.html");
 
 /// The app shell for ONE request. The classic view it was once switched with is retired (#s98),
@@ -30,7 +32,7 @@ pub fn page(version: &str, paired: bool) -> String {
             "{{MDREV}}",
             claude_replay_html::mdrev_version().unwrap_or(""),
         );
-    format!("{head}{REFERENCE_SHELL}{PAGE_TAIL}")
+    format!("{head}{APP_SHELL}{PAGE_TAIL}")
 }
 
 /// The page a Markdown document opens in when the preview pane sends it to a tab of its own (#271):
@@ -176,6 +178,10 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
         "monitor-ui/session-view.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/session-view.js").as_slice(),
+        ),
+        "monitor-ui/session-view-markup.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/session-view-markup.js").as_slice(),
         ),
         "monitor-ui/native-policy.js" => (
             "text/javascript; charset=utf-8",
@@ -393,7 +399,10 @@ mod tests {
     #[test]
     fn page_is_the_reference_shell_without_mock_runtime() {
         let page = page("test", false);
-        assert!(page.contains(REFERENCE_SHELL));
+        assert!(page.contains(APP_SHELL));
+        // The view's markup is not in the page: the view builds itself from its own (stage 4).
+        assert!(page.contains(r#"<div class="session-view preview-off" id="sessionView"></div>"#));
+        assert!(!page.contains(r#"<main class="workspace">"#));
         assert!(page.contains(r#"src="monitor-ui/app.js""#));
         assert!(!page.contains("sample-transcript-data.js"));
         assert!(!page.contains("REAL_TRANSCRIPT"));
@@ -535,6 +544,10 @@ mod tests {
             ("view-model.js", include_str!("codex-ui/view-model.js")),
             ("view-root.js", include_str!("codex-ui/view-root.js")),
             ("session-view.js", include_str!("codex-ui/session-view.js")),
+            (
+                "session-view-markup.js",
+                include_str!("codex-ui/session-view-markup.js"),
+            ),
             ("viewport.js", include_str!("codex-ui/viewport.js")),
             (
                 "phone-keyboard.js",

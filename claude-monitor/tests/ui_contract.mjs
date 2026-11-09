@@ -52,6 +52,23 @@ const extractedCss = `${demo.slice(demo.indexOf("<style>\n") + 8, demo.indexOf("
 const extractedShell = demo.slice(demo.indexOf("<body>\n") + 7, demo.indexOf('<script src="sample-transcript-data.js"></script>'));
 assert.equal(referenceCss, extractedCss, "reference CSS must remain an exact demo extraction");
 assert.equal(referenceShell, extractedShell, "reference shell must remain an exact demo extraction");
+// #s429 stage 4: the session view builds itself from its own markup, one block of the shell (the
+// workspace, the pane's resizer and the artifact pane), and the page the monitor serves is the shell
+// with an empty #sessionView in its place. Both are cut from the shell by the extraction script; the
+// cut is made again here and must agree byte for byte, and the two together are the whole shell.
+const appShell = readFileSync(new URL("../../claude-monitor/src/codex-ui/app-shell.html", import.meta.url), "utf8");
+const { SESSION_VIEW_MARKUP } = await import("../src/codex-ui/session-view-markup.js");
+{
+  const viewStart = referenceShell.indexOf('  <main class="workspace">');
+  const previewStart = referenceShell.indexOf('  <aside class="preview" id="preview"', viewStart);
+  const viewEnd = referenceShell.indexOf("\n  </aside>\n", previewStart) + "\n  </aside>\n".length;
+  assert.ok(viewStart > 0 && previewStart > viewStart && viewEnd > previewStart, "the shell holds the view's block");
+  const placeholder = '  <div class="session-view preview-off" id="sessionView"></div>\n';
+  assert.equal(SESSION_VIEW_MARKUP, referenceShell.slice(viewStart, viewEnd), "the view's markup is the shell's block, exactly");
+  assert.equal(appShell, `${referenceShell.slice(0, viewStart)}${placeholder}${referenceShell.slice(viewEnd)}`, "the app shell is the shell with an empty #sessionView in the view's place");
+  assert.equal(appShell.replace(placeholder, SESSION_VIEW_MARKUP), referenceShell, "the two together are the whole shell");
+  console.log("#s429 view markup cases passed");
+}
 assert.match(productionCss, /\.monitor-empty\[hidden\]\{display:none!important\}/, "a loaded session must not retain the loading placeholder in layout");
 assert.match(viewportSource, /USER_INTENT_MS/, "follow state must distinguish user scroll intent");
 assert.match(viewportSource, /captureDomAnchor/, "window changes must preserve a real DOM anchor");
@@ -156,7 +173,8 @@ assert.match(classicExportSource, /if \(usageCost\) row\("est\. cost", usageCost
 for (const moduleName of ["app.js", "session-view.js", "control-store.js", "preview.js"]) {
   const module = readFileSync(new URL(`../../claude-monitor/src/codex-ui/${moduleName}`, import.meta.url), "utf8");
   for (const [, id] of module.matchAll(/byId\("([^"]+)"\)/g)) {
-    assert.match(referenceShell, new RegExp(`id=["']${id}["']`), `${moduleName} requires missing shell #${id}`);
+    // The page as it is drawn: the app's shell, and the view's markup inside #sessionView (stage 4).
+    assert.match(`${appShell}${SESSION_VIEW_MARKUP}`, new RegExp(`id=["']${id}["']`), `${moduleName} requires missing shell #${id}`);
   }
 }
 
