@@ -237,25 +237,43 @@ pane, so step 6 also makes the view's root what they are placed against.
      - `SHARED`: what both draw (`.iconbtn`, `.label`, `.on`, the popover rows the session filter
        and the section menu borrow). A rule naming only these, or no name (`button`, `*`), is in
        both files.
+     - `COMMON`: common words the app draws as modifiers (`.dim`, `.warn`, `.hint`, `.kbd`,
+       `.dialog`, the list's `is-*` marks…), which decide nothing alone, as `SHARED` does: beside a
+       chrome name the rule is the app's (`.navbtn .hint`), beside a name of the view's it is the
+       view's (`.process-row.warn`, `.transcript .hint`), alone it is in both files.
+     - A name inside `:not()` decides nothing (`.turn:not(.dim)` is the view's).
      - `ROOT_CLASSES`: the classes the view's element carries.
      - `OUTSIDE`: what the view draws that the page shows outside `#sessionView`, so the app's copy
        of its rule styles it where it is: the task card and its scrim, which `viewRoot.layer()`
        appends to `body`, and the Turns, Tasks and Agents lists with their rows, which a wide
        phone's column borrows into the app's `#columnPane`. Read off the page in those states.
      - Everything else is the view's alone.
+   - **What cannot hang under the view stops the build**, none of it in the sources today: a
+     selector going on from the view's element to its siblings (`.pane-open+.x`); one led by a
+     condition the page around the view meets (`[data-shared-codex] .composer`, `:not(.x) .y`,
+     `:focus-within .y`), which under the view's element would quietly match less or nothing; and
+     alternatives naming the app's chrome and the view's elements together
+     (`:is(.sidebar,.transcript) .label`). An attribute the view's own elements carry may lead
+     (`[data-nav-card="tasks"] .x`).
    - **The cascade.** The app's file loads first. A rule in both files is the same rule twice,
      its later copy in the view's file, so for an element of the view the view's file alone
      decides, in the order and at the weight the sources gave. An app rule that reaches into the
-     view now comes before every rule of the view's; the script lists any that weighs the same as a
-     view rule it used to follow, on a shared name and property, and the contract requires none.
+     view, or places it, now comes before every rule of the view's; the script lists any that
+     weighs the same as a view rule it used to follow, on what could be one element (a shared name
+     outside `:not()`, or a subject naming none) and a property they share, a shorthand meeting its
+     longhands (`padding` and `padding-left`). The contract requires none.
    - **The theme on the view's element.** `#sessionView` carries `data-theme`, `light` or `dark`.
      `mountSessionView` takes `theme` (#s436) and its handle has `setTheme`; the app passes its own
-     theme and calls `setTheme` when its toggle flips, and still marks the page's root for its own
-     chrome. `viewRoot.theme()` reads the view's element (a page with no view, mdrev's own tab,
+     theme, still marks the page's root for its own chrome, and calls `setTheme` whenever the root's
+     `data-theme` changes, by its toggle or by a script. `viewRoot.theme()` reads the view's element (a page with no view, mdrev's own tab,
      reads its root), mdrev's pane remounts when the view's element changes theme, and Mermaid's
-     diagrams follow the view's element (`useMermaidTheme`; the offline page keeps the root).
+     diagrams follow the view's element and take their colours from its tokens (`useMermaidTheme`;
+     the offline page keeps the root). `mountSessionView` gives its element the id `sessionView`
+     the stylesheet hangs on, and refuses one that carries another.
    - **Native mode's mark** is set on the view's element as well as on `body`, which the app, the
-     compose box and native mode's own stylesheet read.
+     compose box and native mode's own stylesheet read. Native mode's stylesheet and controls read
+     the view's own states (`composing`, `keyboard-up`) on `#sessionView`, where stage 2 moved them
+     (#s442: from v1.496.0 they read `#app`, where the states no longer were).
    - **The reset**, first in the file: the page's own rules come along by the derivation
      (`box-sizing` on the view's element and all within it, `button,input,textarea{font:inherit;
      color:inherit}`, `button{border:0}`), and it adds a `select` beside them and a `code` as the
@@ -263,17 +281,20 @@ pane, so step 6 also makes the view's root what they are placed against.
      already computes. A button's background is not pinned: five of the view's buttons keep the
      browser's own (the top bar's Tasks and Agents, a phone pane's close, the dock's ✎ and its
      search's ✕; measured), so pinning one would change them.
-   - **Keyframes** are global by name, as they always are: the view's file carries `pulse`, `pop`,
-     `source-flash`, `primary-pulse`, `fleet-pulse`, `session-loading-in` and
-     `session-loading-spin`; the app's carries `pop`, `status-breathe` and `session-loading-spin`.
-   - The split: `session-view.css` 2,148 rules (2,419 selectors), `app-shell.css` 609 rules (679
+   - **Keyframes** are global by name, so the view's take a prefix: its file carries `sv-pulse`,
+     `sv-pop`, `sv-source-flash`, `sv-primary-pulse`, `sv-fleet-pulse`, `sv-session-loading-in` and
+     `sv-session-loading-spin`, and every animation there names them so; a host's keyframes of the
+     same name can neither replace them nor be replaced. The app's file keeps its own names, `pop`
+     and `status-breathe`. A keyframe no animation names stops the build. No script names one.
+   - The split: `session-view.css` 2,152 rules (2,423 selectors), `app-shell.css` 609 rules (679
      selectors), from 1,458 and 1,057 in the sources. By selector of the sources: 1,882 the view's
-     alone, 270 the view's already on `#sessionView`, 162 the view's shown outside it, 42 with no
+     alone, 270 the view's already on `#sessionView`, 162 the view's shown outside it, 46 with no
      name of the view's own and 23 through the shared hook (in both files), 36 on the page's root,
-     381 the app's, 34 an app state on the view and one the app placing the view.
+     377 the app's, 34 an app state on the view and one the app placing the view.
    - A static test, `ui.rs` `the_view_s_stylesheet_names_nothing_outside_its_element`, fails on any
-     selector of `session-view.css` that does not start at the view's element or names the page or
-     the app.
+     selector of `session-view.css` that does not start at the view's element, goes on from it to its
+     siblings, or names the page or the app. The contract also scans the other way: the view's
+     modules and its markup draw no name of the app's chrome or states.
    - **Nothing a reader sees changed.** A throwaway probe served the same hermetic sessions from
      the build before this stage and the build after it, and compared every element's computed
      style (every longhand, every custom property, `::before`, `::after` and `::placeholder`) in
@@ -293,6 +314,12 @@ pane, so step 6 also makes the view's root what they are placed against.
      bar's display, border and alignment, and what moved inside it), about 6,000 on a phone. The
      probe cannot draw native mode
      (its rules depend on the mark the view's element now carries too) or the app's arranged list.
+     Run again after the review's fixes (the keyframes' prefix, the classifier, Mermaid's colours,
+     the id, the theme followed from the root): in 86 states, 153,701 elements compared, the one
+     difference is `animation-name` taking the prefix, on the loading veil (`session-loading-in`
+     to `sv-session-loading-in`) and its spinner (`session-loading-spin` to
+     `sv-session-loading-spin`), in every state; the same keyframes run. The noise was mdrev's
+     relative time again, 6 values in one state.
 
    **Left for later:**
    - The app placing the view from outside (the 34 selectors that reach in), the window's media
