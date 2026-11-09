@@ -1,7 +1,8 @@
 # The session view as a component
 
 > **DRAFT 1** (#s429, 2026-11-08). Step 4 of `design/embedding.md` ("The order of the work").
-> Stages 1 and 2 are built and shipped in v1.496.0. Stage 3 is built.
+> Stages 1 and 2 are built and shipped in v1.496.0, stage 3 in v1.497.0. Stage 4 and the first half
+> of stage 5 (5a) are built.
 
 ## What it is for
 
@@ -148,8 +149,55 @@ pane, so step 6 also makes the view's root what they are placed against.
 4. **The view's markup from its own template.** The entry point builds its three parts inside the
    element, so a host page carries no markup of ours. The extraction script cuts the template from
    the demo, so the generated files stay exact.
+
+   **Built** (#s429): the view builds its markup from `session-view-markup.js`, and the page serves
+   `app-shell.html`, whose `#sessionView` is empty.
 5. **Styles apart.** The view's rules are scoped to its root, and a static test checks that none
    reaches outside it. The app's chrome rules are kept apart from the view's.
+
+   **5a, built** (#s429): the view's rules in `production.css` hang on its element. Nothing a
+   reader sees changed. A throwaway probe compared every element's computed style (every
+   longhand, the custom properties, `::before`, `::after` and `::placeholder`) under the old
+   stylesheet and the new one, in the same page, and found no difference. It walked 58 states:
+   desktops at 1440, 1100 and 820px, light and dark, with the pane open or shut, the compose box,
+   the search and its filter, Reading's menu, wrap and wide; a phone upright with the drawer, each
+   pane's sheet, the reply box, the search, Info and Aa; a phone held sideways; and a wide phone's
+   column with each pane borrowed into it. Those states exercised 200 of the 272 rewritten
+   selectors. The rest style what a hermetic page cannot show (a herdr dialog or images in the
+   compose box, a live pane, native mode, a slow link's placeholders, Codex's quoted replies) or
+   only a touch's hover; each of those elements is drawn inside the view.
+   - The rules that hung on a plain `#app ` descendant and style only what the view draws now hang
+     on `#sessionView ` (249 selectors, id for id, so no specificity moved). That includes the ones
+     behind native mode's mark on `body`, and one that read the view's own state through
+     `#app:has(…)`: the jump to the latest stepping aside while the dock's find pill is open.
+   - What a wide phone's column borrows (`PHONE_PANES`: the Turns, Tasks and Agents lists, moved
+     into the app's `#columnPane`), and what the app's chrome shares with the view (`.iconbtn`,
+     `button`, the session filter's `.navigator-options` rows), hang on `:is(#sessionView,#app)`
+     (23 selectors). In the app both match, in a host only the first.
+   - What the view appends to `viewRoot.layer()` lands in `body`, outside `#app` and `#sessionView`
+     alike: the task card and its scrim, the copy field, a download's link. No `#app` rule ever
+     reached them, and none does now. The app's own rail flyout and native mode's menu sit there
+     too.
+   - A static test, `ui.rs` `the_view_s_styles_hang_on_its_own_element`, fails on any selector
+     that names `#app`, `.app`, `body`, `html` or `:root` and is not in one of its lists.
+
+   **Left for later**, each listed in that test:
+   - **The app placing or styling the view from outside** (stage 6 lays the view out by its pane's
+     size instead): the rules conditioned on an app state on `#app`. Those are `sidebar-off`,
+     `sidebar-tight`, `mobile-detail`, `phone-column-off`, `column-pane-on`, `sessions-flat` and
+     `sessions-arranged`, and the pane's `preview-off` and `preview-full`, copied onto `#app` for
+     its grid. Also the app reading the view's state for its own control: the drawer handle steps
+     under the dock while a dock sheet is open (`#app:has(.reading-cluster>…)>.drawer-handle`).
+   - **The view's tokens on the app's grid:** `#app{--code-size;--measure}`, which `applyReading`
+     writes on `grid`, and the phone's `#app{--phone-dock-h;--phone-glass}`. They move to the
+     view's root with the reading options (stage 7) and the pane-sized layout (stage 6).
+   - **The theme and the page's tokens:** `:root`, `html` and `[data-theme]` rules, the view's
+     included (`:root[data-theme="dark"] .fence`). In a shadow root the view's root carries the
+     theme (stage 6).
+   - **Native mode's mark** on `body` (`body[data-shared-codex]`), which `backend.js` reads. The
+     rest of each such selector hangs on `#sessionView`.
+   - **The app's own chrome rules** stay on `#app`: the sidebar, the tree, the drawer, the rail,
+     the arrangement strip and the section menu.
 6. **The shadow root:**
    - the open shadow root, with the view's styles adopted into it and mdrev's linked there;
    - keys and focus followed through the event's composed path;
