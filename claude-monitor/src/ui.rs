@@ -858,9 +858,8 @@ mod tests {
             "read {} selectors of session-view.css",
             selectors.len()
         );
-        let head = PAGE_HEAD;
-        let app = head.find(r#"href="monitor-ui/app-shell.css""#);
-        let view = head.find(r#"href="monitor-ui/session-view.css""#);
+        let app = PAGE_HEAD.find(r#"href="monitor-ui/app-shell.css""#);
+        let view = PAGE_HEAD.find(r#"href="monitor-ui/session-view.css""#);
         assert!(
             matches!((app, view), (Some(a), Some(v)) if a < v),
             "the page links app-shell.css, then session-view.css"
