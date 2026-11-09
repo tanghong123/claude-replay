@@ -1,8 +1,8 @@
 # The session view as a component
 
 > **DRAFT 1** (#s429, 2026-11-08). Step 4 of `design/embedding.md` ("The order of the work").
-> Stages 1 and 2 are built and shipped in v1.496.0, stage 3 in v1.497.0. Stage 4 and the first half
-> of stage 5 (5a) are built.
+> Stages 1 and 2 are built and shipped in v1.496.0, stage 3 in v1.497.0. Stage 4 and stage 5 (5a and
+> 5b) are built.
 
 ## What it is for
 
@@ -200,6 +200,107 @@ pane, so step 6 also makes the view's root what they are placed against.
      rest of each such selector hangs on `#sessionView`.
    - **The app's own chrome rules** stay on `#app`: the sidebar, the tree, the drawer, the rail,
      the arrangement strip and the section menu.
+
+   **5b, built** (#s429): the session view has ONE stylesheet, `session-view.css`, and every rule
+   in it hangs on the view's element. Nothing in it styles the page around the view: no `:root`,
+   `html`, `body`, `*`, bare element or unscoped class. The app shell loads `app-shell.css`, its own
+   chrome and the page's, and then `session-view.css`. The owner chose prefixing over a shadow root
+   for the collaboration app (#s438), as mdrev's styles hang under `.mdrev-host`.
+   - **Both files are generated.** `scripts/extract-agent-monitor-demo.mjs` derives them from
+     `reference.css` and `production.css` through `scripts/session-view-css.mjs`, and never edits
+     those two, which stay the sources: a rule is still written in `production.css`, and the script
+     run after. The frontend contract derives both again and requires a byte match, as it does for
+     the view's markup. Comments are not carried; the sources keep them.
+   - **How a selector is written in the view's file.** A plain selector gets the prefix
+     `:where(#sessionView) `, which weighs nothing. One that may match the view's element itself
+     (it leads with `*` or a class the element carries: `.preview-off`, `.composing`…) is also
+     written on the element. Stage 5a's rules keep their `#sessionView`, and its shared hook
+     `:is(#sessionView,#app)` becomes `#sessionView`, an id as before. Where a source named the
+     page's root, a stand-in on the view's element weighs the same: `.session-view` (the element's
+     own class, which `mountSessionView` adds) for `:root`, `:is(*,div)` for `html` or `body`, and
+     the conditions they carried move onto the element, which carries both: the theme
+     (`[data-theme="dark"]`) and native mode's mark (`[data-shared-codex]`). So every rule keeps its
+     weight exactly; the script checks each selector it writes against the one it read. A rule on
+     the page's root becomes a rule on the view's element that carries only what the view inherits
+     from the page: the tokens (56 custom properties) and `color`, `font`, `font-size`,
+     `letter-spacing`, `color-scheme` and `text-size-adjust`. Not `--sidebar` or `--preview`, which
+     the app's grid declares or a script writes on the page, and which the view inherits.
+   - **Whose a rule is.** What `app-shell.html`, `app.js` and `session-list.js` draw is the app's;
+     every other class or id is the view's. The classifier keeps the app's names in lists, each
+     commented, and the contract checks the lists against what the app draws, both ways:
+     - `APP_CHROME`: the session list and its tree, the rail and its flyout, the arrangement strip
+       and the section menu, the session filter, the brand, the drawer, a wide phone's column, the
+       session search layer (⌘K), the confirm layer and the toast. A rule naming one is the app's.
+     - `APP_STATES`: the app's states on `#app` (stage 5a's groups). A rule reading one is the
+       app's; where what it styles is the view's, it reaches into the view from outside (34
+       selectors: the rail, the pane's state and a wide phone's column placing the view).
+     - `SHARED`: what both draw (`.iconbtn`, `.label`, `.on`, the popover rows the session filter
+       and the section menu borrow). A rule naming only these, or no name (`button`, `*`), is in
+       both files.
+     - `ROOT_CLASSES`: the classes the view's element carries.
+     - `OUTSIDE`: what the view draws that the page shows outside `#sessionView`, so the app's copy
+       of its rule styles it where it is: the task card and its scrim, which `viewRoot.layer()`
+       appends to `body`, and the Turns, Tasks and Agents lists with their rows, which a wide
+       phone's column borrows into the app's `#columnPane`. Read off the page in those states.
+     - Everything else is the view's alone.
+   - **The cascade.** The app's file loads first. A rule in both files is the same rule twice,
+     its later copy in the view's file, so for an element of the view the view's file alone
+     decides, in the order and at the weight the sources gave. An app rule that reaches into the
+     view now comes before every rule of the view's; the script lists any that weighs the same as a
+     view rule it used to follow, on a shared name and property, and the contract requires none.
+   - **The theme on the view's element.** `#sessionView` carries `data-theme`, `light` or `dark`.
+     `mountSessionView` takes `theme` (#s436) and its handle has `setTheme`; the app passes its own
+     theme and calls `setTheme` when its toggle flips, and still marks the page's root for its own
+     chrome. `viewRoot.theme()` reads the view's element (a page with no view, mdrev's own tab,
+     reads its root), mdrev's pane remounts when the view's element changes theme, and Mermaid's
+     diagrams follow the view's element (`useMermaidTheme`; the offline page keeps the root).
+   - **Native mode's mark** is set on the view's element as well as on `body`, which the app, the
+     compose box and native mode's own stylesheet read.
+   - **The reset**, first in the file: the page's own rules come along by the derivation
+     (`box-sizing` on the view's element and all within it, `button,input,textarea{font:inherit;
+     color:inherit}`, `button{border:0}`), and it adds a `select` beside them and a `code` as the
+     browser draws it (`monospace`, no border or background). Each value is what the app's page
+     already computes. A button's background is not pinned: five of the view's buttons keep the
+     browser's own (the top bar's Tasks and Agents, a phone pane's close, the dock's ✎ and its
+     search's ✕; measured), so pinning one would change them.
+   - **Keyframes** are global by name, as they always are: the view's file carries `pulse`, `pop`,
+     `source-flash`, `primary-pulse`, `fleet-pulse`, `session-loading-in` and
+     `session-loading-spin`; the app's carries `pop`, `status-breathe` and `session-loading-spin`.
+   - The split: `session-view.css` 2,148 rules (2,419 selectors), `app-shell.css` 609 rules (679
+     selectors), from 1,458 and 1,057 in the sources. By selector of the sources: 1,882 the view's
+     alone, 270 the view's already on `#sessionView`, 162 the view's shown outside it, 42 with no
+     name of the view's own and 23 through the shared hook (in both files), 36 on the page's root,
+     381 the app's, 34 an app state on the view and one the app placing the view.
+   - A static test, `ui.rs` `the_view_s_stylesheet_names_nothing_outside_its_element`, fails on any
+     selector of `session-view.css` that does not start at the view's element or names the page or
+     the app.
+   - **Nothing a reader sees changed.** A throwaway probe served the same hermetic sessions from
+     the build before this stage and the build after it, and compared every element's computed
+     style (every longhand, every custom property, `::before`, `::after` and `::placeholder`) in
+     each state: the old build, the new, and the old again for the method's own noise, matched by
+     each element's path. It walked stage 5a's 56 states; the theme flipped after load, each way,
+     at every width (`setTheme`); Mermaid's diagram and mdrev's pane in the pane, each across a
+     flip; and the app's own states and layers: the rail and its flyout, a narrow sidebar
+     (`sidebar-tight`), the flat list, ⌘K, the session filter, the confirm layer and the task card
+     on a desktop, a phone and a wide phone's column. In 86 states, 153,683 elements compared:
+     no difference. The method's noise was 12 values in two states, mdrev's toolbar measuring its
+     relative time ("1 min ago") a pixel or two differently between loads; the new build matched
+     one of the old loads there. Seven loads were made again because the transcript's virtual
+     window had mounted a unit more or fewer. The theme followed every flip in both builds:
+     Mermaid's fill and mdrev's own theme match, old and new. A positive control, the top bar's
+     base rule broken in the view's file (`:where(#sessionView) .topbar` made a child of the
+     element, which the top bar is not), showed in every state it ran: 51 values on a desktop (the
+     bar's display, border and alignment, and what moved inside it), about 6,000 on a phone. The
+     probe cannot draw native mode
+     (its rules depend on the mark the view's element now carries too) or the app's arranged list.
+
+   **Left for later:**
+   - The app placing the view from outside (the 34 selectors that reach in), the window's media
+     queries, and the tokens on the app's grid (`--code-size`, `--measure`, `--phone-dock-h`,
+     `--phone-glass`) with `--sidebar` and `--preview`: stage 6 lays the view out by its pane's
+     size, and stage 7 moves the reading options onto the view.
+   - What the view draws outside its element is styled by the app's copy of its rules: in a host,
+     the task card and its scrim need a layer under the view's element (stage 6).
 6. **The shadow root:**
    - the open shadow root, with the view's styles adopted into it and mdrev's linked there;
    - keys and focus followed through the event's composed path;

@@ -844,7 +844,12 @@ byte-for-byte from `design/agent-monitor-codex-demo.html` by
 `scripts/extract-agent-monitor-demo.mjs` and checked by two tests. Never hand-edit them: change
 the demo and re-run the script. Production-only chrome (the session filter, the compose box's image
 controls) is layered on at runtime by the shell's own scripts and `production.css`, so the
-extraction stays exact.
+extraction stays exact. **The page loads neither `reference.css` nor `production.css`** (#s429 stage
+5b): the same script DERIVES `app-shell.css` (the app's chrome and the page's) and `session-view.css`
+(the session view's, every rule hung on `#sessionView`) from those two, through
+`scripts/session-view-css.mjs`, and the contract requires the byte match. A rule is still written in
+`production.css`; then run the script. A new class the app draws goes in one of the classifier's
+lists, which the contract checks against `app.js` and the shell.
 
 **Shared frontend modules live in `claude-replay-html/src/html/shared/`** (seam 0 of
 `design/monitor-shell-duplication.md`, v1.140.0): ONE source, consumed two ways — the monitor
