@@ -1,7 +1,7 @@
 # The session view as a component
 
 > **DRAFT 1** (#s429, 2026-11-08). Step 4 of `design/embedding.md` ("The order of the work").
-> Nothing is built yet.
+> Stages 1 and 2 are built and shipped in v1.496.0. Stage 3 is built.
 
 ## What it is for
 
@@ -125,6 +125,18 @@ pane, so step 6 also makes the view's root what they are placed against.
    `app.js` keeps what belongs to the app: the list, the drawer, pairing, the theme, the session
    search and placing the two. It calls `mountSessionView(…, {isolate: false})`, and shared state
    is passed in, not imported.
+
+   **Built** (#s429):
+   - `session-view.js` holds the transcript and its viewport, the turn bar and search, the outline
+     panes, the artifact pane, the compose box and its dialogs, and the phone's dock and sheets.
+   - `app.js` holds the session list with its filter and arrangements, the drawer and a wide
+     phone's column, the rail, the brand, the theme, the session search layer, the toast, and the
+     mount. The view asks the app for its selection, rows and workers through options and raises
+     its events there; the app calls the handle to select, open and close a session and to say the
+     view was resized.
+
+   The function's body is the view's old top-level code moved line for line, so it sits at the
+   margin. A whitespace-only commit can indent it once stages 4 to 6 stop rewriting it.
 4. **The view's markup from its own template.** The entry point builds its three parts inside the
    element, so a host page carries no markup of ours. The extraction script cuts the template from
    the demo, so the generated files stay exact.
