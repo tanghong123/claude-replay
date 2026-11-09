@@ -19,13 +19,15 @@ const at = () => root || doc();
 
 /** The element a root's styles and state hang on: the shadow root's host, or the page's `<html>`. */
 const rootElement = () => root?.host || doc()?.documentElement;
+/** The view's own element (`#sessionView`), once the page holds one. */
+const viewElement = () => at()?.getElementById("sessionView") ?? null;
 
 /** The session view's root and its lookups. */
 export const viewRoot = Object.freeze({
   /** The root itself: the page, or the shadow root the view draws in. */
   root: () => at(),
-  /** The view's own element, which carries its state (`#sessionView`, stage 2). */
-  element: () => at()?.getElementById("sessionView") ?? null,
+  /** The view's own element, which carries its state (`#sessionView`, stage 2) and its theme. */
+  element: viewElement,
   /** One of the view's elements by id. */
   byId: id => at().getElementById(id),
   /** The first of the view's elements a selector matches. */
@@ -42,8 +44,11 @@ export const viewRoot = Object.freeze({
   sheets: () => (root?.host ? root : doc().head),
   /** Where the view sets the custom properties it measures (`--preview`, `--phone-top`, …). */
   styleRoot: () => rootElement(),
-  /** "dark" or "light": the theme the view draws in, carried by its root's element. */
-  theme: () => (rootElement()?.dataset.theme === "dark" ? "dark" : "light"),
+  /** "dark" or "light": the theme the view draws in, carried by the view's own element, whose
+   *  stylesheet reads it there (stage 5b); a page with no view (mdrev's tab) carries it on its root. */
+  theme: () => ((viewElement() || rootElement())?.dataset.theme === "dark" ? "dark" : "light"),
+  /** The element whose `data-theme` the view follows: what to watch for a theme change. */
+  themeElement: () => viewElement() || rootElement(),
 });
 
 /** The app around the view: its own chrome, which stays in the page. */

@@ -31,7 +31,7 @@ import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, quer
 import { agentName, agentRecordTargets, currentTurnIndex, escapeText, peerHue, peerLabelRest, plainText, recordForSearch, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick, replyContext } from "./view-model.js";
 import { Viewport } from "./viewport.js";
 import { sharedKeyboardFrame } from "./phone-keyboard.js";
-import { revealMermaidSource, useMermaidRuntime } from "./shared/mermaid.js";
+import { revealMermaidSource, useMermaidRuntime, useMermaidTheme } from "./shared/mermaid.js";
 import { page, viewRoot } from "./view-root.js";
 
 /** The outline's panes a phone opens from its dock as sheets, by key, label and list element. A wide
@@ -44,6 +44,8 @@ export const PHONE_PANES = Object.freeze([["turns", "Turns", "navigatorTurns"], 
  *  may leave out; `backend` is optional too (the page's own handle stands); the rest are required:
  *  - `isolate`: `false`, the only mode built yet: the view draws into the page, its parts columns
  *    of the app's grid (the shadow root is stage 6).
+ *  - `theme`: "light" (the default) or "dark", carried by the view's element, where its stylesheet
+ *    reads it; the handle's `setTheme` changes it.
  *  - `grid`: the app's grid (`#app`). While the view draws into the page it carries the reading
  *    properties (`--code-size`, `--measure`), and it is the box the phone's sheets are measured
  *    against and moved back over iOS's keyboard scroll, as before the split.
@@ -61,7 +63,7 @@ export const PHONE_PANES = Object.freeze([["turns", "Turns", "navigatorTurns"], 
  *  - `paneCount(key, text)`: a phone pane's count changed (a wide phone's column shows it too).
  *
  *  The handle: `select(id)` and `open(id)` (a session chosen: the view takes it, then reads it),
- *  `session()`, `close(title, detail)`, `indexChanged()`, `resized()`, `keys` (the view's key
+ *  `session()`, `close(title, detail)`, `indexChanged()`, `resized()`, `setTheme(theme)`, `keys` (the view's key
  *  actions), `closePane()`, `paneNode(key)` and `outlineClick(event)` (the wide phone's column),
  *  and, for the monitor's own native mode, `controls` and `installNativeControls(…)`. */
 export function mountSessionView(element, options) {
@@ -71,6 +73,11 @@ if (options.backend) useBackend(options.backend);
 // page carries none of ours, and draws the glyphs that markup names.
 if (!element.firstElementChild) element.innerHTML = SESSION_VIEW_MARKUP;
 element.querySelectorAll("[data-icon]").forEach(glyph => { glyph.innerHTML = svg(glyph.dataset.icon); });
+// The view's element carries its class and its theme (stage 5b): its stylesheet hangs every rule on
+// it and reads the theme there, light or dark, as the host says (#s436).
+element.classList.add("session-view");
+const applyTheme = theme => { element.dataset.theme = theme === "dark" ? "dark" : "light"; };
+applyTheme(options.theme);
 const { toast, selectSession } = options;
 const grid = options.grid;
 // The view's own element: its three parts, and the state it keeps for itself (stage 2).
@@ -290,6 +297,8 @@ let controls = ordinaryControls;
 // The Mermaid runtime the page head names loads through the backend handle, as every other
 // request the page makes does (#s423).
 useMermaidRuntime(path => backend().url(path));
+// …and its diagrams are drawn in the view's theme, which the view's element carries (stage 5b).
+useMermaidTheme(() => sessionView);
 const WINDOWED = (() => { const q = new URLSearchParams(location.search).get("windowed"); return q === "1" ? true : q === "0" ? false : !backend().local; })();
 const recordStore = new RecordStore({
   reset: () => { lastRecordCount = -1; heldRecords = null; heldTurnJump = null; fillWaiting = false; recordState.headIndex = null; viewport.cancelStill(); recordState.headProgress = null; projection.units = []; projection.stub = null; projection.upto = Infinity; hashWait = null; remoteSearch = null; remoteFilter = null; stepWhenFound = null; recordState.records = []; if (controls.nativeActive) { recordState.units = []; turnStickyAt = null; turnStickyBar.classList.remove("on"); turnSubtitle.hidden = true; turnSubtitle.textContent = ""; } recordState.meta = null; recordState.heights.clear(); recordState.folds.clear(); recordState.processFolds.clear(); recordState.processBulk.clear(); recordState.processExpanded.clear(); recordState.processChosen.clear(); recordState.promptExpanded.clear(); recordState.taskTargets.clear(); recordState.agentTargets.clear(); recordState.rawTurns.clear(); recordState.codeOverrides.clear(); recordState.capOpen.clear(); recordState.recSizes = []; recordState.pendingSearch = false; recordState.filterHits = null; recordState.filterDirect = null; recordState.filterSnapshot = null; recordState.search = ""; byId("transcriptSearchInput").value = ""; uiState.chips = { scope: "", tools: [] }; renderChips(); viewport.showEmpty("Loading session…", "Reading the normalized record stream."); renderHeader(); renderNavigator(); },
@@ -3872,6 +3881,8 @@ return {
   },
   /** The view's width changed under it (the sidebar moved). */
   resized: () => viewport.remeasure(),
+  /** Draw in "light" or "dark" (#s436); mdrev's pane and the diagrams follow the view's element. */
+  setTheme: applyTheme,
   /** The view's key actions, by the keymap's names. */
   keys: keyActions,
   /** A phone's pane sheet closes; a pane's list, by key, for a wide phone's column to borrow; and a

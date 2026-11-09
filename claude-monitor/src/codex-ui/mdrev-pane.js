@@ -195,7 +195,7 @@ function mountAt(mountMdrev, el, facts, moved, contract = backend().mdrevUrl(CON
   show();
   mount();
   const watch = new MutationObserver(() => { mounted?.unmount(); mount(); });
-  watch.observe(viewRoot.styleRoot(), { attributes: true, attributeFilter: ["data-theme"] });
+  watch.observe(viewRoot.themeElement(), { attributes: true, attributeFilter: ["data-theme"] });
   return {
     place,
     unmount() { watch.disconnect(); mounted?.unmount(); mounted = null; },

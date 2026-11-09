@@ -6,6 +6,17 @@ import { controlState, indexState, selectedRow } from "./state.js";
 const byId = viewRoot.byId;
 import { isCodexSession, usesNativeControls } from "./native-policy.js";
 
+/** Native mode's mark, on the page's body, which the app, the compose box and native mode's own
+ *  stylesheet read, and on the session view's element, which the view's stylesheet reads (#s429
+ *  stage 5b: its rules name nothing outside the view). */
+function markShared(on) {
+  for (const element of [page.body(), viewRoot.element()]) {
+    if (!element) continue;
+    if (on) element.dataset.sharedCodex = "true";
+    else delete element.dataset.sharedCodex;
+  }
+}
+
 /** Own only the presentation changes made by the optional native controller. */
 class NativePresentation {
   constructor() {
@@ -38,7 +49,7 @@ class NativePresentation {
     this.apply(this.native);
     this.nativeParent.append(this.input);
     for (const { node, hidden } of this.owned) node.hidden = hidden;
-    page.body().dataset.sharedCodex = "true";
+    markShared(true);
   }
   hide() {
     for (const { node } of this.owned) {
@@ -48,7 +59,7 @@ class NativePresentation {
     }
     this.parent.insertBefore(this.input, this.next);
     this.apply(this.saved);
-    delete page.body().dataset.sharedCodex; delete page.body().dataset.sharedReaderOpen;
+    markShared(false); delete page.body().dataset.sharedReaderOpen;
     this.viewport.content = this.viewportContent;
     const composer = byId("composer"); composer.removeAttribute("data-shared-constrained");
     composer.classList.remove("production-show"); controlState.row = null;
@@ -239,7 +250,7 @@ export class NativeModeControls {
       const presentation = new NativePresentation();
       if (indexState.selected) this.drafts.set(indexState.selected, byId("composeInput").value);
       this.presentation = presentation;
-      page.body().dataset.sharedCodex = "true";
+      markShared(true);
       this.native = new MonitorControls({ ...this.actions, backend: backend(), nativeManaged: true,
         nativeDisabled: () => { if (this.mode !== "disabling") this.finishDisable(); },
         nativeNewClosed: () => { this.intent = "none"; this.paint(); } });

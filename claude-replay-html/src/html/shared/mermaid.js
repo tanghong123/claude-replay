@@ -17,6 +17,15 @@ function useMermaidRuntime(resolve) {
   runtimeUrl = resolve;
 }
 
+// The element whose `data-theme` the diagrams are drawn in and follow: the page's root, unless the
+// session view says its own element carries its theme (#s429 stage 5b), as it does in a host's page.
+let themeElement = () => document.documentElement;
+
+/** The session view's theme element: `element()` returns it. Called before the first diagram. */
+function useMermaidTheme(element) {
+  themeElement = element;
+}
+
 function loadMermaid() {
   if (loading) return loading;
   loading = new Promise((resolve, reject) => {
@@ -54,7 +63,7 @@ function loadMermaid() {
 }
 
 function diagramTheme() {
-  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+  return themeElement()?.dataset.theme === "dark" ? "dark" : "light";
 }
 
 function diagramPalette(theme) {
@@ -232,7 +241,7 @@ function renderMermaid(root, readerReshaped) {
   if (!cards.length) return;
   if (!themeObserver) {
     themeObserver = new MutationObserver(() => renderMermaid(document));
-    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    themeObserver.observe(themeElement(), { attributes: true, attributeFilter: ["data-theme"] });
   }
   const theme = diagramTheme();
   for (const card of cards) {
@@ -246,4 +255,4 @@ function renderMermaid(root, readerReshaped) {
   }
 }
 
-export { renderMermaid, revealMermaidSource, useMermaidRuntime };
+export { renderMermaid, revealMermaidSource, useMermaidRuntime, useMermaidTheme };

@@ -920,7 +920,9 @@ page.byId("searchInput").onkeydown = event => {
   } else if (event.key === "Enter") { event.preventDefault(); chooseGlobal(uiState.globalIndex); }
 };
 page.byId("searchLayer").onclick = event => { if (event.target === page.byId("searchLayer")) page.byId("searchLayer").classList.remove("production-open"); };
-page.byId("themeBtn").onclick = () => { const dark = page.html().dataset.theme !== "dark"; page.html().dataset.theme = dark ? "dark" : ""; localStorage.setItem("am-demo-theme", dark ? "dark" : "light"); };
+// The theme is the app's: its chrome reads it on the page's root, and the view, which carries its own
+// on its element (#s429 stage 5b), is told.
+page.byId("themeBtn").onclick = () => { const dark = page.html().dataset.theme !== "dark"; page.html().dataset.theme = dark ? "dark" : ""; viewHandle?.setTheme(dark ? "dark" : "light"); localStorage.setItem("am-demo-theme", dark ? "dark" : "light"); };
 if (localStorage.getItem("am-demo-theme") === "dark") page.html().dataset.theme = "dark";
 // #s33: the collapsed rail is the DESKTOP's. On a phone the sidebar is the drawer, and the rail's
 // rules hide its head, its nav and its list: a phone that had the rail stored (1.355 drew a phone
@@ -1146,6 +1148,7 @@ var mobileShell;
 // What it needs from the app is passed in here; what the app asks of it is the handle.
 viewHandle = mountSessionView(viewRoot.element(), {
   isolate: false,
+  theme: page.html().dataset.theme === "dark" ? "dark" : "light",
   backend: backend(),
   grid: app,
   toast,
