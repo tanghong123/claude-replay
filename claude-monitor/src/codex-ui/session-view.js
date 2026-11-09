@@ -38,7 +38,8 @@ import { page, viewRoot } from "./view-root.js";
  *  phone's column shows the same lists under the app's tabs, so the app reads this too. */
 export const PHONE_PANES = Object.freeze([["turns", "Turns", "navigatorTurns"], ["tasks", "Tasks", "navigatorWork"], ["agents", "Agents", "navigatorAgents"]].map(pane => Object.freeze(pane)));
 
-/** Draw the session view in `element` (`#sessionView`) and return its handle.
+/** Draw the session view in `element` and return its handle. The element becomes `#sessionView`, the
+ *  id the view's stylesheet hangs every rule on; one with another id is refused.
  *
  *  Options. The last five, from `parentShown` on, are what the view tells its host, which a host
  *  may leave out; `backend` is optional too (the page's own handle stands); the rest are required:
@@ -73,8 +74,11 @@ if (options.backend) useBackend(options.backend);
 // page carries none of ours, and draws the glyphs that markup names.
 if (!element.firstElementChild) element.innerHTML = SESSION_VIEW_MARKUP;
 element.querySelectorAll("[data-icon]").forEach(glyph => { glyph.innerHTML = svg(glyph.dataset.icon); });
-// The view's element carries its class and its theme (stage 5b): its stylesheet hangs every rule on
-// it and reads the theme there, light or dark, as the host says (#s436).
+// The view's element carries its id, its class and its theme (stage 5b): its stylesheet hangs every
+// rule on #sessionView and reads the theme there, light or dark, as the host says (#s436), and
+// `viewRoot.element()` finds it by that id. A host's element with an id of its own cannot be both.
+if (element.id && element.id !== "sessionView") throw new Error(`mountSessionView draws into an element whose id is sessionView, or that has none; this one is #${element.id}`);
+element.id = "sessionView";
 element.classList.add("session-view");
 const applyTheme = theme => { element.dataset.theme = theme === "dark" ? "dark" : "light"; };
 applyTheme(options.theme);
