@@ -98,7 +98,7 @@ const { SESSION_VIEW_MARKUP } = await import("../src/codex-ui/session-view-marku
   const visit = nodes => { for (const node of nodes) { if (node.kind === "group") visit(node.children); else if (node.kind === "rule") for (const n of node.prelude.match(/[.#]-?[A-Za-z_][A-Za-z0-9_-]*/g) || []) used.add(n); } };
   for (const css of [referenceCss, productionCss]) visit(styles.parseCss(styles.stripComments(css)));
   const isOutside = n => styles.OUTSIDE.some(prefix => n === prefix || n.startsWith(`${prefix}-`));
-  const listed = new Set([...styles.APP_CHROME, ...styles.APP_STATES, ...styles.SHARED, ...styles.ROOT_CLASSES, "#app", ".app", "#sessionView"]);
+  const listed = new Set([...styles.APP_CHROME, ...styles.APP_STATES, ...styles.SHARED, ...styles.COMMON, ...styles.ROOT_CLASSES, "#app", ".app", "#sessionView"]);
   const unlisted = [...drawn].filter(n => used.has(n) && !listed.has(n) && !isOutside(n)).sort();
   assert.deepEqual(unlisted, [], "every name the app draws that a selector uses is in one of the classifier's lists (scripts/session-view-css.mjs)");
   const stale = [...styles.APP_CHROME, ...styles.APP_STATES].filter(n => !drawn.has(n) && !new RegExp(`["'\\s.#]${n.slice(1)}(?![\\w-])`).test(appText)).sort();
@@ -107,6 +107,53 @@ const { SESSION_VIEW_MARKUP } = await import("../src/codex-ui/session-view-marku
   // goes); and the shell's own copy of a rule the view shares is in the app's file, which loads first.
   assert.ok(derived.report.kinds["the view's"] > 1500 && derived.report.kinds["the app's"] > 300, `the split read the stylesheets: ${JSON.stringify(derived.report.kinds)}`);
   assert.deepEqual(derived.report.ties, [], "no app rule that reaches into the view weighs the same as a view rule it used to follow on the same element");
+  // The reverse: the view's own modules (what session-view.js reaches by its imports, and its markup)
+  // draw no name of the app's chrome or its states, which the lists say only the app draws.
+  const viewDrawn = new Map();
+  const reach = (file, seen = new Set()) => {
+    if (seen.has(file.href)) return seen;
+    seen.add(file.href);
+    for (const m of readFileSync(file, "utf8").matchAll(/^import [^;]*? from "(\.[^"]+)";/gm)) reach(new URL(m[1], file), seen);
+    return seen;
+  };
+  const appModules = ["app.js", "state.js", "view-root.js", "backend.js", "icons.js"];
+  for (const href of reach(new URL("../src/codex-ui/session-view.js", import.meta.url))) {
+    const name = href.slice(href.indexOf("/codex-ui/") + "/codex-ui/".length);
+    if (appModules.includes(name)) continue;
+    const text = name === "session-view-markup.js" ? SESSION_VIEW_MARKUP : readFileSync(new URL(href), "utf8");
+    const names = new Set();
+    const classAttr = name === "session-view-markup.js" ? /class="([^"]*)"/g : /class=\\?["']((?:[^"'\\$]|\$\{[^}]*\})*)\\?["']/g;
+    for (const m of text.matchAll(classAttr)) for (const w of words(m[1])) names.add(`.${w}`);
+    for (const m of text.matchAll(/className\s*=\s*(["'`])((?:(?!\1).)*)\1/g)) for (const w of words(m[2])) names.add(`.${w}`);
+    for (const m of text.matchAll(/classList\.(?:add|toggle|replace)\(([^)]*)\)/g)) for (const q of m[1].matchAll(/["']([A-Za-z0-9_-]+)["']/g)) names.add(`.${q[1]}`);
+    for (const m of text.matchAll(/(?:\bid=\\?["']|\.id\s*=\s*["'])([A-Za-z0-9_-]+)/g)) names.add(`#${m[1]}`);
+    viewDrawn.set(name, names);
+  }
+  assert.ok(viewDrawn.has("components.js") && viewDrawn.get("session-view-markup.js")?.has(".workspace"), "the scan read the view's modules and its markup");
+  const appOnly = new Set([...styles.APP_CHROME, ...styles.APP_STATES]);
+  const crossing = [...viewDrawn].flatMap(([name, names]) => [...names].filter(n => appOnly.has(n)).map(n => `${name}: ${n}`));
+  assert.deepEqual(crossing, [], "the view's modules draw no name of the app's chrome or states (a common word goes in COMMON)");
+  // The classifier's edges, none of which the sources hold today (the review of stage 5b). A name
+  // decides only outside `:not()`, and a common word beside a name of the view's is the view's.
+  const only = sel => { const d = styles.classify(sel); return d.app ? (d.view.length ? "both" : "app") : "view"; };
+  assert.equal(only(".turn:not(.dim)"), "view", "an app's word inside :not() decides nothing");
+  assert.equal(only(".process-row.warn"), "view", "a common word as a second class of a view element is the view's");
+  assert.equal(only(".transcript .hint"), "view", "a common word inside a view element is the view's");
+  assert.equal(only(".navbtn .hint"), "app", "a common word inside the app's chrome is the app's");
+  assert.equal(only(".dim"), "both", "a common word alone is in both files");
+  assert.equal(only('[data-nav-card="tasks"] .outline-card-head'), "view", "an attribute the view's elements carry may lead");
+  for (const sel of [".pane-open+.x", ".composing~.dock", "*+.x", "#sessionView+.x", ":is(#sessionView,#app)~.x", "[data-shared-codex] .composer", '[data-paired="true"] .compose-fab', ":not(.sidebar-off) .topbar", ":focus-within .x", ":is(.sidebar,.transcript) .label"]) {
+    assert.throws(() => styles.classify(sel), /session-view\.css/, `the build refuses \`${sel}\`, which cannot hang under the view's element as written`);
+  }
+  // The tie check meets a shorthand with its longhand; a keyframe no animation names stops the build;
+  // the view's keyframes take the prefix, in their rule and in every animation naming them.
+  const tie = styles.deriveStylesheets({ reference: ".a.b .preview{padding-left:1px}", production: ".app.sidebar-off .preview{padding:0}" });
+  assert.deepEqual(tie.report.ties.map(t => t.props), [["padding-left"]], "an app rule reaching in is checked against an earlier view rule, shorthand against longhand");
+  assert.throws(() => styles.deriveStylesheets({ reference: ".turn{color:red}@keyframes lost{to{opacity:0}}", production: "" }), /no animation names the keyframes `lost`/);
+  const spun = styles.deriveStylesheets({ reference: ".turn{animation:spin 1s linear}.tree-row{animation:spin 2s}@keyframes spin{to{opacity:0}}", production: "" });
+  assert.match(spun.view, /:where\(#sessionView\) \.turn\{animation:sv-spin 1s linear\}/);
+  assert.match(spun.view, /@keyframes sv-spin\{to\{opacity:0\}\}/);
+  assert.match(spun.app, /\.tree-row\{animation:spin 2s\}\n@keyframes spin\{/, "the app's file keeps its own names");
   console.log("#s429 stylesheet cases passed");
 }
 assert.match(productionCss, /\.monitor-empty\[hidden\]\{display:none!important\}/, "a loaded session must not retain the loading placeholder in layout");

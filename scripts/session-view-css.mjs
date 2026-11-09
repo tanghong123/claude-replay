@@ -242,22 +242,21 @@ export const APP_CHROME = Object.freeze([
   "#collapseBtn", "#expandBtn", "#filterBtn", "#sidebarCollapse",
   ".agent-label", ".agent-monogram",
   ".arrange-app", ".arrange-note", ".arrange-strip", ".arrange-strip-box", ".arrange-strip-close", ".arrange-strip-text", ".arrange-text",
-  ".arranged", ".arranged-empty", ".arranged-group", ".arranged-head", ".arranged-label", ".arranged-rest", ".arranged-view",
+  ".arranged-empty", ".arranged-group", ".arranged-head", ".arranged-label", ".arranged-rest", ".arranged-view",
   ".attention-count", ".attention-filter", ".attention-mini",
   ".brand", ".brand-icon",
   ".column-pane", ".column-switch", ".column-switch-count",
-  ".confirm-layer", ".dialog", ".dialog-actions",
-  ".dim", ".drawer-handle", ".drawer-scrim", ".filter-mini", ".flat", ".head-actions", ".hint", ".in-group",
-  ".is-absent", ".is-hidden", ".is-member", ".is-side", ".kbd",
-  ".nav", ".nav-tooltip", ".navbtn", ".no-results", ".production-open",
+  ".confirm-layer", ".dialog-actions",
+  ".drawer-handle", ".drawer-scrim", ".filter-mini", ".head-actions",
+  ".nav", ".nav-tooltip", ".navbtn", ".no-results",
   ".rail-flyout", ".rail-flyout-filter", ".rail-flyout-head", ".rail-flyout-tree",
   ".result-copy", ".result-kind", ".result-why",
   ".search-input", ".search-layer", ".search-result", ".search-result-stale", ".search-results", ".searchbox",
   ".section-menu-name", ".section-view-menu", ".section-view-scrim",
-  ".session-age", ".session-end", ".session-filter", ".session-filter-options", ".session-state", ".sheet",
+  ".session-age", ".session-end", ".session-filter", ".session-filter-options", ".session-state",
   ".side-head", ".sidebar", ".sidebar-collapse", ".sidebar-mini", ".sidebar-mini-agent", ".sidebar-mini-agents", ".sidebar-mini-badge", ".sidebar-mini-button", ".sidebar-mini-separator", ".sidebar-resizer",
   ".toast", ".tree", ".tree-action", ".tree-agent", ".tree-context", ".tree-forks", ".tree-main", ".tree-project", ".tree-project-more", ".tree-row", ".tree-side", ".tree-title",
-  ".warn", ".write-control", ".write-help", ".write-info",
+  ".write-control", ".write-help", ".write-info",
 ]);
 
 /** The app's states, kept on `#app` (stage 5a's groups): its rail, the drawer, a wide phone's column
@@ -274,6 +273,15 @@ export const SHARED = Object.freeze([
   ".active", ".count", ".current", ".disabled", ".dragging", ".icon", ".iconbtn", ".label", ".mode-switch", ".navigator-options", ".on", ".phone-pane-body",
   ".primary", ".project", ".scope-check", ".scope-count", ".scope-menu-action", ".scope-menu-divider", ".scope-menu-head", ".scope-menu-list", ".scope-option",
   ".selected", ".session", ".show", ".smallbtn",
+]);
+
+/** Common words the app draws as modifiers (on its rows, layers and hints) that the view does not
+ *  draw today but may: like `SHARED`, they decide nothing alone. Beside a chrome name the rule is the
+ *  app's (`.navbtn .hint`); beside a name of the view's it is the view's (`.process-row.warn`,
+ *  `.transcript .hint`); alone it is in both files (`.dim`). */
+export const COMMON = Object.freeze([
+  ".arranged", ".dialog", ".dim", ".flat", ".hint", ".in-group", ".is-absent", ".is-hidden", ".is-member", ".is-side", ".kbd",
+  ".production-open", ".sheet", ".warn",
 ]);
 
 /** The classes the view's own element carries: its class and its state (stages 2 and 5a). The pane's
@@ -304,6 +312,10 @@ export const OUTSIDE = Object.freeze([
  *  on the app's grid. The view's element must not declare them, or it would hide what was written
  *  above it. Tokens an `#app` rule declares are added to these by `deriveStylesheets`. */
 export const SCRIPT_TOKENS = Object.freeze(["--preview", "--sidebar-user", "--phone-top", "--phone-bottom", "--phone-kb"]);
+
+/** The attributes the page's `body` carries (page-head.html's, and native mode's mark), which no
+ *  element of the view does: a selector led by one alone never matches under the view's element. */
+export const PAGE_ATTRIBUTES = Object.freeze(["data-paired", "data-version", "data-mdrev", "data-contract", "data-shared-codex", "data-shared-reader-open"]);
 
 /** What the view's element takes from a rule on the page's root: the properties that inherit. */
 const INHERITED = new Set([
@@ -343,18 +355,22 @@ function movable(conditions, selector) {
 
 const CHROME_NAMES = new Set(APP_CHROME);
 const STATE_NAMES = new Set(APP_STATES);
-const SHARED_NAMES = new Set(SHARED);
+const SHARED_NAMES = new Set([...SHARED, ...COMMON]);
 const ROOT_NAMES = new Set(ROOT_CLASSES);
 const isOutside = name => OUTSIDE.some(prefix => name === prefix || name.startsWith(`${prefix}-`));
 const namesIn = text => text.match(NAME) || [];
+/** A compound without its `:not(…)` parts (two levels of parentheses inside, as the sources write). */
+const withoutNot = text => text.replace(/:not\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)/g, "");
+// A pseudo-class whose argument is a list of alternatives.
+const ALTERNATIVES = /:(?:is|where|matches|-webkit-any)\(((?:[^()]|\([^()]*\))*)\)/g;
 
 /** Whether an app rule may still style an element of the view: it reads an app state on `#app` (or
  *  hangs on `#app`) and what it styles is no chrome of the app's. Such a rule stays in app-shell.css
  *  and reaches into the view from outside; `deriveStylesheets` checks it against the view's rules. */
 function reachesIn(parts) {
-  const subject = namesIn(parts[parts.length - 1].text);
+  const subject = namesIn(withoutNot(parts[parts.length - 1].text));
   if (parts.length < 2 || subject.some(n => CHROME_NAMES.has(n) || n === "#app" || n === ".app")) return false;
-  return parts.slice(0, -1).every(p => !namesIn(p.text).some(n => CHROME_NAMES.has(n)));
+  return parts.slice(0, -1).every(p => !namesIn(withoutNot(p.text)).some(n => CHROME_NAMES.has(n)));
 }
 
 /** Where one selector goes: `{kind, app, view}`, the app's copy as written (or null) and the view's
@@ -380,21 +396,52 @@ export function classify(selector) {
   const tail = rest.slice(1);
   // What follows the first compound, with its combinator: `" .x>.y"`.
   const tailText = tail.length ? joinCompounds([{ comb: "", text: "" }, ...tail]) : "";
+  // Whether the first compound goes on to its siblings (`+`, `~`) rather than into itself.
+  const sibling = tail.length > 0 && (tail[0].comb === "+" || tail[0].comb === "~");
+  const notToSiblings = () => {
+    if (sibling) throw new Error(`session-view.css: \`${selector}\` goes on from the view's element to its siblings, which are no part of the view`);
+  };
   if (/^(#app|\.app)(?![\w-])/.test(lead)) return { kind: reachesIn(parts) ? "an app state on the view" : "the app's", app: selector, view: [] };
   if (lead === ".session-view" && !tail.length && !weight && !conditions) return { kind: "the app placing the view", app: selector, view: [] };
   if (lead.startsWith(":is(#sessionView,#app)")) {
+    notToSiblings();
     return { kind: "both, through the shared hook", app: selector, view: [`#sessionView${weight}${movable(conditions, selector)}${lead.slice(":is(#sessionView,#app)".length)}${tailText}`] };
   }
   if (/^#sessionView(?![\w-])/.test(lead)) {
+    notToSiblings();
     return { kind: "the view's, on #sessionView", app: null, view: [`#sessionView${weight}${movable(conditions, selector)}${lead.slice("#sessionView".length)}${tailText}`] };
   }
-  const names = [...new Set(namesIn(joinCompounds(rest)))];
+  // A lead that names no element, before a descendant, is a condition on an ancestor, which under
+  // the view's element reads only the view's own elements. That is right for an attribute the view's
+  // elements carry (`[data-nav-card="tasks"] .x`); for one the page's body carries, or a bare
+  // pseudo-class that the page's root met as well (`:focus-within .x`), the rule would quietly match
+  // less, or nothing (`[data-shared-codex] .composer`). Say what it means instead.
+  if (tail.length && !/^[A-Za-z*]/.test(lead) && !namesIn(withoutNot(lead)).length) {
+    const attributes = [...lead.matchAll(/\[([\w-]+)/g)].map(m => m[1]);
+    if (!attributes.length || attributes.some(a => PAGE_ATTRIBUTES.includes(a))) {
+      throw new Error(`session-view.css: \`${selector}\` leads with a condition the page around the view meets; hang it on a class or on #sessionView`);
+    }
+  }
+  // The names that decide are those outside `:not()`: a rule for a view element that is not `.dim`
+  // styles the view's element (`.turn:not(.dim)`).
+  const own = rest.map(p => namesIn(withoutNot(p.text)));
+  const names = [...new Set(own.flat())];
+  const viewOwn = n => !CHROME_NAMES.has(n) && !STATE_NAMES.has(n) && !SHARED_NAMES.has(n) && !ROOT_NAMES.has(n) && n !== "#sessionView";
+  for (const p of rest) {
+    for (const [, list] of withoutNot(p.text).matchAll(ALTERNATIVES)) {
+      const alt = splitTop(list).map(namesIn);
+      if (alt.some(ns => ns.some(n => CHROME_NAMES.has(n))) && alt.some(ns => ns.some(viewOwn))) {
+        throw new Error(`session-view.css: \`${selector}\` names the app's chrome and the view's elements as alternatives; write one rule for each`);
+      }
+    }
+  }
   if (names.some(n => STATE_NAMES.has(n))) return { kind: reachesIn(rest) ? "an app state on the view" : "the app's", app: selector, view: [] };
   if (names.some(n => CHROME_NAMES.has(n))) return { kind: "the app's", app: selector, view: [] };
-  const view = names.filter(n => !SHARED_NAMES.has(n) && !ROOT_NAMES.has(n) && n !== "#sessionView");
+  const view = names.filter(viewOwn);
   // The view's copy: under the view's element, and on it too where the first compound may be it.
-  const onRoot = lead.startsWith("*") || namesIn(lead).some(n => ROOT_NAMES.has(n));
+  const onRoot = lead.startsWith("*") || namesIn(withoutNot(lead)).some(n => ROOT_NAMES.has(n));
   if (onRoot && /^[A-Za-z]/.test(lead)) throw new Error(`session-view.css: \`${selector}\` leads with a type and a class the view's element carries`);
+  if (onRoot && sibling) throw new Error(`session-view.css: \`${selector}\` goes on from what may be the view's element to its siblings, which are no part of the view`);
   const under = `${root()} ${joinCompounds(rest)}`;
   const selectors = onRoot ? [`${root()}${lead.replace(/^\*/, "")}${tailText}`, under] : [under];
   if (!view.length) return { kind: "both: no name of the view's own", app: selector, view: selectors };
@@ -473,7 +520,7 @@ export function deriveStylesheets({ reference, production }) {
           const decision = classify(sel);
           count(decision.kind);
           const parts = compounds(sel);
-          ledger.push({ sel, kind: decision.kind, spec: specificity(sel), subject: namesIn(parts[parts.length - 1].text), props: declarations(node.body).map(([prop]) => prop), view: decision.view.length > 0 });
+          ledger.push({ sel, kind: decision.kind, spec: specificity(sel), subject: namesIn(withoutNot(parts[parts.length - 1].text)), props: declarations(node.body).map(([prop]) => prop), view: decision.view.length > 0 });
           if (decision.kind === "an app state on the view") report.reachIn.push(sel);
           if (decision.app) app.push(decision.app);
           for (const written of decision.view) {
@@ -524,12 +571,15 @@ export function deriveStylesheets({ reference, production }) {
   // An app rule that styles an element of the view from outside used to stand among the view's rules
   // in source order; now it comes before all of them. Where it weighs the same as a view rule written
   // BEFORE it, on the same element and property, that view rule would now win where it lost. Listed
-  // for whoever splits: a pair whose subjects share a name and whose properties overlap.
+  // for whoever splits: a pair whose subjects could be one element (they share a name outside
+  // `:not()`, or one names none: a type or `*`) and whose properties overlap, a shorthand meeting
+  // its longhands (`padding` and `padding-left`).
   ledger.forEach((a, at) => {
-    if (a.kind !== "an app state on the view") return;
+    if (a.kind !== "an app state on the view" && a.kind !== "the app placing the view") return;
     for (const v of ledger.slice(0, at)) {
-      if (!v.view || compare(v.spec, a.spec) || !v.subject.some(n => a.subject.includes(n))) continue;
-      const props = v.props.filter(p => a.props.includes(p));
+      if (!v.view || compare(v.spec, a.spec)) continue;
+      if (v.subject.length && a.subject.length && !v.subject.some(n => a.subject.includes(n))) continue;
+      const props = v.props.filter(p => a.props.some(q => overlaps(p, q)));
       if (props.length) report.ties.push({ app: a.sel, view: v.sel, props });
     }
   });
@@ -560,6 +610,22 @@ export function deriveStylesheets({ reference, production }) {
     return false;
   });
   return { view: `${HEADER.view}${[...RESET, ...view].join("\n")}\n`, app: `${HEADER.app}${app.join("\n")}\n`, report };
+}
+
+// The longhands a shorthand sets that its name does not lead (`padding` leads `padding-left`).
+const LONGHANDS = {
+  gap: ["row-gap", "column-gap"], inset: ["top", "right", "bottom", "left"],
+  "place-items": ["align-items", "justify-items"], "place-content": ["align-content", "justify-content"], "place-self": ["align-self", "justify-self"],
+  "grid-area": ["grid-row", "grid-column"], "flex-flow": ["flex-direction", "flex-wrap"],
+  "border-radius": ["border-top-left-radius", "border-top-right-radius", "border-bottom-left-radius", "border-bottom-right-radius"],
+};
+/** Whether two declared properties set something in common: the same property, or a shorthand and
+ *  one of its longhands (`padding`/`padding-left`, `border`/`border-left-color`, `inset`/`top`). */
+function overlaps(p, q) {
+  if (p === q) return true;
+  if (p.startsWith("--") || q.startsWith("--")) return false;
+  const covers = (short, long) => long.startsWith(`${short}-`) || (LONGHANDS[short] || []).some(l => long === l || long.startsWith(`${l}-`));
+  return covers(p, q) || covers(q, p);
 }
 
 /** The view's own keyframes are named with this before their source name. */

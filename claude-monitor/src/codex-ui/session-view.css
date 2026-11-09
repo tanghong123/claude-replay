@@ -126,6 +126,7 @@
 :where(#sessionView) .cap-row span:last-child{color:var(--green)}
 :where(#sessionView) .reopen-preview{position:absolute;right:15px;top:67px;z-index:12;box-shadow:var(--shadow);background:var(--bg);border:1px solid var(--line);display:none}
 :where(#sessionView).preview-off .reopen-preview,:where(#sessionView) .preview-off .reopen-preview{display:grid}
+:where(#sessionView) .kbd{font:10px var(--mono);border:1px solid rgba(31,38,45,.10);background:var(--panel);border-radius:6px;padding:3px 6px;color:var(--faint)}
 :where(#sessionView) .search-tabs{height:45px;padding:0 15px;display:flex;align-items:flex-end;gap:5px;border-top:1px solid rgba(31,38,45,.055);border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none}
 :where(#sessionView) .search-tabs::-webkit-scrollbar{display:none}
 :where(#sessionView) .search-tab{height:44px;padding:0 12px;flex:none;position:relative;background:transparent;color:var(--faint);font-size:12.5px;cursor:pointer}
@@ -134,6 +135,9 @@
 :where(#sessionView) .search-tab[aria-selected="true"]:after{content:"";position:absolute;left:10px;right:10px;bottom:-1px;height:2px;border-radius:2px;background:#59636f}
 :where(#sessionView) .search-tab:focus-visible{outline:2px solid var(--blue);outline-offset:-3px;border-radius:7px}
 :where(#sessionView) .search-context{padding:7px 10px 5px;color:var(--faint);font-size:11px}
+:where(#sessionView) .dialog{width:min(430px,calc(100% - 28px));background:var(--bg);border:1px solid var(--line);border-radius:15px;box-shadow:var(--shadow);padding:20px}
+:where(#sessionView) .dialog h3{font-size:16px;margin:0 0 8px}
+:where(#sessionView) .dialog p{color:var(--sub);font-size:13px;margin:0 0 18px}
 @media(max-width:1180px){
 :where(#sessionView) .resizer{display:none}
 :where(#sessionView) .preview{position:fixed;right:0;top:0;bottom:0;width:min(620px,72vw);z-index:50;box-shadow:var(--shadow);transform:translateX(0);transition:transform .22s}
