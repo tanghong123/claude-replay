@@ -400,7 +400,8 @@ mod tests {
     }
 
     /// Every style rule's selectors in `css`, one per comma, each with its line, whitespace
-    /// collapsed: comments out, `@media` and `@supports` read through, other at-rules skipped.
+    /// collapsed: comments out, the at-rules that hold rules (`@media`, `@supports`, `@container`,
+    /// a `@layer` block) read through, other at-rules skipped.
     fn style_selectors(css: &str) -> Vec<(usize, String)> {
         let mut text = String::with_capacity(css.len());
         let mut rest = css;
@@ -430,7 +431,10 @@ mod tests {
                 let lead = head.len() - head.trim_start().len();
                 let line = base_line + text[..i + lead].matches('\n').count();
                 let prelude = head.trim();
-                if prelude.starts_with("@media") || prelude.starts_with("@supports") {
+                if ["@media", "@supports", "@container", "@layer"]
+                    .iter()
+                    .any(|at| prelude.starts_with(at))
+                {
                     let inner = base_line + text[..open + 1].matches('\n').count();
                     walk(&text[open + 1..close], inner, out);
                 } else if !prelude.starts_with('@') {
@@ -815,8 +819,9 @@ mod tests {
     /// nothing outside its own element, so a host's page can load it beside its own and lose
     /// nothing to it. Every selector in session-view.css starts at the view's element —
     /// `:where(#sessionView)`, which weighs nothing, or `#sessionView` (stage 5a's rules, which keep
-    /// their id) — and none names the page or the app around it; only a `@keyframes` block, global
-    /// by nature, is outside a selector. The page loads it after the app's own, app-shell.css.
+    /// their id) — none names the page or the app around it, and none goes on from the element to
+    /// its siblings (`+`, `~`); only a `@keyframes` block is outside a selector. The page loads it
+    /// after the app's own, app-shell.css.
     #[test]
     fn the_view_s_stylesheet_names_nothing_outside_its_element() {
         let css = include_str!("codex-ui/session-view.css");
@@ -834,9 +839,14 @@ mod tests {
                     !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
                 })
             });
-            let outside = selector_names(selector)
-                .iter()
-                .any(|n| matches!(*n, "#app" | ".app"))
+            // The view's element's siblings are no part of the view: nothing goes on from it with
+            // `+` or `~` (`:where(#sessionView).pane-open+.x`).
+            let (lead, _) = leading_compound(selector);
+            let to_siblings = selector[lead.len()..].trim_start().starts_with(['+', '~']);
+            let outside = to_siblings
+                || selector_names(selector)
+                    .iter()
+                    .any(|n| matches!(*n, "#app" | ".app"))
                 || ["body", "html", ":root"].iter().any(|w| bare(selector, w));
             assert!(
                 rooted && !outside,
@@ -846,11 +856,16 @@ mod tests {
                  (design/session-view-component.md, stage 5b)"
             );
         }
-        // Every rule of the file is a selector's or a keyframe's: nothing else at the top.
+        // Every rule of the file is a selector's, read through the at-rules that hold rules, or a
+        // keyframe's: nothing else at the top.
         let at_rules: Vec<&str> = css
             .lines()
             .filter(|line| line.starts_with('@'))
-            .filter(|line| !line.starts_with("@media") && !line.starts_with("@keyframes"))
+            .filter(|line| {
+                !["@media", "@supports", "@container", "@layer", "@keyframes"]
+                    .iter()
+                    .any(|at| line.starts_with(at))
+            })
             .collect();
         assert!(at_rules.is_empty(), "session-view.css holds {at_rules:?}");
         assert!(
