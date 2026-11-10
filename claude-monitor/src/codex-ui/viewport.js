@@ -172,6 +172,12 @@ export class Viewport extends VirtualWindow {
     for (const observer of [this.observer, this.contentObserver, this.outerObserver]) observer?.disconnect();
     for (const timer of [this.stillTimer, this.restTimer, this.rememberTimer]) clearTimeout(timer);
     this.stillWaiters = [];
+    // What the engine put on the window for a bug report (its violations and its history, whose
+    // export reads this engine) goes, unless a newer engine has put its own there since.
+    if (typeof window !== "undefined") {
+      if (window.__viewportViolations === this.violations) delete window.__viewportViolations;
+      if (this.history && window.__viewportHistory?.actions === this.history.actions) delete window.__viewportHistory;
+    }
     // What a timer already queued (a scroll's window update, a rest) finds nothing to do.
     for (const name of ["updateWindow", "rest", "remember", "measureNow", "displaced", "transact", "checkStill", "scheduleRemember"]) this[name] = () => {};
   }
