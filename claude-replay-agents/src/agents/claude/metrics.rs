@@ -285,7 +285,14 @@ impl MetricsAcc {
             if let Some(long) = long {
                 bucket.long_prompt += long.into();
             }
-            self.credit_advisors(u);
+            // #s447: an advisor call credited here is a second request in this push's delta, and
+            // the seam gives a class only for a delta that is ONE request. A consumer prices every
+            // model of the push in it (agent-metrics does), so the class would price the advisor
+            // at the main call's tier. With none, both price at the default class: standard, the
+            // main call's flagged as an estimate where its price depends on the request.
+            if self.credit_advisors(u) {
+                self.request_pricing = None;
+            }
             // Qoder's opaque model aliases cannot be priced from token counts; `credits`
             // supply its cost independently, as micro-credits in `credits_micro`. Real Claude usage
             // has no such field; current QoderWork usage does, and intentionally shares this
@@ -386,19 +393,22 @@ impl MetricsAcc {
     /// later line add one.
     /// An entry that names no model cannot be priced and is passed over. A type this fold does not
     /// know reports to `--unknown` (`note_unknown_record_keys`).
-    fn credit_advisors(&mut self, usage: &Value) {
+    /// Whether it credited any tokens: a new advisor call rode in this push.
+    fn credit_advisors(&mut self, usage: &Value) -> bool {
         let Some(entries) = usage.get("iterations").and_then(Value::as_array) else {
-            return;
+            return false;
         };
         let advisors: Vec<&Value> = entries
             .iter()
             .filter(|e| e.get("type").and_then(Value::as_str) == Some("advisor_message"))
             .collect();
+        let mut credited = false;
         for entry in advisors.iter().skip(self.credited_advisors) {
             let Some(model) = entry.get("model").and_then(Value::as_str) else {
                 continue;
             };
             let tokens = usage_tokens(entry);
+            credited |= tokens != TokenCounts::default();
             let bucket = self.per_model.entry(model.to_string()).or_default();
             *bucket += tokens;
             if long_prompt_over(model).is_some_and(|over| tokens.prompt() > over) {
@@ -406,6 +416,7 @@ impl MetricsAcc {
             }
         }
         self.credited_advisors = self.credited_advisors.max(advisors.len());
+        credited
     }
 
     /// The resumable snapshot. Overrides the seam default (which stores bare
@@ -845,6 +856,36 @@ mod tests {
         let (price, _) = class.price_with(&Default::default(), "claude-opus-5-5", tokens);
         let usd = price.and_then(|p| p.amount_in("USD")).unwrap();
         assert!((usd - 16.0).abs() < 1e-9, "{usd}");
+    }
+
+    /// #s447: the seam gives a class only for a delta that is one request. A push that also
+    /// credits an advisor call's tokens is two requests, so it has none: a consumer that prices
+    /// every model of the push in its class (agent-metrics does) would price the advisor at the
+    /// main call's Fast rate. A repeat line of the call, which credits nothing new from the
+    /// advisor, has its class again.
+    #[test]
+    fn a_push_that_credits_an_advisor_call_has_no_class() {
+        let fast = |id: &str, out: u64| {
+            let mut line = advised_line(id, out);
+            line["message"]["usage"]["speed"] = "fast".into();
+            line
+        };
+        let mut acc = MetricsAcc::default();
+        acc.push(&fast("msg_01", 5));
+        assert_eq!(
+            acc.request_pricing(),
+            None,
+            "the advisor's call rides in this push"
+        );
+        acc.push(&fast("msg_01", 40));
+        let class = acc
+            .request_pricing()
+            .expect("a repeat line credits nothing new from the advisor");
+        assert_eq!(class.tier, ServiceTier::Fast);
+        acc.push(&fast("msg_02", 7));
+        assert_eq!(acc.request_pricing(), None, "a second call, advised again");
+        let m = acc.finish();
+        assert_eq!(m.per_model["claude-fable-5-1"].input, 2_000_000);
     }
 
     /// #s359: an advisor entry carries the same `cache_creation` object as the usage around it.
