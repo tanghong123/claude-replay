@@ -2696,7 +2696,7 @@ function applyToolFilter() {
 // Reading came last, under a tool list that is unsorted and unbounded (five fixture rows
 // already needed scrolling; twenty MCP tools push it ~400px below the fold). One control now
 // means one thing — funnel: what is shown; this one: how it reads. They apply as custom
-// properties and two classes on the app root (see production.css), persist with the other
+// properties and two classes on the view's element (see production.css), persist with the other
 // production preferences, and are also what the `w` / `-` / `+` keys drive.
 // #173: code size and wrap left this panel. They were the only rows here that governed ONE
 // KIND of content rather than the page, and a global control read as "everything, always" —
@@ -2825,7 +2825,7 @@ let readingApplied = null;
 function applyReading() {
   const prefs = uiState.reading;
   // #173's other half: a preference that changed NOTHING must not re-guess every height. Every
-  // one of these four moves layout — size and width through the app root's properties, wrap
+  // one of these four moves layout — size and width through the view element's properties, wrap
   // through its class, raw text through a re-render — and nothing else here does, so this is
   // the whole test. `-` held down at the floor, `Reset` on an already-default panel, a second
   // click on the same switch: each used to clear the height cache and rewrite the reader's

@@ -601,7 +601,7 @@ mod tests {
         for (line, selector) in &selectors {
             let mut rest = selector.as_str();
             // The page's theme and its tokens (`:root`, `html`, `[data-theme]`), which the view
-            // reads from its root element once it draws in a shadow root (stage 6); and native
+            // reads from its own element since stage 5b (no shadow root, #s438); and native
             // mode's mark on `body`, which `backend.js` reads. The rest of such a selector is held
             // to the same rules.
             let (lead, after) = leading_compound(rest);

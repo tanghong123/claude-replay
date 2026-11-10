@@ -324,7 +324,7 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
    structurally — a Write body, a Read's output, an Edit's diff — which the renderer marks with
    `data-code` and nothing else in the document carries. It used to reach markdown code blocks,
    terminal output and a raw turn as well; those are STREAMS, and a reader who wanted the code
-   smaller got the whole page smaller. `--code-size` is the app root's property, so a block that
+   smaller got the whole page smaller. `--code-size` is the view element's property, so a block that
    sets its own (the per-block override below) simply shadows it. */
 #sessionView [data-code]{font-size:var(--code-size)}
 /* #161 + #173. Wrap is WIDER than code: it is a verbatim-TEXT control — every run of text that
