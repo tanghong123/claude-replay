@@ -1627,33 +1627,23 @@ fn the_app_shell_hears_what_its_session_view_tells_its_host() {
     );
     let subtitle = "document.getElementById('turnSubtitle').textContent + '@' + Math.round(document.querySelector('.transcript').scrollTop)";
     let after = last_view_event(&tab, "onTurn");
-    // A scroll inside one turn, as the view itself reads it: step down until two readings in a row
-    // name the same turn at different offsets (right after a jump the line can still sit in the
-    // turn above), and count the events between those two.
+    // A scroll inside the turn `]` landed: the first step down names the same turn, in the subtitle
+    // and to the app, and the app hears nothing new. Right after a landing the turn above's tail
+    // sits behind the turn bar, and painting from the unit crossing the top named it (#s450: this
+    // case stepped until two readings agreed while it did).
     let turn_of = |v: &serde_json::Value| {
         v.as_str()
             .and_then(|s| s.split('@').next())
             .map(str::to_string)
     };
     let step_down = "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:40})); s.scrollTop += 40; return 'ok'; })()";
-    let (mut landed, _) = harness::until_still(&tab, subtitle, |_| true, bound);
-    let mut inside = None;
-    for _ in 0..6 {
-        let turns_before = count("onTurn");
-        harness::eval(&tab, step_down);
-        let (scrolled, _) =
-            harness::until_still(&tab, subtitle, |v| v.as_str() != landed.as_str(), bound);
-        if turn_of(&scrolled) == turn_of(&landed) && scrolled != landed {
-            inside = Some((
-                landed.clone(),
-                scrolled.clone(),
-                turns_before,
-                count("onTurn"),
-            ));
-            break;
-        }
-        landed = scrolled;
-    }
+    let (landed, _) = harness::until_still(&tab, subtitle, |_| true, bound);
+    let turns_before = count("onTurn");
+    harness::eval(&tab, step_down);
+    let (scrolled, _) =
+        harness::until_still(&tab, subtitle, |v| v.as_str() != landed.as_str(), bound);
+    let turns_after = count("onTurn");
+    let still_heard = harness::eval(&tab, turn_matches);
     let turns = view_events(&tab, "onTurn");
 
     let said = harness::probe(&tab, "window.__viewHeard.said");
@@ -1730,12 +1720,18 @@ fn the_app_shell_hears_what_its_session_view_tells_its_host() {
             && after["args"][0]["session"] == serde_json::json!(sid),
         "`]` moved the turn the app hears from the first: {first} -> {after}"
     );
-    let Some((from, to, turns_before, turns_after)) = inside else {
-        panic!("no two readings in a row named the same turn in six steps of 40px: {turns:?}");
-    };
+    assert!(
+        scrolled != landed && turn_of(&scrolled) == turn_of(&landed),
+        "one step down from where `]` landed names the same turn ({landed} -> {scrolled}): {turns:?}"
+    );
     assert_eq!(
         turns_after, turns_before,
-        "a scroll inside one turn ({from} -> {to}) said nothing: {turns:?}"
+        "a scroll inside one turn ({landed} -> {scrolled}) said nothing: {turns:?}"
+    );
+    assert_eq!(
+        still_heard,
+        serde_json::json!(true),
+        "…and the turn the app heard last is still the one the subtitle shows: {turns:?}"
     );
     assert_eq!(
         repeated(&turns),
