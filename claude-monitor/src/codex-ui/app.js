@@ -6,7 +6,7 @@ import { agentLogo, svg } from "./icons.js";
 import { backend } from "./backend.js";
 import { PHONE_QUERY, WIDE_PHONE_QUERY } from "./shared/capabilities.js";
 import { SessionIndexStore } from "./session-index-store.js";
-import { controlState, indexState, persist, searchState, selectedRow } from "./state.js";
+import { controlState, indexState, persist as persistIndex, searchState, selectedRow } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
 import { ARRANGE_SOURCES, arrangeSessions, familyHolds, flatFamilies, isDefaultView, nestSideSessions, paneLookup, rowLookup, sectionView, viewSection } from "./session-list.js";
 import { displayState, denoteState, sessionBucket, sessionFilterBuckets, FILTER_BUCKETS, FILTER_LABELS, BLOCKED_SUMMARY } from "./shared/state-labels.js";
@@ -19,6 +19,9 @@ import { page, viewRoot } from "./view-root.js";
 // The session view's handle, once it is mounted (below). Declared first: the drawer's set-up runs
 // before the mount and asks the view to close a sheet that cannot be open yet.
 let viewHandle = null;
+/** Remember the app's choices, and the view's with them (#s429 stage 7): the one `persist` wrote both
+ *  halves' until the view kept its own, so the view's are written at the same moments as before. */
+function persist() { persistIndex(); viewHandle?.persist(); }
 const app = page.byId("app");
 const tree = page.byId("tree");
 // The session view's own element (#s429, design/session-view-component.md): where the view builds

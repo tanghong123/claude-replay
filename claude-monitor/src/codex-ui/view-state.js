@@ -93,9 +93,10 @@ export const createViewState = () => ({
   readingChosen: localStorage.getItem(READING_KEY) != null
 });
 
-/** Remember the reader's choices of the view: it calls this after changing one, and as a session is
- *  chosen (which is when the app's own remembering wrote them too, before stage 7 split the two, so
- *  the outline's first state is kept from the same moment). */
+/** Remember the reader's choices of the view: it calls this after changing one, and its host asks for
+ *  it through the handle's `persist` (the app, whenever it remembers its own, which is when its one
+ *  remembering wrote both halves' before stage 7 split the two: the outline's first state reaches
+ *  storage at the same moments). */
 export function persistView(uiState) {
   localStorage.setItem("am-demo-navigator", uiState.navigatorOpen ? "1" : "0");
   localStorage.setItem("am-prod-nav-cards", JSON.stringify([...uiState.navCards]));

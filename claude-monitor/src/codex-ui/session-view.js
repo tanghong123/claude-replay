@@ -106,8 +106,10 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    which also takes the policy of the page around it; the native app's page allows no scripts, so
  *    there the page's own would not run. With it, the view hands that document to `frame`, which
  *    answers (or resolves to) the address the frame loads instead: the native app serves the
- *    document from a scheme of its own, under the same policy (design/monitor-hub.md, D3). An answer
- *    that is not an address, or a refusal, shows the pane's own error.
+ *    document from a scheme of its own, under the same policy (design/monitor-hub.md, D3). It is asked
+ *    once per tab while the tab's text is the same, and no address is ever released: the native app
+ *    owns their lifetime. An answer that is not an address, or a refusal, shows the pane's own error
+ *    (and is asked again the next time the tab is shown).
  *  - `selectedId()`, `sessionRow(id)`, `sessionWorkers(id)`: what the app's session index says —
  *    the session it has selected, a session's row, and the headless workers a session started.
  *  - `selectSession(id, push)`: ask the app to select a session (the parent control, a descent).
@@ -138,8 +140,19 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  The handle: `select(id)` and `open(id)` (a session chosen: the view takes it, then reads it),
  *  `session()`, `close(title, detail)`, `indexChanged()`, `writeChanged()`, `resized()`,
  *  `setTheme(theme)`, `keys` (the view's key actions), `closePane()`, `paneNode(key)` and
- *  `outlineClick(event)` (the wide phone's column), and, for the monitor's own native mode,
- *  `controls` and `installNativeControls(…)`. */
+ *  `outlineClick(event)` (the wide phone's column), `persist()` (remember the reader's choices of
+ *  the view now), `unmount()`, and, for the monitor's own native mode, `controls` and
+ *  `installNativeControls(…)`.
+ *
+ *  `unmount()` takes the view away: it stops all it started (its listeners on the page, its timers,
+ *  frames and observers, the record store's polls, the pane's and the viewport's own), and work
+ *  still out when it is called (a send, a grant, the host's confirm, a dialog's read, a download, a
+ *  server search) does nothing when it comes back. It removes what it put outside its element, puts
+ *  back what the host had set where the view writes (the page root's measured properties, the
+ *  `grid`'s transform), and leaves the element as the host gave it: empty, with its own attributes.
+ *  The element must be empty when the view mounts: one holding anything is refused. After the
+ *  unmount every other member of the handle does nothing and answers nothing (`controls` too), and
+ *  the view tells its host nothing more; mounting again in the same element draws a new view. */
 export function mountSessionView(element, options) {
 for (const name of Object.keys(options)) if (!MOUNT_OPTIONS.includes(name)) throw new Error(`mountSessionView takes no option named ${name}; its options are ${MOUNT_OPTIONS.join(", ")}`);
 for (const [name, shown] of Object.entries(options.show || {})) {
@@ -178,8 +191,14 @@ const ResizeObserver = kept(globalThis.ResizeObserver), MutationObserver = kept(
 // The element as the host gave it, which `unmount` puts back: its attributes (the id, the class, the
 // theme and the reading options the view writes on it) and no children.
 const elementBefore = [...element.attributes].map(attribute => [attribute.name, attribute.value]);
-// …and whether the page's root and the host's box had a style of their own, which the view writes in.
-const stylesBefore = new Map([viewRoot.styleRoot(), options.grid].filter(Boolean).map(node => [node, node.getAttribute("style")]));
+// …and what the host had set where the view writes too, which `unmount` puts back as it was: the
+// properties the view measures onto the page's root, the transform it moves the host's box by over a
+// phone's keyboard, and whether either had a style of its own.
+const ROOT_PROPERTIES = ["--preview", "--phone-top", "--phone-bottom", "--phone-kb"];
+const hostStyles = [[viewRoot.styleRoot(), ROOT_PROPERTIES], [options.grid, ["transform"]]].filter(([node]) => node).map(([node, names]) => ({
+  node, style: node.getAttribute("style"),
+  values: names.map(name => [name, node.style.getPropertyValue(name), node.style.getPropertyPriority(name)]),
+}));
 // The view's own stores, fresh for this mount (stage 7): the open session's records and how they are
 // drawn, and how the view is laid out and read, with the reader's remembered choices.
 const recordState = createRecordState(), uiState = createViewState();
@@ -187,12 +206,15 @@ const persist = () => persistView(uiState);
 if (options.backend) useBackend(options.backend);
 // The view builds its three parts inside its element from its own markup (stage 4), so a host's
 // page carries none of the view's markup, and draws the glyphs that markup names.
-if (!element.firstElementChild) element.innerHTML = SESSION_VIEW_MARKUP;
+if (element.id && element.id !== "sessionView") throw new Error(`mountSessionView draws into an element whose id is sessionView, or that has none; this one is #${element.id}`);
+// A host gives it an empty element (stage 7): one that holds anything is refused, so the view never
+// takes a host's nodes for its own, nor takes them away when it is unmounted.
+if (element.firstElementChild) throw new Error("mountSessionView draws into an empty element; this one holds the host's nodes");
+element.innerHTML = SESSION_VIEW_MARKUP;
 element.querySelectorAll("[data-icon]").forEach(glyph => { glyph.innerHTML = svg(glyph.dataset.icon); });
 // The view's element carries its id, its class and its theme (stage 5b): its stylesheet hangs every
 // rule on #sessionView and reads the theme there, light or dark, as the host says (#s436), and
 // `viewRoot.element()` finds it by that id. A host's element with an id of its own cannot be both.
-if (element.id && element.id !== "sessionView") throw new Error(`mountSessionView draws into an element whose id is sessionView, or that has none; this one is #${element.id}`);
 element.id = "sessionView";
 element.classList.add("session-view");
 const applyTheme = theme => { element.dataset.theme = theme === "dark" ? "dark" : "light"; };
@@ -345,6 +367,7 @@ sessionCopyMenu.addEventListener("click", async event => {
   const kind = button.dataset.copySession;
   const value = kind === "id" ? (meta.sid || row?.id || "") : (meta.path || "");
   const copied = await copyText(value);
+  if (unmounted) return;
   toast(copied ? (kind === "id" ? "Copied session id" : "Copied transcript path") : "Copy failed — check the browser's clipboard permission");
   if (copied) setSessionCopyMenu(false);
 });
@@ -416,6 +439,7 @@ bindComponentEvents(transcript, recordState, {
     const url = new URL(location.href);
     url.hash = id;
     const copied = await copyText(url.href);
+    if (unmounted) return;
     if (!copied) { toast("Copy failed — check the browser's clipboard permission"); return; }
     say(options.onLinkCopied, { url: url.href, record: String(id) });
     clearTimeout(button._spotTimer);
@@ -935,7 +959,7 @@ async function findTaskRecord(task, key) {
     replies = await Promise.all(asks.map(q => backend().fetch(`/search?session=${encodeURIComponent(session)}&epoch=${head.epoch}&upto=${owed.upto}&q=${encodeURIComponent(JSON.stringify(q))}`, { cache: "no-store" })
       .then(response => (response.ok ? response.json() : Promise.reject(response.status)))));
   } catch (_) {}
-  if (taskFind !== mine || recordState.session !== session) return;
+  if (unmounted || taskFind !== mine || recordState.session !== session) return;
   taskFind = null;
   // The reader moved on while it was asked: they are not taken back.
   if (viewport.lastUserInput > mine.at) return;
@@ -2164,7 +2188,8 @@ function remoteFound(q) {
  *  really moved starts over, which drops this ask — and after five the page counts what it holds,
  *  saying the earlier turns were not searched. */
 function askRemote(mine, q, head, owed) {
-  const current = () => (q.lc ? remoteSearch : remoteFilter) === mine;
+  // Not once the view is unmounted (stage 7): an answer then has no view to settle in.
+  const current = () => !unmounted && (q.lc ? remoteSearch : remoteFilter) === mine;
   const settle = found => {
     mine.found = found;
     if (q.lc) updateSearch(false);
@@ -4116,6 +4141,19 @@ viewMounted = true;
 // the position (the debounced save may not have run yet).
 addEventListener("pagehide", () => viewport.remember(), { signal });
 document.addEventListener("visibilitychange", () => { if (document.hidden) viewport.remember(); }, { signal });
+// Once the view is unmounted every member of its handle does nothing and answers nothing (stage 7):
+// a host still holding it, or a late callback of its own, reaches nothing of a view that is gone. The
+// key actions are fenced one by one, and the compose box's controls read as none.
+function fenced(handle) {
+  const fence = run => function (...args) { return unmounted ? undefined : run.apply(this, args); };
+  for (const [name, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(handle))) {
+    if (name === "unmount") continue;
+    if (descriptor.get) Object.defineProperty(handle, name, { ...descriptor, get: fence(descriptor.get) });
+    else if (typeof descriptor.value === "function") handle[name] = fence(descriptor.value);
+    else if (descriptor.value && typeof descriptor.value === "object") handle[name] = Object.fromEntries(Object.entries(descriptor.value).map(([key, run]) => [key, typeof run === "function" ? fence(run) : run]));
+  }
+  return handle;
+}
 // What the view said while it mounted (its first title, a toast) goes to the host once
 // `mountSessionView` has returned, in the order it was said (`say`).
 queueMicrotask(() => {
@@ -4124,11 +4162,15 @@ queueMicrotask(() => {
   for (const [handler, data] of held) say(handler, data);
 });
 
-return {
+return fenced({
   /** A session was chosen: the view takes it before the app writes its address — the loading veil,
-   *  the pane's tabs, the top bar and the compose box — and remembers the reader's choices, as the
-   *  app's own remembering of a selection did while it wrote both halves' (stage 7). */
-  select(id) { sessionLoading?.show(); preview.setSession(id); renderHeader(); controls.paint(); persist(); },
+   *  the pane's tabs, the top bar and the compose box. */
+  select(id) { sessionLoading?.show(); preview.setSession(id); renderHeader(); controls.paint(); },
+  /** Remember the reader's choices of the view now (view-state.js `persistView`), as the view does
+   *  after each one. The app asks for it whenever it remembers its own (stage 7), as its one
+   *  remembering wrote both halves' before: so the outline's first state (a phone's default, the Info
+   *  pane taken out of the stack) reaches storage at the same moments it always did. */
+  persist: () => persist(),
   /** …and reads its records. */
   open(id) { recordState.session = id; queueTurn(null); viewport.beginSession(id); recordStore.open(id); },
   /** The session whose records the view reads ("" for none). */
@@ -4147,12 +4189,14 @@ return {
   /** Take the view away (stage 7). The reader's place in the session is remembered, as a page leaving
    *  remembers it; then everything the view started stops (its listeners on the page, its timers,
    *  frames and observers, the record store's reads and polls, the viewport's and the artifact
-   *  pane's own), what it put outside its element goes (the task card and its scrim, a list a wide
-   *  phone's column borrowed, the properties it measured on the page's root, the place it moved the
-   *  host's box to over a phone's keyboard), and the element is left as the host gave it: empty, with
-   *  its own attributes. The view tells its host nothing more. Mounting again in the same element
-   *  draws a new view. Native mode, which only the app installs and the app never unmounts, is not
-   *  taken down. */
+   *  pane's own, the compose box's and the downloads', whose work still out does nothing when it
+   *  comes back), what it put outside its element goes (the task card and its scrim, a list a wide
+   *  phone's column borrowed, the engine's globals for a bug report), what the host had set where the
+   *  view writes is put back (the page root's measured properties, the `grid`'s transform), and the
+   *  element is left as the host gave it: empty, with its own attributes. The view tells its host
+   *  nothing more, and every other member of the handle does nothing (`fenced`). Mounting again in
+   *  the same element draws a new view. Native mode, which only the app installs and the app never
+   *  unmounts, is not taken down. */
   unmount() {
     if (unmounted) return;
     viewport.remember();
@@ -4160,7 +4204,8 @@ return {
     recordStore.stop();
     viewport.destroy();
     preview.destroy();
-    ordinaryControls.dialog.clear();
+    ordinaryControls.destroy();
+    attachmentViewer.destroy();
     sessionLoading?.hide();
     life.abort();
     for (const id of timers) clearTimeout(id);
@@ -4169,10 +4214,10 @@ return {
     timers.clear(); frames.clear(); observers.clear();
     taskScrim.remove(); taskPopover.remove(); floating.clear();
     for (const [, , id] of PHONE_PANES) { const node = byId(id); if (node && !element.contains(node)) node.remove(); }
-    const root = viewRoot.styleRoot();
-    for (const name of ["--preview", "--phone-top", "--phone-bottom", "--phone-kb"]) root?.style.removeProperty(name);
-    grid?.style.removeProperty("transform");
-    for (const [node, style] of stylesBefore) if (style === null && !node.getAttribute("style")) node.removeAttribute("style");
+    for (const { node, style, values } of hostStyles) {
+      for (const [name, value, priority] of values) { if (value) node.style.setProperty(name, value, priority); else node.style.removeProperty(name); }
+      if (style === null && !node.getAttribute("style")) node.removeAttribute("style");
+    }
     element.replaceChildren();
     for (const { name } of [...element.attributes]) element.removeAttribute(name);
     for (const [name, value] of elementBefore) element.setAttribute(name, value);
@@ -4207,5 +4252,5 @@ return {
     await controller.adopt(status);
     return controller;
   },
-};
+});
 }
