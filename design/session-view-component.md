@@ -585,7 +585,13 @@ pane, so step 6 also makes the view's root what they are placed against.
        classifier lists `.passcode-input` with the app's chrome and its rule moved from
        `session-view.css` to `app-shell.css`. Since 5b the rule had hung on `#sessionView`, which the
        confirm layer is not inside, so the field drew unstyled (the browser's own input) whenever a
-       monitor asked for a passcode. Nothing else in either stylesheet moved.
+       monitor asked for a passcode. Nothing else in either stylesheet moved. Measured in the app on
+       this stage's build, a field drawn in the confirm layer is 38px tall with the 8px corners its
+       rule gives, and does not match `:where(#sessionView) .passcode-input`, the rule 5b to stage 6
+       shipped, so that rule never reached it. To keep the unstyled field instead, the app would draw
+       the field under a class the classifier leaves with the view.
+       The flow behind it (a grant the monitor wants a passcode for, a refused passcode, a cancel, a
+       dialog's grant) is covered by the native send tests (`codex_native_send_ownership`).
    - **The unmount**, the handle's `unmount()`. It remembers the reader's place (as a page leaving
      does), then stops what the view started and takes away what it put outside its element, and
      leaves the element as the host gave it, empty, with its own attributes; the view tells its host
@@ -607,8 +613,9 @@ pane, so step 6 also makes the view's root what they are placed against.
        the app (a dialog's answer settling) goes nowhere.
      - What it put outside its element goes: the task card and its scrim in the page's layer, a list
        a wide phone's column borrowed, the properties it measured on the page's root (`--preview`,
-       `--phone-top`, `--phone-bottom`, `--phone-kb`) and the place it moved the host's box to over a
-       phone's keyboard.
+       `--phone-top`, `--phone-bottom`, `--phone-kb`; a `style` attribute it left empty goes too) and
+       the place it moved the host's box to over a phone's keyboard. A mount and an unmount in the same
+       task are safe: what the mount held back for its host goes nowhere.
    - **Tests.** The contract holds `frame` and `write` both ways with the other options (the app
      leaves out only `show` and `frame`), runs the pane's frame (the address, a promise of one, a late
      answer, a refusal, a throw, an answer that is not an address) and the compose box's confirm (the
@@ -630,8 +637,11 @@ pane, so step 6 also makes the view's root what they are placed against.
        `DOMDebugger.getEventListeners` lists them, `harness::page_listeners`), the element is empty
        with its own attributes, nothing is left in the layer or on the root, a key reaches nothing,
        no request goes out and nothing throws; mounted again, the same listeners as the first mount,
-       one of each part, and one `w` toggles wrapping once. With the signal's abort taken out, it
-       fails on the listeners.
+       one of each part, and one `w` toggles wrapping once. The page around the view (the root's and
+       the body's attributes, the root's style, what the body and the head hold, the host's box) is
+       as it was before each mount, after a mount and an unmount in one task too, and on a phone with a
+       session and with none ever opened. With the signal's abort taken out, it fails on the
+       listeners.
 
    **Left for later:**
    - Native mode is not taken down by the unmount: only the app installs it, and the app never
