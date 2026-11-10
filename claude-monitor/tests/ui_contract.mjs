@@ -4300,7 +4300,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // Mounted alone, the pane shutting itself as it is built changed the width, and the remeasure
   // reached the record store before it existed: the pane's layout waits for the mount's end.
   assert.match(viewSource, /const paneLayoutChanged = \(\) => \{\n  if \(!viewMounted\) return;/, "the pane remeasures nothing while the view mounts");
-  assert.match(viewSource, /^renderHeader\(\); renderNavigator\(\); paintJump\(\);\n[^\n]*\nviewMounted = true;$/m, "and does from the first render on");
+  assert.match(viewSource, /^renderHeader\(\); renderNavigator\(\); paintJump\(\);\n(?:\/\/[^\n]*\n)+paneLaidOutWidth = transcript\.clientWidth;\nviewMounted = true;$/m, "and does from the first render on, measured from the width the mount left");
   // The engaged binding, run: the engagement and the keymap as the view writes them, over a fake
   // document, the view's element, a host's node, a guest and the task card the view floats.
   const engagement = /^const floating = new Set\(\);\nlet engaged = keyMode === "page";\nif \(keyMode === "engaged"\) \{\n[\s\S]*?\n\}\n/m.exec(viewSource);

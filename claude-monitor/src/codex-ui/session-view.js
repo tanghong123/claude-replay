@@ -388,7 +388,8 @@ if (keyMode === "engaged") {
 // Not while the view is mounting (stage 6): the pane shuts itself as it is built, which in a host's
 // page whose element did not start `preview-off` (the app's markup does) changes the width, and a
 // remeasure then reached the record store before it existed. The reading options' first application,
-// later in the mount, measures everything. In the app nothing changes the width while it mounts.
+// later in the mount, measures everything, and the mount's end takes the width it left as the one
+// the next change is measured from.
 let paneLaidOutWidth = transcript.clientWidth, viewMounted = false;
 const paneLayoutChanged = () => {
   if (!viewMounted) return;
@@ -4003,7 +4004,9 @@ var phoneDock;
 
 // The first render: the top bar, the outline and the jump, for no session yet.
 renderHeader(); renderNavigator(); paintJump();
-// From here the pane's layout changes remeasure the transcript (`paneLayoutChanged`).
+// From here the pane's layout changes remeasure the transcript (`paneLayoutChanged`), from the width
+// the mount left: the one read before the pane shut itself is not the transcript's any more.
+paneLaidOutWidth = transcript.clientWidth;
 viewMounted = true;
 // #114: a reload, a close or the tab going to the background saves the reader's choices with
 // the position (the debounced save may not have run yet).
