@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Session view host</title>
+<!-- A test host (#s429 stage 6): a page of the case's own that mounts the session view alone, as a
+     host app would, on the monitor's origin. The case answers this page itself through the browser
+     (harness::answer_in_browser); the monitor serves only its own modules and routes. Its options
+     come from the address: `controls=` names the optional controls switched off (comma-separated),
+     `keys=` the key mode (left out: the view's default). -->
+<link rel="stylesheet" href="/monitor-ui/session-view.css">
+<style>
+/* The host's own rules keep to its own elements, as the owner's terms say (#s438). */
+.host-bar { position: fixed; top: 0; left: 0; right: 0; height: 40px; display: flex; gap: 8px; align-items: center; padding: 0 12px; }
+.host-pane { position: fixed; top: 40px; left: 0; right: 0; bottom: 0; }
+.host-view { position: absolute; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) 6px minmax(0, 420px); overflow: hidden; }
+</style>
+</head>
+<body>
+<header class="host-bar"><button type="button" id="hostButton">The host's own button</button><span id="hostLabel">A host</span></header>
+<div class="host-pane" id="hostPane"><div class="host-view"></div></div>
+<!-- What the view still reaches for in the app's page, hidden: the compose box's controls
+     (control-store.js) bind the app's write-mode switch and its confirm layer, which state.js's
+     `controlState` ties to the app until stage 7 passes write mode in
+     (design/session-view-component.md, stage 3's "Not yet passed in"). A host without them cannot
+     mount the view today. -->
+<div hidden>
+  <div id="writeBtn"><button type="button" id="writeInfo"></button><button type="button" id="writeSwitch" role="switch" aria-checked="false"></button></div>
+  <div id="writeHelp" hidden></div>
+  <button type="button" id="sidebarMiniWrite"></button>
+  <div id="confirmLayer"><div class="dialog"><h3></h3><p id="confirmText"></p><button type="button" id="cancelSend"></button><button type="button" id="confirmSend"></button></div></div>
+</div>
+<script type="module">
+const host = window.__host = { mounted: false, error: null, events: [], keys: [] };
+try {
+  const { backendHandle } = await import("/monitor-ui/backend.js");
+  const { mountSessionView } = await import("/monitor-ui/session-view.js");
+  const params = new URLSearchParams(location.search);
+  const off = (params.get("controls") || "").split(",").filter(Boolean);
+  const options = {
+    theme: "light",
+    backend: backendHandle({ paired: true }),
+    grid: document.getElementById("hostPane"),
+    selectedId: () => "",
+    sessionRow: () => null,
+    sessionWorkers: () => [],
+    selectSession: () => {},
+    renderList: () => {},
+    refreshIndex: () => {},
+    pauseIndex: () => {},
+    resumeIndex: () => {},
+  };
+  if (off.length) options.controls = Object.fromEntries(off.map(name => [name, false]));
+  if (params.get("keys")) options.keys = params.get("keys");
+  for (const name of ["onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast"]) options[name] = (...args) => host.events.push({ name, args });
+  window.__view = mountSessionView(document.querySelector(".host-view"), options);
+  // The host's own keyboard: what reaches it after the view had its turn (the view listens first,
+  // since it mounted before this listener was added), and whether the view took it.
+  document.addEventListener("keydown", event => host.keys.push({ key: event.key, prevented: event.defaultPrevented }));
+  host.mounted = true;
+} catch (error) {
+  host.error = String(error && error.stack || error);
+}
+</script>
+</body>
+</html>

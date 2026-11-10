@@ -3579,6 +3579,104 @@ pub fn touch_glide(tab: &headless_chrome::Tab, distance: i64) -> (Vec<i64>, i64)
     (turns, writes)
 }
 
+/// A request the browser answers from the case itself ([`answer_in_browser`]): a URL `pattern` in
+/// CDP's wildcards (`*` any run, `?` one character), and the `path` the request must name exactly,
+/// its query dropped, for this body to answer it.
+pub struct Answer {
+    pub pattern: String,
+    pub path: String,
+    pub content_type: String,
+    pub body: String,
+}
+
+/// Answer some of a tab's requests from the case, before they leave the browser (#s429 stage 6),
+/// through CDP's Fetch domain; every other request goes on to the server untouched. So a case can
+/// put a page of its own on the monitor's origin (a test host that mounts the session view alone),
+/// or a wrapper in front of one of the monitor's modules, and the monitor serves nothing new: no
+/// route, no flag, nothing a reader could reach. Call it before the navigation it answers.
+pub fn answer_in_browser(tab: &headless_chrome::Tab, answers: Vec<Answer>) {
+    use headless_chrome::browser::tab::RequestPausedDecision;
+    use headless_chrome::protocol::cdp::Fetch::{
+        FulfillRequest, HeaderEntry, RequestPattern, RequestStage,
+    };
+    let patterns: Vec<RequestPattern> = answers
+        .iter()
+        .map(|answer| RequestPattern {
+            url_pattern: Some(answer.pattern.clone()),
+            resource_Type: None,
+            request_stage: Some(RequestStage::Request),
+        })
+        .collect();
+    tab.enable_fetch(Some(&patterns), None)
+        .expect("the Fetch domain is enabled");
+    let answers = std::sync::Arc::new(answers);
+    tab.enable_request_interception(std::sync::Arc::new(
+        move |_transport,
+              _session,
+              event: headless_chrome::protocol::cdp::Fetch::events::RequestPausedEvent| {
+            let url = event.params.request.url.as_str();
+            let path = url
+                .split_once("://")
+                .map(|(_, rest)| rest.find('/').map_or("/", |at| &rest[at..]))
+                .unwrap_or(url);
+            let path = path.split(['?', '#']).next().unwrap_or("");
+            match answers.iter().find(|answer| answer.path == path) {
+                Some(answer) => RequestPausedDecision::Fulfill(FulfillRequest {
+                    request_id: event.params.request_id.clone(),
+                    response_code: 200,
+                    response_headers: Some(vec![
+                        HeaderEntry {
+                            name: "Content-Type".into(),
+                            value: answer.content_type.clone(),
+                        },
+                        HeaderEntry {
+                            name: "Cache-Control".into(),
+                            value: "no-store".into(),
+                        },
+                    ]),
+                    binary_response_headers: None,
+                    body: Some(history::base64(answer.body.as_bytes())),
+                    response_phrase: None,
+                }),
+                None => RequestPausedDecision::Continue(None),
+            }
+        },
+    ))
+    .expect("the interceptor is installed");
+}
+
+/// The test host page (`tests/fixtures/host/session-view-host.html`, #s429 stage 6): the session view
+/// mounted alone in a page of the case's own, on the monitor's origin at `/session-view-host`, a
+/// single segment so the page's base is the root. `query` is the page's address after `?`
+/// (`controls=reading,history` switches those off, `keys=page` takes the page's keys). Returns once
+/// the view is mounted; panics with the page's error if it failed to.
+pub fn open_host_page(tab: &headless_chrome::Tab, monitor: &Monitor, query: &str) {
+    answer_in_browser(
+        tab,
+        vec![Answer {
+            pattern: "*/session-view-host*".into(),
+            path: "/session-view-host".into(),
+            content_type: "text/html; charset=utf-8".into(),
+            body: include_str!("../fixtures/host/session-view-host.html").into(),
+        }],
+    );
+    tab.navigate_to(&monitor.url(&format!("session-view-host?{query}")))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    until(
+        tab,
+        "!!(window.__host && (window.__host.mounted || window.__host.error))",
+        "the test host to mount the session view",
+        Duration::from_secs(20),
+        "JSON.stringify(window.__host || null)",
+    );
+    let error = eval(tab, "window.__host.error");
+    assert!(
+        error.is_null(),
+        "the test host could not mount the view: {error}"
+    );
+}
+
 /// The page's own account of what it still has to do (#351), installed before its scripts so every
 /// timer, interval, animation frame, fetch and body read it starts goes through a wrapper that
 /// knows when it is due. `window.__settle(ms, check)` then resolves the moment the page is idle —

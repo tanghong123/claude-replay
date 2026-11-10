@@ -1364,6 +1364,411 @@ fn the_app_shell_keys_step_turns_and_heads() {
     );
 }
 
+/// The last event of `name` the session view raised into the app's handler, through the case's
+/// wrapper (`fixtures/host/session-view-spy.js`), as `{name, args, plain}`; null before any.
+fn last_view_event(tab: &headless_chrome::Tab, name: &str) -> serde_json::Value {
+    harness::probe(
+        tab,
+        &format!("(function(){{ var s = ((window.__viewHeard || {{}}).said || []).filter(function (e) {{ return e.name === {name:?}; }}); return s.length ? s[s.length - 1] : null; }})()"),
+    )
+}
+
+/// The app shell is a host of its session view like any other (#s429 stage 6,
+/// design/session-view-component.md): what the view tells its host reaches the handlers the APP
+/// passed, each with plain data — the title when a session opens, the turn the reader is in as `]`
+/// moves it, a press for the session's Info, a file opened in the pane (its path and the text the
+/// transcript carries), a link copied, and a toast, which the app then shows. The case answers the
+/// app's request for `session-view.js` with a wrapper (harness::answer_in_browser) that records each
+/// call on its way to the app's own handler; the monitor serves nothing new.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_hears_what_its_session_view_tells_its_host() {
+    let _serial = serial();
+    let base = base("appshell-view-events");
+    let stores = Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let notes = repo.join("notes.md");
+    std::fs::write(&notes, "line 1\nline 2\nline 3\nline 4\n").unwrap();
+    let sid = "cccccccc-0000-4000-8000-0000000000e6".to_string();
+    let mut jsonl = harness::long_session(
+        16,
+        harness::Shape {
+            tool_every: 3,
+            think_every: 0,
+            prose_repeat: 6,
+        },
+    );
+    jsonl += &harness::user_at("carry on", &harness::at("30:01"));
+    jsonl += &harness::assistant_at(
+        "Picking up where the summary left off.",
+        &harness::at("30:02"),
+    );
+    jsonl += &harness::restored_file_at(
+        &notes.display().to_string(),
+        "notes.md",
+        4,
+        &harness::at("30:02"),
+    );
+    jsonl += &harness::user_at("next", &harness::at("30:03"));
+    let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3102, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::track_idle(&tab);
+    harness::answer_in_browser(
+        &tab,
+        vec![harness::Answer {
+            pattern: "*/monitor-ui/session-view.js".into(),
+            path: "/monitor-ui/session-view.js".into(),
+            content_type: "text/javascript; charset=utf-8".into(),
+            body: include_str!("fixtures/host/session-view-spy.js").into(),
+        }],
+    );
+    tab.navigate_to(&monitor.url(&format!("?ui=app&session={sid}")))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let bound = std::time::Duration::from_secs(20);
+    let heard = "JSON.stringify(window.__viewHeard || null).slice(0, 1500)";
+    harness::until(
+        &tab,
+        "!!window.__viewHeard && document.querySelectorAll('.virtual-window .turn.user').length >= 3",
+        "the app shell mounted through the wrapper, with a session's turns drawn",
+        bound,
+        heard,
+    );
+    let passed = harness::probe(&tab, "window.__viewHeard.passed.slice().sort()");
+    assert_eq!(
+        passed,
+        serde_json::json!([
+            "onFile",
+            "onInfo",
+            "onLinkCopied",
+            "onTitle",
+            "onToast",
+            "onTurn"
+        ]),
+        "the app passes a handler for each of the view's events"
+    );
+
+    // Its title, as the top bar shows it, once the session is open.
+    harness::until(
+        &tab,
+        &format!("(function(){{ var s = (window.__viewHeard.said || []).filter(function (e) {{ return e.name === 'onTitle'; }}).pop(); var t = document.getElementById('sessionTitle').textContent; return !!s && s.args[0].session === {sid:?} && s.args[0].title === t && t !== 'Agent Monitor'; }})()"),
+        "the view to tell the app the open session's title",
+        bound,
+        heard,
+    );
+
+    // A press for the session's Info (the view still opens its own).
+    harness::eval(
+        &tab,
+        "document.getElementById('outlineFooterInfo').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "!!(window.__viewHeard.said || []).some(function (e) { return e.name === 'onInfo'; })",
+        "the view to tell the app the reader asked for Info",
+        bound,
+        heard,
+    );
+    let info = last_view_event(&tab, "onInfo");
+    assert_eq!(
+        info["args"],
+        serde_json::json!([{ "session": sid }]),
+        "{info}"
+    );
+
+    // A file opened in the pane: the restored file's card, its path and the text it carries.
+    harness::until(
+        &tab,
+        "!!document.querySelector('[data-attachment-action]')",
+        "the restored file's card",
+        bound,
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(-400) : 'no transcript'",
+    );
+    harness::eval(&tab, "(function(){ var r = [...document.querySelectorAll('.renderer.closed')].find(function (r) { return r.querySelector('[data-attachment-action]'); }); if (r) r.querySelector(':scope > .renderer-head').click(); var b = [...document.querySelectorAll('[data-attachment-action=\"preview\"]')].find(function (b) { return /notes\\.md$/.test(b.dataset.path || ''); }); if (b) b.click(); return !!b; })()");
+    harness::until(
+        &tab,
+        "!!(window.__viewHeard.said || []).some(function (e) { return e.name === 'onFile'; })",
+        "the view to tell the app a file opened",
+        bound,
+        heard,
+    );
+    let file = last_view_event(&tab, "onFile");
+    assert_eq!(file["args"][0]["name"], "notes.md", "{file}");
+    assert_eq!(
+        file["args"][0]["path"],
+        serde_json::json!(notes.display().to_string()),
+        "{file}"
+    );
+    assert!(
+        file["args"][0]["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("line 1")),
+        "the text the transcript carries for it: {file}"
+    );
+
+    // A link copied, from a record's `#`.
+    harness::stub_clipboard(&tab);
+    let record = harness::eval(&tab, "(function(){ var b = document.querySelector('.virtual-window [data-spot-link]'); if (!b) return ''; b.click(); return b.dataset.spotLink; })()");
+    let record = record.as_str().unwrap_or("").to_string();
+    assert!(!record.is_empty(), "a record offers its link");
+    harness::until(
+        &tab,
+        "!!(window.__viewHeard.said || []).some(function (e) { return e.name === 'onLinkCopied'; })",
+        "the view to tell the app a link was copied",
+        bound,
+        heard,
+    );
+    let link = last_view_event(&tab, "onLinkCopied");
+    assert_eq!(
+        link["args"][0]["record"],
+        serde_json::json!(record),
+        "{link}"
+    );
+    let url = link["args"][0]["url"].as_str().unwrap_or("").to_string();
+    assert!(
+        url.ends_with(&format!("#{record}")) && url == harness::copied_text(&tab),
+        "the link it copied: {link}, copied {:?}",
+        harness::copied_text(&tab)
+    );
+
+    // A toast: the session's id copied from the title's menu. The app shows it.
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-copy-session=\"id\"]').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "!!(window.__viewHeard.said || []).some(function (e) { return e.name === 'onToast'; }) && document.getElementById('toast').textContent === 'Copied session id'",
+        "the view's toast to reach the app, which shows it",
+        bound,
+        &format!("{heard} + ' | toast: ' + document.getElementById('toast').textContent"),
+    );
+    let toast = last_view_event(&tab, "onToast");
+    assert_eq!(
+        toast["args"],
+        serde_json::json!(["Copied session id"]),
+        "{toast}"
+    );
+
+    // The turn the reader is in: from the top, then `]` to the next, each as the top bar's subtitle
+    // names it.
+    let turn_matches = "(function(){ var s = (window.__viewHeard.said || []).filter(function (e) { return e.name === 'onTurn'; }).pop(); if (!s || s.args[0].turn == null) return false; var a = s.args[0]; return ('Turn ' + a.turn + ' — ' + a.label).trim() === document.getElementById('turnSubtitle').textContent.trim(); })()";
+    harness::eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:-1})); s.scrollTop = 0; return 'ok'; })()");
+    harness::until_reader_owns_the_view(&tab);
+    harness::until(
+        &tab,
+        &format!("{turn_matches} && (window.__viewHeard.said.filter(function (e) {{ return e.name === 'onTurn'; }}).pop().args[0].turn === 1)"),
+        "the view to tell the app the first turn, at the top",
+        bound,
+        heard,
+    );
+    let first = last_view_event(&tab, "onTurn");
+    harness::key(&tab, "]", false);
+    harness::until(
+        &tab,
+        &format!("{turn_matches} && window.__viewHeard.said.filter(function (e) {{ return e.name === 'onTurn'; }}).pop().args[0].turn > 1"),
+        "the view to tell the app the turn `]` moved to",
+        bound,
+        heard,
+    );
+    let after = last_view_event(&tab, "onTurn");
+    assert_eq!(
+        after["args"][0]["session"],
+        serde_json::json!(sid),
+        "{after}"
+    );
+
+    let said = harness::probe(&tab, "window.__viewHeard.said");
+    let all = said.as_array().cloned().unwrap_or_default();
+    assert!(
+        all.iter().all(|e| e["plain"] == serde_json::json!(true)),
+        "every event carries plain data, never a node: {said}"
+    );
+    drop(monitor);
+    assert!(
+        first["args"][0]["turn"] == serde_json::json!(1)
+            && after["args"][0]["turn"].as_i64().unwrap_or(0) > 1,
+        "`]` moved the turn the app hears from the first: {first} -> {after}"
+    );
+}
+
+/// Whether a key pressed where the reader is (the focused element, or the page) was taken: the
+/// dispatch answers false when a listener prevented it.
+const PRESS: &str = "(function (k) { var t = document.activeElement || document.body; return !t.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); })";
+
+/// A host switches the session view's optional controls off (#s429 stage 6): mounted alone in a
+/// page of the case's own (`fixtures/host/session-view-host.html`, answered by the browser itself on
+/// the monitor's origin), with the Reading menu, the viewport history's Save and the pane's ↗ off,
+/// none of them is drawn, and the Reading menu's keys are not taken even while the reader works in
+/// the view, while a key whose control is on still is.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_draws_no_control_switched_off_and_takes_none_of_its_keys() {
+    let _serial = serial();
+    let base = base("host-controls-off");
+    let monitor = Monitor::spawn(Kind::V1, 3103, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::open_host_page(&tab, &monitor, "controls=reading,history,detach");
+    let drawn = harness::probe(
+        &tab,
+        "({ reading: !!document.getElementById('readingBtn') || !!document.querySelector('.reading-cluster'), history: !!document.querySelector('[data-history-save]'), detach: !!document.querySelector('[data-preview-new-tab]'), paneHead: !!document.getElementById('closePreview') && !!document.querySelector('.preview-reveal'), transcript: !!document.getElementById('transcript'), wrapKey: 'wrap' in window.__view.keys })",
+    );
+    assert_eq!(
+        drawn,
+        serde_json::json!({ "reading": false, "history": false, "detach": false, "paneHead": true, "transcript": true, "wrapKey": false }),
+        "no control switched off is drawn, and the rest of the view is"
+    );
+    harness::eval(&tab, "document.getElementById('transcript').dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); 'ok'");
+    let taken = harness::probe(&tab, &format!("['w', '+', '=', '-', '_'].map({PRESS})"));
+    let after = harness::probe(
+        &tab,
+        "({ wrap: document.getElementById('sessionView').classList.contains('wrap-code'), size: document.getElementById('sessionView').style.getPropertyValue('--code-size') })",
+    );
+    let search = harness::probe(
+        &tab,
+        &format!("({{ taken: {PRESS}('/'), focus: (document.activeElement || {{}}).id || '' }})"),
+    );
+    let host_saw = harness::probe(
+        &tab,
+        "window.__host.keys.map(function (k) { return k.key + ':' + k.prevented; })",
+    );
+    drop(monitor);
+    assert_eq!(
+        taken,
+        serde_json::json!([false, false, false, false, false]),
+        "the Reading menu's keys are not the view's with it off"
+    );
+    assert_eq!(
+        after,
+        serde_json::json!({ "wrap": false, "size": "12px" }),
+        "and change nothing"
+    );
+    assert_eq!(
+        search,
+        serde_json::json!({ "taken": true, "focus": "transcriptSearchInput" }),
+        "a key whose control is on still answers while the reader works in the view"
+    );
+    assert_eq!(
+        host_saw,
+        serde_json::json!(["w:false", "+:false", "=:false", "-:false", "_:false", "/:true"]),
+        "the host's own listener heard every key, after the view"
+    );
+}
+
+/// A host's keys stay the host's (#s429 stage 6, design/embedding.md "Customizing"): mounted alone
+/// in the test host page with its default, `keys: "engaged"`, the session view answers its keymap
+/// only while the reader's last press or focus is inside it — not before the reader has touched it,
+/// not after a press or focus in the host, and never for a key it has no action for. With
+/// `keys: "page"` it binds none: the host routes keys to its handle, as the app does.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_takes_its_keys_only_while_the_reader_works_in_it() {
+    let _serial = serial();
+    let base = base("host-keys-engaged");
+    let monitor = Monitor::spawn(Kind::V1, 3104, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::open_host_page(&tab, &monitor, "");
+    let drawn = harness::probe(
+        &tab,
+        "({ reading: !!document.getElementById('readingBtn'), history: !!document.querySelector('[data-history-save]'), detach: !!document.querySelector('[data-preview-new-tab]') })",
+    );
+    let wrapped = "document.getElementById('sessionView').classList.contains('wrap-code')";
+    let step = |js: &str| -> serde_json::Value {
+        harness::probe(
+            &tab,
+            &format!("(function(){{ {js}; return {{ taken: {PRESS}('w'), wrap: {wrapped}, active: (document.activeElement || {{}}).id || document.activeElement.tagName }}; }})()"),
+        )
+    };
+    let untouched = step("");
+    let pressed_in = step("document.getElementById('transcript').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))");
+    let unbound = harness::probe(&tab, &format!("{PRESS}('\\\\')"));
+    let host_press = step("var b = document.getElementById('hostButton'); b.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); b.focus()");
+    let focus_in = step("var v = [].slice.call(document.querySelectorAll('#sessionView button')).find(function (b) { return b.offsetParent && !b.disabled; }); v.focus()");
+    let focus_in_active = harness::eval(
+        &tab,
+        "document.getElementById('sessionView').contains(document.activeElement)",
+    );
+    let host_focus = step("document.getElementById('hostButton').focus()");
+    let host_saw = harness::probe(&tab, "window.__host.keys.length");
+    // `keys: "page"`: the view binds nothing; the host's own routing to the handle still works.
+    harness::open_host_page(&tab, &monitor, "keys=page");
+    let page_mode = step("document.getElementById('transcript').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))");
+    let routed = harness::eval(
+        &tab,
+        &format!("(function(){{ window.__view.keys.wrap(); return {wrapped}; }})()"),
+    );
+    drop(monitor);
+    assert_eq!(
+        drawn,
+        serde_json::json!({ "reading": true, "history": true, "detach": true }),
+        "every optional control is on by default"
+    );
+    assert_eq!(
+        (untouched["taken"].clone(), untouched["wrap"].clone()),
+        (serde_json::json!(false), serde_json::json!(false)),
+        "before the reader has touched the view, its keys are the host's: {untouched}"
+    );
+    assert_eq!(
+        (pressed_in["taken"].clone(), pressed_in["wrap"].clone()),
+        (serde_json::json!(true), serde_json::json!(true)),
+        "a press inside the view engages it, the focus still on the page: {pressed_in}"
+    );
+    assert_eq!(
+        unbound,
+        serde_json::json!(false),
+        "a key the view has no action for (`\\`) stays the page's"
+    );
+    assert_eq!(
+        (
+            host_press["taken"].clone(),
+            host_press["wrap"].clone(),
+            host_press["active"].clone()
+        ),
+        (
+            serde_json::json!(false),
+            serde_json::json!(true),
+            serde_json::json!("hostButton")
+        ),
+        "a press in the host ends it: {host_press}"
+    );
+    assert_eq!(
+        focus_in_active,
+        serde_json::json!(true),
+        "the focus went into the view"
+    );
+    assert_eq!(
+        (focus_in["taken"].clone(), focus_in["wrap"].clone()),
+        (serde_json::json!(true), serde_json::json!(false)),
+        "focus coming into the view engages it: {focus_in}"
+    );
+    assert_eq!(
+        (host_focus["taken"].clone(), host_focus["wrap"].clone()),
+        (serde_json::json!(false), serde_json::json!(false)),
+        "focus going to the host ends it: {host_focus}"
+    );
+    assert_eq!(
+        host_saw,
+        serde_json::json!(6),
+        "the host's listener heard every key"
+    );
+    assert_eq!(
+        (page_mode["taken"].clone(), page_mode["wrap"].clone()),
+        (serde_json::json!(false), serde_json::json!(false)),
+        "with keys: \"page\" the view binds none, even while engaged: {page_mode}"
+    );
+    assert_eq!(
+        routed,
+        serde_json::json!(true),
+        "and the host's own routing to the handle's keys works"
+    );
+}
+
 /// The app shell's layout contract, the counterpart of the v2 classic case (task #27): on a
 /// fresh open the view lands pinned at the tail; the TRANSCRIPT is the scroller, and scrolling
 /// it leaves the header and the sidebar exactly where they were; there is no iframe anywhere.
