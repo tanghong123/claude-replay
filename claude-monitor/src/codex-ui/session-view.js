@@ -8,8 +8,8 @@
 // The function's body sits at the margin ON PURPOSE. It is the view's code as it stood at app.js's
 // top level before the split, moved line for line (`git diff --color-moved` shows it so), and the
 // frontend contract's patterns read it unchanged (several pin a column or an indent). A whitespace-
-// only commit can indent it once the stages that rewrite it (the template, the styles, the shadow
-// root) are done.
+// only commit can indent it once the stages that rewrite it (the template, the styles, the events
+// and options) are done.
 import { svg } from "./icons.js";
 import { SESSION_VIEW_MARKUP } from "./session-view-markup.js";
 import { backend, useBackend } from "./backend.js";
@@ -26,7 +26,7 @@ import { persist, recordState, uiState } from "./state.js";
 import { displayState } from "./shared/state-labels.js";
 import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
-import { hintFor } from "./shared/keymap.js";
+import { hintFor, inGuest, resolveKey } from "./shared/keymap.js";
 import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, querySpans, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, prefixOf, CLASS_ORDER, wholeAt, toolMatches, recordHasTool, toolLetters as sessionToolLetters, resolveTools as resolveToolSpec } from "./shared/search.js";
 import { agentName, agentRecordTargets, currentTurnIndex, escapeText, peerHue, peerLabelRest, plainText, recordForSearch, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick, replyContext } from "./view-model.js";
 import { Viewport } from "./viewport.js";
@@ -38,25 +38,55 @@ import { page, viewRoot } from "./view-root.js";
  *  phone's column shows the same lists under the app's tabs, so the app reads this too. */
 export const PHONE_PANES = Object.freeze([["turns", "Turns", "navigatorTurns"], ["tasks", "Tasks", "navigatorWork"], ["agents", "Agents", "navigatorAgents"]].map(pane => Object.freeze(pane)));
 
+/** The controls a host may switch off (#s436; design/session-view-component.md, stage 6), each on
+ *  unless the `controls` option names it `false`. */
+export const OPTIONAL_CONTROLS = Object.freeze(["reading", "history", "detach"]);
+/** How the view takes its keys: "engaged" binds them itself, answering only while the reader works
+ *  in the view; "page" leaves the page's keyboard to the host, which calls the handle's `keys`. */
+export const KEY_MODES = Object.freeze(["engaged", "page"]);
+
 /** Draw the session view in `element` and return its handle. The element becomes `#sessionView`, the
- *  id the view's stylesheet hangs every rule on; one with another id is refused.
+ *  id the view's stylesheet hangs every rule on; one with another id is refused. The view always
+ *  draws into the page (#s438): no shadow root.
  *
- *  Options. The last five, from `parentShown` on, are what the view tells its host, which a host
- *  may leave out; `backend` is optional too (the page's own handle stands); the rest are required:
- *  - `isolate`: `false`, the only mode built yet: the view draws into the page, its parts columns
- *    of the app's grid (the shadow root is stage 6).
+ *  Options. Required: `grid`, `selectedId`, `sessionRow`, `sessionWorkers`, `selectSession`,
+ *  `renderList`, `refreshIndex`, `pauseIndex` and `resumeIndex`. The rest are optional: a host may
+ *  leave out `theme`, `backend`, `controls` and `keys` (each has a default), and every handler of
+ *  what the view tells it.
  *  - `theme`: "light" (the default) or "dark", carried by the view's element, where its stylesheet
  *    reads it; the handle's `setTheme` changes it.
- *  - `grid`: the app's grid (`#app`). While the view draws into the page it carries the reading
- *    properties (`--code-size`, `--measure`), and it is the box the phone's sheets are measured
- *    against and moved back over iOS's keyboard scroll, as before the split.
- *  - `backend`: the backend handle the view reads its session through (`useBackend`'s).
- *  - `toast(message)`: say something briefly.
+ *  - `grid`: the box around the view (the app's `#app`). The phone's sheets are measured against it
+ *    (`--phone-top`, `--phone-bottom`), and it is the box moved back over iOS's page scroll while
+ *    the keyboard is up, whose height native mode's keyboard frame reads. Embedding's step 6 makes
+ *    the view's own element that box.
+ *  - `backend`: the backend handle the view reads its session through (`useBackend`'s); the page's
+ *    own handle stands without one.
+ *  - `controls`: the optional controls switched off, by name, as `{ reading: false }`; each is on
+ *    unless named `false`, and a name not in `OPTIONAL_CONTROLS` is refused. A control switched off
+ *    is not drawn and takes no key.
+ *    - `reading`: the Reading menu (Aa) and its keys (`w`, `-`, `+`).
+ *    - `history`: the viewport history's Save, a row of the Reading menu.
+ *    - `detach`: the artifact pane's ↗, which opens the document or image in a tab of its own.
+ *  - `keys`: "engaged" (the default) or "page", as `KEY_MODES` says. Engaged, the view answers its
+ *    keymap only while the reader's last click or focus is inside its element (or the task card it
+ *    floats over the page), and yields to a guest inside it (mdrev's pane), as mdrev does; a key it
+ *    has no action for is left to the page. "page" binds none: the host owns the page's keyboard and
+ *    calls `keys[action]` for the keymap's bindings, as the app shell does with its list's keys.
  *  - `selectedId()`, `sessionRow(id)`, `sessionWorkers(id)`: what the app's session index says —
  *    the session it has selected, a session's row, and the headless workers a session started.
  *  - `selectSession(id, push)`: ask the app to select a session (the parent control, a descent).
  *  - `renderList()`, `refreshIndex()`, `pauseIndex()`, `resumeIndex()`: the session list and
  *    its index, for the compose box's controls (native mode's among them).
+ *
+ *  What the view tells its host, each with plain data (never a node), each optional:
+ *  - `onTitle({ session, title })`: the title its top bar shows changed (a session opened, its
+ *    row renamed; `session` "" and the placeholder title for none).
+ *  - `onTurn({ session, turn, label })`: the turn the reader is in changed (`turn` null for none).
+ *  - `onInfo({ session })`: the reader pressed for the session's Info (the view opens it itself).
+ *  - `onFile({ name, path, text })`: a file opened in the artifact pane: its path ("" for none),
+ *    and the text the transcript carries for it (null for none).
+ *  - `onLinkCopied({ url, record })`: the reader copied a link to a record.
+ *  - `onToast(message)`: say something briefly.
  *  - `parentShown(id)`: the top bar offers a way back to this parent (the app writes the browser's
  *    Back to it for a deep-linked child).
  *  - `openList()`, `openSidebar()`: the top bar's back-to-the-list and reopen controls, the app's.
@@ -68,7 +98,11 @@ export const PHONE_PANES = Object.freeze([["turns", "Turns", "navigatorTurns"], 
  *  actions), `closePane()`, `paneNode(key)` and `outlineClick(event)` (the wide phone's column),
  *  and, for the monitor's own native mode, `controls` and `installNativeControls(…)`. */
 export function mountSessionView(element, options) {
-if (options.isolate !== false) throw new Error("mountSessionView draws into the page only, for now: pass isolate: false (design/session-view-component.md, stage 6)");
+for (const name of Object.keys(options.controls || {})) if (!OPTIONAL_CONTROLS.includes(name)) throw new Error(`mountSessionView has no optional control named ${name}; the controls a host may switch off are ${OPTIONAL_CONTROLS.join(", ")}`);
+const keyMode = options.keys ?? "engaged";
+if (!KEY_MODES.includes(keyMode)) throw new Error(`mountSessionView takes its keys "engaged" or "page", not ${JSON.stringify(keyMode)}`);
+/** Whether an optional control is drawn: each is, unless the host switched it off. */
+const shows = name => options.controls?.[name] !== false;
 if (options.backend) useBackend(options.backend);
 // The view builds its three parts inside its element from its own markup (stage 4), so a host's
 // page carries none of ours, and draws the glyphs that markup names.
@@ -82,7 +116,7 @@ element.id = "sessionView";
 element.classList.add("session-view");
 const applyTheme = theme => { element.dataset.theme = theme === "dark" ? "dark" : "light"; };
 applyTheme(options.theme);
-const { toast, selectSession } = options;
+const { selectSession } = options;
 const grid = options.grid;
 // The view's own element: its three parts, and the state it keeps for itself (stage 2).
 const sessionView = element;
@@ -91,6 +125,27 @@ const selectedId = () => options.selectedId();
 const sessionRow = id => options.sessionRow(id) || null;
 const selectedRow = () => sessionRow(selectedId());
 const sessionWorkers = (id = recordState.session) => options.sessionWorkers(id);
+// What the view tells its host (stage 6), as plain data. The title and the turn are said only when
+// they change: the top bar is redrawn on every index poll and the turn bar on every scroll.
+const toast = message => options.onToast?.(String(message));
+let saidTitle = null, saidTurn = null;
+function sayTitle(title) {
+  const session = selectedId() || "", said = `${session}\u0000${title}`;
+  if (said === saidTitle) return;
+  saidTitle = said;
+  options.onTitle?.({ session, title });
+}
+function sayTurn(unit) {
+  const session = recordState.session || "", turn = unit ? unit.turn : null, label = unit ? unit.label || "" : "";
+  const said = `${session}\u0000${turn}\u0000${label}`;
+  if (said === saidTurn) return;
+  saidTurn = said;
+  options.onTurn?.({ session, turn, label });
+}
+const sayInfo = () => options.onInfo?.({ session: recordState.session || selectedId() || "" });
+/** A file the artifact pane was asked to show: its name, path and carried text, copied off the tab,
+ *  which also holds the file's stamps and an image's bytes. */
+const sayFile = item => options.onFile?.({ name: String(item.name || ""), path: String(item.path || ""), text: typeof item.text === "string" ? item.text : null });
 
 // The outline row currently marked (#52) — declared ahead of the init code below, which
 // renders the navigator before the module's later statements have run.
@@ -256,6 +311,7 @@ bindComponentEvents(transcript, recordState, {
     url.hash = id;
     const copied = await copyText(url.href);
     if (!copied) { toast("Copy failed — check the browser's clipboard permission"); return; }
+    options.onLinkCopied?.({ url: url.href, record: String(id) });
     clearTimeout(button._spotTimer);
     button.classList.add("copied");
     button.querySelector("span").textContent = "✓";
@@ -283,14 +339,19 @@ bindComponentEvents(transcript, recordState, {
 // Elsewhere — a phone, or below 1180px — it lies over the transcript, whose width and so every
 // height are unchanged, and a remeasure only threw every measured height away: on a phone it was the
 // step through which a pane a tap had opened moved the reader back several turns.
-let paneLaidOutWidth = transcript.clientWidth;
+// Not while the view is mounting (stage 6): the pane shuts itself as it is built, which in a host's
+// page whose element did not start `preview-off` (the app's markup does) changes the width, and a
+// remeasure then reached the record store before it existed. The reading options' first application,
+// later in the mount, measures everything. In the app nothing changes the width while it mounts.
+let paneLaidOutWidth = transcript.clientWidth, viewMounted = false;
 const paneLayoutChanged = () => {
+  if (!viewMounted) return;
   const width = transcript.clientWidth;
   if (width === paneLaidOutWidth) return;
   paneLaidOutWidth = width;
   viewport.remeasure();
 };
-const preview = new Preview({ layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") });
+const preview = new Preview({ layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") });
 const attachmentViewer = new AttachmentViewer({ toast });
 const controlActions = { renderTree: () => options.renderList(), recordSnapshot: () => ({ session: recordState.session, records: recordState.records }), toast, refreshIndex: () => options.refreshIndex(), pauseIndex: () => options.pauseIndex(), resumeIndex: () => options.resumeIndex(), selectSession, refreshEmpty: () => recordStore.refreshEmpty() };
 const ordinaryControls = new ControlStore(controlActions);
@@ -393,7 +454,12 @@ function renderParent(meta) {
   if (parent) options.parentShown?.(parent.id);
   return parent;
 }
+/** The top bar for the selected session, and its title to the host (`onTitle`, when it changed). */
 function renderHeader() {
+  paintHeader();
+  sayTitle(sessionTitle.textContent);
+}
+function paintHeader() {
   renderArtifacts();
   const row = selectedRow();
   const liveMeta = recordState.session === selectedId() ? recordState.meta : null;
@@ -2576,6 +2642,8 @@ readingSection.innerHTML = `<div class="scope-menu-head"><strong>Reading</strong
 <div class="reading-row reading-wrap"><span>Wrap long lines</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wrap" aria-label="Wrap long lines — the baseline every code block starts from" aria-checked="false"><span></span></button></div>
 <div class="reading-row"><span>User turns as raw text</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="rawUser" aria-label="Show user turns as raw text — exactly as typed, whitespace intact" aria-checked="false"><span></span></button></div>
 <div class="reading-row"><span>Viewport history</span><button class="scope-menu-action" type="button" data-history-save title="Save the last hour of what you did and what the page did — kinds, heights and timings, no content">Save</button></div>`;
+// A host may switch the viewport history's Save off (stage 6): it is this repository's bug report.
+if (!shows("history")) readingSection.querySelector("[data-history-save]").closest(".reading-row").remove();
 // Production-only chrome, built here so the extracted demo shell stays byte-identical (the
 // same reason the retired rail X wrote its own SVG). The cluster is the positioning
 // context the popover anchors to; `navigator-options` carries the shared popover styling,
@@ -2604,8 +2672,9 @@ readingOptions.append(readingSection);
 readingCluster.append(readingBtn, readingOptions);
 // Anchored on `sessionFoldAll`, not on the outline toggle: #148 has since removed that button,
 // and `.before()` on a missing node throws at module load — a blank app shell that every static
-// gate would pass.
-byId("sessionFoldAll").after(readingCluster);
+// gate would pass. A host that switched the menu off (stage 6) gets none: the cluster is never
+// placed, here or in the phone's dock (`placeToolbar`).
+if (shows("reading")) byId("sessionFoldAll").after(readingCluster);
 
 /** Only one header popover is open at a time — two overlapping sheets is not a menu. */
 function setPopover(which) {
@@ -3039,11 +3108,14 @@ panesMenu.onclick = event => {
     node.addEventListener("focusout", leave);
   }
   popover.addEventListener("pointerenter", () => clearTimeout(closeTimer));
-  // Click PINS it, so the reader can read inside it, fold a group, or select a value to copy.
-  trigger.addEventListener("click", () => { pinned = !pinned; show(pinned || true); if (!pinned) leave(); });
+  // Click PINS it, so the reader can read inside it, fold a group, or select a value to copy. A press
+  // that pins is the reader asking for the session's Info, which the host hears (`onInfo`); a hover's
+  // peek is not.
+  const pin = () => { pinned = !pinned; show(pinned || true); if (pinned) sayInfo(); else leave(); };
+  trigger.addEventListener("click", pin);
   // The phone's "i" in the top bar (#313) is this same control: a tap pins or unpins, and there is
   // no hover to peek with, so an unpin closes at once.
-  infoPopoverToggle = () => { pinned = !pinned; show(pinned); };
+  infoPopoverToggle = () => { pinned = !pinned; show(pinned); if (pinned) sayInfo(); };
   addEventListener("pointerdown", event => {
     if (pinned && !popover.contains(event.target) && !trigger.contains(event.target) && !event.target.closest?.("[data-info-trigger]")) { pinned = false; show(false); }
   }, true);
@@ -3057,7 +3129,7 @@ panesMenu.onclick = event => {
     railInfo.title = "Session details";
     for (const type of ["pointerenter", "focus"]) railInfo.addEventListener(type, peek);
     railInfo.addEventListener("pointerleave", leave);
-    railInfo.addEventListener("click", () => { pinned = !pinned; show(pinned || true); if (!pinned) leave(); });
+    railInfo.addEventListener("click", pin);
   }
 }
 applyPanes(); // the stored choice, before anything measures the column
@@ -3286,6 +3358,7 @@ function updateTurnBar(atKey) {
   turnStickyAt = on ? unit.from : null;
   turnSubtitle.hidden = !unit;
   if (unit) turnSubtitle.textContent = `Turn ${unit.turn} — ${unit.label || ""}`.trimEnd();
+  sayTurn(unit);
   if (!on) return;
   turnStickyText.textContent = `Turn ${unit.turn} — ${unit.label || ""}`.trimEnd();
   turnStickyBar.title = `Back to turn ${unit.turn}`;
@@ -3401,7 +3474,9 @@ function stepHead(delta) {
 function pageTranscript(direction) {
   viewport.pageBy(direction, { intent: true });
 }
-// The view's half of the keymap: the app binds the page's keys and adds the list's (app.js).
+// The view's half of the keymap, by the keymap's action names: the handle's `keys`. In the app
+// (`keys: "page"`) the app binds the page's keys and adds the list's (app.js); engaged, the view
+// binds them itself (below).
 const keyActions = {
   "search": () => { setPhoneSearch(true); byId("transcriptSearchInput").focus(); },
   "turn-next": () => stepTurn(1), "turn-prev": () => stepTurn(-1),
@@ -3414,6 +3489,29 @@ const keyActions = {
   "tasks-center": () => centerTasks(),
   "parent": () => { if (parentBtn.dataset.parent) selectSession(parentBtn.dataset.parent, true); }
 };
+// A control a host switched off takes no key (stage 6): its actions are not the view's.
+if (!shows("reading")) for (const action of ["wrap", "size-down", "size-up"]) delete keyActions[action];
+// Engaged (stage 6, the default for a host): the view answers its keymap only while the reader is
+// working in it, as `design/embedding.md` says a component does, so it never takes the host's keys.
+// Engagement is mdrev's own rule, which `bindKeymap` already reads for a guest (#270): the last
+// mousedown or focus landed inside the view's element, or inside what it floats over the page from
+// `viewRoot.layer()` (the task card and its scrim), and not inside a guest of the view's (mdrev's
+// pane), whose keys stay its own. The shared keymap resolves the binding; an action the view does
+// not have (the list's arrows, `\`) or one that answers `false` is left to the page. "page" binds
+// nothing: the host routes the page's keys to `keys` (app.js).
+if (keyMode === "engaged") {
+  let engaged = false;
+  const inView = target => !!target && typeof target.closest === "function" && (element.contains(target) || taskPopover.contains(target) || taskScrim.contains(target));
+  const engage = event => { engaged = inView(event.target) && !inGuest(event.target); };
+  document.addEventListener("mousedown", engage, true);
+  document.addEventListener("focusin", engage, true);
+  document.addEventListener("keydown", event => {
+    if (!engaged || !element.isConnected) return;
+    const binding = resolveKey(event, "view", event.target);
+    const act = binding && keyActions[binding.action];
+    if (act && act() !== false) event.preventDefault();
+  });
+}
 // Discoverability in the shell's idiom: the key in the control's own title / hint.
 byId("transcriptSearchInput").placeholder = `Search this session  ( ${hintFor("search")} )`;
 byId("findPrev").title = `Previous match (${hintFor("hit-prev")})`; byId("findNext").title = `Next match (${hintFor("hit-next")})`;
@@ -3649,11 +3747,11 @@ var phoneDock;
   window.visualViewport?.addEventListener("resize", paintCompose);
   const placeToolbar = () => {
     if (PHONE.matches) {
-      dockPill.append(readingCluster);
+      if (shows("reading")) dockPill.append(readingCluster);
       dock.append(searchCluster, searchDone, dockCompose);
     } else {
       topbar.querySelector(".top-spacer").after(searchCluster);
-      byId("sessionFoldAll").after(readingCluster);
+      if (shows("reading")) byId("sessionFoldAll").after(readingCluster);
     }
   };
   placeToolbar();
@@ -3862,6 +3960,8 @@ var phoneDock;
 
 // The first render: the top bar, the outline and the jump, for no session yet.
 renderHeader(); renderNavigator(); paintJump();
+// From here the pane's layout changes remeasure the transcript (`paneLayoutChanged`).
+viewMounted = true;
 // #114: a reload, a close or the tab going to the background saves the reader's choices with
 // the position (the debounced save may not have run yet).
 addEventListener("pagehide", () => viewport.remember());

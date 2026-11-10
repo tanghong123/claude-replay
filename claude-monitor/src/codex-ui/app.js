@@ -1147,14 +1147,14 @@ var mobileShell;
 }
 
 // The session view (session-view.js): its three parts are columns of this grid, and it draws into
-// the page (`isolate: false`) until it has a shadow root of its own (design/session-view-component.md).
-// What it needs from the app is passed in here; what the app asks of it is the handle.
+// the page, as it does in every host (design/session-view-component.md, #s438). What it needs from
+// the app is passed in here; what the app asks of it is the handle. Every optional control stays on,
+// and the app keeps the page's keyboard (`keys: "page"`, the keymap below).
 viewHandle = mountSessionView(viewRoot.element(), {
-  isolate: false,
   theme: page.html().dataset.theme === "dark" ? "dark" : "light",
   backend: backend(),
   grid: app,
-  toast,
+  keys: "page",
   selectedId: () => indexState.selected,
   sessionRow: id => indexState.rows.get(id) || null,
   sessionWorkers,
@@ -1168,6 +1168,15 @@ viewHandle = mountSessionView(viewRoot.element(), {
   openSidebar: () => toggleSidebar(true),
   paneLayout: (name, on) => app.classList.toggle(name, on),
   paneCount: (key, text) => mobileShell?.paneCount(key, text),
+  // What the view tells its host (stage 6). The view still draws its own top bar, title, turn and
+  // Info included (the app's phone bar takes them at embedding's step 6), and the app has no use yet
+  // for a file opened or a link copied: today's page does nothing with any of them. It shows a toast.
+  onTitle: () => {},
+  onTurn: () => {},
+  onInfo: () => {},
+  onFile: () => {},
+  onLinkCopied: () => {},
+  onToast: toast,
 });
 // The rail's write button reaches the write switch itself (#54): the demo clicks the write
 // BUTTON, whose handler ignores a click that lands on a button — a programmatic click does.
@@ -1182,7 +1191,9 @@ const keyActions = {
   "list-next": () => stepList(1), "list-prev": () => stepList(-1),
   "sidebar-toggle": () => toggleSidebar(!indexState.sidebarOpen),
 };
-bindKeymap(document, target => (target?.closest?.(".tree-row") ? "list" : "view"), action => keyActions[action]?.());
+// A key with no action here (a control a host switched off) is left to the page, as the view's own
+// binding leaves it; every action the keymap names has one in the app, so nothing changes for it.
+bindKeymap(document, target => (target?.closest?.(".tree-row") ? "list" : "view"), action => (keyActions[action] ? keyActions[action]() : false));
 addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openGlobalSearch(); } else if (event.key === "Escape") page.byId("searchLayer").classList.remove("production-open"); });
 
 applySidebar();

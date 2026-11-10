@@ -4185,17 +4185,54 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // #s429 stage 3: the app and the session view call each other by NAME, the view's options and the
 // handle it returns. Most options are optional callbacks (`options.paneCount?.(…)`), so a rename on
 // one side would fail silently: a wide phone's pane counts, or a deep-linked child's Back. So every
-// option the view reads is one the app passes, every option passed is read, and every member of the
-// handle the app calls is one the view returns.
+// option the view reads is one the app passes or one the doc comment names as optional, every option
+// passed is read, every option read is documented, every handler of what the view tells its host
+// (`on…`) is called, and every member of the handle the app calls is one the view returns.
+// Stage 6 added the optional ones a host may leave out (`controls`, the app's are all on) and the
+// events, and took `isolate` away.
 {
   const call = /viewHandle = mountSessionView\(viewRoot\.element\(\), \{\n([\s\S]*?)\n\}\);/.exec(appSource);
   assert.ok(call, "the app mounts the view in one call with an options literal");
   const passed = new Set([...call[1].matchAll(/^  ([A-Za-z]+)(?=[:,])/gm)].map(m => m[1]));
   const destructured = /^const \{ ([A-Za-z, ]+) \} = options;$/m.exec(viewSource);
   assert.ok(destructured, "the view takes its plain options by destructuring");
+  // Only literal reads count, so the view names every option it reads as `options.<name>`.
+  assert.doesNotMatch(viewSource, /\boptions\[/, "no option is read by a computed name, which the scan below cannot see");
   const read = new Set([...viewSource.matchAll(/\boptions\.([A-Za-z]+)/g)].map(m => m[1]));
   for (const name of destructured[1].split(/,\s*/)) read.add(name);
-  assert.deepEqual([...read].sort(), [...passed].sort(), "the options the view reads are exactly the ones the app passes");
+  // The doc comment over `mountSessionView` says which options are required and documents each.
+  const doc = /\/\*\* Draw the session view in `element`[\s\S]*?\*\/\nexport function mountSessionView\(element, options\) \{/.exec(viewSource);
+  assert.ok(doc, "mountSessionView carries its doc comment");
+  const required = /Options\. Required: ([^.]+)\./.exec(doc[0].replace(/\n \*\s*/g, " "));
+  assert.ok(required, "the doc comment lists the required options");
+  const requiredNames = new Set([...required[1].matchAll(/`([A-Za-z]+)`/g)].map(m => m[1]));
+  const documented = new Set([...doc[0].matchAll(/`([A-Za-z]+)(?:\([^`]*\))?`/g)].map(m => m[1]));
+  for (const name of read) assert.ok(documented.has(name), `the view reads options.${name}, which its doc comment names`);
+  for (const name of requiredNames) assert.ok(read.has(name) && passed.has(name), `the required option ${name} is read and the app passes it`);
+  const optional = [...read].filter(name => !passed.has(name)).sort();
+  for (const name of optional) assert.ok(!requiredNames.has(name), `options.${name}, which the app leaves out, is documented as optional`);
+  assert.deepEqual(optional, ["controls"], "the app leaves out only what it keeps at its default: every optional control on");
+  for (const name of passed) assert.ok(read.has(name), `the app passes ${name}, which the view reads`);
+  assert.ok(!read.has("isolate") && !passed.has("isolate"), "isolate is gone (#s438): the view always draws into the page");
+  assert.doesNotMatch(viewSource, /\bisolate\b/, "and the view says nothing of it");
+  // What the view tells its host: each handler a host may pass is called, by its literal name.
+  const EVENTS = ["onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast"];
+  const handlers = [...read].filter(name => /^on[A-Z]/.test(name)).sort();
+  assert.deepEqual(handlers, [...EVENTS].sort(), "the view's events are the six the design names");
+  for (const name of handlers) {
+    assert.match(viewSource, new RegExp(`\\boptions\\.${name}\\?\\.\\(`), `the view calls options.${name} where it does that thing`);
+    assert.ok(passed.has(name), `the app passes ${name}, so its tests see each event reach it`);
+  }
+  // The app keeps the page's keyboard; a host left at the default gets the view's engaged keys.
+  assert.match(call[1], /^  keys: "page",$/m, "the app passes keys: \"page\"");
+  const { KEY_MODES, OPTIONAL_CONTROLS } = { KEY_MODES: JSON.parse(/export const KEY_MODES = Object\.freeze\((\[[^\]]*\])\);/.exec(viewSource)[1]), OPTIONAL_CONTROLS: JSON.parse(/export const OPTIONAL_CONTROLS = Object\.freeze\((\[[^\]]*\])\);/.exec(viewSource)[1]) };
+  assert.deepEqual(KEY_MODES, ["engaged", "page"]);
+  assert.match(viewSource, /^const keyMode = options\.keys \?\? "engaged";$/m, "engaged is the default");
+  for (const name of OPTIONAL_CONTROLS) {
+    assert.match(doc[0], new RegExp(`- \`${name}\`: `), `the optional control ${name} is documented`);
+    assert.match(viewSource, new RegExp(`shows\\("${name}"\\)`), `the view reads whether ${name} is on`);
+  }
+  assert.ok(!/^  controls:/m.test(call[1]), "the app switches no control off");
   const at = viewSource.lastIndexOf("\nreturn {\n");
   assert.ok(at > 0, "the view returns its handle as an object literal at the end of mountSessionView");
   const handle = viewSource.slice(at);
@@ -4203,4 +4240,58 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const called = new Set([...appSource.matchAll(/\bviewHandle\??\.([A-Za-z]+)/g)].map(m => m[1]));
   for (const name of called) assert.ok(members.has(name), `the app calls viewHandle.${name}, which the view's handle has`);
   console.log("#s429 mount interface cases passed");
+}
+
+// #s429 stage 6: the optional controls and the keys a host may change. A control switched off is
+// not drawn and takes no key; engaged, the view's keys answer only while the reader works in it.
+{
+  // Reading off: the cluster is never placed, at any width, and its keys are not the view's.
+  for (const placed of [/^if \(shows\("reading"\)\) byId\("sessionFoldAll"\)\.after\(readingCluster\);$/m, /if \(shows\("reading"\)\) dockPill\.append\(readingCluster\);/, /if \(shows\("reading"\)\) byId\("sessionFoldAll"\)\.after\(readingCluster\);\n    \}/]) assert.match(viewSource, placed, "the Reading menu is placed only while it is on");
+  assert.equal((viewSource.match(/\.(?:after|append)\(readingCluster\)/g) || []).length, 3, "and nowhere else");
+  assert.match(viewSource, /if \(!shows\("reading"\)\) for \(const action of \["wrap", "size-down", "size-up"\]\) delete keyActions\[action\];/, "its keys go with it");
+  const readingKeys = KEYMAP.filter(b => ["wrap", "size-down", "size-up"].includes(b.action)).map(b => b.key).sort();
+  assert.deepEqual(readingKeys, ["+", "-", "=", "_", "w"], "the keys that go are the Reading menu's");
+  assert.match(viewSource, /if \(!shows\("history"\)\) readingSection\.querySelector\("\[data-history-save\]"\)\.closest\("\.reading-row"\)\.remove\(\);/, "the viewport history's Save goes with history off");
+  const previewSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
+  assert.match(previewSrc, /\.\.\.\(this\.actions\.detach === false \? \[\] : \[this\.newTab\]\)/, "the ↗ is kept out of the pane's head with detach off");
+  assert.match(viewSource, /detach: shows\("detach"\)/, "the view tells the pane");
+  // The app's keymap leaves a key it has no action for to the page, as the view's own does.
+  assert.match(appSource, /action => \(keyActions\[action\] \? keyActions\[action\]\(\) : false\)\);/, "the app takes no key it has no action for");
+  // Engaged: the shared keymap resolves, the view decides by engagement (mdrev's rule), and the
+  // shared module is untouched (the offline pages inline it, and the byte gate reads them).
+  assert.match(viewSource, /if \(keyMode === "engaged"\) \{/, "the view binds its own keys only when engaged");
+  assert.match(viewSource, /const engage = event => \{ engaged = inView\(event\.target\) && !inGuest\(event\.target\); \};/, "engagement is the last press or focus inside the view and outside its guest");
+  assert.match(viewSource, /element\.contains\(target\) \|\| taskPopover\.contains\(target\) \|\| taskScrim\.contains\(target\)/, "inside the view counts what it floats over the page");
+  assert.match(viewSource, /const binding = resolveKey\(event, "view", event\.target\);\n    const act = binding && keyActions\[binding\.action\];\n    if \(act && act\(\) !== false\) event\.preventDefault\(\);/, "a key the view has no action for, or one that answers false, is left to the page");
+  // Mounted alone, the pane shutting itself as it is built changed the width, and the remeasure
+  // reached the record store before it existed: the pane's layout waits for the mount's end.
+  assert.match(viewSource, /const paneLayoutChanged = \(\) => \{\n  if \(!viewMounted\) return;/, "the pane remeasures nothing while the view mounts");
+  assert.match(viewSource, /^renderHeader\(\); renderNavigator\(\); paintJump\(\);\n[^\n]*\nviewMounted = true;$/m, "and does from the first render on");
+  // The engaged binding, run: a fake document, the view's element, a host's button and a guest.
+  const handlers = {};
+  const doc = { addEventListener: (type, fn) => { (handlers[type] ||= []).push(fn); } };
+  const node = (inside, guest = false) => ({ tagName: "DIV", closest: sel => (sel === "[data-guest-keys]" && guest ? {} : null), inside });
+  const viewNode = node(true), guestNode = node(true, true), hostNode = node(false), card = { tagName: "DIV", closest: () => null, card: true };
+  const body = /if \(keyMode === "engaged"\) \{\n([\s\S]*?)\n\}\n/.exec(viewSource)[1];
+  const fired = [];
+  const run = new Function("document", "element", "taskPopover", "taskScrim", "inGuest", "resolveKey", "keyActions", body);
+  run(doc, { contains: t => t.inside === true, isConnected: true }, { contains: t => t.card === true }, { contains: () => false }, inGuest, resolveKey, { "turn-next": () => { fired.push("turn-next"); }, "tasks-center": () => { fired.push("tasks-center"); return false; } });
+  const press = (key, target = { tagName: "BODY", closest: () => null }) => { let prevented = false; for (const fn of handlers.keydown) fn({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, target, preventDefault() { prevented = true; } }); return prevented; };
+  const down = target => { for (const fn of handlers.mousedown) fn({ target }); };
+  assert.equal(press("]"), false, "nothing pressed yet: not the view's key");
+  assert.deepEqual(fired, []);
+  down(viewNode);
+  assert.equal(press("]"), true, "a press in the view engages it, even with the focus on <body>");
+  assert.equal(press("\\"), false, "a binding the view has no action for stays the page's");
+  assert.equal(press("c"), false, "an action that answers false leaves the key to the page");
+  assert.deepEqual(fired, ["turn-next", "tasks-center"]);
+  down(guestNode);
+  assert.equal(press("]"), false, "inside a guest of the view's, the key is the guest's");
+  down(card);
+  assert.equal(press("]"), true, "the task card the view floats over the page is the view's");
+  down(hostNode);
+  assert.equal(press("]"), false, "a press in the host ends it");
+  for (const fn of handlers.focusin) fn({ target: viewNode });
+  assert.equal(press("]"), true, "focus coming into the view engages it too");
+  console.log("#s429 optional controls and keys cases passed");
 }

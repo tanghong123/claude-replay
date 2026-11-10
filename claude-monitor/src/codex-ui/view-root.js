@@ -1,11 +1,12 @@
 // Where the session view finds what it draws in (#s429, design/session-view-component.md, stage 1).
 //
-// The session view is becoming a component a host mounts, and in the end it draws inside a shadow
-// root of its own. Inside one, `document.getElementById` finds nothing the view drew, a popover
-// appended to `document.body` takes none of its styles, and `document.activeElement` is the host's
-// element rather than the field that has focus. So every one of those the view makes goes through
-// its ROOT, here. For now the root is the page itself, so nothing changes; a shadow root takes its
-// place later (stage 6). One view per page: the native app gives each window a page of its own.
+// The session view is a component a host mounts. It was to draw inside a shadow root of its own,
+// where `document.getElementById` finds nothing the view drew, a popover appended to
+// `document.body` takes none of its styles, and `document.activeElement` is the host's element
+// rather than the field that has focus. So every one of those the view makes goes through its ROOT,
+// here. The owner chose no shadow root (#s438): the view draws into the page in every host, its
+// styles hung on its own element, so the root is the page itself. One view per page: the native app
+// gives each window a page of its own.
 //
 // What belongs to the app around the view (the session list, the theme toggle, the brand, the
 // session search, the toast) reaches the page through `page` instead (and the view through `viewRoot`), so the two are told apart
@@ -61,7 +62,8 @@ export const page = Object.freeze({
   html: () => doc()?.documentElement ?? null,
 });
 
-/** Draw the view inside another root (a shadow root, stage 6). Called once, before the view mounts. */
+/** Draw the view inside another root (a shadow root). Called once, before the view mounts. Nothing
+ *  calls it since the shadow root was dropped (#s438); the lookups above still go through the root. */
 export function useViewRoot(next) {
   root = next || null;
 }

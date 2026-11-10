@@ -83,7 +83,9 @@ export class Preview {
     this.expandBtn = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn preview-expand" });
     this.expandBtn.onclick = () => this.setFull(!viewRoot.element()?.classList.contains("preview-full"));
     this.setFull(false);
-    byId("closePreview").before(this.revealBtn, this.downloadBtn, this.printBtn, this.newTab, this.reviewBtn, this.expandBtn);
+    // A host that switched the ↗ off (`detach: false`, stage 6) gets none in the head: the show paths
+    // still flip its `hidden`, on a button nobody can reach.
+    byId("closePreview").before(this.revealBtn, this.downloadBtn, this.printBtn, ...(this.actions.detach === false ? [] : [this.newTab]), this.reviewBtn, this.expandBtn);
     // #337, the owner: with many files open the strip squeezed every tab to a few letters and the
     // CURRENT one to nothing. The tabs now keep their width and the strip scrolls; while it
     // overflows, ‹ and › beside it step to the previous and next tab (the pinned roster first),
@@ -180,10 +182,13 @@ export class Preview {
     const parts = [open ? `${open} open document${open === 1 ? "" : "s"}` : "", published ? `${published} published artifact${published === 1 ? "" : "s"}` : ""].filter(Boolean);
     button.title = parts.length ? `Open the right panel — ${parts.join(", ")}` : "Open the right panel";
   }
+  /** A file to show: a tab of its own, selected, and the pane open. The host hears of it (`opened`,
+   *  the view's `onFile`), as it does for the first of an Open all, the one the pane shows. */
   open(item) {
     if (!uiState.previewTabs.some(tab => tab.id === item.id)) uiState.previewTabs.push(item);
     if (uiState.previewTabs.length > SESSION_TAB_LIMIT) uiState.previewTabs.splice(0, uiState.previewTabs.length - SESSION_TAB_LIMIT);
     uiState.previewId = item.id; this.paneBadge(); this.setOpen(true);
+    this.actions.opened?.(item);
   }
   /** #s222: Open all — every item a tab, in the block's order, the FIRST selected so the reader
    *  steps through them by the tabs. A tab already open moves to its place in that order (the same
@@ -202,6 +207,7 @@ export class Preview {
       uiState.previewTabs.splice(at, 1);
     }
     uiState.previewId = items[0].id; this.paneBadge(); this.setOpen(true);
+    this.actions.opened?.(items[0]);
   }
   /** #337: the previous or next tab — the pinned roster first, then the files — wrapping. */
   stepTab(dir) {
