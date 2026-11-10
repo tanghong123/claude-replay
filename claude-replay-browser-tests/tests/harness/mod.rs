@@ -3694,6 +3694,42 @@ pub fn open_host_page_with(
     );
 }
 
+/// Every listener on the page's window and document, as the browser itself reports them (CDP's
+/// `DOMDebugger.getEventListeners`, which sees what an abort signal removed, where a ledger kept in
+/// the page would not): `window:keydown:capture`, sorted (#s429 stage 7).
+pub fn page_listeners(tab: &headless_chrome::Tab) -> Vec<String> {
+    use headless_chrome::protocol::cdp::DOMDebugger::GetEventListeners;
+    let mut out = Vec::new();
+    for target in ["window", "document"] {
+        let object = tab
+            .evaluate(target, false)
+            .expect("the page answers")
+            .object_id
+            .expect("an object");
+        let listeners = tab
+            .call_method(GetEventListeners {
+                object_id: object,
+                depth: Some(0),
+                pierce: None,
+            })
+            .expect("the browser lists the listeners")
+            .listeners;
+        for listener in listeners {
+            out.push(format!(
+                "{target}:{}:{}",
+                listener.Type,
+                if listener.use_capture {
+                    "capture"
+                } else {
+                    "bubble"
+                }
+            ));
+        }
+    }
+    out.sort();
+    out
+}
+
 /// The page's own account of what it still has to do (#351), installed before its scripts so every
 /// timer, interval, animation frame, fetch and body read it starts goes through a wrapper that
 /// knows when it is due. `window.__settle(ms, check)` then resolves the moment the page is idle —

@@ -10,10 +10,11 @@
      (harness::answer_in_browser); the monitor serves only its own modules and routes. Its options
      come from the address: `hide=` names the optional controls switched off (comma-separated, each
      `show: {name: false}`), `keyboard=` the key mode (left out: the view's default), `frame=` the
-     native app's frame (below), `write=on` writes switched on (below), and `session=` a session to
-     open, read from the monitor's own session list. The page carries nothing of the view's or the
-     app's beyond the element it mounts the view in (stage 7). A case may put a content policy where `host-policy` stands; the script carries
-     the nonce `host` for one. -->
+     native app's frame (below), `write=on` writes switched on (below), `mount=0` leaves the mount to
+     the case (`__host.mount()`), and `session=` a session to open, read from the monitor's own session
+     list. The page carries nothing of the view's or the app's beyond the element it mounts the view
+     in (stage 7). A case may put a content policy where `host-policy` stands; the script carries the
+     nonce `host` for one. -->
 <link rel="stylesheet" href="/monitor-ui/session-view.css">
 <style>
 /* The host's own rules keep to its own elements, as the owner's terms say (#s438). */
@@ -26,9 +27,14 @@
 <header class="host-bar"><button type="button" id="hostButton">The host's own button</button><span id="hostLabel">A host</span></header>
 <div class="host-pane" id="hostPane"><div class="host-view"></div></div>
 <script type="module" nonce="host">
-const host = window.__host = { mounted: false, error: null, events: [], keys: [], framed: [], messages: [] };
+const host = window.__host = { mounted: false, error: null, events: [], keys: [], framed: [], messages: [], errors: [], requests: [] };
 // What a frame inside the view says to its parent: how a case sees an agent page's script run.
 addEventListener("message", event => host.messages.push(String(event.data)));
+// What the page throws, and every request it makes, with when: how a case sees that an unmounted view
+// stopped (stage 7).
+addEventListener("error", event => host.errors.push(String(event.message)));
+const fetched = window.fetch;
+window.fetch = (input, init) => { host.requests.push({ url: String(input && input.url || input), at: performance.now() }); return fetched(input, init); };
 // The host's own keyboard, bound BEFORE the view mounts, as a host's page would be: what reaches it,
 // and whether the view (which listens in the capture phase) had already taken it.
 document.addEventListener("keydown", event => host.keys.push({ key: event.key, prevented: event.defaultPrevented }));
@@ -74,8 +80,14 @@ try {
     return frame === "empty" ? "" : frame;
   };
   for (const name of ["onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast"]) options[name] = (...args) => host.events.push({ name, args });
-  const view = window.__view = mountSessionView(document.querySelector(".host-view"), options);
-  if (session) { view.select(session); view.open(session); }
+  // Mounting is a function the case can call again after an unmount (stage 7, `mount=0` leaves it to
+  // the case), with the same options in the same element.
+  host.mount = () => {
+    const view = window.__view = mountSessionView(document.querySelector(".host-view"), options);
+    if (session) { view.select(session); view.open(session); }
+    return "mounted";
+  };
+  if (params.get("mount") !== "0") host.mount();
   host.mounted = true;
 } catch (error) {
   host.error = String(error && error.stack || error);

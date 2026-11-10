@@ -2438,6 +2438,147 @@ fn the_session_view_in_a_host_without_write_controls_mounts_and_offers_no_writes
     );
 }
 
+/// The session view's unmount (#s429 stage 7): mounted in the test host and taken away, it leaves
+/// the page's window and document with exactly the listeners they had before it (as the browser
+/// lists them), the host's element empty with its own attributes, nothing of its own in the page's
+/// layer, no property measured on the page's root, and it asks the monitor nothing more (its record
+/// polls stop). A key or a press on the page then reaches nothing of it, and nothing throws. Mounted
+/// again in the same element it is whole once, not twice: the same listeners as the first mount, one
+/// turn strip, one copy menu, one task card, and one press of `w` toggles wrapping once.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_unmounts_and_mounts_again() {
+    let _serial = serial();
+    let base = base("host-unmount");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000000f9".to_string();
+    let mut jsonl = harness::user_at("first question", &harness::at("00:01"));
+    jsonl += &harness::assistant_at("first answer", &harness::at("00:02"));
+    jsonl += &harness::user_at("second question", &harness::at("00:03"));
+    jsonl += &harness::assistant_at("second answer", &harness::at("00:04"));
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3107, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}&mount=0"));
+    let before = harness::page_listeners(&tab);
+    let drawn = |tab: &headless_chrome::Tab| {
+        harness::until(
+            tab,
+            "!!document.querySelector('.transcript') && /second answer/.test(document.querySelector('.transcript').innerText)",
+            "the session in the host's view",
+            std::time::Duration::from_secs(20),
+            "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+        );
+    };
+    let shape = "({ strips: document.querySelectorAll('#turnStickyBar').length, menus: document.querySelectorAll('#sessionCopyMenu').length, cards: document.querySelectorAll('body > .task-popover').length, scrims: document.querySelectorAll('body > .task-scrim').length, children: document.querySelector('.host-view').children.length, attributes: [].map.call(document.querySelector('.host-view').attributes, function (a) { return a.name + '=' + a.value; }), preview: document.documentElement.style.getPropertyValue('--preview'), errors: window.__host.errors })";
+    let wrapped = "document.querySelector('.host-view').classList.contains('wrap-code')";
+    let press_w = format!("(function(){{ document.getElementById('transcript').dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }})); var was = {wrapped}; var taken = {PRESS}('w'); return {{ was: was, taken: taken, now: {wrapped} }}; }})()");
+    harness::eval(&tab, "window.__host.mount()");
+    drawn(&tab);
+    let first = harness::page_listeners(&tab);
+    let first_shape = harness::probe(&tab, shape);
+    let first_w = harness::probe(&tab, &press_w);
+    // Let a record poll or two go by, then take the view away.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let polled = harness::eval(
+        &tab,
+        "window.__host.requests.filter(function (r) { return /\\/records/.test(r.url); }).length",
+    );
+    harness::eval(
+        &tab,
+        "window.__unmountedAt = performance.now(); window.__view.unmount(); 'ok'",
+    );
+    let after = harness::page_listeners(&tab);
+    let after_shape = harness::probe(&tab, shape);
+    let after_key = harness::probe(&tab, &format!("(function(){{ document.querySelector('.host-view').dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }})); document.body.dispatchEvent(new PointerEvent('pointerdown', {{ bubbles: true }})); return {{ w: {PRESS}('w'), escape: {PRESS}('Escape'), slash: {PRESS}('/') }}; }})()"));
+    std::thread::sleep(std::time::Duration::from_millis(3000));
+    let late = harness::probe(&tab, "({ requests: window.__host.requests.filter(function (r) { return r.at > window.__unmountedAt; }).map(function (r) { return r.url; }), errors: window.__host.errors })");
+    // Again, in the same element.
+    harness::eval(&tab, "window.__host.mount()");
+    drawn(&tab);
+    let second = harness::page_listeners(&tab);
+    let second_shape = harness::probe(&tab, shape);
+    let second_w = harness::probe(&tab, &press_w);
+    drop(monitor);
+    assert!(
+        first.len() > before.len(),
+        "the mounted view listens on the page: {first:?}"
+    );
+    assert!(
+        polled.as_u64().unwrap_or(0) > 0,
+        "the mounted view polls its records: {polled}"
+    );
+    assert_eq!(
+        (
+            first_shape["strips"].clone(),
+            first_shape["menus"].clone(),
+            first_shape["cards"].clone(),
+            first_shape["scrims"].clone()
+        ),
+        (
+            serde_json::json!(1),
+            serde_json::json!(1),
+            serde_json::json!(1),
+            serde_json::json!(1)
+        ),
+        "one of each, mounted: {first_shape}"
+    );
+    assert_eq!(
+        (first_w["taken"].clone(), first_w["now"] != first_w["was"]),
+        (serde_json::json!(true), true),
+        "one press of w toggles wrapping: {first_w}"
+    );
+    assert_eq!(
+        after, before,
+        "unmounted, the window and the document have exactly the listeners they had before the view"
+    );
+    assert_eq!(
+        after_shape,
+        serde_json::json!({ "strips": 0, "menus": 0, "cards": 0, "scrims": 0, "children": 0, "attributes": ["class=host-view"], "preview": "", "errors": [] }),
+        "and nothing of the view is left: the element as the host gave it, no layer of its own, no property on the root"
+    );
+    assert_eq!(
+        after_key,
+        serde_json::json!({ "w": false, "escape": false, "slash": false }),
+        "a key on the page reaches nothing of the old view"
+    );
+    assert_eq!(
+        late,
+        serde_json::json!({ "requests": [], "errors": [] }),
+        "and it asks the monitor nothing more, and nothing throws"
+    );
+    assert_eq!(
+        second, first,
+        "mounted again, the page has exactly the listeners of the first mount"
+    );
+    assert_eq!(
+        (
+            second_shape["strips"].clone(),
+            second_shape["menus"].clone(),
+            second_shape["cards"].clone(),
+            second_shape["scrims"].clone(),
+            second_shape["errors"].clone()
+        ),
+        (
+            serde_json::json!(1),
+            serde_json::json!(1),
+            serde_json::json!(1),
+            serde_json::json!(1),
+            serde_json::json!([])
+        ),
+        "and one of each again: {second_shape}"
+    );
+    assert_eq!(
+        (
+            second_w["taken"].clone(),
+            second_w["now"] != second_w["was"]
+        ),
+        (serde_json::json!(true), true),
+        "one press of w toggles wrapping once, the old view hearing nothing: {second_w}"
+    );
+}
+
 /// The app shell's layout contract, the counterpart of the v2 classic case (task #27): on a
 /// fresh open the view lands pinned at the tail; the TRANSCRIPT is the scroller, and scrolling
 /// it leaves the header and the sidebar exactly where they were; there is no iframe anywhere.
