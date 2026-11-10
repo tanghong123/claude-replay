@@ -627,9 +627,10 @@ mod tests {
                     .then_some("shared")
             } else if lead.starts_with("#app") || lead.starts_with(".app") {
                 if (lead == "#app" || lead == ".app") && after.is_empty() {
-                    // The view's tokens set on the app's grid (`--code-size`, `--measure`, which
-                    // `applyReading` writes there; `--phone-dock-h`, `--phone-glass`) and the
-                    // app's own `--sidebar`.
+                    // The view's tokens set on the app's grid (`--phone-dock-h`, `--phone-glass`,
+                    // which embedding's step 6 moves with the pane-sized layout) and the app's own
+                    // `--sidebar`. The reading ones (`--code-size`, `--measure`) are the view
+                    // element's since stage 6.
                     Some("tokens on the app's grid")
                 } else if selector_names(lead).iter().any(|n| APP_STATES.contains(n)) {
                     Some("an app state")

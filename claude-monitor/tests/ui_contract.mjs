@@ -1143,7 +1143,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(readingVars(DEFAULT_READING), { "--code-size": "12px", "--measure": "820px" });
   const raw = rawTurnHtml({ kind: "user", body: [{ p: "md", h: "<p>x</p>" }] });
   assert.match(raw, /^<pre class="turn-raw">/); assert.ok(raw.includes("&lt;p&gt;x&lt;\/p&gt;") || raw.includes("&lt;p&gt;x&lt;/p&gt;"), "the raw record is escaped, never re-entered as markup");
-  assert.match(productionCss, /#app\{--code-size:12px;--measure:820px\}/, "reading preferences are custom properties on the app root");
+  // #s429 stage 6: on the session view's own element, so a host gets them without the app's grid.
+  assert.match(productionCss, /#sessionView\{--code-size:12px;--measure:820px\}/, "reading preferences are custom properties on the view's element");
+  assert.doesNotMatch(productionCss, /#app\{[^}]*--(code-size|measure)/, "…and no longer on the app's grid");
+  assert.match(viewSource, /for \(const \[name, value\] of Object\.entries\(readingVars\(prefs\)\)\) sessionView\.style\.setProperty\(name, value\);/, "applyReading writes them on the view's element");
   // #173: wrap is still a class on the app root, but its DOMAIN is now derived rather than
   // enumerated — every `pre` in the transcript, plus whatever carries the code marker. The old
   // pin named `.markdown pre`, one entry of the list this change deleted.

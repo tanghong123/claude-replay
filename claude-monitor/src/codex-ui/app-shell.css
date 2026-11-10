@@ -438,7 +438,6 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .arrange-text{display:flex;flex-direction:column;gap:1px;min-width:0}
 .arrange-note{font-size:10.5px;line-height:13px;color:var(--faint);white-space:normal}
 .arrange-note:empty{display:none}
-#app{--code-size:12px;--measure:820px}
 .work-group{display:flex;align-items:center;gap:6px;margin:8px 4px 3px;padding-top:6px;border-top:1px solid color-mix(in srgb,var(--line) 80%,transparent);font:600 10.5px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
 .work-group:first-child{margin-top:2px;padding-top:0;border-top:0}
 .work-group-count{font-weight:500;color:var(--faint)}

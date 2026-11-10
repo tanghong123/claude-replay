@@ -316,9 +316,10 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
 .arrange-note:empty{display:none}
 
 /* Reading controls (parity #7): the reference rules size code and the transcript with literals;
-   production sizes them through custom properties the app root carries, so a preference is one
-   property change, not a rule per element. */
-#app{--code-size:12px;--measure:820px}
+   production sizes them through custom properties the session view's element carries (#s429 stage 6:
+   they were the app root's, so a host needed our grid for them), so a preference is one property
+   change, not a rule per element. */
+#sessionView{--code-size:12px;--measure:820px}
 /* #173. Size is a CODE control: it applies to bytes that came from a FILE ON DISK, rendered
    structurally — a Write body, a Read's output, an Edit's diff — which the renderer marks with
    `data-code` and nothing else in the document carries. It used to reach markdown code blocks,

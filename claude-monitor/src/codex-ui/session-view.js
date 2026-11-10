@@ -2698,7 +2698,8 @@ function applyReading() {
   recordState.rawUser = !!prefs.rawUser;
   if (rawChanged) recordState.rawTurns.clear(); // a global change clears per-turn overrides, as the classic page does
   if (rawChanged && recordState.records.length) viewport.rerender();
-  for (const [name, value] of Object.entries(readingVars(prefs))) grid.style.setProperty(name, value);
+  // On the view's own element (stage 6), where its rules read them, so a host needs no grid of ours.
+  for (const [name, value] of Object.entries(readingVars(prefs))) sessionView.style.setProperty(name, value);
   sessionView.classList.toggle("wrap-code", !!prefs.wrap); sessionView.classList.toggle("wide", !!prefs.wide);
   for (const toggle of readingSection.querySelectorAll("[data-reading-toggle]")) toggle.setAttribute("aria-checked", String(!!prefs[toggle.dataset.readingToggle]));
   // The per-pane bars (#115) mirror the baseline in place — no re-render for a label — but only

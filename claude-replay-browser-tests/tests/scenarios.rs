@@ -14817,7 +14817,7 @@ fn scenario_a_five_digit_line_number_stays_on_one_line() {
             eval(
                 &page.tab,
                 &format!(
-                    "(function(){{ var a = document.getElementById('app'); \
+                    "(function(){{ var a = document.getElementById('sessionView'); \
                        if (a) {{ a.classList.add('wrap-code'); a.style.setProperty('--code-size', '{size}px'); }} \
                        else {{ document.documentElement.style.setProperty('--code-size', '{size}px'); }} \
                        return 'ok'; }})()"

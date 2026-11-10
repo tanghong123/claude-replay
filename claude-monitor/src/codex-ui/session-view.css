@@ -1642,6 +1642,7 @@
 :where(#sessionView) .session-parent.is-live{display:inline-flex;align-items:center;gap:6px;width:auto;height:28px;padding:0 10px 0 7px;border:1px solid var(--line);border-radius:8px;color:var(--sub);font-size:12.5px;white-space:nowrap}
 :where(#sessionView) .session-parent.is-live:hover,:where(#sessionView) .session-parent.is-live:focus-visible{color:var(--ink);border-color:var(--sub);background:var(--hover);outline:0}
 :where(#sessionView) .session-parent-label{font-weight:500}
+#sessionView{--code-size:12px;--measure:820px}
 #sessionView [data-code]{font-size:var(--code-size)}
 #sessionView.wrap-code .transcript pre,#sessionView.wrap-code [data-code]:not([data-wrap]){white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;overflow-x:hidden}
 #sessionView:not(.wrap-code) .transcript pre,#sessionView:not(.wrap-code) [data-code]:not([data-wrap]){white-space:pre;overflow-x:auto}
