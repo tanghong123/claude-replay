@@ -4966,7 +4966,7 @@ fn the_app_shell_lists_the_published_artifacts() {
     harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
     harness::until(
         &tab,
-        "!document.getElementById('app').classList.contains('preview-off') && !!document.querySelector('#previewTabs .preview-tab.pinned.on')",
+        "!document.getElementById('app').classList.contains('preview-off') && !!document.querySelector('#previewTabs .preview-tab.sv-pinned.on')",
         "the pane to open on its pinned roster tab",
         std::time::Duration::from_secs(10),
         "document.getElementById('previewTabs').innerText",
@@ -4974,7 +4974,7 @@ fn the_app_shell_lists_the_published_artifacts() {
     assert_eq!(
         harness::probe(
             &tab,
-            "document.querySelector('#previewTabs .preview-tab.pinned').innerText.trim()"
+            "document.querySelector('#previewTabs .preview-tab.sv-pinned').innerText.trim()"
         ),
         "Artifacts (2)",
         "the pinned tab counts them"
@@ -10666,12 +10666,12 @@ fn a_phone_pane_counts_its_open_files_and_steps_through_their_tabs() {
     assert_eq!(
         harness::eval(
             &tab,
-            "document.querySelector('#previewTabs .preview-tab.pinned').innerText.trim()"
+            "document.querySelector('#previewTabs .preview-tab.sv-pinned').innerText.trim()"
         ),
         "Artifacts (1)",
         "the pinned roster tab still counts what was published"
     );
-    let strip = "(function(){ var s = document.getElementById('previewTabs'), box = s.getBoundingClientRect(), tabs = [].slice.call(s.querySelectorAll('.preview-tab:not(.pinned)')), on = s.querySelector('.preview-tab.on'), label = on && on.querySelector('.preview-tab-label'), r = on ? on.getBoundingClientRect() : {}; return JSON.stringify({ n: tabs.length, over: s.scrollWidth > s.clientWidth + 1, narrowest: Math.round(Math.min.apply(null, tabs.filter(function (t) { return t !== on; }).map(function (t) { return t.getBoundingClientRect().width; }))), on: label ? label.textContent : '', whole: !!label && label.scrollWidth <= label.clientWidth + 1, inView: r.left >= box.left - 1 && r.right <= box.right + 1, onW: Math.round(r.width || 0) }); })()";
+    let strip = "(function(){ var s = document.getElementById('previewTabs'), box = s.getBoundingClientRect(), tabs = [].slice.call(s.querySelectorAll('.preview-tab:not(.sv-pinned)')), on = s.querySelector('.preview-tab.on'), label = on && on.querySelector('.preview-tab-label'), r = on ? on.getBoundingClientRect() : {}; return JSON.stringify({ n: tabs.length, over: s.scrollWidth > s.clientWidth + 1, narrowest: Math.round(Math.min.apply(null, tabs.filter(function (t) { return t !== on; }).map(function (t) { return t.getBoundingClientRect().width; }))), on: label ? label.textContent : '', whole: !!label && label.scrollWidth <= label.clientWidth + 1, inView: r.left >= box.left - 1 && r.right <= box.right + 1, onW: Math.round(r.width || 0) }); })()";
     let s: serde_json::Value =
         serde_json::from_str(harness::eval(&tab, strip).as_str().unwrap_or("{}")).unwrap();
     assert_eq!(
@@ -10722,7 +10722,7 @@ fn a_phone_pane_counts_its_open_files_and_steps_through_their_tabs() {
     }
     harness::eval(
         &tab,
-        "document.querySelector('#previewTabs .preview-tab.pinned').click(); 'ok'",
+        "document.querySelector('#previewTabs .preview-tab.sv-pinned').click(); 'ok'",
     );
     phone_tap(&tab, "[data-preview-tab-step=\"-1\"]");
     std::thread::sleep(Duration::from_millis(250));

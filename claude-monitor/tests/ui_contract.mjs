@@ -2063,7 +2063,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // #95: the roster is the right pane's pinned first tab, not a header menu.
   assert.ok(!/artifactsBtn|artifactsMenu/.test(shellSource) && !/artifacts-btn|artifacts-menu/.test(productionCss), "the header control is gone");
   assert.match(viewSource, /preview\.setRoster\(recordState\.session === selectedId\(\) \? artifactRoster\(recordState\.records, owedIndex\(\)\?\.artifacts, scanFrom\(\)\) : \[\]\)/, "the header render hands the roster to the pane (scanning above the index's boundary while it answers for the head, #s277)");
-  assert.match(previewSource, /class="preview-tab pinned \$\{roster \? "on" : ""\}" data-preview-tab="\$\{ROSTER_ID\}"/, "…which pins it as a tab");
+  assert.match(previewSource, /class="preview-tab sv-pinned \$\{roster \? "on" : ""\}" data-preview-tab="\$\{ROSTER_ID\}"/, "…which pins it as a tab");
   assert.match(previewSource, /<span class="preview-tab-label">Artifacts \(\$\{this\.roster\.length\}\)<\/span>/, "…labelled with the count");
   assert.match(previewSource, /const roster = !item && this\.roster\.length > 0;/, "…and shown when no file tab is selected, so an opened pane lands on it");
   // #336, the owner: the badge counting published artifacts read "1" over a pane holding five

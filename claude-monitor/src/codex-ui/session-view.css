@@ -1745,10 +1745,10 @@
 :where(#sessionView) .session-navigator.drawers-animating .outline-card>.outline-card-body{transition:height .2s ease}
 :where(#sessionView) #previewBtn{position:relative}
 :where(#sessionView) .preview-badge{position:absolute;right:-2px;top:-3px;min-width:14px;height:14px;padding:0 3px;border-radius:6px;background:var(--primary);color:#fff;font:9px/14px var(--mono);text-align:center;box-shadow:0 0 0 2px var(--bg)}
-:where(#sessionView) .preview-tab.pinned{padding-right:11px}
+:where(#sessionView) .preview-tab.sv-pinned{padding-right:11px}
 :where(#sessionView) .preview-tab{flex:none;min-width:88px}
-:where(#sessionView) .preview-tab:not(.on):not(.pinned){max-width:132px}
-:where(#sessionView) .preview-tab.pinned{min-width:0}
+:where(#sessionView) .preview-tab:not(.on):not(.sv-pinned){max-width:132px}
+:where(#sessionView) .preview-tab.sv-pinned{min-width:0}
 :where(#sessionView) .preview-tab.on{max-width:min(85%,360px)}
 :where(#sessionView) .preview-tab-step{width:28px;height:32px;flex:none;font-size:18px;line-height:1;color:var(--sub)}
 :where(#sessionView) .preview-tab-step[hidden]{display:none}

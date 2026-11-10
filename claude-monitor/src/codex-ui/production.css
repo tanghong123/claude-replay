@@ -609,13 +609,13 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    count on the pane's button so a closed pane still says there is something to see. */
 #previewBtn{position:relative}
 .preview-badge{position:absolute;right:-2px;top:-3px;min-width:14px;height:14px;padding:0 3px;border-radius:6px;background:var(--primary);color:#fff;font:9px/14px var(--mono);text-align:center;box-shadow:0 0 0 2px var(--bg)}
-.preview-tab.pinned{padding-right:11px}
+.preview-tab.sv-pinned{padding-right:11px}
 /* #337: tabs keep their width and the strip scrolls, rather than every tab squeezing to a few
    letters and the CURRENT one to nothing: the current file takes the width its title needs (to a
    cap that leaves the others showing), the rest a readable minimum; ‹ › step while it overflows. */
 .preview-tab{flex:none;min-width:88px}
-.preview-tab:not(.on):not(.pinned){max-width:132px}
-.preview-tab.pinned{min-width:0}
+.preview-tab:not(.on):not(.sv-pinned){max-width:132px}
+.preview-tab.sv-pinned{min-width:0}
 .preview-tab.on{max-width:min(85%,360px)}
 .preview-tab-step{width:28px;height:32px;flex:none;font-size:18px;line-height:1;color:var(--sub)}
 .preview-tab-step[hidden]{display:none}
