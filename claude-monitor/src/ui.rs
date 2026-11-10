@@ -851,8 +851,9 @@ mod tests {
             assert!(
                 rooted && !outside,
                 "session-view.css:{line}: `{selector}` reaches outside the session view's element. \
-                 Every rule of the view's hangs on #sessionView; change reference.css or \
-                 production.css and run scripts/extract-agent-monitor-demo.mjs \
+                 Every rule of the view's hangs on #sessionView; change the demo \
+                 (design/agent-monitor-codex-demo.html) or production.css and run \
+                 scripts/extract-agent-monitor-demo.mjs \
                  (design/session-view-component.md, stage 5b)"
             );
         }
@@ -909,8 +910,8 @@ mod tests {
                 found.is_empty(),
                 "session-view.css:{line}: `{selector}` names {found:?}, which the collaboration \
                  app styles in the page the view is mounted in (#s438). Name the view's element \
-                 sv-<name> in reference.css or production.css and the code that draws it, then \
-                 run scripts/extract-agent-monitor-demo.mjs"
+                 sv-<name> in the demo (design/agent-monitor-codex-demo.html) or production.css \
+                 and in the code that draws it, then run scripts/extract-agent-monitor-demo.mjs"
             );
         }
         // The renamed classes are the ones the view's rules name now.
