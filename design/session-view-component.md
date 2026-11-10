@@ -139,13 +139,12 @@ pane, so step 6 also makes the view's root what they are placed against.
    The function's body is the view's old top-level code moved line for line, so it sits at the
    margin. A whitespace-only commit can indent it once stages 4 to 6 stop rewriting it.
 
-   Not yet passed in: `state.js`'s stores (passed in by stage 7, below). The view still imports
-   `persist` (which writes the app's settings with its own), `uiState` (which also holds the session search's results) and
-   `controlState`; `control-store.js` reads `selectedRow()` and native mode `indexState.selected`
-   from there. `state.js` says which side owns each field. Each moves behind an option when the
-   kit's host needs it, at stage 7 at the latest. The names the two sides call each other by are
-   held by a contract check (`#s429 mount interface`), since most options are optional callbacks
-   a rename would silence.
+   Not passed in at this stage: `state.js`'s stores. The view went on importing `persist` (which
+   wrote the app's settings with its own), `uiState` (which also held the session search's results)
+   and `controlState`, and `control-store.js` read `selectedRow()` and native mode
+   `indexState.selected` from there, until stage 7 (below) passed them in. The names the two sides
+   call each other by are held by a contract check (`#s429 mount interface`), since most options are
+   optional callbacks a rename would silence.
 4. **The view's markup from its own template.** The entry point builds its three parts inside the
    element, so a host page carries no markup of ours. The extraction script cuts the template from
    the demo, so the generated files stay exact.
@@ -483,14 +482,12 @@ pane, so step 6 also makes the view's root what they are placed against.
      existed: the mount threw. The pane's layout changes now remeasure only once the view is built,
      from the width the mount left (the one read before the pane shut itself was stale); the reading
      options' first application, later in the mount, measures everything anyway.
-   - **What a host's page must still carry** (nothing since stage 7, which passes write mode in),
-     which the test host found: the compose box's controls
-     (`control-store.js`) bind the app's write-mode switch (`writeSwitch`, `writeBtn`, `writeInfo`,
-     `writeHelp`, `sidebarMiniWrite`) and its confirm layer (`confirmLayer` with its `h3` and
-     `.dialog`, `confirmText`, `cancelSend`, `confirmSend`) by id, so a page without them cannot
-     mount the view. The doc comment names them and the contract checks each against
-     `control-store.js`; the test host carries hidden stand-ins. That is stage 3's `controlState`,
-     passed in by stage 7 at the latest.
+   - **What a host's page still had to carry** at this stage, which the test host found: the compose
+     box's controls (`control-store.js`) bound the app's write-mode switch (`writeSwitch`,
+     `writeBtn`, `writeInfo`, `writeHelp`, `sidebarMiniWrite`) and its confirm layer (`confirmLayer`
+     with its `h3` and `.dialog`, `confirmText`, `cancelSend`, `confirmSend`) by id, so a page without
+     them could not mount the view, and the test host carried hidden stand-ins. Stage 7 passed write
+     mode in (the `write` option): a host's page carries none of these now, and the test host none.
    - **Tests.** The frontend contract's mount interface cases hold the names both ways:
      `MOUNT_OPTIONS` is exactly the options the view reads and the ones its doc comment documents,
      where documented means an option bullet's head names it (not any backticked word); the required
@@ -551,8 +548,11 @@ pane, so step 6 also makes the view's root what they are placed against.
      (`design/monitor-hub.md`, D3). An answer that is not a non-empty string, a refusal or a throw is
      the pane's own error ("Cannot show this page", the same block a file it cannot read gets,
      `Preview.showError`), never an empty frame, and an answer for a page the pane has since left
-     changes nothing. The doc comment says it is the native app's arrangement, offered to no other
-     host; the kit's guide will not list it.
+     changes nothing. The pane asks once per tab while the tab's text is the same (it draws a tab
+     again whenever it is shown), asks again for a changed text or after a refusal, and never
+     releases an address: the native app owns their lifetime (noted in `design/monitor-hub.md`). The
+     doc comment says it is the native app's arrangement, offered to no other host; the kit's guide
+     will not list it.
    - **The stores, passed in.** `state.js` is the app's alone now: the session index, the session
      search's results (`searchState`, which was `uiState`'s `globalResults` and `globalIndex`), and
      write mode (`controlState`: `paired` and `write`), which native mode reads too (`native-entry.js`
@@ -561,10 +561,12 @@ pane, so step 6 also makes the view's root what they are placed against.
      - The view makes its own stores as it mounts (`view-state.js`): `createRecordState()`,
        `createViewState()`, which reads the reader's remembered choices then, and
        `persistView(uiState)`, the view's half of the old `persist`, under the same keys. The app's
-       `persist` writes only the app's keys. The app's remembering of a selection used to write the
-       view's keys too, which is when the outline's first state (the phone's default, the Info pane
-       taken out of the stack) reached storage; the view's `select` writes its own now, so that
-       moment holds.
+       `persist` in `state.js` writes only the app's keys, and the app's own `persist` (in `app.js`)
+       calls it and then the handle's `persist()`, so the view's keys are written at every moment
+       the one `persist` wrote them before: whenever the app remembers a choice of its own (a group
+       collapsed, the sidebar, the filter, a selection). The outline's first state (the phone's
+       default, the Info pane taken out of the stack) reaches storage then, as it did, even for a
+       reader who never opens a session.
      - The artifact pane takes the view's store (`new Preview(actions, uiState)`).
      - The compose box keeps its own state (`ControlStore.compose`: the row, the mode, the grant
        and the text a grant waits to send), which native mode reads through it. It gets the app's
@@ -595,7 +597,20 @@ pane, so step 6 also makes the view's root what they are placed against.
    - **The unmount**, the handle's `unmount()`. It remembers the reader's place (as a page leaving
      does), then stops what the view started and takes away what it put outside its element, and
      leaves the element as the host gave it, empty, with its own attributes; the view tells its host
-     nothing more. Mounting again in the same element draws a new view.
+     nothing more, and every other member of its handle does nothing and answers nothing (`fenced`:
+     `open` starts no poll, `select`, `indexChanged` and `writeChanged` paint nothing, `controls`
+     reads as none). Mounting again in the same element draws a new view. The element must be empty
+     when the view mounts: one holding anything is refused, so the view never takes a host's nodes
+     for its own nor removes them.
+     - **Work still out does nothing when it comes back.** The view finds its elements by id, so
+       after a mount in the same element a late callback of the old view would act on the new one.
+       The compose box (`ControlStore.destroy`) fences a send (its `finally` re-enables no button and
+       retires no draft), a grant, the host's confirm (an answer after the unmount grants and sends
+       nothing) and an image being read, and paints nothing; the dialog card fences its reads and its
+       read again after an answer; a download in flight is aborted and saves nothing
+       (`AttachmentViewer.destroy`); the server's searches (`askRemote`, `findTaskRecord`) settle in
+       no unmounted view; a copied link's ✓ and the session menu's copy go nowhere. The artifact pane
+       and the record store were fenced by their own generations already.
      - Every listener the view binds on the page (the document, the window, the visual viewport, a
        media query; 30 places in its code, the four of engaged mode among them) carries one
        `AbortController`'s signal. The timers, frames and observers the view's code starts are made through names that
@@ -612,18 +627,28 @@ pane, so step 6 also makes the view's root what they are placed against.
        (`Preview.destroy`). The dialog card is cleared, and what the compose box would still ask of
        the app (a dialog's answer settling) goes nowhere.
      - What it put outside its element goes: the task card and its scrim in the page's layer, a list
-       a wide phone's column borrowed, the properties it measured on the page's root (`--preview`,
-       `--phone-top`, `--phone-bottom`, `--phone-kb`; a `style` attribute it left empty goes too) and
-       the place it moved the host's box to over a phone's keyboard. A mount and an unmount in the same
-       task are safe: what the mount held back for its host goes nowhere.
+       a wide phone's column borrowed, and the engine's globals for a bug report
+       (`window.__viewportHistory`, whose export reads the engine, and `__viewportViolations`) when
+       they are still this engine's. Where the view writes on what is the host's, the host's own
+       values as they were at the mount are put back, and a value the host had not set is removed:
+       the properties it measures on the page's root (`--preview`, `--phone-top`, `--phone-bottom`,
+       `--phone-kb`), the transform it moves the host's box by over a phone's keyboard, and a `style`
+       attribute neither had. A mount and an unmount in the same task are safe: what the mount held
+       back for its host goes nowhere.
    - **Tests.** The contract holds `frame` and `write` both ways with the other options (the app
      leaves out only `show` and `frame`), runs the pane's frame (the address, a promise of one, a late
      answer, a refusal, a throw, an answer that is not an address) and the compose box's confirm (the
-     last ask wins, a cancelled one does not go on, nothing without `write`), checks that no module
-     of the view imports `state.js` and that the compose box binds none of the app's write controls,
-     which the app binds itself, and reads every listener the view binds on the page for its signal.
-     The native mode node tests take the compose state and write mode the new way. Three browser
-     cases, in the stage 6 test host, which no longer carries the hidden write controls:
+     last ask wins, a cancelled one does not go on, nothing without `write`), runs the frame's one
+     address per tab, checks that no module of the view (its import closure from `session-view.js`,
+     and native mode) imports `state.js` and that the compose box binds none of the app's write
+     controls, which the app binds itself, reads every listener the view binds on the page for its
+     signal, runs the handle's fence, and holds the fences on work still out, the host's values put
+     back, the empty element and the app's `persist` asking the view's. The native mode node tests
+     take the compose state and write mode the new way, and run the passcode chain (a grant the
+     monitor wants a passcode for, a refused one, a cancel, a dialog's grant) and a send and a confirm
+     answered after the unmount, which re-enable, retire, grant and send nothing. Four browser
+     cases; the first three in the stage 6 test host, which no longer carries the hidden write
+     controls:
      - `the_session_view_in_a_host_frames_an_agents_page_from_the_hosts_own_source` (3105): under a
        host policy with no inline script, the srcdoc's script does not run (and without the policy
        it does); with `frame` the host is handed the page with its policy in front, the frame loads
@@ -639,9 +664,16 @@ pane, so step 6 also makes the view's root what they are placed against.
        no request goes out and nothing throws; mounted again, the same listeners as the first mount,
        one of each part, and one `w` toggles wrapping once. The page around the view (the root's and
        the body's attributes, the root's style, what the body and the head hold, the host's box) is
-       as it was before each mount, after a mount and an unmount in one task too, and on a phone with a
-       session and with none ever opened. With the signal's abort taken out, it fails on the
-       listeners.
+       as it was before each mount (the host's own `--preview` and transform put back, the engine's
+       globals gone), after a mount and an unmount in one task too, and on a phone with a session and
+       with none ever opened; the `/pull` polls stop, and every member of the handle then does
+       nothing, throws nothing and answers nothing. With the signal's abort taken out, it fails on
+       the listeners.
+     - `the_app_grants_a_live_pane_through_its_own_confirm_layer_and_passcode_field` (3108), in the
+       app: a send to a herdr pane with no grant asks the app's confirm layer first; the monitor
+       (stubbed in the page) wants a passcode, so the app draws its field above the buttons, styled
+       (38px) and focused; the passcode typed is what the grant carries, a refused one is asked again
+       in the same field, the right one grants, the layer closes and the text goes to the pane.
 
    **Left for later:**
    - Native mode is not taken down by the unmount: only the app installs it, and the app never
@@ -650,8 +682,11 @@ pane, so step 6 also makes the view's root what they are placed against.
      the Mermaid runtime, and the shared Mermaid module's theme observer, which watches the element
      the view last drew in and redraws nothing once the element holds no diagram. A new mount
      reuses them.
-   - The handle's other members after an unmount do nothing useful; a host drops the handle and
-     mounts again.
+   - Two small risks of the viewport's watch over the window's `addEventListener` while the engine
+     is built (the review's notes): a host listener added synchronously during that build would be
+     taken away with the engine's, and a call made with another `this` is passed through as given.
+     Neither happens today. The contract's scan of the view's listeners on the page names the
+     targets it knows (the document, the window, the visual viewport, the media queries).
    - Everything stage 6 left for embedding's step 6: the app's own phone bar, `grid`'s two roles and
      the phone's tokens on `#app`, a host-supplied link for a record, and the task card's layer under
      the view's element.

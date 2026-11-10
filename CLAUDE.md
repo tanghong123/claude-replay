@@ -67,7 +67,11 @@ app's** (#s429 stage 7): `state.js` is the app's (the index, ⌘K's results, wri
 makes its own as it mounts (`view-state.js`, the compose box's `compose`), and write mode and the
 grant's confirm come in as its `write` option, so a host page carries nothing of ours; every
 listener the view binds on the page takes its `signal`, and its timers and observers go through the
-names `mountSessionView` declares, so `unmount()` stops them all. The native frontend tests
+names `mountSessionView` declares, so `unmount()` stops them all; the modules under it stop their
+own (`destroy`), and work still out when it is called (a send, a grant, a confirm, a dialog's read,
+a download, a server search) checks that the view is still mounted before it touches anything, since
+the view finds its elements by id and a remount in the same element reuses the ids. After the
+unmount every handle member is a no-op (`fenced`). The native frontend tests
 (`codex_*.test.mjs`) run module SOURCE with imports stripped, so a new import needs the real module
 in their context (`VIEW_ROOT` there) and only the workspace `cargo test` runs them.
 **The sidebar head is TWO LINES by construction** (#223): the brand takes the first, the controls
