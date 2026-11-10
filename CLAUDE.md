@@ -62,7 +62,12 @@ shadow root: the owner chose prefixed styles, #s438); and the
 view keeps its own state as classes on its element `#sessionView` (`display: contents` in the app, so
 its parts stay columns of `#app`'s grid), a rule's negated twin reading `#sessionView` too, with the
 pane's open, full and resizing states copied onto `#app` for the app's grid. Its server's facts
-(paired, version, the mdrev pin) come from the backend handle. The native frontend tests
+(paired, version, the mdrev pin) come from the backend handle. **The view imports no store of the
+app's** (#s429 stage 7): `state.js` is the app's (the index, ⌘K's results, write mode), the view
+makes its own as it mounts (`view-state.js`, the compose box's `compose`), and write mode and the
+grant's confirm come in as its `write` option, so a host page carries nothing of ours; every
+listener the view binds on the page takes its `signal`, and its timers and observers go through the
+names `mountSessionView` declares, so `unmount()` stops them all. The native frontend tests
 (`codex_*.test.mjs`) run module SOURCE with imports stripped, so a new import needs the real module
 in their context (`VIEW_ROOT` there) and only the workspace `cargo test` runs them.
 **The sidebar head is TWO LINES by construction** (#223): the brand takes the first, the controls

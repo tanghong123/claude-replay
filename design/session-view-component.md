@@ -2,8 +2,8 @@
 
 > **DRAFT 1** (#s429, 2026-11-08). Step 4 of `design/embedding.md` ("The order of the work").
 > Stages 1 and 2 are built and shipped in v1.496.0, stage 3 in v1.497.0, stage 4 in v1.498.0, 5a in
-> v1.499.0, 5b in v1.500.0, the class renames in v1.502.0, and stage 6 in v1.504.0. Stage 7 is left.
-> There is no shadow root (the owner, #s438).
+> v1.499.0, 5b in v1.500.0, the class renames in v1.502.0, and stage 6 in v1.504.0. Stage 7 is
+> built, not yet released. There is no shadow root (the owner, #s438).
 
 ## What it is for
 
@@ -139,8 +139,8 @@ pane, so step 6 also makes the view's root what they are placed against.
    The function's body is the view's old top-level code moved line for line, so it sits at the
    margin. A whitespace-only commit can indent it once stages 4 to 6 stop rewriting it.
 
-   Not yet passed in: `state.js`'s stores. The view still imports `persist` (which writes the
-   app's settings with its own), `uiState` (which also holds the session search's results) and
+   Not yet passed in: `state.js`'s stores (passed in by stage 7, below). The view still imports
+   `persist` (which writes the app's settings with its own), `uiState` (which also holds the session search's results) and
    `controlState`; `control-store.js` reads `selectedRow()` and native mode `indexState.selected`
    from there. `state.js` says which side owns each field. Each moves behind an option when the
    kit's host needs it, at stage 7 at the latest. The names the two sides call each other by are
@@ -483,7 +483,8 @@ pane, so step 6 also makes the view's root what they are placed against.
      existed: the mount threw. The pane's layout changes now remeasure only once the view is built,
      from the width the mount left (the one read before the pane shut itself was stale); the reading
      options' first application, later in the mount, measures everything anyway.
-   - **What a host's page must still carry**, which the test host found: the compose box's controls
+   - **What a host's page must still carry** (nothing since stage 7, which passes write mode in),
+     which the test host found: the compose box's controls
      (`control-store.js`) bind the app's write-mode switch (`writeSwitch`, `writeBtn`, `writeInfo`,
      `writeHelp`, `sidebarMiniWrite`) and its confirm layer (`confirmLayer` with its `h3` and
      `.dialog`, `confirmText`, `cancelSend`, `confirmSend`) by id, so a page without them cannot
@@ -527,13 +528,123 @@ pane, so step 6 also makes the view's root what they are placed against.
      by pane size which bar a phone shows; `grid`'s two remaining roles and the phone's tokens on
      `#app`; and a host-supplied link for a record (the view copies the page's own address with the
      record's hash, which in a host is the host's address). All are embedding's step 6.
-   - **The unmount.** The handle has none yet. It must remove what the view adds to the document
-     for its keys, the four capture listeners of engaged mode (`pointerdown`, `mousedown`, `focusin`,
+   - **The unmount** (built by stage 7). The handle had none. It must remove what the view adds to
+     the document for its keys, the four capture listeners of engaged mode (`pointerdown`, `mousedown`, `focusin`,
      `keydown`), beside the view's other listeners on the window and the document (its Escape
      handlers, the pane's and the task card's outside-press closers, the viewport's), its floating
      layers in `viewRoot.layer()`, its observers and its timers.
-   - The compose box's page elements above, passed in with `controlState` (stage 7).
-7. **The native app's own frame** for an agent's page, which is not offered to other hosts (#s436).
+   - The compose box's page elements above, passed in with `controlState` (done: stage 7's `write`).
+7. **The native app's own frame** for an agent's page, which is not offered to other hosts (#s436);
+   and what stage 3 and stage 6 left: the stores passed in, not imported, and the unmount.
+
+   **Built** (#s429). Nothing a reader of the app sees changed, but for one fix below (the passcode
+   field). The app passes what it used before and keeps the srcdoc.
+   - **The native app's frame**, the `frame(html)` option (`MOUNT_OPTIONS`). The artifact pane shows
+     an agent's HTML page in a frame sandboxed without its origin (`sandbox="allow-scripts"`,
+     `referrerpolicy="no-referrer"`), whose document is the page's text with the preview's policy
+     in front (`sandboxDocument`). Without the option the frame is that document's `srcdoc`, byte for
+     byte as before, and a `srcdoc` also takes the policy of the page around it, so under the native
+     app's page, which allows no inline script, the agent page's script would not run. With it, the
+     view hands that document (the policy in front, so it travels with the page) to `frame`, which
+     answers or resolves to the address the frame loads (`src`); the frame keeps its sandbox and its
+     referrer policy. The native app answers from `app-frame://`, under the same policy as its header
+     (`design/monitor-hub.md`, D3). An answer that is not a non-empty string, a refusal or a throw is
+     the pane's own error ("Cannot show this page", the same block a file it cannot read gets,
+     `Preview.showError`), never an empty frame, and an answer for a page the pane has since left
+     changes nothing. The doc comment says it is the native app's arrangement, offered to no other
+     host; the kit's guide will not list it.
+   - **The stores, passed in.** `state.js` is the app's alone now: the session index, the session
+     search's results (`searchState`, which was `uiState`'s `globalResults` and `globalIndex`), and
+     write mode (`controlState`: `paired` and `write`), which native mode reads too (`native-entry.js`
+     and `codex-workspace/monitor-controls.js` import it). No module of the view imports it; the
+     contract holds that.
+     - The view makes its own stores as it mounts (`view-state.js`): `createRecordState()`,
+       `createViewState()`, which reads the reader's remembered choices then, and
+       `persistView(uiState)`, the view's half of the old `persist`, under the same keys. The app's
+       `persist` writes only the app's keys. The app's remembering of a selection used to write the
+       view's keys too, which is when the outline's first state (the phone's default, the Info pane
+       taken out of the stack) reached storage; the view's `select` writes its own now, so that
+       moment holds.
+     - The artifact pane takes the view's store (`new Preview(actions, uiState)`).
+     - The compose box keeps its own state (`ControlStore.compose`: the row, the mode, the grant
+       and the text a grant waits to send), which native mode reads through it. It gets the app's
+       selection (`selectedId`, `selectedRow`) and the host's write mode through the view's actions.
+       `canInject`, `canResume` and `canCompose` moved into `control-store.js`.
+   - **Write mode, passed in**, the `write` option: `{ on(), confirm({ title, text, passcode }) }`.
+     Left out, the view offers no writes: no compose button, no ✎ in a phone's dock, no notice. `on()`
+     says whether the reader has writing on; the host calls the handle's `writeChanged()` when it
+     changes. `confirm` asks before the monitor types into a live pane (a grant), with a passcode
+     field when asked for one, and answers the passcode given ("" with no field) to go on, anything
+     else to cancel; an ask while another is open answers that one as cancelled, so only the last
+     goes on, as before. The app owns all of it again: it binds and paints its write switch, the
+     rail's write button, the pairing help and the confirm layer (`paintWrite`, `showPairHelp`,
+     `confirmWrite` in `app.js`), and passes `write: { on: () => controlState.write, confirm:
+     confirmWrite }`. Its switch's handler is bound before native mode loads, which wraps it as
+     before; native mode reads write mode through the view's actions (`writing`).
+     - **The passcode field is styled again.** The app draws it now, in its confirm layer, so the
+       classifier lists `.passcode-input` with the app's chrome and its rule moved from
+       `session-view.css` to `app-shell.css`. Since 5b the rule had hung on `#sessionView`, which the
+       confirm layer is not inside, so the field drew unstyled (the browser's own input) whenever a
+       monitor asked for a passcode. Nothing else in either stylesheet moved.
+   - **The unmount**, the handle's `unmount()`. It remembers the reader's place (as a page leaving
+     does), then stops what the view started and takes away what it put outside its element, and
+     leaves the element as the host gave it, empty, with its own attributes; the view tells its host
+     nothing more. Mounting again in the same element draws a new view.
+     - Every listener the view binds on the page (the document, the window, the visual viewport, a
+       media query; 30 places in its code, the four of engaged mode among them) carries one
+       `AbortController`'s signal. The timers, frames and observers the view's code starts are made through names that
+       keep each (`setTimeout`, `requestAnimationFrame`, `ResizeObserver`, `MutationObserver`,
+       declared at the top of `mountSessionView`), so the unmount clears them all.
+     - The viewport stops its own (`Viewport.destroy`): its listeners, the shared engine's on the
+       window (the end of a scrollbar drag, a blur), its three observers and its timers, and what a
+       queued timer would still run finds nothing to do. The engine is shared with the offline
+       pages and has no way to take its listeners back, and is not changed (the byte gate reads the
+       pages that inline it): the viewport watches the window's `addEventListener` while the engine
+       is built and removes what it bound.
+     - The record store stops its reads and polls (`stop`). The artifact pane closes its review
+       sheet, mdrev's viewer and its image viewer, stops its observers and drops a read in flight
+       (`Preview.destroy`). The dialog card is cleared, and what the compose box would still ask of
+       the app (a dialog's answer settling) goes nowhere.
+     - What it put outside its element goes: the task card and its scrim in the page's layer, a list
+       a wide phone's column borrowed, the properties it measured on the page's root (`--preview`,
+       `--phone-top`, `--phone-bottom`, `--phone-kb`) and the place it moved the host's box to over a
+       phone's keyboard.
+   - **Tests.** The contract holds `frame` and `write` both ways with the other options (the app
+     leaves out only `show` and `frame`), runs the pane's frame (the address, a promise of one, a late
+     answer, a refusal, a throw, an answer that is not an address) and the compose box's confirm (the
+     last ask wins, a cancelled one does not go on, nothing without `write`), checks that no module
+     of the view imports `state.js` and that the compose box binds none of the app's write controls,
+     which the app binds itself, and reads every listener the view binds on the page for its signal.
+     The native mode node tests take the compose state and write mode the new way. Three browser
+     cases, in the stage 6 test host, which no longer carries the hidden write controls:
+     - `the_session_view_in_a_host_frames_an_agents_page_from_the_hosts_own_source` (3105): under a
+       host policy with no inline script, the srcdoc's script does not run (and without the policy
+       it does); with `frame` the host is handed the page with its policy in front, the frame loads
+       the host's address, sandboxed as before, and its script runs; a refusal and an empty answer
+       are the pane's error.
+     - `the_session_view_in_a_host_without_write_controls_mounts_and_offers_no_writes` (3106): no
+       compose button, notice or ✎ without `write`, on a desktop and a phone; with it, both, and the
+       box opens on the session.
+     - `the_session_view_in_a_host_unmounts_and_mounts_again` (3107): after the unmount the window
+       and the document have exactly the listeners they had before the mount (as CDP's
+       `DOMDebugger.getEventListeners` lists them, `harness::page_listeners`), the element is empty
+       with its own attributes, nothing is left in the layer or on the root, a key reaches nothing,
+       no request goes out and nothing throws; mounted again, the same listeners as the first mount,
+       one of each part, and one `w` toggles wrapping once. With the signal's abort taken out, it
+       fails on the listeners.
+
+   **Left for later:**
+   - Native mode is not taken down by the unmount: only the app installs it, and the app never
+     unmounts the view. Its menu, its observer and its listeners on the visual viewport stay.
+   - What is the page's once, not the view's: mdrev's stylesheet in the head and its loaded bundle,
+     the Mermaid runtime, and the shared Mermaid module's theme observer, which watches the element
+     the view last drew in and redraws nothing once the element holds no diagram. A new mount
+     reuses them.
+   - The handle's other members after an unmount do nothing useful; a host drops the handle and
+     mounts again.
+   - Everything stage 6 left for embedding's step 6: the app's own phone bar, `grid`'s two roles and
+     the phone's tokens on `#app`, a host-supplied link for a record, and the task card's layer under
+     the view's element.
 
 The shadow root this draft first planned as stage 6, and the app shell moved into it as stage 8, are
 dropped (#s438, above). The isolation test of `design/embedding.md` still runs, in the terms the
