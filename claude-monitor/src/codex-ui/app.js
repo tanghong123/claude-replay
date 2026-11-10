@@ -6,7 +6,7 @@ import { agentLogo, svg } from "./icons.js";
 import { backend } from "./backend.js";
 import { PHONE_QUERY, WIDE_PHONE_QUERY } from "./shared/capabilities.js";
 import { SessionIndexStore } from "./session-index-store.js";
-import { indexState, persist, selectedRow, uiState } from "./state.js";
+import { indexState, persist, searchState, selectedRow } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
 import { ARRANGE_SOURCES, arrangeSessions, familyHolds, flatFamilies, isDefaultView, nestSideSessions, paneLookup, rowLookup, sectionView, viewSection } from "./session-list.js";
 import { displayState, denoteState, sessionBucket, sessionFilterBuckets, FILTER_BUCKETS, FILTER_LABELS, BLOCKED_SUMMARY } from "./shared/state-labels.js";
@@ -884,14 +884,14 @@ function globalRows(raw) {
 function renderGlobalSearch() {
   const query = page.byId("searchInput").value.trim();
   const rows = globalRows(query).slice(0, 80);
-  uiState.globalResults = rows; uiState.globalIndex = Math.min(uiState.globalIndex, Math.max(0, rows.length - 1));
-  page.byId("searchResults").innerHTML = rows.map((row, index) => `<button class="search-result ${index === uiState.globalIndex ? "active" : ""}${row.why.length ? " search-result-stale" : ""}" data-global-index="${index}"${row.why.length ? ` title="The sidebar is not showing this (${escapeText(row.why.join(", "))}) — opening it shows it there again"` : ""}><span class="result-copy"><b>${escapeText(row.label)}</b><small>${escapeText(row.meta)}</small></span>${row.why.length ? `<span class="result-why">${escapeText(row.why.join(" · "))}</span>` : ""}<span class="result-kind">${escapeText(row.kind)}</span></button>`).join("") || '<div class="no-results">No matches</div>';
+  searchState.globalResults = rows; searchState.globalIndex = Math.min(searchState.globalIndex, Math.max(0, rows.length - 1));
+  page.byId("searchResults").innerHTML = rows.map((row, index) => `<button class="search-result ${index === searchState.globalIndex ? "active" : ""}${row.why.length ? " search-result-stale" : ""}" data-global-index="${index}"${row.why.length ? ` title="The sidebar is not showing this (${escapeText(row.why.join(", "))}) — opening it shows it there again"` : ""}><span class="result-copy"><b>${escapeText(row.label)}</b><small>${escapeText(row.meta)}</small></span>${row.why.length ? `<span class="result-why">${escapeText(row.why.join(" · "))}</span>` : ""}<span class="result-kind">${escapeText(row.kind)}</span></button>`).join("") || '<div class="no-results">No matches</div>';
 }
 page.byId("searchBtn").onclick = openGlobalSearch; page.byId("sidebarMiniSearch").onclick = openGlobalSearch;
-page.byId("searchInput").oninput = () => { uiState.globalIndex = 0; renderGlobalSearch(); };
+page.byId("searchInput").oninput = () => { searchState.globalIndex = 0; renderGlobalSearch(); };
 /** Go to a ⌘K row — by click, or Enter on the highlighted one. */
 function chooseGlobal(index) {
-  const row = uiState.globalResults[index]; if (!row) return;
+  const row = searchState.globalResults[index]; if (!row) return;
   page.byId("searchLayer").classList.remove("production-open");
   // A row the sidebar is not showing: opening it clears what hides it — the bucket filter to All
   // (owner, 2026-09-26), and Include hidden for a hidden one — or the reader lands in a session
@@ -904,10 +904,10 @@ page.byId("searchResults").onclick = event => { const item = event.target.closes
 // A jump-to is done from the keyboard: ↑/↓ move the highlight, Enter goes. The demo's own handler
 // never runs here, so without this Enter did nothing (#294's gap, found by #296's case).
 page.byId("searchInput").onkeydown = event => {
-  const n = uiState.globalResults.length;
+  const n = searchState.globalResults.length;
   if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     event.preventDefault(); if (!n) return;
-    uiState.globalIndex = (uiState.globalIndex + (event.key === "ArrowDown" ? 1 : n - 1)) % n;
+    searchState.globalIndex = (searchState.globalIndex + (event.key === "ArrowDown" ? 1 : n - 1)) % n;
     renderGlobalSearch();
     // Keep the highlight in view by moving the LIST's own offset — never scrollIntoView, which the
     // contract bans from this file because the browser may move the transcript with it.
@@ -917,7 +917,7 @@ page.byId("searchInput").onkeydown = event => {
       if (r.top < l.top) list.scrollTop -= l.top - r.top;
       else if (r.bottom > l.bottom) list.scrollTop += r.bottom - l.bottom;
     }
-  } else if (event.key === "Enter") { event.preventDefault(); chooseGlobal(uiState.globalIndex); }
+  } else if (event.key === "Enter") { event.preventDefault(); chooseGlobal(searchState.globalIndex); }
 };
 page.byId("searchLayer").onclick = event => { if (event.target === page.byId("searchLayer")) page.byId("searchLayer").classList.remove("production-open"); };
 // The theme is the app's: its chrome reads it on the page's root, and the view, which carries its own

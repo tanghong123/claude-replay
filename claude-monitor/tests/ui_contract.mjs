@@ -1154,7 +1154,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // The contract's explicit DROP: `.transcript code` swept inline backtick code into a code
   // control, forcing pre-wrap on prose. Inline code has no line identity and is not a wrap surface.
   assert.doesNotMatch(productionCss, /wrap-code[^{]*\.transcript code/, "inline code is not a wrap surface");
-  assert.match(readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8"), /if \(uiState\.readingChosen\) localStorage\.setItem\(READING_KEY, JSON\.stringify\(uiState\.reading\)\)/, "reading preferences persist with the other production preferences — once chosen (#45)");
+  assert.match(readFileSync(new URL("../../claude-monitor/src/codex-ui/view-state.js", import.meta.url), "utf8"), /if \(uiState\.readingChosen\) localStorage\.setItem\(READING_KEY, JSON\.stringify\(uiState\.reading\)\)/, "reading preferences persist with the other production preferences — once chosen (#45)");
   assert.match(viewSource, /recordState\.rawTurns\.clear\(\)/, "raw turns reset when a session opens");
   console.log("reading + raw cases passed");
 }
@@ -1394,7 +1394,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /from "\.\/shared\/keymap\.js"/); assert.match(viewSource, /from "\.\/shared\/reading\.js"/);
   // The shared key is written only by a CHOICE, in either shell — never by a load or by an
   // unrelated persist() carrying one shell's defaults into the other.
-  const stateSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
+  const stateSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-state.js", import.meta.url), "utf8");
   assert.match(stateSrc, /if \(uiState\.readingChosen\) localStorage\.setItem\(READING_KEY/, "the app shell persists reading prefs only once chosen");
   assert.match(viewSource, /uiState\.readingChosen = true; persist\(\)/, "…and setReading is the choice");
   assert.match(exportSource, /\n  applyMono\(ms\);\n  applyWide\(wide\);/, "the classic page applies stored prefs at load without persisting them");
@@ -1759,7 +1759,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /byId\("navigatorToggle"\)\?\.remove\(\)/, "#148: the top-bar toggle is removed at runtime — the demo shell it lives in is generated and never hand-edited");
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.doesNotMatch(css, /navigator-hidden/, "#148: no CSS describes a state that cannot be reached");
-  const stateSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
+  const stateSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-state.js", import.meta.url), "utf8");
   assert.doesNotMatch(stateSrc, /am-prod-navigator-hidden/, "#148: nothing is remembered for a retired state");
   assert.match(stateSrc, /navigatorOpen/, "…while the two-state preference still is");
   console.log("#55/#148 outline pane cases passed");
@@ -1781,7 +1781,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(taskGroups([]), [], "no tasks, no groups");
   assert.match(viewSource, /const afterFilter = taskGroups\(tasks\)\.filter\(group => group\.key === "other" \|\| shownGroups\.has\(group\.key\)\);/, "#186, as #218 leaves it: the pane filters the GROUPS, never the list — each row carries its index into `meta.tasks` and `data-task-open` hands that index straight back to `openTaskPopover`, so a filtered array would open the wrong task's details");
   assert.match(viewSource, /taskShown\.map\(group => `<div class="work-group" data-task-group="\$\{group\.key\}">/, "the pane renders the groups with a boundary");
-  const stateSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
+  const stateSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-state.js", import.meta.url), "utf8");
   assert.match(stateSource, /liveOnly: new Set\(json\("am-prod-live-only", \["tasks", "agents"\]\)\),/, "…live-only is ON for both panes by default (#186), and remembered per viewer like the other outline choices");
   // #215, the owner: the control moved out of the card head and into the outline's drop-down. It
   // was unfindable there (a faint dot beside the decorative dots the counts wear) and, once found,
@@ -1884,7 +1884,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /byId\("sessionNavigator"\)\.addEventListener\("wheel", event => \{/, "…and the reader's PUSH spends on the panes (#157), never the offset, which closing would eat as it went");
   assert.match(viewSource, /toggleDrawer\(card\.dataset\.navCardToggle\);/, "a head opens and shuts ITS drawer, and nothing else changes")
   assert.doesNotMatch(shellSource, /navFocus|classList\.toggle\("focus"/, "no focus state");
-  const stateSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
+  const stateSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-state.js", import.meta.url), "utf8");
   assert.doesNotMatch(stateSrc, /navFocus/, "…nor remembered");
   assert.match(viewSource, /revealInPane\(row\)/, "the focused turn is revealed through the pane's own scroller");
   // #139/#157: a drawer's body has a HEIGHT, and the reader's PUSH is spent on those heights,
@@ -2088,7 +2088,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(preview, /\{ gone: true \}\);/, "…a 410 marks the refusal gone, so the note says gone only then");
   assert.match(preview, /<div class="image-zoom" data-zoom-bar hidden>/, "the pane carries the lightbox's zoom bar, since every image opens there (#228 through #s223)");
   assert.match(preview, /if \(how === "in"\) view\.zoomBy\(1\.25\);/, "…and its buttons drive the shared engine");
-  assert.match(preview, /uiState\.previewTabs = uiState\.previewTabs\.filter\(tab => !opened\.has\(tab\.id\)\)\.concat\(items\.map\(item => \(open\.has\(item\.id\) \? Object\.assign\(open\.get\(item\.id\), \{ name: item\.name \}\) : item\)\)\);/, "Open all puts its tabs in the block's order, reusing a tab already open (#s222)");
+  assert.match(preview, /this\.uiState\.previewTabs = this\.uiState\.previewTabs\.filter\(tab => !opened\.has\(tab\.id\)\)\.concat\(items\.map\(item => \(open\.has\(item\.id\) \? Object\.assign\(open\.get\(item\.id\), \{ name: item\.name \}\) : item\)\)\);/, "Open all puts its tabs in the block's order, reusing a tab already open (#s222)");
   assert.match(viewSrc, /name: `\$\{item\.name\} \$\{at \+ 1\}\/\$\{items\.length\}`/, "a group's tabs say which of the group each is, since its images share one name (#s222)");
   const compSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   assert.match(compSrc, /<span class="renderer-open-all" role="button" data-open-files=/, "a send's Open all rides its head, so a folded card still offers it (#s222)");
@@ -2130,7 +2130,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // #336, the owner: the badge counting published artifacts read "1" over a pane holding five
   // files. It counts the DOCUMENTS open in the pane; the roster counts itself on its own tab.
   assert.match(previewSource, /className: "preview-badge" \}\)\)\)\.textContent = String\(open\)/, "the pane's button counts the documents open in it");
-  assert.match(previewSource, /const open = uiState\.previewTabs\.length/, "…its tabs, not the published artifacts");
+  assert.match(previewSource, /const open = this\.uiState\.previewTabs\.length/, "…its tabs, not the published artifacts");
   assert.match(previewSource, /if \(key === this\.rosterKey\) return;/, "an unchanged roster re-renders nothing — an open file tab is not re-fetched underneath the reader");
   assert.match(previewSource, /<a href="\$\{escapeText\(r\.url\)\}" target="_blank" rel="noopener"/, "a row is a link in a new tab");
   assert.match(previewSource, /this\.actions\.jumpToRecord\?\.\(Number\(jump\.dataset\.artifactRecord\)\)/, "…with a jump to the publishing record");
@@ -3047,7 +3047,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // one key, kept across sessions and reloads.
 {
   const view89 = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-view.js", import.meta.url), "utf8");
-  const state89 = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
+  const state89 = readFileSync(new URL("../../claude-monitor/src/codex-ui/view-state.js", import.meta.url), "utf8");
   const css89 = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.match(state89, /infoFolds: new Set\(json\("am-prod-info-folds", \[\]\)\),/, "one key, per viewer");
   assert.match(state89, /localStorage\.setItem\("am-prod-info-folds", JSON\.stringify\(\[\.\.\.uiState\.infoFolds\]\)\);/, "…persisted with the rest");
@@ -3803,7 +3803,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(imageView, /if \(!isActive\(\)\) return;/, "…and yields while it is not on screen");
   const preview = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
   assert.match(preview, /const keyHost = this\.actions\.keysFirst \? \{ addEventListener: \(type, fn\) => document\.addEventListener\(type, fn, true\), removeEventListener: \(type, fn\) => document\.removeEventListener\(type, fn, true\) \} : undefined;/, "in a host the viewer's keys are heard in the capture phase, ahead of the host's own; the app keeps the document's bubble phase (#s429 stage 6)");
-  assert.match(preview, /createImageView\(stage, img, \{ keyHost, isActive: \(\) => uiState\.preview && this\.actions\.engaged\?\.\(\) !== false, onChange: /, "the preview's viewer is active only while the pane is open, and in a host's page only while the reader works in the view (#s429 stage 6)");
+  assert.match(preview, /createImageView\(stage, img, \{ keyHost, isActive: \(\) => this\.uiState\.preview && this\.actions\.engaged\?\.\(\) !== false, onChange: /, "the preview's viewer is active only while the pane is open, and in a host's page only while the reader works in the view (#s429 stage 6)");
 
   console.log("#228 image cases passed");
 }

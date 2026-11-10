@@ -1,6 +1,5 @@
 import { escapeText } from "./view-model.js";
 import { backend } from "./backend.js";
-import { uiState } from "./state.js";
 import { sandboxDocument } from "./sandbox.js";
 import { createImageView } from "./shared/image-view.js";
 import { isMarkdownName, mdrevVersion, mountMarkdown } from "./mdrev-pane.js";
@@ -39,9 +38,11 @@ const tabWeight = tab => 256 + 2 * String(tab.text || "").length + 2 * String(ta
 const refusal = (title, message) => Object.assign(new Error(message), { title });
 
 export class Preview {
-  constructor(actions) { this.actions = actions; this.sessionId = ""; this.sessionTabs = new Map(); this.renderGeneration = 0; this.objectUrl = ""; this.roster = []; this.rosterKey = ""; this.bind(); this.setOpen(false); this.restoreWidth(); }
+  /** `uiState` is the view's own store (view-state.js), whose `preview`, `previewTabs` and `previewId`
+   *  are the pane's: open or shut, its tabs and the one shown. */
+  constructor(actions, uiState) { this.actions = actions; this.uiState = uiState; this.sessionId = ""; this.sessionTabs = new Map(); this.renderGeneration = 0; this.objectUrl = ""; this.roster = []; this.rosterKey = ""; this.bind(); this.setOpen(false); this.restoreWidth(); }
   bind() {
-    byId("previewBtn").onclick = () => this.setOpen(!uiState.preview);
+    byId("previewBtn").onclick = () => this.setOpen(!this.uiState.preview);
     byId("closePreview").onclick = () => this.setOpen(false);
     // The Markdown document the pane shows, in a tab of its own (#271): production chrome beside
     // the demo's close button, there only while mdrev has a document mounted. NOT `noopener` — the
@@ -106,7 +107,7 @@ export class Preview {
       const close = event.target.closest("[data-preview-tab-close]");
       if (close) { this.closeTab(close.dataset.previewTabClose); return; }
       const tab = event.target.closest("[data-preview-tab]");
-      if (tab) { uiState.previewId = tab.dataset.previewTab; this.render(); }
+      if (tab) { this.uiState.previewId = tab.dataset.previewTab; this.render(); }
     };
     byId("previewBody").addEventListener("click", event => {
       const jump = event.target.closest("[data-artifact-record]");
@@ -124,7 +125,7 @@ export class Preview {
   /** The pane's open, full and resizing states: the view's own, and its host's, whose layout follows
    *  them (the app's grid, #s429). */
   paneState(name, on) { viewRoot.element()?.classList.toggle(name, on); this.actions.paneLayout?.(name, on); }
-  setOpen(open) { uiState.preview = open; this.paneState("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (!open) this.setFull(false); if (open) this.render(); this.actions.layoutChanged?.(); }
+  setOpen(open) { this.uiState.preview = open; this.paneState("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (!open) this.setFull(false); if (open) this.render(); this.actions.layoutChanged?.(); }
   setFull(full) {
     this.paneState("preview-full", full);
     this.expandBtn.innerHTML = full
@@ -140,9 +141,9 @@ export class Preview {
   setSession(sessionId) {
     if (sessionId === this.sessionId) return;
     if (this.sessionId) {
-      const tabs = uiState.previewTabs.slice(-SESSION_TAB_LIMIT);
+      const tabs = this.uiState.previewTabs.slice(-SESSION_TAB_LIMIT);
       this.sessionTabs.delete(this.sessionId);
-      this.sessionTabs.set(this.sessionId, { tabs, active: uiState.previewId, bytes: tabs.reduce((total, tab) => total + tabWeight(tab), 0) });
+      this.sessionTabs.set(this.sessionId, { tabs, active: this.uiState.previewId, bytes: tabs.reduce((total, tab) => total + tabWeight(tab), 0) });
       const cacheBytes = () => [...this.sessionTabs.values()].reduce((total, entry) => total + entry.bytes, 0);
       while (this.sessionTabs.size > SESSION_CACHE_LIMIT || cacheBytes() > SESSION_CACHE_BYTES) this.sessionTabs.delete(this.sessionTabs.keys().next().value);
     }
@@ -150,11 +151,11 @@ export class Preview {
     this.teardownMarkdown();
     this.sessionId = sessionId || "";
     const saved = this.sessionTabs.get(this.sessionId);
-    uiState.previewTabs = saved?.tabs.slice() || [];
-    uiState.previewId = saved?.active && uiState.previewTabs.some(tab => tab.id === saved.active) ? saved.active : uiState.previewTabs.at(-1)?.id || null;
+    this.uiState.previewTabs = saved?.tabs.slice() || [];
+    this.uiState.previewId = saved?.active && this.uiState.previewTabs.some(tab => tab.id === saved.active) ? saved.active : this.uiState.previewTabs.at(-1)?.id || null;
     this.paneBadge();
     this.renderGeneration++;
-    if (uiState.preview) this.render();
+    if (this.uiState.preview) this.render();
   }
   /** What this session published (#78), as `artifactRoster` groups it — one row per URL. It
    *  lives here rather than in a header menu (#95): a pinned first tab, and a count on the
@@ -167,7 +168,7 @@ export class Preview {
     if (key === this.rosterKey) return;
     this.rosterKey = key; this.roster = list;
     this.paneBadge();
-    if (uiState.preview) this.render();
+    if (this.uiState.preview) this.render();
   }
   /** The pane button's badge (#336): how many DOCUMENTS are open in the pane — its tabs, not the
    *  pinned roster, which counts itself ("Artifacts (N)"). It used to count the published
@@ -176,7 +177,7 @@ export class Preview {
   paneBadge() {
     const button = byId("previewBtn");
     const badge = button.querySelector(".preview-badge");
-    const open = uiState.previewTabs.length, published = this.roster.length;
+    const open = this.uiState.previewTabs.length, published = this.roster.length;
     if (!open) badge?.remove();
     else (badge || button.appendChild(Object.assign(document.createElement("span"), { className: "preview-badge" }))).textContent = String(open);
     const parts = [open ? `${open} open document${open === 1 ? "" : "s"}` : "", published ? `${published} published artifact${published === 1 ? "" : "s"}` : ""].filter(Boolean);
@@ -185,9 +186,9 @@ export class Preview {
   /** A file to show: a tab of its own, selected, and the pane open. The host hears of it (`opened`,
    *  the view's `onFile`), as it does for the first of an Open all, the one the pane shows. */
   open(item) {
-    if (!uiState.previewTabs.some(tab => tab.id === item.id)) uiState.previewTabs.push(item);
-    if (uiState.previewTabs.length > SESSION_TAB_LIMIT) uiState.previewTabs.splice(0, uiState.previewTabs.length - SESSION_TAB_LIMIT);
-    uiState.previewId = item.id; this.paneBadge(); this.setOpen(true);
+    if (!this.uiState.previewTabs.some(tab => tab.id === item.id)) this.uiState.previewTabs.push(item);
+    if (this.uiState.previewTabs.length > SESSION_TAB_LIMIT) this.uiState.previewTabs.splice(0, this.uiState.previewTabs.length - SESSION_TAB_LIMIT);
+    this.uiState.previewId = item.id; this.paneBadge(); this.setOpen(true);
     this.actions.opened?.(item);
   }
   /** #s222: Open all — every item a tab, in the block's order, the FIRST selected so the reader
@@ -198,24 +199,24 @@ export class Preview {
   openAll(items) {
     if (!items.length) return;
     const opened = new Set(items.map(item => item.id));
-    const open = new Map(uiState.previewTabs.filter(tab => opened.has(tab.id)).map(tab => [tab.id, tab]));
-    uiState.previewTabs = uiState.previewTabs.filter(tab => !opened.has(tab.id)).concat(items.map(item => (open.has(item.id) ? Object.assign(open.get(item.id), { name: item.name }) : item)));
+    const open = new Map(this.uiState.previewTabs.filter(tab => opened.has(tab.id)).map(tab => [tab.id, tab]));
+    this.uiState.previewTabs = this.uiState.previewTabs.filter(tab => !opened.has(tab.id)).concat(items.map(item => (open.has(item.id) ? Object.assign(open.get(item.id), { name: item.name }) : item)));
     const cap = Math.max(SESSION_TAB_LIMIT, items.length);
-    while (uiState.previewTabs.length > cap) {
-      const at = uiState.previewTabs.findIndex(tab => !opened.has(tab.id));
+    while (this.uiState.previewTabs.length > cap) {
+      const at = this.uiState.previewTabs.findIndex(tab => !opened.has(tab.id));
       if (at < 0) break;
-      uiState.previewTabs.splice(at, 1);
+      this.uiState.previewTabs.splice(at, 1);
     }
-    uiState.previewId = items[0].id; this.paneBadge(); this.setOpen(true);
+    this.uiState.previewId = items[0].id; this.paneBadge(); this.setOpen(true);
     this.actions.opened?.(items[0]);
   }
   /** #337: the previous or next tab — the pinned roster first, then the files — wrapping. */
   stepTab(dir) {
-    const ids = [...(this.roster.length ? [ROSTER_ID] : []), ...uiState.previewTabs.map(tab => tab.id)];
+    const ids = [...(this.roster.length ? [ROSTER_ID] : []), ...this.uiState.previewTabs.map(tab => tab.id)];
     if (ids.length < 2) return;
-    const current = uiState.previewTabs.some(tab => tab.id === uiState.previewId) ? uiState.previewId : ROSTER_ID;
+    const current = this.uiState.previewTabs.some(tab => tab.id === this.uiState.previewId) ? this.uiState.previewId : ROSTER_ID;
     const at = Math.max(0, ids.indexOf(current));
-    uiState.previewId = ids[(at + dir + ids.length) % ids.length];
+    this.uiState.previewId = ids[(at + dir + ids.length) % ids.length];
     this.render();
   }
   /** #337: the step buttons while the strip overflows, and the current tab in view — moved by the
@@ -231,10 +232,10 @@ export class Preview {
     if (tab.left < box.left) strip.scrollLeft += tab.left - box.left - 8;
     else if (tab.right > box.right) strip.scrollLeft += tab.right - box.right + 8;
   }
-  closeTab(id) { uiState.previewTabs = uiState.previewTabs.filter(tab => tab.id !== id); if (uiState.previewId === id) uiState.previewId = uiState.previewTabs.at(-1)?.id || null; this.paneBadge(); this.render(); }
+  closeTab(id) { this.uiState.previewTabs = this.uiState.previewTabs.filter(tab => tab.id !== id); if (this.uiState.previewId === id) this.uiState.previewId = this.uiState.previewTabs.at(-1)?.id || null; this.paneBadge(); this.render(); }
   render() {
     const generation = ++this.renderGeneration;
-    const item = uiState.previewTabs.find(tab => tab.id === uiState.previewId);
+    const item = this.uiState.previewTabs.find(tab => tab.id === this.uiState.previewId);
     this.shown = item || null;
     const beside = item ? besideAction(item, backend().local) : null;
     this.revealBtn.hidden = beside !== "reveal";
@@ -243,7 +244,7 @@ export class Preview {
     // so it is also what a freshly opened pane lands on, without hunting for a control.
     const roster = !item && this.roster.length > 0;
     const pinned = this.roster.length ? `<button class="preview-tab sv-pinned ${roster ? "on" : ""}" data-preview-tab="${ROSTER_ID}" title="What this session published"><span class="preview-tab-label">Artifacts (${this.roster.length})</span></button>` : "";
-    byId("previewTabs").innerHTML = pinned + uiState.previewTabs.map(tab => `<button class="preview-tab ${tab.id === uiState.previewId ? "on" : ""}" data-preview-tab="${escapeText(tab.id)}"><span class="preview-tab-label">${escapeText(tab.name)}</span><span class="preview-tab-close" data-preview-tab-close="${escapeText(tab.id)}">×</span></button>`).join("");
+    byId("previewTabs").innerHTML = pinned + this.uiState.previewTabs.map(tab => `<button class="preview-tab ${tab.id === this.uiState.previewId ? "on" : ""}" data-preview-tab="${escapeText(tab.id)}"><span class="preview-tab-label">${escapeText(tab.name)}</span><span class="preview-tab-close" data-preview-tab-close="${escapeText(tab.id)}">×</span></button>`).join("");
     this.fitTabs();
     // A Markdown tab mdrev is already showing stays as it is: the tab strip and the roster re-render
     // around it, and a remount would throw away the reader's place, range and open notes. The tab
@@ -432,7 +433,7 @@ export class Preview {
       // view's own are (`keysFirst`), so a host's listener bound before the viewer finds a key it
       // took already taken; the app's page keeps the document's bubble phase, as before.
       const keyHost = this.actions.keysFirst ? { addEventListener: (type, fn) => document.addEventListener(type, fn, true), removeEventListener: (type, fn) => document.removeEventListener(type, fn, true) } : undefined;
-      this.imageView = createImageView(stage, img, { keyHost, isActive: () => uiState.preview && this.actions.engaged?.() !== false, onChange: state => { percent.textContent = `${state.percent}%`; } });
+      this.imageView = createImageView(stage, img, { keyHost, isActive: () => this.uiState.preview && this.actions.engaged?.() !== false, onChange: state => { percent.textContent = `${state.percent}%`; } });
       img.addEventListener("load", () => { bar.hidden = false; }, { once: true });
       bar.onclick = event => {
         const how = event.target.closest("[data-zoom]")?.dataset.zoom, view = this.imageView;

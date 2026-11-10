@@ -22,7 +22,7 @@ import { taskCardHtml, taskRowMeta, TASK_NO_TITLE } from "./shared/task-card.js"
 import { ControlStore } from "./control-store.js";
 import { Preview } from "./preview.js";
 import { RecordStore } from "./record-store.js";
-import { persist, recordState, uiState } from "./state.js";
+import { createRecordState, createViewState, persistView } from "./view-state.js";
 import { displayState } from "./shared/state-labels.js";
 import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
@@ -142,6 +142,10 @@ if (!KEYBOARD_MODES.includes(keyboardMode)) throw new Error(`mountSessionView ta
 if (options.frame !== undefined && typeof options.frame !== "function") throw new Error("mountSessionView takes its frame as a function from a page's HTML to the address its frame loads");
 /** Whether an optional control is drawn: each is, unless the host switched it off. */
 const shows = name => options.show?.[name] !== false;
+// The view's own stores, fresh for this mount (stage 7): the open session's records and how they are
+// drawn, and how the view is laid out and read, with the reader's remembered choices.
+const recordState = createRecordState(), uiState = createViewState();
+const persist = () => persistView(uiState);
 if (options.backend) useBackend(options.backend);
 // The view builds its three parts inside its element from its own markup (stage 4), so a host's
 // page carries none of the view's markup (the compose box still binds the app's write controls,
@@ -433,7 +437,7 @@ const paneLayoutChanged = () => {
   paneLaidOutWidth = width;
   viewport.remeasure();
 };
-const preview = new Preview({ layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") });
+const preview = new Preview({ layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
 const attachmentViewer = new AttachmentViewer({ toast });
 const controlActions = { renderTree: () => options.renderList(), recordSnapshot: () => ({ session: recordState.session, records: recordState.records }), toast, refreshIndex: () => options.refreshIndex(), pauseIndex: () => options.pauseIndex(), resumeIndex: () => options.resumeIndex(), selectSession, refreshEmpty: () => recordStore.refreshEmpty() };
 const ordinaryControls = new ControlStore(controlActions);
@@ -4082,8 +4086,9 @@ queueMicrotask(() => {
 
 return {
   /** A session was chosen: the view takes it before the app writes its address — the loading veil,
-   *  the pane's tabs, the top bar and the compose box. */
-  select(id) { sessionLoading?.show(); preview.setSession(id); renderHeader(); controls.paint(); },
+   *  the pane's tabs, the top bar and the compose box — and remembers the reader's choices, as the
+   *  app's own remembering of a selection did while it wrote both halves' (stage 7). */
+  select(id) { sessionLoading?.show(); preview.setSession(id); renderHeader(); controls.paint(); persist(); },
   /** …and reads its records. */
   open(id) { recordState.session = id; queueTurn(null); viewport.beginSession(id); recordStore.open(id); },
   /** The session whose records the view reads ("" for none). */
