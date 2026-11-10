@@ -1008,7 +1008,7 @@ delivered is offered (`ToolUse::delivered` → `head.files`), not only the first
   shell that failed to LINK passed every static gate and was caught only here. Everything is
   `#[ignore]`d; the gate is
   `cargo build --release -p claude-monitor --features claude-monitor/codex-native && cargo test -p claude-replay-browser-tests -- --ignored --skip known_red`
-  (a local Chrome; CI runs the same in its `browser` job). `tests/harness/mod.rs` is the kit
+  (a local Chrome; CI runs the same split into five `browser` legs on separate runners, #s448, whose one result is the check `browser (real Chrome)`). `tests/harness/mod.rs` is the kit
   every case uses: `Stores` (a hermetic world of agent stores under the case's scratch root —
   nothing a case measures comes from this machine's sessions), record builders and
   `long_session`, `Monitor::spawn` (`agent-monitor` on a fixed port, reaped on drop; a missing binary
