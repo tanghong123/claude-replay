@@ -1551,7 +1551,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /function updateTurnBar\(atKey\) \{\s*\n\s*const index = currentUserUnitIndex\(atKey\);/, "the turn bar reads the shared rule (#209 gave it the engine's key for the transaction boundary)");
   assert.match(viewSource, /const index = currentUserUnitIndex\(\);\s*\n\s*const unit = index >= 0 \? userUnits\(\)\[index\] : null;\s*\n\s*const key = unit \? String\(unit\.from\) : null;/, "…and so does the navigator pane");
   assert.match(viewSource, /if \(units\.length && \(viewport\.following \|\| viewport\.gapToBottom\(\) <= viewport\.slacks\.hold\)\) \{\s*\n\s*let last = -1;\s*\n\s*for \(const unit of units\) if \(unit\.type === "user"\) last\+\+;/, "at the bottom the last turn is current (#89 on the classic page, #199 here)");
-  assert.match(viewSource, /return currentTurnIndex\(units, atKey === undefined \? unitAtTop\(\) : atKey\);/, "…and everywhere else the turn of the unit at the top, unless the engine named one (#209)");
+  assert.match(viewSource, /return currentTurnIndex\(units, atKey === undefined \? unitAtTop\(\) : keyAtSpyLine\(atKey\)\);/, "…and everywhere else the turn of the unit at the top, unless the engine named one (#209), read at the same line (#s450)");
+  // #s450: the engine's position names the unit crossing the viewport's top, behind the turn bar;
+  // the walk from it reaches the spy's line, `landing + 8`, the one `unitAtTop` reads.
+  assert.match(viewSource, /function keyAtSpyLine\(key\) \{\s*\n\s*const p = viewport\.position;\s*\n\s*if \(!p \|\| p\.key !== key \|\| p\.commanded \|\| p\.source !== "anchor" \|\| p\.index == null\) return key;\s*\n\s*const line = viewport\.landing \+ 8;/, "…which walks from the position's unit to that line, and takes a position a command set as it is");
   assert.match(viewSource, /if \(child\.getBoundingClientRect\(\)\.top <= line\) key = child\.dataset\.unitKey;\s*\n\s*else break;/, "the unit at the top is the LAST one whose top is above the line — a unit spanning the viewport names itself");
   assert.match(viewSource, /const line = viewport\.scroller\.getBoundingClientRect\(\)\.top \+ viewport\.landing \+ 8;/, "…and the line sits just below where a jump lands its target, so a clicked turn is the turn named");
   assert.match(viewSource, /return key \?\? viewport\.window\.firstElementChild\?\.dataset\.unitKey \?\? null;/, "…and the first child stands in when nothing has scrolled past the line");
@@ -1930,7 +1933,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(engineSource209, /this\.trace\("arrived"[\s\S]{0,400}?this\.afterTransaction\(\);/, "…and the arrival of that write calls it instead");
   assert.match(viewportSource, /afterTransaction\(\) \{ this\.actions\.afterTransaction\?\.\(\); \}/, "the shell's viewport forwards it");
   assert.match(viewSource, /afterTransaction: \(\) => \{ const p = viewport\.position; if \(p && p\.key\) queueTurn\(updateTurnBar\(p\.key\)\); wantWindow\(\); \}/, "…and the shell repaints the bar from the ENGINE's belief, the turn its host hears too (#s429 stage 6; and, #s277, asks the store for what the window shows)");
-  assert.match(viewSource, /return currentTurnIndex\(units, atKey === undefined \? unitAtTop\(\) : atKey\);/, "…which is what the key argument is for: no layout read at the boundary");
+  assert.match(viewSource, /return currentTurnIndex\(units, atKey === undefined \? unitAtTop\(\) : keyAtSpyLine\(atKey\)\);/, "…which is what the key argument is for: no layout read at the boundary");
+  // #s450 reads the key at the spy's line from the engine's own heights: no rect, no offset.
+  const spyLine450 = viewSource.match(/function keyAtSpyLine\(key\) \{[\s\S]*?\n\}/)?.[0] || "";
+  assert.ok(spyLine450, "the walk to the spy's line exists");
+  assert.doesNotMatch(spyLine450, /getBoundingClientRect|scrollTop|offsetTop|offsetHeight|clientHeight/, "…and reads no layout: the position, the engine's heights and the landing's declared padding");
   assert.doesNotMatch(classicExportSource, /afterTransaction\(\) \{/, "the classic page does NOT spy at the boundary — its spy measures rects, and forcing that flush there moved the reader");
   assert.match(css, /\.session-navigator\{overflow-anchor:none\}/, "scroll anchoring would fight a body that is changing height");
   assert.doesNotMatch(css, /\.navigator-list\{[^}]*overscroll-behavior:contain/, "the list never contains its overscroll — the wheel reaches the chain once the list is at its end");

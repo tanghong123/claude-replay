@@ -1997,6 +1997,125 @@ fn the_session_view_in_a_host_takes_its_keys_only_while_the_reader_works_in_it()
     );
 }
 
+/// #s450: right after `]` lands a turn, scrolling DOWN never makes the subtitle
+/// (`#turnSubtitle`, which names the turn the reader is in) name a turn before the one landed on,
+/// and at any one offset every value it is given is the same. The scroll path reads the unit under
+/// the spy's line, just below the turn bar (`unitAtTop`); after a transaction the engine's
+/// position names the unit crossing the viewport's TOP, which after a landing is the previous
+/// turn's tail, behind the bar. Painted from that, one 24px scroll down named the turn before until
+/// the next scroll event. Swept in 4px steps, since the two readings' boundaries could differ by a
+/// margin, and at a phone's size too, where the line is 20px down and no bar covers the transcript.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_subtitle_keeps_the_jumped_to_turn_scrolling_down() {
+    subtitle_after_a_jump(3261, None);
+}
+
+/// #s450 on a phone held upright: the same sweep.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_subtitle_keeps_the_jumped_to_turn_scrolling_down() {
+    subtitle_after_a_jump(3262, Some((390, 844)));
+}
+
+fn subtitle_after_a_jump(port: u16, phone: Option<(u32, u32)>) {
+    let _serial = serial();
+    let base = base(&format!("subtitle-after-a-jump-{port}"));
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000450".to_string();
+    stores.claude_session(
+        &sid,
+        &harness::long_session(
+            40,
+            harness::Shape {
+                tool_every: 2,
+                think_every: 5,
+                prose_repeat: 6,
+            },
+        ),
+    );
+    let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    if let Some((w, h)) = phone {
+        harness::phone(&tab, w, h);
+    }
+    monitor.pair(&tab);
+    harness::track_idle(&tab);
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "document.querySelectorAll('.virtual-window .turn.user').length >= 3",
+        "three user turns mounted",
+        std::time::Duration::from_secs(20),
+        "document.querySelectorAll('.virtual-window .turn.user').length + ' turns'",
+    );
+    harness::eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:-1})); s.scrollTop = 0; return 'ok'; })()");
+    harness::until_reader_owns_the_view(&tab);
+    let reading = "(function(){ var s=document.querySelector('.transcript'), top=s.getBoundingClientRect().top; for (var c of document.querySelector('.virtual-window').children) { if (c.getBoundingClientRect().top >= top - 24) return c.dataset.unitFrom + '@' + Math.round(s.scrollTop); } return '-1@' + Math.round(s.scrollTop); })()";
+    let unit_of = |v: &serde_json::Value| -> i64 {
+        v.as_str()
+            .and_then(|s| s.split('@').next())
+            .and_then(|u| u.parse().ok())
+            .unwrap_or(-1)
+    };
+    let offset_of = |v: &serde_json::Value| -> i64 {
+        v.as_str()
+            .and_then(|s| s.split('@').nth(1))
+            .and_then(|o| o.parse().ok())
+            .unwrap_or(-1)
+    };
+    // "Turn 7 — label" → 7.
+    let turn_of = |text: &str| -> i64 {
+        text.strip_prefix("Turn ")
+            .and_then(|t| t.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(-1)
+    };
+    let subtitle = "document.getElementById('turnSubtitle').textContent";
+    let bound = std::time::Duration::from_secs(10);
+    let (at_top, _) = harness::until_still(&tab, reading, |v| offset_of(v) == 0, bound);
+    // Every value the subtitle is given, in order: each paint replaces its text, so a paint that
+    // names the same turn is recorded too.
+    harness::eval(&tab, "(function(){ var t=document.getElementById('turnSubtitle'); window.__subtitles=[]; new MutationObserver(function(){ window.__subtitles.push(t.textContent); }).observe(t, {childList:true, characterData:true, subtree:true}); return 'ok'; })()");
+    let mut previous_unit = unit_of(&at_top);
+    let mut previous_turn = turn_of(harness::eval(&tab, subtitle).as_str().unwrap_or(""));
+    for _ in 0..2 {
+        harness::key(&tab, "]", false);
+        let (landed_at, seen) =
+            harness::until_still(&tab, reading, |v| unit_of(v) > previous_unit, bound);
+        let landed = turn_of(harness::eval(&tab, subtitle).as_str().unwrap_or(""));
+        assert!(
+            unit_of(&landed_at) > previous_unit && landed > previous_turn,
+            "`]` lands the next turn: unit {previous_unit} -> {landed_at}, turn {previous_turn} -> {landed} (readings {seen:?})"
+        );
+        previous_unit = unit_of(&landed_at);
+        previous_turn = landed;
+        let mut offset = offset_of(&landed_at);
+        let mut steps: Vec<String> = Vec::new();
+        for _ in 0..30 {
+            harness::eval(&tab, "window.__subtitles = []; 'ok'");
+            harness::eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:4, bubbles:true})); s.scrollTop += 4; return 'ok'; })()");
+            offset += 4;
+            let (at, _) = harness::until_still(&tab, reading, |v| offset_of(v) == offset, bound);
+            let values: Vec<i64> = harness::eval(&tab, "JSON.stringify(window.__subtitles)")
+                .as_str()
+                .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+                .unwrap_or_default()
+                .iter()
+                .map(|t| turn_of(t))
+                .collect();
+            steps.push(format!("{at}: {values:?}"));
+            assert!(
+                values.iter().all(|&t| t == landed),
+                "scrolled down {}px after `]` landed turn {landed}, the subtitle was painted {values:?}; every step so far: {steps:?}",
+                offset - offset_of(&landed_at)
+            );
+        }
+    }
+}
+
 /// The app shell's layout contract, the counterpart of the v2 classic case (task #27): on a
 /// fresh open the view lands pinned at the tail; the TRANSCRIPT is the scroller, and scrolling
 /// it leaves the header and the sidebar exactly where they were; there is no iframe anywhere.

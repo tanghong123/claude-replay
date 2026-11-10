@@ -3410,8 +3410,23 @@ function currentUserUnitIndex(atKey) {
     if (last >= 0) return last;
   }
   // `atKey` given: the engine's own belief of where the reader is (#209), which costs no layout
-  // read — the rule below scans the mounted rects.
-  return currentTurnIndex(units, atKey === undefined ? unitAtTop() : atKey);
+  // read — the rule below scans the mounted rects. Read at that rule's line (#s450).
+  return currentTurnIndex(units, atKey === undefined ? unitAtTop() : keyAtSpyLine(atKey));
+}
+/** The unit under `unitAtTop`'s line, from the engine's position alone (#s450). A position the
+ *  reader's scroll set names the unit crossing the viewport's TOP, and right after a landing that
+ *  is the turn before's tail, under the turn bar: one 4px scroll down from a `]` named the turn
+ *  before. The line sits `landing + 8` below the top, so walk the engine's heights from that unit
+ *  to it. A position a command set holds its target where it put it and is taken as it is, as is
+ *  a key that is not the position's. */
+function keyAtSpyLine(key) {
+  const p = viewport.position;
+  if (!p || p.key !== key || p.commanded || p.source !== "anchor" || p.index == null) return key;
+  const line = viewport.landing + 8;
+  let index = p.index, top = p.top;
+  while (index > 0 && top > line) top -= viewport.heightOf(--index);
+  while (index < viewport.count - 1 && top + viewport.heightOf(index) <= line) top += viewport.heightOf(index++);
+  return viewport.identityAt(index) ?? key;
 }
 // The pane follows the transcript (#52): the outline row of the turn at the viewport top is the
 // current one — marked (`current`, `aria-current`) on every scroll and render, and revealed in
