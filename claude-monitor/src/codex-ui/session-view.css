@@ -1822,28 +1822,28 @@
 :where(#sessionView) .renderer-result{display:flex;gap:8px}
 :where(#sessionView) .renderer-result>.renderer-result-lead{flex:none;color:var(--faint)}
 :where(#sessionView) .renderer-result>.renderer-result-box{flex:1;min-width:0}
-:where(#sessionView) .task-card{display:flex;flex-direction:column;gap:9px;margin:2px 0 4px}
-:where(#sessionView) .task-card-head{display:flex;align-items:baseline;gap:7px}
-:where(#sessionView) .task-card-glyph{flex:none;font:12px/1 var(--mono);color:var(--faint)}
-:where(#sessionView) .task-card-glyph[data-state="completed"]{color:var(--ok,#3f9d63)}
-:where(#sessionView) .task-card-glyph[data-state="in_progress"]{color:var(--primary)}
-:where(#sessionView) .task-card-glyph[data-state="cancelled"]{color:var(--bad,#b4483a)}
-:where(#sessionView) .task-card-id{font:11.5px/1 var(--mono);color:var(--faint)}
-:where(#sessionView) .task-card-title{font-weight:620;color:var(--ink);overflow-wrap:anywhere}
-:where(#sessionView) .task-card-chips{display:flex;flex-wrap:wrap;gap:5px}
+:where(#sessionView) .sv-task-card{display:flex;flex-direction:column;gap:9px;margin:2px 0 4px}
+:where(#sessionView) .sv-task-card-head{display:flex;align-items:baseline;gap:7px}
+:where(#sessionView) .sv-task-card-glyph{flex:none;font:12px/1 var(--mono);color:var(--faint)}
+:where(#sessionView) .sv-task-card-glyph[data-state="completed"]{color:var(--ok,#3f9d63)}
+:where(#sessionView) .sv-task-card-glyph[data-state="in_progress"]{color:var(--primary)}
+:where(#sessionView) .sv-task-card-glyph[data-state="cancelled"]{color:var(--bad,#b4483a)}
+:where(#sessionView) .sv-task-card-id{font:11.5px/1 var(--mono);color:var(--faint)}
+:where(#sessionView) .sv-task-card-title{font-weight:620;color:var(--ink);overflow-wrap:anywhere}
+:where(#sessionView) .sv-task-card-chips{display:flex;flex-wrap:wrap;gap:5px}
 :where(#sessionView) .task-chip{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border:1px solid var(--line);border-radius:999px;background:var(--panel);font-size:11.5px;color:var(--sub)}
-:where(#sessionView) .task-card-dates{font:11.5px/1.6 var(--mono);color:var(--faint)}
-:where(#sessionView) .task-card-gap{max-width:64ch;padding-left:9px;border-left:2px solid var(--line);font-size:12px;line-height:1.55;color:var(--faint)}
-:where(#sessionView) .task-card-section{display:flex;flex-direction:column;gap:4px}
-:where(#sessionView) .task-card-label{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
-:where(#sessionView) .task-card-body{max-width:72ch;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--sub)}
-:where(#sessionView) .task-card-item{color:var(--sub)}
-:where(#sessionView) .task-card-out{padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--ok,#3f9d63) 9%,transparent)}
-:where(#sessionView) .task-card-out>.task-card-label{color:var(--ok,#3f9d63)}
-:where(#sessionView) .task-card-log{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 10px}
-:where(#sessionView) .task-card-log-time{font:11px/1.7 var(--mono);color:var(--faint);white-space:nowrap}
-:where(#sessionView) .task-card-log-msg{color:var(--sub);overflow-wrap:anywhere}
-:where(#sessionView) .task-card-log-by{color:var(--faint)}
+:where(#sessionView) .sv-task-card-dates{font:11.5px/1.6 var(--mono);color:var(--faint)}
+:where(#sessionView) .sv-task-card-gap{max-width:64ch;padding-left:9px;border-left:2px solid var(--line);font-size:12px;line-height:1.55;color:var(--faint)}
+:where(#sessionView) .sv-task-card-section{display:flex;flex-direction:column;gap:4px}
+:where(#sessionView) .sv-task-card-label{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+:where(#sessionView) .sv-task-card-body{max-width:72ch;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--sub)}
+:where(#sessionView) .sv-task-card-item{color:var(--sub)}
+:where(#sessionView) .sv-task-card-out{padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--ok,#3f9d63) 9%,transparent)}
+:where(#sessionView) .sv-task-card-out>.sv-task-card-label{color:var(--ok,#3f9d63)}
+:where(#sessionView) .sv-task-card-log{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 10px}
+:where(#sessionView) .sv-task-card-log-time{font:11px/1.7 var(--mono);color:var(--faint);white-space:nowrap}
+:where(#sessionView) .sv-task-card-log-msg{color:var(--sub);overflow-wrap:anywhere}
+:where(#sessionView) .sv-task-card-log-by{color:var(--faint)}
 :where(#sessionView) .work-task-meta{display:block;margin-top:2px;font-size:11px;color:var(--faint);overflow-wrap:anywhere}
 :where(#sessionView) .renderer[data-target="full"]>.renderer-head>.renderer-target{white-space:pre-wrap;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
 :where(#sessionView) .command-card .renderer-result{margin:2px 0 0;font:12px/1.7 var(--mono);color:var(--sub)}

@@ -1579,7 +1579,7 @@ function searchTextOf(record) {
   return entry;
 }
 /** This shell's names for the shared task card (html/shared/task-card.js). */
-const APP_TASK = { card: "task-card", head: "task-card-head", glyph: "task-card-glyph", id: "task-card-id", title: "task-card-title", chips: "task-card-chips", chip: "task-chip", dates: "task-card-dates", gap: "task-card-gap", section: "task-card-section", label: "task-card-label", body: "task-card-body", item: "task-card-item", outcome: "task-card-out", log: "task-card-log", logTime: "task-card-log-time", logMsg: "task-card-log-msg", logBy: "task-card-log-by" };
+const APP_TASK = { card: "sv-task-card", head: "sv-task-card-head", glyph: "sv-task-card-glyph", id: "sv-task-card-id", title: "sv-task-card-title", chips: "sv-task-card-chips", chip: "task-chip", dates: "sv-task-card-dates", gap: "sv-task-card-gap", section: "sv-task-card-section", label: "sv-task-card-label", body: "sv-task-card-body", item: "sv-task-card-item", outcome: "sv-task-card-out", log: "sv-task-card-log", logTime: "sv-task-card-log-time", logMsg: "sv-task-card-log-msg", logBy: "sv-task-card-log-by" };
 const ALL_SCOPES = ["u", "a", "t", "o"];
 /** The active scope as a set for the shared grammar; null when every class is on (no scope). */
 function activeScopeSet() {
@@ -3127,7 +3127,7 @@ function openTaskPopover(index, opener) {
   // them. What stays this shell's is the popover around it and the jump.
   taskPopover.innerHTML = `<div class="task-popover-head"><strong>${escapeText(d.subject)}</strong><button type="button" class="task-popover-close" aria-label="Close">✕</button></div>
     ${taskCardHtml({ ...task, id: key, blockedBy: d.blockedBy, blocks: d.blocks }, APP_TASK)}
-    ${d.activeForm && d.status === "in_progress" ? `<div class="task-card-dates">${escapeText(d.activeForm)}</div>` : ""}
+    ${d.activeForm && d.status === "in_progress" ? `<div class="sv-task-card-dates">${escapeText(d.activeForm)}</div>` : ""}
     <div class="task-popover-actions">${jump}</div>`;
   taskPopoverOpener = opener;
   taskPopover.hidden = false;

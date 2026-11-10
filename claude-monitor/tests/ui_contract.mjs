@@ -2951,9 +2951,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // Both class maps must NAME the part — a missing key renders `class="undefined"` in silence.
   const view188 = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-view.js", import.meta.url), "utf8");
   const js188 = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
-  assert.match(view188, /dates: "task-card-dates", gap: "task-card-gap",/, "the app shell names the gap");
+  assert.match(view188, /dates: "sv-task-card-dates", gap: "sv-task-card-gap",/, "the app shell names the gap");
   assert.match(js188, /dates: "tcard-dates", gap: "tcard-gap",/, "…and so does the classic page");
-  assert.match(productionCss, /\.task-card-gap\{/, "…and each page styles it");
+  assert.match(productionCss, /\.sv-task-card-gap\{/, "…and each page styles it");
   const exportCss = readFileSync(new URL("../../claude-replay-html/src/html/export.css", import.meta.url), "utf8");
   assert.match(exportCss, /\.tcard-gap \{/);
   // The ROW's fallback title is the same wording on both pages. The app shell's read

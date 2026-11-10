@@ -3218,7 +3218,7 @@ fn the_app_shell_opens_a_task_details_popover() {
     );
     // The popover shows the shared task card (#125): a glyph, chips and labelled sections,
     // where it used to show a definition list of facts.
-    let shown = harness::probe(&tab, "(function(){ var p = document.getElementById('taskPopover'); var c = p.querySelector('.task-card'); return { subject: p.querySelector('.task-popover-head strong').textContent, glyph: (c.querySelector('.task-card-glyph')||{}).textContent, chips: [...c.querySelectorAll('.task-chip')].map(function (e) { return e.textContent.trim(); }), sections: [...c.querySelectorAll('.task-card-label')].map(function (e) { return e.textContent; }), jumpDisabled: p.querySelector('.task-popover-jump').disabled, transcriptTop: document.querySelector('.transcript').scrollTop, focusInside: p.contains(document.activeElement) }; })()");
+    let shown = harness::probe(&tab, "(function(){ var p = document.getElementById('taskPopover'); var c = p.querySelector('.sv-task-card'); return { subject: p.querySelector('.task-popover-head strong').textContent, glyph: (c.querySelector('.sv-task-card-glyph')||{}).textContent, chips: [...c.querySelectorAll('.task-chip')].map(function (e) { return e.textContent.trim(); }), sections: [...c.querySelectorAll('.sv-task-card-label')].map(function (e) { return e.textContent; }), jumpDisabled: p.querySelector('.task-popover-jump').disabled, transcriptTop: document.querySelector('.transcript').scrollTop, focusInside: p.contains(document.activeElement) }; })()");
     assert_eq!(shown["subject"], "two, running", "{shown}");
     assert_eq!(
         shown["glyph"], "◐",

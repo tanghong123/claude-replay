@@ -301,7 +301,7 @@ export const ROOT_CLASSES = Object.freeze([
  *    the rows the hermetic page cannot draw (stage 5a's shared list).
  *  A name that is one of these, or starts with one and a hyphen. */
 export const OUTSIDE = Object.freeze([
-  ".task-popover", ".task-scrim", ".task-card", ".task-chip",
+  ".task-popover", ".task-scrim", ".sv-task-card", ".task-chip",
   "#navigatorTurns", "#navigatorWork", "#navigatorAgents", ".navigator-list",
   ".activity-empty", ".agent-state", ".agents-filter-row", ".outline-agent", ".outline-epoch", ".outline-label", ".outline-number", ".outline-peer",
   ".outline-quote-marker", ".outline-quoted", ".outline-reply-count", ".outline-turn-pending", ".outline-turn-row",
