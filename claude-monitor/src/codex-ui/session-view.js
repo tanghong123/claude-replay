@@ -422,7 +422,7 @@ const paneLayoutChanged = () => {
   paneLaidOutWidth = width;
   viewport.remeasure();
 };
-const preview = new Preview({ layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), engaged: () => engaged, toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") });
+const preview = new Preview({ layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") });
 const attachmentViewer = new AttachmentViewer({ toast });
 const controlActions = { renderTree: () => options.renderList(), recordSnapshot: () => ({ session: recordState.session, records: recordState.records }), toast, refreshIndex: () => options.refreshIndex(), pauseIndex: () => options.pauseIndex(), resumeIndex: () => options.resumeIndex(), selectSession, refreshEmpty: () => recordStore.refreshEmpty() };
 const ordinaryControls = new ControlStore(controlActions);

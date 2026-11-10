@@ -423,8 +423,11 @@ export class Preview {
       // can be collapsed with an image still mounted, and a collapsed pane must not own
       // `0`/`-`/`+`… against the compose box beside it. In a host's page, also only while the
       // reader is working in the view (`engaged`, #s429 stage 6): a zoomed image must not take the
-      // arrows the host's page scrolls with.
-      this.imageView = createImageView(stage, img, { isActive: () => uiState.preview && this.actions.engaged?.() !== false, onChange: state => { percent.textContent = `${state.percent}%`; } });
+      // arrows the host's page scrolls with. There its keys are heard in the capture phase, as the
+      // view's own are (`keysFirst`), so a host's listener bound before the viewer finds a key it
+      // took already taken; the app's page keeps the document's bubble phase, as before.
+      const keyHost = this.actions.keysFirst ? { addEventListener: (type, fn) => document.addEventListener(type, fn, true), removeEventListener: (type, fn) => document.removeEventListener(type, fn, true) } : undefined;
+      this.imageView = createImageView(stage, img, { keyHost, isActive: () => uiState.preview && this.actions.engaged?.() !== false, onChange: state => { percent.textContent = `${state.percent}%`; } });
       img.addEventListener("load", () => { bar.hidden = false; }, { once: true });
       bar.onclick = event => {
         const how = event.target.closest("[data-zoom]")?.dataset.zoom, view = this.imageView;

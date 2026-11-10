@@ -3795,7 +3795,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(imageView, /isContentEditable/, "…including contenteditable");
   assert.match(imageView, /if \(!isActive\(\)\) return;/, "…and yields while it is not on screen");
   const preview = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
-  assert.match(preview, /createImageView\(stage, img, \{ isActive: \(\) => uiState\.preview && this\.actions\.engaged\?\.\(\) !== false, onChange: /, "the preview's viewer is active only while the pane is open, and in a host's page only while the reader works in the view (#s429 stage 6)");
+  assert.match(preview, /const keyHost = this\.actions\.keysFirst \? \{ addEventListener: \(type, fn\) => document\.addEventListener\(type, fn, true\), removeEventListener: \(type, fn\) => document\.removeEventListener\(type, fn, true\) \} : undefined;/, "in a host the viewer's keys are heard in the capture phase, ahead of the host's own; the app keeps the document's bubble phase (#s429 stage 6)");
+  assert.match(preview, /createImageView\(stage, img, \{ keyHost, isActive: \(\) => uiState\.preview && this\.actions\.engaged\?\.\(\) !== false, onChange: /, "the preview's viewer is active only while the pane is open, and in a host's page only while the reader works in the view (#s429 stage 6)");
 
   console.log("#228 image cases passed");
 }
@@ -4316,7 +4317,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /element\.contains\(target\) \|\| \[\.\.\.floating\]\.some\(node => node\.contains\(target\)\)/, "inside the view counts what it floats over the page");
   assert.match(viewSource, /floating\.add\(taskScrim\); floating\.add\(taskPopover\);/, "the task card and its scrim float");
   assert.match(viewSource, /const binding = resolveKey\(event, "view", event\.target\);\n    const act = binding && keyActions\[binding\.action\];\n    if \(act && act\(\) !== false\) event\.preventDefault\(\);\n  \}, true\);/, "a key the view has no action for, or one that answers false, is left to the page; the view listens in the capture phase");
-  assert.match(viewSource, /engaged: \(\) => engaged, toast,/, "the pane's image viewer reads the engagement too");
+  assert.match(viewSource, /engaged: \(\) => engaged, keysFirst: keyboardMode === "engaged", toast,/, "the pane's image viewer reads the engagement too, and hears its keys first in a host");
   // Mounted alone, the pane shutting itself as it is built changed the width, and the remeasure
   // reached the record store before it existed: the pane's layout waits for the mount's end.
   assert.match(viewSource, /const paneLayoutChanged = \(\) => \{\n  if \(!viewMounted\) return;/, "the pane remeasures nothing while the view mounts");
