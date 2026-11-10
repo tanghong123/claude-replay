@@ -549,8 +549,11 @@ pane, so step 6 also makes the view's root what they are placed against.
      the pane's own error ("Cannot show this page", the same block a file it cannot read gets,
      `Preview.showError`), never an empty frame, and an answer for a page the pane has since left
      changes nothing. The pane asks once per tab while the tab's text is the same (it draws a tab
-     again whenever it is shown), asks again for a changed text or after a refusal, and never
-     releases an address: the native app owns their lifetime (noted in `design/monitor-hub.md`). The
+     again whenever it is shown), asks again for a changed text or after a refusal, and uses the
+     address for the tab's whole life, across session switches too. Nothing ever says an address is
+     released, so the native app keeps every page it was handed for the life of the page that asked,
+     unless it decides otherwise itself (said in `design/monitor-hub.md` too); no release callback
+     for now. The
      doc comment says it is the native app's arrangement, offered to no other host; the kit's guide
      will not list it.
    - **The stores, passed in.** `state.js` is the app's alone now: the session index, the session
@@ -600,8 +603,8 @@ pane, so step 6 also makes the view's root what they are placed against.
      nothing more, and every other member of its handle does nothing and answers nothing (`fenced`:
      `open` starts no poll, `select`, `indexChanged` and `writeChanged` paint nothing, `controls`
      reads as none). Mounting again in the same element draws a new view. The element must be empty
-     when the view mounts: one holding anything is refused, so the view never takes a host's nodes
-     for its own nor removes them.
+     when the view mounts, nothing in it but white space: one holding an element, text or a comment
+     is refused, so the view never takes a host's nodes for its own nor removes them.
      - **Work still out does nothing when it comes back.** The view finds its elements by id, so
        after a mount in the same element a late callback of the old view would act on the new one.
        The compose box (`ControlStore.destroy`) fences a send (its `finally` re-enables no button and
@@ -629,11 +632,14 @@ pane, so step 6 also makes the view's root what they are placed against.
      - What it put outside its element goes: the task card and its scrim in the page's layer, a list
        a wide phone's column borrowed, and the engine's globals for a bug report
        (`window.__viewportHistory`, whose export reads the engine, and `__viewportViolations`) when
-       they are still this engine's. Where the view writes on what is the host's, the host's own
-       values as they were at the mount are put back, and a value the host had not set is removed:
-       the properties it measures on the page's root (`--preview`, `--phone-top`, `--phone-bottom`,
-       `--phone-kb`), the transform it moves the host's box by over a phone's keyboard, and a `style`
-       attribute neither had. A mount and an unmount in the same task are safe: what the mount held
+       they are still this engine's. Where the view writes on what is the host's (the properties it
+       measures on the page's root, `--preview`, `--phone-top`, `--phone-bottom` and `--phone-kb`, and
+       the transform it moves the host's box by over a phone's keyboard) it writes through one
+       function that keeps what it wrote (`writeStyle`, `viewWrote`), and the unmount puts back the
+       host's value from the mount, or removes the property, only where the view wrote and its value
+       is still there. A property the view never wrote (on a desktop, the transform and the three
+       `--phone-*`), or one the host wrote since, is the host's and is left as it is. A `style`
+       attribute neither had goes too. A mount and an unmount in the same task are safe: what the mount held
        back for its host goes nowhere.
    - **Tests.** The contract holds `frame` and `write` both ways with the other options (the app
      leaves out only `show` and `frame`), runs the pane's frame (the address, a promise of one, a late
@@ -664,14 +670,15 @@ pane, so step 6 also makes the view's root what they are placed against.
        no request goes out and nothing throws; mounted again, the same listeners as the first mount,
        one of each part, and one `w` toggles wrapping once. The page around the view (the root's and
        the body's attributes, the root's style, what the body and the head hold, the host's box) is
-       as it was before each mount (the host's own `--preview` and transform put back, the engine's
-       globals gone), after a mount and an unmount in one task too, and on a phone with a session and
+       as it was before each mount (the host's own `--preview` put back, a transform the host moved
+       on its box while the view was mounted left where it put it, the engine's globals gone), after a mount and an unmount in one task too, and on a phone with a session and
        with none ever opened; the `/pull` polls stop, and every member of the handle then does
        nothing, throws nothing and answers nothing. With the signal's abort taken out, it fails on
        the listeners.
      - `the_app_grants_a_live_pane_through_its_own_confirm_layer_and_passcode_field` (3108), in the
        app: a send to a herdr pane with no grant asks the app's confirm layer first; the monitor
-       (stubbed in the page) wants a passcode, so the app draws its field above the buttons, styled
+       (stubbed in the page) wants a passcode (after the app's Cancel, which closes the layer with
+       nothing granted or sent), so the app draws its field above the buttons, styled
        (38px) and focused; the passcode typed is what the grant carries, a refused one is asked again
        in the same field, the right one grants, the layer closes and the text goes to the pane.
 
