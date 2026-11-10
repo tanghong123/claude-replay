@@ -428,6 +428,16 @@ pub(super) enum NativeConnection {
     Unix {
         path: std::path::PathBuf,
     },
+    /// A worker case's WebSocket, whose server end's owner the case names (#s449). Its server is
+    /// a thread of the test process, so `lsof` could only say what the case already knows, and
+    /// on a box at a load of 40 to 54 on 12 cores one `lsof` outlasted the cases' own deadlines.
+    /// The credential still goes only where `credential_may_go_to` allows, asked on every
+    /// connection; the real lookup's cases are `transport`'s and the direct `socket` ones.
+    #[cfg(test)]
+    OwnedBy {
+        endpoint: String,
+        owner: ServerOwner,
+    },
 }
 impl NativeConnection {
     pub fn configured(endpoint: &str, state: &Path) -> anyhow::Result<Self> {
@@ -442,6 +452,10 @@ impl NativeConnection {
     fn connect(&self) -> Result<WebSocket<NativeStream>, String> {
         match self {
             Self::WebSocket { endpoint, token } => socket(endpoint, token),
+            #[cfg(test)]
+            Self::OwnedBy { endpoint, owner } => {
+                socket_owned_by(endpoint, &ServerToken::fixture(), *owner)
+            }
             Self::Unix { path } => {
                 #[cfg(unix)]
                 {
@@ -1033,6 +1047,7 @@ mod tests {
     use super::*;
     use crate::state::scope_fixture::ScopeFixture;
     use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn request(socket: &mut WebSocket<TcpStream>) -> Value {
         loop {
@@ -1119,9 +1134,9 @@ mod tests {
             let worker = std::thread::spawn(move || {
                 run(
                     endpoint.clone(),
-                    NativeConnection::WebSocket {
+                    NativeConnection::OwnedBy {
                         endpoint,
-                        token: ServerToken::fixture(),
+                        owner: crate::transport::this_user,
                     },
                     target,
                     receiver,
@@ -1214,9 +1229,9 @@ mod tests {
         let worker = std::thread::spawn(move || {
             run(
                 endpoint.clone(),
-                NativeConnection::WebSocket {
+                NativeConnection::OwnedBy {
                     endpoint,
-                    token: ServerToken::fixture(),
+                    owner: crate::transport::this_user,
                 },
                 worker_state,
                 receiver,
@@ -1244,6 +1259,12 @@ mod tests {
 
     #[test]
     fn setup_and_idle_disconnect_causes_survive_until_a_successful_reconnect() {
+        // The owner is the case's to name (#s449), and is still asked on every connection.
+        static ASKED: AtomicUsize = AtomicUsize::new(0);
+        let owner: ServerOwner = |stream| {
+            ASKED.fetch_add(1, Ordering::SeqCst);
+            crate::transport::this_user(stream)
+        };
         for malformed_setup in [true, false] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let endpoint = format!("ws://{}", listener.local_addr().unwrap());
@@ -1272,12 +1293,13 @@ mod tests {
             let (commands, receiver) = mpsc::channel();
             let worker_state = Arc::clone(&state);
             let worker_endpoint = endpoint.clone();
+            let asked = ASKED.load(Ordering::SeqCst);
             let worker = std::thread::spawn(move || {
                 run(
                     worker_endpoint.clone(),
-                    NativeConnection::WebSocket {
+                    NativeConnection::OwnedBy {
                         endpoint: worker_endpoint,
-                        token: ServerToken::fixture(),
+                        owner,
                     },
                     worker_state,
                     receiver,
@@ -1313,6 +1335,11 @@ mod tests {
             commands.send(Command::Stop).unwrap();
             worker.join().unwrap();
             fixture.join().unwrap();
+            assert_eq!(
+                ASKED.load(Ordering::SeqCst) - asked,
+                2,
+                "the credential's owner is asked on the first connection and on the reconnect"
+            );
         }
     }
 
@@ -1409,9 +1436,9 @@ mod tests {
         let worker = std::thread::spawn(move || {
             run(
                 endpoint.clone(),
-                NativeConnection::WebSocket {
+                NativeConnection::OwnedBy {
                     endpoint,
-                    token: ServerToken::fixture(),
+                    owner: crate::transport::this_user,
                 },
                 worker_state,
                 receiver,
@@ -1523,9 +1550,9 @@ mod tests {
             let worker = std::thread::spawn(move || {
                 run(
                     endpoint.clone(),
-                    NativeConnection::WebSocket {
+                    NativeConnection::OwnedBy {
                         endpoint,
-                        token: ServerToken::fixture(),
+                        owner: crate::transport::this_user,
                     },
                     worker_state,
                     receiver,
@@ -1668,9 +1695,9 @@ mod tests {
             let worker = std::thread::spawn(move || {
                 run(
                     endpoint.clone(),
-                    NativeConnection::WebSocket {
+                    NativeConnection::OwnedBy {
                         endpoint,
-                        token: ServerToken::fixture(),
+                        owner: crate::transport::this_user,
                     },
                     worker_state,
                     receiver,
@@ -1757,9 +1784,9 @@ mod tests {
         let worker = std::thread::spawn(move || {
             run(
                 endpoint.clone(),
-                NativeConnection::WebSocket {
+                NativeConnection::OwnedBy {
                     endpoint,
-                    token: ServerToken::fixture(),
+                    owner: crate::transport::this_user,
                 },
                 worker_state,
                 receiver,
@@ -1829,9 +1856,9 @@ mod tests {
             let worker = std::thread::spawn(move || {
                 run(
                     endpoint.clone(),
-                    NativeConnection::WebSocket {
+                    NativeConnection::OwnedBy {
                         endpoint,
-                        token: ServerToken::fixture(),
+                        owner: crate::transport::this_user,
                     },
                     worker_state,
                     receiver,
@@ -1899,9 +1926,9 @@ mod tests {
         let worker = std::thread::spawn(move || {
             run(
                 endpoint.clone(),
-                NativeConnection::WebSocket {
+                NativeConnection::OwnedBy {
                     endpoint,
-                    token: ServerToken::fixture(),
+                    owner: crate::transport::this_user,
                 },
                 worker_state,
                 receiver,
@@ -1953,9 +1980,9 @@ mod tests {
         let worker = std::thread::spawn(move || {
             run(
                 endpoint.clone(),
-                NativeConnection::WebSocket {
+                NativeConnection::OwnedBy {
                     endpoint,
-                    token: ServerToken::fixture(),
+                    owner: crate::transport::this_user,
                 },
                 worker_state,
                 receiver,
@@ -2008,9 +2035,9 @@ mod tests {
         let worker = std::thread::spawn(move || {
             run(
                 endpoint.clone(),
-                NativeConnection::WebSocket {
+                NativeConnection::OwnedBy {
                     endpoint,
-                    token: ServerToken::fixture(),
+                    owner: crate::transport::this_user,
                 },
                 worker_state,
                 receiver,
@@ -2066,9 +2093,9 @@ mod tests {
         let worker = std::thread::spawn(move || {
             run(
                 endpoint.clone(),
-                NativeConnection::WebSocket {
+                NativeConnection::OwnedBy {
                     endpoint,
-                    token: ServerToken::fixture(),
+                    owner: crate::transport::this_user,
                 },
                 worker_state,
                 receiver,
@@ -2110,6 +2137,12 @@ mod tests {
     #[test]
     fn reconnect_preserves_selected_history_only_for_its_exact_native_archived_rejection() {
         let archived = "session t is archived. Run `codex unarchive t` to unarchive it first.";
+        // The owner is the case's to name (#s449), and is still asked on every connection.
+        static ASKED: AtomicUsize = AtomicUsize::new(0);
+        let owner: ServerOwner = |stream| {
+            ASKED.fetch_add(1, Ordering::SeqCst);
+            crate::transport::this_user(stream)
+        };
         for (case, error) in [
             ("archived", json!({"code":-32600,"message":archived})),
             ("wrong-code", json!({"code":-32000,"message":archived})),
@@ -2142,13 +2175,11 @@ mod tests {
             let (_, events) = state.lock().unwrap().subscribe();
             let (sender, receiver) = mpsc::channel();
             let worker_state = Arc::clone(&state);
+            let asked = ASKED.load(Ordering::SeqCst);
             let worker = std::thread::spawn(move || {
                 run(
                     endpoint.clone(),
-                    NativeConnection::WebSocket {
-                        endpoint,
-                        token: ServerToken::fixture(),
-                    },
+                    NativeConnection::OwnedBy { endpoint, owner },
                     worker_state,
                     receiver,
                 )
@@ -2223,6 +2254,11 @@ mod tests {
             sender.send(Command::Stop).unwrap();
             worker.join().unwrap();
             fixture.join().unwrap();
+            assert_eq!(
+                ASKED.load(Ordering::SeqCst) - asked,
+                2,
+                "{case}: the credential's owner is asked on the first connection and on the reconnect"
+            );
         }
     }
 
@@ -2250,9 +2286,9 @@ mod tests {
         let worker = std::thread::spawn(move || {
             run(
                 endpoint.clone(),
-                NativeConnection::WebSocket {
+                NativeConnection::OwnedBy {
                     endpoint,
-                    token: ServerToken::fixture(),
+                    owner: crate::transport::this_user,
                 },
                 worker_state,
                 receiver,
@@ -2306,9 +2342,9 @@ mod tests {
         let worker = std::thread::spawn(move || {
             run(
                 endpoint.clone(),
-                NativeConnection::WebSocket {
+                NativeConnection::OwnedBy {
                     endpoint,
-                    token: ServerToken::fixture(),
+                    owner: crate::transport::this_user,
                 },
                 worker_state,
                 receiver,
@@ -2355,9 +2391,9 @@ mod tests {
         let worker = std::thread::spawn(move || {
             run(
                 endpoint.clone(),
-                NativeConnection::WebSocket {
+                NativeConnection::OwnedBy {
                     endpoint,
-                    token: ServerToken::fixture(),
+                    owner: crate::transport::this_user,
                 },
                 worker_state,
                 receiver,
@@ -2422,9 +2458,9 @@ mod tests {
         let worker = std::thread::spawn(move || {
             run(
                 endpoint.clone(),
-                NativeConnection::WebSocket {
+                NativeConnection::OwnedBy {
                     endpoint,
-                    token: ServerToken::fixture(),
+                    owner: crate::transport::this_user,
                 },
                 worker_state,
                 receiver,
@@ -2496,9 +2532,9 @@ mod tests {
         let worker = std::thread::spawn(move || {
             run(
                 endpoint.clone(),
-                NativeConnection::WebSocket {
+                NativeConnection::OwnedBy {
                     endpoint,
-                    token: ServerToken::fixture(),
+                    owner: crate::transport::this_user,
                 },
                 worker_state,
                 receiver,

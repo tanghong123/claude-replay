@@ -332,6 +332,13 @@ fn effective_uid() -> Option<u32> {
     None
 }
 
+/// The owner a worker case gives its own server's end (#s449): this user, answered without a
+/// lookup, since the server is a thread of the test process (`client::NativeConnection::OwnedBy`).
+#[cfg(test)]
+pub(crate) fn this_user(_: &TcpStream) -> Option<u32> {
+    effective_uid()
+}
+
 /// Who holds the server end of one loopback TCP connection, per platform: `Ok(None)` when the
 /// table was read and no process holds the end, `Err` naming why nothing could be read. A
 /// platform with no way to tell answers `None`, which is a refusal.
