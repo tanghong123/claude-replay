@@ -1929,7 +1929,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(engineSource209, /if \(!this\.queued\.length && !this\.inFlight\(\)\) this\.afterTransaction\(\);/, "…called once the transaction is complete, not between queued ones, and never while a smooth write travels");
   assert.match(engineSource209, /this\.trace\("arrived"[\s\S]{0,400}?this\.afterTransaction\(\);/, "…and the arrival of that write calls it instead");
   assert.match(viewportSource, /afterTransaction\(\) \{ this\.actions\.afterTransaction\?\.\(\); \}/, "the shell's viewport forwards it");
-  assert.match(viewSource, /afterTransaction: \(\) => \{ const p = viewport\.position; if \(p && p\.key\) updateTurnBar\(p\.key\); wantWindow\(\); \}/, "…and the shell repaints the bar from the ENGINE's belief (and, #s277, asks the store for what the window shows)");
+  assert.match(viewSource, /afterTransaction: \(\) => \{ const p = viewport\.position; if \(p && p\.key\) queueTurn\(updateTurnBar\(p\.key\)\); wantWindow\(\); \}/, "…and the shell repaints the bar from the ENGINE's belief, the turn its host hears too (#s429 stage 6; and, #s277, asks the store for what the window shows)");
   assert.match(viewSource, /return currentTurnIndex\(units, atKey === undefined \? unitAtTop\(\) : atKey\);/, "…which is what the key argument is for: no layout read at the boundary");
   assert.doesNotMatch(classicExportSource, /afterTransaction\(\) \{/, "the classic page does NOT spy at the boundary — its spy measures rects, and forcing that flush there moved the reader");
   assert.match(css, /\.session-navigator\{overflow-anchor:none\}/, "scroll anchoring would fight a body that is changing height");
@@ -4220,9 +4220,41 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const handlers = [...read].filter(name => /^on[A-Z]/.test(name)).sort();
   assert.deepEqual(handlers, [...EVENTS].sort(), "the view's events are the six the design names");
   for (const name of handlers) {
-    assert.match(viewSource, new RegExp(`\\boptions\\.${name}\\?\\.\\(`), `the view calls options.${name} where it does that thing`);
+    assert.match(viewSource, new RegExp(`\\bsay\\(options\\.${name}, `), `the view raises options.${name} through its one emitter, where it does that thing`);
     assert.ok(passed.has(name), `the app passes ${name}, so its tests see each event reach it`);
   }
+  assert.doesNotMatch(viewSource, /\boptions\.on[A-Z][A-Za-z]*\?\.\(/, "no handler is called around the emitter");
+  // The emitter, run: a handler that throws is reported and the view goes on; what is said while the
+  // view mounts waits for the mount to return, in order.
+  {
+    const emitter = /^let mountingEvents = \[\];\nfunction say\(handler, data\) \{\n[\s\S]*?\n\}\n/m.exec(viewSource);
+    assert.ok(emitter, "the view has one emitter, `say`");
+    const reported = [];
+    const run = new Function("globalThis", `${emitter[0]}; return { say, done: () => { const held = mountingEvents; mountingEvents = null; for (const [h, d] of held) say(h, d); } };`);
+    const { say, done } = run({ reportError: error => reported.push(String(error.message)) });
+    const heard = [];
+    say(data => heard.push(["title", data]), "first");
+    say(() => { throw new Error("the host's bug"); }, "boom");
+    say(data => heard.push(["toast", data]), "second");
+    assert.deepEqual(heard, [], "nothing reaches the host while the view mounts");
+    done();
+    assert.deepEqual(heard, [["title", "first"], ["toast", "second"]], "then all of it, in order, past a handler that threw");
+    assert.deepEqual(reported, ["the host's bug"], "and the throw is reported, not raised into the view");
+    say(undefined, "nobody");
+    say(data => heard.push(["later", data]), "x");
+    assert.deepEqual(heard.at(-1), ["later", "x"], "after the mount, at once");
+  }
+  assert.match(viewSource, /^queueMicrotask\(\(\) => \{\n  const held = mountingEvents;\n  mountingEvents = null;\n  for \(const \[handler, data\] of held\) say\(handler, data\);\n\}\);\n\nreturn \{$/m, "the held events go out a microtask after mountSessionView returns");
+  // The turn is said from where the engine placed the reader, once per task, and as none until the
+  // session's own units arrive.
+  assert.match(viewSource, /afterTransaction: \(\) => \{ const p = viewport\.position; if \(p && p\.key\) queueTurn\(updateTurnBar\(p\.key\)\); wantWindow\(\); \}/, "after a transaction");
+  assert.match(viewSource, /updateStickyHeaders\(\); updateOutlineFocus\(\); queueTurn\(updateTurnBar\(\)\);/, "after a scroll");
+  assert.equal((viewSource.match(/queueTurn\(/g) || []).length, 5, "and nowhere else but open and close, which say none (with the definition)");
+  assert.doesNotMatch(/^function updateTurnBar\(atKey\) \{[\s\S]*?\n\}/m.exec(viewSource)[0], /sayTurn|queueTurn/, "never from the bar itself, which afterRender paints before the placement");
+  assert.match(viewSource, /recordState\.units = projection\.units;\n  unitsSession = recordState\.session \|\| "";/, "the units are the session's once its records apply");
+  assert.match(viewSource, /const session = recordState\.session \|\| "", known = !!unit && unitsSession === session;/, "until then its turn is none");
+  assert.match(viewSource, /fileName: item\.name, name: `\$\{item\.name\} \$\{at \+ 1\}\/\$\{items\.length\}`/, "Open all keeps the file's own name beside its tab's label");
+  assert.match(viewSource, /name: String\(item\.fileName \|\| item\.name \|\| ""\)/, "and onFile says it");
   // The app keeps the page's keyboard; a host left at the default gets the view's engaged keys.
   assert.match(call[1], /^  keys: "page",$/m, "the app passes keys: \"page\"");
   const { KEY_MODES, OPTIONAL_CONTROLS } = { KEY_MODES: JSON.parse(/export const KEY_MODES = Object\.freeze\((\[[^\]]*\])\);/.exec(viewSource)[1]), OPTIONAL_CONTROLS: JSON.parse(/export const OPTIONAL_CONTROLS = Object\.freeze\((\[[^\]]*\])\);/.exec(viewSource)[1]) };

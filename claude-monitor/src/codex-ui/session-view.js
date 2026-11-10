@@ -78,10 +78,15 @@ export const KEY_MODES = Object.freeze(["engaged", "page"]);
  *  - `renderList()`, `refreshIndex()`, `pauseIndex()`, `resumeIndex()`: the session list and
  *    its index, for the compose box's controls (native mode's among them).
  *
- *  What the view tells its host, each with plain data (never a node), each optional:
+ *  What the view tells its host, each with plain data (never a node), each optional. A handler that
+ *  throws is reported (`reportError`) and the view goes on; what the view says while it mounts (its
+ *  first title) reaches the host a microtask after `mountSessionView` has returned, so a handler may
+ *  use the handle.
  *  - `onTitle({ session, title })`: the title its top bar shows changed (a session opened, its
  *    row renamed; `session` "" and the placeholder title for none).
- *  - `onTurn({ session, turn, label })`: the turn the reader is in changed (`turn` null for none).
+ *  - `onTurn({ session, turn, label })`: the turn the reader is in changed, said once the engine has
+ *    placed the reader (after a transaction or a scroll, once per task); `turn` is null for none,
+ *    and for a session just opened until its own records arrive.
  *  - `onInfo({ session })`: the reader pressed for the session's Info (the view opens it itself).
  *  - `onFile({ name, path, text })`: a file opened in the artifact pane: its path ("" for none),
  *    and the text the transcript carries for it (null for none).
@@ -125,27 +130,52 @@ const selectedId = () => options.selectedId();
 const sessionRow = id => options.sessionRow(id) || null;
 const selectedRow = () => sessionRow(selectedId());
 const sessionWorkers = (id = recordState.session) => options.sessionWorkers(id);
-// What the view tells its host (stage 6), as plain data. The title and the turn are said only when
-// they change: the top bar is redrawn on every index poll and the turn bar on every scroll.
-const toast = message => options.onToast?.(String(message));
+// What the view tells its host (stage 6), as plain data, through ONE emitter. A handler is the
+// host's code: one that throws is reported (`reportError`, as an uncaught error would be) and never
+// breaks the view in the middle of what it was doing (a redraw, a transaction's placement, the ✓ on a
+// copied link). And what the view says while it mounts waits until `mountSessionView` has returned,
+// a microtask later, so a handler may already use the handle; anything said in that task waits too,
+// so the order holds. The title and the turn are said only when they change: the top bar is redrawn
+// on every index poll and the turn bar on every scroll.
+let mountingEvents = [];
+function say(handler, data) {
+  if (typeof handler !== "function") return;
+  if (mountingEvents) { mountingEvents.push([handler, data]); return; }
+  try { handler(data); } catch (error) { (globalThis.reportError || console.error)(error); }
+}
+const toast = message => say(options.onToast, String(message));
 let saidTitle = null, saidTurn = null;
 function sayTitle(title) {
   const session = selectedId() || "", said = `${session}\u0000${title}`;
   if (said === saidTitle) return;
   saidTitle = said;
-  options.onTitle?.({ session, title });
+  say(options.onTitle, { session, title });
 }
+// The session whose units the view holds: `open` names the new session before its records arrive,
+// and until they do the units are the last session's, so its turn is said as none.
+let unitsSession = "";
 function sayTurn(unit) {
-  const session = recordState.session || "", turn = unit ? unit.turn : null, label = unit ? unit.label || "" : "";
+  const session = recordState.session || "", known = !!unit && unitsSession === session;
+  const turn = known ? unit.turn : null, label = known ? unit.label || "" : "";
   const said = `${session}\u0000${turn}\u0000${label}`;
   if (said === saidTurn) return;
   saidTurn = said;
-  options.onTurn?.({ session, turn, label });
+  say(options.onTurn, { session, turn, label });
 }
-const sayInfo = () => options.onInfo?.({ session: recordState.session || selectedId() || "" });
-/** A file the artifact pane was asked to show: its name, path and carried text, copied off the tab,
- *  which also holds the file's stamps and an image's bytes. */
-const sayFile = item => options.onFile?.({ name: String(item.name || ""), path: String(item.path || ""), text: typeof item.text === "string" ? item.text : null });
+// The turn is said from where the engine has placed the reader: after a transaction and after a
+// scroll, never from `afterRender`, which runs before the placement and can name a turn the place
+// then moves away from (#209). The last of a task's readings is said, once, at its end.
+let turnToSay, turnQueued = false;
+function queueTurn(unit) {
+  turnToSay = unit;
+  if (turnQueued) return;
+  turnQueued = true;
+  queueMicrotask(() => { turnQueued = false; sayTurn(turnToSay); });
+}
+const sayInfo = () => say(options.onInfo, { session: recordState.session || selectedId() || "" });
+/** A file the artifact pane was asked to show: its name (the file's own, not an Open all tab's label),
+ *  path and carried text, copied off the tab, which also holds the file's stamps and an image's bytes. */
+const sayFile = item => say(options.onFile, { name: String(item.fileName || item.name || ""), path: String(item.path || ""), text: typeof item.text === "string" ? item.text : null });
 
 // The outline row currently marked (#52) — declared ahead of the init code below, which
 // renders the navigator before the module's later statements have run.
@@ -250,9 +280,9 @@ const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, 
   // can name a window the place has since moved — measured at three turns behind, until a
   // one-pixel nudge put it right. The key costs no layout read; reading the DOM here does, and
   // that forced flush moved the reader (the smooth-step case's record went 190px).
-  afterTransaction: () => { const p = viewport.position; if (p && p.key) updateTurnBar(p.key); wantWindow(); },
+  afterTransaction: () => { const p = viewport.position; if (p && p.key) queueTurn(updateTurnBar(p.key)); wantWindow(); },
   afterScroll: () => {
-    updateStickyHeaders(); updateOutlineFocus(); updateTurnBar();
+    updateStickyHeaders(); updateOutlineFocus(); queueTurn(updateTurnBar());
     // The reader moved themselves: wherever a jump last landed them is no longer where they
     // are, so the next step enters afresh at the nearest hit rather than stepping past it. Only
     // input LATER than the landing (#s259): the jump stamps intent itself, so its own scroll came
@@ -311,7 +341,7 @@ bindComponentEvents(transcript, recordState, {
     url.hash = id;
     const copied = await copyText(url.href);
     if (!copied) { toast("Copy failed — check the browser's clipboard permission"); return; }
-    options.onLinkCopied?.({ url: url.href, record: String(id) });
+    say(options.onLinkCopied, { url: url.href, record: String(id) });
     clearTimeout(button._spotTimer);
     button.classList.add("copied");
     button.querySelector("span").textContent = "✓";
@@ -328,7 +358,7 @@ bindComponentEvents(transcript, recordState, {
   openChild: id => descendTo(id),
   openAttachment: (id, path, fsig, action, sig, card) => openAttachment(id, path, fsig, action, sig, card),
   // #s222: a group's images share one name ("image.png"), so their tabs say which of the group each is.
-  openAll: ids => { const items = ids.map(id => paneImage(id)).filter(Boolean); preview.openAll(items.map((item, at) => ({ ...item, name: `${item.name} ${at + 1}/${items.length}` }))); },
+  openAll: ids => { const items = ids.map(id => paneImage(id)).filter(Boolean); preview.openAll(items.map((item, at) => ({ ...item, fileName: item.name, name: `${item.name} ${at + 1}/${items.length}` }))); },
   openFiles: offers => preview.openAll(offers.map(offer => ({ id: `reference:${offer.path}`, name: String(offer.path).split("/").pop() || "file", path: offer.path, fsig: offer.fsig, sig: offer.sig || "" }))),
   openReference: path => openReference(path),
   openReferenceOffer: offer => openReferenceOffer(offer),
@@ -555,6 +585,7 @@ function applyRecords({ records, meta, changedFrom, prepended }) {
   const was = after ? projection.units.indexOf(after) : -1;
   const changedUnit = projection.rebuild(records, changedFrom);
   recordState.units = projection.units;
+  unitsSession = recordState.session || "";
   const now = after ? unitAt(after.from) : -1;
   const shift = now >= 0 ? Math.max(0, now - was) : 0;
   const renamed = now >= 0 && recordState.units[now].key !== after.key ? { [after.key]: recordState.units[now].key } : null;
@@ -3358,10 +3389,10 @@ function updateTurnBar(atKey) {
   turnStickyAt = on ? unit.from : null;
   turnSubtitle.hidden = !unit;
   if (unit) turnSubtitle.textContent = `Turn ${unit.turn} — ${unit.label || ""}`.trimEnd();
-  sayTurn(unit);
-  if (!on) return;
+  if (!on) return unit;
   turnStickyText.textContent = `Turn ${unit.turn} — ${unit.label || ""}`.trimEnd();
   turnStickyBar.title = `Back to turn ${unit.turn}`;
+  return unit;
 }
 
 function updateOutlineFocus() {
@@ -3966,17 +3997,24 @@ viewMounted = true;
 // the position (the debounced save may not have run yet).
 addEventListener("pagehide", () => viewport.remember());
 document.addEventListener("visibilitychange", () => { if (document.hidden) viewport.remember(); });
+// What the view said while it mounted (its first title, a toast) goes to the host once
+// `mountSessionView` has returned, in the order it was said (`say`).
+queueMicrotask(() => {
+  const held = mountingEvents;
+  mountingEvents = null;
+  for (const [handler, data] of held) say(handler, data);
+});
 
 return {
   /** A session was chosen: the view takes it before the app writes its address — the loading veil,
    *  the pane's tabs, the top bar and the compose box. */
   select(id) { sessionLoading?.show(); preview.setSession(id); renderHeader(); controls.paint(); },
   /** …and reads its records. */
-  open(id) { recordState.session = id; viewport.beginSession(id); recordStore.open(id); },
+  open(id) { recordState.session = id; queueTurn(null); viewport.beginSession(id); recordStore.open(id); },
   /** The session whose records the view reads ("" for none). */
   session: () => recordStore.session,
   /** The selected session is gone: the view stops reading it and says why. */
-  close(title, detail) { sessionLoading?.hide(); recordStore.stop(); preview.setSession(""); recordState.session = ""; viewport.showEmpty(title, detail, true); },
+  close(title, detail) { sessionLoading?.hide(); recordStore.stop(); preview.setSession(""); recordState.session = ""; queueTurn(null); viewport.showEmpty(title, detail, true); },
   /** The index has new rows: the top bar and the compose box follow, and so does the Agents pane. */
   indexChanged() {
     renderHeader(); controls.paint();
