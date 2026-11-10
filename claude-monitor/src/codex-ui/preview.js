@@ -494,10 +494,22 @@ export class Preview {
     if (!this.actions.frame) { frame.srcdoc = source; return; }
     const generation = this.renderGeneration;
     const current = () => generation === this.renderGeneration && frame.isConnected;
-    new Promise(resolve => resolve(this.actions.frame(source))).then(address => {
-      if (!current()) return;
-      if (typeof address !== "string" || !address) throw new Error("No address came back for this page's frame.");
-      frame.src = address;
+    // One address per tab while its text is the same: the pane draws a tab again whenever it is shown
+    // (a tab chosen, the pane reopened, a roster change), and each ask would make the native app keep
+    // another copy of the page. The native app owns the addresses' lifetime; the view never releases
+    // one. A refusal is not kept, so the next time the tab is shown asks again.
+    this.frames ||= new WeakMap();
+    let held = this.frames.get(item);
+    if (held?.source !== source) {
+      held = { source, address: new Promise(resolve => resolve(this.actions.frame(source))).then(address => {
+        if (typeof address !== "string" || !address) throw new Error("No address came back for this page's frame.");
+        return address;
+      }) };
+      this.frames.set(item, held);
+      held.address.catch(() => { if (this.frames.get(item) === held) this.frames.delete(item); });
+    }
+    held.address.then(address => {
+      if (current()) frame.src = address;
     }).catch(error => {
       if (current()) this.showError(item, refusal("Cannot show this page", error?.message || String(error || "Its frame could not be made.")));
     });

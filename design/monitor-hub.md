@@ -195,6 +195,8 @@ it:
   `app-frame://`, a scheme the relay is not on: the app answers it from the HTML the page hands it
   (through a handler that takes HTML and returns only the frame's address), once, under today's
   frame policy (`connect-src 'none'`, `img-src data: blob:`, `form-action 'none'`) as its header.
+  The session view asks once per tab while its text is the same and never releases an address, so
+  the app decides how long it keeps each page (the view's `frame` option, #s429 stage 7).
   The frame never sees the key. The navigation delegate refuses any frame's navigation to `app://`.
   A script in an agent's page must not open Safari or another app's URL with no tap, and WebKit
   cannot tell a tap from a script's `click()`: both reach the delegate as `.linkActivated`, by the
