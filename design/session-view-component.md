@@ -2,7 +2,7 @@
 
 > **DRAFT 1** (#s429, 2026-11-08). Step 4 of `design/embedding.md` ("The order of the work").
 > Stages 1 and 2 are built and shipped in v1.496.0, stage 3 in v1.497.0, stage 4 in v1.498.0, 5a in
-> v1.499.0, 5b in v1.500.0, and the class renames in v1.502.0. Stage 6 is built; stage 7 is left.
+> v1.499.0, 5b in v1.500.0, the class renames in v1.502.0, and stage 6 in v1.504.0. Stage 7 is left.
 > There is no shadow root (the owner, #s438).
 
 ## What it is for
@@ -544,4 +544,5 @@ first mounted alone in a test page for the width tests.
 
 Every stage is page code. So before each landing, the whole local browser suite runs, about 85
 minutes, and the iOS Simulator walk is done. Stages 1 and 2 landed together, then 3, then 4, then 5a,
-5b and the renames; 6 and 7 land together.
+5b and the renames, then 6 on its own, so that embedding's steps 5 and 6 need not wait for 7; 7 lands
+last.
