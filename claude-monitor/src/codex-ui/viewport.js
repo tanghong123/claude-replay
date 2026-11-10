@@ -81,32 +81,40 @@ export class Viewport extends VirtualWindow {
     // pads, the anchor, the observers, the follow state, the thumb, the converge, the remember
     // debounce. What this shell brings is what a unit IS, how one renders, and where the
     // reader's choices are kept.
-    super({
-      frame: elementFrame(scroller),
-      mount: { top, window: mounted, bottom, content: inner },
-      overscan: OVERSCAN,
-      // The viewport trace's stored switch (#192): the host reads it, so the shared engine,
-      // which the offline export inlines too, touches no store (#s124).
-      traceStored: (() => { try { return localStorage.getItem("viewportTrace"); } catch (e) { return null; } })(),
-      // Rule 7's hysteresis (#127): acquiring the pin needs the true end, KEEPING it only the
-      // old slack. Held at the true end too, a nudge of three pixels dropped the tail — which
-      // is what this shell did, where the classic page has held at 80 since #103.
-      slacks: { acquire: ACQUIRE_SLACK, hold: HOLD_SLACK, heal: HOLD_SLACK },
-      userIntentMs: USER_INTENT_MS,
-      rememberMs: REMEMBER_MS,
-      // #184: the floors seed one running mean per unit type; a unit of a type with no floor
-      // learns as a process. The means, and what each unit taught them, are the engine's (#196
-      // stage 3) — on its instance, never in `state`: a persisted share against a fresh mean would
-      // withdraw what was never learned.
-      floors: ESTIMATES,
-      // `?mountall=1` (#232): render every record, so a parity audit can compare the two pages
-      // record by record instead of comparing one page against whatever the other happened to
-      // have mounted. Test-only, and only ever safe on a fixture small enough to hold whole.
-      renderAll: () => mountEverythingRequested(),
-      defaultKind: "process",
-      page: "app",
-      version: backend().version,
-    });
+    // The engine binds listeners on the window as it is built (the end of a scrollbar drag, a blur), and
+    // offers no way to take them away: it is shared with the offline pages, which never unmount. So
+    // the window's `addEventListener` is watched for the length of the build, and `destroy` takes away
+    // what it bound (#s429 stage 7).
+    const bound = [], own = Object.prototype.hasOwnProperty.call(globalThis, "addEventListener"), add = globalThis.addEventListener;
+    globalThis.addEventListener = function (type, listener, options) { bound.push([type, listener, options]); return add.call(this ?? globalThis, type, listener, options); };
+    try {
+      super({
+        frame: elementFrame(scroller),
+        mount: { top, window: mounted, bottom, content: inner },
+        overscan: OVERSCAN,
+        // The viewport trace's stored switch (#192): the host reads it, so the shared engine,
+        // which the offline export inlines too, touches no store (#s124).
+        traceStored: (() => { try { return localStorage.getItem("viewportTrace"); } catch (e) { return null; } })(),
+        // Rule 7's hysteresis (#127): acquiring the pin needs the true end, KEEPING it only the
+        // old slack. Held at the true end too, a nudge of three pixels dropped the tail — which
+        // is what this shell did, where the classic page has held at 80 since #103.
+        slacks: { acquire: ACQUIRE_SLACK, hold: HOLD_SLACK, heal: HOLD_SLACK },
+        userIntentMs: USER_INTENT_MS,
+        rememberMs: REMEMBER_MS,
+        // #184: the floors seed one running mean per unit type; a unit of a type with no floor
+        // learns as a process. The means, and what each unit taught them, are the engine's (#196
+        // stage 3) — on its instance, never in `state`: a persisted share against a fresh mean would
+        // withdraw what was never learned.
+        floors: ESTIMATES,
+        // `?mountall=1` (#232): render every record, so a parity audit can compare the two pages
+        // record by record instead of comparing one page against whatever the other happened to
+        // have mounted. Test-only, and only ever safe on a fixture small enough to hold whole.
+        renderAll: () => mountEverythingRequested(),
+        defaultKind: "process",
+        page: "app",
+        version: backend().version,
+      });
+    } finally { if (own) globalThis.addEventListener = add; else delete globalThis.addEventListener; }
     this.scroller = scroller;
     this.inner = inner;
     this.state = state;
@@ -121,7 +129,9 @@ export class Viewport extends VirtualWindow {
     this.session = "";
     this.pending = null;
     this.pendingTries = 0;
-    addEventListener("pagehide", () => this.remember());
+    this.windowListeners = bound;
+    this.life = new AbortController();
+    addEventListener("pagehide", () => this.remember(), { signal: this.life.signal });
     // #340: whether the view is still moving, by ANY means — a scroll event of any kind, or a
     // finger on the glass — for `whenStill`. Kept here rather than in the engine: only this page
     // makes a change that must wait for it (a tail-first open's head landing, #314).
@@ -150,7 +160,20 @@ export class Viewport extends VirtualWindow {
       this.whenStill(() => { this.touchGlide = false; this.settleDebt(); this.rest(); });
     }, { passive: true, capture: true });
     scroller.addEventListener("wheel", () => { this.touchGlide = false; }, { passive: true, capture: true });
-    addEventListener("keydown", () => { this.touchGlide = false; }, { capture: true });
+    addEventListener("keydown", () => { this.touchGlide = false; }, { capture: true, signal: this.life.signal });
+  }
+
+  /** The view is unmounted (#s429 stage 7): everything the engine and this page started outside the
+   *  scroller stops (its listeners on the window, its observers, its timers), and nothing it was
+   *  waiting to do runs. The reader's place was remembered first, as a page leaving remembers it. */
+  destroy() {
+    this.life.abort();
+    for (const [type, listener, options] of this.windowListeners) removeEventListener(type, listener, options);
+    for (const observer of [this.observer, this.contentObserver, this.outerObserver]) observer?.disconnect();
+    for (const timer of [this.stillTimer, this.restTimer, this.rememberTimer]) clearTimeout(timer);
+    this.stillWaiters = [];
+    // What a timer already queued (a scroll's window update, a rest) finds nothing to do.
+    for (const name of ["updateWindow", "rest", "remember", "measureNow", "displaced", "transact", "checkStill", "scheduleRemember"]) this[name] = () => {};
   }
 
   /** #372: the engine asks before a correction whether a write would stick; during a touch glide

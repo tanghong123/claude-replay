@@ -102,7 +102,8 @@ export class Preview {
     this.nextTabBtn = step(1, "Next file", "›");
     byId("previewTabs").before(this.prevTabBtn);
     byId("previewTabs").after(this.nextTabBtn);
-    new ResizeObserver(() => this.fitTabs()).observe(byId("previewTabs"));
+    this.tabsObserver = new ResizeObserver(() => this.fitTabs());
+    this.tabsObserver.observe(byId("previewTabs"));
     byId("previewHead").onclick = event => {
       const close = event.target.closest("[data-preview-tab-close]");
       if (close) { this.closeTab(close.dataset.previewTabClose); return; }
@@ -121,6 +122,18 @@ export class Preview {
       resizer.onpointerup = () => { resizer.classList.remove("dragging"); this.paneState("resizing", false); resizer.onpointermove = null; localStorage.setItem("am-demo-preview", parseFloat(getComputedStyle(viewRoot.styleRoot()).getPropertyValue("--preview")) || 420); };
     };
     resizer.ondblclick = () => this.setWidth(420, true);
+  }
+  /** The view is unmounted (#s429 stage 7): the review sheet closes (its key listener on the window
+   *  goes with it), mdrev's viewer unmounts, the image viewer lets go of its keys, the observers stop,
+   *  a render still reading a file drops what it reads, and the image's object URL is released. */
+  destroy() {
+    this.reviewSheet?.close?.();
+    this.teardownMarkdown();
+    this.imageView?.destroy(); this.imageView = null;
+    this.stageObserver?.disconnect(); this.stageObserver = null;
+    this.tabsObserver?.disconnect();
+    this.renderGeneration++;
+    if (this.objectUrl) { URL.revokeObjectURL(this.objectUrl); this.objectUrl = ""; }
   }
   /** The pane's open, full and resizing states: the view's own, and its host's, whose layout follows
    *  them (the app's grid, #s429). */
@@ -381,7 +394,7 @@ export class Preview {
     sheet.setAttribute("aria-label", `Review ${item.name || "document"}`);
     sheet.innerHTML = `<div class="review-sheet-head"><button type="button" class="review-sheet-close" data-review-close aria-label="Close the review">${svg("x")}</button><strong>${escapeText(item.name || "document")}</strong></div><div class="review-sheet-body mdrev-pane"></div>`;
     (viewRoot.element() || viewRoot.layer()).append(sheet);
-    const state = { sheet, handle: null };
+    const state = { sheet, handle: null, close: null };
     this.reviewSheet = state;
     const close = () => {
       if (this.reviewSheet !== state) return;
@@ -391,6 +404,7 @@ export class Preview {
       sheet.remove();
     };
     const onKey = event => { if (event.key === "Escape") { event.preventDefault(); close(); } };
+    state.close = close;
     addEventListener("keydown", onKey, true);
     sheet.querySelector("[data-review-close]").onclick = close;
     mountMarkdown(sheet.querySelector(".review-sheet-body"), item, { review: true }).then(handle => {

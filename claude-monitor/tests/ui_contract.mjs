@@ -1128,7 +1128,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(parseViewMemory(""), null); assert.equal(parseViewMemory("nope"), null); assert.equal(parseViewMemory('{"key":"","top":1}'), null); assert.equal(parseViewMemory('{"key":"x","top":"1"}'), null, "a non-numeric offset is rejected");
   assert.equal(parseViewMemory('{"following":false}'), null, "not following without an anchor is nothing to restore");
   assert.match(viewportSource, /beginSession\(session\)/, "the viewport reads the memory when a session opens");
-  assert.match(viewportSource, /addEventListener\("pagehide", \(\) => this\.remember\(\)\)/, "the last position is written on the way out");
+  assert.match(viewportSource, /addEventListener\("pagehide", \(\) => this\.remember\(\), \{ signal: this\.life\.signal \}\)/, "the last position is written on the way out");
   assert.match(viewportSource, /this\.state\.following = !this\.pending/, "a remembered anchor holds following off until it is applied, so the tail never flashes past");
   assert.match(viewSource, /viewport\.beginSession\(id\); recordStore\.open\(id\)/, "the memory is read before the stream starts");
   console.log("view memory cases passed");
@@ -2420,7 +2420,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const viewSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-view.js", import.meta.url), "utf8");
   assert.match(viewSrc, /rerender: \(\) => \{ viewport\.readerReshaped\(\); viewport\.rerender\(\); viewport\.scheduleRemember\(\); \}/, "every choice schedules a save — and drops the tail pin first (#185), because everything reaching `rerender` is the reader reshaping the page themselves");
   assert.match(viewSrc, /reshaped: \(\) => viewport\.readerReshaped\(\),/, "…and the branches that grow the page IN PLACE, without a re-render, have their own way to say so — the cap expander reveals rows and never reaches `rerender`, which is the path #185 was actually reported from");
-  assert.match(viewSrc, /addEventListener\("pagehide", \(\) => viewport\.remember\(\)\);/, "…and leaving saves at once");
+  assert.match(viewSrc, /addEventListener\("pagehide", \(\) => viewport\.remember\(\), \{ signal \}\);/, "…and leaving saves at once");
   console.log("#114 view state cases passed");
 }
 
@@ -4250,8 +4250,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     const emitter = /^let mountingEvents = \[\];\nfunction say\(handler, data\) \{\n[\s\S]*?\n\}\n/m.exec(viewSource);
     assert.ok(emitter, "the view has one emitter, `say`");
     const reported = [];
-    const run = new Function("globalThis", `${emitter[0]}; return { say, done: () => { const held = mountingEvents; mountingEvents = null; for (const [h, d] of held) say(h, d); } };`);
-    const { say, done } = run({ reportError: error => reported.push(String(error.message)) });
+    const run = new Function("globalThis", `let unmounted = false; ${emitter[0]}; return { unmount: () => { unmounted = true; }, say, done: () => { const held = mountingEvents; mountingEvents = null; for (const [h, d] of held) say(h, d); } };`);
+    const { say, done, unmount } = run({ reportError: error => reported.push(String(error.message)) });
     const heard = [];
     say(data => heard.push(["title", data]), "first");
     say(() => { throw new Error("the host's bug"); }, "boom");
@@ -4263,6 +4263,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     say(undefined, "nobody");
     say(data => heard.push(["later", data]), "x");
     assert.deepEqual(heard.at(-1), ["later", "x"], "after the mount, at once");
+    unmount();
+    say(data => heard.push(["gone", data]), "y");
+    assert.deepEqual(heard.at(-1), ["later", "x"], "and nothing once the view is unmounted (stage 7)");
   }
   assert.match(viewSource, /^queueMicrotask\(\(\) => \{\n  const held = mountingEvents;\n  mountingEvents = null;\n  for \(const \[handler, data\] of held\) say\(handler, data\);\n\}\);\n\nreturn \{$/m, "the held events go out a microtask after mountSessionView returns");
   // The turn is said from where the engine placed the reader, once per task, and as none until the
@@ -4363,7 +4366,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /const engage = event => \{ engaged = inView\(event\.target\) && !inGuest\(event\.target\); \};/, "engagement is the last press or focus inside the view and outside its guest");
   assert.match(viewSource, /element\.contains\(target\) \|\| \[\.\.\.floating\]\.some\(node => node\.contains\(target\)\)/, "inside the view counts what it floats over the page");
   assert.match(viewSource, /floating\.add\(taskScrim\); floating\.add\(taskPopover\);/, "the task card and its scrim float");
-  assert.match(viewSource, /const binding = resolveKey\(event, "view", event\.target\);\n    const act = binding && keyActions\[binding\.action\];\n    if \(act && act\(\) !== false\) event\.preventDefault\(\);\n  \}, true\);/, "a key the view has no action for, or one that answers false, is left to the page; the view listens in the capture phase");
+  assert.match(viewSource, /const binding = resolveKey\(event, "view", event\.target\);\n    const act = binding && keyActions\[binding\.action\];\n    if \(act && act\(\) !== false\) event\.preventDefault\(\);\n  \}, \{ capture: true, signal \}\);/, "a key the view has no action for, or one that answers false, is left to the page; the view listens in the capture phase");
   assert.match(viewSource, /engaged: \(\) => engaged, keysFirst: keyboardMode === "engaged", toast,/, "the pane's image viewer reads the engagement too, and hears its keys first in a host");
   // Mounted alone, the pane shutting itself as it is built changed the width, and the remeasure
   // reached the record store before it existed: the pane's layout waits for the mount's end.
@@ -4378,9 +4381,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const viewNode = node(true), guestNode = node(true, true), hostNode = node(false), card = { tagName: "DIV", closest: () => null, card: true };
   const mount = (keyboardMode, actions) => {
     const handlers = {}, capture = {};
-    const doc = { addEventListener: (type, fn, phase) => { (handlers[type] ||= []).push(fn); capture[type] = phase === true; } };
-    const run = new Function("document", "element", "inGuest", "resolveKey", "keyActions", "keyboardMode", `${engagement[0]}${keymap[0]}; return { floating, engaged: () => engaged };`);
-    const view = run(doc, { contains: t => t.inside === true, isConnected: true }, inGuest, resolveKey, actions, keyboardMode);
+    const signal = { lifetime: "the view's" }, bound = [];
+    const doc = { addEventListener: (type, fn, phase) => { (handlers[type] ||= []).push(fn); capture[type] = phase?.capture === true; bound.push(phase?.signal === signal); } };
+    const run = new Function("document", "element", "inGuest", "resolveKey", "keyActions", "keyboardMode", "signal", `${engagement[0]}${keymap[0]}; return { floating, engaged: () => engaged };`);
+    const view = run(doc, { contains: t => t.inside === true, isConnected: true }, inGuest, resolveKey, actions, keyboardMode, signal);
+    assert.ok(bound.every(Boolean), "every one of them carries the view's signal, which its unmount aborts (stage 7)");
     view.floating.add({ contains: t => t.card === true });
     const press = (key, target = { tagName: "BODY", closest: () => null }) => { let prevented = false; for (const fn of handlers.keydown || []) fn({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, target, preventDefault() { prevented = true; } }); return prevented; };
     const on = (type, target) => { for (const fn of handlers[type] || []) fn({ target }); };
@@ -4452,4 +4457,45 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /if \(options\.frame !== undefined && typeof options\.frame !== "function"\) throw new Error\(/, "a frame that is not a function is refused");
   assert.match(viewSource, /detach: shows\("detach"\), frame: options\.frame, /, "the view hands it to the pane");
   console.log("#s429 native frame cases passed");
+}
+
+// #s429 stage 7: the unmount. Every listener the view binds on the page carries its signal, the
+// timers, frames and observers its code starts are made through the names it keeps, the modules
+// under it stop what they start, and the handle takes it all away and leaves the element as it was.
+{
+  const body = viewSource.slice(viewSource.indexOf("export function mountSessionView(element, options) {"));
+  // Each call that binds on the page, read to its closing parenthesis (past strings and nested
+  // brackets), names the view's signal in its options.
+  const calls = [];
+  for (const m of body.matchAll(/(?:\b(?:document|window|window\.visualViewport\?|viewport2|PHONE|WIDE|phoneSearch)\.|(?<![.\w]))addEventListener\(/g)) {
+    let depth = 0, i = m.index + m[0].length, quote = null;
+    for (; i < body.length; i++) {
+      const c = body[i];
+      if (quote) { if (c === "\\") i++; else if (c === quote) quote = null; continue; }
+      if (c === '"' || c === "'" || c === "`") { quote = c; continue; }
+      if (c === "(" || c === "[" || c === "{") depth++;
+      else if (c === ")" || c === "]" || c === "}") { if (depth === 0) break; depth--; }
+    }
+    calls.push(body.slice(m.index, i + 1));
+  }
+  assert.ok(calls.length >= 30, `the scan read the view's listeners on the page (${calls.length})`);
+  const unsigned = calls.filter(call => !/\bsignal \}\)$/.test(call));
+  assert.deepEqual(unsigned, [], "every listener the view binds on the page carries its signal");
+  assert.match(body, /^const life = new AbortController\(\), signal = life\.signal;$/m, "the view's lifetime is one signal");
+  for (const name of ["setTimeout", "requestAnimationFrame"]) assert.match(body, new RegExp(`^const ${name} = `, "m"), `the view keeps every ${name} it starts`);
+  assert.match(body, /^const ResizeObserver = kept\(globalThis\.ResizeObserver\), MutationObserver = kept\(globalThis\.MutationObserver\);$/m, "and every observer");
+  assert.doesNotMatch(body, /\bsetInterval\(/, "and starts no interval it would not keep");
+  const unmount = /^  unmount\(\) \{\n[\s\S]*?\n  \},\n/m.exec(body);
+  assert.ok(unmount, "the handle has an unmount");
+  for (const step of ["viewport.remember();", "recordStore.stop();", "viewport.destroy();", "preview.destroy();", "life.abort();", "clearTimeout(id)", "cancelAnimationFrame(id)", "observer.disconnect()", "taskScrim.remove(); taskPopover.remove();", "element.replaceChildren();", "for (const [name, value] of elementBefore) element.setAttribute(name, value);"]) {
+    assert.ok(unmount[0].includes(step), `the unmount does ${step}`);
+  }
+  assert.ok(unmount[0].indexOf("viewport.remember();") < unmount[0].indexOf("unmounted = true;"), "the reader's place is remembered before anything stops");
+  assert.match(body, /if \(typeof handler !== "function" \|\| unmounted\) return;/, "and the view tells its host nothing after it");
+  const vp = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
+  assert.match(vp, /  destroy\(\) \{\n    this\.life\.abort\(\);\n    for \(const \[type, listener, options\] of this\.windowListeners\) removeEventListener\(type, listener, options\);/, "the viewport takes away its own listeners and the engine's on the window");
+  assert.match(vp, /\} finally \{ if \(own\) globalThis\.addEventListener = add; else delete globalThis\.addEventListener; \}/, "which it watched the engine bind as it was built, and no longer");
+  const pv = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
+  assert.match(pv, /  destroy\(\) \{\n    this\.reviewSheet\?\.close\?\.\(\);\n    this\.teardownMarkdown\(\);\n    this\.imageView\?\.destroy\(\);/, "the pane closes its review sheet, mdrev's viewer and its image viewer");
+  console.log("#s429 unmount cases passed");
 }

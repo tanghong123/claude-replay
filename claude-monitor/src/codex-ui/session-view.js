@@ -152,14 +152,36 @@ if (options.write !== undefined && !(typeof options.write?.on === "function" && 
 if (options.frame !== undefined && typeof options.frame !== "function") throw new Error("mountSessionView takes its frame as a function from a page's HTML to the address its frame loads");
 /** Whether an optional control is drawn: each is, unless the host switched it off. */
 const shows = name => options.show?.[name] !== false;
+// What the view starts outside its element, which `unmount` stops (stage 7). Every listener it binds
+// on the page (the document, the window, the visual viewport, a media query) carries `signal`; the
+// timers, frames and observers its code starts are made through the names below, which keep each
+// one, so nothing the view's code calls `setTimeout`, `requestAnimationFrame`, `ResizeObserver` or
+// `MutationObserver` outlives it. What the modules under it start, each stops itself (`destroy`).
+const life = new AbortController(), signal = life.signal;
+const timers = new Set(), frames = new Set(), observers = new Set();
+let unmounted = false;
+const setTimeout = (run, ms, ...args) => {
+  const id = globalThis.setTimeout(() => { timers.delete(id); run(...args); }, ms);
+  timers.add(id);
+  return id;
+};
+const requestAnimationFrame = run => {
+  const id = globalThis.requestAnimationFrame(time => { frames.delete(id); run(time); });
+  frames.add(id);
+  return id;
+};
+const kept = Observer => class extends Observer { constructor(callback) { super(callback); observers.add(this); } };
+const ResizeObserver = kept(globalThis.ResizeObserver), MutationObserver = kept(globalThis.MutationObserver);
+// The element as the host gave it, which `unmount` puts back: its attributes (the id, the class, the
+// theme and the reading options the view writes on it) and no children.
+const elementBefore = [...element.attributes].map(attribute => [attribute.name, attribute.value]);
 // The view's own stores, fresh for this mount (stage 7): the open session's records and how they are
 // drawn, and how the view is laid out and read, with the reader's remembered choices.
 const recordState = createRecordState(), uiState = createViewState();
 const persist = () => persistView(uiState);
 if (options.backend) useBackend(options.backend);
 // The view builds its three parts inside its element from its own markup (stage 4), so a host's
-// page carries none of the view's markup (the compose box still binds the app's write controls,
-// above), and draws the glyphs that markup names.
+// page carries none of the view's markup, and draws the glyphs that markup names.
 if (!element.firstElementChild) element.innerHTML = SESSION_VIEW_MARKUP;
 element.querySelectorAll("[data-icon]").forEach(glyph => { glyph.innerHTML = svg(glyph.dataset.icon); });
 // The view's element carries its id, its class and its theme (stage 5b): its stylesheet hangs every
@@ -188,7 +210,7 @@ const sessionWorkers = (id = recordState.session) => options.sessionWorkers(id);
 // on every index poll and the turn bar on every scroll.
 let mountingEvents = [];
 function say(handler, data) {
-  if (typeof handler !== "function") return;
+  if (typeof handler !== "function" || unmounted) return;
   if (mountingEvents) { mountingEvents.push([handler, data]); return; }
   try { handler(data); } catch (error) { (globalThis.reportError || console.error)(error); }
 }
@@ -297,7 +319,7 @@ sessionCopyMenu.addEventListener("pointerleave", event => { if (leftByHover(even
 sessionCopyMenu.addEventListener("focusout", scheduleSessionCopyClose);
 document.addEventListener("pointerdown", event => {
   if (event.target !== sessionTitle && !event.target.closest?.("#turnSubtitle") && !sessionCopyMenu.contains(event.target)) setSessionCopyMenu(false);
-});
+}, { signal });
 
 async function copyText(text) {
   if (!text) return false;
@@ -427,7 +449,7 @@ let engaged = keyboardMode === "page";
 if (keyboardMode === "engaged") {
   const inView = target => !!target && typeof target.closest === "function" && (element.contains(target) || [...floating].some(node => node.contains(target)));
   const engage = event => { engaged = inView(event.target) && !inGuest(event.target); };
-  for (const type of ["pointerdown", "mousedown", "focusin"]) document.addEventListener(type, engage, true);
+  for (const type of ["pointerdown", "mousedown", "focusin"]) document.addEventListener(type, engage, { capture: true, signal });
 }
 
 // #s25: the pane changes the TRANSCRIPT's layout only where it is a grid column (a wide desktop).
@@ -449,7 +471,10 @@ const paneLayoutChanged = () => {
 };
 const preview = new Preview({ layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
 const attachmentViewer = new AttachmentViewer({ toast });
-const controlActions = { write: options.write, selectedId, selectedRow, renderTree: () => options.renderList(), recordSnapshot: () => ({ session: recordState.session, records: recordState.records }), toast, refreshIndex: () => options.refreshIndex(), pauseIndex: () => options.pauseIndex(), resumeIndex: () => options.resumeIndex(), selectSession, refreshEmpty: () => recordStore.refreshEmpty() };
+// What the compose box asks of the app goes nowhere once the view is unmounted: a dialog's answer
+// still settling, a send still out.
+const whileMounted = run => (...args) => (unmounted ? undefined : run(...args));
+const controlActions = { write: options.write, selectedId, selectedRow, renderTree: whileMounted(() => options.renderList()), recordSnapshot: () => ({ session: recordState.session, records: recordState.records }), toast, refreshIndex: whileMounted(() => options.refreshIndex()), pauseIndex: whileMounted(() => options.pauseIndex()), resumeIndex: whileMounted(() => options.resumeIndex()), selectSession: whileMounted(selectSession), refreshEmpty: () => recordStore.refreshEmpty() };
 const ordinaryControls = new ControlStore(controlActions);
 let controls = ordinaryControls;
 // #s277 (design/slow-links.md §6.7, D3): a reader across a network — the test gzip and masking use —
@@ -1396,7 +1421,7 @@ function toggleDrawer(key) {
   const closing = dir === "closing" ? true : dir === "opening" ? false : open >= 0.5;
   setDrawerOpen(key, closing ? 0 : 1);
 }
-window.addEventListener("resize", stackOutlineHeads);
+window.addEventListener("resize", stackOutlineHeads, { signal });
 /** What a Turns pane row whose records are still coming adds to its title (#s276). */
 const STILL_LOADING = " — still loading; the page goes there when it arrives";
 /** A turn the turn index lists (#s276), shaped as a Turns pane row reads a unit: its first record,
@@ -2274,7 +2299,7 @@ function fitSearchField() {
   input.style.width = `${Math.max(48, Math.floor(searchField.clientWidth - chips), text)}px`;
   if (input.selectionStart === input.value.length) searchField.scrollLeft = searchField.scrollWidth;
 }
-addEventListener("resize", () => fitSearchField());
+addEventListener("resize", () => fitSearchField(), { signal });
 // #310, #313: on a phone (`PHONE_QUERY`, the shell's one breakpoint; #s32 a landscape phone too) the search box is an icon with its
 // input hidden. A tap on it OPENS it across the bar's second row, and it stays open until a tap lands outside the search's own
 // surfaces (the box, the drop-down, the filter popover) or Escape — never on blur, since a touch
@@ -2299,8 +2324,8 @@ document.addEventListener("pointerdown", event => {
   if (!searchBox.classList.contains("phone-open") || event.target.closest(".header-search-cluster")) return;
   if (phoneSearch.matches && byId("navigatorOptions").classList.contains("open")) { setPopover(null); return; }
   setPhoneSearch(false);
-}, true);
-phoneSearch.addEventListener("change", () => { if (!phoneSearch.matches) setPhoneSearch(false); });
+}, { capture: true, signal });
+phoneSearch.addEventListener("change", () => { if (!phoneSearch.matches) setPhoneSearch(false); }, { signal });
 byId("transcriptSearchInput").addEventListener("focus", () => { if (phoneSearch.matches && byId("navigatorOptions").classList.contains("open")) setPopover(null); });
 const SCOPE_ROWS = [["u", "User messages"], ["a", "Agent replies"], ["t", "Thinking"], ["o", "Tools"], ["w", "Whole words"]];
 // #367: the session's tools are secondary checkboxes under the Tools scope row — the last row of the
@@ -2789,7 +2814,7 @@ function setPopover(which) {
 readingBtn.onclick = () => setPopover(readingOptions.classList.contains("open") ? null : "reading");
 addEventListener("pointerdown", event => {
   if (!readingCluster.contains(event.target) && readingOptions.classList.contains("open")) setPopover(null);
-}, true);
+}, { capture: true, signal });
 /** The size control reads as a RELATIVE step, never as a pixel count (#160). An absolute "11px"
  *  pins the reader to one base size and forecloses the variable sizes we want later — the
  *  adjustment has always been relative, so say so: 0 at the default, +n and −n either side. */
@@ -2898,7 +2923,7 @@ function saveHistory() {
 document.addEventListener("click", event => {
   const button = event.target.closest ? event.target.closest("button[id]") : null;
   if (button && !button.closest("#transcript")) viewport.noteAction("control", button.id);
-}, true);
+}, { capture: true, signal });
 applyReading();
 byId("filterTranscriptBtn").onclick = () => { setPopover(byId("navigatorOptions").classList.contains("open") ? null : "filter"); renderFilterMenu(); };
 byId("navigatorOptions").onclick = event => { const scope = event.target.closest("[data-scope]"); if (scope) { const key = scope.dataset.scope; { const everything = ALL_SCOPES.every(k => uiState.searchScopes.has(k)); if (everything) uiState.searchScopes = new Set([key]); else if (uiState.searchScopes.has(key)) { uiState.searchScopes.delete(key); if (!uiState.searchScopes.size) uiState.searchScopes = new Set(ALL_SCOPES); } else uiState.searchScopes.add(key); } applyScopeFromMenu(); } // A twisty EXPANDS its branch and selects nothing (#293): it sits INSIDE the row button, so it
@@ -3215,8 +3240,8 @@ panesMenu.onclick = event => {
   infoPopoverToggle = () => { pinned = !pinned; show(pinned); if (pinned) sayInfo(); };
   addEventListener("pointerdown", event => {
     if (pinned && !popover.contains(event.target) && !trigger.contains(event.target) && !event.target.closest?.("[data-info-trigger]")) { pinned = false; show(false); }
-  }, true);
-  addEventListener("keydown", event => { if (event.key === "Escape" && pinned) { pinned = false; show(false); } });
+  }, { capture: true, signal });
+  addEventListener("keydown", event => { if (event.key === "Escape" && pinned) { pinned = false; show(false); } }, { signal });
   // The collapsed rail's Info button is the SAME control now — one gesture in both states,
   // rather than click-in-rail and hover-when-open.
   const railInfo = nav.parentElement?.querySelector('[data-nav-card-open="session"]');
@@ -3317,8 +3342,8 @@ taskPopover.addEventListener("click", event => {
   const find = event.target.closest("[data-task-find]");
   if (find) { const index = Number(find.dataset.taskFind), task = (recordState.meta?.tasks || [])[index]; closeTaskPopover(false); if (task) findTaskRecord(task, String(task.id ?? index)); }
 });
-document.addEventListener("keydown", event => { if (event.key === "Escape" && !taskPopover.hidden) { event.stopPropagation(); closeTaskPopover(); } }, true);
-document.addEventListener("pointerdown", event => { if (!taskPopover.hidden && !taskPopover.contains(event.target) && !event.target.closest("[data-task-open]")) closeTaskPopover(false); });
+document.addEventListener("keydown", event => { if (event.key === "Escape" && !taskPopover.hidden) { event.stopPropagation(); closeTaskPopover(); } }, { capture: true, signal });
+document.addEventListener("pointerdown", event => { if (!taskPopover.hidden && !taskPopover.contains(event.target) && !event.target.closest("[data-task-open]")) closeTaskPopover(false); }, { signal });
 // The tasks pane centered on the running tasks (#57), or on the done/pending boundary: the
 // target row is the pure function's, the scroll is the PANE's own scroller — never the
 // transcript's. Runtime chrome on the card's head, so the generated shell stays exact.
@@ -3373,8 +3398,8 @@ byId("sessionFoldAll").onclick = () => { const close = recordState.units.some(un
 // top bar") and says when one is pressed.
 byId("mobileBack").onclick = () => options.openList?.();
 byId("sidebarReopen").onclick = () => options.openSidebar?.();
-addEventListener("hashchange", () => { landedHash = ""; landOnHash(); });
-addEventListener("resize", () => { viewport.remeasure(); updateStickyHeaders(); }, { passive: true });
+addEventListener("hashchange", () => { landedHash = ""; landOnHash(); }, { signal });
+addEventListener("resize", () => { viewport.remeasure(); updateStickyHeaders(); }, { passive: true, signal });
 // The keymap (parity #11): the classic view's keys, resolved by keymap.js, acted on here.
 const userUnits = () => recordState.units.filter(unit => unit.type === "user");
 // The unit the reader is "at": the first mounted unit that starts at (or within a line above)
@@ -3573,7 +3598,7 @@ function readerMoves(event) {
     if (event.deltaY && room) setTurnsFollow(false);
   } else if (type === "touchmove" || (type === "keydown" && SCROLL_KEYS.has(event.key)) || (type === "pointerdown" && target === scroller)) setTurnsFollow(false);
 }
-for (const kind of ["wheel", "touchmove", "pointerdown", "keydown"]) document.addEventListener(kind, readerMoves, { capture: true, passive: true });
+for (const kind of ["wheel", "touchmove", "pointerdown", "keydown"]) document.addEventListener(kind, readerMoves, { capture: true, passive: true, signal });
 
 function stepTurn(delta) {
   setTurnsFollow(true);
@@ -3628,7 +3653,7 @@ if (keyboardMode === "engaged") {
     const binding = resolveKey(event, "view", event.target);
     const act = binding && keyActions[binding.action];
     if (act && act() !== false) event.preventDefault();
-  }, true);
+  }, { capture: true, signal });
 }
 // Discoverability in the shell's idiom: the key in the control's own title / hint.
 byId("transcriptSearchInput").placeholder = `Search this session  ( ${hintFor("search")} )`;
@@ -3636,7 +3661,7 @@ byId("findPrev").title = `Previous match (${hintFor("hit-prev")})`; byId("findNe
 byId("turnPrev").title = `Previous turn (${hintFor("turn-prev")})`; byId("turnNext").title = `Next turn (${hintFor("turn-next")})`;
 // The header's own turn steppers were in the design but never bound; they step the same way the keys do.
 byId("turnPrev").onclick = () => stepTurn(-1); byId("turnNext").onclick = () => stepTurn(1);
-addEventListener("keydown", event => { if (event.key === "Escape") { setSessionCopyMenu(false); setPopover(null); } });
+addEventListener("keydown", event => { if (event.key === "Escape") { setSessionCopyMenu(false); setPopover(null); } }, { signal });
 
 // #313 — while a session loads, a veil over the session area says so. It dims what is below the top
 // bars, which already name the new session, and speaks in three phases: loading; after
@@ -3862,7 +3887,7 @@ var phoneDock;
   // Native request cards are installed lazily; delegate focus from their stable workspace.
   composer.closest(".workspace").addEventListener("focusin", paintCompose);
   composer.closest(".workspace").addEventListener("focusout", () => requestAnimationFrame(paintCompose));
-  window.visualViewport?.addEventListener("resize", paintCompose);
+  window.visualViewport?.addEventListener("resize", paintCompose, { signal });
   const placeToolbar = () => {
     if (PHONE.matches) {
       if (shows("reading")) dockPill.append(readingCluster);
@@ -3976,20 +4001,20 @@ var phoneDock;
       stopCatching(4000);
     }
     if (openPane && taskPopover.hidden && !menu.contains(event.target) && !event.target.closest?.("[data-phone-pane]")) closePane();
-  }, true);
+  }, { capture: true, signal });
   const lifted = event => {
     if (event.pointerId !== catchingPointer) return;
     catchingPointer = null;
     stopCatching(event.type === "pointercancel" ? 0 : 1000);
   };
-  addEventListener("pointerup", lifted, true);
-  addEventListener("pointercancel", lifted, true);
+  addEventListener("pointerup", lifted, { capture: true, signal });
+  addEventListener("pointercancel", lifted, { capture: true, signal });
   paneScrim.addEventListener("click", event => {
     event.preventDefault();
     clearTimeout(catchTimer);
     paneScrim.classList.remove("catching");
   });
-  addEventListener("keydown", event => { if (event.key === "Escape") closePane(); });
+  addEventListener("keydown", event => { if (event.key === "Escape") closePane(); }, { signal });
   // The card's own jump to the turn leaves for the transcript: the list goes with the card.
   taskPopover.addEventListener("click", event => { if (event.target.closest("[data-task-record], [data-task-find]")) closePane(); });
 
@@ -4007,7 +4032,7 @@ var phoneDock;
   };
   new ResizeObserver(place).observe(topbar);
   new ResizeObserver(place).observe(dock);
-  addEventListener("resize", place);
+  addEventListener("resize", place, { signal });
   // #s37 (design/phone-landscape.md §3.5): the dock rides the keyboard. iOS never lifts a fixed bottom
   // element above its keyboard — the layout viewport keeps its height and the keyboard covers its foot
   // — so the find pill would type behind it. What the keyboard (and its accessory bar) covers is the
@@ -4045,18 +4070,18 @@ var phoneDock;
       root.style.setProperty("--phone-kb", `${covered}px`);
       place();
     };
-    viewport2.addEventListener("resize", ride);
-    viewport2.addEventListener("scroll", ride);
+    viewport2.addEventListener("resize", ride, { signal });
+    viewport2.addEventListener("scroll", ride, { signal });
     // The page itself scrolls only under iOS's keyboard; off a phone this listener has nothing to do.
-    addEventListener("scroll", () => { if (PHONE.matches || grid.style.transform) ride(); }, { passive: true });
+    addEventListener("scroll", () => { if (PHONE.matches || grid.style.transform) ride(); }, { passive: true, signal });
     ride();
   }
   // Across the breakpoint the Tasks list changes what it shows (#319: every state on a phone); the
   // desktop's rail comes off or goes back on in the app (#s33, `applySidebar`).
-  PHONE.addEventListener("change", () => { placeToolbar(); place(); if (!PHONE.matches) closePane(); renderNavigator(); paintCompose(); });
+  PHONE.addEventListener("change", () => { placeToolbar(); place(); if (!PHONE.matches) closePane(); renderNavigator(); paintCompose(); }, { signal });
   // Into the wide layout the drop-down has no button (the column shows its panes); out of it, the
   // app sends the column's borrowed list home and the handle speaks of the drawer again.
-  WIDE.addEventListener("change", () => { if (WIDE.matches) closePane(); place(); });
+  WIDE.addEventListener("change", () => { if (WIDE.matches) closePane(); place(); }, { signal });
   place();
 
   mobileShell = {
@@ -4084,8 +4109,8 @@ paneLaidOutWidth = transcript.clientWidth;
 viewMounted = true;
 // #114: a reload, a close or the tab going to the background saves the reader's choices with
 // the position (the debounced save may not have run yet).
-addEventListener("pagehide", () => viewport.remember());
-document.addEventListener("visibilitychange", () => { if (document.hidden) viewport.remember(); });
+addEventListener("pagehide", () => viewport.remember(), { signal });
+document.addEventListener("visibilitychange", () => { if (document.hidden) viewport.remember(); }, { signal });
 // What the view said while it mounted (its first title, a toast) goes to the host once
 // `mountSessionView` has returned, in the order it was said (`say`).
 queueMicrotask(() => {
@@ -4114,6 +4139,39 @@ return {
   },
   /** The host's write mode changed (`write.on()`): the compose box follows. */
   writeChanged: () => ordinaryControls.paint(),
+  /** Take the view away (stage 7). The reader's place in the session is remembered, as a page leaving
+   *  remembers it; then everything the view started stops (its listeners on the page, its timers,
+   *  frames and observers, the record store's reads and polls, the viewport's and the artifact
+   *  pane's own), what it put outside its element goes (the task card and its scrim, a list a wide
+   *  phone's column borrowed, the properties it measured on the page's root, the place it moved the
+   *  host's box to over a phone's keyboard), and the element is left as the host gave it: empty, with
+   *  its own attributes. The view tells its host nothing more. Mounting again in the same element
+   *  draws a new view. Native mode, which only the app installs and the app never unmounts, is not
+   *  taken down. */
+  unmount() {
+    if (unmounted) return;
+    viewport.remember();
+    unmounted = true;
+    mountingEvents = null;
+    recordStore.stop();
+    viewport.destroy();
+    preview.destroy();
+    ordinaryControls.dialog.clear();
+    sessionLoading?.hide();
+    life.abort();
+    for (const id of timers) clearTimeout(id);
+    for (const id of frames) cancelAnimationFrame(id);
+    for (const observer of observers) observer.disconnect();
+    timers.clear(); frames.clear(); observers.clear();
+    taskScrim.remove(); taskPopover.remove(); floating.clear();
+    for (const [, , id] of PHONE_PANES) { const node = byId(id); if (node && !element.contains(node)) node.remove(); }
+    const root = viewRoot.styleRoot();
+    for (const name of ["--preview", "--phone-top", "--phone-bottom", "--phone-kb"]) root?.style.removeProperty(name);
+    grid?.style.removeProperty("transform");
+    element.replaceChildren();
+    for (const { name } of [...element.attributes]) element.removeAttribute(name);
+    for (const [name, value] of elementBefore) element.setAttribute(name, value);
+  },
   /** The view's width changed under it (the sidebar moved). */
   resized: () => viewport.remeasure(),
   /** Draw in "light" or "dark" (#s436); mdrev's pane and the diagrams follow the view's element. */
