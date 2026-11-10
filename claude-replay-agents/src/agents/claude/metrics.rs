@@ -247,9 +247,9 @@ impl MetricsAcc {
             // request, where a class changes the price: by prompt length (#s47) or by speed
             // (#s78). The tier is the one the provider returned, confirmed only on the standard
             // speed — except fast mode, which the request records as its SPEED ("fast") and the
-            // catalog prices for Fable 5.2, Mythos 5.2, Opus 5.5, Opus 5 and Opus 4.8 (`prices_fast`):
-            // that is a confirmed Fast. Claude's
-            // service_tier "priority" is the Priority Tier, not fast mode, and stays unpriced. A
+            // catalog prices for Fable 5.2, Mythos 5.2, Opus 5.5, Opus 5 and Opus 4.8
+            // (`prices_fast`): that is a confirmed Fast. Claude's service_tier "priority" is the
+            // Priority Tier, not fast mode, and stays unpriced. A
             // repeat whose prompt crossed the line moved the call's earlier credit into the long
             // subset, which no class of this delta can say, so it has none.
             let fast_rule = prices_fast(&m);
@@ -286,13 +286,23 @@ impl MetricsAcc {
             if let Some(long) = long {
                 bucket.long_prompt += long.into();
             }
-            // #s447: an advisor call credited here is a second request in this push's delta, and
-            // the seam gives a class only for a delta that is ONE request. A consumer prices every
-            // model of the push in it (agent-metrics does), so the class would price the advisor
-            // at the main call's tier. With none, both price at the default class: standard, the
-            // main call's flagged as an estimate where its price depends on the request.
-            if self.credit_advisors(u) {
-                self.request_pricing = None;
+            // #s447: an advisor call credited here is a second request in this push's delta. A
+            // consumer prices every model of the push in its class (agent-metrics does), so the
+            // class goes wherever it would change an advisor's price: a Fast class over an
+            // advisor the catalog prices fast (a Fable 5.2 advisor would bill at 2x), or a long
+            // prompt over one priced by prompt length. Elsewhere it prices the advisor as the
+            // default does, and the main call keeps its exact class (the advisor call's first line
+            // carries most of the main call's tokens). Where it goes, both price at the default
+            // class, each flagged as an estimate where its price depends on the request.
+            let advisors = self.credit_advisors(u);
+            if let Some(class) = self.request_pricing {
+                let scales = |advisor: &String| {
+                    (class.tier == ServiceTier::Fast && prices_fast(advisor))
+                        || (class.long_context == Some(true) && long_prompt_over(advisor).is_some())
+                };
+                if advisors.iter().any(scales) {
+                    self.request_pricing = None;
+                }
             }
             // Qoder's opaque model aliases cannot be priced from token counts; `credits`
             // supply its cost independently, as micro-credits in `credits_micro`. Real Claude usage
@@ -394,22 +404,24 @@ impl MetricsAcc {
     /// later line add one.
     /// An entry that names no model cannot be priced and is passed over. A type this fold does not
     /// know reports to `--unknown` (`note_unknown_record_keys`).
-    /// Whether it credited any tokens: a new advisor call rode in this push.
-    fn credit_advisors(&mut self, usage: &Value) -> bool {
+    /// The advisor models it credited tokens to: the new advisor calls that rode in this push.
+    fn credit_advisors(&mut self, usage: &Value) -> Vec<String> {
         let Some(entries) = usage.get("iterations").and_then(Value::as_array) else {
-            return false;
+            return Vec::new();
         };
         let advisors: Vec<&Value> = entries
             .iter()
             .filter(|e| e.get("type").and_then(Value::as_str) == Some("advisor_message"))
             .collect();
-        let mut credited = false;
+        let mut credited = Vec::new();
         for entry in advisors.iter().skip(self.credited_advisors) {
             let Some(model) = entry.get("model").and_then(Value::as_str) else {
                 continue;
             };
             let tokens = usage_tokens(entry);
-            credited |= tokens != TokenCounts::default();
+            if tokens != TokenCounts::default() {
+                credited.push(model.to_string());
+            }
             let bucket = self.per_model.entry(model.to_string()).or_default();
             *bucket += tokens;
             if long_prompt_over(model).is_some_and(|over| tokens.prompt() > over) {
@@ -859,34 +871,54 @@ mod tests {
         assert!((usd - 16.0).abs() < 1e-9, "{usd}");
     }
 
-    /// #s447: the seam gives a class only for a delta that is one request. A push that also
-    /// credits an advisor call's tokens is two requests, so it has none: a consumer that prices
-    /// every model of the push in its class (agent-metrics does) would price the advisor at the
-    /// main call's Fast rate. A repeat line of the call, which credits nothing new from the
-    /// advisor, has its class again.
+    /// #s447: a push that credits an advisor call is two requests, and a consumer prices every
+    /// model of the push in its class (agent-metrics does). So the class goes where it would
+    /// change the advisor's price: a Fast class over an advisor the catalog prices fast (here
+    /// Opus 5, which would bill at 2x). A repeat line, which credits nothing new from the
+    /// advisor, has it again. Over an advisor with no fast rule (Fable 5.1), or a long prompt over
+    /// one with no length rule, the class prices the advisor as the default does, and the main
+    /// call keeps it exact.
     #[test]
-    fn a_push_that_credits_an_advisor_call_has_no_class() {
-        let fast = |id: &str, out: u64| {
+    fn a_push_keeps_its_class_unless_it_would_change_an_advisor_s_price() {
+        let fast = |id: &str, out: u64, advisor: &str| {
             let mut line = advised_line(id, out);
             line["message"]["usage"]["speed"] = "fast".into();
+            line["message"]["usage"]["iterations"][1]["model"] = advisor.into();
             line
         };
         let mut acc = MetricsAcc::default();
-        acc.push(&fast("msg_01", 5));
+        acc.push(&fast("msg_01", 5, "claude-opus-5"));
         assert_eq!(
             acc.request_pricing(),
             None,
-            "the advisor's call rides in this push"
+            "the Fast class would bill a fast-priced advisor at 2x"
         );
-        acc.push(&fast("msg_01", 40));
-        let class = acc
-            .request_pricing()
-            .expect("a repeat line credits nothing new from the advisor");
-        assert_eq!(class.tier, ServiceTier::Fast);
-        acc.push(&fast("msg_02", 7));
-        assert_eq!(acc.request_pricing(), None, "a second call, advised again");
+        acc.push(&fast("msg_01", 40, "claude-opus-5"));
+        assert_eq!(
+            acc.request_pricing().map(|c| c.tier),
+            Some(ServiceTier::Fast),
+            "a repeat line credits nothing new from the advisor"
+        );
+        acc.push(&fast("msg_02", 7, "claude-fable-5-1"));
+        assert_eq!(
+            acc.request_pricing().map(|c| c.tier),
+            Some(ServiceTier::Fast),
+            "an advisor with no fast rule prices the same in the class"
+        );
         let m = acc.finish();
-        assert_eq!(m.per_model["claude-fable-5-1"].input, 2_000_000);
+        assert_eq!(m.per_model["claude-opus-5"].input, 1_000_000);
+        assert_eq!(m.per_model["claude-fable-5-1"].input, 1_000_000);
+
+        let mut long = advised_line("msg_03", 5);
+        long["message"]["model"] = "claude-haiku-5-5".into();
+        long["message"]["usage"]["input_tokens"] = 200_000.into();
+        let mut acc = MetricsAcc::default();
+        acc.push(&long);
+        assert_eq!(
+            acc.request_pricing().map(|c| c.long_context),
+            Some(Some(true)),
+            "Haiku 5.5's long prompt keeps its class over a Fable 5.1 advisor"
+        );
     }
 
     /// #s359: an advisor entry carries the same `cache_creation` object as the usage around it.
@@ -917,7 +949,15 @@ mod tests {
         let parked = before.state();
         let mut after = MetricsAcc::default();
         after.restore(&parked);
-        after.push(&advised_line("msg_01", 40));
+        let mut line = advised_line("msg_01", 40);
+        line["message"]["usage"]["speed"] = "fast".into();
+        line["message"]["usage"]["iterations"][1]["model"] = "claude-opus-5".into();
+        after.push(&line);
+        // #s447: the advisor's call is not credited again, so this line's class stands.
+        assert_eq!(
+            after.request_pricing().map(|c| c.tier),
+            Some(ServiceTier::Fast)
+        );
         assert_eq!(
             after.finish().per_model["claude-fable-5-1"].input,
             1_000_000
@@ -1749,7 +1789,7 @@ mod long_prompt_tests {
         assert_eq!(opus.request_pricing(), None);
     }
 
-    /// #s78: fast mode is a request's SPEED. On Opus 5.5, Opus 5 and Opus 4.8, which the catalog
+    /// #s78: fast mode is a request's SPEED. On Fable 5.2, Mythos 5.2 (#s445), Opus 5.5, Opus 5 and Opus 4.8, which the catalog
     /// prices fast at 2x on every class, a push recorded with `usage.speed` "fast" names a
     /// confirmed Fast class (the engine's `fast_mode_is_twice_standard_where_the_page_offers_it`
     /// prices it at twice standard); a standard-speed push names Standard; Opus 4.7, which refuses fast mode, names none; and a
@@ -1763,7 +1803,13 @@ mod long_prompt_tests {
                         "cache_read_input_tokens": 30_000, "output_tokens": 500,
                         "service_tier": tier, "speed": speed}}})
         };
-        for model in ["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"] {
+        for model in [
+            "claude-fable-5-2",
+            "claude-mythos-5-2",
+            "claude-opus-5-5",
+            "claude-opus-5",
+            "claude-opus-4-8",
+        ] {
             let mut acc = MetricsAcc::default();
             acc.push(&line(model, "F", "fast", "standard"));
             let fast = acc
