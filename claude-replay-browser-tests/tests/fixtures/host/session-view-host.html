@@ -7,8 +7,9 @@
 <!-- A test host (#s429 stage 6): a page of the case's own that mounts the session view alone, as a
      host app would, on the monitor's origin. The case answers this page itself through the browser
      (harness::answer_in_browser); the monitor serves only its own modules and routes. Its options
-     come from the address: `controls=` names the optional controls switched off (comma-separated),
-     `keys=` the key mode (left out: the view's default). -->
+     come from the address: `hide=` names the optional controls switched off (comma-separated, each
+     `show: {name: false}`), `keyboard=` the key mode (left out: the view's default), and `session=`
+     a session to open, read from the monitor's own session list. -->
 <link rel="stylesheet" href="/monitor-ui/session-view.css">
 <style>
 /* The host's own rules keep to its own elements, as the owner's terms say (#s438). */
@@ -22,9 +23,8 @@
 <div class="host-pane" id="hostPane"><div class="host-view"></div></div>
 <!-- What the view still reaches for in the app's page, hidden: the compose box's controls
      (control-store.js) bind the app's write-mode switch and its confirm layer, which state.js's
-     `controlState` ties to the app until stage 7 passes write mode in
-     (design/session-view-component.md, stage 3's "Not yet passed in"). A host without them cannot
-     mount the view today. -->
+     `controlState` ties to the app until stage 7 passes write mode in (mountSessionView's doc comment
+     names them). A host without them cannot mount the view today. -->
 <div hidden>
   <div id="writeBtn"><button type="button" id="writeInfo"></button><button type="button" id="writeSwitch" role="switch" aria-checked="false"></button></div>
   <div id="writeHelp" hidden></div>
@@ -33,17 +33,29 @@
 </div>
 <script type="module">
 const host = window.__host = { mounted: false, error: null, events: [], keys: [] };
+// The host's own keyboard, bound BEFORE the view mounts, as a host's page would be: what reaches it,
+// and whether the view (which listens in the capture phase) had already taken it.
+document.addEventListener("keydown", event => host.keys.push({ key: event.key, prevented: event.defaultPrevented }));
 try {
   const { backendHandle } = await import("/monitor-ui/backend.js");
   const { mountSessionView } = await import("/monitor-ui/session-view.js");
   const params = new URLSearchParams(location.search);
-  const off = (params.get("controls") || "").split(",").filter(Boolean);
+  const off = (params.get("hide") || "").split(",").filter(Boolean);
+  const backend = backendHandle({ paired: true });
+  // A session to open: its row from the monitor's own list, which a first scan may not have yet.
+  const session = params.get("session") || "";
+  const rows = new Map();
+  for (let tries = 0; session && !rows.has(session) && tries < 40; tries++) {
+    const data = await backend.fetch("/api/sessions", { cache: "no-store" }).then(response => response.json());
+    for (const group of data.groups || []) for (const row of group.rows || []) { row._group = group; rows.set(row.id, row); }
+    if (!rows.has(session)) await new Promise(done => setTimeout(done, 250));
+  }
   const options = {
     theme: "light",
-    backend: backendHandle({ paired: true }),
+    backend,
     grid: document.getElementById("hostPane"),
-    selectedId: () => "",
-    sessionRow: () => null,
+    selectedId: () => session,
+    sessionRow: id => rows.get(id) || null,
     sessionWorkers: () => [],
     selectSession: () => {},
     renderList: () => {},
@@ -52,12 +64,10 @@ try {
     resumeIndex: () => {},
   };
   if (off.length) options.show = Object.fromEntries(off.map(name => [name, false]));
-  if (params.get("keys")) options.keyboard = params.get("keys");
+  if (params.get("keyboard")) options.keyboard = params.get("keyboard");
   for (const name of ["onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast"]) options[name] = (...args) => host.events.push({ name, args });
-  window.__view = mountSessionView(document.querySelector(".host-view"), options);
-  // The host's own keyboard: what reaches it after the view had its turn (the view listens first,
-  // since it mounted before this listener was added), and whether the view took it.
-  document.addEventListener("keydown", event => host.keys.push({ key: event.key, prevented: event.defaultPrevented }));
+  const view = window.__view = mountSessionView(document.querySelector(".host-view"), options);
+  if (session) { view.select(session); view.open(session); }
   host.mounted = true;
 } catch (error) {
   host.error = String(error && error.stack || error);
