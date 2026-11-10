@@ -160,3 +160,29 @@ test("a dialog's grant goes through the host's confirm, then the grant, with a p
   assert.deepEqual(f.posted.map(([, body]) => body), ["", "4321"], "the grant, asked again with the passcode");
   assert.deepEqual(went, ["answered"]); assert.equal(f.store.compose.consented, true);
 });
+
+// #s429 stage 7: what is still out when the view is unmounted does nothing when it comes back. The
+// view finds its elements by id, so after a mount in the same element they would be a new view's.
+test("a send that answers after the unmount re-enables nothing and retires no draft", async () => {
+  const f = fixture(); delete f.ordinary.actions.captureComposer;
+  f.ordinary.dialog = { destroy() {} };
+  const pending = f.ordinary.send("Claude send");
+  assert.equal(f.send.disabled, true);
+  f.ordinary.destroy();
+  f.finish(); await pending;
+  assert.equal(f.send.disabled, true, "the old send button is left as it was");
+  assert.equal(f.input.value, "Claude send", "and the field (a new view's, by its id) keeps its text");
+});
+test("a confirm the host answers after the unmount grants and sends nothing", async () => {
+  let answer;
+  const f = grantFixture({ answers: [new Promise(resolve => { answer = resolve; })], sends: [sent], grants: [{ ok: true }] });
+  f.store.dialog.destroy = () => {};
+  f.store.attempt();
+  const went = [];
+  f.store.askGrant(() => went.push("answered"));
+  f.store.destroy();
+  answer(""); await settle();
+  assert.deepEqual([f.payloads, f.posted, went], [[], [], []], "no send, no grant");
+  f.store.attempt(); f.store.askGrant(() => went.push("again")); await settle();
+  assert.equal(f.asks.length, 2, "and the ended box asks the host nothing more");
+});

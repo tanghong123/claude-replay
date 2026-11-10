@@ -2441,8 +2441,10 @@ fn the_session_view_in_a_host_without_write_controls_mounts_and_offers_no_writes
 /// The session view's unmount (#s429 stage 7): mounted in the test host and taken away, it leaves
 /// the page's window and document with exactly the listeners they had before it (as the browser
 /// lists them), the host's element empty with its own attributes, nothing of its own in the page's
-/// layer, no property measured on the page's root, and it asks the monitor nothing more (its record
-/// polls stop). A key or a press on the page then reaches nothing of it, and nothing throws. Mounted
+/// layer, the host's own values put back where the view writes too (a property on the page's root,
+/// the host box's transform), no global of its engine left on the window, and it asks the monitor
+/// nothing more (its `/pull` polls stop). Every member of its handle then does nothing, and a key or
+/// a press on the page reaches nothing of it; nothing throws. Mounted
 /// again in the same element it is whole once, not twice: the same listeners as the first mount, one
 /// turn strip, one copy menu, one task card, and one press of `w` toggles wrapping once. The page
 /// around it (the root's and the body's attributes and the root's style, what the body and the head
@@ -2466,8 +2468,11 @@ fn the_session_view_in_a_host_unmounts_and_mounts_again() {
     monitor.pair(&tab);
     // The page around the view, whatever the view might have touched: the root's and the body's
     // attributes, the root's inline style, what the body and the head hold, and the host's box.
-    let page = "(function(){ var attrs = function (e) { return [].map.call(e.attributes, function (a) { return a.name + '=' + a.value; }).sort(); }; return { html: attrs(document.documentElement), body: attrs(document.body), rootStyle: document.documentElement.style.cssText, bodyKids: document.body.children.length, headKids: document.head.children.length, pane: document.getElementById('hostPane').getAttribute('style'), errors: window.__host.errors }; })()";
+    let page = "(function(){ var attrs = function (e) { return [].map.call(e.attributes, function (a) { return a.name + '=' + a.value; }).sort(); }; return { html: attrs(document.documentElement), body: attrs(document.body), rootStyle: document.documentElement.style.cssText, bodyKids: document.body.children.length, headKids: document.head.children.length, pane: document.getElementById('hostPane').getAttribute('style'), globals: ['__viewportHistory', '__viewportViolations'].filter(function (k) { return k in window; }), errors: window.__host.errors }; })()";
     harness::open_host_page(&tab, &monitor, &format!("session={sid}&mount=0"));
+    // The host's own values where the view writes too: the view must put them back, not clear them.
+    let host_styles = "document.documentElement.style.setProperty('--preview', '510px'); document.getElementById('hostPane').style.transform = 'translateX(0px)'; 'ok'";
+    harness::eval(&tab, host_styles);
     let before = harness::page_listeners(&tab);
     let page_before = harness::probe(&tab, page);
     let drawn = |tab: &headless_chrome::Tab| {
@@ -2486,12 +2491,16 @@ fn the_session_view_in_a_host_unmounts_and_mounts_again() {
     drawn(&tab);
     let first = harness::page_listeners(&tab);
     let first_shape = harness::probe(&tab, shape);
+    let mounted_globals = harness::eval(
+        &tab,
+        "['__viewportHistory', '__viewportViolations'].filter(function (k) { return k in window; }).join(',')",
+    );
     let first_w = harness::probe(&tab, &press_w);
     // Let a record poll or two go by, then take the view away.
     std::thread::sleep(std::time::Duration::from_millis(1500));
     let polled = harness::eval(
         &tab,
-        "window.__host.requests.filter(function (r) { return /\\/records/.test(r.url); }).length",
+        "window.__host.requests.filter(function (r) { return /\\/pull\\?/.test(r.url); }).length",
     );
     harness::eval(
         &tab,
@@ -2500,6 +2509,11 @@ fn the_session_view_in_a_host_unmounts_and_mounts_again() {
     let after = harness::page_listeners(&tab);
     let after_shape = harness::probe(&tab, shape);
     let page_after = harness::probe(&tab, page);
+    // Every member of the handle, after the unmount: nothing done, nothing thrown, nothing answered.
+    let members = harness::probe(
+        &tab,
+        &format!("(function(){{ var v = window.__view, thrown = []; [function () {{ return v.open({sid:?}); }}, function () {{ return v.select({sid:?}); }}, function () {{ return v.indexChanged(); }}, function () {{ return v.writeChanged(); }}, function () {{ return v.resized(); }}, function () {{ return v.close('gone', 'gone'); }}, function () {{ return v.keys.wrap(); }}, function () {{ return v.persist(); }}, function () {{ return v.session(); }}, function () {{ return v.controls; }}, function () {{ return v.unmount(); }}].forEach(function (f, i) {{ try {{ var r = f(); if (r !== undefined) thrown.push(i + ' answered ' + r); }} catch (e) {{ thrown.push(i + ': ' + e.message); }} }}); return {{ thrown: thrown, children: document.querySelector('.host-view').children.length }}; }})()"),
+    );
     let after_key = harness::probe(&tab, &format!("(function(){{ document.querySelector('.host-view').dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }})); document.body.dispatchEvent(new PointerEvent('pointerdown', {{ bubbles: true }})); return {{ w: {PRESS}('w'), escape: {PRESS}('Escape'), slash: {PRESS}('/') }}; }})()"));
     std::thread::sleep(std::time::Duration::from_millis(3000));
     let late = harness::probe(&tab, "({ requests: window.__host.requests.filter(function (r) { return r.at > window.__unmountedAt; }).map(function (r) { return r.url; }), errors: window.__host.errors })");
@@ -2545,8 +2559,18 @@ fn the_session_view_in_a_host_unmounts_and_mounts_again() {
     }
     drop(monitor);
     assert_eq!(
+        mounted_globals,
+        serde_json::json!("__viewportHistory,__viewportViolations"),
+        "the mounted view's engine puts its bug report on the window"
+    );
+    assert_eq!(
         page_after, page_before,
-        "the page around the view is as it was before the mount"
+        "the page around the view is as it was before the mount: the host's own --preview and transform put back, the engine's globals gone"
+    );
+    assert_eq!(
+        members,
+        serde_json::json!({ "thrown": [], "children": 0 }),
+        "after the unmount every member of the handle does nothing and answers nothing"
     );
     assert_eq!(
         same_task,
@@ -2566,7 +2590,7 @@ fn the_session_view_in_a_host_unmounts_and_mounts_again() {
     );
     assert!(
         polled.as_u64().unwrap_or(0) > 0,
-        "the mounted view polls its records: {polled}"
+        "the mounted view polls the monitor (`/pull`): {polled}"
     );
     assert_eq!(
         (
@@ -2594,8 +2618,8 @@ fn the_session_view_in_a_host_unmounts_and_mounts_again() {
     );
     assert_eq!(
         after_shape,
-        serde_json::json!({ "strips": 0, "menus": 0, "cards": 0, "scrims": 0, "children": 0, "attributes": ["class=host-view"], "preview": "", "errors": [] }),
-        "and nothing of the view is left: the element as the host gave it, no layer of its own, no property on the root"
+        serde_json::json!({ "strips": 0, "menus": 0, "cards": 0, "scrims": 0, "children": 0, "attributes": ["class=host-view"], "preview": "510px", "errors": [] }),
+        "and nothing of the view is left: the element as the host gave it, no layer of its own, the root's property the host's"
     );
     assert_eq!(
         after_key,
@@ -15740,6 +15764,112 @@ fn a_herdr_session_takes_images_from_the_compose_box() {
         "a desktop send with both images to empty the strip and keep the box open",
         Duration::from_secs(5),
         "JSON.stringify(window.__sent).slice(0, 120)",
+    );
+}
+
+/// The app's own confirm layer grants a live pane, passcode and all (#s429 stage 7: the view asks
+/// through its `write` option, and the app answers with its confirm layer). A send to a herdr pane
+/// with no grant asks first; the monitor wants a passcode, so the app draws its passcode field in the
+/// layer (styled by the app's stylesheet), reads what the reader typed and sends it with the grant; a
+/// refused passcode is asked again in the same field; the right one grants, and the text is sent.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_grants_a_live_pane_through_its_own_confirm_layer_and_passcode_field() {
+    let _serial = serial();
+    let base = harness::base("app-confirm-passcode");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        PHONE_SID,
+        &harness::long_session(4, harness::Shape::default()),
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3108, &base, Some(&stores), true);
+    let (_b, tab) = desktop_tab(&m);
+    // The session in a herdr pane with no grant yet; the monitor's grant answers stubbed in the page:
+    // a passcode wanted, then refused, then granted. Every grant's body (its passcode) is kept.
+    let stub = STUB_HERDR.replace("__SID__", PHONE_SID).replace("v.consented = true;", "v.consented = false;").replace(
+        "if (u.indexOf('/api/sessions') === 0)",
+        "if (u.indexOf('/api/consent') === 0) { window.__consents.push(String(init && init.body || '')); return Promise.resolve(new Response(JSON.stringify(window.__consentAnswers.shift() || { ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })); } if (u.indexOf('/api/sessions') === 0)",
+    );
+    assert!(
+        stub.contains("/api/consent") && stub.contains("v.consented = false;"),
+        "the stub was rewritten"
+    );
+    harness::eval(&tab, "window.__consents = []; window.__consentAnswers = [{ code: 'passcode-required' }, { code: 'bad-passcode' }, { ok: true }]; 'ok'");
+    harness::eval(&tab, &stub);
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "window.__herdrRow === true && document.getElementById('composeFab').classList.contains('show')",
+        "the session in herdr pane w1:p2, with write mode on",
+        Duration::from_secs(15),
+        "String(window.__herdrRow) + ' ' + document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "document.getElementById('composeFab').click(); (function(){ var i = document.getElementById('composeInput'); i.value = 'hello pane'; i.dispatchEvent(new Event('input', { bubbles: true })); })(); document.getElementById('sendBtn').click(); 'ok'");
+    let layer = "(function(){ var l = document.getElementById('confirmLayer'), f = l.querySelector('.passcode-input'); return { open: l.classList.contains('production-open'), title: l.querySelector('h3').textContent, text: document.getElementById('confirmText').textContent, field: !!f, focused: !!f && document.activeElement === f, height: f ? getComputedStyle(f).height : null, beforeActions: !!f && f.nextElementSibling === l.querySelector('.dialog-actions'), consents: window.__consents, sent: window.__sent.length }; })()";
+    let wait_open = |what: &str, text: &str| {
+        harness::until(
+            &tab,
+            &format!("document.getElementById('confirmLayer').classList.contains('production-open') && document.getElementById('confirmText').textContent.indexOf({text:?}) >= 0"),
+            what,
+            Duration::from_secs(10),
+            "document.getElementById('confirmText').textContent",
+        );
+        harness::probe(&tab, layer)
+    };
+    let grant = wait_open("the grant asked first", "herdr pane w1:p2");
+    harness::eval(&tab, "document.getElementById('confirmSend').click(); 'ok'");
+    let wanted = wait_open("the passcode asked for", "requires a passcode");
+    harness::eval(&tab, "(function(){ var f = document.querySelector('#confirmLayer .passcode-input'); f.value = 'wrong'; document.getElementById('confirmSend').click(); return 'ok'; })()");
+    let refused = wait_open("a refused passcode asked again", "Passcode incorrect");
+    harness::eval(&tab, "(function(){ var f = document.querySelector('#confirmLayer .passcode-input'); f.value = '1234'; document.getElementById('confirmSend').click(); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "window.__sent.length === 1",
+        "the text sent once the grant goes through",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__consents) + ' ' + window.__sent.length",
+    );
+    let done = harness::probe(&tab, &format!("(function(){{ var v = {layer}; v.prompt = window.__sent[0].body; v.fields = document.querySelectorAll('.passcode-input').length; return v; }})()"));
+    drop(m);
+    assert_eq!(
+        (grant["open"].clone(), grant["title"].clone(), grant["field"].clone(), grant["consents"].clone()),
+        (serde_json::json!(true), serde_json::json!("Allow typing into this pane?"), serde_json::json!(false), serde_json::json!([])),
+        "the send asks the app's confirm layer for the grant first, with no passcode field: {grant}"
+    );
+    assert_eq!(
+        (wanted["field"].clone(), wanted["focused"].clone(), wanted["height"].clone(), wanted["beforeActions"].clone(), wanted["consents"].clone()),
+        (serde_json::json!(true), serde_json::json!(true), serde_json::json!("38px"), serde_json::json!(true), serde_json::json!([""])),
+        "the monitor wants a passcode: the app draws its field above the buttons, styled and focused: {wanted}"
+    );
+    assert_eq!(
+        (
+            refused["field"].clone(),
+            refused["consents"].clone(),
+            refused["sent"].clone()
+        ),
+        (
+            serde_json::json!(true),
+            serde_json::json!(["", "wrong"]),
+            serde_json::json!(0)
+        ),
+        "the passcode typed is what the grant carries, and a refused one is asked again: {refused}"
+    );
+    assert_eq!(
+        (
+            done["open"].clone(),
+            done["consents"].clone(),
+            done["fields"].clone()
+        ),
+        (
+            serde_json::json!(false),
+            serde_json::json!(["", "wrong", "1234"]),
+            serde_json::json!(1)
+        ),
+        "the right one grants, the layer closes, and one field was ever drawn: {done}"
+    );
+    assert!(
+        done["prompt"].as_str().unwrap_or("").contains("hello pane"),
+        "and the text goes to the pane: {done}"
     );
 }
 

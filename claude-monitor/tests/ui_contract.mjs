@@ -4267,7 +4267,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     say(data => heard.push(["gone", data]), "y");
     assert.deepEqual(heard.at(-1), ["later", "x"], "and nothing once the view is unmounted (stage 7)");
   }
-  assert.match(viewSource, /^queueMicrotask\(\(\) => \{\n  const held = mountingEvents;\n  mountingEvents = null;\n  for \(const \[handler, data\] of held\) say\(handler, data\);\n\}\);\n\nreturn \{$/m, "the held events go out a microtask after mountSessionView returns");
+  assert.match(viewSource, /^queueMicrotask\(\(\) => \{\n  const held = mountingEvents;\n  mountingEvents = null;\n  for \(const \[handler, data\] of held\) say\(handler, data\);\n\}\);\n\nreturn fenced\(\{$/m, "the held events go out a microtask after mountSessionView returns");
   // The turn is said from where the engine placed the reader, once per task, and as none until the
   // session's own units arrive.
   assert.match(viewSource, /afterTransaction: \(\) => \{ const p = viewport\.position; if \(p && p\.key\) queueTurn\(updateTurnBar\(p\.key\)\); wantWindow\(\); \}/, "after a transaction");
@@ -4308,10 +4308,21 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /  write: \{ on/, "the app passes write");
   assert.match(appSource, /controlState\.write = !controlState\.write;\n  paintWrite\(\);\n  viewHandle\.writeChanged\(\);/, "the app's switch moves write mode, paints its own controls and tells the view");
   // The view imports no store of the app's: state.js is the app's alone (stage 7).
-  for (const name of ["session-view.js", "control-store.js", "native-mode.js", "preview.js", "record-store.js", "viewport.js", "components.js", "dialog-card.js", "view-state.js"]) {
-    const text = readFileSync(new URL(`../../claude-monitor/src/codex-ui/${name}`, import.meta.url), "utf8");
-    assert.doesNotMatch(text, /from "\.\/state\.js"/, `${name} imports nothing from state.js`);
-  }
+  // The view's modules are what session-view.js reaches by its static imports, and native mode, which
+  // the view installs (the app imports it by name, at run time); none of them imports state.js.
+  const closure = new Set();
+  const walk = file => {
+    if (closure.has(file.href)) return;
+    closure.add(file.href);
+    for (const m of readFileSync(file, "utf8").matchAll(/^(?:import|export) [^;]*? from "(\.[^"]+)";/gm)) walk(new URL(m[1], file));
+  };
+  walk(new URL("../src/codex-ui/session-view.js", import.meta.url));
+  walk(new URL("../src/codex-ui/native-mode.js", import.meta.url));
+  const viewModules = [...closure].map(href => href.slice(href.indexOf("/codex-ui/") + "/codex-ui/".length));
+  for (const name of ["control-store.js", "preview.js", "record-store.js", "viewport.js", "components.js", "dialog-card.js", "view-state.js", "view-root.js", "shared/virtual-window.js"]) assert.ok(viewModules.includes(name), `the view's import closure holds ${name}`);
+  assert.ok(!viewModules.includes("app.js"), "and not the app");
+  for (const href of closure) assert.doesNotMatch(readFileSync(new URL(href), "utf8"), /from "\.\.?\/state\.js"/, `${href.slice(href.indexOf("/codex-ui/") + 10)} imports nothing from state.js`);
+  assert.ok(!viewModules.includes("state.js"), "the view's modules reach state.js by no path");
   // The confirm, run: the last ask goes on with the passcode given, an earlier or cancelled one does
   // not, and with no write option nothing is asked.
   {
@@ -4336,7 +4347,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     await new Promise(resolve => setTimeout(resolve, 0));
     assert.deepEqual(went, [["second", "1234"]], "and with no write option nothing goes on");
   }
-  const at = viewSource.lastIndexOf("\nreturn {\n");
+  const at = viewSource.lastIndexOf("\nreturn fenced({\n");
   assert.ok(at > 0, "the view returns its handle as an object literal at the end of mountSessionView");
   const handle = viewSource.slice(at);
   const members = new Set([...handle.matchAll(/^  (?:get |async )?([A-Za-z]+)(?=[(:])/gm)].map(m => m[1]));
@@ -4452,7 +4463,25 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual((await run(() => Promise.reject(new Error("no frame here")))).errors, [["Cannot show this page", "no frame here"]], "a refusal is the pane's own error");
   assert.deepEqual((await run(() => { throw new Error("thrown"); })).errors, [["Cannot show this page", "thrown"]], "and so is a throw");
   for (const empty of ["", null, 42]) assert.deepEqual((await run(() => empty)).errors.map(e => e[0]), ["Cannot show this page"], `and an answer that is not an address (${JSON.stringify(empty)})`);
+  {
+    // One address per tab while its text is the same; a changed text, or a refusal, asks again.
+    const frame = { isConnected: true, src: "", srcdoc: "" }, body = { innerHTML: "", querySelector: () => frame };
+    const Klass = new Function("byId", "sandboxDocument", "refusal", `return class { ${showPage[0]} };`)(() => body, html => `<meta policy>${html}`, (title, message) => Object.assign(new Error(message), { title }));
+    let asked = 0, refuse = false;
+    const pane = Object.assign(new Klass(), { renderGeneration: 1, actions: { frame: () => { asked++; return refuse ? Promise.reject(new Error("no")) : `app-frame://page/${asked}`; } }, showError: () => {} });
+    const tab = { name: "page.html" };
+    pane.showPage(tab, "<p>one</p>"); await new Promise(resolve => setTimeout(resolve, 0));
+    pane.showPage(tab, "<p>one</p>"); await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual([asked, frame.src], [1, "app-frame://page/1"], "the tab drawn again keeps its address");
+    pane.showPage(tab, "<p>two</p>"); await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual([asked, frame.src], [2, "app-frame://page/2"], "its text changed: a new one");
+    const other = { name: "page.html" };
+    refuse = true; pane.showPage(other, "<p>one</p>"); await new Promise(resolve => setTimeout(resolve, 0));
+    refuse = false; pane.showPage(other, "<p>one</p>"); await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual([asked, frame.src], [4, "app-frame://page/4"], "another tab asks for its own, and a refusal is asked again");
+  }
   const doc = /\/\*\* Draw the session view in `element`[\s\S]*?\*\/\nexport function mountSessionView/.exec(viewSource)[0];
+  assert.match(doc, /owns their lifetime/, "the doc comment says the native app owns the addresses");
   assert.match(doc, /^ \*  - `frame\(html\)`: the native app's own arrangement \(#s436\), not offered to other hosts, and the\n \*    kit's guide does not list it\./m, "the doc comment says it is the native app's alone");
   assert.match(viewSource, /if \(options\.frame !== undefined && typeof options\.frame !== "function"\) throw new Error\(/, "a frame that is not a function is refused");
   assert.match(viewSource, /detach: shows\("detach"\), frame: options\.frame, /, "the view hands it to the pane");
@@ -4497,5 +4526,40 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(vp, /\} finally \{ if \(own\) globalThis\.addEventListener = add; else delete globalThis\.addEventListener; \}/, "which it watched the engine bind as it was built, and no longer");
   const pv = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
   assert.match(pv, /  destroy\(\) \{\n    this\.reviewSheet\?\.close\?\.\(\);\n    this\.teardownMarkdown\(\);\n    this\.imageView\?\.destroy\(\);/, "the pane closes its review sheet, mdrev's viewer and its image viewer");
+  // After the unmount the handle does nothing: run the fence over a handle like the view's.
+  {
+    const fencedFn = /^function fenced\(handle\) \{\n[\s\S]*?\n\}\n/m.exec(body);
+    assert.ok(fencedFn, "the handle is fenced in one place");
+    assert.match(body, /^return fenced\(\{$/m, "and the view returns it fenced");
+    let unmountedFlag = false;
+    const calls = [];
+    const make = new Function("isUnmounted", `const fenced = (() => { let unmounted; ${fencedFn[0].replace("unmounted ?", "isUnmounted() ?")} return fenced; })(); return fenced;`);
+    const fence = make(() => unmountedFlag);
+    const handle = fence({ open: id => { calls.push(["open", id]); return "opened"; }, session: () => "s1", keys: { wrap: () => calls.push(["wrap"]), label: "x" }, get controls() { return "the controls"; }, unmount() { unmountedFlag = true; calls.push(["unmount"]); } });
+    assert.equal(handle.open("a"), "opened"); assert.equal(handle.controls, "the controls"); handle.keys.wrap();
+    handle.unmount(); handle.unmount();
+    assert.deepEqual([handle.open("b"), handle.session(), handle.controls, handle.keys.wrap(), handle.keys.label], [undefined, undefined, undefined, undefined, "x"], "once unmounted every member does nothing and answers nothing");
+    assert.deepEqual(calls, [["open", "a"], ["wrap"], ["unmount"], ["unmount"]], "the unmount itself stays callable (and is idempotent inside)");
+  }
+  // Work started before the unmount does nothing after it: the compose box, its dialog card, a
+  // download, the server's searches.
+  const store = readFileSync(new URL("../../claude-monitor/src/codex-ui/control-store.js", import.meta.url), "utf8");
+  for (const fenceAt of [/const result = await runSend\([^\n]*\n      if \(this\.ended\) return;/, /if \(!this\.ended && this\.asked === ask && typeof given === "string"\) then\(given\);/, /consentQuery\(this\.compose\.row\.id\), passcode \|\| ""\)\); \} catch \(_\) \{[^\n]*\n    if \(this\.ended\) return;/, /      if \(!this\.ended\) \{\n        if \(ownsComposer\(\)\) byId\("sendBtn"\)\.disabled = false;/, /  paint\(\) \{\n    if \(this\.ended\) return;/]) {
+    assert.match(store, fenceAt, `the compose box is fenced: ${fenceAt}`);
+  }
+  assert.match(unmount[0], /ordinaryControls\.destroy\(\);\n    attachmentViewer\.destroy\(\);/, "the unmount ends the compose box and the downloads");
+  const card = readFileSync(new URL("../../claude-monitor/src/codex-ui/dialog-card.js", import.meta.url), "utf8");
+  assert.match(card, /if \(this\.ended \|\| load !== this\.loads \|\| this\.row !== row\) return;/, "the dialog card's read is fenced");
+  assert.match(card, /setTimeout\(\(\) => \{ if \(this\.ended\) return;/, "and its read again after an answer");
+  assert.match(body, /const current = \(\) => !unmounted && \(q\.lc \? remoteSearch : remoteFilter\) === mine;/, "a server search's answer settles in no unmounted view");
+  assert.match(body, /if \(unmounted \|\| taskFind !== mine \|\| recordState\.session !== session\) return;/, "nor does a task's");
+  // The host's element and styles: an element holding the host's nodes is refused, and what the host
+  // had set where the view writes is put back.
+  assert.match(body, /if \(element\.firstElementChild\) throw new Error\(/, "a host's element with children is refused");
+  assert.match(unmount[0], /for \(const \[name, value, priority\] of values\) \{ if \(value\) node\.style\.setProperty\(name, value, priority\); else node\.style\.removeProperty\(name\); \}/, "the host's values are put back, and the view's own removed");
+  assert.match(/^  destroy\(\) \{\n[\s\S]*?\n  \}\n/m.exec(vp)[0], /if \(window\.__viewportViolations === this\.violations\) delete window\.__viewportViolations;/, "the engine's globals go as the viewport is destroyed (and only then), if still this engine's");
+  assert.doesNotMatch(vp.slice(0, vp.indexOf("  destroy() {")), /delete window\.__viewport/, "the engine's globals are never taken away while the viewport is built");
+  // The app remembers the view's choices whenever it remembers its own, as its one persist did.
+  assert.match(appSource, /^function persist\(\) \{ persistIndex\(\); viewHandle\?\.persist\(\); \}$/m, "the app's persist asks the view to remember its own");
   console.log("#s429 unmount cases passed");
 }
