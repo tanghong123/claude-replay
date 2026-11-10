@@ -58,7 +58,13 @@ returns a handle:
 The session index store (`session-index-store.js`, which reads and merges into `indexState`) moves
 into the list. It reads the session list route through the backend handle, as the view reads its
 routes, so a host's list fills itself. Native mode's workspace stops importing `state.js`: it reads
-the selected row and adds a row through the list's handle. The folds, the filter, the
+the selected row and adds a row through the list's handle.
+
+**The keys are written at the same moments as now.** The app's `persist()` writes every key on
+every app action, so a reader who only folds a group or changes the filter also stores the view's
+outline choice; #s429's stage 7 kept that by having the app write the view's choices with its own.
+The list's store keeps those moments: an action that writes today still writes every key it wrote,
+the list's and the view's alike. The folds, the filter, the
 arrangement and the read marks go with it, each under its key as today, written by the list's own
 store; the app's `persist` stops writing them. The app asks the list's handle for what the view's
 options need (`selectedId`, `sessionRow`, `sessionWorkers`) and for the session search's rows.
@@ -96,12 +102,22 @@ it (`controls()`); the app moves that strip into its head's row, so the head loo
 A host that does not place it gets the strip at the top of the list. `the_app_shell_resizes_the_session_list`,
 which hit-tests every control of that row at the sidebar's minimum, holds the app unchanged.
 
-### Keys and styles, as the view's
+### Keys, theme and styles, as the view's
 
 The list answers its keys only while the reader works in it (the view's `keyboard` option, #s436);
-the app keeps `sidebar-toggle` and the session search. The list's rules hang on its own element,
-`#sessionList`, the way the view's hang on `#sessionView`, and a class the collaboration app styles
-in its own page is renamed with a prefix, as the view's were (#s438).
+the app keeps `sidebar-toggle` and the session search. It takes the same `theme` option as the
+view, light or dark, so a host sets both from one value and the two never disagree. The list's
+rules hang on its own element, `#sessionList`, the way the view's hang on `#sessionView`, and a
+class the collaboration app styles in its own page is renamed with a prefix, as the view's were
+(#s438).
+
+### Lookups stay inside the list, and a late call finds nothing
+
+`view-root.js` looks ids up in the document, so after an unmount and a second mount in the same
+element, the old view's late callbacks found the new view's nodes; #s429's stage 7 fences that
+(work only while mounted, a handle that does nothing after unmount). Two components with fixed
+ids on one page make it likelier. So the list looks its elements up inside its own element from
+stage 1, and fences its timers, listeners and handle the same way.
 
 ## The order
 
@@ -119,8 +135,15 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
    session and hears `onOpen`. Lands alone.
 3. **Markup and styles apart.** The list builds its markup from a template of its own, and its
    rules hang on its element in a stylesheet of its own, generated as the view's is. Lands as one.
-4. **Options and events as the app uses them.** `keyboard`, `show` (the filter, the arrangements,
-   hiding), `onOpen`, `compact`, `controls()` and `unmount`; unknown option names are refused, as
-   the view's are, and a contract check holds the names. Lands alone.
+4. **Options and events as the app uses them.** `keyboard`, `theme`, `show` (the filter, the
+   arrangements, hiding), `onOpen`, `compact`, `controls()` and `unmount`; unknown option names are
+   refused, as the view's are, and a contract check holds the names. The unmount case follows the
+   view's (stage 7): the page's listeners the same before and after, no late work, the handle
+   fenced, the host's values put back, and a second mount that works. Lands alone.
+
+To check once stage 7 is on main: `session-index-store.js` imports `indexState`; the rail's write
+button is bound in `native-mode.js` through `page` and stays with the app and native mode, though
+`take()` touches that module; and the contract blocks this step moves sit beside stage 7's new ones
+(its `write` and `frame` options).
 
 Left for step 6: compact rows when the pane is narrow, and the rail chosen by the pane's width.
