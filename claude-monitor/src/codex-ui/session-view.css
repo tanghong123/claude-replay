@@ -381,7 +381,7 @@
 :where(#sessionView) .artifact-empty p{font-size:12px;margin:0 auto;max-width:280px}
 :where(#sessionView) .artifact-toolbar{min-height:62px;border-bottom:1px solid var(--line);padding:9px 14px 9px 17px;display:flex;align-items:center;gap:12px;position:relative}
 :where(#sessionView) .artifact-path{min-width:0;flex:1}
-:where(#sessionView) .artifact-path .crumbs{font-size:10.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:where(#sessionView) .artifact-path .sv-crumbs{font-size:10.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 :where(#sessionView) .artifact-path strong{display:block;margin-top:2px;font-size:12.5px;font-weight:590;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 :where(#sessionView) .view-switch{height:29px;padding:2px;display:flex;align-items:center;border-radius:9px;background:#f0f0ee;box-shadow:inset 0 0 0 1px rgba(25,25,23,.045);flex:none}
 :where(#sessionView) .view-switch button{height:25px;min-width:47px;padding:0 10px;border-radius:7px;background:transparent;color:var(--faint);font-size:10.5px;cursor:pointer;transition:.15s}
