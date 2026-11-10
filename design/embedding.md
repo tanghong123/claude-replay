@@ -140,8 +140,11 @@ allows no scripts under it, so the native app frames the page from a source of i
 an arrangement between the components and the native app, which are built together; it is not
 offered to hosts.
 
-Styles are kept apart both ways: the host's CSS cannot reach into a component, and a component's
-CSS cannot reach the host page.
+Styles are kept apart by terms on both sides, with no shadow root (the owner, #s438). A component's
+CSS cannot reach the host page: every rule of ours hangs on the component's own element. The host's
+CSS stays out of the component on the host's side of the terms: it keeps blanket rules (`button`,
+`*`, `body`) out of its page, and the component's classes that the host styles are named `sv-<name>`,
+so a host's class rule cannot style ours by name (`design/session-view-component.md`, stage 5).
 
 ## Detached views
 
