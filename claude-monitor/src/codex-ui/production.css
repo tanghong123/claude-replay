@@ -1415,7 +1415,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      dims both, and a tap on it closes the card. */
   .task-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:59;background:rgba(14,19,31,.42)}
 
-  #sessionView .session-main,#sessionView .workspace.navigator-off .session-main{grid-template-columns:0 minmax(0,1fr)}
+  #sessionView .sv-session-main,#sessionView .workspace.navigator-off .sv-session-main{grid-template-columns:0 minmax(0,1fr)}
   #sessionView .session-navigator{display:none!important}
   #sessionView .outline-footer{position:fixed;left:0;top:0;z-index:30;width:0;height:0;min-height:0;padding:0;margin:0;overflow:visible}
   #sessionView .outline-footer>:not(.info-popover){display:none!important}
@@ -1426,8 +1426,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 
   /* #s55, the owner: upright the transcript keeps a margin on either side; the Reading menu's Wide
      transcript gives it the whole width (a 13px gutter, #310's edge to edge). */
-  #sessionView .session-main .transcript-inner{width:calc(100% - 48px);padding-top:16px}
-  #sessionView.wide .session-main .transcript-inner{width:calc(100% - 26px)}
+  #sessionView .sv-session-main .transcript-inner{width:calc(100% - 48px);padding-top:16px}
+  #sessionView.wide .sv-session-main .transcript-inner{width:calc(100% - 26px)}
   #sessionView .turn-stickybar{margin:0 8px}
   #sessionView .turn.user{flex-wrap:wrap}
   #sessionView .turn.user .user-prompt{max-width:100%}
@@ -1494,10 +1494,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   /* #s37 (design/phone-landscape.md §3.3): held sideways the transcript is a reading column — about
      75 characters of prose a line (measured: 580px still set 88), where the full width ran to ~119 —
      and the spare width is margin. */
-  #sessionView .session-main .transcript-inner{width:min(500px,calc(100% - 26px))}
+  #sessionView .sv-session-main .transcript-inner{width:min(500px,calc(100% - 26px))}
   /* …and the Reading menu's Wide transcript widens it to the whole width, as on a desktop (for
      source code, a wide table), and upright too since #s55. */
-  #sessionView.wide .session-main .transcript-inner{width:calc(100% - 26px)}
+  #sessionView.wide .sv-session-main .transcript-inner{width:calc(100% - 26px)}
   /* #s41: the jump to the latest sits at the FOOT, on the dock's row, centred in the session (the
      owner: "should move to the bottom") — sideways the dock leaves the middle of that row free (its
      pill at one end, search at the other), where upright the pill reaches the middle. */
@@ -1573,7 +1573,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionView .renderer-open-all{display:inline-flex;align-items:center;min-height:32px;padding:0 12px;border-radius:16px}
   #sessionView .image-run-strip{gap:8px}
   .toast{bottom:calc(max(calc(64px + env(safe-area-inset-bottom,0px)),calc(var(--phone-kb,0px) + 64px)) + 10px)}
-  #sessionView .session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 16px)}
+  #sessionView .sv-session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 16px)}
   /* #s39 (design/phone-landscape.md §3.5c, approved by the owner): the compose box is the dock's third
      mode. A ✎ circle in the dock replaces the floating compose button; open, the box takes the dock's
      place — ✕ at the left, the field (growing with its text, ↑ inside it) beside it, the target and
@@ -1589,7 +1589,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   /* #s298: the session waits on an answer the reply box can give. */
   #sessionView .dock-compose.asks .dock-compose-dot{display:block;position:absolute;top:11px;right:12px;width:9px;height:9px;border-radius:50%;background:var(--amber);box-shadow:0 0 0 2px var(--bg)}
   #sessionView.composing .phone-dock,#sessionView.composing .jump-to-bottom{display:none!important}
-  #sessionView.composing .session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 110px)}
+  #sessionView.composing .sv-session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 110px)}
   #sessionView .workspace .composer.production-show{position:fixed;z-index:14;left:calc(12px + env(safe-area-inset-left,0px));right:calc(12px + env(safe-area-inset-right,0px));top:auto;bottom:max(calc(8px + env(safe-area-inset-bottom,0px)),calc(var(--phone-kb,0px) + 8px));width:auto;max-width:none;min-height:0;transform:none;display:grid;grid-template-columns:48px minmax(0,1fr);grid-template-areas:"note note" "close field";align-items:end;column-gap:8px;row-gap:6px;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
   #sessionView .composer.production-show>.composer-head,#sessionView .composer.production-show>.compose-foot{display:contents}
   #sessionView .composer.production-show>.composer-head>span,#sessionView .composer.production-show #composerTitle,#sessionView .composer.production-show #composeTarget,#sessionView .composer.production-show .risk{display:none}
@@ -1796,7 +1796,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    above would otherwise keep a hidden veil on screen over a session that has long since loaded. */
 .session-loading[hidden],.session-loading-bar[hidden],.phone-pane-count[hidden]{display:none}
 .session-loading-bar>i{display:block;width:0;height:100%;background:var(--primary);transition:width .15s linear}
-.session-main:has(>.session-loading:not([hidden])) .monitor-empty{visibility:hidden}
+.sv-session-main:has(>.session-loading:not([hidden])) .monitor-empty{visibility:hidden}
 @keyframes session-loading-in{from{opacity:0}to{opacity:1}}
 @keyframes session-loading-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.session-loading{animation:none}.session-loading-spinner{animation:none}}

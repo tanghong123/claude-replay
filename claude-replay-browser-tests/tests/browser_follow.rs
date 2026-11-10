@@ -2527,7 +2527,7 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
         "…and nothing is remembered for it: {retired}"
     );
 
-    let widths = "(function(){ var t = document.querySelector('.transcript').getBoundingClientRect(), m = document.querySelector('.session-main').getBoundingClientRect(), n = document.querySelector('.session-navigator'); var nr = n.getBoundingClientRect(); return { transcript: Math.round(t.width), main: Math.round(m.width), navigator: getComputedStyle(n).display === 'none' ? 0 : Math.round(nr.width) }; })()";
+    let widths = "(function(){ var t = document.querySelector('.transcript').getBoundingClientRect(), m = document.querySelector('.sv-session-main').getBoundingClientRect(), n = document.querySelector('.session-navigator'); var nr = n.getBoundingClientRect(); return { transcript: Math.round(t.width), main: Math.round(m.width), navigator: getComputedStyle(n).display === 'none' ? 0 : Math.round(nr.width) }; })()";
     let open = harness::probe(&tab, widths);
     assert!(
         open["navigator"].as_f64().unwrap_or(0.0) > 150.0,
@@ -10189,7 +10189,7 @@ fn a_phone_jumps_to_the_latest_from_the_bottom_centre() {
     );
     let corner = harness::eval(
         &desk,
-        "(function(){ var r = document.querySelector('.jump-to-bottom').getBoundingClientRect(), m = document.querySelector('.session-main').getBoundingClientRect(); return JSON.stringify({ fromRight: Math.round(m.right - r.right), w: Math.round(r.width) }); })()",
+        "(function(){ var r = document.querySelector('.jump-to-bottom').getBoundingClientRect(), m = document.querySelector('.sv-session-main').getBoundingClientRect(); return JSON.stringify({ fromRight: Math.round(m.right - r.right), w: Math.round(r.width) }); })()",
     );
     assert_eq!(
         corner.as_str(),
@@ -12730,7 +12730,7 @@ fn safe_area_facts(
             if (r.left < L - 1 || r.top < T - 1 || r.right > W - R + 1 || r.bottom > H - B + 1)
                 bad.push(String(e.id || e.getAttribute('aria-label') || e.className || e.tagName).slice(0, 40) + ' @' + [r.left, r.top, r.right, r.bottom].map(Math.round).join(','));
         }});
-        var inner = document.querySelector('#app .session-main .transcript-inner').getBoundingClientRect();
+        var inner = document.querySelector('#app .sv-session-main .transcript-inner').getBoundingClientRect();
         var tree = document.querySelector('#app>.sidebar .tree');
         var t = tree && getComputedStyle(tree).display !== 'none' ? tree.getBoundingClientRect() : null;
         return JSON.stringify({{ bad: bad, inner: [Math.round(inner.left), Math.round(W - inner.right)], tree: t && t.right > 0 ? Math.round(t.left) : null, insets: [T, R, B, L], size: [W, H] }});
@@ -12935,7 +12935,7 @@ fn a_wide_phone_held_sideways_shows_the_session_list_beside_the_session() {
         Duration::from_secs(10),
         DRAWER_FACTS,
     );
-    let centred = harness::eval(&tab, "(function(){ var t = document.querySelector('#app .transcript').getBoundingClientRect(), i = document.querySelector('#app .session-main .transcript-inner').getBoundingClientRect(); return JSON.stringify([Math.round(i.width), Math.round(i.left - t.left), Math.round(t.right - i.right)]); })()");
+    let centred = harness::eval(&tab, "(function(){ var t = document.querySelector('#app .transcript').getBoundingClientRect(), i = document.querySelector('#app .sv-session-main .transcript-inner').getBoundingClientRect(); return JSON.stringify([Math.round(i.width), Math.round(i.left - t.left), Math.round(t.right - i.right)]); })()");
     let centred: Vec<i64> =
         serde_json::from_str(centred.as_str().unwrap_or("[]")).unwrap_or_default();
     assert!(
@@ -13033,7 +13033,7 @@ fn a_narrow_phone_held_sideways_reads_at_a_measure() {
         (40..=78).contains(&chars),
         "about 70 characters a line, not ~119: {chars}"
     );
-    let centred = harness::eval(&tab, "(function(){ var t = document.querySelector('#app .transcript'), r = t.getBoundingClientRect(), cs = getComputedStyle(t), i = document.querySelector('#app .session-main .transcript-inner').getBoundingClientRect(); var left = r.left + parseFloat(cs.paddingLeft), right = r.right - parseFloat(cs.paddingRight); return JSON.stringify([Math.round(i.width), Math.round(i.left - left), Math.round(right - i.right)]); })()");
+    let centred = harness::eval(&tab, "(function(){ var t = document.querySelector('#app .transcript'), r = t.getBoundingClientRect(), cs = getComputedStyle(t), i = document.querySelector('#app .sv-session-main .transcript-inner').getBoundingClientRect(); var left = r.left + parseFloat(cs.paddingLeft), right = r.right - parseFloat(cs.paddingRight); return JSON.stringify([Math.round(i.width), Math.round(i.left - left), Math.round(right - i.right)]); })()");
     let centred: Vec<i64> =
         serde_json::from_str(centred.as_str().unwrap_or("[]")).unwrap_or_default();
     assert!(
@@ -13051,7 +13051,7 @@ fn a_narrow_phone_held_sideways_reads_at_a_measure() {
         Duration::from_secs(5),
         "document.getElementById('readingOptions').className",
     );
-    let inner = "Math.round(document.querySelector('#app .session-main .transcript-inner').getBoundingClientRect().width)";
+    let inner = "Math.round(document.querySelector('#app .sv-session-main .transcript-inner').getBoundingClientRect().width)";
     phone_tap(&tab, "#readingOptions [data-reading-toggle=wide]");
     harness::until(
         &tab,
@@ -13491,7 +13491,7 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
 /// #s245: where the desktop's compose box sits against the session's column — the box, the
 /// transcript (the column it must keep inside), the outline beside it, the field and how much of its
 /// draft it shows, the last record drawn, and how far the transcript is from its end.
-const DESKTOP_COMPOSE_GEOMETRY: &str = "(function(){ var R = function (e) { if (!e) return null; var b = e.getBoundingClientRect(); return { l: Math.round(b.left), t: Math.round(b.top), r: Math.round(b.right), b: Math.round(b.bottom), h: Math.round(b.height) }; }; var c = document.getElementById('composer'), t = document.querySelector('.session-main>.transcript'), n = document.getElementById('sessionNavigator'), i = document.getElementById('composeInput'), w = document.querySelector('.transcript .virtual-window'), cs = getComputedStyle(i); var rows = w ? [...w.children].filter(function (e) { return e.getBoundingClientRect().height > 0; }) : []; return JSON.stringify({ w: innerWidth, h: innerHeight, shown: c.classList.contains('production-show'), box: R(c), col: R(t), nav: R(n), field: R(i), fieldH: i.clientHeight, fieldScroll: i.scrollHeight, lh: parseFloat(cs.lineHeight), last: R(rows[rows.length - 1]), gap: Math.round(t.scrollHeight - t.clientHeight - t.scrollTop), jump: R(document.getElementById('jumpToBottom')) }); })()";
+const DESKTOP_COMPOSE_GEOMETRY: &str = "(function(){ var R = function (e) { if (!e) return null; var b = e.getBoundingClientRect(); return { l: Math.round(b.left), t: Math.round(b.top), r: Math.round(b.right), b: Math.round(b.bottom), h: Math.round(b.height) }; }; var c = document.getElementById('composer'), t = document.querySelector('.sv-session-main>.transcript'), n = document.getElementById('sessionNavigator'), i = document.getElementById('composeInput'), w = document.querySelector('.transcript .virtual-window'), cs = getComputedStyle(i); var rows = w ? [...w.children].filter(function (e) { return e.getBoundingClientRect().height > 0; }) : []; return JSON.stringify({ w: innerWidth, h: innerHeight, shown: c.classList.contains('production-show'), box: R(c), col: R(t), nav: R(n), field: R(i), fieldH: i.clientHeight, fieldScroll: i.scrollHeight, lh: parseFloat(cs.lineHeight), last: R(rows[rows.length - 1]), gap: Math.round(t.scrollHeight - t.clientHeight - t.scrollTop), jump: R(document.getElementById('jumpToBottom')) }); })()";
 
 /// #s245 (Hong, 2026-10-25, a screenshot at about 2000px wide): the open compose box on a desktop
 /// spanned the outline column to the right edge and stood tall over the transcript's last lines.
@@ -13604,10 +13604,10 @@ fn a_desktop_compose_box_keeps_to_the_session_column_and_grows_with_its_draft() 
         harness::jump_to_end(&tab, harness::Surface::AppShell);
         harness::until(
             &tab,
-            "(function(){ var t = document.querySelector('.session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop <= 2; })()",
+            "(function(){ var t = document.querySelector('.sv-session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop <= 2; })()",
             "the reader to be at the end",
             Duration::from_secs(5),
-            "(function(){ var t = document.querySelector('.session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop; })()",
+            "(function(){ var t = document.querySelector('.sv-session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop; })()",
         );
         type_lines(0);
         let empty = geometry("the box to settle empty");
@@ -13669,7 +13669,7 @@ fn a_desktop_compose_box_keeps_to_the_session_column_and_grows_with_its_draft() 
             jump,
         );
         // And the box growing does not move them: only a reader following the end is kept at it.
-        let offset = "(function(){ var t = document.querySelector('.session-main>.transcript'); return JSON.stringify([Math.round(t.scrollTop), Math.round(t.scrollHeight - t.clientHeight - t.scrollTop)]); })()";
+        let offset = "(function(){ var t = document.querySelector('.sv-session-main>.transcript'); return JSON.stringify([Math.round(t.scrollTop), Math.round(t.scrollHeight - t.clientHeight - t.scrollTop)]); })()";
         let before = harness::eval(&tab, offset);
         type_lines(8);
         let grown = geometry("the box to grow under a reader who scrolled up");
@@ -13689,10 +13689,10 @@ fn a_desktop_compose_box_keeps_to_the_session_column_and_grows_with_its_draft() 
         harness::jump_to_end(&tab, harness::Surface::AppShell);
         harness::until(
             &tab,
-            "(function(){ var t = document.querySelector('.session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop <= 2; })()",
+            "(function(){ var t = document.querySelector('.sv-session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop <= 2; })()",
             "the reader to be back at the end",
             Duration::from_secs(5),
-            "(function(){ var t = document.querySelector('.session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop; })()",
+            "(function(){ var t = document.querySelector('.sv-session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop; })()",
         );
         // A long draft: the field stops at its cap and scrolls inside.
         type_lines(60);
@@ -13950,7 +13950,7 @@ fn a_desktop_search_step_never_leaves_a_match_under_the_compose_box() {
     // Its record's head then sits above the column: the landing alone (the head near the top)
     // would have left the match under the box, so only the reveal can have put it in sight.
     harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
-    let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); if (!m) return 'none'; var r = m.getBoundingClientRect(), rec = m.closest('[data-block-index]').getBoundingClientRect(); return JSON.stringify({ above: r.bottom <= c.top + 0.5 && r.top >= t.top - 0.5, revealed: rec.top < t.top - 0.5, mark: [Math.round(r.top), Math.round(r.bottom)], record: Math.round(rec.top), box: Math.round(c.top), col: [Math.round(t.top), Math.round(t.bottom)] }); })()";
+    let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(); if (!m) return 'none'; var r = m.getBoundingClientRect(), rec = m.closest('[data-block-index]').getBoundingClientRect(); return JSON.stringify({ above: r.bottom <= c.top + 0.5 && r.top >= t.top - 0.5, revealed: rec.top < t.top - 0.5, mark: [Math.round(r.top), Math.round(r.bottom)], record: Math.round(rec.top), box: Math.round(c.top), col: [Math.round(t.top), Math.round(t.bottom)] }); })()";
     harness::until(
         &tab,
         &format!("(function(){{ var g = {seen}; return g !== 'none' && JSON.parse(g).above && JSON.parse(g).revealed; }})()"),
@@ -14022,7 +14022,7 @@ fn a_desktop_search_first_step_lands_on_a_first_hit_under_the_compose_box() {
     );
     harness::pause("the query to settle", Duration::from_millis(400));
     harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
-    let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); if (!m) return 'none'; var r = m.getBoundingClientRect(); return JSON.stringify({ text: m.closest('[data-block-index]').textContent.match(/needle \\w+/)[0], above: r.bottom <= c.top + 0.5 && r.top >= t.top - 0.5, mark: Math.round(r.top), box: Math.round(c.top) }); })()";
+    let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(); if (!m) return 'none'; var r = m.getBoundingClientRect(); return JSON.stringify({ text: m.closest('[data-block-index]').textContent.match(/needle \\w+/)[0], above: r.bottom <= c.top + 0.5 && r.top >= t.top - 0.5, mark: Math.round(r.top), box: Math.round(c.top) }); })()";
     harness::until(
         &tab,
         &format!("(function(){{ var g = {seen}; if (g === 'none') return false; g = JSON.parse(g); return g.text === 'needle one' && g.above; }})()"),
@@ -14074,10 +14074,10 @@ fn a_search_step_after_an_unheard_move_enters_at_the_nearest_hit() {
     assert!(first >= 0, "the first step lands a hit");
     // Far from it, by script: no wheel, no key, nothing the engine hears as the reader.
     let to = if first < 5 { 0.7 } else { 0.25 };
-    harness::eval(&tab, &format!("(function(){{ var s = document.querySelector('.session-main>.transcript'); s.scrollTo({{ top: s.scrollHeight * {to}, behavior: 'instant' }}); return 'ok'; }})()"));
+    harness::eval(&tab, &format!("(function(){{ var s = document.querySelector('.sv-session-main>.transcript'); s.scrollTo({{ top: s.scrollHeight * {to}, behavior: 'instant' }}); return 'ok'; }})()"));
     harness::pause("the move to settle", Duration::from_millis(700));
     // The nearest hit: the first at or below the unit at the top, as the page reads the top.
-    let nearest = "(function(){ var t = document.querySelector('.session-main>.transcript'), line = t.getBoundingClientRect().top + (parseFloat(getComputedStyle(t).scrollPaddingTop) || 18) + 8; var kids = [...document.querySelector('.virtual-window').children], at = 0; kids.forEach(function (c, i) { if (c.getBoundingClientRect().top <= line) at = i; }); for (var i = at; i < kids.length; i++) { var m = kids[i].textContent.match(/answer (\\d+) holds the needle/); if (m) return Number(m[1]); } return -1; })()";
+    let nearest = "(function(){ var t = document.querySelector('.sv-session-main>.transcript'), line = t.getBoundingClientRect().top + (parseFloat(getComputedStyle(t).scrollPaddingTop) || 18) + 8; var kids = [...document.querySelector('.virtual-window').children], at = 0; kids.forEach(function (c, i) { if (c.getBoundingClientRect().top <= line) at = i; }); for (var i = at; i < kids.length; i++) { var m = kids[i].textContent.match(/answer (\\d+) holds the needle/); if (m) return Number(m[1]); } return -1; })()";
     let want = harness::eval(&tab, nearest).as_i64().unwrap_or(-1);
     assert!(
         want >= 0 && want != (first + 1) % 10 && want != first,
@@ -14142,7 +14142,7 @@ fn a_search_step_in_a_short_space_leaves_the_match_below_the_turn_bar() {
     // (at most 25) left it well behind the bar's 31. Walked down to, measured at each height, since
     // how much of the window the browser's frame takes differs between platforms; a 5px step moves
     // the space about 3px, inside the band.
-    let space = "(function(){ var c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); return Math.round(c.top - t.top); })()";
+    let space = "(function(){ var c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(); return Math.round(c.top - t.top); })()";
     let mut seen = Vec::new();
     for h in (300..=600).rev().step_by(5) {
         harness::resize(&tab, 1280.0, h as f64);
@@ -15253,7 +15253,7 @@ fn a_phone_reaches_a_session_s_workers_from_its_agents_sheet() {
 fn a_phone_dims_behind_a_pane_sheet_and_keeps_a_margin_upright() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2734, "phone-dim", 440, 956);
-    let gutter = "(function(){ var r = document.querySelector('#app .session-main .transcript-inner').getBoundingClientRect(); return JSON.stringify([Math.round(r.left), Math.round(innerWidth - r.right)]); })()";
+    let gutter = "(function(){ var r = document.querySelector('#app .sv-session-main .transcript-inner').getBoundingClientRect(); return JSON.stringify([Math.round(r.left), Math.round(innerWidth - r.right)]); })()";
     let read = |js: &str| -> Vec<i64> {
         serde_json::from_str(harness::eval(&tab, js).as_str().unwrap()).unwrap()
     };
@@ -16285,7 +16285,7 @@ fn a_search_step_deep_inside_a_tall_unit_enters_at_the_record_there() {
     );
     // Where each output's record row sits against the line the page reads the top by, and which
     // unit holds it: all four must be ONE unit, taller than the view, or the case tests nothing.
-    let rows = "(function(){ var t = document.querySelector('.session-main>.transcript'), r = t.getBoundingClientRect(), line = r.top + (parseFloat(getComputedStyle(t).scrollPaddingTop) || 18) + 8; var out = { line: Math.round(line), view: [Math.round(r.top), Math.round(r.bottom)], rows: {} }; [...document.querySelectorAll('.virtual-window [data-block-index]')].forEach(function (e) { var m = e.textContent.match(/output (\\d) holds the needle/); if (!m || e.querySelector('[data-block-index]')) return; var b = e.getBoundingClientRect(), u = e.closest('[data-unit-key]'); var rec = e; while (rec && !Number.isInteger(Number(rec.dataset.blockIndex))) rec = rec.parentElement && rec.parentElement.closest('[data-block-index]'); out.rows[m[1]] = { top: Math.round(b.top), bottom: Math.round(b.bottom), record: rec && rec.dataset.blockIndex, unit: u && u.dataset.unitKey, unitHeight: u && Math.round(u.getBoundingClientRect().height) }; }); return JSON.stringify(out); })()";
+    let rows = "(function(){ var t = document.querySelector('.sv-session-main>.transcript'), r = t.getBoundingClientRect(), line = r.top + (parseFloat(getComputedStyle(t).scrollPaddingTop) || 18) + 8; var out = { line: Math.round(line), view: [Math.round(r.top), Math.round(r.bottom)], rows: {} }; [...document.querySelectorAll('.virtual-window [data-block-index]')].forEach(function (e) { var m = e.textContent.match(/output (\\d) holds the needle/); if (!m || e.querySelector('[data-block-index]')) return; var b = e.getBoundingClientRect(), u = e.closest('[data-unit-key]'); var rec = e; while (rec && !Number.isInteger(Number(rec.dataset.blockIndex))) rec = rec.parentElement && rec.parentElement.closest('[data-block-index]'); out.rows[m[1]] = { top: Math.round(b.top), bottom: Math.round(b.bottom), record: rec && rec.dataset.blockIndex, unit: u && u.dataset.unitKey, unitHeight: u && Math.round(u.getBoundingClientRect().height) }; }); return JSON.stringify(out); })()";
     let read = |tab: &headless_chrome::Tab| -> serde_json::Value {
         serde_json::from_str(harness::eval(tab, rows).as_str().unwrap_or("null")).unwrap()
     };
@@ -16341,7 +16341,7 @@ fn a_search_step_deep_inside_a_tall_unit_enters_at_the_record_there() {
     );
     // Back to the first output by script, which the engine never hears: still inside the unit.
     let dy = to_row(&tab, "0");
-    harness::eval(&tab, &format!("(function(){{ var s = document.querySelector('.session-main>.transcript'); s.scrollTo({{ top: s.scrollTop + ({dy}), behavior: 'instant' }}); return 'ok'; }})()"));
+    harness::eval(&tab, &format!("(function(){{ var s = document.querySelector('.sv-session-main>.transcript'); s.scrollTo({{ top: s.scrollTop + ({dy}), behavior: 'instant' }}); return 'ok'; }})()"));
     harness::pause("the move to settle", Duration::from_millis(700));
     let g = read(&tab);
     assert!(
@@ -16412,7 +16412,7 @@ fn a_phone_search_held_sideways_lands_a_match_below_its_process_head() {
         );
         // The keyboard as the keyboard-wrap case raises it, sized from the space with none, so the
         // space is the target whatever the platform's chrome: the find pill rides it one for one.
-        let space = "(function(){ var d = document.getElementById('phoneDock').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); return Math.round(d.top - t.top); })()";
+        let space = "(function(){ var d = document.getElementById('phoneDock').getBoundingClientRect(), t = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(); return Math.round(d.top - t.top); })()";
         let open = harness::eval(&tab, space).as_i64().unwrap_or(0);
         let kb = open - target;
         harness::eval(&tab, &format!("(function(){{ Object.defineProperty(visualViewport, 'height', {{ configurable: true, get: function () {{ return innerHeight - {kb}; }} }}); visualViewport.dispatchEvent(new Event('resize')); return 'ok'; }})()"));

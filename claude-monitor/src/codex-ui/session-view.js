@@ -3437,7 +3437,7 @@ var sessionLoading;
   veil.hidden = true;
   veil.setAttribute("role", "status");
   veil.innerHTML = '<div class="session-loading-card"><span class="session-loading-spinner" aria-hidden="true"></span><span class="session-loading-text">Loading session…</span><span class="session-loading-bar" hidden><i></i></span></div>';
-  viewRoot.$(".session-main").append(veil);
+  viewRoot.$(".sv-session-main").append(veil);
   const text = veil.querySelector(".session-loading-text"), bar = veil.querySelector(".session-loading-bar"), fill = bar.querySelector("i");
   let slow = 0, downloading = false;
   const size = n => (n >= 1e6 ? `${(n / 1e6).toFixed(n < 1e7 ? 1 : 0)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
