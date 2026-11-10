@@ -4231,7 +4231,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   for (const name of requiredNames) assert.ok(read.has(name) && passed.has(name), `the required option ${name} is read and the app passes it`);
   const optional = [...read].filter(name => !passed.has(name)).sort();
   for (const name of optional) assert.ok(!requiredNames.has(name), `options.${name}, which the app leaves out, is documented as optional`);
-  assert.deepEqual(optional, ["show"], "the app leaves out only what it keeps at its default: every optional control shown");
+  assert.deepEqual(optional, ["frame", "show"], "the app leaves out only what it keeps at its default: every optional control shown, and the pane's frame its srcdoc");
   for (const name of passed) assert.ok(read.has(name), `the app passes ${name}, which the view reads`);
   assert.ok(!read.has("isolate") && !passed.has("isolate"), "isolate is gone (#s438): the view always draws into the page");
   assert.doesNotMatch(viewSource, /\bisolate\b/, "and the view says nothing of it");
@@ -4370,4 +4370,46 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(Object.keys(page.handlers), [], "with the page's keyboard the view listens to nothing");
   assert.equal(page.engaged(), true, "and is always engaged, so the image viewer answers as it did");
   console.log("#s429 optional controls and keys cases passed");
+}
+
+// #s429 stage 7: the native app's own frame for an agent's page (#s436). Without `frame` the pane's
+// frame is the srcdoc it always was; with it the frame loads the address the native app answers,
+// keeping the sandbox and the policy; a refusal or an answer that is not an address is the pane's
+// own error. It is the native app's arrangement, and the doc comment says it is offered to no other
+// host.
+{
+  const previewSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
+  const showPage = /^  showPage\(item, text\) \{\n[\s\S]*?\n  \}\n/m.exec(previewSrc);
+  assert.ok(showPage, "the pane draws an agent's page in one place");
+  assert.match(previewSrc, /if \(html && backend\(\)\.paired\) \{ this\.showPage\(item, text\); return; \}/, "an HTML page goes there, for a paired monitor as before");
+  assert.equal((previewSrc.match(/<iframe /g) || []).length, 1, "the pane writes one frame");
+  assert.match(showPage[0], /'<iframe class="artifact-html-frame" sandbox="allow-scripts" referrerpolicy="no-referrer"><\/iframe>'/, "sandboxed without its origin and sending no referrer, either way");
+  assert.doesNotMatch(previewSrc, /allow-same-origin/, "never with its origin");
+  assert.match(showPage[0], /if \(!this\.actions\.frame\) \{ frame\.srcdoc = source; return; \}/, "without the native app's frame, the srcdoc of the page with its policy in front, as before");
+  // Run it: the frame's address, a late answer, a refusal, a throw and an empty answer.
+  const run = async (frameOption, { late = false } = {}) => {
+    const frame = { isConnected: true, src: "", srcdoc: "" };
+    const body = { innerHTML: "", querySelector: () => frame };
+    const errors = [];
+    const Klass = new Function("byId", "sandboxDocument", "refusal", `return class { ${showPage[0]} };`)(() => body, html => `<meta policy>${html}`, (title, message) => Object.assign(new Error(message), { title }));
+    const pane = Object.assign(new Klass(), { renderGeneration: 1, actions: { frame: frameOption }, showError: (item, error) => errors.push([error.title, error.message]) });
+    pane.showPage({ name: "page.html" }, "<p>hi</p>");
+    if (late) pane.renderGeneration++;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    return { src: frame.src, srcdoc: frame.srcdoc, errors };
+  };
+  const handed = [];
+  assert.deepEqual(await run(undefined), { src: "", srcdoc: "<meta policy><p>hi</p>", errors: [] }, "no frame option: the srcdoc");
+  assert.deepEqual(await run(html => { handed.push(html); return "app-frame://page/1"; }), { src: "app-frame://page/1", srcdoc: "", errors: [] }, "the frame loads the address the native app answers");
+  assert.deepEqual(handed, ["<meta policy><p>hi</p>"], "and the native app is handed the page with its policy in front");
+  assert.deepEqual(await run(async () => "app-frame://page/2"), { src: "app-frame://page/2", srcdoc: "", errors: [] }, "a promise of the address too");
+  assert.deepEqual(await run(async () => "app-frame://late", { late: true }), { src: "", srcdoc: "", errors: [] }, "an answer for a page the pane has since left changes nothing");
+  assert.deepEqual((await run(() => Promise.reject(new Error("no frame here")))).errors, [["Cannot show this page", "no frame here"]], "a refusal is the pane's own error");
+  assert.deepEqual((await run(() => { throw new Error("thrown"); })).errors, [["Cannot show this page", "thrown"]], "and so is a throw");
+  for (const empty of ["", null, 42]) assert.deepEqual((await run(() => empty)).errors.map(e => e[0]), ["Cannot show this page"], `and an answer that is not an address (${JSON.stringify(empty)})`);
+  const doc = /\/\*\* Draw the session view in `element`[\s\S]*?\*\/\nexport function mountSessionView/.exec(viewSource)[0];
+  assert.match(doc, /^ \*  - `frame\(html\)`: the native app's own arrangement \(#s436\), not offered to other hosts, and the\n \*    kit's guide does not list it\./m, "the doc comment says it is the native app's alone");
+  assert.match(viewSource, /if \(options\.frame !== undefined && typeof options\.frame !== "function"\) throw new Error\(/, "a frame that is not a function is refused");
+  assert.match(viewSource, /detach: shows\("detach"\), frame: options\.frame, /, "the view hands it to the pane");
+  console.log("#s429 native frame cases passed");
 }

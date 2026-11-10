@@ -48,7 +48,7 @@ export const KEYBOARD_MODES = Object.freeze(["engaged", "page"]);
 /** Every option `mountSessionView` takes; any other name is refused, so a misspelt or retired one
  *  (the old `toast`, `keys` or `controls`) fails loudly rather than being dropped. */
 export const MOUNT_OPTIONS = Object.freeze([
-  "theme", "grid", "backend", "show", "keyboard",
+  "theme", "grid", "backend", "show", "keyboard", "frame",
   "selectedId", "sessionRow", "sessionWorkers", "selectSession", "renderList", "refreshIndex", "pauseIndex", "resumeIndex",
   "onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast",
   "parentShown", "openList", "openSidebar", "paneLayout", "paneCount",
@@ -67,7 +67,8 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  Options, each named in `MOUNT_OPTIONS`; any other name is refused. Required: `grid`, `selectedId`,
  *  `sessionRow`, `sessionWorkers`, `selectSession`, `renderList`, `refreshIndex`, `pauseIndex` and
  *  `resumeIndex`. The rest are optional: a host may leave out `theme`, `backend`, `show` and
- *  `keyboard` (each has a default), and every handler of what the view tells it.
+ *  `keyboard` (each has a default), `frame` (the native app's), and every handler of what the view
+ *  tells it.
  *  - `theme`: "light" (the default) or "dark", carried by the view's element, where its stylesheet
  *    reads it; the handle's `setTheme` changes it.
  *  - `grid`: the box around the view (the app's `#app`). The phone's sheets are measured against it
@@ -90,6 +91,15 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    "page" is the app's mode: the view binds none, and the host owns the page's keyboard and calls
  *    `keys[action]`. A host that uses it gets the action names, not the key table (shared/keymap.js,
  *    which the app binds with its list's keys and contexts).
+ *  - `frame(html)`: the native app's own arrangement (#s436), not offered to other hosts, and the
+ *    kit's guide does not list it. The artifact pane shows an agent's HTML page in a frame sandboxed
+ *    without its origin (`sandbox="allow-scripts"`, no referrer), whose document is the page's text
+ *    with the preview's policy in front (sandbox.js). Without this option it is the frame's `srcdoc`,
+ *    which also takes the policy of the page around it; the native app's page allows no scripts, so
+ *    there the page's own would not run. With it, the view hands that document to `frame`, which
+ *    answers (or resolves to) the address the frame loads instead: the native app serves the
+ *    document from a scheme of its own, under the same policy (design/monitor-hub.md, D3). An answer
+ *    that is not an address, or a refusal, shows the pane's own error.
  *  - `selectedId()`, `sessionRow(id)`, `sessionWorkers(id)`: what the app's session index says —
  *    the session it has selected, a session's row, and the headless workers a session started.
  *  - `selectSession(id, push)`: ask the app to select a session (the parent control, a descent).
@@ -129,6 +139,7 @@ for (const [name, shown] of Object.entries(options.show || {})) {
 }
 const keyboardMode = options.keyboard ?? "engaged";
 if (!KEYBOARD_MODES.includes(keyboardMode)) throw new Error(`mountSessionView takes its keyboard "engaged" or "page", not ${JSON.stringify(keyboardMode)}`);
+if (options.frame !== undefined && typeof options.frame !== "function") throw new Error("mountSessionView takes its frame as a function from a page's HTML to the address its frame loads");
 /** Whether an optional control is drawn: each is, unless the host switched it off. */
 const shows = name => options.show?.[name] !== false;
 if (options.backend) useBackend(options.backend);
@@ -422,7 +433,7 @@ const paneLayoutChanged = () => {
   paneLaidOutWidth = width;
   viewport.remeasure();
 };
-const preview = new Preview({ layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") });
+const preview = new Preview({ layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") });
 const attachmentViewer = new AttachmentViewer({ toast });
 const controlActions = { renderTree: () => options.renderList(), recordSnapshot: () => ({ session: recordState.session, records: recordState.records }), toast, refreshIndex: () => options.refreshIndex(), pauseIndex: () => options.pauseIndex(), resumeIndex: () => options.resumeIndex(), selectSession, refreshEmpty: () => recordStore.refreshEmpty() };
 const ordinaryControls = new ControlStore(controlActions);

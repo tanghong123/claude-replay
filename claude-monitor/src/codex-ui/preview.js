@@ -299,17 +299,22 @@ export class Preview {
       // #324 through #s223: an image whose saved original could not be read shows the transcript's
       // own copy, as the lightbox did, rather than the refusal, and says why.
       if (item.fallback) { this.show(item, null, item.fallback, `${error.gone ? "The original is gone" : "The original could not be read"}: this is the copy saved with the session.`); return; }
-      const body = byId("previewBody"); body.classList.remove("production-loading");
-      body.innerHTML = `<div class="preview-error"><strong>${escapeText(error.title || "Cannot preview this file")}</strong><span>${escapeText(error.message)}</span><div class="preview-error-actions">${besideAction(item, backend().local) === "reveal" ? '<button class="smallbtn" data-preview-reveal>Reveal in file manager</button>' : ""}<button class="smallbtn" data-copy-path>Copy original path</button><button class="smallbtn" data-close-preview>Close tab</button></div></div>`;
-      const reveal = body.querySelector("[data-preview-reveal]");
-      if (reveal) reveal.onclick = () => this.actions.reveal?.(item);
-      body.querySelector("[data-copy-path]").onclick = () => {
-        const operation = navigator.clipboard?.writeText(item.path || "");
-        if (operation) operation.then(() => this.actions.toast?.("Copied the original path"));
-        else this.actions.toast?.("This browser does not support copying");
-      };
-      body.querySelector("[data-close-preview]").onclick = () => this.closeTab(item.id);
+      this.showError(item, error);
     });
+  }
+  /** The pane's own word that it cannot show a file: what went wrong, the file manager where the
+   *  reader is at this machine, the path to copy, and the tab to close. */
+  showError(item, error) {
+    const body = byId("previewBody"); body.classList.remove("production-loading");
+    body.innerHTML = `<div class="preview-error"><strong>${escapeText(error.title || "Cannot preview this file")}</strong><span>${escapeText(error.message)}</span><div class="preview-error-actions">${besideAction(item, backend().local) === "reveal" ? '<button class="smallbtn" data-preview-reveal>Reveal in file manager</button>' : ""}<button class="smallbtn" data-copy-path>Copy original path</button><button class="smallbtn" data-close-preview>Close tab</button></div></div>`;
+    const reveal = body.querySelector("[data-preview-reveal]");
+    if (reveal) reveal.onclick = () => this.actions.reveal?.(item);
+    body.querySelector("[data-copy-path]").onclick = () => {
+      const operation = navigator.clipboard?.writeText(item.path || "");
+      if (operation) operation.then(() => this.actions.toast?.("Copied the original path"));
+      else this.actions.toast?.("This browser does not support copying");
+    };
+    body.querySelector("[data-close-preview]").onclick = () => this.closeTab(item.id);
   }
   /** A file the page does not show: a download, with the file's place above it — and the head's
    *  reveal beside it (#272). */
@@ -455,10 +460,32 @@ export class Preview {
       return;
     }
     const html = /\.html?$/i.test(item.name || "");
-    if (html && backend().paired) { body.innerHTML = '<iframe class="artifact-html-frame" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>'; body.querySelector("iframe").srcdoc = sandboxDocument(text || ""); return; }
+    if (html && backend().paired) { this.showPage(item, text); return; }
     // The file's place above its text; revealing it is the head's control (#272), one for every view.
     body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="artifact-surface"><pre class="artifact-text"></pre></div>`;
     body.querySelector("pre").textContent = text || "";
+  }
+  /** An agent's HTML page, in a frame sandboxed without its origin, its scripts running under the
+   *  preview's policy (sandbox.js), and sending no referrer. Its document is the page's text with
+   *  that policy in front (`sandboxDocument`), written as the frame's `srcdoc`, which takes the
+   *  policy of the page around it as well. The native app's page allows no scripts, so the native
+   *  app frames the page from a source of its own (#s436, design/monitor-hub.md D3): `frame`, given
+   *  that document, answers the address the frame loads. An answer that is not an address, or a
+   *  refusal, is the pane's own error, never an empty frame. */
+  showPage(item, text) {
+    const body = byId("previewBody");
+    body.innerHTML = '<iframe class="artifact-html-frame" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>';
+    const frame = body.querySelector("iframe"), source = sandboxDocument(text || "");
+    if (!this.actions.frame) { frame.srcdoc = source; return; }
+    const generation = this.renderGeneration;
+    const current = () => generation === this.renderGeneration && frame.isConnected;
+    new Promise(resolve => resolve(this.actions.frame(source))).then(address => {
+      if (!current()) return;
+      if (typeof address !== "string" || !address) throw new Error("No address came back for this page's frame.");
+      frame.src = address;
+    }).catch(error => {
+      if (current()) this.showError(item, refusal("Cannot show this page", error?.message || String(error || "Its frame could not be made.")));
+    });
   }
 }
 
