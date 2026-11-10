@@ -4203,15 +4203,27 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // The doc comment over `mountSessionView` says which options are required and documents each.
   const doc = /\/\*\* Draw the session view in `element`[\s\S]*?\*\/\nexport function mountSessionView\(element, options\) \{/.exec(viewSource);
   assert.ok(doc, "mountSessionView carries its doc comment");
-  const required = /Options\. Required: ([^.]+)\./.exec(doc[0].replace(/\n \*\s*/g, " "));
+  const required = /Required: ([^.]+)\./.exec(doc[0].replace(/\n \*\s*/g, " "));
   assert.ok(required, "the doc comment lists the required options");
   const requiredNames = new Set([...required[1].matchAll(/`([A-Za-z]+)`/g)].map(m => m[1]));
-  const documented = new Set([...doc[0].matchAll(/`([A-Za-z]+)(?:\([^`]*\))?`/g)].map(m => m[1]));
-  for (const name of read) assert.ok(documented.has(name), `the view reads options.${name}, which its doc comment names`);
+  // Documented means an option bullet's HEAD names it: a line ` *  - ` whose backticked names come
+  // before its first colon outside them (`selectedId()`, `sessionRow(id)`: …). A name mentioned in
+  // passing (`session`, `element`, a sub-bullet's control) documents no option.
+  const heads = [...doc[0].matchAll(/^ \*  - ((?:`[^`]*`(?:, | and )?)+):/gm)].map(m => m[1]);
+  const documented = new Set(heads.flatMap(head => [...head.matchAll(/`([A-Za-z]+)(?:\([^`]*\))?`/g)].map(m => m[1])));
+  assert.ok(documented.has("onTitle") && documented.has("selectedId") && documented.has("resumeIndex") && !documented.has("reading") && !documented.has("session"), `the heads read are the option bullets': ${[...documented].join(", ")}`);
+  for (const name of read) assert.ok(documented.has(name), `the view reads options.${name}, which an option bullet of its doc comment names`);
+  // Every option is one name in ONE list, which the view refuses any other name by.
+  const mountOptions = /export const MOUNT_OPTIONS = Object\.freeze\(\[([\s\S]*?)\]\);/.exec(viewSource);
+  assert.ok(mountOptions, "the view lists its options in MOUNT_OPTIONS");
+  const listed = [...mountOptions[1].matchAll(/"([A-Za-z]+)"/g)].map(m => m[1]);
+  assert.deepEqual([...listed].sort(), [...read].sort(), "MOUNT_OPTIONS is exactly the options the view reads");
+  assert.deepEqual([...listed].sort(), [...documented].sort(), "and exactly the ones its doc comment documents");
+  assert.match(viewSource, /^for \(const name of Object\.keys\(options\)\) if \(!MOUNT_OPTIONS\.includes\(name\)\) throw new Error\(/m, "any other option name is refused");
   for (const name of requiredNames) assert.ok(read.has(name) && passed.has(name), `the required option ${name} is read and the app passes it`);
   const optional = [...read].filter(name => !passed.has(name)).sort();
   for (const name of optional) assert.ok(!requiredNames.has(name), `options.${name}, which the app leaves out, is documented as optional`);
-  assert.deepEqual(optional, ["controls"], "the app leaves out only what it keeps at its default: every optional control on");
+  assert.deepEqual(optional, ["show"], "the app leaves out only what it keeps at its default: every optional control shown");
   for (const name of passed) assert.ok(read.has(name), `the app passes ${name}, which the view reads`);
   assert.ok(!read.has("isolate") && !passed.has("isolate"), "isolate is gone (#s438): the view always draws into the page");
   assert.doesNotMatch(viewSource, /\bisolate\b/, "and the view says nothing of it");
@@ -4256,15 +4268,23 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /fileName: item\.name, name: `\$\{item\.name\} \$\{at \+ 1\}\/\$\{items\.length\}`/, "Open all keeps the file's own name beside its tab's label");
   assert.match(viewSource, /name: String\(item\.fileName \|\| item\.name \|\| ""\)/, "and onFile says it");
   // The app keeps the page's keyboard; a host left at the default gets the view's engaged keys.
-  assert.match(call[1], /^  keys: "page",$/m, "the app passes keys: \"page\"");
-  const { KEY_MODES, OPTIONAL_CONTROLS } = { KEY_MODES: JSON.parse(/export const KEY_MODES = Object\.freeze\((\[[^\]]*\])\);/.exec(viewSource)[1]), OPTIONAL_CONTROLS: JSON.parse(/export const OPTIONAL_CONTROLS = Object\.freeze\((\[[^\]]*\])\);/.exec(viewSource)[1]) };
-  assert.deepEqual(KEY_MODES, ["engaged", "page"]);
-  assert.match(viewSource, /^const keyMode = options\.keys \?\? "engaged";$/m, "engaged is the default");
+  assert.match(call[1], /^  keyboard: "page",$/m, "the app passes keyboard: \"page\"");
+  const { KEYBOARD_MODES, OPTIONAL_CONTROLS } = { KEYBOARD_MODES: JSON.parse(/export const KEYBOARD_MODES = Object\.freeze\((\[[^\]]*\])\);/.exec(viewSource)[1]), OPTIONAL_CONTROLS: JSON.parse(/export const OPTIONAL_CONTROLS = Object\.freeze\((\[[^\]]*\])\);/.exec(viewSource)[1]) };
+  assert.deepEqual(KEYBOARD_MODES, ["engaged", "page"]);
+  assert.match(viewSource, /^const keyboardMode = options\.keyboard \?\? "engaged";$/m, "engaged is the default");
+  assert.match(viewSource, /if \(typeof shown !== "boolean"\) throw new Error\(/, "show takes booleans only");
   for (const name of OPTIONAL_CONTROLS) {
-    assert.match(doc[0], new RegExp(`- \`${name}\`: `), `the optional control ${name} is documented`);
-    assert.match(viewSource, new RegExp(`shows\\("${name}"\\)`), `the view reads whether ${name} is on`);
+    assert.match(doc[0], new RegExp(`^ \\*    - \`${name}\`: `, "m"), `the optional control ${name} is documented under show`);
+    assert.match(viewSource, new RegExp(`shows\\("${name}"\\)`), `the view reads whether ${name} is shown`);
   }
-  assert.ok(!/^  controls:/m.test(call[1]), "the app switches no control off");
+  assert.ok(!/^  show:/m.test(call[1]), "the app switches no control off");
+  // What a host's page must still carry for the compose box is named in the doc comment, each id
+  // one control-store.js binds.
+  const storeSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/control-store.js", import.meta.url), "utf8");
+  for (const id of ["writeSwitch", "writeBtn", "writeInfo", "writeHelp", "sidebarMiniWrite", "confirmLayer", "confirmText", "cancelSend", "confirmSend"]) {
+    assert.ok(storeSource.includes(`byId("${id}")`), `control-store.js binds #${id}`);
+    assert.ok(doc[0].includes(`\`${id}\``), `the doc comment names #${id} as what a host's page must carry`);
+  }
   const at = viewSource.lastIndexOf("\nreturn {\n");
   assert.ok(at > 0, "the view returns its handle as an object literal at the end of mountSessionView");
   const handle = viewSource.slice(at);
@@ -4291,7 +4311,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /action => \(keyActions\[action\] \? keyActions\[action\]\(\) : false\)\);/, "the app takes no key it has no action for");
   // Engaged: the shared keymap resolves, the view decides by engagement (mdrev's rule), and the
   // shared module is untouched (the offline pages inline it, and the byte gate reads them).
-  assert.match(viewSource, /if \(keyMode === "engaged"\) \{/, "the view binds its own keys only when engaged");
+  assert.match(viewSource, /if \(keyboardMode === "engaged"\) \{/, "the view binds its own keys only when engaged");
   assert.match(viewSource, /const engage = event => \{ engaged = inView\(event\.target\) && !inGuest\(event\.target\); \};/, "engagement is the last press or focus inside the view and outside its guest");
   assert.match(viewSource, /element\.contains\(target\) \|\| \[\.\.\.floating\]\.some\(node => node\.contains\(target\)\)/, "inside the view counts what it floats over the page");
   assert.match(viewSource, /floating\.add\(taskScrim\); floating\.add\(taskPopover\);/, "the task card and its scrim float");
@@ -4303,16 +4323,16 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /^renderHeader\(\); renderNavigator\(\); paintJump\(\);\n(?:\/\/[^\n]*\n)+paneLaidOutWidth = transcript\.clientWidth;\nviewMounted = true;$/m, "and does from the first render on, measured from the width the mount left");
   // The engaged binding, run: the engagement and the keymap as the view writes them, over a fake
   // document, the view's element, a host's node, a guest and the task card the view floats.
-  const engagement = /^const floating = new Set\(\);\nlet engaged = keyMode === "page";\nif \(keyMode === "engaged"\) \{\n[\s\S]*?\n\}\n/m.exec(viewSource);
-  const keymap = /^if \(keyMode === "engaged"\) \{\n  document\.addEventListener\("keydown"[\s\S]*?\n\}\n/m.exec(viewSource);
+  const engagement = /^const floating = new Set\(\);\nlet engaged = keyboardMode === "page";\nif \(keyboardMode === "engaged"\) \{\n[\s\S]*?\n\}\n/m.exec(viewSource);
+  const keymap = /^if \(keyboardMode === "engaged"\) \{\n  document\.addEventListener\("keydown"[\s\S]*?\n\}\n/m.exec(viewSource);
   assert.ok(engagement && keymap, "the view's engagement and its engaged keymap are where the contract reads them");
   const node = (inside, guest = false) => ({ tagName: "DIV", closest: sel => (sel === "[data-guest-keys]" && guest ? {} : null), inside });
   const viewNode = node(true), guestNode = node(true, true), hostNode = node(false), card = { tagName: "DIV", closest: () => null, card: true };
-  const mount = (keyMode, actions) => {
+  const mount = (keyboardMode, actions) => {
     const handlers = {}, capture = {};
     const doc = { addEventListener: (type, fn, phase) => { (handlers[type] ||= []).push(fn); capture[type] = phase === true; } };
-    const run = new Function("document", "element", "inGuest", "resolveKey", "keyActions", "keyMode", `${engagement[0]}${keymap[0]}; return { floating, engaged: () => engaged };`);
-    const view = run(doc, { contains: t => t.inside === true, isConnected: true }, inGuest, resolveKey, actions, keyMode);
+    const run = new Function("document", "element", "inGuest", "resolveKey", "keyActions", "keyboardMode", `${engagement[0]}${keymap[0]}; return { floating, engaged: () => engaged };`);
+    const view = run(doc, { contains: t => t.inside === true, isConnected: true }, inGuest, resolveKey, actions, keyboardMode);
     view.floating.add({ contains: t => t.card === true });
     const press = (key, target = { tagName: "BODY", closest: () => null }) => { let prevented = false; for (const fn of handlers.keydown || []) fn({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, target, preventDefault() { prevented = true; } }); return prevented; };
     const on = (type, target) => { for (const fn of handlers[type] || []) fn({ target }); };

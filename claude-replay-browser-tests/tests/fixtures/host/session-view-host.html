@@ -51,8 +51,8 @@ try {
     pauseIndex: () => {},
     resumeIndex: () => {},
   };
-  if (off.length) options.controls = Object.fromEntries(off.map(name => [name, false]));
-  if (params.get("keys")) options.keys = params.get("keys");
+  if (off.length) options.show = Object.fromEntries(off.map(name => [name, false]));
+  if (params.get("keys")) options.keyboard = params.get("keys");
   for (const name of ["onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast"]) options[name] = (...args) => host.events.push({ name, args });
   window.__view = mountSessionView(document.querySelector(".host-view"), options);
   // The host's own keyboard: what reaches it after the view had its turn (the view listens first,

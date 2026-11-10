@@ -38,21 +38,36 @@ import { page, viewRoot } from "./view-root.js";
  *  phone's column shows the same lists under the app's tabs, so the app reads this too. */
 export const PHONE_PANES = Object.freeze([["turns", "Turns", "navigatorTurns"], ["tasks", "Tasks", "navigatorWork"], ["agents", "Agents", "navigatorAgents"]].map(pane => Object.freeze(pane)));
 
-/** The controls a host may switch off (#s436; design/session-view-component.md, stage 6), each on
- *  unless the `controls` option names it `false`. */
+/** The controls a host may switch off (#s436; design/session-view-component.md, stage 6), each shown
+ *  unless the `show` option says `false`. */
 export const OPTIONAL_CONTROLS = Object.freeze(["reading", "history", "detach"]);
-/** How the view takes its keys: "engaged" binds them itself, answering only while the reader works
- *  in the view; "page" leaves the page's keyboard to the host, which calls the handle's `keys`. */
-export const KEY_MODES = Object.freeze(["engaged", "page"]);
+/** How the view takes its keys (the `keyboard` option): "engaged" binds them itself, answering only
+ *  while the reader works in the view; "page" leaves the page's keyboard to the host, which calls the
+ *  handle's `keys`. */
+export const KEYBOARD_MODES = Object.freeze(["engaged", "page"]);
+/** Every option `mountSessionView` takes; any other name is refused, so a misspelt or retired one
+ *  (the old `toast`, `keys` or `controls`) fails loudly rather than being dropped. */
+export const MOUNT_OPTIONS = Object.freeze([
+  "theme", "grid", "backend", "show", "keyboard",
+  "selectedId", "sessionRow", "sessionWorkers", "selectSession", "renderList", "refreshIndex", "pauseIndex", "resumeIndex",
+  "onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast",
+  "parentShown", "openList", "openSidebar", "paneLayout", "paneCount",
+]);
 
 /** Draw the session view in `element` and return its handle. The element becomes `#sessionView`, the
  *  id the view's stylesheet hangs every rule on; one with another id is refused. The view always
  *  draws into the page (#s438): no shadow root.
  *
- *  Options. Required: `grid`, `selectedId`, `sessionRow`, `sessionWorkers`, `selectSession`,
- *  `renderList`, `refreshIndex`, `pauseIndex` and `resumeIndex`. The rest are optional: a host may
- *  leave out `theme`, `backend`, `controls` and `keys` (each has a default), and every handler of
- *  what the view tells it.
+ *  What a host's page must still carry: the compose box's controls (control-store.js) bind the app's
+ *  write-mode switch and its confirm layer by id, `writeSwitch`, `writeBtn`, `writeInfo`, `writeHelp`,
+ *  `sidebarMiniWrite`, `confirmLayer` (with its `h3` and `.dialog`), `confirmText`, `cancelSend` and
+ *  `confirmSend`, and a page without them cannot mount the view. They are state.js's `controlState`,
+ *  passed in by stage 7 at the latest.
+ *
+ *  Options, each named in `MOUNT_OPTIONS`; any other name is refused. Required: `grid`, `selectedId`,
+ *  `sessionRow`, `sessionWorkers`, `selectSession`, `renderList`, `refreshIndex`, `pauseIndex` and
+ *  `resumeIndex`. The rest are optional: a host may leave out `theme`, `backend`, `show` and
+ *  `keyboard` (each has a default), and every handler of what the view tells it.
  *  - `theme`: "light" (the default) or "dark", carried by the view's element, where its stylesheet
  *    reads it; the handle's `setTheme` changes it.
  *  - `grid`: the box around the view (the app's `#app`). The phone's sheets are measured against it
@@ -61,17 +76,20 @@ export const KEY_MODES = Object.freeze(["engaged", "page"]);
  *    the view's own element that box.
  *  - `backend`: the backend handle the view reads its session through (`useBackend`'s); the page's
  *    own handle stands without one.
- *  - `controls`: the optional controls switched off, by name, as `{ reading: false }`; each is on
- *    unless named `false`, and a name not in `OPTIONAL_CONTROLS` is refused. A control switched off
- *    is not drawn and takes no key.
- *    - `reading`: the Reading menu (Aa) and its keys (`w`, `-`, `+`).
+ *  - `show`: which optional controls are drawn, by name, as `{ reading: false }`. Each is shown unless
+ *    it is `false`; a name not in `OPTIONAL_CONTROLS`, or a value that is not a boolean, is refused.
+ *    A control switched off is not drawn and takes no key.
+ *    - `reading`: the Reading menu (Aa) and its keys (`w`, `-`, `+`). Off, the reader's stored
+ *      reading preferences (this origin's `am-prod-reading`) still apply as they are.
  *    - `history`: the viewport history's Save, a row of the Reading menu.
  *    - `detach`: the artifact pane's ↗, which opens the document or image in a tab of its own.
- *  - `keys`: "engaged" (the default) or "page", as `KEY_MODES` says. Engaged, the view answers its
- *    keymap only while the reader's last click or focus is inside its element (or the task card it
- *    floats over the page), and yields to a guest inside it (mdrev's pane), as mdrev does; a key it
- *    has no action for is left to the page. "page" binds none: the host owns the page's keyboard and
- *    calls `keys[action]` for the keymap's bindings, as the app shell does with its list's keys.
+ *  - `keyboard`: "engaged" (the default) or "page", as `KEYBOARD_MODES` says. Engaged, the view answers
+ *    its keymap only while the reader's last press or focus is inside its element (or the task card
+ *    it floats over the page), and yields to a guest inside it (mdrev's pane), as mdrev does; a key
+ *    it has no action for is left to the page, and the pane's image viewer keeps to the same rule.
+ *    "page" is the app's mode: the view binds none, and the host owns the page's keyboard and calls
+ *    `keys[action]`. A host that uses it gets the action names, not the key table (shared/keymap.js,
+ *    which the app binds with its list's keys and contexts).
  *  - `selectedId()`, `sessionRow(id)`, `sessionWorkers(id)`: what the app's session index says —
  *    the session it has selected, a session's row, and the headless workers a session started.
  *  - `selectSession(id, push)`: ask the app to select a session (the parent control, a descent).
@@ -88,10 +106,11 @@ export const KEY_MODES = Object.freeze(["engaged", "page"]);
  *    placed the reader (after a transaction or a scroll, once per task); `turn` is null for none,
  *    and for a session just opened until its own records arrive.
  *  - `onInfo({ session })`: the reader pressed for the session's Info (the view opens it itself).
- *  - `onFile({ name, path, text })`: a file opened in the artifact pane: its path ("" for none),
- *    and the text the transcript carries for it (null for none).
+ *  - `onFile({ name, path, text })`: a file opened in the artifact pane: the file's name, its path
+ *    ("" for none), and the text the transcript carries for it (null for none).
  *  - `onLinkCopied({ url, record })`: the reader copied a link to a record.
- *  - `onToast(message)`: say something briefly.
+ *  - `onToast(message)`: say something briefly. A host that leaves it out hears nothing of what the
+ *    view says this way, a send the compose box held or the server refused among it.
  *  - `parentShown(id)`: the top bar offers a way back to this parent (the app writes the browser's
  *    Back to it for a deep-linked child).
  *  - `openList()`, `openSidebar()`: the top bar's back-to-the-list and reopen controls, the app's.
@@ -103,14 +122,19 @@ export const KEY_MODES = Object.freeze(["engaged", "page"]);
  *  actions), `closePane()`, `paneNode(key)` and `outlineClick(event)` (the wide phone's column),
  *  and, for the monitor's own native mode, `controls` and `installNativeControls(…)`. */
 export function mountSessionView(element, options) {
-for (const name of Object.keys(options.controls || {})) if (!OPTIONAL_CONTROLS.includes(name)) throw new Error(`mountSessionView has no optional control named ${name}; the controls a host may switch off are ${OPTIONAL_CONTROLS.join(", ")}`);
-const keyMode = options.keys ?? "engaged";
-if (!KEY_MODES.includes(keyMode)) throw new Error(`mountSessionView takes its keys "engaged" or "page", not ${JSON.stringify(keyMode)}`);
+for (const name of Object.keys(options)) if (!MOUNT_OPTIONS.includes(name)) throw new Error(`mountSessionView takes no option named ${name}; its options are ${MOUNT_OPTIONS.join(", ")}`);
+for (const [name, shown] of Object.entries(options.show || {})) {
+  if (!OPTIONAL_CONTROLS.includes(name)) throw new Error(`mountSessionView has no optional control named ${name}; the controls a host may switch off are ${OPTIONAL_CONTROLS.join(", ")}`);
+  if (typeof shown !== "boolean") throw new Error(`mountSessionView shows ${name} or not by true or false, not ${JSON.stringify(shown)}`);
+}
+const keyboardMode = options.keyboard ?? "engaged";
+if (!KEYBOARD_MODES.includes(keyboardMode)) throw new Error(`mountSessionView takes its keyboard "engaged" or "page", not ${JSON.stringify(keyboardMode)}`);
 /** Whether an optional control is drawn: each is, unless the host switched it off. */
-const shows = name => options.controls?.[name] !== false;
+const shows = name => options.show?.[name] !== false;
 if (options.backend) useBackend(options.backend);
 // The view builds its three parts inside its element from its own markup (stage 4), so a host's
-// page carries none of ours, and draws the glyphs that markup names.
+// page carries none of the view's markup (the compose box still binds the app's write controls,
+// above), and draws the glyphs that markup names.
 if (!element.firstElementChild) element.innerHTML = SESSION_VIEW_MARKUP;
 element.querySelectorAll("[data-icon]").forEach(glyph => { glyph.innerHTML = svg(glyph.dataset.icon); });
 // The view's element carries its id, its class and its theme (stage 5b): its stylesheet hangs every
@@ -374,8 +398,8 @@ bindComponentEvents(transcript, recordState, {
 // (`keyboard: "engaged"`); with the page's keyboard (`"page"`, the app's) the view is always engaged,
 // as before.
 const floating = new Set();
-let engaged = keyMode === "page";
-if (keyMode === "engaged") {
+let engaged = keyboardMode === "page";
+if (keyboardMode === "engaged") {
   const inView = target => !!target && typeof target.closest === "function" && (element.contains(target) || [...floating].some(node => node.contains(target)));
   const engage = event => { engaged = inView(event.target) && !inGuest(event.target); };
   for (const type of ["pointerdown", "mousedown", "focusin"]) document.addEventListener(type, engage, true);
@@ -3525,7 +3549,7 @@ function pageTranscript(direction) {
   viewport.pageBy(direction, { intent: true });
 }
 // The view's half of the keymap, by the keymap's action names: the handle's `keys`. In the app
-// (`keys: "page"`) the app binds the page's keys and adds the list's (app.js); engaged, the view
+// (`keyboard: "page"`) the app binds the page's keys and adds the list's (app.js); engaged, the view
 // binds them itself (below).
 const keyActions = {
   "search": () => { setPhoneSearch(true); byId("transcriptSearchInput").focus(); },
@@ -3548,7 +3572,7 @@ if (!shows("reading")) for (const action of ["wrap", "size-down", "size-up"]) de
 // phase, so a host's own listener on the page, bound before the view's, finds the key already taken
 // (`defaultPrevented`) rather than acting on it beside the view. "page" binds nothing: the host
 // routes the page's keys to `keys` (app.js).
-if (keyMode === "engaged") {
+if (keyboardMode === "engaged") {
   document.addEventListener("keydown", event => {
     if (!engaged || !element.isConnected) return;
     const binding = resolveKey(event, "view", event.target);

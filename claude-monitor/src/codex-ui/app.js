@@ -1149,12 +1149,12 @@ var mobileShell;
 // The session view (session-view.js): its three parts are columns of this grid, and it draws into
 // the page, as it does in every host (design/session-view-component.md, #s438). What it needs from
 // the app is passed in here; what the app asks of it is the handle. Every optional control stays on,
-// and the app keeps the page's keyboard (`keys: "page"`, the keymap below).
+// and the app keeps the page's keyboard (`keyboard: "page"`, the keymap below).
 viewHandle = mountSessionView(viewRoot.element(), {
   theme: page.html().dataset.theme === "dark" ? "dark" : "light",
   backend: backend(),
   grid: app,
-  keys: "page",
+  keyboard: "page",
   selectedId: () => indexState.selected,
   sessionRow: id => indexState.rows.get(id) || null,
   sessionWorkers,

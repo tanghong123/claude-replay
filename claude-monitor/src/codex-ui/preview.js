@@ -83,8 +83,8 @@ export class Preview {
     this.expandBtn = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn preview-expand" });
     this.expandBtn.onclick = () => this.setFull(!viewRoot.element()?.classList.contains("preview-full"));
     this.setFull(false);
-    // A host that switched the ↗ off (`detach: false`, stage 6) gets none in the head: the show paths
-    // still flip its `hidden`, on a button nobody can reach.
+    // A host that switched the ↗ off (`show: { detach: false }`, stage 6) gets none in the head:
+    // the show paths still flip its `hidden`, on a button nobody can reach.
     byId("closePreview").before(this.revealBtn, this.downloadBtn, this.printBtn, ...(this.actions.detach === false ? [] : [this.newTab]), this.reviewBtn, this.expandBtn);
     // #337, the owner: with many files open the strip squeezed every tab to a few letters and the
     // CURRENT one to nothing. The tabs now keep their width and the strip scrolls; while it
