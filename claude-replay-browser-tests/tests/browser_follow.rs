@@ -2365,6 +2365,79 @@ fn the_session_view_in_a_host_frames_an_agents_page_from_the_hosts_own_source() 
     }
 }
 
+/// A host page that carries none of the app's write controls (its switch, the rail's write button,
+/// the pairing help) or its confirm layer mounts the session view, and the view offers no writes
+/// (#s429 stage 7): no compose button, no notice, no ✎ in a phone's dock, over a session that could
+/// be written to. Writes are the host's to offer, through the `write` option: with write mode on, the
+/// same session gets its compose button, and the box opens on it saying it resumes the session.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_without_write_controls_mounts_and_offers_no_writes() {
+    let _serial = serial();
+    let base = base("host-no-writes");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000000f8".to_string();
+    let mut jsonl = harness::user_at("a finished session", &harness::at("00:01"));
+    jsonl += &harness::assistant_at("all done", &harness::at("00:02"));
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3106, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let read = |tab: &headless_chrome::Tab| -> serde_json::Value {
+        harness::until(
+            tab,
+            "!!document.querySelector('.transcript') && /all done/.test(document.querySelector('.transcript').innerText)",
+            "the session in the host's view",
+            std::time::Duration::from_secs(20),
+            "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+        );
+        harness::probe(
+            tab,
+            "({ appElements: ['writeSwitch', 'writeBtn', 'writeInfo', 'writeHelp', 'sidebarMiniWrite', 'confirmLayer', 'confirmText', 'cancelSend', 'confirmSend'].filter(function (id) { return !!document.getElementById(id); }), fab: document.getElementById('composeFab').classList.contains('show'), notice: document.getElementById('writeNotice').classList.contains('show'), dock: !!document.getElementById('dockCompose') && document.getElementById('dockCompose').getClientRects().length > 0, errors: window.__host.error })",
+        )
+    };
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}"));
+    let without = read(&tab);
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}&write=on"));
+    let with = read(&tab);
+    harness::eval(&tab, "document.getElementById('composeFab').click(); 'ok'");
+    let opened = harness::probe(
+        &tab,
+        "({ open: document.getElementById('composer').classList.contains('production-show'), target: document.getElementById('composeTarget').textContent, asks: window.__host.asks || [] })",
+    );
+    harness::phone(&tab, 390, 844);
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}"));
+    let phone_without = read(&tab);
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}&write=on"));
+    let phone_with = read(&tab);
+    drop(monitor);
+    assert_eq!(
+        without,
+        serde_json::json!({ "appElements": [], "fab": false, "notice": false, "dock": false, "errors": null }),
+        "a host page with none of the app's write controls mounts the view, which offers no writes"
+    );
+    assert_eq!(
+        phone_without,
+        serde_json::json!({ "appElements": [], "fab": false, "notice": false, "dock": false, "errors": null }),
+        "and none in a phone's dock"
+    );
+    assert_eq!(
+        phone_with,
+        serde_json::json!({ "appElements": [], "fab": true, "notice": false, "dock": true, "errors": null }),
+        "with the host's write mode on, a phone's dock offers ✎"
+    );
+    assert_eq!(
+        with,
+        serde_json::json!({ "appElements": [], "fab": true, "notice": false, "dock": false, "errors": null }),
+        "and a desktop the compose button"
+    );
+    assert_eq!(
+        opened,
+        serde_json::json!({ "open": true, "target": "Resumes this session", "asks": [] }),
+        "which opens the box on the session, asking the host nothing until a live pane needs a grant"
+    );
+}
+
 /// The app shell's layout contract, the counterpart of the v2 classic case (task #27): on a
 /// fresh open the view lands pinned at the tail; the TRANSCRIPT is the scroller, and scrolling
 /// it leaves the header and the sidebar exactly where they were; there is no iframe anywhere.

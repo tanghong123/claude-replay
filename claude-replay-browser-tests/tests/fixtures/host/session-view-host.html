@@ -10,8 +10,9 @@
      (harness::answer_in_browser); the monitor serves only its own modules and routes. Its options
      come from the address: `hide=` names the optional controls switched off (comma-separated, each
      `show: {name: false}`), `keyboard=` the key mode (left out: the view's default), `frame=` the
-     native app's frame (below), and `session=` a session to open, read from the monitor's own
-     session list. A case may put a content policy where `host-policy` stands; the script carries
+     native app's frame (below), `write=on` writes switched on (below), and `session=` a session to
+     open, read from the monitor's own session list. The page carries nothing of the view's or the
+     app's beyond the element it mounts the view in (stage 7). A case may put a content policy where `host-policy` stands; the script carries
      the nonce `host` for one. -->
 <link rel="stylesheet" href="/monitor-ui/session-view.css">
 <style>
@@ -24,16 +25,6 @@
 <body>
 <header class="host-bar"><button type="button" id="hostButton">The host's own button</button><span id="hostLabel">A host</span></header>
 <div class="host-pane" id="hostPane"><div class="host-view"></div></div>
-<!-- What the view still reaches for in the app's page, hidden: the compose box's controls
-     (control-store.js) bind the app's write-mode switch and its confirm layer, which state.js's
-     `controlState` ties to the app until stage 7 passes write mode in (mountSessionView's doc comment
-     names them). A host without them cannot mount the view today. -->
-<div hidden>
-  <div id="writeBtn"><button type="button" id="writeInfo"></button><button type="button" id="writeSwitch" role="switch" aria-checked="false"></button></div>
-  <div id="writeHelp" hidden></div>
-  <button type="button" id="sidebarMiniWrite"></button>
-  <div id="confirmLayer"><div class="dialog"><h3></h3><p id="confirmText"></p><button type="button" id="cancelSend"></button><button type="button" id="confirmSend"></button></div></div>
-</div>
 <script type="module" nonce="host">
 const host = window.__host = { mounted: false, error: null, events: [], keys: [], framed: [], messages: [] };
 // What a frame inside the view says to its parent: how a case sees an agent page's script run.
@@ -70,6 +61,10 @@ try {
   };
   if (off.length) options.show = Object.fromEntries(off.map(name => [name, false]));
   if (params.get("keyboard")) options.keyboard = params.get("keyboard");
+  // Writes (stage 7): the page carries none of the app's write controls or its confirm layer, and
+  // offers no writes unless `write=on`, which passes write mode switched on and a confirm that
+  // records each ask and cancels it.
+  if (params.get("write") === "on") options.write = { on: () => true, confirm: ask => { host.asks = [...(host.asks || []), ask]; return null; } };
   // The native app's frame (stage 7): `frame=<address>` answers that address for every page, after
   // keeping the HTML it was handed; `frame=reject` refuses, `frame=empty` answers "".
   const frame = params.get("frame");
