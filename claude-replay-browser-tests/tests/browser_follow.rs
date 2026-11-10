@@ -2253,6 +2253,118 @@ fn the_app_shell_subtitle_after_a_plan_card_gives_one_answer_per_offset() {
     );
 }
 
+/// The native app's own frame for an agent's page (#s429 stage 7, #s436; design/monitor-hub.md D3).
+/// The artifact pane shows an HTML page an agent wrote in a frame whose document is its `srcdoc`,
+/// and a `srcdoc` takes the policy of the page around it: under a host page whose policy allows no
+/// inline script (the native app's), the agent page's script does not run. With the `frame` option
+/// the view hands the host the page, its own policy in front, and the frame loads the address the
+/// host answers, still sandboxed without its origin and sending no referrer, and its script runs. A
+/// host that refuses, or answers no address, gets the pane's own error, not an empty frame. Without
+/// the option and without the policy, the srcdoc's script runs as it always did.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_frames_an_agents_page_from_the_hosts_own_source() {
+    let _serial = serial();
+    let base = base("host-native-frame");
+    let stores = Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let page = repo.join("page.html");
+    std::fs::write(
+        &page,
+        "<h1>An agent's page</h1><script>parent.postMessage('agent page ran', '*')</script>",
+    )
+    .unwrap();
+    let path = page.display().to_string();
+    let sid = "cccccccc-0000-4000-8000-0000000000f7".to_string();
+    let mut jsonl = harness::user_at("show me the page", &harness::at("00:01"));
+    jsonl += &harness::read_tool_at("t0", &path, &harness::at("00:02"));
+    jsonl += &harness::tool_result_at("t0", &harness::at("00:02"));
+    jsonl += &harness::assistant_at("there it is", &harness::at("00:03"));
+    let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3105, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    // The native app's policy: no inline script but the host's own, by its nonce.
+    let policy = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self'; script-src 'self' 'nonce-host'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:\">";
+    // What the host's own source answers for the frame (the native app serves the page it was
+    // handed from a scheme of its own; here a page the browser answers on the monitor's origin).
+    let framed = || harness::Answer {
+        pattern: "*/host-frame*".into(),
+        path: "/host-frame".into(),
+        content_type: "text/html; charset=utf-8".into(),
+        body:
+            "<!doctype html><p>framed</p><script>parent.postMessage('host frame ran', '*')</script>"
+                .into(),
+    };
+    let selector = format!("[data-reference-path={path:?}]");
+    // Open the page in the pane, and read what the frame is and what reached the host.
+    let open = |query: &str, policy: &str| -> serde_json::Value {
+        harness::open_host_page_with(&tab, &monitor, query, policy, vec![framed()]);
+        harness::until(
+            &tab,
+            &format!("!!document.querySelector({selector:?})"),
+            "the page's path in the host's view",
+            std::time::Duration::from_secs(20),
+            "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+        );
+        harness::eval(
+            &tab,
+            &format!("document.querySelector({selector:?}).click(); 'ok'"),
+        );
+        harness::until(
+            &tab,
+            "(function(){ var b = document.getElementById('previewBody'); var f = b && b.querySelector('iframe.artifact-html-frame'); return !!(b && b.querySelector('.preview-error')) || !!(f && (f.getAttribute('src') || f.getAttribute('srcdoc'))); })()",
+            "the pane to frame the page, or say it cannot",
+            std::time::Duration::from_secs(20),
+            "(document.getElementById('previewBody') || {}).innerHTML",
+        );
+        // A script that runs says so at once; give one that does not the same time to.
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        harness::probe(
+            &tab,
+            "(function(){ var b = document.getElementById('previewBody'), f = b.querySelector('iframe.artifact-html-frame'), e = b.querySelector('.preview-error strong'); return { frames: b.querySelectorAll('iframe').length, src: f ? f.getAttribute('src') : null, srcdoc: !!(f && f.hasAttribute('srcdoc')), sandbox: f ? f.getAttribute('sandbox') : null, referrer: f ? f.getAttribute('referrerpolicy') : null, error: e ? e.textContent : null, messages: window.__host.messages, handed: window.__host.framed.map(function (h) { return { page: h.indexOf(\"<h1>An agent's page</h1>\") >= 0, policy: h.indexOf('Content-Security-Policy') >= 0 && h.indexOf(\"script-src 'unsafe-inline'\") >= 0 }; }) }; })()",
+        )
+    };
+    let plain = open(&format!("session={sid}"), "");
+    let strict = open(&format!("session={sid}"), policy);
+    let native = open(&format!("session={sid}&frame=/host-frame"), policy);
+    let refused = open(&format!("session={sid}&frame=reject"), policy);
+    let empty = open(&format!("session={sid}&frame=empty"), policy);
+    drop(monitor);
+    assert_eq!(
+        plain,
+        serde_json::json!({ "frames": 1, "src": null, "srcdoc": true, "sandbox": "allow-scripts", "referrer": "no-referrer", "error": null, "messages": ["agent page ran"], "handed": [] }),
+        "without a frame option or a policy, the srcdoc's script runs, as it always did"
+    );
+    assert_eq!(
+        strict,
+        serde_json::json!({ "frames": 1, "src": null, "srcdoc": true, "sandbox": "allow-scripts", "referrer": "no-referrer", "error": null, "messages": [], "handed": [] }),
+        "under a host's policy with no inline script, the srcdoc's script does not run"
+    );
+    assert_eq!(
+        native,
+        serde_json::json!({ "frames": 1, "src": "/host-frame", "srcdoc": false, "sandbox": "allow-scripts", "referrer": "no-referrer", "error": null, "messages": ["host frame ran"], "handed": [{ "page": true, "policy": true }] }),
+        "with the frame option the host is handed the page with its policy in front, and the frame loads the host's address, sandboxed as before, its script running"
+    );
+    for (what, seen) in [("a refusal", &refused), ("an empty answer", &empty)] {
+        assert_eq!(
+            (
+                seen["frames"].clone(),
+                seen["error"].clone(),
+                seen["handed"].clone()
+            ),
+            (
+                serde_json::json!(0),
+                serde_json::json!("Cannot show this page"),
+                serde_json::json!([{ "page": true, "policy": true }])
+            ),
+            "{what} is the pane's own error, not an empty frame: {seen}"
+        );
+    }
+}
+
 /// The app shell's layout contract, the counterpart of the v2 classic case (task #27): on a
 /// fresh open the view lands pinned at the tail; the TRANSCRIPT is the scroller, and scrolling
 /// it leaves the header and the sidebar exactly where they were; there is no iframe anywhere.

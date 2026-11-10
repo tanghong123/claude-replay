@@ -3648,18 +3648,35 @@ pub fn answer_in_browser(tab: &headless_chrome::Tab, answers: Vec<Answer>) {
 /// The test host page (`tests/fixtures/host/session-view-host.html`, #s429 stage 6): the session view
 /// mounted alone in a page of the case's own, on the monitor's origin at `/session-view-host`, a
 /// single segment so the page's base is the root. `query` is the page's address after `?`
-/// (`controls=reading,history` switches those off, `keys=page` takes the page's keys). Returns once
+/// (`hide=reading,history` switches those off, `keyboard=page` takes the page's keys). Returns once
 /// the view is mounted; panics with the page's error if it failed to.
 pub fn open_host_page(tab: &headless_chrome::Tab, monitor: &Monitor, query: &str) {
-    answer_in_browser(
-        tab,
-        vec![Answer {
-            pattern: "*/session-view-host*".into(),
-            path: "/session-view-host".into(),
-            content_type: "text/html; charset=utf-8".into(),
-            body: include_str!("../fixtures/host/session-view-host.html").into(),
-        }],
+    open_host_page_with(tab, monitor, query, "", Vec::new());
+}
+
+/// [`open_host_page`], with a `<meta>` of the case's own in the page's head (`policy`, a content
+/// policy: the page's script carries the nonce `host`), and more requests the browser answers
+/// beside the page (#s429 stage 7: the address a host's frame loads).
+pub fn open_host_page_with(
+    tab: &headless_chrome::Tab,
+    monitor: &Monitor,
+    query: &str,
+    policy: &str,
+    more: Vec<Answer>,
+) {
+    let page = include_str!("../fixtures/host/session-view-host.html");
+    assert!(
+        page.contains("<!--host-policy-->"),
+        "the host page has a place for a policy"
     );
+    let mut answers = vec![Answer {
+        pattern: "*/session-view-host*".into(),
+        path: "/session-view-host".into(),
+        content_type: "text/html; charset=utf-8".into(),
+        body: page.replace("<!--host-policy-->", policy),
+    }];
+    answers.extend(more);
+    answer_in_browser(tab, answers);
     tab.navigate_to(&monitor.url(&format!("session-view-host?{query}")))
         .unwrap();
     tab.wait_until_navigated().unwrap();
