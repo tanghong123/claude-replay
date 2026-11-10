@@ -1,8 +1,9 @@
 # The session view as a component
 
 > **DRAFT 1** (#s429, 2026-11-08). Step 4 of `design/embedding.md` ("The order of the work").
-> Stages 1 and 2 are built and shipped in v1.496.0, stage 3 in v1.497.0. Stage 4 and stage 5 (5a and
-> 5b) are built.
+> Stages 1 and 2 are built and shipped in v1.496.0, stage 3 in v1.497.0, stage 4 in v1.498.0, 5a in
+> v1.499.0, 5b in v1.500.0, and the class renames in v1.502.0. Stages 6 and 7 are left. There is no
+> shadow root (the owner, #s438).
 
 ## What it is for
 
@@ -44,8 +45,8 @@ options the app shell uses, and the kit (step 7) publishes them.
   from the page: mdrev's version (`data-mdrev`), the build's version, and Codex native mode's mark
   on `body`.
 - **The theme** is the page's too: `:root[data-theme="dark"]`, read by the view, the mdrev pane and
-  the image page. Such a rule does not reach inside a shadow tree, and Safari has no
-  `:host-context()`. So the view's root carries the theme itself, set from its options.
+  the image page. A host's page root is not the view's to theme, and a host may theme its own
+  differently. So the view's root carries the theme itself, set from its options.
 
 ## Decisions
 
@@ -67,33 +68,28 @@ Its options name the backend handle, and the handlers for what the view tells it
 
 The rest of the options are light or dark and the optional controls to switch off (#s436).
 
-### The shadow root, and how the app reaches it
+### No shadow root: the view's styles keep to its element
 
-Keeping a host's CSS out of the view takes a shadow root. Without one, a host's reset or utility
-framework reaches every element the view draws. So the view draws inside an open shadow root
-attached to `element`, and adopts its styles there. mdrev's stylesheet is a file scoped under
-`.mdrev-host` that a host links (`vendor/mdrev/release/docs/embedding-guide.md`), so the view puts
-that link inside its shadow root. Mermaid writes its `<style>` into its own SVG, which then applies
-where the SVG is.
+This draft first planned a shadow root, to keep a host's CSS out of the view. The owner chose
+otherwise for the collaboration app (#s438), as mdrev does under `.mdrev-host`: the view draws into
+the host's page, and each side keeps its styles to itself.
 
-The app shell mounts the view the same way, in the end. Otherwise the whole browser suite and the
-iOS Simulator walk would never cover the one mode a host uses: events retargeted at the shadow
-root, `document.activeElement`, the keys' engagement, mdrev's guest, and Safari's own handling of
-shadow trees.
+- **Ours stay inside the view.** Every rule of the view's stylesheet hangs on its own element
+  (stage 5b), so nothing of ours reaches the host's page.
+- **The host keeps blanket rules out of its page.** A rule on `button`, `*` or `body` would reach
+  the view's elements. The collaboration app moved its element rules into a layer that skips the
+  embed, and its agent rules forbid new unscoped ones (collab #s801).
+- **No class of ours shares a name with one the host styles.** A host's `.primary{…}` would
+  otherwise style our `.primary`. So the view's classes the collaboration app styles are named
+  `sv-<name>` (stage 5b), and a test keeps the bare names out. mdrev's own classes inside the pane
+  are mdrev's; the collaboration app removed the one rule of its own that reached them (#s444).
+- **A short reset** under the view's element sets what a host's rules could still change by
+  inheritance or a browser default (box sizing, a button's font).
 
-But the suite reads the page through `document` about 3,500 times, and a shadow root hides what is
-inside it from those reads. The cases' text must stay as it is: an unchanged suite passing against
-the app is what proves the refactor kept everything. So the harness does the reaching:
-- A script it installs before the page loads, as it installs `track_idle` today, makes the
-  document's lookups (`getElementById`, `querySelector`, `querySelectorAll`) search open shadow
-  roots too, when the document has no match.
-- Its own CDP lookups (`find_element`, 37 places) go through the same search.
-- The app's chrome stays in the page, so `document.body` and `document.documentElement`, read about
-  200 times, mean what they mean today.
+So the app shell and a host mount the view the same way: into the page. The suite and the iOS
+Simulator walk already cover that path, and the harness needs no lookup into a shadow tree. The
+`isolate` option, which only ever took `false`, goes with stage 6.
 
-Until that is built, the entry point takes `isolate: false` and draws into the page. This is a
-staging step only. The last stage switches the app shell to the shadow root, so that the last
-landing's suite and Simulator walk cover a host's path.
 ### The grid stays the app's
 
 In the app, the view's root element is `display: contents`. Its three parts stay columns of
@@ -184,20 +180,20 @@ pane, so step 6 also makes the view's root what they are placed against.
      that names `#app`, `.app`, `body`, `html` or `:root` and is not in one of its lists.
 
    **Left for later**, each listed in that test:
-   - **The app placing or styling the view from outside** (stage 6 lays the view out by its pane's
-     size instead): the rules conditioned on an app state on `#app`. Those are `sidebar-off`,
+   - **The app placing or styling the view from outside** (step 6 of `design/embedding.md` lays the
+     view out by its pane's size instead): the rules conditioned on an app state on `#app`. Those are `sidebar-off`,
      `sidebar-tight`, `mobile-detail`, `phone-column-off`, `column-pane-on`, `sessions-flat` and
      `sessions-arranged`, and the pane's `preview-off` and `preview-full`, copied onto `#app` for
      its grid. Also the app reading the view's state for its own control: the drawer handle steps
      under the dock while a dock sheet is open (`#app:has(.reading-cluster>…)>.drawer-handle`).
    - **The view's tokens on the app's grid:** `#app{--code-size;--measure}`, which `applyReading`
      writes on `grid`, and the phone's `#app{--phone-dock-h;--phone-glass}`. They move to the
-     view's root with the reading options (stage 7) and the pane-sized layout (stage 6).
+     view's root with the reading options (stage 6) and the pane-sized layout (embedding's step 6).
    - **The theme and the page's tokens:** `:root`, `html` and `[data-theme]` rules, the view's
-     included (`:root[data-theme="dark"] .fence`). In a shadow root the view's root carries the
-     theme (stage 6).
+     included (`:root[data-theme="dark"] .fence`). 5b gave the view's element its own theme and
+     tokens.
    - **Native mode's mark** on `body` (`body[data-shared-codex]`), which `backend.js` reads. The
-     rest of each such selector hangs on `#sessionView`.
+     rest of each such selector hangs on `#sessionView`. 5b sets the mark on the view's element too.
    - **The app's own chrome rules** stay on `#app`: the sidebar, the tree, the drawer, the rail,
      the arrangement strip and the section menu.
 
@@ -362,21 +358,25 @@ pane, so step 6 also makes the view's root what they are placed against.
    **Left for later:**
    - The app placing the view from outside (the 34 selectors that reach in), the window's media
      queries, and the tokens on the app's grid (`--code-size`, `--measure`, `--phone-dock-h`,
-     `--phone-glass`) with `--sidebar` and `--preview`: stage 6 lays the view out by its pane's
-     size, and stage 7 moves the reading options onto the view.
+     `--phone-glass`) with `--sidebar` and `--preview`: step 6 of `design/embedding.md` lays the
+     view out by its pane's size, and stage 6 here moves the reading options onto the view.
    - What the view draws outside its element is styled by the app's copy of its rules: in a host,
-     the task card and its scrim need a layer under the view's element (stage 6).
-6. **The shadow root:**
-   - the open shadow root, with the view's styles adopted into it and mdrev's linked there;
-   - keys and focus followed through the event's composed path;
-   - the harness's lookup into open shadow roots;
-   - the hostile test host page (`design/embedding.md`, the isolation test).
-7. **Events out and the options,** as the app shell uses them: the title, the turn, Info, a file, a
-   link and a toast; light or dark; the optional controls switched off. Also the native app's own
-   frame for an agent's page, which is not offered to other hosts (#s436).
-8. **The app shell in the shadow root.** The app passes `isolate: true` like any host, and the whole
-   suite and the Simulator walk run against it that way. Then the `isolate` option goes.
+     the task card and its scrim need a layer under the view's element (embedding's step 6, with
+     the test host page that first mounts the view alone).
+   - **The class renames, built** (#s429, after 5b's review): see 5b above. Shipped in v1.502.0.
+6. **Events out and the options,** as the app shell uses them: the title, the turn, Info, a file, a
+   link and a toast; light or dark; the reading options (the wide transcript, wrapped code, the text
+   size) on the view's element rather than the app's grid; and the optional controls switched off.
+   The `isolate` option goes, since the view always draws into the page (#s438).
+7. **The native app's own frame** for an agent's page, which is not offered to other hosts (#s436).
+
+The shadow root this draft first planned as stage 6, and the app shell moved into it as stage 8, are
+dropped (#s438, above). The isolation test of `design/embedding.md` still runs, in the terms the
+owner set: a test host page whose own CSS keeps to its side (class rules on common names, element
+rules on its own containers, no blanket rules) and whose keys are its own. Nothing of ours reaches
+the host, and the view looks as it does in the app. It comes with step 6 there, where the view is
+first mounted alone in a test page for the width tests.
 
 Every stage is page code. So before each landing, the whole local browser suite runs, about 85
-minutes, and the iOS Simulator walk is done. To keep that to three runs, the stages land in three
-groups: 1 and 2, then 3 and 4, then 5 to 8.
+minutes, and the iOS Simulator walk is done. Stages 1 and 2 landed together, then 3, then 4, then 5a,
+5b and the renames; 6 and 7 land together.

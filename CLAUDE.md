@@ -42,7 +42,8 @@ options)`; `app.js` keeps the app around it (the session list, the drawer and ra
 theme, the session search and the toast) and mounts it. Two rules hold every shell module (`ui.rs`
 `the_shell_reaches_the_page_only_through_its_root`): the view finds its elements, focus, floating
 layers, stylesheets, measured properties and theme through `viewRoot`, and the app's chrome through
-`page` (`view-root.js`), never `document` itself, so the view can move into a shadow root; and the
+`page` (`view-root.js`), never `document` itself, so it assumes nothing of a host's page (there is no
+shadow root: the owner chose prefixed styles, #s438); and the
 view keeps its own state as classes on its element `#sessionView` (`display: contents` in the app, so
 its parts stay columns of `#app`'s grid), a rule's negated twin reading `#sessionView` too, with the
 pane's open, full and resizing states copied onto `#app` for the app's grid. Its server's facts

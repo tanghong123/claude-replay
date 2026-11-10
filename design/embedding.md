@@ -178,8 +178,11 @@ by the native app (#s407). None can drift from the others.
   from a phone's to a wide desktop's and at several heights, by mouse and by touch, light and
   dark. At every size: nothing overflows its pane, every control can be reached and clicked,
   and the right layout is chosen.
-- **Isolation, both ways:** a test host page with hostile CSS and keys of its own. Nothing of the
-  host reaches a record, and nothing of ours reaches the host.
+- **Isolation, both ways:** a test host page with CSS and keys of its own, as hostile as a host may
+  be under the owner's terms (#s438): class rules on common names (`.primary`, `.hint`, `.active`,
+  `.open`) and element rules on its own containers, but no blanket rules, which a host keeps out of
+  its page (the collaboration app's agent rules forbid them, collab #s801). Nothing of the host
+  reaches a record, and nothing of ours reaches the host.
 - **The app's existing browser suite** keeps running unchanged against the app, which is now a
   host. That is the proof that the refactor kept everything.
 - **The iOS Simulator walk** of the app as today, and of a test host with a narrow pane on a
