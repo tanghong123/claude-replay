@@ -2051,7 +2051,10 @@ mod price_tests {
             ("gpt-6-cyber", p("20", "25", "2", "100")),
             ("gpt-5.6-cyber", p("12.5", "15.625", "1.25", "75")),
             ("gpt-daybreak-red-latest", p("12.5", "15.625", "1.25", "75")),
-            // Listed with no cache-write rate, so it no longer shares gpt-5.6-cyber's row.
+            // Listed with no cache-write rate, so it no longer shares gpt-5.6-cyber's row. The
+            // page prints it as gpt-5.5-cyber-preview since at least 2026-11-10 (#s453); the old
+            // name keeps its rates.
+            ("gpt-5.5-cyber-preview", p("12.5", "12.5", "1.25", "75")),
             ("gpt-5.5-cyber", p("12.5", "12.5", "1.25", "75")),
             // Delisted by 2026-09-25, kept at the rate listed when the catalog was built.
             ("gpt-5.1-codex-max", p("1.25", "1.25", "0.125", "10")),
