@@ -811,6 +811,21 @@ const SYSTEM_SUBTYPES_KNOWN: &[&str] = &[
     "turn_duration",
 ];
 
+/// #s452 (client 2.1.322): the one content a `critical_system_reminder` attachment has been seen
+/// carrying. The record is `{type, content}` with a `rendered` system reminder wrapping the content
+/// (`renderedRole: system`), written in the run of context attachments the client writes each time
+/// it builds a context (after `instructions`, before `credential_org`): at the head of a sub-agent's
+/// transcript, after each `compact_boundary`, and where a running agent's client was upgraded to
+/// 2.1.322. Met 2026-11-10 in sub-agent transcripts only, 33 on hong-devserver and 3 on
+/// aries-black, with this content every time: a self-closing marker the client tells the MODEL,
+/// which carries nothing a reader wrote or the agent did. So nothing is drawn, as for
+/// `sandbox_instructions` and `instructions`. The type is a generic envelope, so it is NOT in `ATTACHMENT_TYPES_KNOWN`: the
+/// attachment arm claims a record only when its content is exactly this marker, and any other
+/// content under the type still reaches the unknown sweep. REVISIT (a RENDER question for the
+/// owner): a content other than this marker, or the record in a main transcript with something a
+/// reader would want named.
+const CRITICAL_REMINDER_MARKER: &str = "<artifact-content-authored-by-others/>";
+
 /// `attachment.type`s met in the corpus (census, 2026-09-20: 39). Most are bookkeeping —
 /// `total_tokens_reminder` alone occurs 1,515 times in one session — and the handful that
 /// carry something a reader wants are handled above.
@@ -4206,6 +4221,13 @@ pub(crate) fn decode_line_known(
                 });
             } else if let Some(att) = a.and_then(attachment_from_event) {
                 msgs.push(Message::Attachment(att));
+            } else if a.and_then(|a| a.get("type")).and_then(Value::as_str)
+                == Some("critical_system_reminder")
+                && a.and_then(|a| a.get("content")).and_then(Value::as_str)
+                    == Some(CRITICAL_REMINDER_MARKER)
+            {
+                // #s452: the marker measured, addressed to the model. Nothing drawn, nothing
+                // reported; another content under the type falls through to the sweep below.
             } else {
                 // #264: an attachment of a type nothing above claimed. Most attachment types
                 // ARE bookkeeping and say nothing here; this is one the vocabulary has never
@@ -8261,6 +8283,50 @@ mod tests {
             .filter(|s| s.example.as_deref() == Some("s-s369"))
             .collect();
         assert!(seen.is_empty(), "and is not reported as new: {seen:?}");
+    }
+
+    /// #s452: the 2.1.322 attachment `critical_system_reminder` carrying the marker measured
+    /// (`CRITICAL_REMINDER_MARKER`) is known: neither drawn nor reported. The type is keyed on that
+    /// content, so the same type carrying anything else is still reported as new. Removing the
+    /// arm turns the first half red; listing the type in `ATTACHMENT_TYPES_KNOWN` turns the second.
+    #[test]
+    fn a_critical_system_reminder_attachment_is_known() {
+        let jsonl = r###"
+{"type":"user","version":"2.1.322","sessionId":"s-s452","uuid":"u1","timestamp":"2026-11-10T01:00:00.000Z","message":{"role":"user","content":"sort the heron sightings"}}
+{"type":"attachment","version":"2.1.322","sessionId":"s-s452","uuid":"m1","parentUuid":"u1","timestamp":"2026-11-10T01:00:00.000Z","attachment":{"type":"critical_system_reminder","content":"<artifact-content-authored-by-others/>"},"rendered":[{"content":"<system-reminder><artifact-content-authored-by-others/></system-reminder>"}],"renderedRole":"system"}
+"###;
+        let blocks = parse(jsonl);
+        assert_eq!(blocks.len(), 1, "only the prompt is drawn: {blocks:?}");
+        assert!(
+            matches!(&blocks[0], Block::UserText(t) if t == "sort the heron sightings"),
+            "{blocks:?}"
+        );
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s452"))
+            .collect();
+        assert!(seen.is_empty(), "and is not reported as new: {seen:?}");
+
+        let other = r###"
+{"type":"user","version":"2.1.322","sessionId":"s-s452-other","uuid":"u1","timestamp":"2026-11-10T01:00:00.000Z","message":{"role":"user","content":"sort the heron sightings"}}
+{"type":"attachment","version":"2.1.322","sessionId":"s-s452-other","uuid":"m1","parentUuid":"u1","timestamp":"2026-11-10T01:00:00.000Z","attachment":{"type":"critical_system_reminder","content":"A reminder of some other kind."},"rendered":[{"content":"<system-reminder>A reminder of some other kind.</system-reminder>"}],"renderedRole":"system"}
+"###;
+        let blocks = parse(other);
+        assert_eq!(
+            blocks.len(),
+            1,
+            "another content draws nothing either: {blocks:?}"
+        );
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s452-other"))
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(
+            seen,
+            vec!["critical_system_reminder".to_string()],
+            "but it is reported as new, so the sweep sees it"
+        );
     }
 
     /// #s2: the 2.1.288 attachment `skill_mention` is known — neither reported as unknown nor
