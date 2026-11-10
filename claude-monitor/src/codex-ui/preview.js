@@ -149,7 +149,7 @@ export class Preview {
     this.expandBtn.setAttribute("aria-label", words);
     this.expandBtn.setAttribute("aria-pressed", String(full));
   }
-  setWidth(value, persist) { const width = Math.max(340, Math.min(680, Number(value) || 420)); viewRoot.styleRoot().style.setProperty("--preview", `${width}px`); if (persist) localStorage.setItem("am-demo-preview", width); this.actions.layoutChanged?.(); }
+  setWidth(value, persist) { const width = Math.max(340, Math.min(680, Number(value) || 420)); (this.actions.rootProperty || ((name, value) => viewRoot.styleRoot().style.setProperty(name, value)))("--preview", `${width}px`); if (persist) localStorage.setItem("am-demo-preview", width); this.actions.layoutChanged?.(); }
   restoreWidth() { this.setWidth(localStorage.getItem("am-demo-preview") || 420, false); }
   setSession(sessionId) {
     if (sessionId === this.sessionId) return;
@@ -496,8 +496,9 @@ export class Preview {
     const current = () => generation === this.renderGeneration && frame.isConnected;
     // One address per tab while its text is the same: the pane draws a tab again whenever it is shown
     // (a tab chosen, the pane reopened, a roster change), and each ask would make the native app keep
-    // another copy of the page. The native app owns the addresses' lifetime; the view never releases
-    // one. A refusal is not kept, so the next time the tab is shown asks again.
+    // another copy of the page. The address serves the tab for its whole life, across session
+    // switches, and nothing ever says it is released: the native app keeps every one for the life of
+    // the page. A refusal is not kept, so the next time the tab is shown asks again.
     this.frames ||= new WeakMap();
     let held = this.frames.get(item);
     if (held?.source !== source) {

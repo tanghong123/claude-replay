@@ -107,9 +107,11 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    there the page's own would not run. With it, the view hands that document to `frame`, which
  *    answers (or resolves to) the address the frame loads instead: the native app serves the
  *    document from a scheme of its own, under the same policy (design/monitor-hub.md, D3). It is asked
- *    once per tab while the tab's text is the same, and no address is ever released: the native app
- *    owns their lifetime. An answer that is not an address, or a refusal, shows the pane's own error
- *    (and is asked again the next time the tab is shown).
+ *    once per tab while the tab's text is the same, and that address is used again for the tab's whole
+ *    life, across session switches. No address is ever released and nothing says one is no longer
+ *    needed: the native app keeps every address it gave for the life of the page, unless it decides
+ *    otherwise itself. An answer that is not an address, or a refusal,
+ *    shows the pane's own error (and is asked again the next time the tab is shown).
  *  - `selectedId()`, `sessionRow(id)`, `sessionWorkers(id)`: what the app's session index says —
  *    the session it has selected, a session's row, and the headless workers a session started.
  *  - `selectSession(id, push)`: ask the app to select a session (the parent control, a descent).
@@ -147,10 +149,12 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  `unmount()` takes the view away: it stops all it started (its listeners on the page, its timers,
  *  frames and observers, the record store's polls, the pane's and the viewport's own), and work
  *  still out when it is called (a send, a grant, the host's confirm, a dialog's read, a download, a
- *  server search) does nothing when it comes back. It removes what it put outside its element, puts
- *  back what the host had set where the view writes (the page root's measured properties, the
- *  `grid`'s transform), and leaves the element as the host gave it: empty, with its own attributes.
- *  The element must be empty when the view mounts: one holding anything is refused. After the
+ *  server search) does nothing when it comes back. It removes what it put outside its element; where
+ *  it wrote on the host's (the page root's measured properties, the `grid`'s transform) and its
+ *  value is still there, it puts back the host's value from the mount (or removes it), and leaves a
+ *  property it never wrote, or one the host wrote since, alone; and it leaves the element as the host
+ *  gave it: empty, with its own attributes. The element must be empty when the view mounts (nothing
+ *  in it but white space): one holding an element, text or a comment is refused. After the
  *  unmount every other member of the handle does nothing and answers nothing (`controls` too), and
  *  the view tells its host nothing more; mounting again in the same element draws a new view. */
 export function mountSessionView(element, options) {
@@ -191,14 +195,26 @@ const ResizeObserver = kept(globalThis.ResizeObserver), MutationObserver = kept(
 // The element as the host gave it, which `unmount` puts back: its attributes (the id, the class, the
 // theme and the reading options the view writes on it) and no children.
 const elementBefore = [...element.attributes].map(attribute => [attribute.name, attribute.value]);
-// …and what the host had set where the view writes too, which `unmount` puts back as it was: the
-// properties the view measures onto the page's root, the transform it moves the host's box by over a
-// phone's keyboard, and whether either had a style of its own.
+// …and what the host had set where the view may write too: the properties the view measures onto the
+// page's root, the transform it moves the host's box by over a phone's keyboard, and whether either had
+// a style of its own. `unmount` puts back the host's value only where the view wrote and its value is
+// still there (`viewWrote`, below).
 const ROOT_PROPERTIES = ["--preview", "--phone-top", "--phone-bottom", "--phone-kb"];
 const hostStyles = [[viewRoot.styleRoot(), ROOT_PROPERTIES], [options.grid, ["transform"]]].filter(([node]) => node).map(([node, names]) => ({
   node, style: node.getAttribute("style"),
   values: names.map(name => [name, node.style.getPropertyValue(name), node.style.getPropertyPriority(name)]),
 }));
+// What the view itself wrote there, by element and property: the unmount puts back only a property
+// whose value is still the one the view last wrote. One the view never wrote, or the host has
+// written since, is the host's and stays as it is.
+const viewWrote = new Map();
+/** Write a style property on the page's root or the host's box, and keep that the view wrote it. */
+function writeStyle(node, name, value) {
+  if (!node) return;
+  if (value) node.style.setProperty(name, value); else node.style.removeProperty(name);
+  if (!viewWrote.has(node)) viewWrote.set(node, new Map());
+  viewWrote.get(node).set(name, node.style.getPropertyValue(name));
+}
 // The view's own stores, fresh for this mount (stage 7): the open session's records and how they are
 // drawn, and how the view is laid out and read, with the reader's remembered choices.
 const recordState = createRecordState(), uiState = createViewState();
@@ -207,9 +223,10 @@ if (options.backend) useBackend(options.backend);
 // The view builds its three parts inside its element from its own markup (stage 4), so a host's
 // page carries none of the view's markup, and draws the glyphs that markup names.
 if (element.id && element.id !== "sessionView") throw new Error(`mountSessionView draws into an element whose id is sessionView, or that has none; this one is #${element.id}`);
-// A host gives it an empty element (stage 7): one that holds anything is refused, so the view never
-// takes a host's nodes for its own, nor takes them away when it is unmounted.
-if (element.firstElementChild) throw new Error("mountSessionView draws into an empty element; this one holds the host's nodes");
+// A host gives it an empty element (stage 7): one that holds anything but white space (an element,
+// text, a comment) is refused, so the view never takes a host's nodes for its own, nor takes them
+// away when it is unmounted.
+if ([...element.childNodes].some(node => !(node.nodeType === 3 && !node.data.trim()))) throw new Error("mountSessionView draws into an empty element; this one holds the host's nodes");
 element.innerHTML = SESSION_VIEW_MARKUP;
 element.querySelectorAll("[data-icon]").forEach(glyph => { glyph.innerHTML = svg(glyph.dataset.icon); });
 // The view's element carries its id, its class and its theme (stage 5b): its stylesheet hangs every
@@ -498,7 +515,7 @@ const paneLayoutChanged = () => {
   paneLaidOutWidth = width;
   viewport.remeasure();
 };
-const preview = new Preview({ layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
+const preview = new Preview({ layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
 const attachmentViewer = new AttachmentViewer({ toast });
 // What the compose box asks of the app goes nowhere once the view is unmounted: a dialog's answer
 // still settling, a send still out.
@@ -4056,9 +4073,9 @@ var phoneDock;
   const place = () => {
     const box = grid.getBoundingClientRect();
     const bottom = Math.round(topbar.getBoundingClientRect().bottom - box.top);
-    if (bottom > 0) viewRoot.styleRoot().style.setProperty("--phone-top", `${bottom}px`);
+    if (bottom > 0) writeStyle(viewRoot.styleRoot(), "--phone-top", `${bottom}px`);
     const rise = Math.round(box.bottom - dock.getBoundingClientRect().top);
-    if (getComputedStyle(dock).display !== "none" && rise > 0) viewRoot.styleRoot().style.setProperty("--phone-bottom", `${rise}px`);
+    if (getComputedStyle(dock).display !== "none" && rise > 0) writeStyle(viewRoot.styleRoot(), "--phone-bottom", `${rise}px`);
   };
   new ResizeObserver(place).observe(topbar);
   new ResizeObserver(place).observe(dock);
@@ -4082,9 +4099,9 @@ var phoneDock;
       if (controls.nativeActive && PHONE.matches) {
         const frame = sharedKeyboardFrame(grid.getBoundingClientRect().height, viewport2);
         // Keep one containing block even at zero offset; Safari pans during keyboard animation.
-        grid.style.transform = Math.abs(viewport2.scale - 1) < 0.01 ? `translateY(${frame.shift}px)` : "";
+        writeStyle(grid, "transform", Math.abs(viewport2.scale - 1) < 0.01 ? `translateY(${frame.shift}px)` : "");
         sessionView.classList.toggle("keyboard-up", frame.keyboardOpen);
-        root.style.setProperty("--phone-kb", `${frame.inset}px`);
+        writeStyle(root, "--phone-kb", `${frame.inset}px`);
         place();
         // The shared listener can run first; fit again after applying the current viewport frame.
         controls.fitComposer();
@@ -4095,9 +4112,9 @@ var phoneDock;
       const shift = steady ? Math.max(0, Math.round(viewport2.pageTop)) : 0;
       // Once the keyboard is down there is nothing to fight: the page goes back to the top.
       if (steady && !covered && shift) scrollTo(0, 0);
-      grid.style.transform = shift ? `translateY(${shift}px)` : "";
+      writeStyle(grid, "transform", shift ? `translateY(${shift}px)` : "");
       sessionView.classList.toggle("keyboard-up", covered > 0);
-      root.style.setProperty("--phone-kb", `${covered}px`);
+      writeStyle(root, "--phone-kb", `${covered}px`);
       place();
     };
     viewport2.addEventListener("resize", ride, { signal });
@@ -4191,9 +4208,9 @@ return fenced({
    *  frames and observers, the record store's reads and polls, the viewport's and the artifact
    *  pane's own, the compose box's and the downloads', whose work still out does nothing when it
    *  comes back), what it put outside its element goes (the task card and its scrim, a list a wide
-   *  phone's column borrowed, the engine's globals for a bug report), what the host had set where the
-   *  view writes is put back (the page root's measured properties, the `grid`'s transform), and the
-   *  element is left as the host gave it: empty, with its own attributes. The view tells its host
+   *  phone's column borrowed, the engine's globals for a bug report), the host's value is put back
+   *  wherever the view's is still the one it wrote (the page root's measured properties, the `grid`'s
+   *  transform; `viewWrote`), and the element is left as the host gave it: empty, with its own attributes. The view tells its host
    *  nothing more, and every other member of the handle does nothing (`fenced`). Mounting again in
    *  the same element draws a new view. Native mode, which only the app installs and the app never
    *  unmounts, is not taken down. */
@@ -4215,7 +4232,11 @@ return fenced({
     taskScrim.remove(); taskPopover.remove(); floating.clear();
     for (const [, , id] of PHONE_PANES) { const node = byId(id); if (node && !element.contains(node)) node.remove(); }
     for (const { node, style, values } of hostStyles) {
-      for (const [name, value, priority] of values) { if (value) node.style.setProperty(name, value, priority); else node.style.removeProperty(name); }
+      for (const [name, value, priority] of values) {
+        const wrote = viewWrote.get(node)?.get(name);
+        if (wrote === undefined || node.style.getPropertyValue(name) !== wrote) continue;
+        if (value) node.style.setProperty(name, value, priority); else node.style.removeProperty(name);
+      }
       if (style === null && !node.getAttribute("style")) node.removeAttribute("style");
     }
     element.replaceChildren();
