@@ -280,7 +280,9 @@ export const SHARED = Object.freeze([
 /** Common words the app draws as modifiers (on its rows, layers and hints) that the view does not
  *  draw today but may: like `SHARED`, they decide nothing alone. Beside a chrome name the rule is the
  *  app's (`.navbtn .hint`); beside a name of the view's it is the view's (`.process-row.warn`,
- *  `.transcript .hint`); alone it is in both files (`.dim`). */
+ *  `.transcript .kbd`); alone it is in both files (`.dim`). `.hint` is the app's ⌘K hint, and the
+ *  view may never draw it: the collaboration app styles it (#s438), so ui.rs refuses it in
+ *  session-view.css and the contract in the view's modules. */
 export const COMMON = Object.freeze([
   ".arranged", ".dialog", ".dim", ".flat", ".hint", ".in-group", ".is-absent", ".is-hidden", ".is-member", ".is-side", ".kbd",
   ".production-open", ".sheet", ".warn",

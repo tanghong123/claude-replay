@@ -189,7 +189,7 @@ const { SESSION_VIEW_MARKUP } = await import("../src/codex-ui/session-view-marku
   const only = sel => { const d = styles.classify(sel); return d.app ? (d.view.length ? "both" : "app") : "view"; };
   assert.equal(only(".turn:not(.dim)"), "view", "an app's word inside :not() decides nothing");
   assert.equal(only(".process-row.warn"), "view", "a common word as a second class of a view element is the view's");
-  assert.equal(only(".transcript .hint"), "view", "a common word inside a view element is the view's");
+  assert.equal(only(".transcript .kbd"), "view", "a common word inside a view element is the view's");
   assert.equal(only(".navbtn .hint"), "app", "a common word inside the app's chrome is the app's");
   assert.equal(only(".dim"), "both", "a common word alone is in both files");
   assert.equal(only('[data-nav-card="tasks"] .outline-card-head'), "view", "an attribute the view's elements carry may lead");

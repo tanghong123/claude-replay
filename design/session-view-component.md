@@ -240,7 +240,7 @@ pane, so step 6 also makes the view's root what they are placed against.
      - `COMMON`: common words the app draws as modifiers (`.dim`, `.warn`, `.hint`, `.kbd`,
        `.dialog`, the list's `is-*` marks…), which decide nothing alone, as `SHARED` does: beside a
        chrome name the rule is the app's (`.navbtn .hint`), beside a name of the view's it is the
-       view's (`.process-row.warn`, `.transcript .hint`), alone it is in both files.
+       view's (`.process-row.warn`, `.transcript .kbd`), alone it is in both files.
      - A name inside `:not()` decides nothing (`.turn:not(.dim)` is the view's).
      - `ROOT_CLASSES`: the classes the view's element carries.
      - `OUTSIDE`: what the view draws that the page shows outside `#sessionView`, so the app's copy
@@ -335,7 +335,8 @@ pane, so step 6 also makes the view's root what they are placed against.
      is `.sv-primary`. The demo's `.smallbtn.primary` rules each gained `.smallbtn.sv-primary` in
      the same rule, so their place in the cascade holds. The app's confirm button keeps
      `.smallbtn.primary`: the classifier lists `.primary` in `APP_CHROME` now, not `SHARED`, so its
-     rule is the app's alone, and `app-shell.css` did not change. The split above moves by three:
+     rule is the app's alone, and its `.primary` rules in `app-shell.css` did not change (that
+     file's task-card rules did, taking the new names). The split above moves by three:
      the three `.smallbtn.primary` selectors are the app's alone now (380, and 43 in both), and the
      three `.smallbtn.sv-primary` beside them the view's (1,885).
    - `.crumbs` was one dead rule of the demo's (`.artifact-path .crumbs`; nothing draws either
