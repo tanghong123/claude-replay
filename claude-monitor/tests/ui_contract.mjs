@@ -127,12 +127,23 @@ const { SESSION_VIEW_MARKUP } = await import("../src/codex-ui/session-view-marku
     for (const m of text.matchAll(/className\s*=\s*(["'`])((?:(?!\1).)*)\1/g)) for (const w of words(m[2])) names.add(`.${w}`);
     for (const m of text.matchAll(/classList\.(?:add|toggle|replace)\(([^)]*)\)/g)) for (const q of m[1].matchAll(/["']([A-Za-z0-9_-]+)["']/g)) names.add(`.${q[1]}`);
     for (const m of text.matchAll(/(?:\bid=\\?["']|\.id\s*=\s*["'])([A-Za-z0-9_-]+)/g)) names.add(`#${m[1]}`);
+    // dialog-card.js builds its elements through `el(tag, classes, text)`, and the task card takes
+    // its class names from session-view.js's APP_TASK.
+    for (const m of text.matchAll(/\bel\(\s*"[a-z0-9]+",\s*"([^"]*)"/g)) for (const w of words(m[1])) names.add(`.${w}`);
+    for (const m of text.matchAll(/const APP_TASK = \{([^}]*)\}/g)) for (const q of m[1].matchAll(/"([A-Za-z0-9_-]+)"/g)) names.add(`.${q[1]}`);
     viewDrawn.set(name, names);
   }
   assert.ok(viewDrawn.has("components.js") && viewDrawn.get("session-view-markup.js")?.has(".workspace"), "the scan read the view's modules and its markup");
+  assert.ok(viewDrawn.get("dialog-card.js")?.has(".dialog-choice") && viewDrawn.get("session-view.js")?.has(".sv-task-card-head"), "the scan read the dialog card's elements and the task card's names");
   const appOnly = new Set([...styles.APP_CHROME, ...styles.APP_STATES]);
   const crossing = [...viewDrawn].flatMap(([name, names]) => [...names].filter(n => appOnly.has(n)).map(n => `${name}: ${n}`));
   assert.deepEqual(crossing, [], "the view's modules draw no name of the app's chrome or states (a common word goes in COMMON)");
+  // The collaboration app styles these classes in its own page, where the view sits in a pane
+  // (#s438), and its rule would reach an element of the view's by class: the view's own are
+  // `sv-<name>` (the task card's whole family). ui.rs refuses them in session-view.css.
+  const colliding = [".session-main", ".task-card", ".hint", ".crumbs", ".pinned", ".primary"];
+  const collisions = [...viewDrawn].flatMap(([name, names]) => [...names].filter(n => colliding.includes(n) || n.startsWith(".task-card-")).map(n => `${name}: ${n}`));
+  assert.deepEqual(collisions, [], "the view's modules draw no class the collaboration app styles (#s438): name it sv-<name>");
   // The classifier's edges, none of which the sources hold today (the review of stage 5b). A name
   // decides only outside `:not()`, and a common word beside a name of the view's is the view's.
   const only = sel => { const d = styles.classify(sel); return d.app ? (d.view.length ? "both" : "app") : "view"; };

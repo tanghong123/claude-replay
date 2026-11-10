@@ -881,6 +881,54 @@ mod tests {
         );
     }
 
+    /// #s429, #s438: the collaboration app mounts the session view in a pane of its own page and
+    /// styles these classes there. Our rules hang on `#sessionView` and cannot reach its elements,
+    /// but its rules reach ours by class, so the view names none of them: its own are `sv-<name>`
+    /// (`.sv-session-main`, `.sv-task-card` and its family, `.sv-primary`…). A selector of the
+    /// view's stylesheet naming one, inside `:not()` too, fails here with its line.
+    #[test]
+    fn the_view_s_stylesheet_names_no_class_the_collaboration_app_styles() {
+        const COLLIDING: &[&str] = &[
+            ".session-main",
+            ".task-card",
+            ".hint",
+            ".crumbs",
+            ".pinned",
+            ".primary",
+        ];
+        let css = include_str!("codex-ui/session-view.css");
+        let selectors = style_selectors(css);
+        assert!(selectors.len() > 2000, "read {} selectors", selectors.len());
+        for (line, selector) in &selectors {
+            let names = selector_names(selector);
+            let found: Vec<&&str> = names
+                .iter()
+                .filter(|n| COLLIDING.contains(n) || n.starts_with(".task-card-"))
+                .collect();
+            assert!(
+                found.is_empty(),
+                "session-view.css:{line}: `{selector}` names {found:?}, which the collaboration \
+                 app styles in the page the view is mounted in (#s438). Name the view's element \
+                 sv-<name> in reference.css or production.css and the code that draws it, then \
+                 run scripts/extract-agent-monitor-demo.mjs"
+            );
+        }
+        // The renamed classes are the ones the view's rules name now.
+        for renamed in [
+            ".sv-session-main",
+            ".sv-task-card",
+            ".sv-pinned",
+            ".sv-primary",
+        ] {
+            assert!(
+                selectors
+                    .iter()
+                    .any(|(_, s)| selector_names(s).contains(&renamed)),
+                "session-view.css styles {renamed}"
+            );
+        }
+    }
+
     #[test]
     fn page_is_the_reference_shell_without_mock_runtime() {
         let page = page("test", false);
