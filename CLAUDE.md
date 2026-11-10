@@ -40,15 +40,19 @@ step 4): `session-view.js` holds the transcript, the turn bar and search, the ou
 artifact pane, the compose box and the phone dock and sheets, behind `mountSessionView(element,
 options)`; `app.js` keeps the app around it (the session list, the drawer and rail, the brand, the
 theme, the session search and the toast) and mounts it. What a host may change is the view's options
-(stage 6; the doc comment over `mountSessionView` is the reference, and the contract's mount interface
-cases hold the names): `theme`; `controls`, the optional controls switched off by name (`reading`,
-`history`, `detach`, each on unless `false`; a control off is not drawn and takes no key; the app
-passes none); and `keys`, `"engaged"` by default (the view binds its keymap and answers only while the
-reader's last press or focus is inside it, as mdrev does) or `"page"`, which the app passes: the
-view binds none and the app's one keymap at the document routes keys to the handle's `keys`. What the
-view tells its host comes out as optional handlers with plain data, never a node (`onTitle`,
-`onTurn`, `onInfo`, `onFile`, `onLinkCopied`, `onToast`): the app passes all six, and only its toast
-does anything yet (its phone bar takes the rest at embedding's step 6). The reading tokens
+(stage 6; the doc comment over `mountSessionView` is the reference, every name is in `MOUNT_OPTIONS`
+and any other is refused, and the contract's mount interface cases hold them): `theme`; `show`, the
+optional controls by name (`reading`, `history`, `detach`, each shown unless `false`, booleans only;
+a control off is not drawn and takes no key; the app passes none); and `keyboard`, `"engaged"` by
+default (the view binds its keymap in the capture phase and answers, as the pane's image viewer
+does, only while the reader's last press or focus is inside it, as mdrev does) or `"page"`, the
+app's: the view binds none and the app's one keymap at the document routes keys to the handle's
+`keys`. What the view tells its host comes out as optional handlers with plain data, never a node
+(`onTitle`, `onTurn`, `onInfo`, `onFile`, `onLinkCopied`, `onToast`), through one emitter that
+reports a handler's throw rather than raising it and holds what is said during the mount until it
+returns: the app passes all six, and only its toast does anything yet (its phone bar takes the rest
+at embedding's step 6). A host's page must still carry the compose box's write-mode and confirm
+elements the doc comment names (stage 7 passes them in). The reading tokens
 (`--code-size`, `--measure`) are the view element's; `grid` (the app's `#app`) is still the box a
 phone's sheets are measured against and the keyboard ride moves. Two rules hold every shell module (`ui.rs`
 `the_shell_reaches_the_page_only_through_its_root`): the view finds its elements, focus, floating

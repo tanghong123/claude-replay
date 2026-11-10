@@ -66,9 +66,9 @@ Its options name the backend handle, and the handlers for what the view tells it
 - a link copied (`onLinkCopied`);
 - a toast (`onToast`).
 
-The rest of the options are light or dark (`theme`), the optional controls to switch off
-(`controls`) and the keys kept to the view (`keys`, engaged by default) (#s436). Stage 6 below says
-what each is.
+The rest of the options are light or dark (`theme`), the optional controls to switch off (`show`)
+and the keys kept to the view (`keyboard`, engaged by default) (#s436). Stage 6 below says what each
+is.
 
 ### No shadow root: the view's styles keep to its element
 
@@ -373,27 +373,44 @@ pane, so step 6 also makes the view's root what they are placed against.
    The `isolate` option goes, since the view always draws into the page (#s438).
 
    **Built** (#s429). Nothing a reader of the app sees changed: the app passes every handler, keeps
-   every control on and keeps the page's keyboard. `mountSessionView`'s doc comment is the reference.
+   every control shown and keeps the page's keyboard. `mountSessionView`'s doc comment is the
+   reference. An independent review then found defects for a host, fixed in the same stage; each is
+   said below where it belongs.
+   - **The options**, each named in `MOUNT_OPTIONS`; any other name is refused, so a retired `toast`
+     or a typo fails loudly. Required: `grid` and the app's index and list callbacks. Optional:
+     `theme`, `backend`, `show`, `keyboard`, the six events and the app's own (`parentShown`,
+     `openList`, `openSidebar`, `paneLayout`, `paneCount`). The names `show` and `keyboard` are the
+     coordinator's, so neither can be taken for the handle's `controls` or `keys`.
    - **Events out.** Each is an optional handler, called with plain data (never a node), where the
-     view already does that thing. The view keeps drawing its own top bar, so it still shows its
-     title, turn and Info itself.
+     view already does that thing, through one emitter (`say`). A handler that throws is reported
+     (`reportError`) and the view goes on: a throw had aborted a redraw after the record store moved
+     its cursor, and skipped a transaction's placement. What the view says while it mounts (its first
+     title) is held and goes out a microtask after `mountSessionView` returns, in order, so a handler
+     may use the handle. The view keeps drawing its own top bar, so it still shows its title, turn and
+     Info itself.
      - `onTitle({ session, title })`: the title the top bar shows, said when it changes
-       (`renderHeader`, which the index's poll calls every few seconds). With no session it is the
-       bar's placeholder and `session` is "".
-     - `onTurn({ session, turn, label })`: the turn the reader is in, said when it changes
-       (`updateTurnBar`, on every scroll and transaction, which reads no layout for it). `turn` is
-       null when there is none.
+       (`renderHeader`, which the index's poll calls every 5 s). With no session it is the bar's
+       placeholder and `session` is "".
+     - `onTurn({ session, turn, label })`: the turn the reader is in, said when it changes, and only
+       from where the engine placed the reader: after a transaction and after a scroll, the task's
+       last reading once (`queueTurn`). Not from `afterRender`, which runs before the placement and
+       had reported a wrong turn that the transaction's end then corrected. `turn` is null when there
+       is none, and for a session just opened until its own records arrive (`unitsSession`): the
+       loading update had reported the previous session's turn under the new id. `open` and `close`
+       say none at once. The app's own subtitle keeps its old timing.
      - `onInfo({ session })`: the reader pressed for the session's Info: the phone's Info button,
        the outline footer's, or the collapsed rail's, when the press opens it. A hover's peek is not
        a request. The view still opens its own popover; a host whose bar shows Info is step 6 of
        `design/embedding.md`.
      - `onFile({ name, path, text })`: the artifact pane was asked to show a file (`Preview.open`,
-       and the first of an Open all, the one it shows). `path` is "" for none, and `text` is the text
-       the transcript carries for it, or null. The fields are copied off the pane's tab, which also
-       holds the file's stamps and an image's bytes.
+       and the first of an Open all, the one it shows). `name` is the file's own, not an Open all
+       tab's label ("image.png 1/4"); `path` is "" for none, and `text` is the text the transcript
+       carries for it, or null. The fields are copied off the pane's tab, which also holds the file's
+       stamps and an image's bytes.
      - `onLinkCopied({ url, record })`: the reader copied a link to a record (a record's `#`).
      - `onToast(message)`: say something briefly. It was the required `toast` option, renamed into
-       the family; a host that leaves it out shows nothing.
+       the family. A host that leaves it out hears nothing of what the view says this way, a send the
+       compose box held or the server refused among it.
      The app passes all six. It shows the toasts; the other five do nothing, since today's page does
      nothing with them (it never set `document.title` from the session). The app's phone bar takes
      the title, the turn and Info at embedding's step 6.
@@ -408,13 +425,15 @@ pane, so step 6 also makes the view's root what they are placed against.
      while the keyboard is up (`ride`: its `transform`, and its height for native mode's
      `sharedKeyboardFrame`). Embedding's step 6 makes the view's own element that box. The phone's
      `--phone-dock-h` and `--phone-glass` are still declared on `#app`, for the same step.
-   - **Optional controls**, one option, `controls: { <name>: false }`. Each is on unless named
-     `false`, and a name the view does not know is refused (`OPTIONAL_CONTROLS`). A control switched
-     off is not drawn and takes no key. Three are on the list:
-     - `reading`, the Reading menu (Aa), with its keys `w`, `-` and `+`. Its settings are the
-       reader's own and the defaults read well everywhere, so a host with little room (a side column)
-       or one that keeps its chrome to the fewest controls can do without it. The per-block code bars
-       stay: they act on one block, not the page.
+   - **Optional controls**, one option, `show: { <name>: false }`. Each is shown unless it is
+     `false`; a name the view does not know (`OPTIONAL_CONTROLS`), or a value that is not a boolean,
+     is refused. A control switched off is not drawn and takes no key. Three are on the list:
+     - `reading`, the Reading menu (Aa), with its keys `w`, `-` and `+`, at every width (on a phone
+       it is the dock's Aa). Its settings are the reader's own and the defaults read well everywhere,
+       so a host with little room (a side column) or one that keeps its chrome to the fewest controls
+       can do without it. With it off, the reader's stored preferences (this origin's
+       `am-prod-reading`) still apply as they are. The per-block code bars stay: they act on one
+       block, not the page.
      - `history`, the viewport history's Save, a row of the Reading menu. It is this repository's bug
        report tool: a host's readers report to the host, and the file is named for this app.
      - `detach`, the artifact pane's ↗, which opens the document or image in a tab of its own. That
@@ -427,56 +446,93 @@ pane, so step 6 also makes the view's root what they are placed against.
      reader whose lists it hides (#s356); switching them off would have to mean showing everything,
      a second path through the outline's rendering for no host's need yet. Also left: the writes,
      which appear only when the backend serves them, and the title's copy menu.
-   - **Keys**, the `keys` option (`KEY_MODES`).
+   - **Keys**, the `keyboard` option (`KEYBOARD_MODES`).
      - `"engaged"`, the default for a host. The view binds its own keymap and answers it only while
-       the reader works in it: the last mousedown or focus landed inside its element, or inside what
-       it floats over the page from `viewRoot.layer()` (the task card and its scrim), and not inside
-       a guest of its own (mdrev's pane), whose keys stay mdrev's. That is mdrev's own rule, which
-       `bindKeymap` already applies to a guest (#270). The binding is resolved by the shared keymap
-       (`resolveKey`), so a key in a text field or with a platform modifier is never taken. A key the
-       view has no action for (the list's arrows, `\`, a switched-off control's) or an action that
-       answers `false` is left to the page. The engagement is built in the view on `resolveKey`, not
-       in `bindKeymap`: the offline pages inline the shared module, and the byte gate reads them.
-     - `"page"`, which the app passes. The view binds none: the host owns the page's keyboard and
-       calls the handle's `keys[action]`. The app's one keymap at the document does that, with the
-       list's keys beside the view's and their contexts, exactly as before; it now leaves a key it
-       has no action for to the page too, which changes nothing in the app, where every action has one.
+       the reader works in it (`engaged`): the last `pointerdown`, `mousedown` or focus landed inside
+       its element, or inside what it floats over the page from `viewRoot.layer()` (`floating`: the
+       task card and its scrim), and not inside a guest of its own (mdrev's pane), whose keys stay
+       mdrev's. That is mdrev's own rule, which `bindKeymap` already applies to a guest (#270).
+       `pointerdown` is heard beside `mousedown` because a host that prevents the first stops the
+       browser's second, which left the view engaged. Every one of these listeners, the keydown
+       included, is in the capture phase, so a host's own listener on the page, bound before the
+       view's, finds the key already taken (`defaultPrevented`) rather than acting on it beside the
+       view. The binding is resolved by the shared keymap (`resolveKey`), so a key in a text field or
+       with a platform modifier is never taken. A key the view has no action for (the list's arrows,
+       `\`, a switched-off control's) or an action that answers `false` is left to the page. The
+       artifact pane's image viewer, which takes `+ = - _ 0 1` and the arrows on the document,
+       keeps to the same engagement: a zoomed image no longer took the arrows the host's page scrolls
+       with. And it too is heard in the capture phase in a host (`keysFirst`, through the key host
+       option `image-view.js` already had), since it binds when an image opens, after a host's own
+       listener. The engagement is built in the view on `resolveKey`, not in `bindKeymap`: the offline
+       pages inline the shared module, and the byte gate reads them.
+     - `"page"`, the app's mode. The view binds none and is always engaged, so the image viewer
+       answers as it did: the host owns the page's keyboard and calls the handle's `keys[action]`.
+       A host that uses it gets the action names, not the key table (`shared/keymap.js`, which the
+       app binds at the document with the list's keys beside the view's and their contexts, exactly
+       as before). It now leaves a key it has no action for to the page too, which changes nothing in
+       the app, where every action has one.
      - Not gated: the view's Escape listeners on the page. Each closes something of the view's that
        is open (a menu, the popovers, a phone sheet, the task card, whose capture-phase listener stops
        the Escape), so each acts only after the reader opened it in the view.
    - **`isolate` is gone**, with the throw at the top of `mountSessionView` and the app's
-     `isolate: false`. `view-root.js` keeps its root-based lookups; nothing calls `useViewRoot`.
-   - **Mounted alone, the view met one fault the app never had.** The artifact pane shuts itself as
-     it is built. In a page whose element does not start `preview-off` (the app's markup does), that
+     `isolate: false`; and so is `view-root.js`'s `useViewRoot`, which nothing called, with its
+     `root?.host` branches. Every lookup of `viewRoot` is the page's, as it was in practice.
+   - **Mounted alone, the view met a fault the app never had.** The artifact pane shuts itself as it
+     is built. In a page whose element does not start `preview-off` (the app's markup does), that
      changed the transcript's width, and `paneLayoutChanged` remeasured before the record store
-     existed: the mount threw. The pane's layout changes now remeasure only once the view is built;
-     the reading options' first application, later in the mount, measures everything anyway.
-   - **Tests.** The frontend contract's mount interface cases hold the names both ways: every option
-     the view reads is one the app passes or one the doc comment documents as optional, every option
-     read is documented, the six handlers are called by their literal names and the app passes each,
-     and the app leaves out only `controls`. A second block runs the engaged binding against a fake
-     page (a press in the view, in its task card, in a guest, in the host; focus in). Three browser
-     cases: `the_app_shell_hears_what_its_session_view_tells_its_host` (port 3102) answers the app's
-     request for `session-view.js` with a wrapper that records each event on its way to the app's
-     handler, and asserts the title when a session opens, the turn as `]` moves it, Info's press, a
-     file opened with its path and text, a link copied and a toast the app then shows, all of it
-     plain data. The other two mount the view alone in a test host page,
-     `claude-replay-browser-tests/tests/fixtures/host/session-view-host.html`:
-     `the_session_view_in_a_host_draws_no_control_switched_off_and_takes_none_of_its_keys` (3103) and
-     `the_session_view_in_a_host_takes_its_keys_only_while_the_reader_works_in_it` (3104, engaged and
-     `"page"`). The page and the wrapper are answered by the browser itself, through CDP's Fetch
-     domain (`harness::answer_in_browser`), at a single-segment address on the monitor's origin, so
-     the monitor serves nothing new and no reader can reach either.
+     existed: the mount threw. The pane's layout changes now remeasure only once the view is built,
+     from the width the mount left (the one read before the pane shut itself was stale); the reading
+     options' first application, later in the mount, measures everything anyway.
+   - **What a host's page must still carry**, which the test host found: the compose box's controls
+     (`control-store.js`) bind the app's write-mode switch (`writeSwitch`, `writeBtn`, `writeInfo`,
+     `writeHelp`, `sidebarMiniWrite`) and its confirm layer (`confirmLayer` with its `h3` and
+     `.dialog`, `confirmText`, `cancelSend`, `confirmSend`) by id, so a page without them cannot
+     mount the view. The doc comment names them and the contract checks each against
+     `control-store.js`; the test host carries hidden stand-ins. That is stage 3's `controlState`,
+     passed in by stage 7 at the latest.
+   - **Tests.** The frontend contract's mount interface cases hold the names both ways:
+     `MOUNT_OPTIONS` is exactly the options the view reads and the ones its doc comment documents,
+     where documented means an option bullet's head names it (not any backticked word); the required
+     ones are passed by the app, the app leaves out only `show`, and each of the six handlers is
+     raised through `say` by its literal name and passed by the app. It runs the emitter (a throw
+     reported, the mount's events held, then in order) and pins where the turn is said. A second
+     block runs the engagement and the engaged keymap as the view writes them, in both modes, over a
+     fake page: a press in the view, its task card, a guest and the host, focus in, a pointer going
+     down in the host, every listener in the capture phase, and the page's keyboard binding nothing.
+     Three browser cases:
+     - `the_app_shell_hears_what_its_session_view_tells_its_host` (port 3102) answers the app's
+       request for `session-view.js` with a wrapper that records each event on its way to the app's
+       handler. It asserts the title when a session opens and no title said twice in a row across an
+       index poll; a hover over Info saying nothing and a press saying it once; a file opened with its
+       path and text; an Open all of three images as one `onFile` under the file's own name; a link
+       copied; a toast the app then shows; the turn as `]` moves it, nothing across a scroll inside
+       that turn, and no turn said twice in a row; all of it plain data.
+     - The other two mount the view alone in a test host page,
+       `claude-replay-browser-tests/tests/fixtures/host/session-view-host.html`, whose own keydown
+       listener is bound before the mount and which can open a session from the monitor's list.
+       `the_session_view_in_a_host_draws_no_control_switched_off_and_takes_none_of_its_keys` (3103):
+       nothing switched off is drawn and the Reading keys are not taken while engaged, and at a
+       phone's width the dock's Aa is there with reading on and gone with it off.
+       `the_session_view_in_a_host_takes_its_keys_only_while_the_reader_works_in_it` (3104): with a
+       session open, engaged and disengaged by a press and by focus, a key without an action left to
+       the page, a zoomed image in the pane panned by ArrowDown while engaged and the key reaching the
+       host once disengaged, and `"page"` binding none.
 
-   **Left for later:** the app's own phone bar, which shows the title, the turn and Info from these
-   events and decides by pane size which bar a phone shows; `grid`'s two remaining roles and the
-   phone's tokens on `#app`; and a host-supplied link for a record (the view copies the page's own
-   address with the record's hash, which in a host is the host's address). All are embedding's step 6.
-   And one the test host found: the compose box's controls (`control-store.js`) still bind the
-   app's write-mode switch (`writeSwitch`, `writeBtn`, `writeInfo`, `writeHelp`,
-   `sidebarMiniWrite`) and its confirm layer (`confirmLayer`, `confirmText`, `cancelSend`,
-   `confirmSend`), so a page without them cannot mount the view; the test host carries hidden
-   stand-ins. That is stage 3's `controlState`, passed in by stage 7 at the latest.
+     The page and the wrapper are answered by the browser itself, through CDP's Fetch domain
+     (`harness::answer_in_browser`), at a single-segment address on the monitor's origin, so the
+     monitor serves nothing new and no reader can reach either.
+
+   **Left for later:**
+   - The app's own phone bar, which shows the title, the turn and Info from these events and decides
+     by pane size which bar a phone shows; `grid`'s two remaining roles and the phone's tokens on
+     `#app`; and a host-supplied link for a record (the view copies the page's own address with the
+     record's hash, which in a host is the host's address). All are embedding's step 6.
+   - **The unmount.** The handle has none yet. It must remove what the view adds to the document
+     for its keys, the four capture listeners of engaged mode (`pointerdown`, `mousedown`, `focusin`,
+     `keydown`), beside the view's other listeners on the window and the document (its Escape
+     handlers, the pane's and the task card's outside-press closers, the viewport's), its floating
+     layers in `viewRoot.layer()`, its observers and its timers.
+   - The compose box's page elements above, passed in with `controlState` (stage 7).
 7. **The native app's own frame** for an agent's page, which is not offered to other hosts (#s436).
 
 The shadow root this draft first planned as stage 6, and the app shell moved into it as stage 8, are
