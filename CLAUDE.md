@@ -849,7 +849,12 @@ extraction stays exact. **The page loads neither `reference.css` nor `production
 (the session view's, every rule hung on `#sessionView`) from those two, through
 `scripts/session-view-css.mjs`, and the contract requires the byte match. A rule is still written in
 `production.css`; then run the script. A new class the app draws goes in one of the classifier's
-lists, which the contract checks against `app.js` and the shell.
+lists, which the contract checks against `app.js` and the shell. **The view draws no class the
+collaboration app styles in its own page** (#s438, where the view sits in a pane and a host's
+`.primary{…}` would reach ours by class): the view's are `sv-session-main`, `sv-task-card` and its
+`sv-task-card-*` family, `sv-pinned` and `sv-primary` (the app's confirm button keeps `.primary`),
+and it draws no `.hint` (the app's ⌘K hint keeps it) and no `.crumbs`; `ui.rs` refuses the six bare
+names in `session-view.css`, and the contract refuses them in the view's modules.
 
 **Shared frontend modules live in `claude-replay-html/src/html/shared/`** (seam 0 of
 `design/monitor-shell-duplication.md`, v1.140.0): ONE source, consumed two ways — the monitor

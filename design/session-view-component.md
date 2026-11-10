@@ -321,6 +321,43 @@ pane, so step 6 also makes the view's root what they are placed against.
      `sv-session-loading-spin`), in every state; the same keyframes run. The noise was mdrev's
      relative time again, 6 values in one state.
 
+   **The names a host styles, built** (#s429, after 5b). Our rules cannot reach the host's page,
+   but the host's class rules still reach ours by name: the collaboration app styles six classes
+   the view used, so the view's are renamed `sv-<name>`, the prefix its keyframes took (#s438).
+   - `.session-main`, the workspace's middle column, is `.sv-session-main`.
+   - `.task-card` and its whole family (`-head`, `-glyph`, `-id`, `-title`, `-chips`, `-dates`,
+     `-gap`, `-section`, `-label`, `-body`, `-item`, `-out`, `-log`, `-log-time`, `-log-msg`,
+     `-log-by`) are `.sv-task-card…`: the names `APP_TASK` hands the shared card. The classic
+     page's `tcard-*` and the module's file name stay. `OUTSIDE` names `.sv-task-card`, so the
+     app's copy still styles the card in the page's layer.
+   - The pane's roster tab, `.preview-tab.pinned`, is `.preview-tab.sv-pinned`.
+   - `.primary` on the view's buttons (a dialog's first choice and its Next, the pane's Download)
+     is `.sv-primary`. The demo's `.smallbtn.primary` rules each gained `.smallbtn.sv-primary` in
+     the same rule, so their place in the cascade holds. The app's confirm button keeps
+     `.smallbtn.primary`: the classifier lists `.primary` in `APP_CHROME` now, not `SHARED`, so its
+     rule is the app's alone, and `app-shell.css` did not change. The split above moves by three:
+     the three `.smallbtn.primary` selectors are the app's alone now (380, and 43 in both), and the
+     three `.smallbtn.sv-primary` beside them the view's (1,885).
+   - `.crumbs` was one dead rule of the demo's (`.artifact-path .crumbs`; nothing draws either
+     class), now `.sv-crumbs`. `.hint` is drawn by the app alone (⌘K beside Search), and stays.
+   - The guard: `ui.rs` `the_view_s_stylesheet_names_no_class_the_collaboration_app_styles` fails
+     on any selector of `session-view.css` naming one of the six, or the task card's family, inside
+     `:not()` too; the contract fails on the view's modules drawing one (its scan now reads
+     `dialog-card.js`'s `el(tag, classes)` and `APP_TASK` as well).
+   - Nothing a reader sees changed. Both generated stylesheets, with the renames mapped back, are
+     byte for byte what 5b derived. Stage 5b's probe, the 5b build against this one, matched
+     elements by path with each renamed class read under its old name (a fixed map, nothing else
+     stripped). Its 86 states in 5b's world: 151,609 elements compared, no difference; one state
+     whose loads mounted different units (mdrev's pane flipped to light) was made again and
+     compared clean. A world that adds a published Artifact (the roster tab) and a delivered binary
+     (the pane's Download), in 17 states with the pane open, the task card and the Download on a
+     desktop, a phone and sideways: 24,714 elements, no difference. Noise, old against old: mdrev's
+     relative time, the jump to the latest fading in one load, and the transcript's window in the
+     roster opened at 1440px. A positive control, one rule of each family changed in the new
+     build's stylesheets, showed on exactly those elements (the middle column, the card's title, the
+     roster tab, the Download). The probe cannot draw a dialog (`.dialog-choice.sv-primary`, a herdr
+     pane's), which the browser case taps by its new name.
+
    **Left for later:**
    - The app placing the view from outside (the 34 selectors that reach in), the window's media
      queries, and the tokens on the app's grid (`--code-size`, `--measure`, `--phone-dock-h`,

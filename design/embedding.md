@@ -212,7 +212,9 @@ The first kit ships without the detached page; a later kit adds it (steps 7 and 
   module (`design/backend-mount.md`), so the caching and the file serving are ours too, over the
   sessions it names (the owner, #s440). It takes no lower layer of ours: no renderer of its own
   fed with records. Its styles stay out of the pane (the owner, #s438: ours are prefixed under the
-  view's element, and the host keeps blanket rules out of its own page). What it changes on its
+  view's element, and the host keeps blanket rules out of its own page). Its class rules could
+  still reach ours by name, so the view's classes the host styles are named `sv-<name>`
+  (`design/session-view-component.md`, stage 5). What it changes on its
   side is its lead's to schedule.
 - **The native app** (#s407) mounts both components in its own window, reaching each paired
   monitor through the backend handle that `design/monitor-hub.md` describes.
