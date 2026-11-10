@@ -421,8 +421,10 @@ export class Preview {
       const bar = stage.querySelector("[data-zoom-bar]"), percent = stage.querySelector("[data-zoom-percent]");
       // The preview's zoom keys belong to it only while the pane is open (#268) — the pane
       // can be collapsed with an image still mounted, and a collapsed pane must not own
-      // `0`/`-`/`+`… against the compose box beside it.
-      this.imageView = createImageView(stage, img, { isActive: () => uiState.preview, onChange: state => { percent.textContent = `${state.percent}%`; } });
+      // `0`/`-`/`+`… against the compose box beside it. In a host's page, also only while the
+      // reader is working in the view (`engaged`, #s429 stage 6): a zoomed image must not take the
+      // arrows the host's page scrolls with.
+      this.imageView = createImageView(stage, img, { isActive: () => uiState.preview && this.actions.engaged?.() !== false, onChange: state => { percent.textContent = `${state.percent}%`; } });
       img.addEventListener("load", () => { bar.hidden = false; }, { once: true });
       bar.onclick = event => {
         const how = event.target.closest("[data-zoom]")?.dataset.zoom, view = this.imageView;

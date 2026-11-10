@@ -3795,7 +3795,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(imageView, /isContentEditable/, "…including contenteditable");
   assert.match(imageView, /if \(!isActive\(\)\) return;/, "…and yields while it is not on screen");
   const preview = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
-  assert.match(preview, /createImageView\(stage, img, \{ isActive: \(\) => uiState\.preview, onChange: /, "the preview's viewer is active only while the pane is open");
+  assert.match(preview, /createImageView\(stage, img, \{ isActive: \(\) => uiState\.preview && this\.actions\.engaged\?\.\(\) !== false, onChange: /, "the preview's viewer is active only while the pane is open, and in a host's page only while the reader works in the view (#s429 stage 6)");
 
   console.log("#228 image cases passed");
 }
@@ -4293,37 +4293,53 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // shared module is untouched (the offline pages inline it, and the byte gate reads them).
   assert.match(viewSource, /if \(keyMode === "engaged"\) \{/, "the view binds its own keys only when engaged");
   assert.match(viewSource, /const engage = event => \{ engaged = inView\(event\.target\) && !inGuest\(event\.target\); \};/, "engagement is the last press or focus inside the view and outside its guest");
-  assert.match(viewSource, /element\.contains\(target\) \|\| taskPopover\.contains\(target\) \|\| taskScrim\.contains\(target\)/, "inside the view counts what it floats over the page");
-  assert.match(viewSource, /const binding = resolveKey\(event, "view", event\.target\);\n    const act = binding && keyActions\[binding\.action\];\n    if \(act && act\(\) !== false\) event\.preventDefault\(\);/, "a key the view has no action for, or one that answers false, is left to the page");
+  assert.match(viewSource, /element\.contains\(target\) \|\| \[\.\.\.floating\]\.some\(node => node\.contains\(target\)\)/, "inside the view counts what it floats over the page");
+  assert.match(viewSource, /floating\.add\(taskScrim\); floating\.add\(taskPopover\);/, "the task card and its scrim float");
+  assert.match(viewSource, /const binding = resolveKey\(event, "view", event\.target\);\n    const act = binding && keyActions\[binding\.action\];\n    if \(act && act\(\) !== false\) event\.preventDefault\(\);\n  \}, true\);/, "a key the view has no action for, or one that answers false, is left to the page; the view listens in the capture phase");
+  assert.match(viewSource, /engaged: \(\) => engaged, toast,/, "the pane's image viewer reads the engagement too");
   // Mounted alone, the pane shutting itself as it is built changed the width, and the remeasure
   // reached the record store before it existed: the pane's layout waits for the mount's end.
   assert.match(viewSource, /const paneLayoutChanged = \(\) => \{\n  if \(!viewMounted\) return;/, "the pane remeasures nothing while the view mounts");
   assert.match(viewSource, /^renderHeader\(\); renderNavigator\(\); paintJump\(\);\n[^\n]*\nviewMounted = true;$/m, "and does from the first render on");
-  // The engaged binding, run: a fake document, the view's element, a host's button and a guest.
-  const handlers = {};
-  const doc = { addEventListener: (type, fn) => { (handlers[type] ||= []).push(fn); } };
+  // The engaged binding, run: the engagement and the keymap as the view writes them, over a fake
+  // document, the view's element, a host's node, a guest and the task card the view floats.
+  const engagement = /^const floating = new Set\(\);\nlet engaged = keyMode === "page";\nif \(keyMode === "engaged"\) \{\n[\s\S]*?\n\}\n/m.exec(viewSource);
+  const keymap = /^if \(keyMode === "engaged"\) \{\n  document\.addEventListener\("keydown"[\s\S]*?\n\}\n/m.exec(viewSource);
+  assert.ok(engagement && keymap, "the view's engagement and its engaged keymap are where the contract reads them");
   const node = (inside, guest = false) => ({ tagName: "DIV", closest: sel => (sel === "[data-guest-keys]" && guest ? {} : null), inside });
   const viewNode = node(true), guestNode = node(true, true), hostNode = node(false), card = { tagName: "DIV", closest: () => null, card: true };
-  const body = /if \(keyMode === "engaged"\) \{\n([\s\S]*?)\n\}\n/.exec(viewSource)[1];
+  const mount = (keyMode, actions) => {
+    const handlers = {}, capture = {};
+    const doc = { addEventListener: (type, fn, phase) => { (handlers[type] ||= []).push(fn); capture[type] = phase === true; } };
+    const run = new Function("document", "element", "inGuest", "resolveKey", "keyActions", "keyMode", `${engagement[0]}${keymap[0]}; return { floating, engaged: () => engaged };`);
+    const view = run(doc, { contains: t => t.inside === true, isConnected: true }, inGuest, resolveKey, actions, keyMode);
+    view.floating.add({ contains: t => t.card === true });
+    const press = (key, target = { tagName: "BODY", closest: () => null }) => { let prevented = false; for (const fn of handlers.keydown || []) fn({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, target, preventDefault() { prevented = true; } }); return prevented; };
+    const on = (type, target) => { for (const fn of handlers[type] || []) fn({ target }); };
+    return { ...view, handlers, capture, press, on };
+  };
   const fired = [];
-  const run = new Function("document", "element", "taskPopover", "taskScrim", "inGuest", "resolveKey", "keyActions", body);
-  run(doc, { contains: t => t.inside === true, isConnected: true }, { contains: t => t.card === true }, { contains: () => false }, inGuest, resolveKey, { "turn-next": () => { fired.push("turn-next"); }, "tasks-center": () => { fired.push("tasks-center"); return false; } });
-  const press = (key, target = { tagName: "BODY", closest: () => null }) => { let prevented = false; for (const fn of handlers.keydown) fn({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, target, preventDefault() { prevented = true; } }); return prevented; };
-  const down = target => { for (const fn of handlers.mousedown) fn({ target }); };
-  assert.equal(press("]"), false, "nothing pressed yet: not the view's key");
+  const view = mount("engaged", { "turn-next": () => { fired.push("turn-next"); }, "tasks-center": () => { fired.push("tasks-center"); return false; } });
+  assert.deepEqual(view.capture, { pointerdown: true, mousedown: true, focusin: true, keydown: true }, "every listener is in the capture phase, ahead of the host's own on the page");
+  assert.equal(view.press("]"), false, "nothing pressed yet: not the view's key");
   assert.deepEqual(fired, []);
-  down(viewNode);
-  assert.equal(press("]"), true, "a press in the view engages it, even with the focus on <body>");
-  assert.equal(press("\\"), false, "a binding the view has no action for stays the page's");
-  assert.equal(press("c"), false, "an action that answers false leaves the key to the page");
+  view.on("mousedown", viewNode);
+  assert.equal(view.press("]"), true, "a press in the view engages it, even with the focus on <body>");
+  assert.equal(view.press("\\"), false, "a binding the view has no action for stays the page's");
+  assert.equal(view.press("c"), false, "an action that answers false leaves the key to the page");
   assert.deepEqual(fired, ["turn-next", "tasks-center"]);
-  down(guestNode);
-  assert.equal(press("]"), false, "inside a guest of the view's, the key is the guest's");
-  down(card);
-  assert.equal(press("]"), true, "the task card the view floats over the page is the view's");
-  down(hostNode);
-  assert.equal(press("]"), false, "a press in the host ends it");
-  for (const fn of handlers.focusin) fn({ target: viewNode });
-  assert.equal(press("]"), true, "focus coming into the view engages it too");
+  view.on("mousedown", guestNode);
+  assert.equal(view.press("]"), false, "inside a guest of the view's, the key is the guest's");
+  view.on("mousedown", card);
+  assert.equal(view.press("]"), true, "the task card the view floats over the page is the view's");
+  view.on("mousedown", hostNode);
+  assert.equal(view.press("]"), false, "a press in the host ends it");
+  view.on("focusin", viewNode);
+  assert.equal(view.press("]"), true, "focus coming into the view engages it too");
+  view.on("pointerdown", hostNode);
+  assert.equal(view.engaged(), false, "a pointer going down in the host ends it, even where the host prevents the mousedown after it");
+  const page = mount("page", { "turn-next": () => { fired.push("page"); } });
+  assert.deepEqual(Object.keys(page.handlers), [], "with the page's keyboard the view listens to nothing");
+  assert.equal(page.engaged(), true, "and is always engaged, so the image viewer answers as it did");
   console.log("#s429 optional controls and keys cases passed");
 }

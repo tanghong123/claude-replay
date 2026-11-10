@@ -365,6 +365,22 @@ bindComponentEvents(transcript, recordState, {
   toast
 });
 
+// Engagement (stage 6): whether the reader is working in the view. It is mdrev's own rule, which
+// `bindKeymap` already reads for a guest (#270): the last press or focus landed inside the view's
+// element, or inside what the view floats over the page from `viewRoot.layer()` (`floating`: the task
+// card and its scrim), and not inside a guest of the view's (mdrev's pane), whose keys stay its own.
+// Both `pointerdown` and `mousedown` are heard, since a host that prevents the first stops the
+// browser's second. The view's keymap and the artifact pane's image viewer answer only while it holds
+// (`keyboard: "engaged"`); with the page's keyboard (`"page"`, the app's) the view is always engaged,
+// as before.
+const floating = new Set();
+let engaged = keyMode === "page";
+if (keyMode === "engaged") {
+  const inView = target => !!target && typeof target.closest === "function" && (element.contains(target) || [...floating].some(node => node.contains(target)));
+  const engage = event => { engaged = inView(event.target) && !inGuest(event.target); };
+  for (const type of ["pointerdown", "mousedown", "focusin"]) document.addEventListener(type, engage, true);
+}
+
 // #s25: the pane changes the TRANSCRIPT's layout only where it is a grid column (a wide desktop).
 // Elsewhere — a phone, or below 1180px — it lies over the transcript, whose width and so every
 // height are unchanged, and a remeasure only threw every measured height away: on a phone it was the
@@ -381,7 +397,7 @@ const paneLayoutChanged = () => {
   paneLaidOutWidth = width;
   viewport.remeasure();
 };
-const preview = new Preview({ layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") });
+const preview = new Preview({ layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), engaged: () => engaged, toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") });
 const attachmentViewer = new AttachmentViewer({ toast });
 const controlActions = { renderTree: () => options.renderList(), recordSnapshot: () => ({ session: recordState.session, records: recordState.records }), toast, refreshIndex: () => options.refreshIndex(), pauseIndex: () => options.pauseIndex(), resumeIndex: () => options.resumeIndex(), selectSession, refreshEmpty: () => recordStore.refreshEmpty() };
 const ordinaryControls = new ControlStore(controlActions);
@@ -3198,6 +3214,8 @@ taskScrim.className = "task-scrim";
 taskScrim.id = "taskScrim";
 taskScrim.hidden = true;
 viewRoot.layer().append(taskScrim, taskPopover);
+// They float over the page, outside the view's element, and a press in them is a press in the view.
+floating.add(taskScrim); floating.add(taskPopover);
 let taskPopoverOpener = null;
 function closeTaskPopover(restoreFocus = true) {
   if (taskPopover.hidden) return;
@@ -3523,25 +3541,19 @@ const keyActions = {
 // A control a host switched off takes no key (stage 6): its actions are not the view's.
 if (!shows("reading")) for (const action of ["wrap", "size-down", "size-up"]) delete keyActions[action];
 // Engaged (stage 6, the default for a host): the view answers its keymap only while the reader is
-// working in it, as `design/embedding.md` says a component does, so it never takes the host's keys.
-// Engagement is mdrev's own rule, which `bindKeymap` already reads for a guest (#270): the last
-// mousedown or focus landed inside the view's element, or inside what it floats over the page from
-// `viewRoot.layer()` (the task card and its scrim), and not inside a guest of the view's (mdrev's
-// pane), whose keys stay its own. The shared keymap resolves the binding; an action the view does
-// not have (the list's arrows, `\`) or one that answers `false` is left to the page. "page" binds
-// nothing: the host routes the page's keys to `keys` (app.js).
+// working in it (`engaged`, above), as `design/embedding.md` says a component does, so it never
+// takes the host's keys. The shared keymap resolves the binding; an action the view does not have
+// (the list's arrows, `\`) or one that answers `false` is left to the page. It listens in the capture
+// phase, so a host's own listener on the page, bound before the view's, finds the key already taken
+// (`defaultPrevented`) rather than acting on it beside the view. "page" binds nothing: the host
+// routes the page's keys to `keys` (app.js).
 if (keyMode === "engaged") {
-  let engaged = false;
-  const inView = target => !!target && typeof target.closest === "function" && (element.contains(target) || taskPopover.contains(target) || taskScrim.contains(target));
-  const engage = event => { engaged = inView(event.target) && !inGuest(event.target); };
-  document.addEventListener("mousedown", engage, true);
-  document.addEventListener("focusin", engage, true);
   document.addEventListener("keydown", event => {
     if (!engaged || !element.isConnected) return;
     const binding = resolveKey(event, "view", event.target);
     const act = binding && keyActions[binding.action];
     if (act && act() !== false) event.preventDefault();
-  });
+  }, true);
 }
 // Discoverability in the shell's idiom: the key in the control's own title / hint.
 byId("transcriptSearchInput").placeholder = `Search this session  ( ${hintFor("search")} )`;
