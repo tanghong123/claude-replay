@@ -1268,6 +1268,7 @@ fn the_app_shell_keys_step_turns_and_heads() {
             .and_then(|r| r.value)
             .unwrap_or(serde_json::Value::Null)
     };
+    harness::track_idle(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:2835/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
@@ -1278,51 +1279,85 @@ fn the_app_shell_keys_step_turns_and_heads() {
     // Start at the top, then `]` twice: the anchor must move to a LATER user turn each time.
     let top_turn = "(function(){ var s=document.querySelector('.transcript'), top=s.getBoundingClientRect().top; for (var c of document.querySelector('.virtual-window').children) { var r=c.getBoundingClientRect(); if (r.bottom > top + 1) return c.dataset.unitKey || ''; } return ''; })()";
     eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:-1})); s.scrollTop = 0; return 'ok'; })()");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // The first key must wait for the engine to have HEARD that scroll (#s443). While it still
+    // follows the tail, `]` steps from the last turn: on a busy box, 500 ms after the scroll the
+    // first `]` went to t39, the last, and the second could only stay there ("…and again:
+    // 100 -> 100 (top "user:t39")", 3 of 10 runs on hong-devserver; with no wait at all, 1 of
+    // 3 here).
+    harness::until_reader_owns_the_view(&tab);
     // Position is the unit's RECORD index (`data-unit-from`), never its place among the
-    // mounted children: the window is virtualized and re-mounted around every jump.
-    let unit_index = |tab: &headless_chrome::Tab| -> i64 {
-        eval(tab, "(function(){ var s=document.querySelector('.transcript'), top=s.getBoundingClientRect().top; for (var c of document.querySelector('.virtual-window').children) { if (c.getBoundingClientRect().top >= top - 24) return Number(c.dataset.unitFrom); } return -1; })()")
-            .as_i64()
+    // mounted children: the window is virtualized and re-mounted around every jump. The
+    // reading carries the scroll offset too (`<unit>@<offset>`), so a jump still under way
+    // reads as moving. Each key is followed by a wait for its effect to land and hold still,
+    // never a fixed sleep, so the next key steps from where the last one landed.
+    let reading = "(function(){ var s=document.querySelector('.transcript'), top=s.getBoundingClientRect().top; for (var c of document.querySelector('.virtual-window').children) { if (c.getBoundingClientRect().top >= top - 24) return c.dataset.unitFrom + '@' + Math.round(s.scrollTop); } return '-1@' + Math.round(s.scrollTop); })()";
+    let unit_of = |v: &serde_json::Value| -> i64 {
+        v.as_str()
+            .and_then(|s| s.split('@').next())
+            .and_then(|u| u.parse().ok())
             .unwrap_or(-1)
     };
-    let start = unit_index(&tab);
+    let offset_of = |v: &serde_json::Value| -> i64 {
+        v.as_str()
+            .and_then(|s| s.split('@').nth(1))
+            .and_then(|o| o.parse().ok())
+            .unwrap_or(-1)
+    };
+    let bound = std::time::Duration::from_secs(10);
+    let (at_top, seen_start) = harness::until_still(&tab, reading, |v| offset_of(v) == 0, bound);
+    let start = unit_of(&at_top);
     eval(&tab, &key("]", false));
-    std::thread::sleep(std::time::Duration::from_millis(600));
-    let after_one = unit_index(&tab);
+    let (v, seen_one) = harness::until_still(&tab, reading, |v| unit_of(v) > start, bound);
+    let after_one = unit_of(&v);
     eval(&tab, &key("]", false));
-    std::thread::sleep(std::time::Duration::from_millis(600));
-    let after_two = unit_index(&tab);
+    let (v, seen_two) = harness::until_still(&tab, reading, |v| unit_of(v) > after_one, bound);
+    let after_two = unit_of(&v);
     let top_after_two = eval(&tab, top_turn);
     eval(&tab, &key("[", false));
-    std::thread::sleep(std::time::Duration::from_millis(600));
-    let back = unit_index(&tab);
+    let (v, seen_back) = harness::until_still(&tab, reading, |v| unit_of(v) < after_two, bound);
+    let back = unit_of(&v);
     // `j` focuses a tool head; typing into the search box must not step anything.
+    // Its effect is the focus AND the reveal that brings the head clear of the edges, smoothly
+    // (`stepHead`: to 160px, or as near as the top of the transcript allows), so wait for both,
+    // or the reveal lands after the reading the next check starts from.
     eval(&tab, &key("j", false));
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    let focused = eval(
+    let on_head = "(function(){ var a=document.activeElement, s=document.querySelector('.transcript'); if (!a || !a.classList.contains('renderer-head')) return 'none@' + Math.round(s.scrollTop); var r=a.getBoundingClientRect(), v=s.getBoundingClientRect(); return (r.top >= v.top + 100 && r.bottom <= v.bottom - 60 ? 'clear' : 'away') + '@' + Math.round(s.scrollTop); })()";
+    let (head, _) = harness::until_still(
         &tab,
-        "document.activeElement && document.activeElement.classList.contains('renderer-head')",
+        on_head,
+        |v| {
+            let s = v.as_str().unwrap_or("");
+            s.starts_with("clear@") || s == "away@0"
+        },
+        bound,
     );
+    let focused = !head.as_str().unwrap_or("none").starts_with("none");
     eval(
         &tab,
         "document.getElementById('transcriptSearchInput').focus(); 'ok'",
     );
-    let before_typing = unit_index(&tab);
+    let (v, _) = harness::until_still(&tab, reading, |_| true, bound);
+    let before_typing = unit_of(&v);
     eval(&tab, "document.getElementById('transcriptSearchInput').dispatchEvent(new KeyboardEvent('keydown', {key: ']', bubbles: true, cancelable: true})); 'ok'");
-    std::thread::sleep(std::time::Duration::from_millis(400));
-    let while_typing = unit_index(&tab);
+    // A key the page refused has no effect to wait for, so this waits for the page to settle
+    // (a step it wrongly took would still be under way, and would hold the settle) and the
+    // reading to hold still.
+    let (v, _) = harness::until_still(&tab, reading, |_| true, bound);
+    let while_typing = unit_of(&v);
     drop(monitor);
     assert!(
         after_one > start,
-        "`]` moved to a later unit: {start} -> {after_one}"
+        "`]` moved to a later unit: {start} -> {after_one} (readings {seen_start:?} then {seen_one:?})"
     );
     assert!(
         after_two > after_one,
-        "…and again: {after_one} -> {after_two} (top {top_after_two})"
+        "…and again: {after_one} -> {after_two} (top {top_after_two}; readings {seen_two:?})"
     );
-    assert!(back < after_two, "`[` moved back: {after_two} -> {back}");
-    assert_eq!(focused, true, "`j` put focus on a tool head");
+    assert!(
+        back < after_two,
+        "`[` moved back: {after_two} -> {back} (readings {seen_back:?})"
+    );
+    assert!(focused, "`j` put focus on a tool head ({head})");
     assert_eq!(
         while_typing, before_typing,
         "keys do nothing while typing in the search box"

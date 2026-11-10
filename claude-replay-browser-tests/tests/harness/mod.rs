@@ -2605,6 +2605,54 @@ pub fn until(tab: &headless_chrome::Tab, js: &str, what: &str, timeout: Duration
     panic!("timed out waiting for {what}; seen: {seen}; {renderer}");
 }
 
+/// Wait for a reading to arrive where `done` accepts it AND to hold still there, in place of a
+/// fixed sleep after an action whose effect lands a frame or a jump later (#s443: the keymap
+/// case read each key's effect a fixed 600 ms on, and `j`'s smooth reveal of a head could land
+/// after the reading the next check started from). `js` is an expression
+/// whose PRIMITIVE value is the reading ([`eval`]'s rule; a string such as `"<unit>@<offset>"`
+/// carries two, and the scroll offset in it makes a scroll still under way count as moving).
+/// It reads every 100 ms until `done` accepts a reading; from then on each reading is taken
+/// once the page's idle tracker says it has settled ([`track_idle`], which the case installs
+/// before it navigates; without it this panics), and it returns when a settled reading is the
+/// same as the one before it. So "still" is the page's own account of having nothing left to
+/// do, not a quiet spell a lazy headless tab can fake (#351). Returns the last reading and
+/// every distinct one seen, in order, by the bound too: it never panics on a timeout, so the
+/// case's own assertion decides, with the readings in its message.
+pub fn until_still(
+    tab: &headless_chrome::Tab,
+    js: &str,
+    done: impl Fn(&serde_json::Value) -> bool,
+    timeout: Duration,
+) -> (serde_json::Value, Vec<serde_json::Value>) {
+    assert_eq!(
+        eval(tab, "typeof window.__settle === 'function'"),
+        serde_json::Value::Bool(true),
+        "until_still reads the page's idle tracker: call harness::track_idle before navigating"
+    );
+    let settled = format!("window.__settle(700).then(function () {{ return ({js}); }})");
+    let t0 = Instant::now();
+    let mut seen: Vec<serde_json::Value> = Vec::new();
+    let mut arrived = false;
+    loop {
+        let v = eval(tab, if arrived { &settled } else { js });
+        let same = seen.last() == Some(&v);
+        if !same {
+            seen.push(v.clone());
+        }
+        if arrived && same && done(&v) {
+            return (v, seen);
+        }
+        if t0.elapsed() >= timeout {
+            eprintln!("until_still: not settled within {timeout:?}; readings {seen:?}");
+            return (v, seen);
+        }
+        arrived = done(&v);
+        if !arrived {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
 /// A key press on the document (the app shell's and the classic page's handlers both listen
 /// there); `shift` for the ⇧ variants.
 pub fn key(tab: &headless_chrome::Tab, k: &str, shift: bool) {
