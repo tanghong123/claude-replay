@@ -79,7 +79,7 @@ export class DialogCard {
     this.box.dispatchEvent(new Event("compose-dialog", { bubbles: true }));
   }
   showGrant() {
-    const allow = el("button", "dialog-choice primary", "Allow");
+    const allow = el("button", "dialog-choice sv-primary", "Allow");
     allow.type = "button";
     allow.onclick = () => this.actions.askGrant(() => { this.key = ""; this.sync(this.row); });
     const where = this.row?.target ? `herdr pane ${this.row.target}` : "its herdr pane";
@@ -118,7 +118,7 @@ export class DialogCard {
         label.append(box, words);
         choices.append(label);
       }
-      const next = el("button", "dialog-choice primary dialog-next", "Next");
+      const next = el("button", "dialog-choice sv-primary dialog-next", "Next");
       next.type = "button";
       next.onclick = () => this.answer({ choices: [...choices.querySelectorAll("input[data-choice]:checked")].map(i => Number(i.dataset.choice)) });
       choices.append(next);

@@ -14567,12 +14567,12 @@ fn a_herdr_dialog_is_answered_from_the_compose_box() {
     harness::eval(&tab, &format!("document.activeElement.blur(); window.__dialogReply = {{ ok: false, code: 'no-consent' }}; window.__dialog = {DIALOG_ONE}; window.__asking = true; window.__since = '2'; 'ok'"));
     harness::until(
         &tab,
-        "(function(){ var b = document.querySelector('#composeDialog .dialog-choice.primary'); return !!b && b.textContent === 'Allow'; })()",
+        "(function(){ var b = document.querySelector('#composeDialog .dialog-choice.sv-primary'); return !!b && b.textContent === 'Allow'; })()",
         "the card to ask for the pane's grant",
         Duration::from_secs(15),
         "document.getElementById('composeDialog').textContent",
     );
-    phone_tap(&tab, "#composeDialog .dialog-choice.primary");
+    phone_tap(&tab, "#composeDialog .dialog-choice.sv-primary");
     harness::until(
         &tab,
         "document.getElementById('confirmLayer').classList.contains('production-open') && /reads the dialog in herdr pane w1:p2/.test(document.getElementById('confirmText').textContent)",

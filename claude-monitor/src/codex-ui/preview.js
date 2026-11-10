@@ -310,7 +310,7 @@ export class Preview {
   showDownload(item, size) {
     const body = byId("previewBody"); body.classList.remove("production-loading");
     const bytes = size >= 1048576 ? `${(size / 1048576).toFixed(1)} MB` : size >= 1024 ? `${Math.round(size / 1024)} KB` : size ? `${size} bytes` : "";
-    body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="preview-error preview-download"><strong>No preview for this file</strong><span>${escapeText(item.name)}${bytes ? ` · ${bytes}` : ""} — this pane shows text and images; this file downloads.</span><div class="preview-error-actions"><button class="smallbtn primary" data-preview-download>Download</button></div></div>`;
+    body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="preview-error preview-download"><strong>No preview for this file</strong><span>${escapeText(item.name)}${bytes ? ` · ${bytes}` : ""} — this pane shows text and images; this file downloads.</span><div class="preview-error-actions"><button class="smallbtn sv-primary" data-preview-download>Download</button></div></div>`;
     body.querySelector("[data-preview-download]").onclick = () => this.actions.download?.(item);
   }
   /** Text through mdrev's viewer (#270; every text file since #s13): a reader for text the

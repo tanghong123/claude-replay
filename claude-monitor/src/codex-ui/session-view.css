@@ -77,7 +77,7 @@
 :where(#sessionView) .approval b{font-size:13px}
 :where(#sessionView) .approval p{font-size:12px;color:var(--sub);margin:3px 0 10px}
 :where(#sessionView) .smallbtn{height:29px;padding:0 11px;border-radius:7px;border:1px solid var(--line);background:var(--bg);cursor:pointer;font-size:12px}
-:where(#sessionView) .smallbtn.primary{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+:where(#sessionView) .smallbtn.sv-primary{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 :where(#sessionView) .composer{position:absolute;left:50%;transform:translateX(-50%);bottom:17px;width:min(820px,calc(100% - 44px));background:var(--bg);border:1px solid var(--line);border-radius:16px;box-shadow:0 8px 30px rgba(22,22,20,.09);padding:11px 12px 9px;display:none}
 :where(#sessionView) .composer.show{display:block}
 :where(#sessionView) .composer textarea{width:100%;border:0;resize:none;outline:0;background:transparent;min-height:48px;max-height:120px;padding:2px 3px}
@@ -508,8 +508,8 @@
 :where(#sessionView) .tool,:where(#sessionView) .codeblock,:where(#sessionView) .artifact-source,:where(#sessionView) .artifact-diff{background:#f8f9fc;border-color:var(--line)}
 :where(#sessionView) .tool-head:hover,:where(#sessionView) .artifact-row:hover{background:var(--hover)}
 :where(#sessionView) .approval{border-color:color-mix(in srgb,var(--attention) 25%,var(--line));background:var(--attention-soft)}
-:where(#sessionView) .smallbtn.primary,:where(#sessionView) .composer:not(.readonly) .send,:where(#sessionView) .compose-fab:not(.disabled){background:var(--primary);color:#fff;border-color:var(--primary)}
-:where(#sessionView) .smallbtn.primary:hover,:where(#sessionView) .composer:not(.readonly) .send:hover,:where(#sessionView) .compose-fab:not(.disabled):hover{background:var(--primary-hover)}
+:where(#sessionView) .smallbtn.sv-primary,:where(#sessionView) .composer:not(.readonly) .send,:where(#sessionView) .compose-fab:not(.disabled){background:var(--primary);color:#fff;border-color:var(--primary)}
+:where(#sessionView) .smallbtn.sv-primary:hover,:where(#sessionView) .composer:not(.readonly) .send:hover,:where(#sessionView) .compose-fab:not(.disabled):hover{background:var(--primary-hover)}
 :where(#sessionView) .tab.on,:where(#sessionView) #infoBtn.active,:where(#sessionView) #previewBtn.active{background:var(--selected);color:var(--ink)}
 :where(#sessionView) .view-switch{background:#eef0f6;box-shadow:inset 0 0 0 1px var(--line)}
 :where(#sessionView) .view-switch button.on{background:#fff;box-shadow:0 1px 4px rgba(55,66,112,.12)}
@@ -1437,12 +1437,12 @@
 #sessionView .compose-dialog .dialog-choice{display:grid;gap:1px;min-height:30px;max-width:100%;box-sizing:border-box;padding:5px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;text-align:left;cursor:pointer}
 #sessionView .compose-dialog .dialog-choice b{font-weight:600;overflow-wrap:anywhere}
 #sessionView .compose-dialog .dialog-desc{color:var(--sub);font-size:11.5px}
-#sessionView .compose-dialog .dialog-choice.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+#sessionView .compose-dialog .dialog-choice.sv-primary{background:var(--primary);border-color:var(--primary);color:#fff}
 #sessionView .compose-dialog .dialog-tick{grid-template-columns:auto minmax(0,1fr);align-items:start;column-gap:8px}
 #sessionView .compose-dialog .dialog-tick input{margin:3px 0 0}
 #sessionView .compose-dialog .dialog-words{display:grid;gap:1px}
 @media(hover:hover){
-#sessionView .compose-dialog .dialog-choice:not(.primary):hover{background:var(--hover)}
+#sessionView .compose-dialog .dialog-choice:not(.sv-primary):hover{background:var(--hover)}
 }
 #sessionView .compose-fab.asks .fab-dot{background:var(--amber)}
 #sessionView:is(*,div)[data-shared-codex] :is(.compose-attach,.compose-images){display:none!important}

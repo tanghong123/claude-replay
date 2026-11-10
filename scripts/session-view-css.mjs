@@ -237,7 +237,9 @@ export function declarations(body) {
 
 /** The app's own chrome, which the view never draws: the session list and its tree, the rail and its
  *  flyout, the arrangement strip and the section menu, the session filter, the brand, the drawer and
- *  a wide phone's column, the session search layer (⌘K), the confirm layer and the toast. */
+ *  a wide phone's column, the session search layer (⌘K), the confirm layer and the toast. `.primary`
+ *  is the confirm layer's button: the view's own primary buttons are `.sv-primary`, a name the
+ *  collaboration app does not style (#s438), so the view never draws `.primary`. */
 export const APP_CHROME = Object.freeze([
   "#collapseBtn", "#expandBtn", "#filterBtn", "#sidebarCollapse",
   ".agent-label", ".agent-monogram",
@@ -246,7 +248,7 @@ export const APP_CHROME = Object.freeze([
   ".attention-count", ".attention-filter", ".attention-mini",
   ".brand", ".brand-icon",
   ".column-pane", ".column-switch", ".column-switch-count",
-  ".confirm-layer", ".dialog-actions",
+  ".confirm-layer", ".dialog-actions", ".primary",
   ".drawer-handle", ".drawer-scrim", ".filter-mini", ".head-actions",
   ".nav", ".nav-tooltip", ".navbtn", ".no-results",
   ".rail-flyout", ".rail-flyout-filter", ".rail-flyout-head", ".rail-flyout-tree",
@@ -271,7 +273,7 @@ export const APP_STATES = Object.freeze([
  *  (or no name at all: `button`, `*`) styles both, and is in both files. */
 export const SHARED = Object.freeze([
   ".active", ".count", ".current", ".disabled", ".dragging", ".icon", ".iconbtn", ".label", ".mode-switch", ".navigator-options", ".on", ".phone-pane-body",
-  ".primary", ".project", ".scope-check", ".scope-count", ".scope-menu-action", ".scope-menu-divider", ".scope-menu-head", ".scope-menu-list", ".scope-option",
+  ".project", ".scope-check", ".scope-count", ".scope-menu-action", ".scope-menu-divider", ".scope-menu-head", ".scope-menu-list", ".scope-option",
   ".selected", ".session", ".show", ".smallbtn",
 ]);
 
