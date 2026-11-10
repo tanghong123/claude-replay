@@ -3418,14 +3418,24 @@ function currentUserUnitIndex(atKey) {
  *  is the turn before's tail, under the turn bar: one 4px scroll down from a `]` named the turn
  *  before. The line sits `landing + 8` below the top, so walk the engine's heights from that unit
  *  to it. A position a command set holds its target where it put it and is taken as it is, as is
- *  a key that is not the position's. */
+ *  a key that is not the position's.
+ *
+ *  The position's `top` is the unit's border box, the edge `unitAtTop` compares, while the
+ *  engine's heights are margin boxes: the walk steps from slot to slot and compares each unit's
+ *  own border top, its top margin added (a plan card's 8px, the loading card's 6px). Stepping by
+ *  border tops alone put every unit after a plan card 8px low, so in that band the two readings
+ *  named different turns. The margin is a style, read without a layout. */
 function keyAtSpyLine(key) {
   const p = viewport.position;
   if (!p || p.key !== key || p.commanded || p.source !== "anchor" || p.index == null) return key;
   const line = viewport.landing + 8;
-  let index = p.index, top = p.top;
-  while (index > 0 && top > line) top -= viewport.heightOf(--index);
-  while (index < viewport.count - 1 && top + viewport.heightOf(index) <= line) top += viewport.heightOf(index++);
+  const margin = index => {
+    const row = unitRow(viewport.identityAt(index));
+    return row ? parseFloat(getComputedStyle(row).marginTop) || 0 : 0;
+  };
+  let index = p.index, slot = p.top - margin(index);
+  while (index > 0 && slot + margin(index) > line) slot -= viewport.heightOf(--index);
+  while (index < viewport.count - 1 && slot + viewport.heightOf(index) + margin(index + 1) <= line) slot += viewport.heightOf(index++);
   return viewport.identityAt(index) ?? key;
 }
 // The pane follows the transcript (#52): the outline row of the turn at the viewport top is the

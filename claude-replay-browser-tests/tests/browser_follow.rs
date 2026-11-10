@@ -2060,8 +2060,10 @@ fn subtitle_after_a_jump(port: u16, phone: Option<(u32, u32)>) {
             .and_then(|u| u.parse().ok())
             .unwrap_or(-1)
     };
+    // `<unit>@<offset>`, or the landing's `<unit>@<offset>|<subtitle>`.
     let offset_of = |v: &serde_json::Value| -> i64 {
         v.as_str()
+            .and_then(|s| s.split('|').next())
             .and_then(|s| s.split('@').nth(1))
             .and_then(|o| o.parse().ok())
             .unwrap_or(-1)
@@ -2081,24 +2083,36 @@ fn subtitle_after_a_jump(port: u16, phone: Option<(u32, u32)>) {
     harness::eval(&tab, "(function(){ var t=document.getElementById('turnSubtitle'); window.__subtitles=[]; new MutationObserver(function(){ window.__subtitles.push(t.textContent); }).observe(t, {childList:true, characterData:true, subtree:true}); return 'ok'; })()");
     let mut previous_unit = unit_of(&at_top);
     let mut previous_turn = turn_of(harness::eval(&tab, subtitle).as_str().unwrap_or(""));
+    // The landing is read with the subtitle, so neither is taken before the other has caught up.
+    let landing = format!("({reading}) + '|' + {subtitle}");
+    let landing_turn = |v: &serde_json::Value| -> i64 {
+        turn_of(v.as_str().and_then(|s| s.split('|').nth(1)).unwrap_or(""))
+    };
     for _ in 0..2 {
         harness::key(&tab, "]", false);
-        let (landed_at, seen) =
-            harness::until_still(&tab, reading, |v| unit_of(v) > previous_unit, bound);
-        let landed = turn_of(harness::eval(&tab, subtitle).as_str().unwrap_or(""));
+        let (landed_at, seen) = harness::until_still(
+            &tab,
+            &landing,
+            |v| unit_of(v) > previous_unit && landing_turn(v) > previous_turn,
+            bound,
+        );
+        let landed = landing_turn(&landed_at);
         assert!(
             unit_of(&landed_at) > previous_unit && landed > previous_turn,
-            "`]` lands the next turn: unit {previous_unit} -> {landed_at}, turn {previous_turn} -> {landed} (readings {seen:?})"
+            "`]` lands the next turn: unit {previous_unit}, turn {previous_turn} -> {landed_at} (readings {seen:?})"
         );
         previous_unit = unit_of(&landed_at);
         previous_turn = landed;
         let mut offset = offset_of(&landed_at);
         let mut steps: Vec<String> = Vec::new();
-        for _ in 0..30 {
+        for step in 1..=30 {
             harness::eval(&tab, "window.__subtitles = []; 'ok'");
             harness::eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:4, bubbles:true})); s.scrollTop += 4; return 'ok'; })()");
-            offset += 4;
-            let (at, _) = harness::until_still(&tab, reading, |v| offset_of(v) == offset, bound);
+            // Where the view went, not where 4px more would be: a unit mounting above the reader is
+            // measured and the engine holds what they read, which moves the offset by the difference.
+            let before = offset;
+            let (at, _) = harness::until_still(&tab, reading, |v| offset_of(v) != before, bound);
+            offset = offset_of(&at);
             let values: Vec<i64> = harness::eval(&tab, "JSON.stringify(window.__subtitles)")
                 .as_str()
                 .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
@@ -2107,12 +2121,124 @@ fn subtitle_after_a_jump(port: u16, phone: Option<(u32, u32)>) {
                 .map(|t| turn_of(t))
                 .collect();
             steps.push(format!("{at}: {values:?}"));
+            assert_ne!(
+                offset, before,
+                "each step moves the view: every step so far: {steps:?}"
+            );
             assert!(
                 values.iter().all(|&t| t == landed),
                 "scrolled down {}px after `]` landed turn {landed}, the subtitle was painted {values:?}; every step so far: {steps:?}",
-                offset - offset_of(&landed_at)
+                step * 4
             );
         }
+    }
+}
+
+/// #s450, a plan card's margin. The walk from the engine's position to the spy's line steps by
+/// the engine's heights, which are margin boxes, and a proposed plan's card has an 8px top margin
+/// the units around it do not. Landed on the turn after a plan, and scrolled UP a pixel at a time
+/// across that band, the subtitle gets one answer at each offset: every value it is painted there
+/// is the same. Stepping by border tops named the turn before in the band, where the scroll path
+/// named the landed turn.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_subtitle_after_a_plan_card_gives_one_answer_per_offset() {
+    let _serial = serial();
+    let port = 3263;
+    let base = base("subtitle-after-a-plan-card");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000451";
+    let mut session = String::new();
+    for i in 0..12u32 {
+        session += &harness::user(
+            &format!(
+                "question {i}: {}",
+                "lorem ipsum dolor sit amet, consectetur. ".repeat(4)
+            ),
+            i,
+        );
+        let answer = if i == 1 {
+            "<proposed_plan>\\n# Plan\\n\\n- step one\\n- step two\\n</proposed_plan>".to_string()
+        } else {
+            format!(
+                "answer {i}: {}",
+                "sed do eiusmod tempor incididunt ut labore. ".repeat(20)
+            )
+        };
+        session += &harness::assistant(&answer, i);
+    }
+    stores.claude_session(sid, &session);
+    let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::track_idle(&tab);
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "document.querySelectorAll('.virtual-window .turn.user').length >= 3 && !!document.querySelector('.virtual-window .turn.proposed-plan')",
+        "three user turns and the plan card mounted",
+        std::time::Duration::from_secs(20),
+        "document.querySelectorAll('.virtual-window .turn.user').length + ' turns'",
+    );
+    harness::eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:-1})); s.scrollTop = 0; return 'ok'; })()");
+    harness::until_reader_owns_the_view(&tab);
+    let reading = "(function(){ var s=document.querySelector('.transcript'), top=s.getBoundingClientRect().top; for (var c of document.querySelector('.virtual-window').children) { if (c.getBoundingClientRect().top >= top - 24) return c.dataset.unitFrom + '@' + Math.round(s.scrollTop); } return '-1@' + Math.round(s.scrollTop); })()";
+    let unit_of = |v: &serde_json::Value| -> i64 {
+        v.as_str()
+            .and_then(|s| s.split('@').next())
+            .and_then(|u| u.parse().ok())
+            .unwrap_or(-1)
+    };
+    let offset_of = |v: &serde_json::Value| -> i64 {
+        v.as_str()
+            .and_then(|s| s.split('@').nth(1))
+            .and_then(|o| o.parse().ok())
+            .unwrap_or(-1)
+    };
+    let bound = std::time::Duration::from_secs(10);
+    let (at_top, _) = harness::until_still(&tab, reading, |v| offset_of(v) == 0, bound);
+    // `]` twice: to the second turn, then to the third, which the plan card closes the second.
+    let mut unit = unit_of(&at_top);
+    for _ in 0..2 {
+        harness::key(&tab, "]", false);
+        let before = unit;
+        let (landed_at, seen) = harness::until_still(&tab, reading, |v| unit_of(v) > before, bound);
+        unit = unit_of(&landed_at);
+        assert!(unit > before, "`]` lands the next turn (readings {seen:?})");
+    }
+    let premise = harness::eval(&tab, &format!("(function(){{ var u=[...document.querySelector('.virtual-window').children].find(function(c){{ return c.dataset.unitFrom === '{unit}'; }}); var p=u && u.previousElementSibling; return !!(p && p.classList.contains('proposed-plan')) && getComputedStyle(p).marginTop === '8px' && getComputedStyle(u).marginTop === '0px'; }})()"));
+    assert_eq!(
+        premise,
+        serde_json::Value::Bool(true),
+        "the landed turn follows the plan card, whose top margin is 8px where the turn's is 0"
+    );
+    harness::eval(&tab, "(function(){ var t=document.getElementById('turnSubtitle'); window.__subtitles=[]; new MutationObserver(function(){ window.__subtitles.push(t.textContent.split(' — ')[0]); }).observe(t, {childList:true, characterData:true, subtree:true}); return 'ok'; })()");
+    let (landed_at, _) = harness::until_still(&tab, reading, |_| true, bound);
+    let mut offset = offset_of(&landed_at);
+    let mut steps: Vec<String> = Vec::new();
+    for _ in 0..12 {
+        harness::eval(&tab, "window.__subtitles = []; 'ok'");
+        harness::eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:-1, bubbles:true})); s.scrollTop -= 1; return 'ok'; })()");
+        // Where the view went: the engine may hold what the reader sees as a unit above mounts.
+        let before = offset;
+        let (at, _) = harness::until_still(&tab, reading, |v| offset_of(v) != before, bound);
+        offset = offset_of(&at);
+        let values: Vec<String> = harness::eval(&tab, "JSON.stringify(window.__subtitles)")
+            .as_str()
+            .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+            .unwrap_or_default();
+        steps.push(format!("{at}: {values:?}"));
+        assert_ne!(
+            offset, before,
+            "each step moves the view: every step so far: {steps:?}"
+        );
+        assert!(
+            values.windows(2).all(|w| w[0] == w[1]),
+            "scrolled up {}px from the landing after the plan card, the subtitle was painted {values:?} at one offset; every step so far: {steps:?}",
+            offset_of(&landed_at) - offset
+        );
     }
 }
 
