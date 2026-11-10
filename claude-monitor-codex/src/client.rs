@@ -429,10 +429,12 @@ pub(super) enum NativeConnection {
         path: std::path::PathBuf,
     },
     /// A worker case's WebSocket, whose server end's owner the case names (#s449). Its server is
-    /// a thread of the test process, so `lsof` could only say what the case already knows, and
-    /// on a box at a load of 40 to 54 on 12 cores one `lsof` outlasted the cases' own deadlines.
-    /// The credential still goes only where `credential_may_go_to` allows, asked on every
-    /// connection; the real lookup's cases are `transport`'s and the direct `socket` ones.
+    /// a thread of the test process, so the lookup could only say what the case already knows,
+    /// and on a Mac at a load of 40 to 54 on 12 cores one `lsof` outlasted the cases' own
+    /// deadlines. The credential still goes only where `credential_may_go_to` allows, asked on
+    /// every connection that would carry it (an unauthenticated probe asks nothing). The real
+    /// lookup's cases are `transport`'s, the direct `socket` ones here, and the runtime's restart
+    /// case, whose server is a child process reached through `configured`.
     #[cfg(test)]
     OwnedBy {
         endpoint: String,
@@ -1259,7 +1261,8 @@ mod tests {
 
     #[test]
     fn setup_and_idle_disconnect_causes_survive_until_a_successful_reconnect() {
-        // The owner is the case's to name (#s449), and is still asked on every connection.
+        // The owner is the case's to name (#s449), and is still asked on every connection that
+        // carries the credential: the first and the reconnect, two in all (the probes ask nothing).
         static ASKED: AtomicUsize = AtomicUsize::new(0);
         let owner: ServerOwner = |stream| {
             ASKED.fetch_add(1, Ordering::SeqCst);
@@ -2137,7 +2140,8 @@ mod tests {
     #[test]
     fn reconnect_preserves_selected_history_only_for_its_exact_native_archived_rejection() {
         let archived = "session t is archived. Run `codex unarchive t` to unarchive it first.";
-        // The owner is the case's to name (#s449), and is still asked on every connection.
+        // The owner is the case's to name (#s449), and is still asked on every connection that
+        // carries the credential: the first and the reconnect, two in all (the probes ask nothing).
         static ASKED: AtomicUsize = AtomicUsize::new(0);
         let owner: ServerOwner = |stream| {
             ASKED.fetch_add(1, Ordering::SeqCst);
