@@ -155,8 +155,9 @@ const shows = name => options.show?.[name] !== false;
 // What the view starts outside its element, which `unmount` stops (stage 7). Every listener it binds
 // on the page (the document, the window, the visual viewport, a media query) carries `signal`; the
 // timers, frames and observers its code starts are made through the names below, which keep each
-// one, so nothing the view's code calls `setTimeout`, `requestAnimationFrame`, `ResizeObserver` or
-// `MutationObserver` outlives it. What the modules under it start, each stops itself (`destroy`).
+// one until it has run or been cleared, so nothing the view's code calls `setTimeout`,
+// `requestAnimationFrame`, `ResizeObserver` or `MutationObserver` outlives it. What the modules
+// under it start, each stops itself (`destroy`).
 const life = new AbortController(), signal = life.signal;
 const timers = new Set(), frames = new Set(), observers = new Set();
 let unmounted = false;
@@ -170,11 +171,15 @@ const requestAnimationFrame = run => {
   frames.add(id);
   return id;
 };
+const clearTimeout = id => { timers.delete(id); globalThis.clearTimeout(id); };
+const cancelAnimationFrame = id => { frames.delete(id); globalThis.cancelAnimationFrame(id); };
 const kept = Observer => class extends Observer { constructor(callback) { super(callback); observers.add(this); } };
 const ResizeObserver = kept(globalThis.ResizeObserver), MutationObserver = kept(globalThis.MutationObserver);
 // The element as the host gave it, which `unmount` puts back: its attributes (the id, the class, the
 // theme and the reading options the view writes on it) and no children.
 const elementBefore = [...element.attributes].map(attribute => [attribute.name, attribute.value]);
+// …and whether the page's root and the host's box had a style of their own, which the view writes in.
+const stylesBefore = new Map([viewRoot.styleRoot(), options.grid].filter(Boolean).map(node => [node, node.getAttribute("style")]));
 // The view's own stores, fresh for this mount (stage 7): the open session's records and how they are
 // drawn, and how the view is laid out and read, with the reader's remembered choices.
 const recordState = createRecordState(), uiState = createViewState();
@@ -4152,7 +4157,6 @@ return {
     if (unmounted) return;
     viewport.remember();
     unmounted = true;
-    mountingEvents = null;
     recordStore.stop();
     viewport.destroy();
     preview.destroy();
@@ -4168,6 +4172,7 @@ return {
     const root = viewRoot.styleRoot();
     for (const name of ["--preview", "--phone-top", "--phone-bottom", "--phone-kb"]) root?.style.removeProperty(name);
     grid?.style.removeProperty("transform");
+    for (const [node, style] of stylesBefore) if (style === null && !node.getAttribute("style")) node.removeAttribute("style");
     element.replaceChildren();
     for (const { name } of [...element.attributes]) element.removeAttribute(name);
     for (const [name, value] of elementBefore) element.setAttribute(name, value);
