@@ -2444,7 +2444,11 @@ fn the_session_view_in_a_host_without_write_controls_mounts_and_offers_no_writes
 /// layer, no property measured on the page's root, and it asks the monitor nothing more (its record
 /// polls stop). A key or a press on the page then reaches nothing of it, and nothing throws. Mounted
 /// again in the same element it is whole once, not twice: the same listeners as the first mount, one
-/// turn strip, one copy menu, one task card, and one press of `w` toggles wrapping once.
+/// turn strip, one copy menu, one task card, and one press of `w` toggles wrapping once. The page
+/// around it (the root's and the body's attributes and the root's style, what the body and the head
+/// hold, the host's box) is as it was before each mount: after an unmount, after a mount and an
+/// unmount in one task, and on a phone, where the view measures its sheets onto the root, with a
+/// session and with none ever opened.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_view_in_a_host_unmounts_and_mounts_again() {
@@ -2460,8 +2464,12 @@ fn the_session_view_in_a_host_unmounts_and_mounts_again() {
     let monitor = Monitor::spawn(Kind::V1, 3107, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
+    // The page around the view, whatever the view might have touched: the root's and the body's
+    // attributes, the root's inline style, what the body and the head hold, and the host's box.
+    let page = "(function(){ var attrs = function (e) { return [].map.call(e.attributes, function (a) { return a.name + '=' + a.value; }).sort(); }; return { html: attrs(document.documentElement), body: attrs(document.body), rootStyle: document.documentElement.style.cssText, bodyKids: document.body.children.length, headKids: document.head.children.length, pane: document.getElementById('hostPane').getAttribute('style'), errors: window.__host.errors }; })()";
     harness::open_host_page(&tab, &monitor, &format!("session={sid}&mount=0"));
     let before = harness::page_listeners(&tab);
+    let page_before = harness::probe(&tab, page);
     let drawn = |tab: &headless_chrome::Tab| {
         harness::until(
             tab,
@@ -2491,16 +2499,67 @@ fn the_session_view_in_a_host_unmounts_and_mounts_again() {
     );
     let after = harness::page_listeners(&tab);
     let after_shape = harness::probe(&tab, shape);
+    let page_after = harness::probe(&tab, page);
     let after_key = harness::probe(&tab, &format!("(function(){{ document.querySelector('.host-view').dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }})); document.body.dispatchEvent(new PointerEvent('pointerdown', {{ bubbles: true }})); return {{ w: {PRESS}('w'), escape: {PRESS}('Escape'), slash: {PRESS}('/') }}; }})()"));
     std::thread::sleep(std::time::Duration::from_millis(3000));
     let late = harness::probe(&tab, "({ requests: window.__host.requests.filter(function (r) { return r.at > window.__unmountedAt; }).map(function (r) { return r.url; }), errors: window.__host.errors })");
+    // Mounted and taken away again in one task, twice, as a host's framework may: what the mount
+    // held back for the host goes nowhere, and nothing throws.
+    harness::eval(
+        &tab,
+        "window.__host.mount(); window.__view.unmount(); window.__host.mount(); window.__view.unmount(); 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let same_task = (harness::page_listeners(&tab), harness::probe(&tab, page));
     // Again, in the same element.
     harness::eval(&tab, "window.__host.mount()");
     drawn(&tab);
     let second = harness::page_listeners(&tab);
     let second_shape = harness::probe(&tab, shape);
     let second_w = harness::probe(&tab, &press_w);
+    // On a phone, where the view measures its sheets onto the page's root and listens to the visual
+    // viewport, with a session and with none ever opened.
+    harness::phone(&tab, 390, 844);
+    let mut phone = Vec::new();
+    for query in [format!("session={sid}&mount=0"), "mount=0".to_string()] {
+        harness::open_host_page(&tab, &monitor, &query);
+        let listeners = harness::page_listeners(&tab);
+        let shape_before = harness::probe(&tab, page);
+        harness::eval(&tab, "window.__host.mount()");
+        if query.contains("session") {
+            drawn(&tab);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let measured = harness::eval(
+            &tab,
+            "document.documentElement.style.getPropertyValue('--phone-top') !== ''",
+        );
+        harness::eval(&tab, "window.__view.unmount(); 'ok'");
+        phone.push((
+            query,
+            measured,
+            listeners == harness::page_listeners(&tab),
+            shape_before,
+            harness::probe(&tab, page),
+        ));
+    }
     drop(monitor);
+    assert_eq!(
+        page_after, page_before,
+        "the page around the view is as it was before the mount"
+    );
+    assert_eq!(
+        same_task,
+        (before.clone(), page_before.clone()),
+        "mounted and unmounted in one task, twice, the page is as it was, and nothing threw"
+    );
+    for (query, measured, listeners, shape_before, shape_after) in &phone {
+        assert_eq!(
+            (measured.clone(), *listeners, shape_after),
+            (serde_json::json!(true), true, shape_before),
+            "on a phone ({query}), what the view measured on the root goes, and the listeners are as they were"
+        );
+    }
     assert!(
         first.len() > before.len(),
         "the mounted view listens on the page: {first:?}"

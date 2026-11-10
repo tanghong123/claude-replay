@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import vm from "node:vm";
+import { composeCapability, consentQuery, grantOutcome } from "../../claude-replay-html/src/html/shared/control-protocol.js";
 
 const controlSource = await readFile(new URL("../src/codex-ui/control-store.js", import.meta.url), "utf8");
 const nativeSource = await readFile(new URL("../src/codex-ui/native-mode.js", import.meta.url), "utf8");
@@ -100,4 +101,62 @@ for (const nativeWrapper of [false, true]) test(`closing and then navigating ret
   f.controlState.row = null; f.indexState.selected = "other";
   f.finish(); await pending;
   assert.equal(f.input.value, ""); assert.equal(f.closed, 0);
+});
+
+// #s429 stage 7: the grant's confirm is the host's (the view's `write` option). A live pane's send
+// that the monitor answers with a passcode request asks the host again, with a passcode field, and
+// sends the same text with the passcode given; a refused passcode asks once more; a cancel sends
+// nothing. A dialog's grant goes through the same confirm, then the grant.
+function grantFixture({ answers, sends, grants = [] }) {
+  const input = { value: "Claude send", dispatchEvent() {}, focus() {} }, send = { disabled: false };
+  const document = { getElementById: id => id === "composeInput" ? input : send, activeElement: null };
+  const asks = [], payloads = [], posted = [];
+  const Control = loadClass(controlSource, "ControlStore", { document, Event: class { constructor(type) { this.type = type; } }, matchMedia: () => ({ matches: false }),
+    composeCapability, consentQuery, grantOutcome,
+    backend: () => ({ paired: true, fetch: async (path, init) => { posted.push([path, init.body]); return { json: async () => grants.shift() }; } }),
+    runSend: async value => { payloads.push(value); return sends.shift(); } });
+  const store = Object.assign(Object.create(Control.prototype), {
+    compose: { row: { id: "claude", target: "w1:p2", term: "herdr" }, mode: "tmux", consented: false, pending: "" },
+    revokeButton: {}, dialog: { active: false }, close() {}, imagesAllowed: () => false,
+    actions: { selectedRow: () => ({ id: "claude" }), toast: () => {}, refreshIndex: () => {},
+      write: { on: () => true, confirm: ask => { asks.push(ask); return answers.shift(); } } },
+  });
+  return { store, asks, payloads, posted, input };
+}
+const settle = async () => { for (let i = 0; i < 20; i++) await new Promise(resolve => setTimeout(resolve, 0)); };
+const passcodeRequired = { consented: false, step: "grant", outcome: { kind: "passcode-required" } };
+const badPasscode = { consented: false, step: "grant", outcome: { kind: "bad-passcode" } };
+const sent = { consented: true, step: "send", outcome: { kind: "sent" } };
+
+test("a send the monitor wants a passcode for asks the host for one and sends the same text with it", async () => {
+  const f = grantFixture({ answers: ["", "1234"], sends: [passcodeRequired, sent] });
+  f.store.attempt(); await settle();
+  assert.deepEqual(f.asks.map(ask => [ask.title, ask.passcode]), [["Allow typing into this pane?", false], ["Allow typing into this pane?", true]], "the grant's confirm, then the passcode's");
+  assert.match(f.asks[0].text, /herdr pane w1:p2/);
+  assert.equal(f.asks[1].text, "This monitor requires a passcode before granting write access.");
+  assert.deepEqual(f.payloads.map(p => [p.prompt, p.passcode]), [["Claude send", ""], ["Claude send", "1234"]], "the same text, the second time with the passcode given");
+});
+
+test("a refused passcode asks once more, and a cancel sends nothing", async () => {
+  const f = grantFixture({ answers: ["", "wrong", null], sends: [passcodeRequired, badPasscode] });
+  f.store.attempt(); await settle();
+  assert.deepEqual(f.asks.map(ask => ask.text.split(" ")[0]), ["The", "This", "Passcode"], "the grant, the passcode, the passcode again");
+  assert.equal(f.asks[2].passcode, true);
+  assert.deepEqual(f.payloads.map(p => p.passcode), ["", "wrong"], "cancelled, nothing more is sent");
+});
+
+test("a cancelled grant sends nothing", async () => {
+  const f = grantFixture({ answers: [null], sends: [] });
+  f.store.attempt(); await settle();
+  assert.equal(f.asks.length, 1); assert.deepEqual(f.payloads, []);
+});
+
+test("a dialog's grant goes through the host's confirm, then the grant, with a passcode when asked", async () => {
+  const went = [];
+  const f = grantFixture({ answers: ["", "4321"], sends: [], grants: [{ code: "passcode-required" }, { ok: true }] });
+  f.store.askGrant(() => went.push("answered")); await settle();
+  assert.deepEqual(f.asks.map(ask => ask.passcode), [false, true]);
+  assert.match(f.asks[0].text, /reads the dialog in herdr pane w1:p2/);
+  assert.deepEqual(f.posted.map(([, body]) => body), ["", "4321"], "the grant, asked again with the passcode");
+  assert.deepEqual(went, ["answered"]); assert.equal(f.store.compose.consented, true);
 });
