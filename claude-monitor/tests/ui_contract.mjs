@@ -4481,7 +4481,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     assert.deepEqual([asked, frame.src], [4, "app-frame://page/4"], "another tab asks for its own, and a refusal is asked again");
   }
   const doc = /\/\*\* Draw the session view in `element`[\s\S]*?\*\/\nexport function mountSessionView/.exec(viewSource)[0];
-  assert.match(doc, /owns their lifetime/, "the doc comment says the native app owns the addresses");
+  assert.match(doc, /keeps every address it gave for the life of the page/, "the doc comment says the native app keeps every address, none released");
   assert.match(doc, /^ \*  - `frame\(html\)`: the native app's own arrangement \(#s436\), not offered to other hosts, and the\n \*    kit's guide does not list it\./m, "the doc comment says it is the native app's alone");
   assert.match(viewSource, /if \(options\.frame !== undefined && typeof options\.frame !== "function"\) throw new Error\(/, "a frame that is not a function is refused");
   assert.match(viewSource, /detach: shows\("detach"\), frame: options\.frame, /, "the view hands it to the pane");
@@ -4553,10 +4553,30 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(card, /setTimeout\(\(\) => \{ if \(this\.ended\) return;/, "and its read again after an answer");
   assert.match(body, /const current = \(\) => !unmounted && \(q\.lc \? remoteSearch : remoteFilter\) === mine;/, "a server search's answer settles in no unmounted view");
   assert.match(body, /if \(unmounted \|\| taskFind !== mine \|\| recordState\.session !== session\) return;/, "nor does a task's");
-  // The host's element and styles: an element holding the host's nodes is refused, and what the host
-  // had set where the view writes is put back.
-  assert.match(body, /if \(element\.firstElementChild\) throw new Error\(/, "a host's element with children is refused");
-  assert.match(unmount[0], /for \(const \[name, value, priority\] of values\) \{ if \(value\) node\.style\.setProperty\(name, value, priority\); else node\.style\.removeProperty\(name\); \}/, "the host's values are put back, and the view's own removed");
+  // The host's element and styles: an element holding anything but white space is refused, and the
+  // host's value is put back only where the view's own is still there.
+  const holds = /^if \(\[\.\.\.element\.childNodes\]\.some\((node => [^\n]*?)\)\) throw new Error\(/m.exec(body);
+  assert.ok(holds, "a host's element is checked node by node");
+  const refused = new Function(`return ${holds[1]};`)();
+  const text = data => ({ nodeType: 3, data }), elementNode = { nodeType: 1 }, comment = { nodeType: 8, data: "x" };
+  assert.deepEqual([[], [text("\n  ")], [text("Loading…")], [elementNode], [text(" "), comment]].map(nodes => nodes.some(refused)), [false, false, true, true, true], "white space alone is empty; text, an element or a comment is the host's, refused");
+  {
+    const write = /^function writeStyle\(node, name, value\) \{\n[\s\S]*?\n\}\n/m.exec(body);
+    const restore = /^      for \(const \[name, value, priority\] of values\) \{\n[\s\S]*?\n      \}\n/m.exec(unmount[0]);
+    assert.ok(write && restore, "the view writes the host's styles through one function, and the unmount reads what it wrote");
+    const style = () => { const props = new Map(); return { setProperty: (n, v) => props.set(n, v), removeProperty: n => props.delete(n), getPropertyValue: n => props.get(n) ?? "", props }; };
+    const run = new Function("hostStyles", `const viewWrote = new Map(); ${write[0]}; return { writeStyle, unmount: () => { for (const { node, values } of hostStyles) {\n${restore[0]}} } };`);
+    const root = { style: style() }, box = { style: style() };
+    root.style.setProperty("--preview", "510px"); box.style.setProperty("transform", "translateX(1px)");
+    const hosts = [{ node: root, values: [["--preview", "510px", ""], ["--phone-top", "", ""], ["--phone-kb", "", ""]] }, { node: box, values: [["transform", "translateX(1px)", ""]] }];
+    const view = run(hosts);
+    view.writeStyle(root, "--preview", "420px"); view.writeStyle(root, "--phone-top", "48px"); view.writeStyle(root, "--phone-kb", "10px");
+    root.style.setProperty("--phone-kb", "99px");  // the host wrote it since
+    box.style.setProperty("transform", "translateX(2px)");  // the host moved its own box; the view never wrote it
+    view.unmount();
+    assert.deepEqual(Object.fromEntries(root.style.props), { "--preview": "510px", "--phone-kb": "99px" }, "the host's value back where the view's is still there, the view's own removed, a value the host wrote since left alone");
+    assert.deepEqual(Object.fromEntries(box.style.props), { transform: "translateX(2px)" }, "and a property the view never wrote is the host's, untouched");
+  }
   assert.match(/^  destroy\(\) \{\n[\s\S]*?\n  \}\n/m.exec(vp)[0], /if \(window\.__viewportViolations === this\.violations\) delete window\.__viewportViolations;/, "the engine's globals go as the viewport is destroyed (and only then), if still this engine's");
   assert.doesNotMatch(vp.slice(0, vp.indexOf("  destroy() {")), /delete window\.__viewport/, "the engine's globals are never taken away while the viewport is built");
   // The app remembers the view's choices whenever it remembers its own, as its one persist did.

@@ -2441,8 +2441,9 @@ fn the_session_view_in_a_host_without_write_controls_mounts_and_offers_no_writes
 /// The session view's unmount (#s429 stage 7): mounted in the test host and taken away, it leaves
 /// the page's window and document with exactly the listeners they had before it (as the browser
 /// lists them), the host's element empty with its own attributes, nothing of its own in the page's
-/// layer, the host's own values put back where the view writes too (a property on the page's root,
-/// the host box's transform), no global of its engine left on the window, and it asks the monitor
+/// layer, the host's own value put back where the view wrote over it (`--preview` on the page's root)
+/// and a value the view never wrote left where the host put it (its box's transform, moved while the
+/// view was mounted), no global of its engine left on the window, and it asks the monitor
 /// nothing more (its `/pull` polls stop). Every member of its handle then does nothing, and a key or
 /// a press on the page reaches nothing of it; nothing throws. Mounted
 /// again in the same element it is whole once, not twice: the same listeners as the first mount, one
@@ -2491,6 +2492,12 @@ fn the_session_view_in_a_host_unmounts_and_mounts_again() {
     drawn(&tab);
     let first = harness::page_listeners(&tab);
     let first_shape = harness::probe(&tab, shape);
+    // The host moves its own box while the view is mounted: the view never wrote that, so the
+    // unmount leaves it where the host put it.
+    harness::eval(
+        &tab,
+        "document.getElementById('hostPane').style.transform = 'translateX(3px)'; 'ok'",
+    );
     let mounted_globals = harness::eval(
         &tab,
         "['__viewportHistory', '__viewportViolations'].filter(function (k) { return k in window; }).join(',')",
@@ -2509,6 +2516,11 @@ fn the_session_view_in_a_host_unmounts_and_mounts_again() {
     let after = harness::page_listeners(&tab);
     let after_shape = harness::probe(&tab, shape);
     let page_after = harness::probe(&tab, page);
+    // …and puts it back as it was before the mount for what follows.
+    harness::eval(
+        &tab,
+        "document.getElementById('hostPane').style.transform = 'translateX(0px)'; 'ok'",
+    );
     // Every member of the handle, after the unmount: nothing done, nothing thrown, nothing answered.
     let members = harness::probe(
         &tab,
@@ -2563,9 +2575,11 @@ fn the_session_view_in_a_host_unmounts_and_mounts_again() {
         serde_json::json!("__viewportHistory,__viewportViolations"),
         "the mounted view's engine puts its bug report on the window"
     );
+    let mut moved_before = page_before.clone();
+    moved_before["pane"] = serde_json::json!("transform: translateX(3px);");
     assert_eq!(
-        page_after, page_before,
-        "the page around the view is as it was before the mount: the host's own --preview and transform put back, the engine's globals gone"
+        page_after, moved_before,
+        "the page around the view is as it was before the mount: the host's own --preview put back, the transform the host moved while mounted left where it put it, the engine's globals gone"
     );
     assert_eq!(
         members,
@@ -15769,7 +15783,8 @@ fn a_herdr_session_takes_images_from_the_compose_box() {
 
 /// The app's own confirm layer grants a live pane, passcode and all (#s429 stage 7: the view asks
 /// through its `write` option, and the app answers with its confirm layer). A send to a herdr pane
-/// with no grant asks first; the monitor wants a passcode, so the app draws its passcode field in the
+/// with no grant asks first, and the app's Cancel closes it with nothing granted or sent; asked again,
+/// the monitor wants a passcode, so the app draws its passcode field in the
 /// layer (styled by the app's stylesheet), reads what the reader typed and sends it with the grant; a
 /// refused passcode is asked again in the same field; the right one grants, and the text is sent.
 #[test]
@@ -15817,6 +15832,15 @@ fn the_app_grants_a_live_pane_through_its_own_confirm_layer_and_passcode_field()
         harness::probe(&tab, layer)
     };
     let grant = wait_open("the grant asked first", "herdr pane w1:p2");
+    // The app's Cancel: the layer closes and nothing is granted or sent.
+    harness::eval(&tab, "document.getElementById('cancelSend').click(); 'ok'");
+    harness::pause(
+        "a cancelled grant to send nothing",
+        Duration::from_millis(800),
+    );
+    let cancelled = harness::probe(&tab, layer);
+    harness::eval(&tab, "document.getElementById('sendBtn').click(); 'ok'");
+    let again = wait_open("the grant asked again after the cancel", "herdr pane w1:p2");
     harness::eval(&tab, "document.getElementById('confirmSend').click(); 'ok'");
     let wanted = wait_open("the passcode asked for", "requires a passcode");
     harness::eval(&tab, "(function(){ var f = document.querySelector('#confirmLayer .passcode-input'); f.value = 'wrong'; document.getElementById('confirmSend').click(); return 'ok'; })()");
@@ -15835,6 +15859,24 @@ fn the_app_grants_a_live_pane_through_its_own_confirm_layer_and_passcode_field()
         (grant["open"].clone(), grant["title"].clone(), grant["field"].clone(), grant["consents"].clone()),
         (serde_json::json!(true), serde_json::json!("Allow typing into this pane?"), serde_json::json!(false), serde_json::json!([])),
         "the send asks the app's confirm layer for the grant first, with no passcode field: {grant}"
+    );
+    assert_eq!(
+        (
+            cancelled["open"].clone(),
+            cancelled["consents"].clone(),
+            cancelled["sent"].clone()
+        ),
+        (
+            serde_json::json!(false),
+            serde_json::json!([]),
+            serde_json::json!(0)
+        ),
+        "the app's Cancel closes the layer, and nothing is granted or sent: {cancelled}"
+    );
+    assert_eq!(
+        (again["open"].clone(), again["consents"].clone()),
+        (serde_json::json!(true), serde_json::json!([])),
+        "a send after it asks again: {again}"
     );
     assert_eq!(
         (wanted["field"].clone(), wanted["focused"].clone(), wanted["height"].clone(), wanted["beforeActions"].clone(), wanted["consents"].clone()),
