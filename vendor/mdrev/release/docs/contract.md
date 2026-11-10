@@ -193,7 +193,7 @@ repository had just been committed drew a redline with nothing in it.)
 
 ### `GET {prefix}/asset?path=`
 
-A file the document refers to — an image, mostly — with its media type. The same root and the same refusal to leave it as `/text`.
+A file the document refers to — an image, mostly — with its media type. The same root and the same refusal to leave it as `/text`. Send it with `X-Content-Type-Options: nosniff`, and every type but video and audio with `Content-Security-Policy: sandbox`: an SVG or HTML file opened in a tab of its own then runs no script as your origin, while an `<img>` draws it as before, and Chrome's PDF viewer still opens a PDF. Video and audio go without the sandbox, because the browser's player fetches the file again from a sandboxed tab as another site, and a `SameSite=Strict` session cookie does not go with it ([the developer guide, §8](embedding-guide.md#8-security)).
 
 ### `GET {prefix}/annotations?path=`
 

@@ -851,7 +851,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.79",
+  "mdrev": "1.1.80",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
@@ -1232,7 +1232,9 @@ before every send.
 
 **On a team's mdrev service** ([personal-service.md](personal-service.md),
 "Notifications"; #s129) the same tools tell people, as the person who pushed,
-through a sign-in of that person's own the service keeps for them. The
+through a sign-in of that person's own the service keeps for them; for a
+pusher with none, or one that lapsed, by chat from the service's own
+account, each message saying who pushed (#s734). The
 service answers Push once the records are in the store; then it renews that
 sign-in and runs `mdrev-cli review notify`, which decides whom and what as a
 push on a machine does, with `MDREV_NOTIFY_FILE` naming five things only the

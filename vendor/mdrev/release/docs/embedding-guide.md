@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.79/
+mdrev-embed-1.1.80/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -180,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.79`, with two tarballs: `mdrev-1.1.79-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.79.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.80`, with two tarballs: `mdrev-1.1.80-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.80.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.79/mdrev-embed-1.1.79.tar.gz
-tar xzf mdrev-embed-1.1.79.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.79
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.80/mdrev-embed-1.1.80.tar.gz
+tar xzf mdrev-embed-1.1.80.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.80
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.79/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.80/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -196,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.79/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.79.tar.gz
-cd mdrev-embed-1.1.79
+tar xzf mdrev-embed-1.1.80.tar.gz
+cd mdrev-embed-1.1.80
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -462,7 +462,7 @@ What is fixed, and is worth a moment if you are fitting this to a framework that
 |---|---|---|
 | `GET /text?path=&rev=` | the file's text — a document's Markdown, or source code (below) — `text/plain; charset=utf-8` | `rev` is an id from `/revisions`, or `current` for the document as it stands. Send an `ETag`; the viewer polls with `If-None-Match` when you have no push, and a 304 is free. Refuse `..` |
 | `GET /revisions?path=` | `[{rev, date, author, subject, body?}]`, **newest first** | `rev` must be the **git commit id** if notes are to be shared with the mdrev application, because a note records the revision it was taken on. `[]` means no history: the viewer is then a reader with notes. **With no `path`** — optional — the COLLECTION's own revisions, which is how the viewer tells "this folder has no history" from "this document has none yet" |
-| `GET /asset?path=` | the file, with its media type | images a document refers to; same root and refusals as `/text` |
+| `GET /asset?path=` | the file, with its media type, `X-Content-Type-Options: nosniff` and, but for video and audio, `Content-Security-Policy: sandbox` | images a document refers to, and files it links to; same root and refusals as `/text`. The sandbox keeps an SVG or HTML file opened in a tab from running script as your site (§8) |
 | `GET /annotations?path=` | `[note]` | `mdrev-cli notes list --path P --all --records --root R`, returned as it is (§6) |
 | `POST /annotations?path=` | the note as stored, **201** | `mdrev-cli notes add --path P --root R` with the request body on stdin |
 | `PATCH /annotations/{id}?path=` `POST /annotations/{id}/replies?path=` `DELETE /annotations/{id}?path=` | the note as it now is; 204 for delete | `notes resolve\|wontfix\|reopen ID --note "…"`, `notes reply ID --body "…"`, `notes delete ID`. A read-and-file-only host may answer 501 |
@@ -583,7 +583,7 @@ Start with 204. Add the stream when you have a change signal to hand.
 
 ## 8. Security
 
-Your documents are other people's. Three lines of defence, in the order they matter:
+Your documents are other people's. Five lines of defence, in the order they matter:
 
 1. **Filtered HTML, on by default.** A document's raw HTML renders — `<details>`, `<kbd>`, `<img width>`, `<div align>` — and everything in it that executes does not: `<script>`, `<style>`, `<iframe>` and their contents are gone, every `on*` handler is stripped, and link and image URLs are held to `http`, `https`, `mailto` and relative paths (`javascript:` and `data:` are dropped). The parse is the platform's — `template.innerHTML` in a browser — because a hand-written tag stripper is where mutation XSS lives. A host whose authors it trusts sets `trustHtml: true`; don't unless you have a reason.
 2. **A Content-Security-Policy on the page**, so that anything that slipped through could not run. This is the whole header the guest needs:
@@ -594,8 +594,23 @@ Your documents are other people's. Three lines of defence, in the order they mat
    ```
 
    `script-src 'self'` is why the mount script in §4 is a file: no inline script runs under it. `style-src 'unsafe-inline'` is the one allowance — diagrams, formulas and highlighted code all write inline styles. `img-src` admits `https:` and `http:` because a document's pictures are often not on the host that serves the document, and refusing them shows the reader an empty box rather than a picture; `connect-src 'self'` still stands, so an image URL is the only outbound channel this page has. A host that would rather not fetch from anywhere sends a narrower `img-src` of its own — this policy is the sample host's, not the guest's requirement. `mdrev-v2` sends exactly this and renders diagrams, math and code under it with no violation. If you send a CSP today, merge these sources into it; if you send none, the guest needs nothing.
-3. **Your session, on every request.** The viewer fetches with `credentials: 'same-origin'`, so a cookie your page already has is sent without being told, including on the event stream. It puts nothing in a URL beyond `path`, `rev`, `blob`, `cap`, `root`, `node`, `from`, `to`, `since` and note ids — no token of yours can leak through a request it makes. If your session arrives as a key in the page URL, rewrite it into a cookie *before* serving the page that mounts the viewer, so the first fetch already carries it.
-4. **Capabilities, if a path is not the same as permission.** A session says the reader may ask. It says nothing about what they may NAME, and your `path` parameter is a name they choose. If that gap matters — and it does the moment one reader's documents are not every reader's — mint a capability per document and require it:
+3. **A sandbox on every file `/asset` sends, but video and audio.** A document's pictures, and the files it links to, come from your origin, where your session lives, and a file in a repository is not always one its reader wrote. Drawn in the page through an `<img>`, an SVG runs nothing. Opened in a tab of its own — a link to it, or *Open image in new tab* — an SVG or an HTML file runs its scripts as your site, and can call every route your page can. Send every asset except a video or an audio file (below) with
+
+   ```text
+   Content-Security-Policy: sandbox
+   ```
+
+   and an opened file gets an origin of its own and no scripts, while an `<img>` draws exactly as before. Keep it on PDFs as well: Chrome's own PDF viewer opens a PDF sent with it, from the address bar and from a document's link alike. If you already send a policy with files, add `sandbox` to it.
+
+   Leave it off video and audio (`video/*`, `audio/*`). The browser's player in that tab fetches the file again, and from a sandboxed page that fetch comes from another site: a `SameSite=Strict` session cookie stays behind, your route refuses the request, and the clip never plays. A player renders no markup, so nothing runs there. Send every asset with
+
+   ```text
+   X-Content-Type-Options: nosniff
+   ```
+
+   so a file is only ever what its type says: an HTML file named `.mp4` is a video the browser cannot play, never a page. `mdrev-v2` sends both from one function, `sendAsset()`.
+4. **Your session, on every request.** The viewer fetches with `credentials: 'same-origin'`, so a cookie your page already has is sent without being told, including on the event stream. It puts nothing in a URL beyond `path`, `rev`, `blob`, `cap`, `root`, `node`, `from`, `to`, `since` and note ids — no token of yours can leak through a request it makes. If your session arrives as a key in the page URL, rewrite it into a cookie *before* serving the page that mounts the viewer, so the first fetch already carries it.
+5. **Capabilities, if a path is not the same as permission.** A session says the reader may ask. It says nothing about what they may NAME, and your `path` parameter is a name they choose. If that gap matters — and it does the moment one reader's documents are not every reader's — mint a capability per document and require it:
 
    ```js
    mountMdrev(el, {contract: '/docs/api/mdrev', path, cap: capabilityFor(user, path)});
@@ -661,7 +676,7 @@ Optional parts you lack are reported as skipped (`–`), never as failures; `--j
 
 `example/` is `mdrev-v2` as source, deliberately small, and organised the way this guide is:
 
-- `server.ts` — `createHost()`: the static files, then the contract route by route. `inside()` is the path guard; `mdrev()` is how a command line is run and its exit code read; the `annotations` block is §6 in forty lines; `subscribe()` is the push half of §7; `CSP` is §8.
+- `server.ts` — `createHost()`: the static files, then the contract route by route. `inside()` is the path guard; `mdrev()` is how a command line is run and its exit code read; the `annotations` block is §6 in forty lines; `subscribe()` is the push half of §7; `CSP` and `sendAsset()` are §8.
 - `page.ts` — the page, and `HOST_SCRIPT`, the mount of §4 as the file the policy requires. **Do not copy this one's layout.** It had a header, a file list and a column, which is what a host looks like and what this guide showed you; then `mdrev` began dispatching to this host by default, and chrome announcing itself as a sample became a lie about what the reader was looking at. So it is now the mount and nothing else. What to take from it is the *mount*: the element that carries `data-path`, `data-cap` and `data-contract`, the range read from the address rather than hardcoded, and `onNavigate` writing it back so a reload and a shared link land where the reader was. Put those inside whatever chrome your application already has.
 - `bin.ts` — the command line. Note `defaultCli()`: the sample runs the `mdrev-cli` beside it, which is the layout this release ships.
 - `roots.ts` — which folders this host will serve, and the file it keeps them in. This is the sample standing in for the permissions your application already has (§8): `allow` is a ceiling a reader sets, `opened` is the working set that grows as they open documents, and a path is servable only when it is inside both.

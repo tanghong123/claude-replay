@@ -6248,12 +6248,12 @@ function tokenizeBlockQuoteStart(effects, ok3, nok) {
   return start;
   function start(code4) {
     if (code4 === 62) {
-      const state = self2.containerState;
-      if (!state.open) {
+      const state2 = self2.containerState;
+      if (!state2.open) {
         effects.enter("blockQuote", {
           _container: true
         });
-        state.open = true;
+        state2.open = true;
       }
       effects.enter("blockQuotePrefix");
       effects.enter("blockQuoteMarker");
@@ -9189,7 +9189,7 @@ function createTokenizer(parser, initialize, from) {
     sliceStream,
     write
   };
-  let state = initialize.tokenize.call(context, effects);
+  let state2 = initialize.tokenize.call(context, effects);
   let expectedCode;
   if (initialize.resolveAll) {
     resolveAllConstructs.push(initialize);
@@ -9251,7 +9251,7 @@ function createTokenizer(parser, initialize, from) {
   function go(code4) {
     consumed = void 0;
     expectedCode = code4;
-    state = state(code4);
+    state2 = state2(code4);
   }
   function consume(code4) {
     if (markdownLineEnding(code4)) {
@@ -10835,13 +10835,13 @@ function exitFootnoteDefinition(token) {
 function footnoteReferencePeek() {
   return "[";
 }
-function footnoteReference(node2, _, state, info) {
-  const tracker = state.createTracker(info);
+function footnoteReference(node2, _, state2, info) {
+  const tracker = state2.createTracker(info);
   let value2 = tracker.move("[^");
-  const exit4 = state.enter("footnoteReference");
-  const subexit = state.enter("reference");
+  const exit4 = state2.enter("footnoteReference");
+  const subexit = state2.enter("reference");
   value2 += tracker.move(
-    state.safe(state.associationId(node2), { after: "]", before: value2 })
+    state2.safe(state2.associationId(node2), { after: "]", before: value2 })
   );
   subexit();
   exit4();
@@ -10874,21 +10874,21 @@ function gfmFootnoteToMarkdown(options) {
     // This is on by default already.
     unsafe: [{ character: "[", inConstruct: ["label", "phrasing", "reference"] }]
   };
-  function footnoteDefinition(node2, _, state, info) {
-    const tracker = state.createTracker(info);
+  function footnoteDefinition(node2, _, state2, info) {
+    const tracker = state2.createTracker(info);
     let value2 = tracker.move("[^");
-    const exit4 = state.enter("footnoteDefinition");
-    const subexit = state.enter("label");
+    const exit4 = state2.enter("footnoteDefinition");
+    const subexit = state2.enter("label");
     value2 += tracker.move(
-      state.safe(state.associationId(node2), { before: value2, after: "]" })
+      state2.safe(state2.associationId(node2), { before: value2, after: "]" })
     );
     subexit();
     value2 += tracker.move("]:");
     if (node2.children && node2.children.length > 0) {
       tracker.shift(4);
       value2 += tracker.move(
-        (firstLineBlank ? "\n" : " ") + state.indentLines(
-          state.containerFlow(node2, tracker.current()),
+        (firstLineBlank ? "\n" : " ") + state2.indentLines(
+          state2.containerFlow(node2, tracker.current()),
           firstLineBlank ? mapAll : mapExceptFirst
         )
       );
@@ -10939,11 +10939,11 @@ function enterStrikethrough(token) {
 function exitStrikethrough(token) {
   this.exit(token);
 }
-function handleDelete(node2, _, state, info) {
-  const tracker = state.createTracker(info);
-  const exit4 = state.enter("strikethrough");
+function handleDelete(node2, _, state2, info) {
+  const tracker = state2.createTracker(info);
+  const exit4 = state2.enter("strikethrough");
   let value2 = tracker.move("~~");
-  value2 += state.containerPhrasing(node2, {
+  value2 += state2.containerPhrasing(node2, {
     ...tracker.current(),
     before: value2,
     after: "~"
@@ -11119,13 +11119,13 @@ function zwitch(key2, options) {
 }
 
 // node_modules/mdast-util-to-markdown/lib/handle/blockquote.js
-function blockquote(node2, _, state, info) {
-  const exit4 = state.enter("blockquote");
-  const tracker = state.createTracker(info);
+function blockquote(node2, _, state2, info) {
+  const exit4 = state2.enter("blockquote");
+  const tracker = state2.createTracker(info);
   tracker.move("> ");
   tracker.shift(2);
-  const value2 = state.indentLines(
-    state.containerFlow(node2, tracker.current()),
+  const value2 = state2.indentLines(
+    state2.containerFlow(node2, tracker.current()),
     map
   );
   exit4();
@@ -11156,10 +11156,10 @@ function listInScope(stack, list4, none) {
 }
 
 // node_modules/mdast-util-to-markdown/lib/handle/break.js
-function hardBreak(_, _1, state, info) {
+function hardBreak(_, _1, state2, info) {
   let index2 = -1;
-  while (++index2 < state.unsafe.length) {
-    if (state.unsafe[index2].character === "\n" && patternInScope(state.stack, state.unsafe[index2])) {
+  while (++index2 < state2.unsafe.length) {
+    if (state2.unsafe[index2].character === "\n" && patternInScope(state2.stack, state2.unsafe[index2])) {
       return /[ \t]/.test(info.before) ? "" : " ";
     }
   }
@@ -11191,9 +11191,9 @@ function longestStreak(value2, substring) {
 }
 
 // node_modules/mdast-util-to-markdown/lib/util/format-code-as-indented.js
-function formatCodeAsIndented(node2, state) {
+function formatCodeAsIndented(node2, state2) {
   return Boolean(
-    state.options.fences === false && node2.value && // If there’s no info…
+    state2.options.fences === false && node2.value && // If there’s no info…
     !node2.lang && // And there’s a non-whitespace character…
     /[^ \r\n]/.test(node2.value) && // And the value doesn’t start or end in a blank…
     !/^[\t ]*(?:[\r\n]|$)|(?:^|[\r\n])[\t ]*$/.test(node2.value)
@@ -11201,8 +11201,8 @@ function formatCodeAsIndented(node2, state) {
 }
 
 // node_modules/mdast-util-to-markdown/lib/util/check-fence.js
-function checkFence(state) {
-  const marker = state.options.fence || "`";
+function checkFence(state2) {
+  const marker = state2.options.fence || "`";
   if (marker !== "`" && marker !== "~") {
     throw new Error(
       "Cannot serialize code with `" + marker + "` for `options.fence`, expected `` ` `` or `~`"
@@ -11212,24 +11212,24 @@ function checkFence(state) {
 }
 
 // node_modules/mdast-util-to-markdown/lib/handle/code.js
-function code(node2, _, state, info) {
-  const marker = checkFence(state);
+function code(node2, _, state2, info) {
+  const marker = checkFence(state2);
   const raw2 = node2.value || "";
   const suffix = marker === "`" ? "GraveAccent" : "Tilde";
-  if (formatCodeAsIndented(node2, state)) {
-    const exit5 = state.enter("codeIndented");
-    const value3 = state.indentLines(raw2, map2);
+  if (formatCodeAsIndented(node2, state2)) {
+    const exit5 = state2.enter("codeIndented");
+    const value3 = state2.indentLines(raw2, map2);
     exit5();
     return value3;
   }
-  const tracker = state.createTracker(info);
+  const tracker = state2.createTracker(info);
   const sequence = marker.repeat(Math.max(longestStreak(raw2, marker) + 1, 3));
-  const exit4 = state.enter("codeFenced");
+  const exit4 = state2.enter("codeFenced");
   let value2 = tracker.move(sequence);
   if (node2.lang) {
-    const subexit = state.enter(`codeFencedLang${suffix}`);
+    const subexit = state2.enter(`codeFencedLang${suffix}`);
     value2 += tracker.move(
-      state.safe(node2.lang, {
+      state2.safe(node2.lang, {
         before: value2,
         after: " ",
         encode: ["`"],
@@ -11239,10 +11239,10 @@ function code(node2, _, state, info) {
     subexit();
   }
   if (node2.lang && node2.meta) {
-    const subexit = state.enter(`codeFencedMeta${suffix}`);
+    const subexit = state2.enter(`codeFencedMeta${suffix}`);
     value2 += tracker.move(" ");
     value2 += tracker.move(
-      state.safe(node2.meta, {
+      state2.safe(node2.meta, {
         before: value2,
         after: "\n",
         encode: ["`"],
@@ -11264,8 +11264,8 @@ function map2(line, _, blank) {
 }
 
 // node_modules/mdast-util-to-markdown/lib/util/check-quote.js
-function checkQuote(state) {
-  const marker = state.options.quote || '"';
+function checkQuote(state2) {
+  const marker = state2.options.quote || '"';
   if (marker !== '"' && marker !== "'") {
     throw new Error(
       "Cannot serialize title with `" + marker + "` for `options.quote`, expected `\"`, or `'`"
@@ -11275,15 +11275,15 @@ function checkQuote(state) {
 }
 
 // node_modules/mdast-util-to-markdown/lib/handle/definition.js
-function definition2(node2, _, state, info) {
-  const quote = checkQuote(state);
+function definition2(node2, _, state2, info) {
+  const quote = checkQuote(state2);
   const suffix = quote === '"' ? "Quote" : "Apostrophe";
-  const exit4 = state.enter("definition");
-  let subexit = state.enter("label");
-  const tracker = state.createTracker(info);
+  const exit4 = state2.enter("definition");
+  let subexit = state2.enter("label");
+  const tracker = state2.createTracker(info);
   let value2 = tracker.move("[");
   value2 += tracker.move(
-    state.safe(state.associationId(node2), {
+    state2.safe(state2.associationId(node2), {
       before: value2,
       after: "]",
       ...tracker.current()
@@ -11296,16 +11296,16 @@ function definition2(node2, _, state, info) {
     !node2.url || // If there are control characters or whitespace.
     /[\0- \u007F]/.test(node2.url)
   ) {
-    subexit = state.enter("destinationLiteral");
+    subexit = state2.enter("destinationLiteral");
     value2 += tracker.move("<");
     value2 += tracker.move(
-      state.safe(node2.url, { before: value2, after: ">", ...tracker.current() })
+      state2.safe(node2.url, { before: value2, after: ">", ...tracker.current() })
     );
     value2 += tracker.move(">");
   } else {
-    subexit = state.enter("destinationRaw");
+    subexit = state2.enter("destinationRaw");
     value2 += tracker.move(
-      state.safe(node2.url, {
+      state2.safe(node2.url, {
         before: value2,
         after: node2.title ? " " : "\n",
         ...tracker.current()
@@ -11314,10 +11314,10 @@ function definition2(node2, _, state, info) {
   }
   subexit();
   if (node2.title) {
-    subexit = state.enter(`title${suffix}`);
+    subexit = state2.enter(`title${suffix}`);
     value2 += tracker.move(" " + quote);
     value2 += tracker.move(
-      state.safe(node2.title, {
+      state2.safe(node2.title, {
         before: value2,
         after: quote,
         ...tracker.current()
@@ -11331,8 +11331,8 @@ function definition2(node2, _, state, info) {
 }
 
 // node_modules/mdast-util-to-markdown/lib/util/check-emphasis.js
-function checkEmphasis(state) {
-  const marker = state.options.emphasis || "*";
+function checkEmphasis(state2) {
+  const marker = state2.options.emphasis || "*";
   if (marker !== "*" && marker !== "_") {
     throw new Error(
       "Cannot serialize emphasis with `" + marker + "` for `options.emphasis`, expected `*`, or `_`"
@@ -11390,13 +11390,13 @@ function encodeInfo(outside, inside, marker) {
 
 // node_modules/mdast-util-to-markdown/lib/handle/emphasis.js
 emphasis.peek = emphasisPeek;
-function emphasis(node2, _, state, info) {
-  const marker = checkEmphasis(state);
-  const exit4 = state.enter("emphasis");
-  const tracker = state.createTracker(info);
+function emphasis(node2, _, state2, info) {
+  const marker = checkEmphasis(state2);
+  const exit4 = state2.enter("emphasis");
+  const tracker = state2.createTracker(info);
   const before = tracker.move(marker);
   let between = tracker.move(
-    state.containerPhrasing(node2, {
+    state2.containerPhrasing(node2, {
       after: marker,
       before,
       ...tracker.current()
@@ -11418,14 +11418,14 @@ function emphasis(node2, _, state, info) {
   }
   const after = tracker.move(marker);
   exit4();
-  state.attentionEncodeSurroundingInfo = {
+  state2.attentionEncodeSurroundingInfo = {
     after: close2.outside,
     before: open.outside
   };
   return before + between + after;
 }
-function emphasisPeek(_, _1, state) {
-  return state.options.emphasis || "*";
+function emphasisPeek(_, _1, state2) {
+  return state2.options.emphasis || "*";
 }
 
 // node_modules/unist-util-visit/lib/index.js
@@ -11451,7 +11451,7 @@ function visit(tree, testOrVisitor, visitorOrReverse, maybeReverse) {
 }
 
 // node_modules/mdast-util-to-markdown/lib/util/format-heading-as-setext.js
-function formatHeadingAsSetext(node2, state) {
+function formatHeadingAsSetext(node2, state2) {
   let literalWithBreak = false;
   visit(node2, function(node3) {
     if ("value" in node3 && /\r?\n|\r/.test(node3.value) || node3.type === "break") {
@@ -11460,18 +11460,18 @@ function formatHeadingAsSetext(node2, state) {
     }
   });
   return Boolean(
-    (!node2.depth || node2.depth < 3) && toString(node2) && (state.options.setext || literalWithBreak)
+    (!node2.depth || node2.depth < 3) && toString(node2) && (state2.options.setext || literalWithBreak)
   );
 }
 
 // node_modules/mdast-util-to-markdown/lib/handle/heading.js
-function heading(node2, _, state, info) {
+function heading(node2, _, state2, info) {
   const rank = Math.max(Math.min(6, node2.depth || 1), 1);
-  const tracker = state.createTracker(info);
-  if (formatHeadingAsSetext(node2, state)) {
-    const exit5 = state.enter("headingSetext");
-    const subexit2 = state.enter("phrasing");
-    const value3 = state.containerPhrasing(node2, {
+  const tracker = state2.createTracker(info);
+  if (formatHeadingAsSetext(node2, state2)) {
+    const exit5 = state2.enter("headingSetext");
+    const subexit2 = state2.enter("phrasing");
+    const value3 = state2.containerPhrasing(node2, {
       ...tracker.current(),
       before: "\n",
       after: "\n"
@@ -11486,10 +11486,10 @@ function heading(node2, _, state, info) {
     );
   }
   const sequence = "#".repeat(rank);
-  const exit4 = state.enter("headingAtx");
-  const subexit = state.enter("phrasing");
+  const exit4 = state2.enter("headingAtx");
+  const subexit = state2.enter("phrasing");
   tracker.move(sequence + " ");
-  let value2 = state.containerPhrasing(node2, {
+  let value2 = state2.containerPhrasing(node2, {
     before: "# ",
     after: "\n",
     ...tracker.current()
@@ -11498,7 +11498,7 @@ function heading(node2, _, state, info) {
     value2 = encodeCharacterReference(value2.charCodeAt(0)) + value2.slice(1);
   }
   value2 = value2 ? sequence + " " + value2 : sequence;
-  if (state.options.closeAtx) {
+  if (state2.options.closeAtx) {
     value2 += " " + sequence;
   }
   subexit();
@@ -11517,15 +11517,15 @@ function htmlPeek() {
 
 // node_modules/mdast-util-to-markdown/lib/handle/image.js
 image.peek = imagePeek;
-function image(node2, _, state, info) {
-  const quote = checkQuote(state);
+function image(node2, _, state2, info) {
+  const quote = checkQuote(state2);
   const suffix = quote === '"' ? "Quote" : "Apostrophe";
-  const exit4 = state.enter("image");
-  let subexit = state.enter("label");
-  const tracker = state.createTracker(info);
+  const exit4 = state2.enter("image");
+  let subexit = state2.enter("label");
+  const tracker = state2.createTracker(info);
   let value2 = tracker.move("![");
   value2 += tracker.move(
-    state.safe(node2.alt, { before: value2, after: "]", ...tracker.current() })
+    state2.safe(node2.alt, { before: value2, after: "]", ...tracker.current() })
   );
   value2 += tracker.move("](");
   subexit();
@@ -11534,16 +11534,16 @@ function image(node2, _, state, info) {
     !node2.url && node2.title || // If there are control characters or whitespace.
     /[\0- \u007F]/.test(node2.url)
   ) {
-    subexit = state.enter("destinationLiteral");
+    subexit = state2.enter("destinationLiteral");
     value2 += tracker.move("<");
     value2 += tracker.move(
-      state.safe(node2.url, { before: value2, after: ">", ...tracker.current() })
+      state2.safe(node2.url, { before: value2, after: ">", ...tracker.current() })
     );
     value2 += tracker.move(">");
   } else {
-    subexit = state.enter("destinationRaw");
+    subexit = state2.enter("destinationRaw");
     value2 += tracker.move(
-      state.safe(node2.url, {
+      state2.safe(node2.url, {
         before: value2,
         after: node2.title ? " " : ")",
         ...tracker.current()
@@ -11552,10 +11552,10 @@ function image(node2, _, state, info) {
   }
   subexit();
   if (node2.title) {
-    subexit = state.enter(`title${suffix}`);
+    subexit = state2.enter(`title${suffix}`);
     value2 += tracker.move(" " + quote);
     value2 += tracker.move(
-      state.safe(node2.title, {
+      state2.safe(node2.title, {
         before: value2,
         after: quote,
         ...tracker.current()
@@ -11574,29 +11574,29 @@ function imagePeek() {
 
 // node_modules/mdast-util-to-markdown/lib/handle/image-reference.js
 imageReference.peek = imageReferencePeek;
-function imageReference(node2, _, state, info) {
+function imageReference(node2, _, state2, info) {
   const type = node2.referenceType;
-  const exit4 = state.enter("imageReference");
-  let subexit = state.enter("label");
-  const tracker = state.createTracker(info);
+  const exit4 = state2.enter("imageReference");
+  let subexit = state2.enter("label");
+  const tracker = state2.createTracker(info);
   let value2 = tracker.move("![");
-  const alt = state.safe(node2.alt, {
+  const alt = state2.safe(node2.alt, {
     before: value2,
     after: "]",
     ...tracker.current()
   });
   value2 += tracker.move(alt + "][");
   subexit();
-  const stack = state.stack;
-  state.stack = [];
-  subexit = state.enter("reference");
-  const reference = state.safe(state.associationId(node2), {
+  const stack = state2.stack;
+  state2.stack = [];
+  subexit = state2.enter("reference");
+  const reference = state2.safe(state2.associationId(node2), {
     before: value2,
     after: "]",
     ...tracker.current()
   });
   subexit();
-  state.stack = stack;
+  state2.stack = stack;
   exit4();
   if (type === "full" || !alt || alt !== reference) {
     value2 += tracker.move(reference + "]");
@@ -11613,7 +11613,7 @@ function imageReferencePeek() {
 
 // node_modules/mdast-util-to-markdown/lib/handle/inline-code.js
 inlineCode.peek = inlineCodePeek;
-function inlineCode(node2, _, state) {
+function inlineCode(node2, _, state2) {
   let value2 = node2.value || "";
   let sequence = "`";
   let index2 = -1;
@@ -11623,9 +11623,9 @@ function inlineCode(node2, _, state) {
   if (/[^ \r\n]/.test(value2) && (/^[ \r\n]/.test(value2) && /[ \r\n]$/.test(value2) || /^`|`$/.test(value2))) {
     value2 = " " + value2 + " ";
   }
-  while (++index2 < state.unsafe.length) {
-    const pattern = state.unsafe[index2];
-    const expression = state.compilePattern(pattern);
+  while (++index2 < state2.unsafe.length) {
+    const pattern = state2.unsafe[index2];
+    const expression = state2.compilePattern(pattern);
     let match;
     if (!pattern.atBreak) continue;
     while (match = expression.exec(value2)) {
@@ -11643,10 +11643,10 @@ function inlineCodePeek() {
 }
 
 // node_modules/mdast-util-to-markdown/lib/util/format-link-as-autolink.js
-function formatLinkAsAutolink(node2, state) {
+function formatLinkAsAutolink(node2, state2) {
   const raw2 = toString(node2);
   return Boolean(
-    !state.options.resourceLink && // If there’s a url…
+    !state2.options.resourceLink && // If there’s a url…
     node2.url && // And there’s a no title…
     !node2.title && // And the content of `node` is a single text node…
     node2.children && node2.children.length === 1 && node2.children[0].type === "text" && // And if the url is the same as the content…
@@ -11659,19 +11659,19 @@ function formatLinkAsAutolink(node2, state) {
 
 // node_modules/mdast-util-to-markdown/lib/handle/link.js
 link.peek = linkPeek;
-function link(node2, _, state, info) {
-  const quote = checkQuote(state);
+function link(node2, _, state2, info) {
+  const quote = checkQuote(state2);
   const suffix = quote === '"' ? "Quote" : "Apostrophe";
-  const tracker = state.createTracker(info);
+  const tracker = state2.createTracker(info);
   let exit4;
   let subexit;
-  if (formatLinkAsAutolink(node2, state)) {
-    const stack = state.stack;
-    state.stack = [];
-    exit4 = state.enter("autolink");
+  if (formatLinkAsAutolink(node2, state2)) {
+    const stack = state2.stack;
+    state2.stack = [];
+    exit4 = state2.enter("autolink");
     let value3 = tracker.move("<");
     value3 += tracker.move(
-      state.containerPhrasing(node2, {
+      state2.containerPhrasing(node2, {
         before: value3,
         after: ">",
         ...tracker.current()
@@ -11679,14 +11679,14 @@ function link(node2, _, state, info) {
     );
     value3 += tracker.move(">");
     exit4();
-    state.stack = stack;
+    state2.stack = stack;
     return value3;
   }
-  exit4 = state.enter("link");
-  subexit = state.enter("label");
+  exit4 = state2.enter("link");
+  subexit = state2.enter("label");
   let value2 = tracker.move("[");
   value2 += tracker.move(
-    state.containerPhrasing(node2, {
+    state2.containerPhrasing(node2, {
       before: value2,
       after: "](",
       ...tracker.current()
@@ -11699,16 +11699,16 @@ function link(node2, _, state, info) {
     !node2.url && node2.title || // If there are control characters or whitespace.
     /[\0- \u007F]/.test(node2.url)
   ) {
-    subexit = state.enter("destinationLiteral");
+    subexit = state2.enter("destinationLiteral");
     value2 += tracker.move("<");
     value2 += tracker.move(
-      state.safe(node2.url, { before: value2, after: ">", ...tracker.current() })
+      state2.safe(node2.url, { before: value2, after: ">", ...tracker.current() })
     );
     value2 += tracker.move(">");
   } else {
-    subexit = state.enter("destinationRaw");
+    subexit = state2.enter("destinationRaw");
     value2 += tracker.move(
-      state.safe(node2.url, {
+      state2.safe(node2.url, {
         before: value2,
         after: node2.title ? " " : ")",
         ...tracker.current()
@@ -11717,10 +11717,10 @@ function link(node2, _, state, info) {
   }
   subexit();
   if (node2.title) {
-    subexit = state.enter(`title${suffix}`);
+    subexit = state2.enter(`title${suffix}`);
     value2 += tracker.move(" " + quote);
     value2 += tracker.move(
-      state.safe(node2.title, {
+      state2.safe(node2.title, {
         before: value2,
         after: quote,
         ...tracker.current()
@@ -11733,35 +11733,35 @@ function link(node2, _, state, info) {
   exit4();
   return value2;
 }
-function linkPeek(node2, _, state) {
-  return formatLinkAsAutolink(node2, state) ? "<" : "[";
+function linkPeek(node2, _, state2) {
+  return formatLinkAsAutolink(node2, state2) ? "<" : "[";
 }
 
 // node_modules/mdast-util-to-markdown/lib/handle/link-reference.js
 linkReference.peek = linkReferencePeek;
-function linkReference(node2, _, state, info) {
+function linkReference(node2, _, state2, info) {
   const type = node2.referenceType;
-  const exit4 = state.enter("linkReference");
-  let subexit = state.enter("label");
-  const tracker = state.createTracker(info);
+  const exit4 = state2.enter("linkReference");
+  let subexit = state2.enter("label");
+  const tracker = state2.createTracker(info);
   let value2 = tracker.move("[");
-  const text9 = state.containerPhrasing(node2, {
+  const text9 = state2.containerPhrasing(node2, {
     before: value2,
     after: "]",
     ...tracker.current()
   });
   value2 += tracker.move(text9 + "][");
   subexit();
-  const stack = state.stack;
-  state.stack = [];
-  subexit = state.enter("reference");
-  const reference = state.safe(state.associationId(node2), {
+  const stack = state2.stack;
+  state2.stack = [];
+  subexit = state2.enter("reference");
+  const reference = state2.safe(state2.associationId(node2), {
     before: value2,
     after: "]",
     ...tracker.current()
   });
   subexit();
-  state.stack = stack;
+  state2.stack = stack;
   exit4();
   if (type === "full" || !text9 || text9 !== reference) {
     value2 += tracker.move(reference + "]");
@@ -11777,8 +11777,8 @@ function linkReferencePeek() {
 }
 
 // node_modules/mdast-util-to-markdown/lib/util/check-bullet.js
-function checkBullet(state) {
-  const marker = state.options.bullet || "*";
+function checkBullet(state2) {
+  const marker = state2.options.bullet || "*";
   if (marker !== "*" && marker !== "+" && marker !== "-") {
     throw new Error(
       "Cannot serialize items with `" + marker + "` for `options.bullet`, expected `*`, `+`, or `-`"
@@ -11788,9 +11788,9 @@ function checkBullet(state) {
 }
 
 // node_modules/mdast-util-to-markdown/lib/util/check-bullet-other.js
-function checkBulletOther(state) {
-  const bullet = checkBullet(state);
-  const bulletOther = state.options.bulletOther;
+function checkBulletOther(state2) {
+  const bullet = checkBullet(state2);
+  const bulletOther = state2.options.bulletOther;
   if (!bulletOther) {
     return bullet === "*" ? "-" : "*";
   }
@@ -11808,8 +11808,8 @@ function checkBulletOther(state) {
 }
 
 // node_modules/mdast-util-to-markdown/lib/util/check-bullet-ordered.js
-function checkBulletOrdered(state) {
-  const marker = state.options.bulletOrdered || ".";
+function checkBulletOrdered(state2) {
+  const marker = state2.options.bulletOrdered || ".";
   if (marker !== "." && marker !== ")") {
     throw new Error(
       "Cannot serialize items with `" + marker + "` for `options.bulletOrdered`, expected `.` or `)`"
@@ -11819,8 +11819,8 @@ function checkBulletOrdered(state) {
 }
 
 // node_modules/mdast-util-to-markdown/lib/util/check-rule.js
-function checkRule(state) {
-  const marker = state.options.rule || "*";
+function checkRule(state2) {
+  const marker = state2.options.rule || "*";
   if (marker !== "*" && marker !== "-" && marker !== "_") {
     throw new Error(
       "Cannot serialize rules with `" + marker + "` for `options.rule`, expected `*`, `-`, or `_`"
@@ -11830,24 +11830,24 @@ function checkRule(state) {
 }
 
 // node_modules/mdast-util-to-markdown/lib/handle/list.js
-function list2(node2, parent, state, info) {
-  const exit4 = state.enter("list");
-  const bulletCurrent = state.bulletCurrent;
-  let bullet = node2.ordered ? checkBulletOrdered(state) : checkBullet(state);
-  const bulletOther = node2.ordered ? bullet === "." ? ")" : "." : checkBulletOther(state);
-  let useDifferentMarker = parent && state.bulletLastUsed ? bullet === state.bulletLastUsed : false;
+function list2(node2, parent, state2, info) {
+  const exit4 = state2.enter("list");
+  const bulletCurrent = state2.bulletCurrent;
+  let bullet = node2.ordered ? checkBulletOrdered(state2) : checkBullet(state2);
+  const bulletOther = node2.ordered ? bullet === "." ? ")" : "." : checkBulletOther(state2);
+  let useDifferentMarker = parent && state2.bulletLastUsed ? bullet === state2.bulletLastUsed : false;
   if (!node2.ordered) {
     const firstListItem = node2.children ? node2.children[0] : void 0;
     if (
       // Bullet could be used as a thematic break marker:
       (bullet === "*" || bullet === "-") && // Empty first list item:
       firstListItem && (!firstListItem.children || !firstListItem.children[0]) && // Directly in two other list items:
-      state.stack[state.stack.length - 1] === "list" && state.stack[state.stack.length - 2] === "listItem" && state.stack[state.stack.length - 3] === "list" && state.stack[state.stack.length - 4] === "listItem" && // That are each the first child.
-      state.indexStack[state.indexStack.length - 1] === 0 && state.indexStack[state.indexStack.length - 2] === 0 && state.indexStack[state.indexStack.length - 3] === 0
+      state2.stack[state2.stack.length - 1] === "list" && state2.stack[state2.stack.length - 2] === "listItem" && state2.stack[state2.stack.length - 3] === "list" && state2.stack[state2.stack.length - 4] === "listItem" && // That are each the first child.
+      state2.indexStack[state2.indexStack.length - 1] === 0 && state2.indexStack[state2.indexStack.length - 2] === 0 && state2.indexStack[state2.indexStack.length - 3] === 0
     ) {
       useDifferentMarker = true;
     }
-    if (checkRule(state) === bullet && firstListItem) {
+    if (checkRule(state2) === bullet && firstListItem) {
       let index2 = -1;
       while (++index2 < node2.children.length) {
         const item = node2.children[index2];
@@ -11861,17 +11861,17 @@ function list2(node2, parent, state, info) {
   if (useDifferentMarker) {
     bullet = bulletOther;
   }
-  state.bulletCurrent = bullet;
-  const value2 = state.containerFlow(node2, info);
-  state.bulletLastUsed = bullet;
-  state.bulletCurrent = bulletCurrent;
+  state2.bulletCurrent = bullet;
+  const value2 = state2.containerFlow(node2, info);
+  state2.bulletLastUsed = bullet;
+  state2.bulletCurrent = bulletCurrent;
   exit4();
   return value2;
 }
 
 // node_modules/mdast-util-to-markdown/lib/util/check-list-item-indent.js
-function checkListItemIndent(state) {
-  const style2 = state.options.listItemIndent || "one";
+function checkListItemIndent(state2) {
+  const style2 = state2.options.listItemIndent || "one";
   if (style2 !== "tab" && style2 !== "one" && style2 !== "mixed") {
     throw new Error(
       "Cannot serialize items with `" + style2 + "` for `options.listItemIndent`, expected `tab`, `one`, or `mixed`"
@@ -11881,22 +11881,22 @@ function checkListItemIndent(state) {
 }
 
 // node_modules/mdast-util-to-markdown/lib/handle/list-item.js
-function listItem(node2, parent, state, info) {
-  const listItemIndent = checkListItemIndent(state);
-  let bullet = state.bulletCurrent || checkBullet(state);
+function listItem(node2, parent, state2, info) {
+  const listItemIndent = checkListItemIndent(state2);
+  let bullet = state2.bulletCurrent || checkBullet(state2);
   if (parent && parent.type === "list" && parent.ordered) {
-    bullet = (typeof parent.start === "number" && parent.start > -1 ? parent.start : 1) + (state.options.incrementListMarker === false ? 0 : parent.children.indexOf(node2)) + bullet;
+    bullet = (typeof parent.start === "number" && parent.start > -1 ? parent.start : 1) + (state2.options.incrementListMarker === false ? 0 : parent.children.indexOf(node2)) + bullet;
   }
   let size = bullet.length + 1;
   if (listItemIndent === "tab" || listItemIndent === "mixed" && (parent && parent.type === "list" && parent.spread || node2.spread)) {
     size = Math.ceil(size / 4) * 4;
   }
-  const tracker = state.createTracker(info);
+  const tracker = state2.createTracker(info);
   tracker.move(bullet + " ".repeat(size - bullet.length));
   tracker.shift(size);
-  const exit4 = state.enter("listItem");
-  const value2 = state.indentLines(
-    state.containerFlow(node2, tracker.current()),
+  const exit4 = state2.enter("listItem");
+  const value2 = state2.indentLines(
+    state2.containerFlow(node2, tracker.current()),
     map3
   );
   exit4();
@@ -11910,10 +11910,10 @@ function listItem(node2, parent, state, info) {
 }
 
 // node_modules/mdast-util-to-markdown/lib/handle/paragraph.js
-function paragraph(node2, _, state, info) {
-  const exit4 = state.enter("paragraph");
-  const subexit = state.enter("phrasing");
-  const value2 = state.containerPhrasing(node2, info);
+function paragraph(node2, _, state2, info) {
+  const exit4 = state2.enter("paragraph");
+  const subexit = state2.enter("phrasing");
+  const value2 = state2.containerPhrasing(node2, info);
   subexit();
   exit4();
   return value2;
@@ -11948,17 +11948,17 @@ var phrasing = (
 );
 
 // node_modules/mdast-util-to-markdown/lib/handle/root.js
-function root(node2, _, state, info) {
+function root(node2, _, state2, info) {
   const hasPhrasing = node2.children.some(function(d) {
     return phrasing(d);
   });
-  const container = hasPhrasing ? state.containerPhrasing : state.containerFlow;
-  return container.call(state, node2, info);
+  const container = hasPhrasing ? state2.containerPhrasing : state2.containerFlow;
+  return container.call(state2, node2, info);
 }
 
 // node_modules/mdast-util-to-markdown/lib/util/check-strong.js
-function checkStrong(state) {
-  const marker = state.options.strong || "*";
+function checkStrong(state2) {
+  const marker = state2.options.strong || "*";
   if (marker !== "*" && marker !== "_") {
     throw new Error(
       "Cannot serialize strong with `" + marker + "` for `options.strong`, expected `*`, or `_`"
@@ -11969,13 +11969,13 @@ function checkStrong(state) {
 
 // node_modules/mdast-util-to-markdown/lib/handle/strong.js
 strong.peek = strongPeek;
-function strong(node2, _, state, info) {
-  const marker = checkStrong(state);
-  const exit4 = state.enter("strong");
-  const tracker = state.createTracker(info);
+function strong(node2, _, state2, info) {
+  const marker = checkStrong(state2);
+  const exit4 = state2.enter("strong");
+  const tracker = state2.createTracker(info);
   const before = tracker.move(marker + marker);
   let between = tracker.move(
-    state.containerPhrasing(node2, {
+    state2.containerPhrasing(node2, {
       after: marker,
       before,
       ...tracker.current()
@@ -11997,24 +11997,24 @@ function strong(node2, _, state, info) {
   }
   const after = tracker.move(marker + marker);
   exit4();
-  state.attentionEncodeSurroundingInfo = {
+  state2.attentionEncodeSurroundingInfo = {
     after: close2.outside,
     before: open.outside
   };
   return before + between + after;
 }
-function strongPeek(_, _1, state) {
-  return state.options.strong || "*";
+function strongPeek(_, _1, state2) {
+  return state2.options.strong || "*";
 }
 
 // node_modules/mdast-util-to-markdown/lib/handle/text.js
-function text3(node2, _, state, info) {
-  return state.safe(node2.value, info);
+function text3(node2, _, state2, info) {
+  return state2.safe(node2.value, info);
 }
 
 // node_modules/mdast-util-to-markdown/lib/util/check-rule-repetition.js
-function checkRuleRepetition(state) {
-  const repetition = state.options.ruleRepetition || 3;
+function checkRuleRepetition(state2) {
+  const repetition = state2.options.ruleRepetition || 3;
   if (repetition < 3) {
     throw new Error(
       "Cannot serialize rules with repetition `" + repetition + "` for `options.ruleRepetition`, expected `3` or more"
@@ -12024,9 +12024,9 @@ function checkRuleRepetition(state) {
 }
 
 // node_modules/mdast-util-to-markdown/lib/handle/thematic-break.js
-function thematicBreak2(_, _1, state) {
-  const value2 = (checkRule(state) + (state.options.ruleSpaces ? " " : "")).repeat(checkRuleRepetition(state));
-  return state.options.ruleSpaces ? value2.slice(0, -1) : value2;
+function thematicBreak2(_, _1, state2) {
+  const value2 = (checkRule(state2) + (state2.options.ruleSpaces ? " " : "")).repeat(checkRuleRepetition(state2));
+  return state2.options.ruleSpaces ? value2.slice(0, -1) : value2;
 }
 
 // node_modules/mdast-util-to-markdown/lib/handle/index.js
@@ -12144,18 +12144,18 @@ function gfmTableToMarkdown(options) {
       tableRow: handleTableRow
     }
   };
-  function handleTable(node2, _, state, info) {
-    return serializeData(handleTableAsData(node2, state, info), node2.align);
+  function handleTable(node2, _, state2, info) {
+    return serializeData(handleTableAsData(node2, state2, info), node2.align);
   }
-  function handleTableRow(node2, _, state, info) {
-    const row = handleTableRowAsData(node2, state, info);
+  function handleTableRow(node2, _, state2, info) {
+    const row = handleTableRowAsData(node2, state2, info);
     const value2 = serializeData([row]);
     return value2.slice(0, value2.indexOf("\n"));
   }
-  function handleTableCell(node2, _, state, info) {
-    const exit4 = state.enter("tableCell");
-    const subexit = state.enter("phrasing");
-    const value2 = state.containerPhrasing(node2, {
+  function handleTableCell(node2, _, state2, info) {
+    const exit4 = state2.enter("tableCell");
+    const subexit = state2.enter("phrasing");
+    const value2 = state2.containerPhrasing(node2, {
       ...info,
       before: around,
       after: around
@@ -12175,31 +12175,31 @@ function gfmTableToMarkdown(options) {
       stringLength
     });
   }
-  function handleTableAsData(node2, state, info) {
+  function handleTableAsData(node2, state2, info) {
     const children2 = node2.children;
     let index2 = -1;
     const result = [];
-    const subexit = state.enter("table");
+    const subexit = state2.enter("table");
     while (++index2 < children2.length) {
-      result[index2] = handleTableRowAsData(children2[index2], state, info);
+      result[index2] = handleTableRowAsData(children2[index2], state2, info);
     }
     subexit();
     return result;
   }
-  function handleTableRowAsData(node2, state, info) {
+  function handleTableRowAsData(node2, state2, info) {
     const children2 = node2.children;
     let index2 = -1;
     const result = [];
-    const subexit = state.enter("tableRow");
+    const subexit = state2.enter("tableRow");
     while (++index2 < children2.length) {
-      result[index2] = handleTableCell(children2[index2], node2, state, info);
+      result[index2] = handleTableCell(children2[index2], node2, state2, info);
     }
     subexit();
     return result;
   }
-  function inlineCodeWithTable(node2, parent, state) {
-    let value2 = handle.inlineCode(node2, parent, state);
-    if (state.stack.includes("tableCell")) {
+  function inlineCodeWithTable(node2, parent, state2) {
+    let value2 = handle.inlineCode(node2, parent, state2);
+    if (state2.stack.includes("tableCell")) {
       value2 = value2.replace(/\|/g, "\\$&");
     }
     return value2;
@@ -12258,15 +12258,15 @@ function exitParagraphWithTaskListItem(token) {
   }
   this.exit(token);
 }
-function listItemWithTaskListItem(node2, parent, state, info) {
+function listItemWithTaskListItem(node2, parent, state2, info) {
   const head2 = node2.children[0];
   const checkable = typeof node2.checked === "boolean" && head2 && head2.type === "paragraph";
   const checkbox = "[" + (node2.checked ? "x" : " ") + "] ";
-  const tracker = state.createTracker(info);
+  const tracker = state2.createTracker(info);
   if (checkable) {
     tracker.move(checkbox);
   }
-  let value2 = handle.listItem(node2, parent, state, {
+  let value2 = handle.listItem(node2, parent, state2, {
     ...info,
     ...tracker.current()
   });
@@ -14756,30 +14756,30 @@ function cjkFriendlyToMarkdown() {
 }
 emphasis2.peek = emphasisPeek2;
 strong2.peek = strongPeek2;
-function emphasis2(node2, parent, state, info) {
-  return serializeAttention(node2, parent, state, info, emphasisPeek2(node2, parent, state), 1);
+function emphasis2(node2, parent, state2, info) {
+  return serializeAttention(node2, parent, state2, info, emphasisPeek2(node2, parent, state2), 1);
 }
-function strong2(node2, parent, state, info) {
-  return serializeAttention(node2, parent, state, info, strongPeek2(node2, parent, state), 2);
+function strong2(node2, parent, state2, info) {
+  return serializeAttention(node2, parent, state2, info, strongPeek2(node2, parent, state2), 2);
 }
-function emphasisPeek2(_, _parent, state) {
-  return state.options.emphasis || "*";
+function emphasisPeek2(_, _parent, state2) {
+  return state2.options.emphasis || "*";
 }
-function strongPeek2(_, _parent, state) {
-  return state.options.strong || "*";
+function strongPeek2(_, _parent, state2) {
+  return state2.options.strong || "*";
 }
-function serializeAttention(node2, parent, state, info, marker, size) {
+function serializeAttention(node2, parent, state2, info, marker, size) {
   const sequence = marker.repeat(size);
-  const exit4 = state.enter(size === 1 ? "emphasis" : "strong");
-  const tracker = state.createTracker(info);
+  const exit4 = state2.enter(size === 1 ? "emphasis" : "strong");
+  const tracker = state2.createTracker(info);
   const before = tracker.move(sequence);
-  let between = tracker.move(state.containerPhrasing(node2, {
+  let between = tracker.move(state2.containerPhrasing(node2, {
     after: marker,
     before,
     ...tracker.current()
   }));
-  const beforeBoundary = resolveBeforeBoundary(node2, parent, state, info.before);
-  const afterBoundary = resolveAfterBoundary(node2, parent, state, info.after);
+  const beforeBoundary = resolveBeforeBoundary(node2, parent, state2, info.before);
+  const afterBoundary = resolveAfterBoundary(node2, parent, state2, info.after);
   const open = encodeInfoCjk(beforeBoundary, firstCodePoint(between), marker, "open");
   if (open.inside && between) between = encodeFirstCodePoint(between);
   const close2 = encodeInfoCjk({
@@ -14789,21 +14789,21 @@ function serializeAttention(node2, parent, state, info, marker, size) {
   if (close2.inside && between) between = encodeLastCodePoint(between);
   const after = tracker.move(sequence);
   exit4();
-  const encodeAfterSupplementary = close2.outside && shouldEncodeAfterSupplementaryText(parent, state);
-  state.attentionEncodeSurroundingInfo = {
+  const encodeAfterSupplementary = close2.outside && shouldEncodeAfterSupplementaryText(parent, state2);
+  state2.attentionEncodeSurroundingInfo = {
     after: close2.outside && !encodeAfterSupplementary,
     before: open.outside
   };
-  getCjkFriendlyState(state).cjkFriendlyEncodeAfterSupplementaryText = encodeAfterSupplementary;
+  getCjkFriendlyState(state2).cjkFriendlyEncodeAfterSupplementaryText = encodeAfterSupplementary;
   return before + between + after;
 }
-function text5(node2, _parent, state, info) {
-  const cjkFriendlyState = getCjkFriendlyState(state);
-  if (!cjkFriendlyState.cjkFriendlyEncodeAfterSupplementaryText) return state.safe(node2.value, info);
+function text5(node2, _parent, state2, info) {
+  const cjkFriendlyState = getCjkFriendlyState(state2);
+  if (!cjkFriendlyState.cjkFriendlyEncodeAfterSupplementaryText) return state2.safe(node2.value, info);
   cjkFriendlyState.cjkFriendlyEncodeAfterSupplementaryText = false;
   const [first = ""] = [...node2.value];
   const rest = node2.value.slice(first.length);
-  return `${encodeCharacterReference2(first.codePointAt(0) ?? codes.eof)}${state.safe(rest, {
+  return `${encodeCharacterReference2(first.codePointAt(0) ?? codes.eof)}${state2.safe(rest, {
     ...info,
     before: ";"
   })}`;
@@ -14899,11 +14899,11 @@ function classifyBoundaryBefore(before) {
   const kind = classifyCharacter2(before.current);
   return before.current === null || !isNonEmojiGeneralUseVS(kind) ? kind : classifyPrecedingCharacter(kind, () => before.previous, before.current);
 }
-function resolveBeforeBoundary(node2, parent, state, fallback) {
+function resolveBeforeBoundary(node2, parent, state2, fallback) {
   let current = lastCodePoint(fallback);
   let previous5 = codePointBeforeLast(fallback);
   if (needsPreviousBoundaryRecovery(current) || needsPreviousContext(current, previous5)) {
-    const siblingText = getAdjacentSiblingText(node2, parent, state, -1);
+    const siblingText = getAdjacentSiblingText(node2, parent, state2, -1);
     if (siblingText) {
       current = lastCodePoint(siblingText);
       previous5 = codePointBeforeLast(siblingText);
@@ -14914,10 +14914,10 @@ function resolveBeforeBoundary(node2, parent, state, fallback) {
     previous: previous5
   };
 }
-function resolveAfterBoundary(node2, parent, state, fallback) {
+function resolveAfterBoundary(node2, parent, state2, fallback) {
   const current = firstCodePoint(fallback);
   if (!needsNextBoundaryRecovery(current)) return current;
-  const siblingText = getAdjacentSiblingText(node2, parent, state, 1);
+  const siblingText = getAdjacentSiblingText(node2, parent, state2, 1);
   return siblingText ? firstCodePoint(siblingText) : current;
 }
 function needsPreviousBoundaryRecovery(codePoint) {
@@ -14929,24 +14929,24 @@ function needsNextBoundaryRecovery(codePoint) {
 function needsPreviousContext(current, previous5) {
   return isNonEmojiGeneralUseVS(classifyCharacter2(current)) && (previous5 === null || previous5 === codes.eof);
 }
-function getAdjacentSiblingText(node2, parent, state, offset) {
+function getAdjacentSiblingText(node2, parent, state2, offset) {
   if (!parent) return;
-  const stackIndex = state.indexStack.at(-1);
+  const stackIndex = state2.indexStack.at(-1);
   const siblings2 = parent.children;
   const index2 = typeof stackIndex === "number" ? stackIndex : siblings2.indexOf(node2);
   if (index2 < 0) return;
   const sibling = siblings2[index2 + offset];
   return getNodeTextContent(sibling) || void 0;
 }
-function shouldEncodeAfterSupplementaryText(parent, state) {
+function shouldEncodeAfterSupplementaryText(parent, state2) {
   if (!parent) return false;
-  const stackIndex = state.indexStack.at(-1);
+  const stackIndex = state2.indexStack.at(-1);
   if (typeof stackIndex !== "number") return false;
   const sibling = parent.children[stackIndex + 1];
   return sibling?.type === "text" && (firstCodePoint(sibling.value) ?? 0) > 65535;
 }
-function getCjkFriendlyState(state) {
-  return state;
+function getCjkFriendlyState(state2) {
+  return state2;
 }
 function getNodeTextContent(node2) {
   if (!node2 || typeof node2 !== "object") return "";
@@ -15441,16 +15441,16 @@ function mathToMarkdown(options) {
     ],
     handlers: { math: math2, inlineMath }
   };
-  function math2(node2, _, state, info) {
+  function math2(node2, _, state2, info) {
     const raw2 = node2.value || "";
-    const tracker = state.createTracker(info);
+    const tracker = state2.createTracker(info);
     const sequence = "$".repeat(Math.max(longestStreak(raw2, "$") + 1, 2));
-    const exit4 = state.enter("mathFlow");
+    const exit4 = state2.enter("mathFlow");
     let value2 = tracker.move(sequence);
     if (node2.meta) {
-      const subexit = state.enter("mathFlowMeta");
+      const subexit = state2.enter("mathFlowMeta");
       value2 += tracker.move(
-        state.safe(node2.meta, {
+        state2.safe(node2.meta, {
           after: "\n",
           before: value2,
           encode: ["$"],
@@ -15467,7 +15467,7 @@ function mathToMarkdown(options) {
     exit4();
     return value2;
   }
-  function inlineMath(node2, _, state) {
+  function inlineMath(node2, _, state2) {
     let value2 = node2.value || "";
     let size = 1;
     if (!single) size++;
@@ -15484,10 +15484,10 @@ function mathToMarkdown(options) {
       value2 = " " + value2 + " ";
     }
     let index2 = -1;
-    while (++index2 < state.unsafe.length) {
-      const pattern = state.unsafe[index2];
+    while (++index2 < state2.unsafe.length) {
+      const pattern = state2.unsafe[index2];
       if (!pattern.atBreak) continue;
-      const expression = state.compilePattern(pattern);
+      const expression = state2.compilePattern(pattern);
       let match;
       while (match = expression.exec(value2)) {
         let position4 = match.index;
@@ -16665,10 +16665,10 @@ function directiveToMarkdown(options) {
       { atBreak: true, character: ":", after: ":" }
     ]
   };
-  function handleDirective(node2, _, state, info) {
-    const tracker = state.createTracker(info);
+  function handleDirective(node2, _, state2, info) {
+    const tracker = state2.createTracker(info);
     const sequence = fence3(node2);
-    const exit4 = state.enter(node2.type);
+    const exit4 = state2.enter(node2.type);
     let value2 = tracker.move(sequence + (node2.name || ""));
     let label4;
     if (node2.type === "containerDirective") {
@@ -16678,12 +16678,12 @@ function directiveToMarkdown(options) {
       label4 = node2;
     }
     if (label4 && label4.children && label4.children.length > 0) {
-      const exit5 = state.enter("label");
+      const exit5 = state2.enter("label");
       const labelType = `${node2.type}Label`;
-      const subexit = state.enter(labelType);
+      const subexit = state2.enter(labelType);
       value2 += tracker.move("[");
       value2 += tracker.move(
-        state.containerPhrasing(label4, {
+        state2.containerPhrasing(label4, {
           ...tracker.current(),
           before: value2,
           after: "]"
@@ -16693,7 +16693,7 @@ function directiveToMarkdown(options) {
       subexit();
       exit5();
     }
-    value2 += tracker.move(attributes4(node2, state));
+    value2 += tracker.move(attributes4(node2, state2));
     if (node2.type === "containerDirective") {
       const head2 = (node2.children || [])[0];
       let shallow = node2;
@@ -16702,14 +16702,14 @@ function directiveToMarkdown(options) {
       }
       if (shallow && shallow.children && shallow.children.length > 0) {
         value2 += tracker.move("\n");
-        value2 += tracker.move(state.containerFlow(shallow, tracker.current()));
+        value2 += tracker.move(state2.containerFlow(shallow, tracker.current()));
       }
       value2 += tracker.move("\n" + sequence);
     }
     exit4();
     return value2;
   }
-  function attributes4(node2, state) {
+  function attributes4(node2, state2) {
     const attributes5 = node2.attributes || {};
     const values = [];
     let classesFull;
@@ -16720,7 +16720,7 @@ function directiveToMarkdown(options) {
       if (own7.call(attributes5, key2) && attributes5[key2] !== void 0 && attributes5[key2] !== null) {
         const value2 = String(attributes5[key2]);
         if (key2 === "id") {
-          id = settings.preferShortcut !== false && shortcut.test(value2) ? "#" + value2 : quoted("id", value2, node2, state);
+          id = settings.preferShortcut !== false && shortcut.test(value2) ? "#" + value2 : quoted("id", value2, node2, state2);
         } else if (key2 === "class") {
           const list4 = value2.split(/[\t\n\r ]+/g);
           const classesFullList = [];
@@ -16730,10 +16730,10 @@ function directiveToMarkdown(options) {
             ;
             (settings.preferShortcut !== false && shortcut.test(list4[index2]) ? classesList : classesFullList).push(list4[index2]);
           }
-          classesFull = classesFullList.length > 0 ? quoted("class", classesFullList.join(" "), node2, state) : "";
+          classesFull = classesFullList.length > 0 ? quoted("class", classesFullList.join(" "), node2, state2) : "";
           classes = classesList.length > 0 ? "." + classesList.join(".") : "";
         } else {
-          values.push(quoted(key2, value2, node2, state));
+          values.push(quoted(key2, value2, node2, state2));
         }
       }
     }
@@ -16748,12 +16748,12 @@ function directiveToMarkdown(options) {
     }
     return values.length > 0 ? "{" + values.join(" ") + "}" : "";
   }
-  function quoted(key2, value2, node2, state) {
+  function quoted(key2, value2, node2, state2) {
     if (settings.collapseEmptyAttributes !== false && !value2) return key2;
     if (settings.preferUnquoted && unquoted.test(value2)) {
       return key2 + "=" + value2;
     }
-    const preferred = settings.quote || state.options.quote || '"';
+    const preferred = settings.quote || state2.options.quote || '"';
     const alternative = preferred === '"' ? "'" : '"';
     const appliedQuote = settings.quoteSmart && ccount(value2, preferred) > ccount(value2, alternative) ? alternative : preferred;
     const subset = node2.type === "textDirective" ? [appliedQuote] : [appliedQuote, "\n", "\r"];
@@ -19797,26 +19797,26 @@ function mergeDocsUnder(a, b) {
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/blockquote.js
-function blockquote2(state, node2) {
+function blockquote2(state2, node2) {
   const result = {
     type: "element",
     tagName: "blockquote",
     properties: {},
-    children: state.wrap(state.all(node2), true)
+    children: state2.wrap(state2.all(node2), true)
   };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/break.js
-function hardBreak2(state, node2) {
+function hardBreak2(state2, node2) {
   const result = { type: "element", tagName: "br", properties: {}, children: [] };
-  state.patch(node2, result);
-  return [state.applyData(node2, result), { type: "text", value: "\n" }];
+  state2.patch(node2, result);
+  return [state2.applyData(node2, result), { type: "text", value: "\n" }];
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/code.js
-function code3(state, node2) {
+function code3(state2, node2) {
   const value2 = node2.value ? node2.value + "\n" : "";
   const properties2 = {};
   const language = node2.lang ? node2.lang.split(/\s+/) : [];
@@ -19832,54 +19832,54 @@ function code3(state, node2) {
   if (node2.meta) {
     result.data = { meta: node2.meta };
   }
-  state.patch(node2, result);
-  result = state.applyData(node2, result);
+  state2.patch(node2, result);
+  result = state2.applyData(node2, result);
   result = { type: "element", tagName: "pre", properties: {}, children: [result] };
-  state.patch(node2, result);
+  state2.patch(node2, result);
   return result;
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/delete.js
-function strikethrough(state, node2) {
+function strikethrough(state2, node2) {
   const result = {
     type: "element",
     tagName: "del",
     properties: {},
-    children: state.all(node2)
+    children: state2.all(node2)
   };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/emphasis.js
-function emphasis3(state, node2) {
+function emphasis3(state2, node2) {
   const result = {
     type: "element",
     tagName: "em",
     properties: {},
-    children: state.all(node2)
+    children: state2.all(node2)
   };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/footnote-reference.js
-function footnoteReference2(state, node2) {
-  const clobberPrefix = typeof state.options.clobberPrefix === "string" ? state.options.clobberPrefix : "user-content-";
+function footnoteReference2(state2, node2) {
+  const clobberPrefix = typeof state2.options.clobberPrefix === "string" ? state2.options.clobberPrefix : "user-content-";
   const id = String(node2.identifier).toUpperCase();
   const safeId = normalizeUri(id.toLowerCase());
-  const index2 = state.footnoteOrder.indexOf(id);
+  const index2 = state2.footnoteOrder.indexOf(id);
   let counter;
-  let reuseCounter = state.footnoteCounts.get(id);
+  let reuseCounter = state2.footnoteCounts.get(id);
   if (reuseCounter === void 0) {
     reuseCounter = 0;
-    state.footnoteOrder.push(id);
-    counter = state.footnoteOrder.length;
+    state2.footnoteOrder.push(id);
+    counter = state2.footnoteOrder.length;
   } else {
     counter = index2 + 1;
   }
   reuseCounter += 1;
-  state.footnoteCounts.set(id, reuseCounter);
+  state2.footnoteCounts.set(id, reuseCounter);
   const link3 = {
     type: "element",
     tagName: "a",
@@ -19891,41 +19891,41 @@ function footnoteReference2(state, node2) {
     },
     children: [{ type: "text", value: String(counter) }]
   };
-  state.patch(node2, link3);
+  state2.patch(node2, link3);
   const sup = {
     type: "element",
     tagName: "sup",
     properties: {},
     children: [link3]
   };
-  state.patch(node2, sup);
-  return state.applyData(node2, sup);
+  state2.patch(node2, sup);
+  return state2.applyData(node2, sup);
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/heading.js
-function heading2(state, node2) {
+function heading2(state2, node2) {
   const result = {
     type: "element",
     tagName: "h" + node2.depth,
     properties: {},
-    children: state.all(node2)
+    children: state2.all(node2)
   };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/html.js
-function html2(state, node2) {
-  if (state.options.allowDangerousHtml) {
+function html2(state2, node2) {
+  if (state2.options.allowDangerousHtml) {
     const result = { type: "raw", value: node2.value };
-    state.patch(node2, result);
-    return state.applyData(node2, result);
+    state2.patch(node2, result);
+    return state2.applyData(node2, result);
   }
   return void 0;
 }
 
 // node_modules/mdast-util-to-hast/lib/revert.js
-function revert(state, node2) {
+function revert(state2, node2) {
   const subtype = node2.referenceType;
   let suffix = "]";
   if (subtype === "collapsed") {
@@ -19936,7 +19936,7 @@ function revert(state, node2) {
   if (node2.type === "imageReference") {
     return [{ type: "text", value: "![" + node2.alt + suffix }];
   }
-  const contents = state.all(node2);
+  const contents = state2.all(node2);
   const head2 = contents[0];
   if (head2 && head2.type === "text") {
     head2.value = "[" + head2.value;
@@ -19953,23 +19953,23 @@ function revert(state, node2) {
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/image-reference.js
-function imageReference2(state, node2) {
+function imageReference2(state2, node2) {
   const id = String(node2.identifier).toUpperCase();
-  const definition3 = state.definitionById.get(id);
+  const definition3 = state2.definitionById.get(id);
   if (!definition3) {
-    return revert(state, node2);
+    return revert(state2, node2);
   }
   const properties2 = { src: normalizeUri(definition3.url || ""), alt: node2.alt };
   if (definition3.title !== null && definition3.title !== void 0) {
     properties2.title = definition3.title;
   }
   const result = { type: "element", tagName: "img", properties: properties2, children: [] };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/image.js
-function image2(state, node2) {
+function image2(state2, node2) {
   const properties2 = { src: normalizeUri(node2.url) };
   if (node2.alt !== null && node2.alt !== void 0) {
     properties2.alt = node2.alt;
@@ -19978,30 +19978,30 @@ function image2(state, node2) {
     properties2.title = node2.title;
   }
   const result = { type: "element", tagName: "img", properties: properties2, children: [] };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/inline-code.js
-function inlineCode2(state, node2) {
+function inlineCode2(state2, node2) {
   const text9 = { type: "text", value: node2.value.replace(/\r?\n|\r/g, " ") };
-  state.patch(node2, text9);
+  state2.patch(node2, text9);
   const result = {
     type: "element",
     tagName: "code",
     properties: {},
     children: [text9]
   };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/link-reference.js
-function linkReference2(state, node2) {
+function linkReference2(state2, node2) {
   const id = String(node2.identifier).toUpperCase();
-  const definition3 = state.definitionById.get(id);
+  const definition3 = state2.definitionById.get(id);
   if (!definition3) {
-    return revert(state, node2);
+    return revert(state2, node2);
   }
   const properties2 = { href: normalizeUri(definition3.url || "") };
   if (definition3.title !== null && definition3.title !== void 0) {
@@ -20011,14 +20011,14 @@ function linkReference2(state, node2) {
     type: "element",
     tagName: "a",
     properties: properties2,
-    children: state.all(node2)
+    children: state2.all(node2)
   };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/link.js
-function link2(state, node2) {
+function link2(state2, node2) {
   const properties2 = { href: normalizeUri(node2.url) };
   if (node2.title !== null && node2.title !== void 0) {
     properties2.title = node2.title;
@@ -20027,15 +20027,15 @@ function link2(state, node2) {
     type: "element",
     tagName: "a",
     properties: properties2,
-    children: state.all(node2)
+    children: state2.all(node2)
   };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/list-item.js
-function listItem2(state, node2, parent) {
-  const results = state.all(node2);
+function listItem2(state2, node2, parent) {
+  const results = state2.all(node2);
   const loose = parent ? listLoose(parent) : listItemLoose(node2);
   const properties2 = {};
   const children2 = [];
@@ -20076,8 +20076,8 @@ function listItem2(state, node2, parent) {
     children2.push({ type: "text", value: "\n" });
   }
   const result = { type: "element", tagName: "li", properties: properties2, children: children2 };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 function listLoose(node2) {
   let loose = false;
@@ -20097,9 +20097,9 @@ function listItemLoose(node2) {
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/list.js
-function list3(state, node2) {
+function list3(state2, node2) {
   const properties2 = {};
-  const results = state.all(node2);
+  const results = state2.all(node2);
   let index2 = -1;
   if (typeof node2.start === "number" && node2.start !== 1) {
     properties2.start = node2.start;
@@ -20115,41 +20115,41 @@ function list3(state, node2) {
     type: "element",
     tagName: node2.ordered ? "ol" : "ul",
     properties: properties2,
-    children: state.wrap(results, true)
+    children: state2.wrap(results, true)
   };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/paragraph.js
-function paragraph2(state, node2) {
+function paragraph2(state2, node2) {
   const result = {
     type: "element",
     tagName: "p",
     properties: {},
-    children: state.all(node2)
+    children: state2.all(node2)
   };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/root.js
-function root2(state, node2) {
-  const result = { type: "root", children: state.wrap(state.all(node2)) };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+function root2(state2, node2) {
+  const result = { type: "root", children: state2.wrap(state2.all(node2)) };
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/strong.js
-function strong3(state, node2) {
+function strong3(state2, node2) {
   const result = {
     type: "element",
     tagName: "strong",
     properties: {},
-    children: state.all(node2)
+    children: state2.all(node2)
   };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/unist-util-position/lib/index.js
@@ -20177,8 +20177,8 @@ function position2(node2) {
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/table.js
-function table(state, node2) {
-  const rows = state.all(node2);
+function table(state2, node2) {
+  const rows = state2.all(node2);
   const firstRow = rows.shift();
   const tableContent = [];
   if (firstRow) {
@@ -20186,9 +20186,9 @@ function table(state, node2) {
       type: "element",
       tagName: "thead",
       properties: {},
-      children: state.wrap([firstRow], true)
+      children: state2.wrap([firstRow], true)
     };
-    state.patch(node2.children[0], head2);
+    state2.patch(node2.children[0], head2);
     tableContent.push(head2);
   }
   if (rows.length > 0) {
@@ -20196,7 +20196,7 @@ function table(state, node2) {
       type: "element",
       tagName: "tbody",
       properties: {},
-      children: state.wrap(rows, true)
+      children: state2.wrap(rows, true)
     };
     const start = pointStart(node2.children[1]);
     const end = pointEnd(node2.children[node2.children.length - 1]);
@@ -20207,14 +20207,14 @@ function table(state, node2) {
     type: "element",
     tagName: "table",
     properties: {},
-    children: state.wrap(tableContent, true)
+    children: state2.wrap(tableContent, true)
   };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/table-row.js
-function tableRow(state, node2, parent) {
+function tableRow(state2, node2, parent) {
   const siblings2 = parent ? parent.children : void 0;
   const rowIndex = siblings2 ? siblings2.indexOf(node2) : 1;
   const tagName = rowIndex === 0 ? "th" : "td";
@@ -20231,9 +20231,9 @@ function tableRow(state, node2, parent) {
     }
     let result2 = { type: "element", tagName, properties: properties2, children: [] };
     if (cell) {
-      result2.children = state.all(cell);
-      state.patch(cell, result2);
-      result2 = state.applyData(cell, result2);
+      result2.children = state2.all(cell);
+      state2.patch(cell, result2);
+      result2 = state2.applyData(cell, result2);
     }
     cells2.push(result2);
   }
@@ -20241,23 +20241,23 @@ function tableRow(state, node2, parent) {
     type: "element",
     tagName: "tr",
     properties: {},
-    children: state.wrap(cells2, true)
+    children: state2.wrap(cells2, true)
   };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/table-cell.js
-function tableCell(state, node2) {
+function tableCell(state2, node2) {
   const result = {
     type: "element",
     tagName: "td",
     // Assume body cell.
     properties: {},
-    children: state.all(node2)
+    children: state2.all(node2)
   };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/trim-lines/index.js
@@ -20301,22 +20301,22 @@ function trimLine(value2, start, end) {
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/text.js
-function text6(state, node2) {
+function text6(state2, node2) {
   const result = { type: "text", value: trimLines(String(node2.value)) };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/thematic-break.js
-function thematicBreak3(state, node2) {
+function thematicBreak3(state2, node2) {
   const result = {
     type: "element",
     tagName: "hr",
     properties: {},
     children: []
   };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 
 // node_modules/mdast-util-to-hast/lib/handlers/index.js
@@ -20617,30 +20617,30 @@ function defaultFootnoteBackContent(_, rereferenceIndex) {
 function defaultFootnoteBackLabel(referenceIndex, rereferenceIndex) {
   return "Back to reference " + (referenceIndex + 1) + (rereferenceIndex > 1 ? "-" + rereferenceIndex : "");
 }
-function footer(state) {
-  const clobberPrefix = typeof state.options.clobberPrefix === "string" ? state.options.clobberPrefix : "user-content-";
-  const footnoteBackContent = state.options.footnoteBackContent || defaultFootnoteBackContent;
-  const footnoteBackLabel = state.options.footnoteBackLabel || defaultFootnoteBackLabel;
-  const footnoteLabel = state.options.footnoteLabel || "Footnotes";
-  const footnoteLabelTagName = state.options.footnoteLabelTagName || "h2";
-  const footnoteLabelProperties = state.options.footnoteLabelProperties || {
+function footer(state2) {
+  const clobberPrefix = typeof state2.options.clobberPrefix === "string" ? state2.options.clobberPrefix : "user-content-";
+  const footnoteBackContent = state2.options.footnoteBackContent || defaultFootnoteBackContent;
+  const footnoteBackLabel = state2.options.footnoteBackLabel || defaultFootnoteBackLabel;
+  const footnoteLabel = state2.options.footnoteLabel || "Footnotes";
+  const footnoteLabelTagName = state2.options.footnoteLabelTagName || "h2";
+  const footnoteLabelProperties = state2.options.footnoteLabelProperties || {
     className: ["sr-only"]
   };
   const listItems = [];
   let referenceIndex = -1;
-  while (++referenceIndex < state.footnoteOrder.length) {
-    const definition3 = state.footnoteById.get(
-      state.footnoteOrder[referenceIndex]
+  while (++referenceIndex < state2.footnoteOrder.length) {
+    const definition3 = state2.footnoteById.get(
+      state2.footnoteOrder[referenceIndex]
     );
     if (!definition3) {
       continue;
     }
-    const content3 = state.all(definition3);
+    const content3 = state2.all(definition3);
     const id = String(definition3.identifier).toUpperCase();
     const safeId = normalizeUri(id.toLowerCase());
     let rereferenceIndex = 0;
     const backReferences = [];
-    const counts = state.footnoteCounts.get(id);
+    const counts = state2.footnoteCounts.get(id);
     while (counts !== void 0 && ++rereferenceIndex <= counts) {
       if (backReferences.length > 0) {
         backReferences.push({ type: "text", value: " " });
@@ -20677,9 +20677,9 @@ function footer(state) {
       type: "element",
       tagName: "li",
       properties: { id: clobberPrefix + "fn-" + safeId },
-      children: state.wrap(content3, true)
+      children: state2.wrap(content3, true)
     };
-    state.patch(definition3, listItem3);
+    state2.patch(definition3, listItem3);
     listItems.push(listItem3);
   }
   if (listItems.length === 0) {
@@ -20704,7 +20704,7 @@ function footer(state) {
         type: "element",
         tagName: "ol",
         properties: {},
-        children: state.wrap(listItems, true)
+        children: state2.wrap(listItems, true)
       },
       { type: "text", value: "\n" }
     ]
@@ -20720,7 +20720,7 @@ function createState(tree, options) {
   const footnoteById = /* @__PURE__ */ new Map();
   const footnoteCounts = /* @__PURE__ */ new Map();
   const handlers2 = { ...handlers, ...settings.handlers };
-  const state = {
+  const state2 = {
     all: all4,
     applyData,
     definitionById,
@@ -20742,24 +20742,24 @@ function createState(tree, options) {
       }
     }
   });
-  return state;
+  return state2;
   function one4(node2, parent) {
     const type = node2.type;
-    const handle3 = state.handlers[type];
-    if (own8.call(state.handlers, type) && handle3) {
-      return handle3(state, node2, parent);
+    const handle3 = state2.handlers[type];
+    if (own8.call(state2.handlers, type) && handle3) {
+      return handle3(state2, node2, parent);
     }
-    if (state.options.passThrough && state.options.passThrough.includes(type)) {
+    if (state2.options.passThrough && state2.options.passThrough.includes(type)) {
       if ("children" in node2) {
         const { children: children2, ...shallow } = node2;
         const result = esm_default(shallow);
-        result.children = state.all(node2);
+        result.children = state2.all(node2);
         return result;
       }
       return esm_default(node2);
     }
-    const unknown2 = state.options.unknownHandler || defaultUnknownHandler;
-    return unknown2(state, node2, parent);
+    const unknown2 = state2.options.unknownHandler || defaultUnknownHandler;
+    return unknown2(state2, node2, parent);
   }
   function all4(parent) {
     const values = [];
@@ -20767,7 +20767,7 @@ function createState(tree, options) {
       const nodes = parent.children;
       let index2 = -1;
       while (++index2 < nodes.length) {
-        const result = state.one(nodes[index2], parent);
+        const result = state2.one(nodes[index2], parent);
         if (result) {
           if (index2 && nodes[index2 - 1].type === "break") {
             if (!Array.isArray(result) && result.type === "text") {
@@ -20817,16 +20817,16 @@ function applyData(from, to) {
   }
   return result;
 }
-function defaultUnknownHandler(state, node2) {
+function defaultUnknownHandler(state2, node2) {
   const data = node2.data || {};
   const result = "value" in node2 && !(own8.call(data, "hProperties") || own8.call(data, "hChildren")) ? { type: "text", value: node2.value } : {
     type: "element",
     tagName: "div",
     properties: {},
-    children: state.all(node2)
+    children: state2.all(node2)
   };
-  state.patch(node2, result);
-  return state.applyData(node2, result);
+  state2.patch(node2, result);
+  return state2.applyData(node2, result);
 }
 function wrap2(nodes, loose) {
   const result = [];
@@ -20855,9 +20855,9 @@ function trimMarkdownSpaceStart(value2) {
 
 // node_modules/mdast-util-to-hast/lib/index.js
 function toHast(tree, options) {
-  const state = createState(tree, options);
-  const node2 = state.one(tree, void 0);
-  const foot = footer(state);
+  const state2 = createState(tree, options);
+  const node2 = state2.one(tree, void 0);
+  const foot = footer(state2);
   const result = Array.isArray(node2) ? { type: "root", children: node2 } : node2 || { type: "root", children: [] };
   if (foot) {
     ok("children" in result);
@@ -22124,17 +22124,17 @@ var svg2 = merge([aria, svg, xlink, xmlns, xml], "svg");
 var htmlCommentRegex = /^>|^->|<!--|-->|--!>|<!-$/g;
 var bogusCommentEntitySubset = [">"];
 var commentEntitySubset = ["<", ">"];
-function comment(node2, _1, _2, state) {
-  return state.settings.bogusComments ? "<?" + stringifyEntities(
+function comment(node2, _1, _2, state2) {
+  return state2.settings.bogusComments ? "<?" + stringifyEntities(
     node2.value,
-    Object.assign({}, state.settings.characterReferences, {
+    Object.assign({}, state2.settings.characterReferences, {
       subset: bogusCommentEntitySubset
     })
   ) + ">" : "<!--" + node2.value.replace(htmlCommentRegex, encode) + "-->";
   function encode($0) {
     return stringifyEntities(
       $0,
-      Object.assign({}, state.settings.characterReferences, {
+      Object.assign({}, state2.settings.characterReferences, {
         subset: commentEntitySubset
       })
     );
@@ -22142,8 +22142,8 @@ function comment(node2, _1, _2, state) {
 }
 
 // node_modules/hast-util-to-html/lib/handle/doctype.js
-function doctype(_1, _2, _3, state) {
-  return "<!" + (state.settings.upperDoctype ? "DOCTYPE" : "doctype") + (state.settings.tightDoctype ? "" : " ") + "html>";
+function doctype(_1, _2, _3, state2) {
+  return "<!" + (state2.settings.upperDoctype ? "DOCTYPE" : "doctype") + (state2.settings.tightDoctype ? "" : " ") + "html>";
 }
 
 // node_modules/comma-separated-tokens/index.js
@@ -22377,26 +22377,26 @@ var constants2 = {
     ['\0"&'.split(""), "\0\"&'`".split("")]
   ]
 };
-function element(node2, index2, parent, state) {
-  const schema = state.schema;
-  const omit = schema.space === "svg" ? false : state.settings.omitOptionalTags;
-  let selfClosing = schema.space === "svg" ? state.settings.closeEmptyElements : state.settings.voids.includes(node2.tagName.toLowerCase());
+function element(node2, index2, parent, state2) {
+  const schema = state2.schema;
+  const omit = schema.space === "svg" ? false : state2.settings.omitOptionalTags;
+  let selfClosing = schema.space === "svg" ? state2.settings.closeEmptyElements : state2.settings.voids.includes(node2.tagName.toLowerCase());
   const parts = [];
   let last;
   if (schema.space === "html" && node2.tagName === "svg") {
-    state.schema = svg2;
+    state2.schema = svg2;
   }
-  const attributes4 = serializeAttributes(state, node2.properties);
-  const content3 = state.all(
+  const attributes4 = serializeAttributes(state2, node2.properties);
+  const content3 = state2.all(
     schema.space === "html" && node2.tagName === "template" ? node2.content : node2
   );
-  state.schema = schema;
+  state2.schema = schema;
   if (content3) selfClosing = false;
   if (attributes4 || !omit || !opening(node2, index2, parent)) {
     parts.push("<", node2.tagName, attributes4 ? " " + attributes4 : "");
-    if (selfClosing && (schema.space === "svg" || state.settings.closeSelfClosing)) {
+    if (selfClosing && (schema.space === "svg" || state2.settings.closeSelfClosing)) {
       last = attributes4.charAt(attributes4.length - 1);
-      if (!state.settings.tightSelfClosing || last === "/" || last && last !== '"' && last !== "'") {
+      if (!state2.settings.tightSelfClosing || last === "/" || last && last !== '"' && last !== "'") {
         parts.push(" ");
       }
       parts.push("/");
@@ -22409,31 +22409,31 @@ function element(node2, index2, parent, state) {
   }
   return parts.join("");
 }
-function serializeAttributes(state, properties2) {
+function serializeAttributes(state2, properties2) {
   const values = [];
   let index2 = -1;
   let key2;
   if (properties2) {
     for (key2 in properties2) {
       if (properties2[key2] !== null && properties2[key2] !== void 0) {
-        const value2 = serializeAttribute(state, key2, properties2[key2]);
+        const value2 = serializeAttribute(state2, key2, properties2[key2]);
         if (value2) values.push(value2);
       }
     }
   }
   while (++index2 < values.length) {
-    const last = state.settings.tightAttributes ? values[index2].charAt(values[index2].length - 1) : void 0;
+    const last = state2.settings.tightAttributes ? values[index2].charAt(values[index2].length - 1) : void 0;
     if (index2 !== values.length - 1 && last !== '"' && last !== "'") {
       values[index2] += " ";
     }
   }
   return values.join("");
 }
-function serializeAttribute(state, key2, value2) {
-  const info = find(state.schema, key2);
-  const x = state.settings.allowParseErrors && state.schema.space === "html" ? 0 : 1;
-  const y = state.settings.allowDangerousCharacters ? 0 : 1;
-  let quote = state.quote;
+function serializeAttribute(state2, key2, value2) {
+  const info = find(state2.schema, key2);
+  const x = state2.settings.allowParseErrors && state2.schema.space === "html" ? 0 : 1;
+  const y = state2.settings.allowDangerousCharacters ? 0 : 1;
+  let quote = state2.quote;
   let result;
   if (info.overloadedBoolean && (value2 === info.attribute || value2 === "")) {
     value2 = true;
@@ -22445,32 +22445,32 @@ function serializeAttribute(state, key2, value2) {
   }
   const name = stringifyEntities(
     info.attribute,
-    Object.assign({}, state.settings.characterReferences, {
+    Object.assign({}, state2.settings.characterReferences, {
       // Always encode without parse errors in non-HTML.
       subset: constants2.name[x][y]
     })
   );
   if (value2 === true) return name;
   value2 = Array.isArray(value2) ? (info.commaSeparated ? stringify : stringify2)(value2, {
-    padLeft: !state.settings.tightCommaSeparatedLists
+    padLeft: !state2.settings.tightCommaSeparatedLists
   }) : String(value2);
-  if (state.settings.collapseEmptyAttributes && !value2) return name;
-  if (state.settings.preferUnquoted) {
+  if (state2.settings.collapseEmptyAttributes && !value2) return name;
+  if (state2.settings.preferUnquoted) {
     result = stringifyEntities(
       value2,
-      Object.assign({}, state.settings.characterReferences, {
+      Object.assign({}, state2.settings.characterReferences, {
         attribute: true,
         subset: constants2.unquoted[x][y]
       })
     );
   }
   if (result !== value2) {
-    if (state.settings.quoteSmart && ccount(value2, quote) > ccount(value2, state.alternative)) {
-      quote = state.alternative;
+    if (state2.settings.quoteSmart && ccount(value2, quote) > ccount(value2, state2.alternative)) {
+      quote = state2.alternative;
     }
     result = quote + stringifyEntities(
       value2,
-      Object.assign({}, state.settings.characterReferences, {
+      Object.assign({}, state2.settings.characterReferences, {
         // Always encode without parse errors in non-HTML.
         subset: (quote === "'" ? constants2.single : constants2.double)[x][y],
         attribute: true
@@ -22482,23 +22482,23 @@ function serializeAttribute(state, key2, value2) {
 
 // node_modules/hast-util-to-html/lib/handle/text.js
 var textEntitySubset = ["<", "&"];
-function text7(node2, _, parent, state) {
+function text7(node2, _, parent, state2) {
   return parent && parent.type === "element" && (parent.tagName === "script" || parent.tagName === "style") ? node2.value : stringifyEntities(
     node2.value,
-    Object.assign({}, state.settings.characterReferences, {
+    Object.assign({}, state2.settings.characterReferences, {
       subset: textEntitySubset
     })
   );
 }
 
 // node_modules/hast-util-to-html/lib/handle/raw.js
-function raw(node2, index2, parent, state) {
-  return state.settings.allowDangerousHtml ? node2.value : text7(node2, index2, parent, state);
+function raw(node2, index2, parent, state2) {
+  return state2.settings.allowDangerousHtml ? node2.value : text7(node2, index2, parent, state2);
 }
 
 // node_modules/hast-util-to-html/lib/handle/root.js
-function root3(node2, _1, _2, state) {
-  return state.all(node2);
+function root3(node2, _1, _2, state2) {
+  return state2.all(node2);
 }
 
 // node_modules/hast-util-to-html/lib/handle/index.js
@@ -22529,7 +22529,7 @@ function toHtml(tree, options) {
   if (quote !== '"' && quote !== "'") {
     throw new Error("Invalid quote `" + quote + "`, expected `'` or `\"`");
   }
-  const state = {
+  const state2 = {
     one: one2,
     all: all2,
     settings: {
@@ -22555,7 +22555,7 @@ function toHtml(tree, options) {
     quote,
     alternative
   };
-  return state.one(
+  return state2.one(
     Array.isArray(tree) ? { type: "root", children: tree } : tree,
     void 0,
     void 0
@@ -23131,7 +23131,7 @@ function fromParse5(tree, options) {
     tree
   );
 }
-function one3(state, node2) {
+function one3(state2, node2) {
   let result;
   switch (node2.nodeName) {
     case "#comment": {
@@ -23140,7 +23140,7 @@ function one3(state, node2) {
         node2
       );
       result = { type: "comment", value: reference.data };
-      patch2(state, reference, result);
+      patch2(state2, reference, result);
       return result;
     }
     case "#document":
@@ -23152,11 +23152,11 @@ function one3(state, node2) {
       const quirksMode = "mode" in reference ? reference.mode === "quirks" || reference.mode === "limited-quirks" : false;
       result = {
         type: "root",
-        children: all3(state, node2.childNodes),
+        children: all3(state2, node2.childNodes),
         data: { quirksMode }
       };
-      if (state.file && state.location) {
-        const document3 = String(state.file);
+      if (state2.file && state2.location) {
+        const document3 = String(state2.file);
         const loc = location(document3);
         const start = loc.toPoint(0);
         const end = loc.toPoint(document3.length);
@@ -23172,7 +23172,7 @@ function one3(state, node2) {
         node2
       );
       result = { type: "doctype" };
-      patch2(state, reference, result);
+      patch2(state2, reference, result);
       return result;
     }
     case "#text": {
@@ -23181,7 +23181,7 @@ function one3(state, node2) {
         node2
       );
       result = { type: "text", value: reference.value };
-      patch2(state, reference, result);
+      patch2(state2, reference, result);
       return result;
     }
     // Element.
@@ -23190,26 +23190,26 @@ function one3(state, node2) {
         /** @type {DefaultTreeAdapterMap['element']} */
         node2
       );
-      result = element2(state, reference);
+      result = element2(state2, reference);
       return result;
     }
   }
 }
-function all3(state, nodes) {
+function all3(state2, nodes) {
   let index2 = -1;
   const results = [];
   while (++index2 < nodes.length) {
     const result = (
       /** @type {RootContent} */
-      one3(state, nodes[index2])
+      one3(state2, nodes[index2])
     );
     results.push(result);
   }
   return results;
 }
-function element2(state, node2) {
-  const schema = state.schema;
-  state.schema = node2.namespaceURI === webNamespaces.svg ? svg2 : html4;
+function element2(state2, node2) {
+  const schema = state2.schema;
+  state2.schema = node2.namespaceURI === webNamespaces.svg ? svg2 : html4;
   let index2 = -1;
   const properties2 = {};
   while (++index2 < node2.attrs.length) {
@@ -23219,9 +23219,9 @@ function element2(state, node2) {
       properties2[name] = attribute.value;
     }
   }
-  const x = state.schema.space === "svg" ? s : h;
-  const result = x(node2.tagName, properties2, all3(state, node2.childNodes));
-  patch2(state, node2, result);
+  const x = state2.schema.space === "svg" ? s : h;
+  const result = x(node2.tagName, properties2, all3(state2, node2.childNodes));
+  patch2(state2, node2, result);
   if (result.tagName === "template") {
     const reference = (
       /** @type {DefaultTreeAdapterMap['template']} */
@@ -23232,39 +23232,39 @@ function element2(state, node2) {
     const endTag = pos && pos.endTag && position3(pos.endTag);
     const content3 = (
       /** @type {Root} */
-      one3(state, reference.content)
+      one3(state2, reference.content)
     );
-    if (startTag && endTag && state.file) {
+    if (startTag && endTag && state2.file) {
       content3.position = { start: startTag.end, end: endTag.start };
     }
     result.content = content3;
   }
-  state.schema = schema;
+  state2.schema = schema;
   return result;
 }
-function patch2(state, from, to) {
-  if ("sourceCodeLocation" in from && from.sourceCodeLocation && state.file) {
-    const position4 = createLocation(state, to, from.sourceCodeLocation);
+function patch2(state2, from, to) {
+  if ("sourceCodeLocation" in from && from.sourceCodeLocation && state2.file) {
+    const position4 = createLocation(state2, to, from.sourceCodeLocation);
     if (position4) {
-      state.location = true;
+      state2.location = true;
       to.position = position4;
     }
   }
 }
-function createLocation(state, node2, location2) {
+function createLocation(state2, node2, location2) {
   const result = position3(location2);
   if (node2.type === "element") {
     const tail = node2.children[node2.children.length - 1];
     if (result && !location2.endTag && tail && tail.position && tail.position.end) {
       result.end = Object.assign({}, tail.position.end);
     }
-    if (state.verbose) {
+    if (state2.verbose) {
       const properties2 = {};
       let key2;
       if (location2.attrs) {
         for (key2 in location2.attrs) {
           if (own10.call(location2.attrs, key2)) {
-            properties2[find(state.schema, key2).property] = position3(
+            properties2[find(state2.schema, key2).property] = position3(
               location2.attrs[key2]
             );
           }
@@ -31792,11 +31792,11 @@ var defaultSchema = {
 var own11 = {}.hasOwnProperty;
 function sanitize(node2, options) {
   let result = { type: "root", children: [] };
-  const state = {
+  const state2 = {
     schema: options ? { ...defaultSchema, ...options } : defaultSchema,
     stack: []
   };
-  const replace2 = transform(state, node2);
+  const replace2 = transform(state2, node2);
   if (replace2) {
     if (Array.isArray(replace2)) {
       if (replace2.length === 1) {
@@ -31810,7 +31810,7 @@ function sanitize(node2, options) {
   }
   return result;
 }
-function transform(state, node2) {
+function transform(state2, node2) {
   if (node2 && typeof node2 === "object") {
     const unsafe = (
       /** @type {Record<string, Readonly<unknown>>} */
@@ -31819,26 +31819,26 @@ function transform(state, node2) {
     const type = typeof unsafe.type === "string" ? unsafe.type : "";
     switch (type) {
       case "comment": {
-        return comment2(state, unsafe);
+        return comment2(state2, unsafe);
       }
       case "doctype": {
-        return doctype2(state, unsafe);
+        return doctype2(state2, unsafe);
       }
       case "element": {
-        return element3(state, unsafe);
+        return element3(state2, unsafe);
       }
       case "root": {
-        return root4(state, unsafe);
+        return root4(state2, unsafe);
       }
       case "text": {
-        return text8(state, unsafe);
+        return text8(state2, unsafe);
       }
       default:
     }
   }
 }
-function comment2(state, unsafe) {
-  if (state.schema.allowComments) {
+function comment2(state2, unsafe) {
+  if (state2.schema.allowComments) {
     const result = typeof unsafe.value === "string" ? unsafe.value : "";
     const index2 = result.indexOf("-->");
     const value2 = index2 < 0 ? result : result.slice(0, index2);
@@ -31847,38 +31847,38 @@ function comment2(state, unsafe) {
     return node2;
   }
 }
-function doctype2(state, unsafe) {
-  if (state.schema.allowDoctypes) {
+function doctype2(state2, unsafe) {
+  if (state2.schema.allowDoctypes) {
     const node2 = { type: "doctype" };
     patch3(node2, unsafe);
     return node2;
   }
 }
-function element3(state, unsafe) {
+function element3(state2, unsafe) {
   const name = typeof unsafe.tagName === "string" ? unsafe.tagName : "";
-  state.stack.push(name);
+  state2.stack.push(name);
   const content3 = (
     /** @type {Array<ElementContent>} */
-    children(state, unsafe.children)
+    children(state2, unsafe.children)
   );
-  const properties_ = properties(state, unsafe.properties);
-  state.stack.pop();
+  const properties_ = properties(state2, unsafe.properties);
+  state2.stack.pop();
   let safeElement = false;
-  if (name && name !== "*" && (!state.schema.tagNames || state.schema.tagNames.includes(name))) {
+  if (name && name !== "*" && (!state2.schema.tagNames || state2.schema.tagNames.includes(name))) {
     safeElement = true;
-    if (state.schema.ancestors && own11.call(state.schema.ancestors, name)) {
-      const ancestors = state.schema.ancestors[name];
+    if (state2.schema.ancestors && own11.call(state2.schema.ancestors, name)) {
+      const ancestors = state2.schema.ancestors[name];
       let index2 = -1;
       safeElement = false;
       while (++index2 < ancestors.length) {
-        if (state.stack.includes(ancestors[index2])) {
+        if (state2.stack.includes(ancestors[index2])) {
           safeElement = true;
         }
       }
     }
   }
   if (!safeElement) {
-    return state.schema.strip && !state.schema.strip.includes(name) ? content3 : void 0;
+    return state2.schema.strip && !state2.schema.strip.includes(name) ? content3 : void 0;
   }
   const node2 = {
     type: "element",
@@ -31889,10 +31889,10 @@ function element3(state, unsafe) {
   patch3(node2, unsafe);
   return node2;
 }
-function root4(state, unsafe) {
+function root4(state2, unsafe) {
   const content3 = (
     /** @type {Array<RootContent>} */
-    children(state, unsafe.children)
+    children(state2, unsafe.children)
   );
   const node2 = { type: "root", children: content3 };
   patch3(node2, unsafe);
@@ -31904,7 +31904,7 @@ function text8(_, unsafe) {
   patch3(node2, unsafe);
   return node2;
 }
-function children(state, children2) {
+function children(state2, children2) {
   const results = [];
   if (Array.isArray(children2)) {
     const childrenUnknown = (
@@ -31913,7 +31913,7 @@ function children(state, children2) {
     );
     let index2 = -1;
     while (++index2 < childrenUnknown.length) {
-      const value2 = transform(state, childrenUnknown[index2]);
+      const value2 = transform(state2, childrenUnknown[index2]);
       if (value2) {
         if (Array.isArray(value2)) {
           results.push(...value2);
@@ -31925,10 +31925,10 @@ function children(state, children2) {
   }
   return results;
 }
-function properties(state, properties2) {
-  const tagName = state.stack[state.stack.length - 1];
-  const attributes4 = state.schema.attributes;
-  const required = state.schema.required;
+function properties(state2, properties2) {
+  const tagName = state2.stack[state2.stack.length - 1];
+  const attributes4 = state2.schema.attributes;
+  const required = state2.schema.required;
   const specific = attributes4 && own11.call(attributes4, tagName) ? attributes4[tagName] : void 0;
   const defaults = attributes4 && own11.call(attributes4, "*") ? attributes4["*"] : void 0;
   const properties_ = (
@@ -31941,13 +31941,13 @@ function properties(state, properties2) {
     if (own11.call(properties_, key2)) {
       const unsafe = properties_[key2];
       let safe = propertyValue(
-        state,
+        state2,
         findDefinition(specific, key2),
         key2,
         unsafe
       );
       if (safe === null || safe === void 0) {
-        safe = propertyValue(state, findDefinition(defaults, key2), key2, unsafe);
+        safe = propertyValue(state2, findDefinition(defaults, key2), key2, unsafe);
       }
       if (safe !== null && safe !== void 0) {
         result[key2] = safe;
@@ -31964,25 +31964,25 @@ function properties(state, properties2) {
   }
   return result;
 }
-function propertyValue(state, definition3, key2, value2) {
-  return definition3 ? Array.isArray(value2) ? propertyValueMany(state, definition3, key2, value2) : propertyValuePrimitive(state, definition3, key2, value2) : void 0;
+function propertyValue(state2, definition3, key2, value2) {
+  return definition3 ? Array.isArray(value2) ? propertyValueMany(state2, definition3, key2, value2) : propertyValuePrimitive(state2, definition3, key2, value2) : void 0;
 }
-function propertyValueMany(state, definition3, key2, values) {
+function propertyValueMany(state2, definition3, key2, values) {
   let index2 = -1;
   const result = [];
   while (++index2 < values.length) {
-    const value2 = propertyValuePrimitive(state, definition3, key2, values[index2]);
+    const value2 = propertyValuePrimitive(state2, definition3, key2, values[index2]);
     if (typeof value2 === "number" || typeof value2 === "string") {
       result.push(value2);
     }
   }
   return result;
 }
-function propertyValuePrimitive(state, definition3, key2, value2) {
+function propertyValuePrimitive(state2, definition3, key2, value2) {
   if (typeof value2 !== "boolean" && typeof value2 !== "number" && typeof value2 !== "string") {
     return;
   }
-  if (!safeProtocol(state, key2, value2)) {
+  if (!safeProtocol(state2, key2, value2)) {
     return;
   }
   if (typeof definition3 === "object" && definition3.length > 1) {
@@ -32002,10 +32002,10 @@ function propertyValuePrimitive(state, definition3, key2, value2) {
     }
     if (!ok3) return;
   }
-  return state.schema.clobber && state.schema.clobberPrefix && state.schema.clobber.includes(key2) ? state.schema.clobberPrefix + value2 : value2;
+  return state2.schema.clobber && state2.schema.clobberPrefix && state2.schema.clobber.includes(key2) ? state2.schema.clobberPrefix + value2 : value2;
 }
-function safeProtocol(state, key2, value2) {
-  const protocols = state.schema.protocols && own11.call(state.schema.protocols, key2) ? state.schema.protocols[key2] : void 0;
+function safeProtocol(state2, key2, value2) {
+  const protocols = state2.schema.protocols && own11.call(state2.schema.protocols, key2) ? state2.schema.protocols[key2] : void 0;
   if (!protocols || protocols.length === 0) {
     return true;
   }
@@ -32461,19 +32461,19 @@ function escapeHtml(s2) {
   return s2.replace(/&/g, "&#x26;").replace(/</g, "&#x3C;");
 }
 function makeHandlers(opts, policy2, cleaned) {
-  const inline = (tagName) => (state, node2) => {
-    const el = { type: "element", tagName, properties: {}, children: state.all(node2) };
-    state.patch(node2, el);
+  const inline = (tagName) => (state2, node2) => {
+    const el = { type: "element", tagName, properties: {}, children: state2.all(node2) };
+    state2.patch(node2, el);
     return el;
   };
-  const math2 = (display) => (state, node2) => {
+  const math2 = (display) => (state2, node2) => {
     const el = {
       type: "element",
       tagName: display ? "div" : "span",
       properties: { className: display ? ["mdv-math", "mdv-math-display"] : ["mdv-math"] },
       children: [{ type: "text", value: node2.value }]
     };
-    state.patch(node2, el);
+    state2.patch(node2, el);
     return el;
   };
   return {
@@ -32482,22 +32482,22 @@ function makeHandlers(opts, policy2, cleaned) {
      * else — text around the image, a linked badge, several images — is the
      * default paragraph, untouched.
      */
-    paragraph(state, node2) {
-      const p2 = handlers.paragraph(state, node2);
+    paragraph(state2, node2) {
+      const p2 = handlers.paragraph(state2, node2);
       const kids = p2.children.filter((c) => !(c.type === "text" && c.value.trim() === ""));
       const only = kids.length === 1 ? kids[0] : null;
       if (!only || only.type !== "element" || only.tagName !== "img")
         return p2;
       const figure = { type: "element", tagName: "figure", properties: {}, children: imageCanvas(only) };
-      state.patch(node2, figure);
-      const marked = state.applyData(node2, figure);
+      state2.patch(node2, figure);
+      const marked = state2.applyData(node2, figure);
       const cls = marked.properties.className;
       marked.properties.className = [...Array.isArray(cls) ? cls : [], "mdv-canvas", "mdv-canvas-image"];
       return marked;
     },
     /** A table, its cells carrying their column's floor (floorColumns). */
-    table(state, node2) {
-      const el = handlers.table(state, node2);
+    table(state2, node2) {
+      const el = handlers.table(state2, node2);
       floorColumns(el);
       return el;
     },
@@ -32516,16 +32516,16 @@ function makeHandlers(opts, policy2, cleaned) {
      * trusting it means.
      */
     ...policy2 === "filter" ? {
-      html(state, node2) {
+      html(state2, node2) {
         const value2 = cleaned.get(node2) ?? "";
         if (!value2)
           return void 0;
         const el = { type: "raw", value: value2 };
-        state.patch(node2, el);
+        state2.patch(node2, el);
         return el;
       }
     } : policy2 === "escape" ? {
-      html(state, node2, parent) {
+      html(state2, node2, parent) {
         const value2 = String(node2.value);
         if (/^\s*(?:<!--[\s\S]*?-->\s*)+$/.test(value2))
           return void 0;
@@ -32537,8 +32537,8 @@ function makeHandlers(opts, policy2, cleaned) {
           children: [{ type: "text", value: value2 }]
         };
         const el = block2 ? { type: "element", tagName: "pre", properties: { className: ["mdv-raw-html"] }, children: [code4] } : { ...code4, properties: { className: ["mdv-raw-html"] } };
-        state.patch(node2, el);
-        return state.applyData(node2, el);
+        state2.patch(node2, el);
+        return state2.applyData(node2, el);
       }
     } : {},
     mdvMark: inline("mark"),
@@ -32546,23 +32546,23 @@ function makeHandlers(opts, policy2, cleaned) {
     mdvSup: inline("sup"),
     inlineMath: math2(false),
     math: math2(true),
-    mdvIns(state, node2) {
+    mdvIns(state2, node2) {
       return {
         type: "element",
         tagName: "ins",
         properties: { className: ["mdv-ins"] },
-        children: state.all(node2)
+        children: state2.all(node2)
       };
     },
-    mdvDel(state, node2) {
+    mdvDel(state2, node2) {
       return {
         type: "element",
         tagName: "del",
         properties: { className: ["mdv-del"] },
-        children: state.all(node2)
+        children: state2.all(node2)
       };
     },
-    mdvCodeDiff(state, node2) {
+    mdvCodeDiff(state2, node2) {
       const rows = [];
       node2.rows.forEach((row, i) => {
         if (i > 0)
@@ -32590,8 +32590,8 @@ function makeHandlers(opts, policy2, cleaned) {
         properties: node2.lang ? { dataLang: node2.lang } : {},
         children: [code4]
       };
-      state.patch(node2, pre);
-      const marked = state.applyData(node2, pre);
+      state2.patch(node2, pre);
+      const marked = state2.applyData(node2, pre);
       if (node2.lang !== "mermaid")
         return marked;
       const wasLine = (r) => r.k === "mod" && r.pieces ? r.pieces.filter((p2) => p2.k !== "ins").map((p2) => p2.text).join("") : r.text;
@@ -32620,8 +32620,8 @@ function makeHandlers(opts, policy2, cleaned) {
      * thing in the document. The mark and change id are re-attached to the
      * highlighted <pre> instead, so both survive.
      */
-    code(state, node2) {
-      const fallback = () => handlers.code(state, node2);
+    code(state2, node2) {
+      const fallback = () => handlers.code(state2, node2);
       const mdvKind = node2.data?.mdvKind;
       if (node2.lang === "mermaid" && (mdvKind === void 0 || mdvKind === "ins" || mdvKind === "del")) {
         const props2 = node2.data?.hProperties ?? {};
@@ -34038,10 +34038,10 @@ async function pull(mode, timeoutMs = ASK_MS) {
     return 0;
   const until = Date.now() + timeoutMs;
   const file = checkoutFile(mode.repo.id, mode.root);
-  const state = readJson(file) ?? { root: mode.root, cursor: "0" };
+  const state2 = readJson(file) ?? { root: mode.root, cursor: "0" };
   const from = (since) => ask(mode.joined, "GET", `/api/device/notes/${mode.repo.id}?since=${encodeURIComponent(since)}`, void 0, Math.max(1, until - Date.now()));
-  let got = await from(state.cursor);
-  if (!got.reset && state.generation && got.generation && got.generation !== state.generation)
+  let got = await from(state2.cursor);
+  if (!got.reset && state2.generation && got.generation && got.generation !== state2.generation)
     got = { ...await from("0"), reset: true };
   return withLock(mode.repo.id, async () => {
     if (queued(mode.repo.id).length > 0)
@@ -34088,12 +34088,12 @@ function silence(mode) {
 }
 async function sync(mode, o = {}) {
   const quiet = readJson(quietFile(mode.repo.id));
-  const state = readJson(checkoutFile(mode.repo.id, mode.root));
+  const state2 = readJson(checkoutFile(mode.repo.id, mode.root));
   const asOf = () => {
     const s2 = readJson(checkoutFile(mode.repo.id, mode.root));
     return s2?.answered ? new Date(s2.answered).toISOString().replace(/\.\d+Z$/, "Z") : "never";
   };
-  if (o.minGapMs && state?.answered && Date.now() - state.answered < o.minGapMs && queued(mode.repo.id).length === 0)
+  if (o.minGapMs && state2?.answered && Date.now() - state2.answered < o.minGapMs && queued(mode.repo.id).length === 0)
     return { said: null, dropped: [] };
   if (quiet && Date.now() - quiet.at < QUIET_MS)
     return { said: `as of ${asOf()}: the service did not answer`, dropped: [] };
@@ -35614,7 +35614,7 @@ function formatServiceTold(t) {
     lines.push(`${t.url || "the service"} would not tell people of this push: ${t.why ?? "it refused"}${t.dropped ? `; ${n(t.dropped, "record")} asked of it before with no answer ${t.dropped === 1 ? "was" : "were"} not told again here` : ""}`);
   else {
     if (t.telling)
-      lines.push(`${t.url} is telling people of ${n(t.telling, "record")}, as you: its page shows whom`);
+      lines.push(`${t.url} is telling people of ${n(t.telling, "record")}, on your behalf: its page shows whom`);
     if (t.told)
       lines.push(`${n(t.told, "record")} ${t.told === 1 ? "was" : "were"} told of already`);
     for (const r of t.refused)
@@ -37443,7 +37443,7 @@ function formatStatus(s2) {
     else
       lines.push("subscribed to nothing here \u2014 mdrev --review-subscribe DOC, or --project");
     if (s2.serviceTells) {
-      lines.push(`notifications: told by ${s2.serviceTells.url}, as you \u2014 this checkout is in service mode, so this machine's channels are not used${s2.serviceTells.kept ? ` (${s2.serviceTells.kept} record${s2.serviceTells.kept === 1 ? "" : "s"} wait to be handed to it)` : ""}`);
+      lines.push(`notifications: told by ${s2.serviceTells.url}, on your behalf \u2014 this checkout is in service mode, so this machine's channels are not used${s2.serviceTells.kept ? ` (${s2.serviceTells.kept} record${s2.serviceTells.kept === 1 ? "" : "s"} wait to be handed to it)` : ""}`);
       if (s2.serviceTells.emailDiffers)
         lines.push(`  it knows you as ${s2.serviceTells.email}, and this machine is paired as ${s2.paired.email}: it tells people only of records written as ${s2.serviceTells.email}, so pair again with that email (mdrev --review-pair) or this machine's channels tell people of the rest`);
     } else if (s2.channels?.length)
@@ -38429,6 +38429,50 @@ async function canonicalAnchor(source, blob, anchor) {
   }
 }
 
+// packages/core/dist/env-proxy.js
+import * as http from "node:http";
+var PROXY_VARS = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"];
+var LOOPBACK = ["localhost", "127.0.0.1", "::1"];
+function withLoopback(list4) {
+  const items = (list4 ?? "").split(",").map((s2) => s2.trim()).filter(Boolean);
+  const have = new Set(items.map((s2) => s2.toLowerCase()));
+  for (const name of LOOPBACK)
+    if (!have.has(name))
+      items.push(name);
+  return items.join(",");
+}
+function withScheme(value2) {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(value2) ? value2 : `http://${value2}`;
+}
+var state = null;
+function useEnvProxy(env2 = process.env, api = http) {
+  state = choose(env2, api);
+  return state;
+}
+function choose(env2, api) {
+  if (!PROXY_VARS.some((k) => env2[k]))
+    return { used: false, why: "no proxy in the environment" };
+  if (env2.NODE_USE_ENV_PROXY === "0")
+    return { used: false, why: "NODE_USE_ENV_PROXY=0" };
+  if (typeof api.setGlobalProxyFromEnv !== "function")
+    return { used: false, why: "this node cannot" };
+  if (env2.no_proxy)
+    env2.no_proxy = withLoopback(env2.no_proxy);
+  else if (env2.NO_PROXY)
+    env2.NO_PROXY = withLoopback(env2.NO_PROXY);
+  else
+    env2.no_proxy = env2.NO_PROXY = withLoopback("");
+  const given = { ...env2 };
+  for (const k of PROXY_VARS)
+    if (given[k])
+      given[k] = withScheme(given[k]);
+  try {
+    return { used: true, restore: api.setGlobalProxyFromEnv(given) };
+  } catch {
+    return { used: false, why: "the proxy is not an address" };
+  }
+}
+
 // packages/cli/dist/cli.js
 import { homedir as homedir4, hostname as hostname5, userInfo as userInfo4 } from "node:os";
 import { readFileSync as readFileSync8 } from "node:fs";
@@ -38933,7 +38977,7 @@ async function sidecarFingerprint(source) {
   return parts.sort().join("\0");
 }
 function createFollower(source, query) {
-  const state = /* @__PURE__ */ new Map();
+  const state2 = /* @__PURE__ */ new Map();
   let scanned = null;
   return {
     async poll() {
@@ -38947,14 +38991,14 @@ function createFollower(source, query) {
         return [];
       }
       const seen = new Set(views.map((v) => v.annotation.id));
-      const lost = [...state.entries()].filter(([id, t]) => t.phase === "open" && !seen.has(id));
+      const lost = [...state2.entries()].filter(([id, t]) => t.phase === "open" && !seen.has(id));
       if (lost.length > 0 && await scanLooksBroken(source, lost.map(([id, t]) => ({ id, path: t.path })))) {
         return [];
       }
       const emitted = [];
       for (const v of views) {
         const replies = (v.annotation.replies ?? []).map(replyKey);
-        const prev = state.get(v.annotation.id);
+        const prev = state2.get(v.annotation.id);
         if (!prev || prev.phase === "closed" || prev.closedAt !== v.annotation.resolvedBy?.at) {
           emitted.push(v);
         } else {
@@ -38963,11 +39007,11 @@ function createFollower(source, query) {
           if (fresh.some((r) => !isAgentReply(r)))
             emitted.push(v);
         }
-        state.set(v.annotation.id, { phase: "open", path: v.path, replies, closedAt: v.annotation.resolvedBy?.at });
+        state2.set(v.annotation.id, { phase: "open", path: v.path, replies, closedAt: v.annotation.resolvedBy?.at });
       }
-      for (const [id, t] of state) {
+      for (const [id, t] of state2) {
         if (t.phase === "open" && !seen.has(id))
-          state.set(id, { ...t, phase: "closed" });
+          state2.set(id, { ...t, phase: "closed" });
       }
       if (mark3 !== null)
         scanned = mark3;
@@ -40237,6 +40281,7 @@ function followSignals() {
 }
 
 // packages/cli/dist/cli-bin.js
+useEnvProxy();
 process.on("SIGTERM", function stopGit() {
   killGitGroups();
   if (process.listenerCount("SIGTERM") > 1)
