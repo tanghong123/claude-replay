@@ -2127,8 +2127,8 @@ fn subtitle_after_a_jump(port: u16, phone: Option<(u32, u32)>) {
             );
             assert!(
                 values.iter().all(|&t| t == landed),
-                "scrolled down {}px after `]` landed turn {landed}, the subtitle was painted {values:?}; every step so far: {steps:?}",
-                step * 4
+                "{step} steps of 4px down after `]` landed turn {landed} (the offset {}px on), the subtitle was painted {values:?}; every step so far: {steps:?}",
+                offset - offset_of(&landed_at)
             );
         }
     }
@@ -2216,6 +2216,12 @@ fn the_app_shell_subtitle_after_a_plan_card_gives_one_answer_per_offset() {
     );
     harness::eval(&tab, "(function(){ var t=document.getElementById('turnSubtitle'); window.__subtitles=[]; new MutationObserver(function(){ window.__subtitles.push(t.textContent.split(' — ')[0]); }).observe(t, {childList:true, characterData:true, subtree:true}); return 'ok'; })()");
     let (landed_at, _) = harness::until_still(&tab, reading, |_| true, bound);
+    // Where the landed turn's top sits below the scroller's, read on screen: the band the case is
+    // about is the 8px under its landing, which only the content moving into it reaches, not an
+    // offset the engine wrote back as a unit mounted.
+    let turn_top = format!("(function(){{ var s=document.querySelector('.transcript'); var u=[...document.querySelector('.virtual-window').children].find(function(c){{ return c.dataset.unitFrom === '{unit}'; }}); return u ? Math.round(u.getBoundingClientRect().top - s.getBoundingClientRect().top) : -1000; }})()");
+    let landed_top = harness::eval(&tab, &turn_top).as_i64().unwrap_or(-1000);
+    let mut tops: Vec<i64> = Vec::new();
     let mut offset = offset_of(&landed_at);
     let mut steps: Vec<String> = Vec::new();
     for _ in 0..12 {
@@ -2229,17 +2235,26 @@ fn the_app_shell_subtitle_after_a_plan_card_gives_one_answer_per_offset() {
             .as_str()
             .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
             .unwrap_or_default();
-        steps.push(format!("{at}: {values:?}"));
+        let top = harness::eval(&tab, &turn_top).as_i64().unwrap_or(-1000);
+        tops.push(top);
+        steps.push(format!("{at} top {top}: {values:?}"));
         assert_ne!(
             offset, before,
             "each step moves the view: every step so far: {steps:?}"
         );
+        // Both callers paint on every update, the same text included (`updateTurnBar` always writes
+        // it), so two answers at one offset are both recorded here.
         assert!(
             values.windows(2).all(|w| w[0] == w[1]),
             "scrolled up {}px from the landing after the plan card, the subtitle was painted {values:?} at one offset; every step so far: {steps:?}",
             offset_of(&landed_at) - offset
         );
     }
+    assert!(
+        tops.iter()
+            .any(|&t| t > landed_top && t <= landed_top + 8),
+        "the sweep passed through the 8px under the landing (at {landed_top}px): every step: {steps:?}"
+    );
 }
 
 /// The app shell's layout contract, the counterpart of the v2 classic case (task #27): on a
