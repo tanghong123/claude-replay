@@ -2561,6 +2561,47 @@ mod request_pricing_tests {
         }
     }
 
+    /// #s446: gpt-6-cyber's long-context row (the pricing page's Cyber table, read raw
+    /// 2026-11-10T04:26Z): over 272K input tokens $40 input, $4 cached, $150 output, against the
+    /// short $20 / $2 / $100, the rule every long-context OpenAI row follows. The page leaves its
+    /// long cache-write cells blank; the catalog prices a long 30m write at 2x as on every other
+    /// long row (1.25x the long input, $50). No tier table lists it, so a Fast, Flex or Batch
+    /// request prices at standard, as an estimate.
+    #[test]
+    fn gpt_6_cyber_prices_a_long_prompt_at_its_long_row() {
+        let table = PriceTable::default();
+        let tokens = TokenCounts {
+            input: 1_000_000,
+            cache_creation: 1_000_000,
+            cache_read: 1_000_000,
+            output: 1_000_000,
+            ..Default::default()
+        };
+        let class = |tier, long| RequestPricing {
+            tier,
+            long_context: Some(long),
+            tier_confirmed: true,
+        };
+        let (short, short_est) =
+            class(ServiceTier::Standard, false).cost_with(&table, "gpt-6-cyber", tokens);
+        assert!((short.unwrap() - (20.0 + 25.0 + 2.0 + 100.0)).abs() < 1e-10);
+        assert!(!short_est, "a short request is exact");
+        let (long, long_est) =
+            class(ServiceTier::Standard, true).cost_with(&table, "gpt-6-cyber", tokens);
+        assert!(
+            (long.unwrap() - (40.0 + 50.0 + 4.0 + 150.0)).abs() < 1e-10,
+            "{long:?}"
+        );
+        assert!(!long_est, "a long request is exact");
+        for tier in [ServiceTier::Fast, ServiceTier::Flex, ServiceTier::Batch] {
+            let (cost, estimated) = class(tier, true).cost_with(&table, "gpt-6-cyber", tokens);
+            assert!(
+                (cost.unwrap() - 244.0).abs() < 1e-10 && estimated,
+                "{tier:?}: no tier rule, long standard rates, an estimate"
+            );
+        }
+    }
+
     /// #s78, Anthropic fast mode (the pricing page's Fast mode pricing section, read raw
     /// 2026-10-10): Opus 5.5 at $8 / $40 against $4 / $20, Opus 5 and Opus 4.8 at $10 / $50
     /// against $5 / $25, and since #s445 (read 2026-11-10) Fable 5.2 and Mythos 5.2 at $16 / $80
