@@ -38,6 +38,7 @@ export class DialogCard {
   // The open box's row (null when the box is shut or resumes an idle session): load its dialog when
   // the row says it holds one, and again when that wait is a new one.
   sync(row) {
+    if (this.ended) return;
     if (!row?.dialog) { this.clear(); return; }
     this.row = row;
     const key = `${row.id}|${row.dialog}|${row.stateSince || ""}`;
@@ -51,6 +52,9 @@ export class DialogCard {
     this.box.replaceChildren();
     this.box.dispatchEvent(new Event("compose-dialog", { bubbles: true }));
   }
+  // The view is unmounted (#s429 stage 7): a read or an answer still out does nothing when it comes
+  // back, nor does the read again after an answer.
+  destroy() { this.ended = true; this.clear(); }
   get active() { return !this.box.hidden && !!this.dialog; }
   get freeText() { return this.dialog?.choices.find(c => c.freeText) || null; }
   async load() {
@@ -59,7 +63,7 @@ export class DialogCard {
     this.show([el("p", "dialog-wait", "Reading the session's dialog…")]);
     let d;
     try { d = await backend().fetch(`/api/dialog?target=${target(row)}`, { cache: "no-store" }).then(json); } catch (_) { d = { ok: false, error: "could not reach the monitor" }; }
-    if (load !== this.loads || this.row !== row) return;
+    if (this.ended || load !== this.loads || this.row !== row) return;
     this.dialog = null;
     if (d.code === "no-consent") { this.showGrant(); return; }
     if (!d.ok) { this.show([el("p", "dialog-wait", d.error || "The dialog could not be read: answer it in the session.")]); return; }
@@ -157,12 +161,13 @@ export class DialogCard {
       d = await backend().fetch(`/api/answer?target=${target(row)}`, { method: "POST", body: JSON.stringify({ fingerprint: this.dialog.fingerprint, ...body }), cache: "no-store" }).then(json);
     } catch (_) { d = { ok: false, error: "could not reach the monitor" }; }
     this.busy = false;
+    if (this.ended) return false;
     this.box.classList.remove("answering");
     if (d.code === "no-consent") { this.showGrant(); return false; }
     this.actions.toast(d.ok ? "Answered" : (d.error || "The answer did not go through"));
     // The next part of a question, or the dialog gone: read the pane again once it has redrawn.
     this.key = "";
-    setTimeout(() => { if (this.row === row) this.sync(row); this.actions.refreshIndex(); }, 600);
+    setTimeout(() => { if (this.ended) return; if (this.row === row) this.sync(row); this.actions.refreshIndex(); }, 600);
     return !!d.ok;
   }
   answerText(text) { return this.answer({ text }); }

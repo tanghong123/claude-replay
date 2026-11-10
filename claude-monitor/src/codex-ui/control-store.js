@@ -52,6 +52,14 @@ export class ControlStore {
   }
   /** Whether the host offers writes and the reader has them switched on. */
   writeOn() { return !!this.actions.write?.on(); }
+  /** The view is unmounted (#s429 stage 7). What is still out (a send, a grant, the host's confirm, an
+   *  image being read, the dialog card's reads) finds the box ended when it comes back and does
+   *  nothing: the view's elements are found by id, and after a mount in the same element those ids
+   *  are a new view's. A confirm still open is answered for nobody. */
+  destroy() {
+    this.ended = true;
+    this.dialog.destroy();
+  }
   bind() {
     this.revokeButton = document.createElement("button");
     this.revokeButton.type = "button";
@@ -123,10 +131,12 @@ export class ControlStore {
       this.images.set(target, [...items, item]);
       this.paintImages();
       try { item.url = await readDataUrl(file); } catch (error) {
+        if (this.ended) return;
         this.removeImage(target, item.id);
         this.actions.toast(`${item.name}: ${error?.message || "could not read the image"}`);
         continue;
       }
+      if (this.ended) return;
       this.paintImages();
     }
   }
@@ -161,6 +171,7 @@ export class ControlStore {
     byId("composer").dispatchEvent(new Event("compose-images"));
   }
   paint() {
+    if (this.ended) return;
     const row = this.actions.selectedRow();
     const available = canCompose(row);
     byId("sendBtn").disabled = !!this.pendingSends?.has(this.compose.row?.id);
@@ -236,11 +247,12 @@ export class ControlStore {
    *  `passcode` asks the host for a passcode field (the monitor requires one, or refused the one
    *  given). */
   confirm(text, then, passcode = false) {
+    if (this.ended) return;
     const ask = this.asked = {};
     let answer;
     try { answer = this.actions.write?.confirm({ title: GRANT_TITLE, text, passcode }); } catch (error) { answer = Promise.reject(error); }
     Promise.resolve(answer).then(given => {
-      if (this.asked === ask && typeof given === "string") then(given);
+      if (!this.ended && this.asked === ask && typeof given === "string") then(given);
     }, error => { (globalThis.reportError || console.error)(error); });
   }
   // #s298: the grant a dialog needs before it is read or answered — the pane's own, the one a
@@ -254,13 +266,14 @@ export class ControlStore {
     if (!this.compose.row) return;
     let outcome;
     try { outcome = grantOutcome(await post(consentQuery(this.compose.row.id), passcode || "")); } catch (_) { outcome = { kind: "error", message: "could not reach the monitor" }; }
+    if (this.ended) return;
     if (outcome.kind === "granted") { this.compose.consented = true; this.revokeButton.hidden = false; then(); this.actions.refreshIndex(); return; }
     if (["passcode-required", "bad-passcode"].includes(outcome.kind)) { this.askPasscode(outcome, passcode => this.grant(passcode, then)); return; }
     this.actions.toast(outcome.message || "Grant failed");
   }
   async answerText(text) {
     const target = this.compose.row?.id;
-    if (!(await this.dialog.answerText(text))) return;
+    if (!(await this.dialog.answerText(text)) || this.ended) return;
     const input = byId("composeInput");
     if (this.compose.row?.id === target && input.value.trim() === text) {
       input.value = "";
@@ -270,6 +283,7 @@ export class ControlStore {
   async revoke() {
     if (!this.compose.row || this.compose.mode !== "tmux") return;
     const outcome = await runRevoke({ target: this.compose.row.id, post });
+    if (this.ended) return;
     if (outcome.kind !== "revoked") { this.actions.toast(outcome.kind === "unreachable" ? outcome.message : "Revoking the grant failed"); return; }
     this.compose.consented = false;
     this.revokeButton.hidden = true;
@@ -296,6 +310,7 @@ export class ControlStore {
     byId("sendBtn").disabled = true;
     try {
       const result = await runSend({ target, mode, consented, prompt: text, images: images.map(item => item.url), passcode, post });
+      if (this.ended) return;
       if (ownsComposer()) this.compose.consented = result.consented;
       if (result.step === "grant") {
         if (["passcode-required", "bad-passcode"].includes(result.outcome.kind) && ownsComposer()) { this.askPasscode(result.outcome, given => this.send(this.compose.pending, given)); return; }
@@ -323,8 +338,12 @@ export class ControlStore {
       this.actions.refreshIndex();
     } finally {
       if (this.pendingSends.get(target) === pending) this.pendingSends.delete(target);
-      if (ownsComposer()) byId("sendBtn").disabled = false;
-      else this.actions.repaintComposer?.();
+      // An unmounted view (stage 7) has nothing of it to re-enable: its button is gone, and one by the
+      // same id may be a new view's.
+      if (!this.ended) {
+        if (ownsComposer()) byId("sendBtn").disabled = false;
+        else this.actions.repaintComposer?.();
+      }
     }
   }
 }

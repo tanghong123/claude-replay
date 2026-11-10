@@ -26,6 +26,9 @@ export class AttachmentViewer {
   constructor(actions) {
     this.actions = actions;
   }
+  /** The view is unmounted (#s429 stage 7): a download still being read stops, and nothing it would
+   *  still do (a save, the share sheet, a toast) happens. */
+  destroy() { this.ended = true; this.controller?.abort(); this.ready = null; }
 
   /** Ask the server to show the file in the file manager. It acts only on a path it offered
    *  with a reveal stamp and that still sits inside a hosted session's roots; it hands over
@@ -63,9 +66,10 @@ export class AttachmentViewer {
       else {
         const filePath = `/file?path=${encodeURIComponent(item.path || "")}&sig=${encodeURIComponent(item.fsig || "")}`;
         fileUrl = backend().url(filePath);
-        controller = new AbortController();
+        controller = this.controller = new AbortController();
         response = await backend().fetch(filePath, { cache: "no-store", signal: controller.signal });
       }
+      if (this.ended) { controller?.abort(); return; }
       if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status });
       // Too large to hold: the refusal checks above are done, so the browser streams it to disk.
       if (fileUrl && Number(response.headers.get("Content-Length") || 0) > IN_MEMORY_MAX) {
@@ -75,6 +79,7 @@ export class AttachmentViewer {
         return;
       }
       const blob = await response.blob();
+      if (this.ended) return;
       if (shareHere()) {
         const file = new File([blob], name, { type: blob.type || "application/octet-stream" });
         if (navigator.canShare?.({ files: [file] })) {
@@ -87,6 +92,7 @@ export class AttachmentViewer {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       this.actions.toast?.("Download started");
     } catch (error) {
+      if (this.ended) return;
       // #s7: say which — a file that is gone (410, or a fetch that failed outright) is not one this
       // monitor may not read (403).
       const why = error?.status === 403 ? "This monitor may not read that file" : error?.status && error.status !== 410 ? `Could not download (HTTP ${error.status})` : "The original file is gone";
