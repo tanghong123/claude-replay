@@ -9,18 +9,20 @@ const nativeSource = await readFile(new URL("../src/codex-ui/native-mode.js", im
 // module runs in the same context, over this context's own document.
 const viewRootSource = await readFile(new URL("../src/codex-ui/view-root.js", import.meta.url), "utf8");
 const VIEW_ROOT = `const { viewRoot, page } = (() => { ${viewRootSource.replace(/^export /gm, "")}\n  return { viewRoot, page };\n})();\n`;
-const loadClass = (source, name, context) => vm.runInNewContext(VIEW_ROOT + source.replace(/^import .*\n/gm, "").replace(`export class ${name}`, `class ${name}`) + `\n${name}`, context);
+const loadClass = (source, name, context) => vm.runInNewContext(VIEW_ROOT + source.replace(/^import .*\n/gm, "").replace(/^export /gm, "") + `\n${name}`, context);
 
 function fixture() {
   const input = { value: "Claude send", focused: 0, dispatchEvent() {}, focus() { this.focused++; } }, send = { disabled: false };
   const document = { getElementById: id => id === "composeInput" ? input : send, activeElement: null };
+  // The compose box's own state (control-store.js's `compose`, stage 7), which native mode reads
+  // through the ordinary box; the app's selection comes through the view's actions.
   const controlState = { row: { id: "claude" }, mode: "resume", consented: false };
   const indexState = { selected: "claude" };
   let finish, payload, closed = 0, painted = 0;
-  const NativeMode = loadClass(nativeSource, "NativeModeControls", { document, controlState, indexState });
-  const native = Object.assign(Object.create(NativeMode.prototype), { view: "ordinary", composerGeneration: 0, drafts: new Map(), draftRevisions: new Map() });
-  const Control = loadClass(controlSource, "ControlStore", { document, controlState, selectedRow: () => ({ id: indexState.selected }), fetch: () => {}, Event: class { constructor(type) { this.type = type; } }, matchMedia: () => ({ matches: false }), runSend: value => { payload = value; return new Promise(resolve => { finish = resolve; }); } });
-  const ordinary = Object.assign(Object.create(Control.prototype), { actions: { captureComposer: () => native.captureOrdinarySend(), repaintComposer: () => painted++, toast: () => {}, refreshIndex: () => {} }, close: () => closed++ });
+  const NativeMode = loadClass(nativeSource, "NativeModeControls", { document });
+  const native = Object.assign(Object.create(NativeMode.prototype), { ordinary: { compose: controlState }, actions: { selectedId: () => indexState.selected }, view: "ordinary", composerGeneration: 0, drafts: new Map(), draftRevisions: new Map() });
+  const Control = loadClass(controlSource, "ControlStore", { document, fetch: () => {}, Event: class { constructor(type) { this.type = type; } }, matchMedia: () => ({ matches: false }), runSend: value => { payload = value; return new Promise(resolve => { finish = resolve; }); } });
+  const ordinary = Object.assign(Object.create(Control.prototype), { compose: controlState, actions: { selectedRow: () => ({ id: indexState.selected }), captureComposer: () => native.captureOrdinarySend(), repaintComposer: () => painted++, toast: () => {}, refreshIndex: () => {} }, close: () => closed++ });
   return { input, send, native, ordinary, controlState, indexState, get payload() { return payload; }, get closed() { return closed; }, get painted() { return painted; }, finish: () => finish({ consented: true, step: "send", outcome: { kind: "sent" } }) };
 }
 

@@ -1,13 +1,20 @@
-import { canCompose, canInject, controlState, selectedRow } from "./state.js";
 import { backend } from "./backend.js";
 // The /api/send + /api/consent protocol is the shared module's (#48): this store keeps the
-// app shell's markup, its confirm dialog and its toasts, and asks the protocol what a server
-// answer means.
-import { consentQuery, grantOutcome, runRevoke, runSend } from "./shared/control-protocol.js";
+// compose box's markup, and asks the protocol what a server answer means. Write mode and the confirm
+// that grants a live pane are the host's (stage 7, the `write` option): the app's are its write
+// switch and its confirm layer.
+import { composeCapability, consentQuery, grantOutcome, runRevoke, runSend } from "./shared/control-protocol.js";
 import { DialogCard } from "./dialog-card.js";
 import { page, viewRoot } from "./view-root.js";
 
 const byId = viewRoot.byId;
+
+// Who may be composed to is the shared protocol's rule (shared/control-protocol.js, #48).
+export const canInject = row => composeCapability(row, backend().paired).inject;
+export const canResume = row => composeCapability(row, backend().paired).resume;
+export const canCompose = row => canInject(row) || canResume(row);
+/** What the host's confirm is titled: a grant lets the monitor type into a live pane. */
+const GRANT_TITLE = "Allow typing into this pane?";
 
 // #s236 (Hong: the box said too much, and "writes to live tmux" for a herdr pane): ONE line says
 // where a message goes — a live pane by its host's own name, or a resume of an idle session.
@@ -32,11 +39,19 @@ const json = response => response.json().catch(() => ({ ok: false, error: `HTTP 
 const post = (path, body) => backend().fetch(path, { method: "POST", body, cache: "no-store" }).then(json);
 
 export class ControlStore {
+  /** `actions`: the view's handlers (`toast`, `refreshIndex`, …), the app's selection
+   *  (`selectedRow()`), and `write`, the host's write mode and its confirm (the view's `write`
+   *  option), or none for a host that offers no writes. */
   constructor(actions) {
     this.actions = actions;
+    // The box's own state: the row it writes to, how (a live pane, "tmux", or a resume), whether the
+    // pane's grant is held, and the text a grant waits to send.
+    this.compose = { row: null, mode: "resume", consented: false, pending: "" };
     this.bind();
     this.paint();
   }
+  /** Whether the host offers writes and the reader has them switched on. */
+  writeOn() { return !!this.actions.write?.on(); }
   bind() {
     this.revokeButton = document.createElement("button");
     this.revokeButton.type = "button";
@@ -44,20 +59,10 @@ export class ControlStore {
     this.revokeButton.textContent = "Revoke pane grant";
     this.revokeButton.onclick = () => this.revoke();
     byId("closeComposer").before(this.revokeButton);
-    page.byId("writeSwitch").onclick = () => {
-      if (!controlState.paired) { this.showPairHelp(); return; }
-      controlState.write = !controlState.write;
-      this.paint();
-    };
-    page.byId("writeBtn").onclick = event => { if (!event.target.closest("button")) page.byId("writeSwitch").click(); };
-    page.byId("writeInfo").onclick = event => { event.stopPropagation(); this.showPairHelp(); };
     byId("composeFab").onclick = () => this.open();
     byId("closeComposer").onclick = () => this.close();
     byId("sendBtn").onclick = () => this.attempt();
     byId("composeInput").onkeydown = event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); this.attempt(); } };
-    byId("cancelSend").onclick = () => this.closeConfirm();
-    byId("confirmLayer").querySelector("h3").textContent = "Allow typing into this pane?";
-    byId("confirmSend").onclick = () => this.grantAndSend();
     // #s237: the image half — an attach control where the foot's "＋" was, a strip of what is
     // attached above the field, and an image pasted into the field.
     this.images = new Map();
@@ -102,10 +107,10 @@ export class ControlStore {
     };
   }
   // Codex native mode shares #composer and sends its own images: none of this one's there.
-  imagesAllowed(row = controlState.row) { return controlState.mode === "tmux" && !!row?.sendsImages && !page.body().dataset.sharedCodex; }
-  imagesFor(target = controlState.row?.id) { return this.images.get(target) || []; }
+  imagesAllowed(row = this.compose.row) { return this.compose.mode === "tmux" && !!row?.sendsImages && !page.body().dataset.sharedCodex; }
+  imagesFor(target = this.compose.row?.id) { return this.images.get(target) || []; }
   async addImages(files) {
-    const target = controlState.row?.id;
+    const target = this.compose.row?.id;
     if (!target || !this.imagesAllowed()) return;
     for (const file of files) {
       const items = this.imagesFor(target);
@@ -146,59 +151,48 @@ export class ControlStore {
       remove.className = "compose-image-remove";
       remove.textContent = "×";
       remove.setAttribute("aria-label", `Remove ${item.name}`);
-      const target = controlState.row?.id;
+      const target = this.compose.row?.id;
       remove.onclick = () => this.removeImage(target, item.id);
       tile.append(remove);
       return tile;
     }));
     // The dock's draft dot counts images too, for the session the dock writes to.
-    byId("composer").dataset.imageDraft = this.imagesFor(selectedRow()?.id).length ? "1" : "";
+    byId("composer").dataset.imageDraft = this.imagesFor(this.actions.selectedRow()?.id).length ? "1" : "";
     byId("composer").dispatchEvent(new Event("compose-images"));
   }
-  showPairHelp() {
-    const help = page.byId("writeHelp");
-    help.innerHTML = controlState.paired
-      ? "<b>Monitor is paired</b><p>With write mode on, a writable session shows a compose box. A live terminal still needs its own grant.</p>"
-      : "<b>Write mode needs a paired monitor</b><p>Stop the monitor and run this in a terminal:</p><code>agent-monitor --pair</code>";
-    help.hidden = false; help.classList.add("show");
-  }
   paint() {
-    const row = selectedRow();
+    const row = this.actions.selectedRow();
     const available = canCompose(row);
-    byId("sendBtn").disabled = !!this.pendingSends?.has(controlState.row?.id);
-    page.byId("writeSwitch").setAttribute("aria-checked", String(controlState.write));
-    page.byId("writeBtn").classList.toggle("on", controlState.write);
-    page.byId("sidebarMiniWrite").classList.toggle("on", controlState.write);
-    page.byId("writeInfo").hidden = controlState.paired;
-    byId("composeFab").classList.toggle("show", controlState.write && available && !byId("composer").classList.contains("production-show"));
+    byId("sendBtn").disabled = !!this.pendingSends?.has(this.compose.row?.id);
+    byId("composeFab").classList.toggle("show", this.writeOn() && available && !byId("composer").classList.contains("production-show"));
     // #s298: the button says when the session waits on an answer the box can give.
     byId("composeFab").classList.toggle("asks", !!row?.dialog && canInject(row));
     byId("composeFab").title = row?.dialog && canInject(row) ? "Claude is asking: answer it" : "Open the compose box";
-    byId("writeNotice").classList.toggle("show", controlState.write && !available);
+    byId("writeNotice").classList.toggle("show", this.writeOn() && !available);
     if (!available) {
       byId("composer").classList.remove("production-show");
-      controlState.row = null;
+      this.compose.row = null;
     }
     this.paintImages();
     this.paintDialog();
   }
   // The open box's dialog, for its row as the index now has it (a live pane only).
   paintDialog() {
-    const open = byId("composer").classList.contains("production-show") && controlState.mode === "tmux";
-    const row = open && selectedRow()?.id === controlState.row?.id ? selectedRow() : null;
+    const open = byId("composer").classList.contains("production-show") && this.compose.mode === "tmux";
+    const row = open && this.actions.selectedRow()?.id === this.compose.row?.id ? this.actions.selectedRow() : null;
     this.dialog.sync(row);
   }
   open() {
-    const row = selectedRow();
-    if (!controlState.write || !canCompose(row)) return;
-    controlState.row = row;
-    controlState.mode = canInject(row) ? "tmux" : "resume";
-    controlState.consented = !!row.consented;
+    const row = this.actions.selectedRow();
+    if (!this.writeOn() || !canCompose(row)) return;
+    this.compose.row = row;
+    this.compose.mode = canInject(row) ? "tmux" : "resume";
+    this.compose.consented = !!row.consented;
     byId("composerTitle").textContent = row.name || row.id;
-    byId("composeTarget").textContent = composeTargetLine(row, controlState.mode);
+    byId("composeTarget").textContent = composeTargetLine(row, this.compose.mode);
     byId("composer").classList.add("production-show");
-    byId("composer").classList.toggle("live", controlState.mode === "tmux");
-    this.revokeButton.hidden = !(controlState.mode === "tmux" && controlState.consented);
+    byId("composer").classList.toggle("live", this.compose.mode === "tmux");
+    this.revokeButton.hidden = !(this.compose.mode === "tmux" && this.compose.consented);
     byId("composeFab").classList.remove("show");
     this.paintImages();
     this.paintDialog();
@@ -207,7 +201,7 @@ export class ControlStore {
   }
   close() {
     byId("composer").classList.remove("production-show");
-    controlState.row = null;
+    this.compose.row = null;
     this.dialog.clear();
     this.paintImages();
     this.paintSoon();
@@ -216,7 +210,7 @@ export class ControlStore {
   attempt() {
     const text = byId("composeInput").value.trim();
     const images = this.imagesAllowed() ? this.imagesFor() : [];
-    if ((!text && !images.length) || !controlState.row) return;
+    if ((!text && !images.length) || !this.compose.row) return;
     // #s298: while a dialog holds the session the field answers it, where it takes a written
     // answer; a message would be refused until the dialog is answered.
     if (this.dialog.active) {
@@ -225,71 +219,69 @@ export class ControlStore {
       return;
     }
     if (images.some(item => !item.url)) { this.actions.toast("Wait for the images to finish loading."); return; }
-    controlState.pending = text;
-    if (controlState.mode === "tmux" && !controlState.consented) {
+    this.compose.pending = text;
+    if (this.compose.mode === "tmux" && !this.compose.consented) {
       // #s226: a herdr pane is named as one; a tmux pane as one too (#s236).
-      const where = controlState.row.term === "herdr" ? `herdr pane ${controlState.row.target}` : controlState.row.target ? `tmux pane ${controlState.row.target}` : "its tmux pane";
-      byId("confirmText").textContent = `The message goes to ${where} and runs with that agent's current permissions.`;
-      // This confirm grants and SENDS: a dialog's grant that was left open does not stand in.
-      this.afterGrant = null;
-      byId("confirmLayer").classList.add("production-open");
+      const where = this.compose.row.term === "herdr" ? `herdr pane ${this.compose.row.target}` : this.compose.row.target ? `tmux pane ${this.compose.row.target}` : "its tmux pane";
+      // This confirm grants and SENDS: a dialog's grant that was left open does not stand in (the
+      // host's confirm answers the last ask, and an earlier one as cancelled).
+      this.confirm(`The message goes to ${where} and runs with that agent's current permissions.`, passcode => this.send(this.compose.pending, passcode));
       return;
     }
     this.send(text);
   }
-  closeConfirm() { byId("confirmLayer").classList.remove("production-open"); this.afterGrant = null; }
-  async grantAndSend() {
-    const passcode = viewRoot.$(".passcode-input")?.value || "";
-    const then = this.afterGrant;
-    this.closeConfirm();
-    if (then) { await this.grant(passcode, then); return; }
-    await this.send(controlState.pending, passcode);
+  /** Ask the reader, through the host's confirm (the `write` option), and go on with the passcode
+   *  they gave ("" where none was asked) once they confirm. Only the last ask goes on: the host
+   *  answers an earlier one still open as cancelled, and a late answer to it is dropped here too.
+   *  `passcode` asks the host for a passcode field (the monitor requires one, or refused the one
+   *  given). */
+  confirm(text, then, passcode = false) {
+    const ask = this.asked = {};
+    let answer;
+    try { answer = this.actions.write?.confirm({ title: GRANT_TITLE, text, passcode }); } catch (error) { answer = Promise.reject(error); }
+    Promise.resolve(answer).then(given => {
+      if (this.asked === ask && typeof given === "string") then(given);
+    }, error => { (globalThis.reportError || console.error)(error); });
   }
   // #s298: the grant a dialog needs before it is read or answered — the pane's own, the one a
   // send asks for, stated as such.
   askGrant(then) {
-    if (!controlState.row) return;
-    const where = controlState.row.target ? `herdr pane ${controlState.row.target}` : "its herdr pane";
-    byId("confirmText").textContent = `The monitor reads the dialog in ${where} and types your answers there, with that agent's current permissions.`;
-    byId("confirmLayer").classList.add("production-open");
-    this.afterGrant = then;
+    if (!this.compose.row) return;
+    const where = this.compose.row.target ? `herdr pane ${this.compose.row.target}` : "its herdr pane";
+    this.confirm(`The monitor reads the dialog in ${where} and types your answers there, with that agent's current permissions.`, passcode => this.grant(passcode, then));
   }
   async grant(passcode, then) {
-    if (!controlState.row) return;
+    if (!this.compose.row) return;
     let outcome;
-    try { outcome = grantOutcome(await post(consentQuery(controlState.row.id), passcode || "")); } catch (_) { outcome = { kind: "error", message: "could not reach the monitor" }; }
-    if (outcome.kind === "granted") { controlState.consented = true; this.revokeButton.hidden = false; then(); this.actions.refreshIndex(); return; }
-    if (["passcode-required", "bad-passcode"].includes(outcome.kind)) { this.askPasscode(outcome); this.afterGrant = then; return; }
+    try { outcome = grantOutcome(await post(consentQuery(this.compose.row.id), passcode || "")); } catch (_) { outcome = { kind: "error", message: "could not reach the monitor" }; }
+    if (outcome.kind === "granted") { this.compose.consented = true; this.revokeButton.hidden = false; then(); this.actions.refreshIndex(); return; }
+    if (["passcode-required", "bad-passcode"].includes(outcome.kind)) { this.askPasscode(outcome, passcode => this.grant(passcode, then)); return; }
     this.actions.toast(outcome.message || "Grant failed");
   }
   async answerText(text) {
-    const target = controlState.row?.id;
+    const target = this.compose.row?.id;
     if (!(await this.dialog.answerText(text))) return;
     const input = byId("composeInput");
-    if (controlState.row?.id === target && input.value.trim() === text) {
+    if (this.compose.row?.id === target && input.value.trim() === text) {
       input.value = "";
       input.dispatchEvent(new Event("input", { bubbles: true }));
     }
   }
   async revoke() {
-    if (!controlState.row || controlState.mode !== "tmux") return;
-    const outcome = await runRevoke({ target: controlState.row.id, post });
+    if (!this.compose.row || this.compose.mode !== "tmux") return;
+    const outcome = await runRevoke({ target: this.compose.row.id, post });
     if (outcome.kind !== "revoked") { this.actions.toast(outcome.kind === "unreachable" ? outcome.message : "Revoking the grant failed"); return; }
-    controlState.consented = false;
+    this.compose.consented = false;
     this.revokeButton.hidden = true;
     this.actions.toast("Pane grant revoked");
     this.actions.refreshIndex();
   }
   // The passcode dialog: the grant asked for one (or refused the one given).
-  askPasscode(outcome) {
-    const dialog = byId("confirmLayer").querySelector(".dialog");
-    let input = dialog.querySelector(".passcode-input");
-    if (!input) { input = document.createElement("input"); input.className = "passcode-input"; input.type = "password"; input.placeholder = "Monitor passcode"; dialog.insertBefore(input, dialog.querySelector(".dialog-actions")); }
-    byId("confirmText").textContent = outcome.kind === "bad-passcode" ? "Passcode incorrect — try again." : "This monitor requires a passcode before granting write access.";
-    byId("confirmLayer").classList.add("production-open"); input.focus();
+  askPasscode(outcome, then) {
+    this.confirm(outcome.kind === "bad-passcode" ? "Passcode incorrect — try again." : "This monitor requires a passcode before granting write access.", then, true);
   }
   async send(text, passcode = "") {
-    const target = controlState.row.id, mode = controlState.mode, consented = controlState.consented;
+    const target = this.compose.row.id, mode = this.compose.mode, consented = this.compose.consented;
     this.pendingSends ||= new Map();
     if (this.pendingSends.has(target)) return;
     const pending = {};
@@ -300,13 +292,13 @@ export class ControlStore {
     // The ordinary editor keeps its target when the reader selects another session.
     // A closed editor has no row; native mode supplies its own generation fence.
     const ownsComposer = () => owner ? owner.isCurrent()
-      : controlState.row?.id === target || !controlState.row;
+      : this.compose.row?.id === target || !this.compose.row;
     byId("sendBtn").disabled = true;
     try {
       const result = await runSend({ target, mode, consented, prompt: text, images: images.map(item => item.url), passcode, post });
-      if (ownsComposer()) controlState.consented = result.consented;
+      if (ownsComposer()) this.compose.consented = result.consented;
       if (result.step === "grant") {
-        if (["passcode-required", "bad-passcode"].includes(result.outcome.kind) && ownsComposer()) { this.askPasscode(result.outcome); return; }
+        if (["passcode-required", "bad-passcode"].includes(result.outcome.kind) && ownsComposer()) { this.askPasscode(result.outcome, given => this.send(this.compose.pending, given)); return; }
         this.actions.toast(result.outcome.kind === "unreachable" ? result.outcome.message : (result.outcome.message || "Grant failed"));
         return;
       }
@@ -324,8 +316,8 @@ export class ControlStore {
         const input = byId("composeInput");
         input.value = "";
         input.dispatchEvent(new Event("input", { bubbles: true }));
-        if (controlState.row && selectedRow()?.id !== controlState.row.id) this.close();
-        else if (controlState.row && !matchMedia("(pointer: coarse)").matches && viewRoot.active() !== input) input.focus();
+        if (this.compose.row && this.actions.selectedRow()?.id !== this.compose.row.id) this.close();
+        else if (this.compose.row && !matchMedia("(pointer: coarse)").matches && viewRoot.active() !== input) input.focus();
       }
       this.actions.toast(mode === "tmux" ? (images.length ? `Sent to the pane with ${images.length === 1 ? "an image" : `${images.length} images`}` : "Sent to the pane") : "Resuming the session");
       this.actions.refreshIndex();

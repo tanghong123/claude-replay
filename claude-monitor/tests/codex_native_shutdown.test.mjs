@@ -33,7 +33,7 @@ function fixture(status = owned) {
   const calls = [], toasts = [], events = [], result = deferred(); let statusError;
   const write = document.getElementById("writeSwitch"); write.onclick = () => { controlState.write = !controlState.write; };
   class GatewayApi { request(route, body) { calls.push({ route, body }); return result.promise; } }
-  const context = { document, controlState, indexState: { selected: null }, ResizeObserver: class { observe() {} }, visualViewport: null,
+  const context = { document, ResizeObserver: class { observe() {} }, visualViewport: null,
     mountNativeMenu: () => ({ button, menu }), readNativeStatus, ownsNativeServer, confirmNativeShutdown, GatewayApi,
     fetch: async () => { calls.push({ route: "status" }); if (statusError) throw statusError; return { ok: true, json: async () => status }; },
     // #s416: the page reaches its server through the backend handle; here it is this context's fetch.
@@ -41,7 +41,10 @@ function fixture(status = owned) {
   const NativeMode = vm.runInNewContext(VIEW_ROOT + source.replace(/^import .*\n/gm, "").replace("export class NativeModeControls", "class NativeModeControls")
     .replaceAll('await import(backend().url("/codex-workspace/api.js"))', 'await Promise.resolve({ GatewayApi: globalThis.GatewayApi })') + "\nNativeModeControls", context);
   NativeMode.prototype.paint = function () { button.disabled = this.pending; };
-  const controller = new NativeMode({ actions: {} }, {
+  // The app's write mode reaches native mode through the view's `write` option (stage 7), and the
+  // selection through its actions.
+  const controller = new NativeMode({ actions: {}, compose: { row: null } }, {
+    write: { on: () => controlState.write, confirm: async () => null }, selectedId: () => null, selectedRow: () => null,
     toast: message => toasts.push(message), pauseIndex: () => events.push("pause"), resumeIndex: () => events.push("resume"),
     refreshIndex() {}, nativeDisabled() {},
   });

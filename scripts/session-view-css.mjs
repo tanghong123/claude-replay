@@ -237,9 +237,10 @@ export function declarations(body) {
 
 /** The app's own chrome, which the view never draws: the session list and its tree, the rail and its
  *  flyout, the arrangement strip and the section menu, the session filter, the brand, the drawer and
- *  a wide phone's column, the session search layer (⌘K), the confirm layer and the toast. `.primary`
- *  is the confirm layer's button: the view's own primary buttons are `.sv-primary`, a name the
- *  collaboration app does not style (#s438), so the view never draws `.primary`. */
+ *  a wide phone's column, the session search layer (⌘K), the confirm layer (and the passcode field
+ *  the app draws in it since stage 7) and the toast. `.primary` is the confirm layer's button: the
+ *  view's own primary buttons are `.sv-primary`, a name the collaboration app does not style
+ *  (#s438), so the view never draws `.primary`. */
 export const APP_CHROME = Object.freeze([
   "#collapseBtn", "#expandBtn", "#filterBtn", "#sidebarCollapse",
   ".agent-label", ".agent-monogram",
@@ -248,7 +249,7 @@ export const APP_CHROME = Object.freeze([
   ".attention-count", ".attention-filter", ".attention-mini",
   ".brand", ".brand-icon",
   ".column-pane", ".column-switch", ".column-switch-count",
-  ".confirm-layer", ".dialog-actions", ".primary",
+  ".confirm-layer", ".dialog-actions", ".passcode-input", ".primary",
   ".drawer-handle", ".drawer-scrim", ".filter-mini", ".head-actions",
   ".nav", ".nav-tooltip", ".navbtn", ".no-results",
   ".rail-flyout", ".rail-flyout-filter", ".rail-flyout-head", ".rail-flyout-tree",

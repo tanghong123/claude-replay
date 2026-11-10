@@ -357,6 +357,8 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .write-help.show{display:block}
 .confirm-layer.production-open,.search-layer.production-open{display:grid}
 .search-layer.production-open{display:flex}
+.passcode-input{width:100%;height:38px;margin:-7px 0 14px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);outline:0}
+.passcode-input:focus{border-color:var(--blue)}
 :where(:root[data-theme="dark"]) .agent-label{color:var(--faint)}
 :where(:root[data-theme="dark"]) .agent-label:after{color:color-mix(in srgb,var(--faint) 62%,transparent)}
 .tree-project-more{width:calc(100% - 32px);height:28px;margin:1px 0 4px 32px;padding:0 9px;border-radius:7px;display:flex;align-items:center;justify-content:space-between;background:transparent;color:color-mix(in srgb,var(--faint) 90%,transparent);font:10px var(--mono);cursor:pointer}

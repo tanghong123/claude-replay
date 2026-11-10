@@ -6,7 +6,7 @@ import { agentLogo, svg } from "./icons.js";
 import { backend } from "./backend.js";
 import { PHONE_QUERY, WIDE_PHONE_QUERY } from "./shared/capabilities.js";
 import { SessionIndexStore } from "./session-index-store.js";
-import { indexState, persist, searchState, selectedRow } from "./state.js";
+import { controlState, indexState, persist, searchState, selectedRow } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
 import { ARRANGE_SOURCES, arrangeSessions, familyHolds, flatFamilies, isDefaultView, nestSideSessions, paneLookup, rowLookup, sectionView, viewSection } from "./session-list.js";
 import { displayState, denoteState, sessionBucket, sessionFilterBuckets, FILTER_BUCKETS, FILTER_LABELS, BLOCKED_SUMMARY } from "./shared/state-labels.js";
@@ -1146,6 +1146,52 @@ var mobileShell;
   };
 }
 
+// Write mode is the app's (#s429 stage 7): its switch in the sidebar, the rail's write button, the
+// help that says writing needs a paired monitor, and the confirm layer that grants a live pane. The
+// view hears whether writing is on and asks for the confirm through its `write` option, and is told
+// when the switch moves (`writeChanged`). Native mode wraps the switch's handler (native-entry.js,
+// native-mode.js), so it is bound before either loads.
+function paintWrite() {
+  page.byId("writeSwitch").setAttribute("aria-checked", String(controlState.write));
+  page.byId("writeBtn").classList.toggle("on", controlState.write);
+  page.byId("sidebarMiniWrite").classList.toggle("on", controlState.write);
+  page.byId("writeInfo").hidden = controlState.paired;
+}
+function showPairHelp() {
+  const help = page.byId("writeHelp");
+  help.innerHTML = controlState.paired
+    ? "<b>Monitor is paired</b><p>With write mode on, a writable session shows a compose box. A live terminal still needs its own grant.</p>"
+    : "<b>Write mode needs a paired monitor</b><p>Stop the monitor and run this in a terminal:</p><code>agent-monitor --pair</code>";
+  help.hidden = false; help.classList.add("show");
+}
+page.byId("writeSwitch").onclick = () => {
+  if (!controlState.paired) { showPairHelp(); return; }
+  controlState.write = !controlState.write;
+  paintWrite();
+  viewHandle.writeChanged();
+};
+page.byId("writeBtn").onclick = event => { if (!event.target.closest("button")) page.byId("writeSwitch").click(); };
+page.byId("writeInfo").onclick = event => { event.stopPropagation(); showPairHelp(); };
+// The confirm layer answers the view's last ask: the passcode given ("" with no field) on Confirm,
+// null on Cancel, and null for an ask a newer one replaced. Its passcode field, once drawn, stays.
+let confirming = null;
+function confirmWrite({ title, text, passcode }) {
+  confirming?.(null);
+  const layer = page.byId("confirmLayer"), dialog = layer.querySelector(".dialog");
+  layer.querySelector("h3").textContent = title;
+  page.byId("confirmText").textContent = text;
+  let input = dialog.querySelector(".passcode-input");
+  if (passcode && !input) { input = document.createElement("input"); input.className = "passcode-input"; input.type = "password"; input.placeholder = "Monitor passcode"; dialog.insertBefore(input, dialog.querySelector(".dialog-actions")); }
+  layer.classList.add("production-open");
+  if (passcode) input.focus();
+  return new Promise(resolve => {
+    confirming = answer => { confirming = null; layer.classList.remove("production-open"); resolve(answer); };
+  });
+}
+page.byId("cancelSend").onclick = () => { if (confirming) confirming(null); else page.byId("confirmLayer").classList.remove("production-open"); };
+page.byId("confirmSend").onclick = () => confirming?.(page.$(".passcode-input")?.value || "");
+paintWrite();
+
 // The session view (session-view.js): its three parts are columns of this grid, and it draws into
 // the page, as it does in every host (design/session-view-component.md, #s438). What it needs from
 // the app is passed in here; what the app asks of it is the handle. Every optional control stays on,
@@ -1155,6 +1201,7 @@ viewHandle = mountSessionView(viewRoot.element(), {
   backend: backend(),
   grid: app,
   keyboard: "page",
+  write: { on: () => controlState.write, confirm: confirmWrite },
   selectedId: () => indexState.selected,
   sessionRow: id => indexState.rows.get(id) || null,
   sessionWorkers,

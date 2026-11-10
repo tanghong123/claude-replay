@@ -1,7 +1,6 @@
 import { appendDesktopHelp, mountNativeMenu, renderNativeMenu, renderNativeServerStatus, positionNativeMenu, readNativeStatus, ownsNativeServer, confirmNativeShutdown } from "./native-menu.js";
 import { backend } from "./backend.js";
 import { page, viewRoot } from "./view-root.js";
-import { controlState, indexState, selectedRow } from "./state.js";
 
 const byId = viewRoot.byId;
 import { isCodexSession, usesNativeControls } from "./native-policy.js";
@@ -19,7 +18,9 @@ function markShared(on) {
 
 /** Own only the presentation changes made by the optional native controller. */
 class NativePresentation {
-  constructor() {
+  /** `compose` is the ordinary compose box's own state (control-store.js), whose row the native view clears. */
+  constructor(compose) {
+    this.compose = compose;
     this.input = byId("composeInput");
     this.parent = this.input.parentNode; this.next = this.input.nextSibling;
     this.nodes = new Set(page.$$("*"));
@@ -62,7 +63,7 @@ class NativePresentation {
     markShared(false); delete page.body().dataset.sharedReaderOpen;
     this.viewport.content = this.viewportContent;
     const composer = byId("composer"); composer.removeAttribute("data-shared-constrained");
-    composer.classList.remove("production-show"); controlState.row = null;
+    composer.classList.remove("production-show"); this.compose.row = null;
     page.body().style.removeProperty("--shared-composer-height");
     byId("transcript").style.paddingBottom = "";
   }
@@ -74,7 +75,7 @@ export class NativeModeControls {
     this.ordinary = ordinary; this.actions = actions; this.mode = "off"; this.view = "ordinary";
     this.intent = "none"; this.status = null; this.drafts = new Map(); this.draftRevisions = new Map(); this.composerGeneration = 0;
     ordinary.actions = { ...ordinary.actions, captureComposer: () => this.captureOrdinarySend(), repaintComposer: () => this.paint() };
-    this.lastOrdinarySession = indexState.selected;
+    this.lastOrdinarySession = this.actions.selectedId();
     ({ button: this.button, menu: this.menu } = menuMount || mountNativeMenu(() => this.openMenu()));
     if (menuMount) this.button.onclick = () => this.menu.matches(":popover-open") ? this.menu.hidePopover() : this.openMenu();
     new ResizeObserver(() => this.positionMenu()).observe(this.menu);
@@ -83,14 +84,14 @@ export class NativeModeControls {
     const originalSwitch = page.byId("writeSwitch").onclick;
     page.byId("writeSwitch").onclick = async event => {
       if (this.pending) return;
-      if (controlState.write && this.enabled && !await this.disable()) return;
+      if (this.writing && this.enabled && !await this.disable()) return;
       originalSwitch(event); this.paint();
     };
     const originalMiniWrite = page.byId("sidebarMiniWrite").onclick;
-    page.byId("sidebarMiniWrite").onclick = event => this.enabled && controlState.write && (!selectedRow() || isCodexSession(selectedRow()))
+    page.byId("sidebarMiniWrite").onclick = event => this.enabled && this.writing && (!this.actions.selectedRow() || isCodexSession(this.actions.selectedRow()))
       ? this.newSession() : originalMiniWrite(event);
     byId("composeInput").addEventListener("input", () => {
-      const session = controlState.row?.id || indexState.selected;
+      const session = this.ordinary.compose.row?.id || this.actions.selectedId();
       if (!this.nativeActive && session) {
         this.drafts.set(session, byId("composeInput").value);
         this.draftRevisions.set(session, (this.draftRevisions.get(session) || 0) + 1);
@@ -99,11 +100,13 @@ export class NativeModeControls {
     this.paint();
   }
   get enabled() { return ["on", "confirming", "disabling"].includes(this.mode); }
+  /** Whether the reader has writing on: the host's write mode (the view's `write` option), the app's switch. */
+  get writing() { return !!this.actions.write?.on(); }
   /** A late ordinary response may retire its own revision, never another controller's editor. */
   captureOrdinarySend() {
-    const session = controlState.row?.id || indexState.selected, generation = this.composerGeneration, revision = this.draftRevisions.get(session) || 0;
+    const session = this.ordinary.compose.row?.id || this.actions.selectedId(), generation = this.composerGeneration, revision = this.draftRevisions.get(session) || 0;
     const isCurrent = () => !this.nativeActive && this.composerGeneration === generation
-      && (controlState.row?.id === session || !controlState.row)
+      && (this.ordinary.compose.row?.id === session || !this.ordinary.compose.row)
       && (this.draftRevisions.get(session) || 0) === revision;
     return {
       isCurrent,
@@ -122,9 +125,9 @@ export class NativeModeControls {
   close() { return this.nativeActive ? this.native.close?.() : this.ordinary.close(); }
   paintSoon() { queueMicrotask(() => this.paint()); }
   paint() {
-    const row = selectedRow(), unavailable = this.native?.sessionReadFailure(indexState.selected);
-    const reader = row || (unavailable ? { nativeThreadId: unavailable.id } : indexState.selected ? { agent: "unknown" } : null);
-    const wanted = usesNativeControls(this.enabled ? "on" : this.mode, controlState.write, reader, this.intent);
+    const row = this.actions.selectedRow(), unavailable = this.native?.sessionReadFailure(this.actions.selectedId());
+    const reader = row || (unavailable ? { nativeThreadId: unavailable.id } : this.actions.selectedId() ? { agent: "unknown" } : null);
+    const wanted = usesNativeControls(this.enabled ? "on" : this.mode, this.writing, reader, this.intent);
     if (wanted && !this.native && !this.installing) this.ensureNative().catch(error => {
       this.mode = "off"; this.actions.toast(error.message); this.paint();
     });
@@ -136,18 +139,18 @@ export class NativeModeControls {
         byId("composeInput").value = ""; this.native.resumeEvents();
       } else {
         this.native.deactivate(); this.view = "ordinary"; this.presentation.hide();
-        byId("composeInput").value = this.drafts.get(indexState.selected) || "";
+        byId("composeInput").value = this.drafts.get(this.actions.selectedId()) || "";
       }
       dispatchEvent(new Event("resize"));
     }
     if (this.nativeActive) this.native.paint();
     else {
-      this.lastOrdinarySession = indexState.selected; this.ordinary.paint();
+      this.lastOrdinarySession = this.actions.selectedId(); this.ordinary.paint();
       if (this.pending && isCodexSession(row)) byId("sendBtn").disabled = true;
     }
-    this.button.hidden = !controlState.write;
+    this.button.hidden = !this.writing;
     this.button.dataset.nativeEnabled = String(this.enabled);
-    if (!controlState.write && this.menu.matches(":popover-open")) this.menu.hidePopover();
+    if (!this.writing && this.menu.matches(":popover-open")) this.menu.hidePopover();
     this.button.title = this.mode === "confirming" ? "Checking Codex shutdown…" : this.mode === "disabling" ? "Closing Codex native…" : this.pending ? "Connecting to Codex…" : this.status?.statusError ? this.status.statusError
       : this.enabled ? "Codex native enabled" : this.status?.serverListening ? "Connect to the running Codex server"
         : this.status?.serverListening === false ? "Server is not running; click to start and enable" : "Check Codex server status";
@@ -166,7 +169,7 @@ export class NativeModeControls {
     finally { this.checking = false; this.paint(); }
   }
   async openMenu() {
-    if (!controlState.write || this.pending) return;
+    if (!this.writing || this.pending) return;
     await this.checkStatus();
     this.showMenu();
   }
@@ -189,7 +192,7 @@ export class NativeModeControls {
   positionMenu() { positionNativeMenu(this.menu, this.button); }
   appendDesktopHelp(parent) { appendDesktopHelp(parent, this.status?.desktopHelp, message => this.actions.toast(message), { document, navigator }); }
   async enable() {
-    if (!controlState.write || this.pending) return;
+    if (!this.writing || this.pending) return;
     this.mode = "enabling"; this.activationFailed = false; this.paint();
     try {
       const { GatewayApi } = await import(backend().url("/codex-workspace/api.js"));
@@ -247,8 +250,8 @@ export class NativeModeControls {
     if (this.installing) return this.installing;
     this.installing = (async () => {
       const { MonitorControls } = await import(backend().url("/codex-workspace/monitor-controls.js"));
-      const presentation = new NativePresentation();
-      if (indexState.selected) this.drafts.set(indexState.selected, byId("composeInput").value);
+      const presentation = new NativePresentation(this.ordinary.compose);
+      if (this.actions.selectedId()) this.drafts.set(this.actions.selectedId(), byId("composeInput").value);
       this.presentation = presentation;
       markShared(true);
       this.native = new MonitorControls({ ...this.actions, backend: backend(), nativeManaged: true,
@@ -261,13 +264,13 @@ export class NativeModeControls {
     return this.installing;
   }
   async newSession(project = null) {
-    if (!this.enabled || !controlState.write || this.pending || this.intent === "create") return;
+    if (!this.enabled || !this.writing || this.pending || this.intent === "create") return;
     this.intent = "create";
     try {
       const native = await this.ensureNative(); this.paint();
       const deadline = Date.now() + 30_000;
       while (!native.models.length || native.state.connection !== "connected" || native.catalogEpoch !== native.observedEpoch) {
-        if (!this.enabled || !controlState.write) { this.intent = "none"; this.paint(); return; }
+        if (!this.enabled || !this.writing) { this.intent = "none"; this.paint(); return; }
         if (Date.now() >= deadline) throw new Error("The Codex model catalog did not become ready. Reconnect native mode.");
         // Recovery also resumes the old session; opening this dialog only needs its catalog.
         native.recovery.recover();
@@ -279,13 +282,13 @@ export class NativeModeControls {
     catch (error) { this.intent = "none"; this.paint(); this.actions.toast(error.message); }
   }
   async loadSessions() {
-    if (this.enabled && controlState.write && this.native) return this.native.loadSessions();
+    if (this.enabled && this.writing && this.native) return this.native.loadSessions();
     const response = await backend().fetch("/api/sessions", { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.json();
   }
-  groupSessions(groups, build) { return this.enabled && controlState.write && this.native ? this.native.groupSessions(groups, build) : build(groups); }
-  get projectActions() { return this.enabled && controlState.write && !this.pending; }
+  groupSessions(groups, build) { return this.enabled && this.writing && this.native ? this.native.groupSessions(groups, build) : build(groups); }
+  get projectActions() { return this.enabled && this.writing && !this.pending; }
   projectTree(visible, all) { return this.projectActions && this.native ? this.native.projectTree(visible, all) : visible; }
   observeRecords(session, records) { this.native?.observeRecords(session, records); }
   sessionIdForThread(id) { return this.native?.sessionIdForThread(id); }

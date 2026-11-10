@@ -1459,8 +1459,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     assert.doesNotMatch(src, /\.code\s*===?\s*"(passcode-required|bad-passcode|locked|no-consent)"/, `${name} reads no raw server code of its own — the outcomes are the protocol's`);
     assert.doesNotMatch(src, /\/api\/(send|consent)\?/, `${name} builds no /api query of its own`);
   }
-  const stateSrc2 = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
-  assert.match(stateSrc2, /composeCapability\(row, controlState\.paired\)/, "the app shell's canInject/canResume are the shared rule");
+  const stateSrc2 = readFileSync(new URL("../../claude-monitor/src/codex-ui/control-store.js", import.meta.url), "utf8");
+  assert.match(stateSrc2, /composeCapability\(row, backend\(\)\.paired\)/, "the app shell's canInject/canResume are the shared rule");
   console.log("seam (c) cases passed");
 }
 
@@ -4077,7 +4077,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // (The classic rail's herdr attach badge went with the classic view, #s98.)
 {
   const store = readFileSync(new URL("../../claude-monitor/src/codex-ui/control-store.js", import.meta.url), "utf8");
-  assert.match(store, /controlState\.row\.term === "herdr" \? `herdr pane \$\{controlState\.row\.target\}`/, "the confirm names a herdr pane");
+  assert.match(store, /this\.compose\.row\.term === "herdr" \? `herdr pane \$\{this\.compose\.row\.target\}`/, "the confirm names a herdr pane");
   console.log("#s226 herdr naming cases passed");
 }
 
@@ -4092,11 +4092,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(line({ term: "tmux", target: "%3" }, "tmux"), "Types into tmux pane %3", "a tmux pane by name");
   assert.equal(line({ term: "tmux" }, "tmux"), "Types into its tmux pane", "a tmux pane with no id");
   assert.equal(line({ term: "herdr", target: "w1:p2" }, "resume"), "Resumes this session", "an idle session resumes");
-  assert.match(store, /composeTarget"\)\.textContent = composeTargetLine\(row, controlState\.mode\)/, "the foot is that line");
+  assert.match(store, /composeTarget"\)\.textContent = composeTargetLine\(row, this\.compose\.mode\)/, "the foot is that line");
   const success = store.slice(store.indexOf("if (retireVisibleDraft) {"), store.indexOf("this.actions.toast(mode === \"tmux\""));
   assert.ok(success.includes('input.value = ""'), "a sent message empties the field");
   const closes = success.split("this.close()").length - 1;
-  assert.ok(closes === 1 && success.includes("if (controlState.row && selectedRow()?.id !== controlState.row.id) this.close();"), "the box closes after a send only for a reader who moved to another session");
+  assert.ok(closes === 1 && success.includes("if (this.compose.row && this.actions.selectedRow()?.id !== this.compose.row.id) this.close();"), "the box closes after a send only for a reader who moved to another session");
   const viewSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-view.js", import.meta.url), "utf8");
   assert.match(viewSrc, /composeNote\.textContent = byId\("composeTarget"\)\.textContent;/, "the phone's note is the same line");
   assert.doesNotMatch(shellSource, /writes to the live session/, "no second warning on the phone");
@@ -4117,7 +4117,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     ["/api/send?target=s1", "text only"],
   ]);
   const store = readFileSync(new URL("../../claude-monitor/src/codex-ui/control-store.js", import.meta.url), "utf8");
-  assert.match(store, /imagesAllowed\(row = controlState\.row\) \{ return controlState\.mode === "tmux" && !!row\?\.sendsImages && !page\.body\(\)\.dataset\.sharedCodex; \}/, "images only for a live pane whose row takes them, never in native mode's composer");
+  assert.match(store, /imagesAllowed\(row = this\.compose\.row\) \{ return this\.compose\.mode === "tmux" && !!row\?\.sendsImages && !page\.body\(\)\.dataset\.sharedCodex; \}/, "images only for a live pane whose row takes them, never in native mode's composer");
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.ok(css.includes("body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){display:none!important}"), "native mode never shows them");
   assert.match(store, /images: images\.map\(item => item\.url\)/, "the send carries the strip's images");
@@ -4286,12 +4286,52 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     assert.match(viewSource, new RegExp(`shows\\("${name}"\\)`), `the view reads whether ${name} is shown`);
   }
   assert.ok(!/^  show:/m.test(call[1]), "the app switches no control off");
-  // What a host's page must still carry for the compose box is named in the doc comment, each id
-  // one control-store.js binds.
+  // Stage 7: a host's page carries nothing of the view's. The compose box binds none of the app's
+  // write controls or its confirm layer: write mode and the confirm come in as the `write` option,
+  // which the app passes with its own switch and layer, and the app paints and binds them itself.
   const storeSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/control-store.js", import.meta.url), "utf8");
+  const nativeSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/native-mode.js", import.meta.url), "utf8");
   for (const id of ["writeSwitch", "writeBtn", "writeInfo", "writeHelp", "sidebarMiniWrite", "confirmLayer", "confirmText", "cancelSend", "confirmSend"]) {
-    assert.ok(storeSource.includes(`byId("${id}")`), `control-store.js binds #${id}`);
-    assert.ok(doc[0].includes(`\`${id}\``), `the doc comment names #${id} as what a host's page must carry`);
+    assert.ok(!storeSource.includes(`"${id}"`), `control-store.js binds no #${id}, the app's`);
+    assert.ok(!viewSource.includes(`"${id}"`), `nor does session-view.js #${id}`);
+    assert.ok(appSource.includes(`page.byId("${id}")`), `the app binds or paints its own #${id}`);
+    assert.ok(!doc[0].includes(`\`${id}\``), `the doc comment no longer names #${id} as what a host's page must carry`);
+  }
+  assert.match(call[1], /^  write: \{ on: \(\) => controlState\.write, confirm: confirmWrite \},$/m, "the app passes its write mode and its confirm layer");
+  assert.match(viewSource, /const controlActions = \{ write: options\.write, selectedId, selectedRow, /, "the compose box gets the host's write and the app's selection through the view");
+  assert.match(storeSource, /writeOn\(\) \{ return !!this\.actions\.write\?\.on\(\); \}/, "with no write option, writing is never on");
+  assert.match(storeSource, /answer = this\.actions\.write\?\.confirm\(\{ title: GRANT_TITLE, text, passcode \}\);/, "and the grant is the host's confirm");
+  assert.match(nativeSource, /get writing\(\) \{ return !!this\.actions\.write\?\.on\(\); \}/, "native mode reads write mode through the view too");
+  assert.match(appSource, /  write: \{ on/, "the app passes write");
+  assert.match(appSource, /controlState\.write = !controlState\.write;\n  paintWrite\(\);\n  viewHandle\.writeChanged\(\);/, "the app's switch moves write mode, paints its own controls and tells the view");
+  // The view imports no store of the app's: state.js is the app's alone (stage 7).
+  for (const name of ["session-view.js", "control-store.js", "native-mode.js", "preview.js", "record-store.js", "viewport.js", "components.js", "dialog-card.js", "view-state.js"]) {
+    const text = readFileSync(new URL(`../../claude-monitor/src/codex-ui/${name}`, import.meta.url), "utf8");
+    assert.doesNotMatch(text, /from "\.\/state\.js"/, `${name} imports nothing from state.js`);
+  }
+  // The confirm, run: the last ask goes on with the passcode given, an earlier or cancelled one does
+  // not, and with no write option nothing is asked.
+  {
+    const confirmFn = /^  confirm\(text, then, passcode = false\) \{\n[\s\S]*?\n  \}\n/m.exec(storeSource);
+    assert.ok(confirmFn, "the compose box asks through one method");
+    const Klass = new Function("GRANT_TITLE", `return class { ${confirmFn[0]} };`)("Allow typing into this pane?");
+    const asks = [], resolvers = [], went = [];
+    const store = Object.assign(new Klass(), { actions: { write: { on: () => true, confirm: ask => { asks.push(ask); return new Promise(resolve => resolvers.push(resolve)); } } } });
+    store.confirm("first", given => went.push(["first", given]));
+    store.confirm("second", given => went.push(["second", given]), true);
+    resolvers[0]("late");
+    resolvers[1]("1234");
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual(asks, [{ title: "Allow typing into this pane?", text: "first", passcode: false }, { title: "Allow typing into this pane?", text: "second", passcode: true }], "the host is asked with the title, the words and whether a passcode is wanted");
+    assert.deepEqual(went, [["second", "1234"]], "only the last ask goes on, with the passcode given");
+    store.confirm("third", given => went.push(["third", given]));
+    resolvers[2](null);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual(went, [["second", "1234"]], "a cancelled ask does not");
+    const none = Object.assign(new Klass(), { actions: {} });
+    none.confirm("nobody", () => went.push(["nobody"]));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual(went, [["second", "1234"]], "and with no write option nothing goes on");
   }
   const at = viewSource.lastIndexOf("\nreturn {\n");
   assert.ok(at > 0, "the view returns its handle as an object literal at the end of mountSessionView");

@@ -48,7 +48,7 @@ export const KEYBOARD_MODES = Object.freeze(["engaged", "page"]);
 /** Every option `mountSessionView` takes; any other name is refused, so a misspelt or retired one
  *  (the old `toast`, `keys` or `controls`) fails loudly rather than being dropped. */
 export const MOUNT_OPTIONS = Object.freeze([
-  "theme", "grid", "backend", "show", "keyboard", "frame",
+  "theme", "grid", "backend", "show", "keyboard", "write", "frame",
   "selectedId", "sessionRow", "sessionWorkers", "selectSession", "renderList", "refreshIndex", "pauseIndex", "resumeIndex",
   "onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast",
   "parentShown", "openList", "openSidebar", "paneLayout", "paneCount",
@@ -58,17 +58,14 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  id the view's stylesheet hangs every rule on; one with another id is refused. The view always
  *  draws into the page (#s438): no shadow root.
  *
- *  What a host's page must still carry: the compose box's controls (control-store.js) bind the app's
- *  write-mode switch and its confirm layer by id, `writeSwitch`, `writeBtn`, `writeInfo`, `writeHelp`,
- *  `sidebarMiniWrite`, `confirmLayer` (with its `h3` and `.dialog`), `confirmText`, `cancelSend` and
- *  `confirmSend`, and a page without them cannot mount the view. They are state.js's `controlState`,
- *  passed in by stage 7 at the latest.
+ *  A host's page carries nothing of the view's: no markup, no element the view binds by id, and no
+ *  store (stage 7: the view makes its own as it mounts, view-state.js).
  *
  *  Options, each named in `MOUNT_OPTIONS`; any other name is refused. Required: `grid`, `selectedId`,
  *  `sessionRow`, `sessionWorkers`, `selectSession`, `renderList`, `refreshIndex`, `pauseIndex` and
  *  `resumeIndex`. The rest are optional: a host may leave out `theme`, `backend`, `show` and
- *  `keyboard` (each has a default), `frame` (the native app's), and every handler of what the view
- *  tells it.
+ *  `keyboard` (each has a default), `write` (writes are not offered without it), `frame` (the
+ *  native app's), and every handler of what the view tells it.
  *  - `theme`: "light" (the default) or "dark", carried by the view's element, where its stylesheet
  *    reads it; the handle's `setTheme` changes it.
  *  - `grid`: the box around the view (the app's `#app`). The phone's sheets are measured against it
@@ -91,6 +88,17 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    "page" is the app's mode: the view binds none, and the host owns the page's keyboard and calls
  *    `keys[action]`. A host that uses it gets the action names, not the key table (shared/keymap.js,
  *    which the app binds with its list's keys and contexts).
+ *  - `write`: what writing to a session needs from the host, which owns write mode; left out, the
+ *    view offers no writes (no compose button, no ✎ in a phone's dock, no notice that a session
+ *    cannot be written to). An object of two functions:
+ *    - `on()`: whether the reader has writing switched on. The view reads it whenever it paints the
+ *      compose box; the host calls the handle's `writeChanged()` when it changes.
+ *    - `confirm({ title, text, passcode })`: ask the reader before the monitor types into a live
+ *      pane (a grant), titled `title` and saying `text`, with a passcode field when `passcode` is
+ *      true (the monitor requires one, or refused the one given). It answers (or resolves to) the
+ *      passcode the reader gave, "" where none was asked, to go on, and anything else to cancel. An
+ *      ask while another is open answers that one as cancelled: only the last goes on.
+ *    The app passes its write switch and its confirm layer.
  *  - `frame(html)`: the native app's own arrangement (#s436), not offered to other hosts, and the
  *    kit's guide does not list it. The artifact pane shows an agent's HTML page in a frame sandboxed
  *    without its origin (`sandbox="allow-scripts"`, no referrer), whose document is the page's text
@@ -128,9 +136,10 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  - `paneCount(key, text)`: a phone pane's count changed (a wide phone's column shows it too).
  *
  *  The handle: `select(id)` and `open(id)` (a session chosen: the view takes it, then reads it),
- *  `session()`, `close(title, detail)`, `indexChanged()`, `resized()`, `setTheme(theme)`, `keys` (the view's key
- *  actions), `closePane()`, `paneNode(key)` and `outlineClick(event)` (the wide phone's column),
- *  and, for the monitor's own native mode, `controls` and `installNativeControls(…)`. */
+ *  `session()`, `close(title, detail)`, `indexChanged()`, `writeChanged()`, `resized()`,
+ *  `setTheme(theme)`, `keys` (the view's key actions), `closePane()`, `paneNode(key)` and
+ *  `outlineClick(event)` (the wide phone's column), and, for the monitor's own native mode,
+ *  `controls` and `installNativeControls(…)`. */
 export function mountSessionView(element, options) {
 for (const name of Object.keys(options)) if (!MOUNT_OPTIONS.includes(name)) throw new Error(`mountSessionView takes no option named ${name}; its options are ${MOUNT_OPTIONS.join(", ")}`);
 for (const [name, shown] of Object.entries(options.show || {})) {
@@ -139,6 +148,7 @@ for (const [name, shown] of Object.entries(options.show || {})) {
 }
 const keyboardMode = options.keyboard ?? "engaged";
 if (!KEYBOARD_MODES.includes(keyboardMode)) throw new Error(`mountSessionView takes its keyboard "engaged" or "page", not ${JSON.stringify(keyboardMode)}`);
+if (options.write !== undefined && !(typeof options.write?.on === "function" && typeof options.write?.confirm === "function")) throw new Error("mountSessionView takes its write as { on, confirm }, two functions, or none for a host that offers no writes");
 if (options.frame !== undefined && typeof options.frame !== "function") throw new Error("mountSessionView takes its frame as a function from a page's HTML to the address its frame loads");
 /** Whether an optional control is drawn: each is, unless the host switched it off. */
 const shows = name => options.show?.[name] !== false;
@@ -439,7 +449,7 @@ const paneLayoutChanged = () => {
 };
 const preview = new Preview({ layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
 const attachmentViewer = new AttachmentViewer({ toast });
-const controlActions = { renderTree: () => options.renderList(), recordSnapshot: () => ({ session: recordState.session, records: recordState.records }), toast, refreshIndex: () => options.refreshIndex(), pauseIndex: () => options.pauseIndex(), resumeIndex: () => options.resumeIndex(), selectSession, refreshEmpty: () => recordStore.refreshEmpty() };
+const controlActions = { write: options.write, selectedId, selectedRow, renderTree: () => options.renderList(), recordSnapshot: () => ({ session: recordState.session, records: recordState.records }), toast, refreshIndex: () => options.refreshIndex(), pauseIndex: () => options.pauseIndex(), resumeIndex: () => options.resumeIndex(), selectSession, refreshEmpty: () => recordStore.refreshEmpty() };
 const ordinaryControls = new ControlStore(controlActions);
 let controls = ordinaryControls;
 // #s277 (design/slow-links.md §6.7, D3): a reader across a network — the test gzip and masking use —
@@ -4102,6 +4112,8 @@ return {
     // reach the Agents pane on the index's poll, which redraws the outline only when they changed.
     if (recordState.session && workersKey(sessionWorkers()) !== lastWorkers) renderNavigator();
   },
+  /** The host's write mode changed (`write.on()`): the compose box follows. */
+  writeChanged: () => ordinaryControls.paint(),
   /** The view's width changed under it (the sidebar moved). */
   resized: () => viewport.remeasure(),
   /** Draw in "light" or "dark" (#s436); mdrev's pane and the diagrams follow the view's element. */
