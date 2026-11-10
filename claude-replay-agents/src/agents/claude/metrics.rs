@@ -247,7 +247,8 @@ impl MetricsAcc {
             // request, where a class changes the price: by prompt length (#s47) or by speed
             // (#s78). The tier is the one the provider returned, confirmed only on the standard
             // speed — except fast mode, which the request records as its SPEED ("fast") and the
-            // catalog prices for Opus 5.5, Opus 5 and Opus 4.8: that is a confirmed Fast. Claude's
+            // catalog prices for Fable 5.2, Mythos 5.2, Opus 5.5, Opus 5 and Opus 4.8 (`prices_fast`):
+            // that is a confirmed Fast. Claude's
             // service_tier "priority" is the Priority Tier, not fast mode, and stays unpriced. A
             // repeat whose prompt crossed the line moved the call's earlier credit into the long
             // subset, which no class of this delta can say, so it has none.
@@ -1750,7 +1751,7 @@ mod long_prompt_tests {
 
     /// #s78: fast mode is a request's SPEED. On Opus 5.5, Opus 5 and Opus 4.8, which the catalog
     /// prices fast at 2x on every class, a push recorded with `usage.speed` "fast" names a
-    /// confirmed Fast class (the engine's `fast_mode_is_twice_standard_on_opus_5_5_5_and_4_8`
+    /// confirmed Fast class (the engine's `fast_mode_is_twice_standard_where_the_page_offers_it`
     /// prices it at twice standard); a standard-speed push names Standard; Opus 4.7, which refuses fast mode, names none; and a
     /// `service_tier` "priority" (the Priority Tier, not fast mode) is not taken for Fast.
     #[test]

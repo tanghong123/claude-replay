@@ -2011,6 +2011,8 @@ mod price_tests {
     #[test]
     fn prices_match_the_published_tables() {
         for (model, want) in [
+            ("claude-fable-5-2", p("8", "10", "0.2", "40")),
+            ("claude-mythos-5-2", p("8", "10", "0.2", "40")),
             ("claude-fable-5-1", p("10", "12.5", "0.25", "50")),
             ("claude-mythos-5", p("10", "12.5", "1", "50")),
             ("claude-opus-5-5", p("4", "5", "0.2", "20")),
@@ -2561,11 +2563,12 @@ mod request_pricing_tests {
 
     /// #s78, Anthropic fast mode (the pricing page's Fast mode pricing section, read raw
     /// 2026-10-10): Opus 5.5 at $8 / $40 against $4 / $20, Opus 5 and Opus 4.8 at $10 / $50
-    /// against $5 / $25, the caching multipliers on top — 2x on every class, across the whole
+    /// against $5 / $25, and since #s445 (read 2026-11-10) Fable 5.2 and Mythos 5.2 at $16 / $80
+    /// against $8 / $40, the caching multipliers on top — 2x on every class, across the whole
     /// context window. Opus 4.7, 4.6 and 4.5 share Opus 4.8's standard rates but no fast rule: a
     /// Fast request there prices at standard, as an estimate. `prices_fast` says which is which.
     #[test]
-    fn fast_mode_is_twice_standard_on_opus_5_5_5_and_4_8() {
+    fn fast_mode_is_twice_standard_where_the_page_offers_it() {
         let table = PriceTable::default();
         let tokens = TokenCounts {
             input: 1_000_000,
@@ -2584,6 +2587,8 @@ mod request_pricing_tests {
             ..fast
         };
         for (model, standard_usd) in [
+            ("claude-fable-5-2", 8.0 + 10.0 + 0.2 + 40.0),
+            ("claude-mythos-5-2", 8.0 + 10.0 + 0.2 + 40.0),
             ("claude-opus-5-5", 4.0 + 5.0 + 0.2 + 20.0),
             ("claude-opus-5", 5.0 + 6.25 + 0.5 + 25.0),
             ("claude-opus-4-8", 5.0 + 6.25 + 0.5 + 25.0),
@@ -3013,6 +3018,7 @@ mod cache_1h_tests {
                 ][..],
                 20.0,
             ),
+            (&["claude-fable-5-2", "claude-mythos-5-2"], 16.0),
             (&["claude-opus-5-5"], 8.0),
             (
                 &[
