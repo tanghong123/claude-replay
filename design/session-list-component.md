@@ -152,6 +152,65 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
    mount sets `#sessionList` on its element itself.
 3. **Markup and styles apart.** The list builds its markup from a template of its own, and its
    rules hang on its element in a stylesheet of its own, generated as the view's is. Lands as one.
+   **Planned** (#s430), in five commits on one landing:
+
+   - **The carve.** `#sessionList` becomes an element of its own, `div.session-list`, a child of
+     the sidebar where the tree stands now, holding the arrangement strip and the tree. In the app
+     it is `display: contents`, as `#sessionView` is, so the strip and the tree stay items of the
+     sidebar's column and nothing moves. Keeping the whole sidebar as the list's element was
+     weighed and set aside: it holds the app's brand, theme toggle, write and search rows and rail
+     buttons, so every shared rule copied into the list's stylesheet (`.iconbtn`, `.on`,
+     `.mode-switch`) would reach the app's own controls after `app-shell.css` and could win a tie
+     it lost before; a host page would still need our sidebar's frame; and stage 4 would carve it
+     anyway and move the styles twice.
+   - **Four parts stay where the app shows them.** The list's head controls (Collapse all, Expand
+     all, the filter) are children of the head's one row, which
+     `the_app_shell_resizes_the_session_list` hit-tests child by child; the filter sheet hangs from
+     the head (`top: 100%` of `.side-head`); the filter's rail button and the agent marks sit in the
+     rail. The list builds each and hands it to a new option, `place(part, node)`, as it asks
+     `layer(kind)` where a floating layer goes: `"controls"` (inserted before the sidebar
+     collapse), `"sheet"` (appended to the head), `"rail-filter"` (after the rail's search) and
+     `"marks"` (appended to the rail). The DOM is node for node what it is now, and the list looks
+     up nothing of the app's (today it finds `#sidebarCollapse`, `.side-head` and
+     `#sidebarMiniSearch` to anchor its parts). A host that leaves `place` out gets the controls and
+     the sheet in a head at the top of the list's element and no rail. The rail flyout and the
+     section menu keep floating where `layer` puts them. Stage 4 turns the controls into one strip
+     (`controls()`) and the rail into the list's compact form (`compact(on)`).
+   - **The template** is cut from the demo's shell by `scripts/extract-agent-monitor-demo.mjs`, as
+     the view's is: `session-list-markup.js` holds the tree, `#collapseBtn` and the marks' holder;
+     the served shell keeps an empty `#sessionList` and loses them, and the demo's two attention
+     controls, which the list removes today, are cut and not kept. The parts built at runtime
+     (expand all, the filter and its sheet, the rail's filter, the strip, the flyout, the section
+     menu) stay script-built. The list draws Collapse all's glyph itself.
+   - **The styles.** `scripts/session-view-css.mjs` derives a third file, `session-list.css`,
+     linked between `app-shell.css` and `session-view.css`. Its classifier splits the app's chrome
+     into the app's own, the list's body (`LIST_CHROME`: the tree, its rows and labels, the strip
+     and the arrangements, the state chips) and the list's parts the app places (`LIST_OUTSIDE`:
+     the controls, the sheet, the rail's filter and marks, the flyout, the section menu), which go
+     in both files as the view's `OUTSIDE` does. The list's rules hang on
+     `:where(#sessionList)` with the view's stand-ins for the page's root (`.session-list`, its
+     `[data-theme]`), keeping every weight; its keyframes take the prefix `sl-`. The two generated
+     reference rules that name the tree as the sidebar's child (`.sidebar>.tree`, and under
+     `sidebar-off`) are rewritten in the app's file as `>:where(.session-list)>`, the one rewrite
+     that file takes; the same in `production.css`'s child rules for the strip and the wide phone's
+     column. The phone rules led by `#app` that style the list's body move to `#sessionList` first,
+     id for id, while `#sessionList` is still the sidebar. Flat mode's rule that hides Collapse and
+     Expand all read `#sessionList.sessions-flat` around the head, which the head is no longer
+     inside: the list marks the two controls it places instead (`[data-flat]`).
+   - **The theme comes forward from stage 4**, as the view's did in its stage 5b: the list takes
+     `theme` and has `setTheme`, so its dark rules and tokens hang on its own element; the app sets
+     both components from one value.
+   - **Names.** No class of the list's is styled by the collaboration app's own styles in a way
+     that reaches it (measured, its vendored copy of our CSS left out: the one rule naming a class
+     the list draws is scoped under that app's own navigation), so the list renames nothing,
+     unlike the view (#s438).
+   - **Checks.** A static test that every rule of `session-list.css` starts at `#sessionList` and
+     names nothing outside it; the contract's byte match of the three derived files, the
+     classifier's lists checked both ways against what the app and the list draw, and `place` and
+     `theme` among the option names. Before landing, beyond the suite and the Simulator walk, the
+     throwaway probe of stage 5b: every element's computed style, old build against new, on a
+     desktop at three widths in both themes, the 232px sidebar, the rail and each flyout, the sheet,
+     flat and arranged, the section menu, a phone's drawer shut and open and a wide phone's column.
 4. **Options and events as the app uses them.** `keyboard`, `theme`, `show` (the filter, the
    arrangements, hiding), `onOpen`, `compact`, `controls()` and `unmount`; unknown option names are
    refused, as the view's are, and a contract check holds the names. The unmount case follows the
