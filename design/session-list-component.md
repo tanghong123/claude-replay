@@ -320,24 +320,42 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      of its rows (`resolveKey` with the list's context), every other key and those keys elsewhere left
      to the page. The list holds the focus itself, so engagement is the focus, simpler than the view's
      last press: a row is focusable and nothing else in the list takes a key. The app passes
-     `keyboard: "page"` and spreads the handle's `keys` into its keymap. A key's step keeps the focus
-     on the row it reached: the step chose a session, the host's `select` redrew the tree with that
-     selection, and the focus fell to the page, so the next key was not the list's (in the app too,
-     before stage 4). Only the keyboard's focus is carried. The first build carried a focused row
-     across every redraw, and the review found what that broke: a row clicked with the mouse is
-     focused too, so after a click the app's keymap read every key as the list's, and `[`, `]`, `j`
-     and Space did nothing until the reader clicked in the transcript. So a press in the tree marks
-     the focus it gives a row (the first focus the tree takes after its pointerdown), and the tree's
-     rewrite carries a session row's focus only when the keyboard gave it, a step's or Tab's, across
-     the host's select, the index's next read and a fold. The second review found a refocus in the step
-     alone held only until the next read, five seconds on, rewrote the tree; the third, that a carry
-     which left the mouse's focus to the click kept a row pressed and dragged off it, a press that
-     straddled a rewrite (#s72), and in Safari a row whose button was clicked, none of which is a click
-     on the row. And a click with the mouse hands the page its keys as it chooses the session, since
-     the open session clicked again redraws nothing and its row kept them (on main too). Enter on a
-     row, a click with no pointer, leaves the focus where the keyboard put it. A step that moves nothing (from a
-     project's row, past the last session) answers `false`, so the key is not taken, engaged or in the
-     app's keymap, and the last session is not chosen again.
+     `keyboard: "page"` and spreads the handle's `keys` into its keymap; the list then binds no key of
+     its own, though in either mode it hears the document's keys, taking none, to know where a row's
+     focus came from (below). A step that moves nothing (from a project's row, past the last session)
+     answers `false`, so the key is not taken, engaged or in the app's keymap, and the last session is
+     not chosen again.
+   - **Where a row's focus came from.** A rewrite of the tree (the host's select, the index's next
+     read, a fold) drops the focus to the page, where the next key is no longer the list's, so after a
+     step the next arrow did nothing (in the app too, before stage 4). The rewrite gives a session row
+     its focus back, but only when the keyboard gave it: a row a press focused, carried, keeps every key
+     of the page's in the list, and `[`, `]`, `j` and Space do nothing until the reader clicks in the
+     transcript. The list keeps which input came last, a press in the tree (a pointerdown there) or a
+     key anywhere (a keydown on the document, a modifier alone not counting), and whether the focus in
+     the tree is the press's:
+
+     | How a row gets the focus | The press's | Carried by a rewrite |
+     |---|---|---|
+     | A press on a row without the focus (the mouse focuses it as it goes down) | yes | no |
+     | A press on the row that has the focus | yes | no |
+     | A finger's tap (its focus comes as it lifts, after its pointerdown) | yes | no |
+     | Tab, after a press that focused nothing or none | no | yes |
+     | A key's step, and the rewrite's own refocus | no | yes |
+     | Enter on a row (a click with no pointer) | as it was | as it was |
+     | The window giving it back (after Cmd-Tab, say) | read again: yes if no key but a modifier reached the page since the press | as read |
+
+     The direction that must never fail is a press's focus carried, which leaves the page's keys in
+     the list. The other, the keyboard's focus dropped at a rewrite, is what main does after every
+     step. A click with the mouse also hands the page its keys as it chooses the session (a click with
+     a pointer blurs the row), since the open session clicked again redraws nothing, and its row kept
+     them, on main too; Enter's click leaves the focus where the keyboard put it. Four reviews shaped
+     this. A refocus in the step alone held only until the next read rewrote the tree; a carry of any
+     focused row kept a clicked one; a carry that left the mouse's focus to the click kept a row
+     pressed and dragged off it, a press straddling a rewrite (#s72) and, in Safari, a row whose button
+     was clicked; and a mark the press set and the next focus cleared went stale after a press that
+     focused nothing, and missed a press on the focused row. Left, unmeasured: if the window's return
+     fires `focusin`, a press dragged off a row, then a key, then another app and
+     back reads as the keyboard's, until any click.
    - **The strip.** `div.session-list-controls`, `display: contents`, so each control is still an item
      of the head's one row; the rule that hides the three while the column shows a pane now names the
      strip. The cases that read the head's children read through it. The rule is the list's and the
@@ -346,8 +364,8 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
    - **Compact.** The app says `compact(on)` from `applySidebar`, the one place it sets the collapsed
      rail, so an open flyout now closes whenever the rail goes, a phone's breakpoint crossed included,
      where it used to close only as the reader opened the sidebar.
-   - **The unmount.** One abort signal on the nine listeners the list binds on the page (the section
-     menu's three, bound when it first opens, the filter's three and the flyout's three); its timers
+   - **The unmount.** One abort signal on the ten listeners the list binds on the page (the section
+     menu's three, bound when it first opens, the filter's three, the flyout's three and the last key's); its timers
      through names it keeps; the index's polls stopped (its store's generation drops a read still out);
      a late reply to another app's list, the apps it could follow and a hide fenced; the strip, the
      sheet (from the flyout too), the rail's parts, the flyout, the section menu, its scrim and the
@@ -368,7 +386,8 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      shown and not with hiding off; the reader's stored filter and arrangement, the Claude app's
      included, kept and not applied, through the app's own `persist`),
      `…_takes_its_keys_only_on_its_rows` (and not on a project's row or past the last session; the
-     focus kept through the host's rewrite after a step, and not after a press dragged off a row), `…_unmounts_and_mounts_again` (listeners by the
+     focus kept through the host's rewrite after a step and after Tab, a press that focused nothing
+     before it, and not after a press dragged off a row, focused before it or not), `…_unmounts_and_mounts_again` (listeners by the
      browser's own count, the element's own included, four replies held across the unmount, the
      handle fenced, a second mount, an unmount inside `onIndex`, and a host that placed every part
      and layer outside the element) and `the_app_shell_keeps_its_transcript_keys_after_a_session_is_
