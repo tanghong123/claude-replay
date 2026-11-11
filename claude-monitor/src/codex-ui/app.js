@@ -34,10 +34,10 @@ let toastTimer = 0;
 
 // Every glyph the app's markup names (the session view draws its own as it builds its markup).
 page.$$("[data-icon]").forEach(element => { element.innerHTML = svg(element.dataset.icon); });
-// The sidebar head's controls (#75, #76): the generated shell gives the theme toggle and
-// collapse-all no glyph — an empty 34px button each, invisible until hovered — and the sidebar
-// collapse beside them was easy to miss in that company. Each is named and drawn here.
-for (const [id, icon, label] of [["themeBtn", "moon", "Toggle light and dark"], ["collapseBtn", "collapseStack", "Collapse every group"], ["sidebarCollapse", "sidebar", "Collapse the session list into its icon rail"]]) {
+// The sidebar head's controls (#75, #76): the generated shell gives the theme toggle no glyph — an
+// empty 34px button, invisible until hovered — and the sidebar collapse beside it was easy to miss in
+// that company. Each is named and drawn here; the list draws its own, Collapse every group among them.
+for (const [id, icon, label] of [["themeBtn", "moon", "Toggle light and dark"], ["sidebarCollapse", "sidebar", "Collapse the session list into its icon rail"]]) {
   const button = page.byId(id);
   if (!button) continue;
   if (!button.querySelector("svg")) button.innerHTML = svg(icon);
@@ -53,13 +53,14 @@ function toast(message) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => element.classList.remove("show"), 1900);
 }
 
-// The session list (session-list-view.js, #s430): the sidebar is its element until it builds its own
-// markup (stage 3), and it becomes `#sessionList`, where the list keeps its arrangement. Mounted here,
-// before the drawer and the view, where its code ran when it was app.js's, so what it puts on the
-// page (the rail's flyout in the body, its listeners) comes in the order it did. What it needs of the
-// view (native mode's projects) is read as it draws, once the view is mounted; it starts reading the
-// index at the end, as it did.
-const listHandle = mountSessionList(page.$(".sidebar"), {
+// The session list (session-list-view.js, #s430): its element is `#sessionList`, which the page's shell
+// carries empty in the sidebar where the tree stood (stage 3), `display: contents` there; the list
+// builds its markup in it and keeps its arrangement on it. Mounted here, before the drawer and the
+// view, where its code ran when it was app.js's, so what it puts on the page (the rail's flyout in the
+// body, its listeners, the parts it asks the app to place) comes in the order it did. What it needs of
+// the view (native mode's projects) is read as it draws, once the view is mounted; it starts reading
+// the index at the end, as it did.
+const listHandle = mountSessionList(page.byId("sessionList"), {
   toast,
   persist,
   onOpen: ({ id, push }) => selectSession(id, push),
@@ -70,7 +71,20 @@ const listHandle = mountSessionList(page.$(".sidebar"), {
   compact: () => app.classList.contains("sidebar-off"),
   // The rail's flyout floats in the body, a section's menu and its scrim in the app, as they did.
   layer: kind => (kind === "flyout" ? page.body() : app),
+  place: placeListPart,
 });
+
+/** Where the list's parts go in the sidebar (stage 3), node for node where the list put them when it
+ *  found the sidebar itself: its head controls in the head's one row before the sidebar's collapse
+ *  (Collapse every group, Expand every group, the filter), the filter's sheet under the head, the
+ *  rail's filter after its search, and the agent marks at the rail's end. Called as the list mounts,
+ *  so it reads nothing declared below the mount. */
+function placeListPart(part, node) {
+  if (part === "controls") page.byId("sidebarCollapse").before(node);
+  else if (part === "sheet") page.$("#app>.sidebar>.side-head").append(node);
+  else if (part === "rail-filter") page.byId("sidebarMiniSearch").after(node);
+  else if (part === "marks") page.byId("sidebarMini").append(node);
+}
 
 /** The index has new rows (the list draws them next): the app's half. Before #s430 the tree was drawn
  *  between a gone selection and the view told; nothing here reads the drawn tree. */

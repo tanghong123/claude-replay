@@ -11,6 +11,13 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 /* #s429 stage 2: the session view's own element, which carries its state. In the app it draws no box,
    so its workspace, resizer and pane stay columns of #app's grid. */
 .session-view{display:contents}
+/* #s430 stage 3: the session list's own element, `#sessionList`, the sidebar's child where the tree
+   stood, holding the arrangement strip and the tree. The app placing the list: it draws no box, so
+   the strip and the tree stay items of the sidebar's column. Its controls and the filter sheet are
+   placed in the sidebar's head and its rail parts in the rail (`place`); a host that places nothing
+   gets them in a head of the list's own, which the sheet hangs from. */
+.session-list{display:contents}
+#sessionList>.session-list-head{position:relative;display:flex;justify-content:flex-end;gap:2px;padding:4px 8px;flex:none}
 /* #s429 stage 5a: the view's rules hang on its element, `#sessionView`, never on the app's `#app`, so
    they hold wherever a host mounts it. Two kinds still name `#app`, both on purpose:
    `:is(#sessionView,#app)` for what the app's chrome shares (`.iconbtn`, `button`, the session
@@ -268,15 +275,17 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
 .tree-project{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #sessionList.sessions-flat .tree-row.session.is-member{padding-left:30px}
 #sessionList.sessions-flat .tree-row.session.is-side{padding-left:calc(16px + var(--side-depth,1) * 14px)}
-#sessionList.sessions-flat .side-head .head-actions>:is(#collapseBtn,#expandBtn){display:none}
+/* Flat, Collapse and Expand every group go: the list marks the two (`data-flat`), wherever they are
+   placed, since the sidebar's head is outside its element (#s430 stage 3). */
+:is(#collapseBtn,#expandBtn)[data-flat]{display:none}
 
 /* Another app's list (#s387, design/layout-sync.md): the app's sections as heads with a count, its
    sub-heads (a project, a Herdr tab) as folder rows, each session a flat row (title, then agent and
    project) — under a sub-head a step in — and a session the app lists that this monitor does not,
    dimmed. The line over the list says which app it follows, and turns amber when that app's list
    cannot be read; the ✕ goes back to the arrangement it replaced. */
-.sidebar>.arrange-strip{width:var(--sidebar);min-width:var(--sidebar);box-sizing:border-box;padding:2px 12px 6px;flex:none}
-#app.sidebar-off .sidebar>.arrange-strip{display:none}
+.sidebar>:where(.session-list)>.arrange-strip{width:var(--sidebar);min-width:var(--sidebar);box-sizing:border-box;padding:2px 12px 6px;flex:none}
+#app.sidebar-off .sidebar>:where(.session-list)>.arrange-strip{display:none}
 .arrange-strip-box{display:flex;align-items:flex-start;gap:6px;padding:7px 6px 7px 10px;border-radius:8px;background:color-mix(in srgb,var(--blue) 9%,transparent);color:var(--sub);font-size:12px;line-height:16px}
 .arrange-strip.warn .arrange-strip-box{background:var(--amber-bg);color:var(--ink)}
 .arrange-strip-text{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
@@ -1686,7 +1695,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app:not(.phone-column-off) .workspace>.topbar{padding-left:6px}
   #app:not(.phone-column-off) .transcript{padding-left:0}
   #app.column-pane-on:not(.phone-column-off) .column-pane{display:block}
-  #app.column-pane-on>.sidebar>.nav,#app.column-pane-on>.sidebar>.tree,#app.column-pane-on>.sidebar>.arrange-strip{display:none}
+  #app.column-pane-on>.sidebar>.nav,#app.column-pane-on>.sidebar>:where(.session-list)>.tree,#app.column-pane-on>.sidebar>:where(.session-list)>.arrange-strip{display:none}
   /* Collapse all, Expand all and the session filter act on the session list alone: while the column
      shows a pane they go (the owner); the theme applies everywhere and stays. */
   #app.column-pane-on .side-head .head-actions>:is(#collapseBtn,#expandBtn,#filterBtn){display:none}

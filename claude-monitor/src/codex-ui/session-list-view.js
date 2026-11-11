@@ -8,6 +8,7 @@ import { agentLogo, svg } from "./icons.js";
 import { backend } from "./backend.js";
 import { PHONE_QUERY } from "./shared/capabilities.js";
 import { SessionIndexStore } from "./session-index-store.js";
+import { SESSION_LIST_MARKUP } from "./session-list-markup.js";
 import { indexState, selectedRow } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
 import { ARRANGE_SOURCES, arrangeSessions, familyHolds, flatFamilies, isDefaultView, nestSideSessions, paneLookup, rowLookup, sectionView, viewSection } from "./session-list.js";
@@ -16,11 +17,10 @@ import { agentName, escapeText } from "./view-model.js";
 import { page } from "./view-root.js";
 
 /** Draw the session list in `element` and return its handle. The element becomes `#sessionList`, the
- *  id the list's rules hang on (stage 1); one with another id is refused. Until the list builds its
- *  own markup (stage 3) the element is the app's sidebar, and it must hold the sidebar's markup: the
- *  tree (`#tree`), the head (`.side-head`, with `#collapseBtn` and `#sidebarCollapse` in its row),
- *  and the rail (`#sidebarMiniSearch`, `#sidebarMiniAgents`, and the demo's `#attentionBtn` and
- *  `#sidebarMiniAttention`, which the list takes away). The list finds each inside `element`.
+ *  id the list's rules hang on (stage 1); one with another id is refused. The list builds its markup
+ *  in it from its own (stage 3, `session-list-markup.js`, cut from the demo's shell): the tree, under
+ *  the arrangement strip it adds; the rest of what it draws it builds and keeps a reference to, and
+ *  hands the parts its host shows elsewhere to `place`. It looks up nothing outside its element.
  *
  *  The selection, the folds, the filter, the arrangement and the read marks are `indexState`'s
  *  (state.js) for now; the host's `persist` writes them.
@@ -42,6 +42,12 @@ import { page } from "./view-root.js";
  *    whose flyouts open only then.
  *  - `layer(kind)`: the element a floating layer is appended to: "flyout" (the rail's flyout) and
  *    "menu" (a section's menu, its scrim and the safe-area probe); left out, the page's body.
+ *  - `place(part, node)`: put one of the list's parts where the host shows it, called once for each
+ *    as the list mounts: "controls" (a fragment of Collapse every group, Expand every group and the
+ *    filter's glyph, in that order), "sheet" (the filter's sheet, which hangs below what holds it,
+ *    `top: 100%` of a positioned parent), "rail-filter" (the filter's button for a rail) and "marks"
+ *    (the agent marks' holder for a rail). Left out, the list draws the controls and the sheet in a
+ *    head of its own at the top of its element, the sheet's containing block, and no rail parts.
  *
  *  The handle: `redraw()`, `refresh()`, `start()` and `stop()` (the index's polls), `grouped()`,
  *  `rows()`, `row(id)`, `workers(id)`, `selected()`, `select(id)` (a selection the host
@@ -57,19 +63,28 @@ import { page } from "./view-root.js";
 export function mountSessionList(element, options = {}) {
 if (element.id && element.id !== "sessionList") throw new Error(`mountSessionList draws into an element whose id is sessionList, or that has none; this one is #${element.id}`);
 // The session list's own element (#s430, stage 1): where the list keeps the state it sets for
-// itself, its arrangement (`sessions-flat`, `sessions-arranged`), which it kept on `#app`. For now it
-// is the sidebar, which also holds the app's brand and rail; the list's own markup (stage 3) carves
-// its element out of it. An id, so the rules that read the state weigh what they did on `#app`.
+// itself, its arrangement (`sessions-flat`, `sessions-arranged`), which it kept on `#app`. In the app
+// it is the sidebar's child where the tree stood (stage 3), `display: contents`, so what it holds stays
+// in the sidebar's column. An id, so the rules that read the state weigh what they did on `#app`.
 element.id = "sessionList";
 const sessionList = element;
-/** The list's elements, found inside its own element, never the document. */
-const inList = Object.freeze({
-  byId: id => element.querySelector(`#${CSS.escape(id)}`),
-  $: selector => element.querySelector(selector),
-});
 const { toast = () => {}, persist = () => {} } = options;
 const layer = kind => options.layer?.(kind) || page.body();
-const tree = inList.byId("tree");
+// The list's markup (stage 3), built from its own template, cut from the demo's shell: the tree, which
+// goes in its element, and Collapse every group and the agent marks' holder, which the host places
+// (`place`, at the end of the mount). The list keeps each, and finds nothing of them in the page.
+const markup = document.createElement("template");
+markup.innerHTML = SESSION_LIST_MARKUP;
+const built = id => markup.content.querySelector(`#${id}`);
+const tree = built("tree");
+const collapseBtn = built("collapseBtn");
+const railMarks = built("sidebarMiniAgents");
+element.append(tree);
+// Collapse every group's glyph and name (#75, #76): the demo's button has none, an empty 34px button
+// invisible until hovered.
+collapseBtn.innerHTML = svg("collapseStack");
+collapseBtn.setAttribute("aria-label", "Collapse every group");
+collapseBtn.title = "Collapse every group";
 // What `renderTree` last wrote into the list, so an unchanged refresh leaves the rows in place (#s72).
 let treeWritten = null;
 const sessionIndex = new SessionIndexStore({
@@ -441,6 +456,9 @@ function renderTree() {
   paintArrangeStrip(source, layout);
   sessionList.classList.toggle("sessions-flat", flat || arranged);
   sessionList.classList.toggle("sessions-arranged", arranged);
+  // The two group controls go with the heads; they are placed outside the list's element (stage 3), so
+  // they carry the mark themselves.
+  for (const control of [collapseBtn, expandBtn]) control.toggleAttribute("data-flat", flat || arranged);
   if (arranged) html = arrangedSessionsHtml(layout, agents, shownAgents);
   else if (flat) html = flatSessionsHtml(shownAgents);
   else for (const agent of shownAgents) {
@@ -461,8 +479,8 @@ function renderTree() {
   // Redrawn on every index refresh; a focused mark would be replaced under the reader and the focus
   // dropped to <body> (#300 caught it handing focus back after Escape), so it is carried across.
   const focusedMark = page.active()?.closest?.("#sidebarMiniAgents [data-mini-agent]")?.dataset.miniAgent;
-  inList.byId("sidebarMiniAgents").innerHTML = agents.map(agent => { const first = agent.projects.flatMap(project => project.sessions).find(row => !row.hidden); return first ? `<button class="sidebar-mini-agent ${agent.projects.some(project => project.sessions.some(row => row.id === indexState.selected)) ? "selected" : ""}" data-mini-agent="${escapeText(agent.id)}" title="${escapeText(agent.name)}" aria-haspopup="true" aria-expanded="${railFlyoutFor === agent.id}">${agentLogo(agent.id)}</button>` : ""; }).join("");
-  if (focusedMark) inList.byId("sidebarMiniAgents").querySelector(`[data-mini-agent="${CSS.escape(focusedMark)}"]`)?.focus();
+  railMarks.innerHTML = agents.map(agent => { const first = agent.projects.flatMap(project => project.sessions).find(row => !row.hidden); return first ? `<button class="sidebar-mini-agent ${agent.projects.some(project => project.sessions.some(row => row.id === indexState.selected)) ? "selected" : ""}" data-mini-agent="${escapeText(agent.id)}" title="${escapeText(agent.name)}" aria-haspopup="true" aria-expanded="${railFlyoutFor === agent.id}">${agentLogo(agent.id)}</button>` : ""; }).join("");
+  if (focusedMark) railMarks.querySelector(`[data-mini-agent="${CSS.escape(focusedMark)}"]`)?.focus();
 }
 
 // The session filter (#202, the owner's shape): a glyph in the head-actions row — between
@@ -476,16 +494,14 @@ function renderTree() {
 // (unchecking the last puts every bucket back). The demo's
 // Needs attention button and the Show Hidden control are gone — the sheet's Blocked and
 // Include hidden checkboxes are those two by name — and the collapsed rail's bell with them;
-// the rail gets a filter glyph that opens the sidebar and the sheet. Layered at runtime so the
-// extracted demo markup stays exact.
-inList.byId("attentionBtn").remove();
-inList.byId("sidebarMiniAttention").remove();
+// the rail gets a filter glyph that opens the sidebar and the sheet (the extraction cuts the demo's
+// two from the app's shell, #s430 stage 3). Built at runtime so the extracted demo markup stays exact,
+// and placed by the host with the list's other parts.
 const filterBtn = document.createElement("button");
 filterBtn.type = "button"; filterBtn.className = "iconbtn session-filter"; filterBtn.id = "filterBtn";
 filterBtn.innerHTML = svg("filterLines");
 filterBtn.setAttribute("aria-label", "Filter the sessions");
 filterBtn.setAttribute("aria-expanded", "false"); filterBtn.setAttribute("aria-haspopup", "true"); filterBtn.setAttribute("aria-controls", "sessionFilter");
-inList.byId("sidebarCollapse").insertAdjacentElement("beforebegin", filterBtn);
 const filterSheet = document.createElement("div");
 filterSheet.className = "navigator-options session-filter-options"; filterSheet.id = "sessionFilter"; filterSheet.hidden = true;
 filterSheet.setAttribute("role", "group"); filterSheet.setAttribute("aria-label", "Show sessions");
@@ -506,13 +522,11 @@ filterSheet.innerHTML = `<div class="scope-menu-head"><strong>SHOW</strong><butt
 <button class="scope-option" type="button" role="radio" aria-checked="false" data-arrange="flat" data-flat title="One list, most recent activity first, without the agent and project groups: each session names its project and agent"><span class="scope-check"></span><span>One list by activity</span></button>
 ${ARRANGE_SOURCES.map(key => `<button class="scope-option arrange-app" type="button" role="radio" aria-checked="false" data-arrange="${key}" title="${escapeText(`The sessions ${ARRANGE_LABELS[key]} shows, in its sections and order, following it as it changes; everything else under “Not in ${ARRANGE_LABELS[key]}”`)}"><span class="scope-check"></span><span class="arrange-text"><span>Like ${escapeText(ARRANGE_LABELS[key])}</span><small class="arrange-note" data-arrange-note="${key}"></small></span></button>`).join("")}
 </div>`;
-inList.$(".side-head").appendChild(filterSheet);
 const filterMini = document.createElement("button");
 filterMini.className = "sidebar-mini-button filter-mini"; filterMini.id = "sidebarMiniFilter"; filterMini.type = "button"; filterMini.title = "Filter the sessions";
 filterMini.setAttribute("aria-label", "Filter the sessions");
 filterMini.setAttribute("aria-haspopup", "true"); filterMini.setAttribute("aria-expanded", "false");
 filterMini.innerHTML = svg("filterLines");
-inList.byId("sidebarMiniSearch").insertAdjacentElement("afterend", filterMini);
 /** Whether the bucket set leaves anything out. */
 const bucketFilterActive = () => FILTER_BUCKETS.some(bucket => !indexState.buckets.has(bucket));
 /** Set the buckets shown — never an empty set — and repaint everything that reads them. */
@@ -572,6 +586,15 @@ document.addEventListener("keydown", event => { if (event.key === "Escape" && !f
 // tree until the mount has returned (the index's first rows, or a host's `redraw` or `select`).
 var lastShownAgents = [];
 var railFlyout = null, railFlyoutFor = null, railFlyoutAnchor = null, railFlyoutPinned = false, railOpenTimer = 0, railCloseTimer = 0;
+// Where the filter's sheet was placed (the host's head, or the list's own) while the flyout hosts it:
+// it goes back there, before the node it stood before when that is still there.
+var sheetHome = null;
+function returnFilterSheet() {
+  if (!sheetHome) return;
+  const { parent, next } = sheetHome;
+  parent.insertBefore(filterSheet, next && next.parentNode === parent ? next : null);
+  sheetHome = null;
+}
 const RAIL_OPEN_MS = 140, RAIL_GRACE_MS = 280;
 railFlyout = document.createElement("div");
 railFlyout.className = "rail-flyout"; railFlyout.id = "railFlyout"; railFlyout.hidden = true;
@@ -605,7 +628,7 @@ function openRailFlyout(kind, anchor, pinned) {
   railFlyoutFor = kind; railFlyoutAnchor = anchor; railFlyoutPinned = railFlyoutPinned || !!pinned;
   railFlyout.setAttribute("aria-label", kind === "filter" ? "Show sessions" : `${agentName(kind)} sessions`);
   if (kind === "filter") {
-    if (filterSheet.parentElement !== railFlyout) { railFlyout.innerHTML = ""; railFlyout.appendChild(filterSheet); }
+    if (filterSheet.parentElement !== railFlyout) { railFlyout.innerHTML = ""; sheetHome = { parent: filterSheet.parentNode, next: filterSheet.nextSibling }; railFlyout.appendChild(filterSheet); }
     filterSheet.hidden = false; filterMini.setAttribute("aria-expanded", "true");
   } else {
     railFlyout.innerHTML = railFlyoutBody();
@@ -617,7 +640,7 @@ function openRailFlyout(kind, anchor, pinned) {
 function closeRailFlyout(refocus) {
   clearTimeout(railOpenTimer); clearTimeout(railCloseTimer);
   if (railFlyoutFor === "filter" && filterSheet.parentElement === railFlyout) {
-    filterSheet.hidden = true; inList.$(".side-head").appendChild(filterSheet);
+    filterSheet.hidden = true; returnFilterSheet();
     filterMini.setAttribute("aria-expanded", "false");
   }
   // The marks are redrawn whenever the index refreshes, so the element that opened the flyout may
@@ -640,7 +663,6 @@ function railFlyoutLeave() {
   clearTimeout(railCloseTimer);
   railCloseTimer = setTimeout(() => closeRailFlyout(false), RAIL_GRACE_MS);
 }
-const railMarks = inList.byId("sidebarMiniAgents");
 railMarks.addEventListener("pointerover", event => { const mark = event.target.closest("[data-mini-agent]"); if (mark) railFlyoutHover(mark.dataset.miniAgent, mark); });
 railMarks.addEventListener("pointerenter", event => { const mark = event.target.closest?.("[data-mini-agent]"); if (mark) railFlyoutHover(mark.dataset.miniAgent, mark); }, true);
 railMarks.addEventListener("pointerleave", railFlyoutLeave, true);
@@ -796,14 +818,14 @@ tree.onclick = event => {
 tree.onkeydown = event => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); event.target.click(); } };
 // A mark's click PINS its flyout (#300) — it used to jump to the agent's newest session, which the
 // flyout now lists first under its project. Enter and Space are the same click; ArrowRight too.
-inList.byId("sidebarMiniAgents").onclick = event => {
+railMarks.onclick = event => {
   const mark = event.target.closest("[data-mini-agent]"); if (!mark) return;
   if (!railFlyout.hidden && railFlyoutFor === mark.dataset.miniAgent && railFlyoutPinned) { closeRailFlyout(false); return; }
   openRailFlyout(mark.dataset.miniAgent, mark, true);
   if (event.detail === 0) railFlyout.querySelector("[role=treeitem]")?.focus();
 };
-inList.byId("sidebarMiniAgents").onkeydown = event => { if (event.key === "ArrowRight") { const mark = event.target.closest("[data-mini-agent]"); if (mark) { event.preventDefault(); mark.click(); } } };
-inList.byId("collapseBtn").onclick = () => { for (const agent of groupedSessions()) { indexState.collapsed.add(`a:${agent.id}`); for (const project of agent.projects) indexState.collapsed.add(`p:${project.id}`); } persist(); renderTree(); };
+railMarks.onkeydown = event => { if (event.key === "ArrowRight") { const mark = event.target.closest("[data-mini-agent]"); if (mark) { event.preventDefault(); mark.click(); } } };
+collapseBtn.onclick = () => { for (const agent of groupedSessions()) { indexState.collapsed.add(`a:${agent.id}`); for (const project of agent.projects) indexState.collapsed.add(`p:${project.id}`); } persist(); renderTree(); };
 // Expand-all (#77, parity item 12): the counterpart of collapse-all — every agent and project
 // group open again, remembered like the folds are. Runtime chrome beside its counterpart.
 const expandBtn = document.createElement("button");
@@ -813,7 +835,6 @@ expandBtn.id = "expandBtn";
 expandBtn.innerHTML = svg("expandStack");
 expandBtn.title = "Expand every group";
 expandBtn.setAttribute("aria-label", "Expand every group");
-inList.byId("collapseBtn").insertAdjacentElement("afterend", expandBtn);
 expandBtn.onclick = () => { indexState.collapsed.clear(); persist(); renderTree(); };
 function stepList(delta) {
   const rows = [...tree.querySelectorAll(".tree-row.session")];
@@ -822,8 +843,26 @@ function stepList(delta) {
   rows[next].focus(); chooseSession(rows[next].dataset.session, true);
 }
 
+// The list's parts its host shows (stage 3): the head's controls, Collapse every group, Expand every
+// group and the filter, in that order before the sidebar's collapse; the filter's sheet, hung from the
+// head; and the rail's filter and agent marks. A host that places nothing gets the controls and the
+// sheet in a head at the top of the list, the sheet's containing block, and no rail.
+const controls = document.createDocumentFragment();
+controls.append(collapseBtn, expandBtn, filterBtn);
+if (options.place) {
+  options.place("controls", controls);
+  options.place("sheet", filterSheet);
+  options.place("rail-filter", filterMini);
+  options.place("marks", railMarks);
+} else {
+  const head = document.createElement("div");
+  head.className = "session-list-head";
+  head.append(controls, filterSheet);
+  element.prepend(head);
+}
+
 tree.innerHTML = '<div class="no-results">Scanning sessions…</div>'; treeWritten = null;
-inList.byId("sidebarMiniAgents").innerHTML = "";
+railMarks.innerHTML = "";
 
 /** The list's half of choosing a session: it is the selection, read, remembered and drawn. */
 function take(id) {

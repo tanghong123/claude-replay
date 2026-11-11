@@ -3696,27 +3696,18 @@ pub fn open_host_page_with(
 
 /// The session list's test host page (`tests/fixtures/host/session-list-host.html`, #s430 stage 2):
 /// the session list mounted alone in a page of the case's own, on the monitor's origin at
-/// `/session-list-host`, with no app shell and no session view. Until the list builds its own markup
-/// (stage 3) the page carries the app's sidebar, cut here from `app-shell.html` so it cannot drift.
-/// Returns once the list is mounted; panics with the page's error if it failed to.
+/// `/session-list-host`, with no app shell and no session view. The page carries an empty element
+/// for the list, which builds its own markup there (stage 3). Returns once the list is mounted;
+/// panics with the page's error if it failed to.
 pub fn open_list_host_page(tab: &headless_chrome::Tab, monitor: &Monitor) {
-    let shell = include_str!("../../../claude-monitor/src/codex-ui/app-shell.html");
-    let start = shell
-        .find("<aside class=\"sidebar\"")
-        .expect("the app shell holds the sidebar");
-    let end = shell[start..].find("</aside>").expect("the sidebar ends") + start + "</aside>".len();
     let page = include_str!("../fixtures/host/session-list-host.html");
-    assert!(
-        page.contains("<!--list-markup-->"),
-        "the host page has a place for the list's markup"
-    );
     answer_in_browser(
         tab,
         vec![Answer {
             pattern: "*/session-list-host*".into(),
             path: "/session-list-host".into(),
             content_type: "text/html; charset=utf-8".into(),
-            body: page.replace("<!--list-markup-->", &shell[start..end]),
+            body: page.to_string(),
         }],
     );
     tab.navigate_to(&monitor.url("session-list-host")).unwrap();

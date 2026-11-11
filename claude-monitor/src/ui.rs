@@ -7,7 +7,9 @@ use claude_replay_html::HttpResponse;
 
 const PAGE_HEAD: &str = include_str!("codex-ui/page-head.html");
 /// The demo's shell with an empty `#sessionView` where the session view's markup was: the view builds
-/// itself there from `session-view-markup.js` (#s429 stage 4). Both are generated from the demo.
+/// itself there from `session-view-markup.js` (#s429 stage 4). Likewise an empty `#sessionList` where
+/// the tree was, which the session list fills from `session-list-markup.js` (#s430 stage 3). All are
+/// generated from the demo.
 const APP_SHELL: &str = include_str!("codex-ui/app-shell.html");
 const PAGE_TAIL: &str = include_str!("codex-ui/page-tail.html");
 
@@ -162,6 +164,11 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
         "monitor-ui/session-list-view.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/session-list-view.js").as_slice(),
+        ),
+        // The list's markup, generated from the demo (stage 3).
+        "monitor-ui/session-list-markup.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/session-list-markup.js").as_slice(),
         ),
         "monitor-ui/view-model.js" => (
             "text/javascript; charset=utf-8",
@@ -950,6 +957,10 @@ mod tests {
         // The view's markup is not in the page: the view builds itself from its own (stage 4).
         assert!(page.contains(r#"<div class="session-view preview-off" id="sessionView"></div>"#));
         assert!(!page.contains(r#"<main class="workspace">"#));
+        // Nor the list's: it builds itself in an empty `#sessionList` (#s430 stage 3).
+        assert!(page.contains(r#"<div class="session-list" id="sessionList"></div>"#));
+        assert!(!page.contains(r#"id="tree""#));
+        assert!(!page.contains(r#"id="collapseBtn""#));
         assert!(page.contains(r#"src="monitor-ui/app.js""#));
         assert!(!page.contains("sample-transcript-data.js"));
         assert!(!page.contains("REAL_TRANSCRIPT"));
@@ -1001,6 +1012,10 @@ mod tests {
             (
                 "session-list-view.js",
                 include_str!("codex-ui/session-list-view.js"),
+            ),
+            (
+                "session-list-markup.js",
+                include_str!("codex-ui/session-list-markup.js"),
             ),
             (
                 "shared/session-visibility.js",

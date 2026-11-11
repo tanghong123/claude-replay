@@ -61,6 +61,12 @@ assert.equal(referenceShell, extractedShell, "reference shell must remain an exa
 // cut is made again here and must agree byte for byte, and the two together are the whole shell.
 const appShell = readFileSync(new URL("../../claude-monitor/src/codex-ui/app-shell.html", import.meta.url), "utf8");
 const { SESSION_VIEW_MARKUP } = await import("../src/codex-ui/session-view-markup.js");
+const { SESSION_LIST_MARKUP } = await import("../src/codex-ui/session-list-markup.js");
+// #s430 stage 3: the demo's two attention controls (the Needs attention button and the rail's bell),
+// which the list removed as it mounted, are cut from the app's shell and kept nowhere. Their markup,
+// as the demo has it: the reference rules that style them stay the app's (`APP_CHROME`), so the
+// classifier's check below counts the names they draw as the app's.
+let droppedAttention = "";
 {
   const viewStart = referenceShell.indexOf('  <main class="workspace">');
   const previewStart = referenceShell.indexOf('  <aside class="preview" id="preview"', viewStart);
@@ -68,9 +74,48 @@ const { SESSION_VIEW_MARKUP } = await import("../src/codex-ui/session-view-marku
   assert.ok(viewStart > 0 && previewStart > viewStart && viewEnd > previewStart, "the shell holds the view's block");
   const placeholder = '  <div class="session-view preview-off" id="sessionView"></div>\n';
   assert.equal(SESSION_VIEW_MARKUP, referenceShell.slice(viewStart, viewEnd), "the view's markup is the shell's block, exactly");
-  assert.equal(appShell, `${referenceShell.slice(0, viewStart)}${placeholder}${referenceShell.slice(viewEnd)}`, "the app shell is the shell with an empty #sessionView in the view's place");
-  assert.equal(appShell.replace(placeholder, SESSION_VIEW_MARKUP), referenceShell, "the two together are the whole shell");
+  const withoutView = `${referenceShell.slice(0, viewStart)}${placeholder}${referenceShell.slice(viewEnd)}`;
+  // The session list's pieces (#s430 stage 3), cut again here and compared: Collapse all from the
+  // head's row, the agent marks' holder from the rail, the tree (its line now an empty #sessionList),
+  // and the two attention controls, dropped. Each is in the shell once; the kept three, in that order,
+  // are the list's markup, and putting all five back gives the shell.
+  const element = (text, from) => {
+    const at = text.indexOf(from);
+    assert.ok(at > 0 && text.indexOf(from, at + 1) < 0, `the shell holds ${from} once`);
+    const tag = /^\s*<([a-z]+)/.exec(from)[1];
+    let depth = 0, i = at;
+    for (const m of text.slice(at).matchAll(new RegExp(`<(/?)${tag}\\b[^>]*>`, "g"))) { depth += m[1] ? -1 : 1; if (!depth) { i = at + m.index + m[0].length; break; } }
+    return { at, end: i };
+  };
+  const pieces = [
+    ['<button class="iconbtn" id="collapseBtn"', "", true],
+    ['<div class="sidebar-mini-agents" id="sidebarMiniAgents"', "", true],
+    ['    <div class="tree" id="tree"', '    <div class="session-list" id="sessionList"></div>', true],
+    ['<button class="sidebar-mini-button attention-mini" id="sidebarMiniAttention"', "", false],
+    ['      <button class="navbtn attention-filter" id="attentionBtn"', "", false],
+  ];
+  let rest = withoutView;
+  const kept = [];
+  const putBack = [];
+  for (const [from, stands, keep] of pieces) {
+    const { at, end } = element(rest, from);
+    // A whole line goes with its newline.
+    const cutEnd = from.startsWith(" ") ? end + 1 : end;
+    const piece = rest.slice(at, cutEnd);
+    if (keep) kept.push(piece.trim()); else droppedAttention += piece;
+    putBack.unshift([stands ? `${stands}\n` : "", at, piece]);
+    rest = `${rest.slice(0, at)}${stands ? `${stands}\n` : ""}${rest.slice(cutEnd)}`;
+  }
+  assert.equal(SESSION_LIST_MARKUP, kept.join("\n"), "the list's markup is Collapse all, the marks' holder and the tree, as the shell has them");
+  assert.equal(appShell, rest, "the app shell is the shell with an empty #sessionView and an empty #sessionList, and without the list's pieces or the attention controls");
+  let whole = appShell;
+  for (const [stands, at, piece] of putBack) whole = `${whole.slice(0, at)}${piece}${whole.slice(at + stands.length)}`;
+  assert.equal(whole, withoutView, "the app shell and the list's pieces together are the shell, the view's place aside");
+  assert.equal(whole.replace(placeholder, SESSION_VIEW_MARKUP), referenceShell, "and with the view's markup, the whole shell");
+  assert.match(SESSION_LIST_MARKUP, /^<button class="iconbtn" id="collapseBtn" title="Collapse all"><\/button>\n<div class="sidebar-mini-agents" id="sidebarMiniAgents"><\/div>\n<div class="tree" id="tree" role="tree"><\/div>$/, "the list's markup, read plainly");
+  assert.doesNotMatch(appShell, /attention/, "nothing of the attention controls is served");
   console.log("#s429 view markup cases passed");
+  console.log("#s430 list markup cases passed");
 }
 // #s429 stage 5b: the page loads two stylesheets, both derived from reference.css and production.css
 // by the extraction script (scripts/session-view-css.mjs): the app's chrome and the page's, then the
@@ -84,12 +129,18 @@ const { SESSION_VIEW_MARKUP } = await import("../src/codex-ui/session-view-marku
   const read = name => readFileSync(new URL(`../../claude-monitor/src/codex-ui/${name}`, import.meta.url), "utf8");
   assert.equal(read("session-view.css"), derived.view, "session-view.css is derived from reference.css and production.css (run scripts/extract-agent-monitor-demo.mjs)");
   assert.equal(read("app-shell.css"), derived.app, "app-shell.css is derived from reference.css and production.css (run scripts/extract-agent-monitor-demo.mjs)");
+  // #s430 stage 3: the app's file takes one rewrite, the demo's two rules naming the tree as the
+  // sidebar's child, which go on through the list's element at the same weight.
+  assert.deepEqual(derived.report.listChild, [".app.sidebar-off .sidebar>:where(.session-list)>.tree", ".sidebar>:where(.session-list)>.tree"], "the demo's two sidebar>tree rules go on through #sessionList, and only they");
+  assert.doesNotMatch(productionCss, /\.sidebar>\.(?:tree|arrange-strip)(?![\w-])/, "production.css names no part of the list as the sidebar's child");
   const head = read("page-head.html");
   const links = [...head.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map(m => m[1]);
   assert.deepEqual(links, ["monitor-ui/app-shell.css", "monitor-ui/session-view.css"], "the page loads the app's stylesheet, then the view's, and nothing else of ours");
   // What the app draws: the class and id names in its shell and its scripts (the quoted words of a
-  // template's pieces too), and the names its own lookups use.
-  const appText = [appShell, appSource, read("session-list-view.js"), read("session-list.js")].join("\n");
+  // template's pieces too), and the names its own lookups use. The list's markup is the app's too
+  // (#s430 stage 3), and so are the demo's attention controls the served shell no longer carries: their
+  // reference rules stay the app's, never the view's.
+  const appText = [appShell, SESSION_LIST_MARKUP, droppedAttention, appSource, read("session-list-view.js"), read("session-list.js")].join("\n");
   const drawn = new Set();
   const words = s => `${s.replace(/\$\{[^}]*\}/g, " ")} ${(s.match(/\$\{[^}]*\}/g) || []).flatMap(d => d.match(/"[^"]*"|'[^']*'/g) || []).join(" ")}`.split(/[\s"'`\\]+/).filter(w => /^-?[A-Za-z_][A-Za-z0-9_-]*$/.test(w));
   for (const m of appText.matchAll(/class=\\?["']((?:[^"'\\$]|\$\{[^}]*\}|\\.)*)\\?["']/g)) for (const w of words(m[1])) drawn.add(`.${w}`);
@@ -314,10 +365,13 @@ assert.match(classicExportSource, /if \(usageCost\) row\("est\. cost", usageCost
 for (const moduleName of ["app.js", "session-list-view.js", "session-view.js", "control-store.js", "preview.js"]) {
   const module = readFileSync(new URL(`../../claude-monitor/src/codex-ui/${moduleName}`, import.meta.url), "utf8");
   for (const [, id] of module.matchAll(/byId\("([^"]+)"\)/g)) {
-    // The page as it is drawn: the app's shell, and the view's markup inside #sessionView (stage 4).
-    assert.match(`${appShell}${SESSION_VIEW_MARKUP}`, new RegExp(`id=["']${id}["']`), `${moduleName} requires missing shell #${id}`);
+    // The page as it is drawn: the app's shell, the view's markup inside #sessionView (stage 4), and
+    // the list's inside #sessionList and where the app places its parts (#s430 stage 3).
+    assert.match(`${appShell}${SESSION_VIEW_MARKUP}${SESSION_LIST_MARKUP}`, new RegExp(`id=["']${id}["']`), `${moduleName} requires missing shell #${id}`);
   }
 }
+// What the list builds from its template is in the template.
+for (const [, id] of listSource.matchAll(/\bbuilt\("([^"]+)"\)/g)) assert.match(SESSION_LIST_MARKUP, new RegExp(`id="${id}"`), `session-list-view.js builds #${id}, which its markup must hold`);
 
 const updates = [];
 const store = new RecordStore({ update: update => updates.push(update) });
@@ -1115,7 +1169,8 @@ assert.match(viewSource, /if \(target && turnsFollow\) revealInPane\(target\);/,
   assert.notEqual(agentLogo("qwenwork"), agentLogo("qoder"), "and not Qoder's");
   console.log("#s209 agent mark cases passed");
 }
-assert.match(productionCss, /#sessionList\.sessions-flat \.side-head \.head-actions>:is\(#collapseBtn,#expandBtn\)\{display:none\}/, "flat, the group controls go (the list keeps its arrangement on its own element, #s430 stage 1)");
+assert.match(productionCss, /\n:is\(#collapseBtn,#expandBtn\)\[data-flat\]\{display:none\}/, "flat, the group controls go: the list marks the two it places, since the head is outside its element (#s430 stage 3)");
+assert.match(listSource, /for \(const control of \[collapseBtn, expandBtn\]\) control\.toggleAttribute\("data-flat", flat \|\| arranged\);/, "…with the same verdict as its own sessions-flat");
 assert.match(appSource, /indexState\.selectedWasRow && !selectedRow\(\)\) sessionGone\(\)/, "a sub-agent child, never a list row, is not declared gone by the index poll");
 assert.match(viewSource, /meta\?\.ancestors\?\.at\(-1\)/, "the parent control reads the last ancestor from the session's own meta");
 assert.match(productionCss, /\.session-parent\.is-live\{display:inline-flex;/, "the reference parent control is shown by a production state, not by editing the shell");
@@ -1343,11 +1398,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // checkboxes and Include hidden, no All (Everything in the head is the way back, and it
   // leaves Include hidden alone), the demo's two controls removed, the set never empty and
   // remembered with every bucket by default.
-  assert.match(listSource, /inList\.byId\("sidebarCollapse"\)\.insertAdjacentElement\("beforebegin", filterBtn\)/, "the glyph sits before the sidebar collapse");
-  assert.match(listSource, /inList\.byId\("collapseBtn"\)\.insertAdjacentElement\("afterend", expandBtn\)/, "…and Expand every group after Collapse every group, so the filter follows expand");
+  // Since #s430 stage 3 the list builds them and the app places them (`place`): the controls as one
+  // fragment before the sidebar collapse, the sheet appended to the head.
+  assert.match(listSource, /^controls\.append\(collapseBtn, expandBtn, filterBtn\);$/m, "the glyph follows Expand every group, which follows Collapse every group…");
+  assert.match(listSource, /^  options\.place\("controls", controls\);$/m, "…placed by the host as one");
+  assert.match(appSource, /^  if \(part === "controls"\) page\.byId\("sidebarCollapse"\)\.before\(node\);$/m, "…before the sidebar collapse");
   assert.match(listSource, /filterBtn\.className = "iconbtn session-filter"/, "…as an iconbtn like its neighbours");
-  assert.match(listSource, /inList\.\$\("\.side-head"\)\.appendChild\(filterSheet\)/, "the sheet hangs under the sidebar's head");
-  assert.match(listSource, /inList\.byId\("attentionBtn"\)\.remove\(\);\ninList\.byId\("sidebarMiniAttention"\)\.remove\(\);/, "the demo's Needs attention button and the rail's bell are gone");
+  assert.match(listSource, /^  options\.place\("sheet", filterSheet\);$/m, "the sheet is placed by the host…");
+  assert.match(appSource, /^  else if \(part === "sheet"\) page\.\$\("#app>\.sidebar>\.side-head"\)\.append\(node\);$/m, "…under the sidebar's head");
+  assert.doesNotMatch(appShell, /id="attentionBtn"|id="sidebarMiniAttention"/, "the demo's Needs attention button and the rail's bell are gone (cut from the served shell)");
   assert.doesNotMatch(shellSource, /hiddenBtn|"Show Hidden"/, "…and the Show Hidden control with them");
   assert.match(listSource, /visibleTree\(agents, \{ showHidden: indexState\.showHidden, buckets: filtered \? indexState\.buckets : null, bucketsOf \}\)/, "the tree is filtered by the shared cover — every bucket chosen is no filter");
   assert.match(listSource, /indexState\.buckets = set\.size \? set : new Set\(FILTER_BUCKETS\);/, "the bucket set is never empty");
@@ -1361,7 +1420,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listSource, /data-include-hidden/, "and Include hidden");
   assert.match(listSource, /title="\$\{BLOCKED_SUMMARY\}"/, "the Blocked checkbox explains itself with the predicate's sentence");
   assert.match(listSource, /\$\{FILTER_LABELS\.recent\}/, "the checkbox is labelled from the shared table (Active recently)");
-  assert.match(listSource, /inList\.byId\("sidebarMiniSearch"\)\.insertAdjacentElement\("afterend", filterMini\)/, "the rail's filter glyph sits after search");
+  assert.match(listSource, /^  options\.place\("rail-filter", filterMini\);$/m, "the rail's filter glyph is placed by the host…");
+  assert.match(appSource, /^  else if \(part === "rail-filter"\) page\.byId\("sidebarMiniSearch"\)\.after\(node\);$/m, "…after search");
   // #300 (the owner): collapsed, the glyph opens the sidebar's own sheet in a flyout beside the rail
   // rather than expanding the sidebar — pointed at, or clicked to pin it.
   assert.match(listSource, /filterMini\.onclick = \(\) => \{ [^\n]*openRailFlyout\("filter", filterMini, true\)/, "…and a click opens the sheet in the rail's flyout");
@@ -2013,8 +2073,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 
 // #75 / #76: the sidebar head's three controls carry a glyph and a name.
 {
-  assert.match(appSource, /\["themeBtn", "moon", "Toggle light and dark"\], \["collapseBtn", "collapseStack", "Collapse every group"\], \["sidebarCollapse", "sidebar", "Collapse the session list into its icon rail"\]/, "theme, collapse-all and the sidebar collapse are drawn and named");
+  assert.match(appSource, /\["themeBtn", "moon", "Toggle light and dark"\], \["sidebarCollapse", "sidebar", "Collapse the session list into its icon rail"\]/, "theme and the sidebar collapse are drawn and named by the app");
   assert.match(appSource, /if \(!button\.querySelector\("svg"\)\) button\.innerHTML = svg\(icon\);/, "…a glyph where the shell left none");
+  // Collapse all is the list's (#s430 stage 3), which draws it from its own markup.
+  assert.match(listSource, /collapseBtn\.innerHTML = svg\("collapseStack"\);\ncollapseBtn\.setAttribute\("aria-label", "Collapse every group"\);\ncollapseBtn\.title = "Collapse every group";/, "collapse-all is drawn and named by the list");
   const iconsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/icons.js", import.meta.url), "utf8");
   for (const name of ["moon", "collapseStack", "sidebar"]) assert.ok(iconsSrc.includes(name + ":'"), `the ${name} glyph exists — svg() would otherwise draw the info glyph`);
   console.log("#75/#76 sidebar head controls cases passed");
@@ -2106,7 +2168,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // #77: expand-all beside collapse-all.
 {
   assert.match(listSource, /expandBtn\.onclick = \(\) => \{ indexState\.collapsed\.clear\(\); persist\(\); renderTree\(\); \};/, "expand-all clears every fold and remembers it");
-  assert.match(listSource, /inList\.byId\("collapseBtn"\)\.insertAdjacentElement\("afterend", expandBtn\);/, "…beside collapse-all");
+  assert.match(listSource, /^controls\.append\(collapseBtn, expandBtn, filterBtn\);$/m, "…beside collapse-all");
   assert.match(listSource, /expandBtn\.innerHTML = svg\("expandStack"\);/, "…with a glyph the sprite has");
   const iconsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/icons.js", import.meta.url), "utf8");
   assert.ok(iconsSrc.includes("expandStack:'"), "the expandStack glyph exists");
@@ -4367,8 +4429,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // list reads is documented and passed, every member of the handle the app calls is one the list
 // returns, and the list finds its elements inside its own element.
 {
-  const call = /^const listHandle = mountSessionList\(page\.\$\("\.sidebar"\), \{\n([\s\S]*?)\n\}\);/m.exec(appSource);
-  assert.ok(call, "the app mounts the list in one call with an options literal, on the sidebar");
+  const call = /^const listHandle = mountSessionList\(page\.byId\("sessionList"\), \{\n([\s\S]*?)\n\}\);/m.exec(appSource);
+  assert.ok(call, "the app mounts the list in one call with an options literal, on the shell's empty #sessionList (stage 3)");
   const passed = new Set([...call[1].matchAll(/^  ([A-Za-z]+)(?=[:,])/gm)].map(m => m[1]));
   const destructured = /^const \{ (.+) \} = options;$/m.exec(listSource);
   assert.ok(destructured, "the list takes its plain options by destructuring");
@@ -4379,7 +4441,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.ok(doc, "mountSessionList carries its doc comment");
   const heads = [...doc[0].matchAll(/^ \*  - ((?:`[^`]*`(?:, | and )?)+):/gm)].map(m => m[1]);
   const documented = new Set(heads.flatMap(head => [...head.matchAll(/`([A-Za-z]+)(?:\([^`]*\))?`/g)].map(m => m[1])));
-  const OPTIONS = ["toast", "persist", "onOpen", "onIndex", "projectTree", "projectActions", "newSession", "compact", "layer"];
+  const OPTIONS = ["toast", "persist", "onOpen", "onIndex", "projectTree", "projectActions", "newSession", "compact", "layer", "place"];
   assert.deepEqual([...read].sort(), [...OPTIONS].sort(), "the list reads exactly the options the design gives it");
   assert.deepEqual([...documented].sort(), [...OPTIONS].sort(), "and its doc comment documents each");
   assert.deepEqual([...passed].sort(), [...OPTIONS].sort(), "and the app passes every one");
@@ -4406,7 +4468,24 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // reads (the body is where a layer floats when the host names none).
   assert.doesNotMatch(listSource, /\bpage\.(?:byId|\$\$?)\(/, "the list looks nothing up in the page");
   assert.deepEqual([...new Set([...listSource.matchAll(/\bpage\.([A-Za-z$]+)/g)].map(m => m[1]))].sort(), ["active", "body"], "it reads the page's focus and its body, nothing else");
-  assert.match(listSource, /^const tree = inList\.byId\("tree"\);$/m, "the tree is the element's");
+  // Since stage 3 it builds its markup from its own template and keeps what it built: the tree goes in
+  // its element, and every part its host shows elsewhere goes through `place`, which the app answers
+  // where the list used to put each itself.
+  assert.match(listSource, /^import \{ SESSION_LIST_MARKUP \} from "\.\/session-list-markup\.js";$/m, "the list's markup is its own module's");
+  assert.match(listSource, /^const tree = built\("tree"\);$/m, "the tree is built from the template…");
+  assert.match(listSource, /^element\.append\(tree\);$/m, "…into the list's element");
+  assert.doesNotMatch(listSource, /\b(?:inList|element)\.(?:querySelector|\$|byId)\(/, "and it looks up nothing, in its element or the page: it keeps what it built");
+  for (const part of ["controls", "sheet", "rail-filter", "marks"]) {
+    assert.match(listSource, new RegExp(`^  options\\.place\\("${part}", [A-Za-z]+\\);$`, "m"), `the list hands its host the ${part}`);
+    assert.match(appSource, new RegExp(`^  (?:else )?if \\(part === "${part}"\\) page\\.`, "m"), `and the app places the ${part}`);
+  }
+  assert.match(appSource, /^  else if \(part === "marks"\) page\.byId\("sidebarMini"\)\.append\(node\);$/m, "the marks at the rail's end");
+  assert.match(appSource, /^  place: placeListPart,$/m, "the app answers `place`");
+  assert.match(listSource, /\} else \{\n  const head = document\.createElement\("div"\);\n  head\.className = "session-list-head";\n  head\.append\(controls, filterSheet\);\n  element\.prepend\(head\);\n\}/, "a host that places nothing gets the controls and the sheet in a head at the top of the list");
+  assert.match(productionCss, /\n#sessionList>\.session-list-head\{position:relative;/, "…the sheet's containing block");
+  // The rail's flyout hosts the sheet and gives it back where it was placed, never to a head it finds.
+  assert.match(listSource, /sheetHome = \{ parent: filterSheet\.parentNode, next: filterSheet\.nextSibling \}; railFlyout\.appendChild\(filterSheet\);/, "the flyout remembers where the sheet stood");
+  assert.match(listSource, /filterSheet\.hidden = true; returnFilterSheet\(\);/, "and puts it back there");
   assert.match(listSource, /^layer\("flyout"\)\.appendChild\(railFlyout\);$/m, "the rail's flyout floats where the host says");
   assert.match(appSource, /^  layer: kind => \(kind === "flyout" \? page\.body\(\) : app\),$/m, "which is the body, and the app for a section's menu, as before");
   // The app holds none of the list's code any more.

@@ -1,14 +1,13 @@
 <div class="app preview-off" id="app">
   <aside class="sidebar" aria-label="Agents and sessions">
-    <div class="sidebar-mini" id="sidebarMini" aria-label="Collapsed navigation"><button class="sidebar-mini-button" id="sidebarMiniExpand" title="Expand the sidebar" data-icon="sidebar"></button><div class="sidebar-mini-separator"></div><button class="sidebar-mini-button" id="sidebarMiniWrite" title="Write mode" data-icon="edit"></button><button class="sidebar-mini-button" id="sidebarMiniSearch" title="Search" data-icon="search"></button><button class="sidebar-mini-button attention-mini" id="sidebarMiniAttention" aria-label="Needs attention"><span data-icon="bell"></span><span class="sidebar-mini-badge" id="sidebarMiniAttentionBadge"></span><span class="nav-tooltip" id="sidebarMiniAttentionTooltip" role="tooltip">Filter to sessions awaiting a reply or a grant, or that failed or stalled · 0</span></button><div class="sidebar-mini-separator"></div><div class="sidebar-mini-agents" id="sidebarMiniAgents"></div></div>
-    <div class="side-head"><span class="brand">Agent Monitor <small>REAL MOCK</small></span><div class="head-actions"><button class="iconbtn" id="themeBtn" title="Toggle the theme"></button><button class="iconbtn" id="collapseBtn" title="Collapse all"></button><button class="iconbtn sidebar-collapse" id="sidebarCollapse" title="Collapse the sidebar" data-icon="sidebar"></button></div></div>
+    <div class="sidebar-mini" id="sidebarMini" aria-label="Collapsed navigation"><button class="sidebar-mini-button" id="sidebarMiniExpand" title="Expand the sidebar" data-icon="sidebar"></button><div class="sidebar-mini-separator"></div><button class="sidebar-mini-button" id="sidebarMiniWrite" title="Write mode" data-icon="edit"></button><button class="sidebar-mini-button" id="sidebarMiniSearch" title="Search" data-icon="search"></button><div class="sidebar-mini-separator"></div></div>
+    <div class="side-head"><span class="brand">Agent Monitor <small>REAL MOCK</small></span><div class="head-actions"><button class="iconbtn" id="themeBtn" title="Toggle the theme"></button><button class="iconbtn sidebar-collapse" id="sidebarCollapse" title="Collapse the sidebar" data-icon="sidebar"></button></div></div>
     <nav class="nav" aria-label="Primary actions">
       <div class="navbtn write-control" id="writeBtn"><span data-icon="edit"></span><span class="label">Write mode</span><button class="write-info" id="writeInfo" title="About write mode" data-icon="info" hidden></button><button class="mode-switch" id="writeSwitch" role="switch" aria-label="Global write mode" aria-checked="false"><span></span></button></div>
       <div class="write-help" id="writeHelp" hidden></div>
       <button class="navbtn" id="searchBtn"><span data-icon="search"></span><span class="label">Search</span><span class="hint">⌘K</span></button>
-      <button class="navbtn attention-filter" id="attentionBtn" aria-pressed="false" aria-describedby="attentionTooltip"><span data-icon="bell"></span><span class="label">Needs attention</span><span class="count attention-count" id="attentionCount">0</span><span class="nav-tooltip" id="attentionTooltip" role="tooltip">Filter to sessions awaiting a reply or a grant, or that failed or stalled</span></button>
     </nav>
-    <div class="tree" id="tree" role="tree"></div>
+    <div class="session-list" id="sessionList"></div>
   </aside>
   <div class="session-view preview-off" id="sessionView"></div>
 </div>

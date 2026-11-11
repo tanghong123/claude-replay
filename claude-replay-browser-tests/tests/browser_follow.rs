@@ -2039,7 +2039,7 @@ fn the_session_list_in_a_host_tells_it_which_session_the_reader_chose() {
     );
     let page = harness::probe(
         &tab,
-        "({ app: !!document.getElementById('app'), view: !!document.getElementById('sessionView'), list: (document.querySelector('#hostPane > .sidebar') || {}).id || '', indexed: window.__host.indexed > 0, opened: window.__host.opened.length })",
+        "({ app: !!document.getElementById('app'), view: !!document.getElementById('sessionView'), sidebar: !!document.querySelector('.sidebar'), list: (document.querySelector('#hostPane > #sessionList') || {}).id || '', rail: !!(document.getElementById('sidebarMiniFilter') || document.getElementById('sidebarMiniAgents')), indexed: window.__host.indexed > 0, opened: window.__host.opened.length })",
     );
     let marked = "[].slice.call(document.querySelectorAll('#tree .tree-row.session.selected')).map(function (r) { return r.dataset.session; })";
     // A host that holds the reader hears the choice and opens nothing.
@@ -2081,11 +2081,34 @@ fn the_session_list_in_a_host_tells_it_which_session_the_reader_chose() {
         &tab,
         &format!("({{ opened: window.__host.opened.slice(1), selected: window.__list.selected(), marked: {marked}, errors: window.__host.error }})"),
     );
+    // #s430 stage 3: the host places nothing, so the list draws its controls and the filter's sheet in
+    // a head of its own at its top, the sheet's containing block: open, the sheet hangs below the
+    // head's row, inside the host's pane, and is what a point inside it hits.
+    tab.find_element("#sessionList > .session-list-head #filterBtn")
+        .unwrap()
+        .click()
+        .unwrap();
+    harness::until(
+        &tab,
+        "!document.getElementById('sessionFilter').hidden",
+        "the filter's sheet to open in the list's own head",
+        Duration::from_secs(10),
+        "(document.getElementById('sessionList') || {}).outerHTML",
+    );
+    let sheet = harness::probe(
+        &tab,
+        "(function () { var list = document.getElementById('sessionList'), pane = document.getElementById('hostPane'), head = list.querySelector(':scope > .session-list-head'), sheet = document.getElementById('sessionFilter'); var h = head.getBoundingClientRect(), s = sheet.getBoundingClientRect(), p = pane.getBoundingClientRect(); var hit = document.elementFromPoint(s.left + s.width / 2, s.top + Math.min(20, s.height / 2)); return { first: list.firstElementChild === head, held: [].map.call(head.children, function (c) { return c.id; }), positioned: getComputedStyle(head).position, shown: s.height > 0, below: s.top >= h.bottom - 1 && s.top <= h.bottom + 1, inside: s.left >= p.left && s.right <= p.right + 0.5 && s.top >= p.top, hit: !!hit && sheet.contains(hit) }; })()",
+    );
     drop(monitor);
     assert_eq!(
         page,
-        serde_json::json!({ "app": false, "view": false, "list": "sessionList", "indexed": true, "opened": 0 }),
-        "the list stands alone in the host's page, its element #sessionList, filled from the index, and nothing chosen yet"
+        serde_json::json!({ "app": false, "view": false, "sidebar": false, "list": "sessionList", "rail": false, "indexed": true, "opened": 0 }),
+        "the list stands alone in the host's page, built in the host's empty #sessionList, filled from the index, with no rail parts, and nothing chosen yet"
+    );
+    assert_eq!(
+        sheet,
+        serde_json::json!({ "first": true, "held": ["collapseBtn", "expandBtn", "filterBtn", "sessionFilter"], "positioned": "relative", "shown": true, "below": true, "inside": true, "hit": true }),
+        "with no `place`, the controls and the sheet are in the list's own head at its top, and the sheet hangs under that head's row, inside the host's pane"
     );
     assert_eq!(
         held,
