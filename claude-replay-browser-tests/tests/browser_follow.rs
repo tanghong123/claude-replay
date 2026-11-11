@@ -16541,6 +16541,70 @@ fn a_phone_find_pill_rides_the_keyboard() {
     );
 }
 
+/// #s451: a short visual viewport is the keyboard only while a field that takes one has focus.
+/// Measured on the iOS 26.4 Simulator: once the software keyboard had been up, a fresh Safari tab
+/// with nothing focused and no keyboard on screen reported `visualViewport.height` 336 against an
+/// `innerHeight` of 714, and the dock floated 378px up the screen. Here the page is given that
+/// shortfall with nothing focused, and the dock stays at its resting place; the find field focused
+/// under the same shortfall (no resize: a keyboard rising into a stale shortfall leaves the height
+/// as it was) and the find pill rides it; the field blurred, the shortfall left in place and no
+/// resize, and the dock goes back.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_with_nothing_focused_takes_no_short_viewport_for_the_keyboard() {
+    let _serial = serial();
+    let (_m, _b, tab, _path) = phone_world_at(3109, "phone-stale-viewport", 390, 844, "");
+    let facts = "(function(){ var d = document.getElementById('phoneDock').getBoundingClientRect(), a = document.activeElement; return JSON.stringify({ kb: getComputedStyle(document.documentElement).getPropertyValue('--phone-kb').trim(), up: document.getElementById('sessionView').classList.contains('keyboard-up'), dockBottom: Math.round(d.bottom), h: innerHeight, focus: a ? a.localName + (a.id ? '#' + a.id : '') : null }); })()";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    harness::eval(
+        &tab,
+        "(function(){ if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur(); return 'ok'; })()",
+    );
+    let rest = read();
+    assert!(
+        rest["focus"] == "body" && rest["kb"] == "0px" && rest["up"] == false,
+        "the page opens with nothing focused and no keyboard: {rest}"
+    );
+    // Safari's stale shortfall, with nothing focused: no keyboard is on screen.
+    harness::eval(&tab, "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 378; } }); visualViewport.dispatchEvent(new Event('resize')); return 'ok'; })()");
+    harness::pause("the ride to answer the resize", Duration::from_millis(400));
+    let stale = read();
+    assert!(
+        stale["kb"] == "0px" && stale["up"] == false && stale["dockBottom"] == rest["dockBottom"],
+        "a short viewport with nothing focused leaves the dock at its resting place: {rest} → {stale}"
+    );
+    // The find field focused (as a tap on the search does): iOS raises its keyboard, and the find
+    // pill rides the shortfall.
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    harness::until(
+        &tab,
+        "(function(){ var d = document.getElementById('phoneDock').getBoundingClientRect(); return document.activeElement === document.getElementById('transcriptSearchInput') && getComputedStyle(document.documentElement).getPropertyValue('--phone-kb').trim() === '378px' && document.getElementById('sessionView').classList.contains('keyboard-up') && Math.abs(d.bottom - (innerHeight - 378 - 8)) <= 1; })()",
+        "the find pill to ride the shortfall once its field has focus",
+        Duration::from_secs(5),
+        facts,
+    );
+    // The field blurred, the shortfall left in place and no resize: the dock goes back.
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('transcriptSearchInput').blur(); return 'ok'; })()",
+    );
+    harness::until(
+        &tab,
+        &format!(
+            "(function(){{ var g = JSON.parse({facts}); return g.kb === '0px' && !g.up && g.dockBottom === {}; }})()",
+            rest["dockBottom"]
+        ),
+        "the dock back at its resting place once the field has lost focus",
+        Duration::from_secs(5),
+        facts,
+    );
+    harness::eval(&tab, "(function(){ delete visualViewport.height; visualViewport.dispatchEvent(new Event('resize')); return 'ok'; })()");
+}
+
 /// #s287: a phone held sideways in Safari with its tab bar keeps about 16px of the page above the
 /// keyboard (measured on the iOS 26.4 Simulator: Safari's two bars 110pt of 402, the keyboard with
 /// its candidate and accessory bars 276), so the find pill, at that strip's foot, sits under Safari's
