@@ -240,28 +240,48 @@ export function declarations(body) {
  *  a wide phone's column, the session search layer (⌘K), the confirm layer (and the passcode field
  *  the app draws in it since stage 7) and the toast. `.primary` is the confirm layer's button: the
  *  view's own primary buttons are `.sv-primary`, a name the collaboration app does not style
- *  (#s438), so the view never draws `.primary`. The session list's element, `#sessionList` (the
- *  sidebar for now), carries the list's arrangement, `sessions-flat` and `sessions-arranged`, which
- *  sat on `#app` until #s430 stage 1. */
+ *  (#s438), so the view never draws `.primary`. The session list's names are in the two lists
+ *  after this one (#s430 stage 3). */
 export const APP_CHROME = Object.freeze([
-  "#collapseBtn", "#expandBtn", "#filterBtn", "#sessionList", "#sidebarCollapse",
-  ".agent-label", ".agent-monogram",
-  ".arrange-app", ".arrange-note", ".arrange-strip", ".arrange-strip-box", ".arrange-strip-close", ".arrange-strip-text", ".arrange-text",
-  ".arranged-empty", ".arranged-group", ".arranged-head", ".arranged-label", ".arranged-rest", ".arranged-view",
+  "#sidebarCollapse",
   ".attention-count", ".attention-filter", ".attention-mini",
-  ".brand", ".brand-icon",
+  ".brand",
   ".column-pane", ".column-switch", ".column-switch-count",
   ".confirm-layer", ".dialog-actions", ".passcode-input", ".primary",
-  ".drawer-handle", ".drawer-scrim", ".filter-mini", ".head-actions",
+  ".drawer-handle", ".drawer-scrim", ".head-actions",
   ".nav", ".nav-tooltip", ".navbtn", ".no-results",
-  ".rail-flyout", ".rail-flyout-filter", ".rail-flyout-head", ".rail-flyout-tree",
   ".result-copy", ".result-kind", ".result-why",
   ".search-input", ".search-layer", ".search-result", ".search-result-stale", ".search-results", ".searchbox",
-  ".section-menu-name", ".section-view-menu", ".section-view-scrim",
-  ".session-age", ".session-end", ".session-filter", ".session-filter-options", ".session-state", ".sessions-arranged", ".sessions-flat",
-  ".side-head", ".sidebar", ".sidebar-collapse", ".sidebar-mini", ".sidebar-mini-agent", ".sidebar-mini-agents", ".sidebar-mini-badge", ".sidebar-mini-button", ".sidebar-mini-separator", ".sidebar-resizer",
-  ".toast", ".tree", ".tree-action", ".tree-agent", ".tree-context", ".tree-forks", ".tree-main", ".tree-project", ".tree-project-more", ".tree-row", ".tree-side", ".tree-title",
+  ".side-head", ".sidebar", ".sidebar-collapse", ".sidebar-mini", ".sidebar-mini-badge", ".sidebar-mini-button", ".sidebar-mini-separator", ".sidebar-resizer",
+  ".toast",
   ".write-control", ".write-help", ".write-info",
+]);
+
+/** The session list's own body, which hangs on its element `#sessionList` (#s430 stage 3): the tree,
+ *  its rows and labels, the arrangement strip and the arranged sections, and the state chips; and the
+ *  element itself, with the arrangement it carries (`sessions-flat`, `sessions-arranged`, on
+ *  `#app` until stage 1). Like the app's chrome, a rule naming one is not the view's. */
+export const LIST_CHROME = Object.freeze([
+  "#sessionList",
+  ".agent-label", ".agent-monogram",
+  ".arrange-strip", ".arrange-strip-box", ".arrange-strip-close", ".arrange-strip-text",
+  ".arranged-empty", ".arranged-group", ".arranged-head", ".arranged-label", ".arranged-rest", ".arranged-view",
+  ".session-age", ".session-end", ".session-state", ".sessions-arranged", ".sessions-flat",
+  ".tree", ".tree-action", ".tree-agent", ".tree-context", ".tree-forks", ".tree-main", ".tree-project", ".tree-project-more", ".tree-row", ".tree-side", ".tree-title",
+]);
+
+/** What the list draws that the page shows outside `#sessionList` (#s430 stage 3): its head controls
+ *  and the filter sheet, placed in the app's head; the filter's rail button and the agent marks,
+ *  placed in the app's rail; and its floating layers, the rail's flyout and the section menu with
+ *  its scrim. */
+export const LIST_OUTSIDE = Object.freeze([
+  "#collapseBtn", "#expandBtn", "#filterBtn",
+  ".arrange-app", ".arrange-note", ".arrange-text",
+  ".brand-icon", ".filter-mini",
+  ".rail-flyout", ".rail-flyout-filter", ".rail-flyout-head", ".rail-flyout-tree",
+  ".section-menu-name", ".section-view-menu", ".section-view-scrim",
+  ".session-filter", ".session-filter-options",
+  ".sidebar-mini-agent", ".sidebar-mini-agents",
 ]);
 
 /** The app's states, kept on `#app` (stage 5a's groups): its rail, the drawer, and a wide phone's
@@ -360,7 +380,8 @@ function movable(conditions, selector) {
   return conditions;
 }
 
-const CHROME_NAMES = new Set(APP_CHROME);
+// The view's decision reads the app's chrome and the list's together: none of it is the view's.
+const CHROME_NAMES = new Set([...APP_CHROME, ...LIST_CHROME, ...LIST_OUTSIDE]);
 const STATE_NAMES = new Set(APP_STATES);
 const SHARED_NAMES = new Set([...SHARED, ...COMMON]);
 const ROOT_NAMES = new Set(ROOT_CLASSES);

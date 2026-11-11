@@ -101,10 +101,10 @@ const { SESSION_VIEW_MARKUP } = await import("../src/codex-ui/session-view-marku
   const visit = nodes => { for (const node of nodes) { if (node.kind === "group") visit(node.children); else if (node.kind === "rule") for (const n of node.prelude.match(/[.#]-?[A-Za-z_][A-Za-z0-9_-]*/g) || []) used.add(n); } };
   for (const css of [referenceCss, productionCss]) visit(styles.parseCss(styles.stripComments(css)));
   const isOutside = n => styles.OUTSIDE.some(prefix => n === prefix || n.startsWith(`${prefix}-`));
-  const listed = new Set([...styles.APP_CHROME, ...styles.APP_STATES, ...styles.SHARED, ...styles.COMMON, ...styles.ROOT_CLASSES, "#app", ".app", "#sessionView"]);
+  const listed = new Set([...styles.APP_CHROME, ...styles.LIST_CHROME, ...styles.LIST_OUTSIDE, ...styles.APP_STATES, ...styles.SHARED, ...styles.COMMON, ...styles.ROOT_CLASSES, "#app", ".app", "#sessionView"]);
   const unlisted = [...drawn].filter(n => used.has(n) && !listed.has(n) && !isOutside(n)).sort();
   assert.deepEqual(unlisted, [], "every name the app draws that a selector uses is in one of the classifier's lists (scripts/session-view-css.mjs)");
-  const stale = [...styles.APP_CHROME, ...styles.APP_STATES].filter(n => !drawn.has(n) && !new RegExp(`["'\\s.#]${n.slice(1)}(?![\\w-])`).test(appText)).sort();
+  const stale = [...styles.APP_CHROME, ...styles.LIST_CHROME, ...styles.LIST_OUTSIDE, ...styles.APP_STATES].filter(n => !drawn.has(n) && !new RegExp(`["'\\s.#]${n.slice(1)}(?![\\w-])`).test(appText)).sort();
   assert.deepEqual(stale, [], "every name the app's lists hold is one the app draws");
   // Every selector the view's file writes weighs what its source did (the derivation checks it as it
   // goes); and the shell's own copy of a rule the view shares is in the app's file, which loads first.
@@ -175,7 +175,7 @@ const { SESSION_VIEW_MARKUP } = await import("../src/codex-ui/session-view-marku
   assert.ok(viewDrawn.has("components.js") && viewDrawn.get("session-view-markup.js")?.has(".workspace"), "the scan read the view's modules and its markup");
   assert.ok(viewDrawn.get("dialog-card.js")?.has(".dialog-choice") && viewDrawn.get("dialog-card.js")?.has(".dialog-tab") && viewDrawn.get("dialog-card.js")?.has(".dialog-detail") && viewDrawn.get("session-view.js")?.has(".sv-task-card-head"), "the scan read the dialog card's elements (a ternary's and a template's too) and the task card's names");
   assert.ok(viewRead.get("session-view.js")?.has(".sv-session-main"), "the scan read the view's lookups");
-  const appOnly = new Set([...styles.APP_CHROME, ...styles.APP_STATES]);
+  const appOnly = new Set([...styles.APP_CHROME, ...styles.LIST_CHROME, ...styles.LIST_OUTSIDE, ...styles.APP_STATES]);
   const crossing = [...viewDrawn].flatMap(([name, names]) => [...names].filter(n => appOnly.has(n)).map(n => `${name}: ${n}`));
   assert.deepEqual(crossing, [], "the view's modules draw no name of the app's chrome or states (a common word goes in COMMON)");
   // The collaboration app styles these classes in its own page, where the view sits in a pane
