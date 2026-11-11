@@ -1328,6 +1328,13 @@ fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
     }
     eval(tab, "(()=>{Object.defineProperty(visualViewport,'scale',{configurable:true,get:()=>2});Object.defineProperty(visualViewport,'pageTop',{configurable:true,get:()=>120});visualViewport.dispatchEvent(new Event('scroll'));return true;})()");
     wait(tab, "document.getElementById('app').style.transform==='' && !document.getElementById('sessionView').classList.contains('keyboard-up')");
+    // #s451: the keyboard back at scale 1 while the composer's field has focus, then the field
+    // blurred with the short viewport left in place and no resize (Safari kept one 378px short in a
+    // fresh tab with nothing focused): the shortfall is the keyboard only while a field has focus.
+    eval(tab, "(()=>{delete visualViewport.scale;delete visualViewport.pageTop;delete visualViewport.offsetTop;visualViewport.dispatchEvent(new Event('resize'));return true;})()");
+    wait(tab, "document.activeElement===document.getElementById('composeInput') && document.getElementById('sessionView').classList.contains('keyboard-up') && parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--phone-kb'))>80");
+    eval(tab, "document.getElementById('composeInput').blur();true");
+    wait(tab, "!document.getElementById('sessionView').classList.contains('keyboard-up') && getComputedStyle(document.documentElement).getPropertyValue('--phone-kb').trim()==='0px'");
     eval(tab, "(()=>{delete visualViewport.height;delete visualViewport.scale;delete visualViewport.pageTop;delete visualViewport.offsetTop;document.activeElement.blur();visualViewport.dispatchEvent(new Event('resize'));return true;})()");
 }
 /// Reload uses the real browser journal and gateway receipts, including an accepted
