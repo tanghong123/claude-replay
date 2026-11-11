@@ -124,15 +124,18 @@ stage 1, and fences its timers, listeners and handle the same way.
 Each landing is page code: the whole local browser suite and an iOS Simulator walk (the drawer,
 the rail and its flyout, the filter, the arrangements, a wide phone's column) before it lands.
 
-1. **Lookups from a root, and the list's state on its own element.** The list's code finds its
-   elements through a root, as the view's does (`view-root.js`), and `sessions-flat` and
-   `sessions-arranged` move from `#app` to the list's element, with the rules that read them. Lands
-   as one.
-2. **The split.** The list's code moves to `session-list-view.js` behind `mountSessionList`, with
-   the index store, the selection, the list's state and `onOpen`. The app mounts it and answers
-   the event. The contract's assertions on the list's source keep their words and move to the new
-   module in the same commit. A new browser case mounts the list alone in a host page, chooses a
-   session and hears `onOpen`. Lands alone.
+1. **The list's state on its own element.** `sessions-flat` and `sessions-arranged` move from
+   `#app` to the list's element, with the rules that read them and the cases that look for them.
+   For now that element is the sidebar, given the id `sessionList` (an id, so each rule weighs what
+   it did on `#app`): a wrapper around the tree would break the generated reference rules that name
+   the tree as the sidebar's child (`.sidebar>.tree`), and the list's own markup (stage 3) carves
+   the element out of the sidebar anyway. **Built** (#s430), not landed: it lands with stage 2.
+2. **The split, with lookups from the list's element.** The list's code moves to
+   `session-list-view.js` behind `mountSessionList`, with the index store, the selection, the
+   list's state and `onOpen`, and finds its elements inside its element, never the document. The
+   app mounts it and answers the event. The contract's assertions on the list's source keep their
+   words and move to the new module in the same commit. A new browser case mounts the list alone in
+   a host page, chooses a session and hears `onOpen`. Lands with stage 1.
 3. **Markup and styles apart.** The list builds its markup from a template of its own, and its
    rules hang on its element in a stylesheet of its own, generated as the view's is. Lands as one.
 4. **Options and events as the app uses them.** `keyboard`, `theme`, `show` (the filter, the

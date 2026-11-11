@@ -546,17 +546,15 @@ mod tests {
             ".column-pane",
         ];
         // The app's states, kept on `#app`: the app placing or styling the view from outside —
-        // its rail, the drawer, a wide phone's column and its pane, the list's arrangement, and
-        // the artifact pane's state copied onto `#app` for its grid. Stage 6 lays the view out by
-        // its own pane's size instead.
+        // its rail, the drawer, a wide phone's column and its pane, and the artifact pane's state
+        // copied onto `#app` for its grid. Stage 6 lays the view out by its own pane's size
+        // instead. The list's arrangement is on the list's own element since #s430 stage 1.
         const APP_STATES: &[&str] = &[
             ".sidebar-off",
             ".sidebar-tight",
             ".mobile-detail",
             ".phone-column-off",
             ".column-pane-on",
-            ".sessions-flat",
-            ".sessions-arranged",
             ".preview-off",
             ".preview-full",
         ];

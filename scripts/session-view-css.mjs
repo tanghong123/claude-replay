@@ -240,9 +240,11 @@ export function declarations(body) {
  *  a wide phone's column, the session search layer (⌘K), the confirm layer (and the passcode field
  *  the app draws in it since stage 7) and the toast. `.primary` is the confirm layer's button: the
  *  view's own primary buttons are `.sv-primary`, a name the collaboration app does not style
- *  (#s438), so the view never draws `.primary`. */
+ *  (#s438), so the view never draws `.primary`. The session list's element, `#sessionList` (the
+ *  sidebar for now), carries the list's arrangement, `sessions-flat` and `sessions-arranged`, which
+ *  sat on `#app` until #s430 stage 1. */
 export const APP_CHROME = Object.freeze([
-  "#collapseBtn", "#expandBtn", "#filterBtn", "#sidebarCollapse",
+  "#collapseBtn", "#expandBtn", "#filterBtn", "#sessionList", "#sidebarCollapse",
   ".agent-label", ".agent-monogram",
   ".arrange-app", ".arrange-note", ".arrange-strip", ".arrange-strip-box", ".arrange-strip-close", ".arrange-strip-text", ".arrange-text",
   ".arranged-empty", ".arranged-group", ".arranged-head", ".arranged-label", ".arranged-rest", ".arranged-view",
@@ -256,17 +258,17 @@ export const APP_CHROME = Object.freeze([
   ".result-copy", ".result-kind", ".result-why",
   ".search-input", ".search-layer", ".search-result", ".search-result-stale", ".search-results", ".searchbox",
   ".section-menu-name", ".section-view-menu", ".section-view-scrim",
-  ".session-age", ".session-end", ".session-filter", ".session-filter-options", ".session-state",
+  ".session-age", ".session-end", ".session-filter", ".session-filter-options", ".session-state", ".sessions-arranged", ".sessions-flat",
   ".side-head", ".sidebar", ".sidebar-collapse", ".sidebar-mini", ".sidebar-mini-agent", ".sidebar-mini-agents", ".sidebar-mini-badge", ".sidebar-mini-button", ".sidebar-mini-separator", ".sidebar-resizer",
   ".toast", ".tree", ".tree-action", ".tree-agent", ".tree-context", ".tree-forks", ".tree-main", ".tree-project", ".tree-project-more", ".tree-row", ".tree-side", ".tree-title",
   ".write-control", ".write-help", ".write-info",
 ]);
 
-/** The app's states, kept on `#app` (stage 5a's groups): its rail, the drawer, a wide phone's column
- *  and its pane, and the list's arrangement. A rule that reads one is the app placing or styling the
+/** The app's states, kept on `#app` (stage 5a's groups): its rail, the drawer, and a wide phone's
+ *  column and its pane. A rule that reads one is the app placing or styling the
  *  view from outside, and stays the app's (stage 6 lays the view out by its own pane's size). */
 export const APP_STATES = Object.freeze([
-  ".column-pane-on", ".mobile-detail", ".phone-column-off", ".sessions-arranged", ".sessions-flat", ".sidebar-off", ".sidebar-tight",
+  ".column-pane-on", ".mobile-detail", ".phone-column-off", ".sidebar-off", ".sidebar-tight",
 ]);
 
 /** Names the app's chrome and the view both draw: the glyph button, generic states and labels, and

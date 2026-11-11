@@ -24,6 +24,13 @@ let viewHandle = null;
 function persist() { persistIndex(); viewHandle?.persist(); }
 const app = page.byId("app");
 const tree = page.byId("tree");
+// The session list's own element (#s430, design/session-list-component.md, stage 1): where the list
+// keeps the state it sets for itself, its arrangement (`sessions-flat`, `sessions-arranged`), which
+// it kept on `#app`. For now it is the sidebar, which also holds the app's brand and rail; the list's
+// own markup (stage 3) carves its element out of it. An id, so the rules that read the state weigh
+// what they did on `#app`.
+const sessionList = page.$(".sidebar");
+sessionList.id = "sessionList";
 // The session view's own element (#s429, design/session-view-component.md): where the view builds
 // its three parts from its own markup (the workspace, the pane's resizer and the artifact pane,
 // stage 4) and the state it keeps for itself (stage 2: composing, a phone sheet open, the keyboard up,
@@ -430,8 +437,8 @@ function renderTree() {
   const arranged = !!layout?.available;
   const flat = indexState.flat || (source && !arranged && indexState.arrangeBefore === "flat");
   paintArrangeStrip(source, layout);
-  app.classList.toggle("sessions-flat", flat || arranged);
-  app.classList.toggle("sessions-arranged", arranged);
+  sessionList.classList.toggle("sessions-flat", flat || arranged);
+  sessionList.classList.toggle("sessions-arranged", arranged);
   if (arranged) html = arrangedSessionsHtml(layout, agents, shownAgents);
   else if (flat) html = flatSessionsHtml(shownAgents);
   else for (const agent of shownAgents) {

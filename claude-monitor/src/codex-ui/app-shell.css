@@ -396,9 +396,9 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .tree-agent .brand-icon{width:12px;height:12px;display:block}
 .tree-agent .agent-monogram text{fill:currentColor;stroke:none;font:700 12px var(--sans,system-ui)}
 .tree-project{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#app.sessions-flat .tree-row.session.is-member{padding-left:30px}
-#app.sessions-flat .tree-row.session.is-side{padding-left:calc(16px + var(--side-depth,1) * 14px)}
-#app.sessions-flat .side-head .head-actions>:is(#collapseBtn,#expandBtn){display:none}
+#sessionList.sessions-flat .tree-row.session.is-member{padding-left:30px}
+#sessionList.sessions-flat .tree-row.session.is-side{padding-left:calc(16px + var(--side-depth,1) * 14px)}
+#sessionList.sessions-flat .side-head .head-actions>:is(#collapseBtn,#expandBtn){display:none}
 .sidebar>.arrange-strip{width:var(--sidebar);min-width:var(--sidebar);box-sizing:border-box;padding:2px 12px 6px;flex:none}
 #app.sidebar-off .sidebar>.arrange-strip{display:none}
 .arrange-strip-box{display:flex;align-items:flex-start;gap:6px;padding:7px 6px 7px 10px;border-radius:8px;background:color-mix(in srgb,var(--blue) 9%,transparent);color:var(--sub);font-size:12px;line-height:16px}
@@ -429,8 +429,8 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .section-menu-name{margin-left:auto;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--faint);text-transform:none;letter-spacing:0}
 .arranged-rest{margin-top:8px;border-top:1px solid var(--line)}
 .tree-row.project.arranged-group{padding-left:12px}
-#app.sessions-arranged .tree-row.session.arranged.in-group{padding-left:28px}
-#app.sessions-arranged .tree-row.session.arranged.is-side{padding-left:calc(16px + var(--side-depth,1) * 14px)}
+#sessionList.sessions-arranged .tree-row.session.arranged.in-group{padding-left:28px}
+#sessionList.sessions-arranged .tree-row.session.arranged.is-side{padding-left:calc(16px + var(--side-depth,1) * 14px)}
 .arranged-empty{padding:4px 12px 6px 28px;font-size:11.5px;color:var(--faint)}
 .tree-row.session.is-absent .tree-title{color:var(--faint);font-style:italic}
 .tree-row.session.is-absent .tree-context{color:var(--faint)}

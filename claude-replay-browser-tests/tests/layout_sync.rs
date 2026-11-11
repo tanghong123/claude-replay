@@ -50,7 +50,7 @@ fn world(stores: &Stores) {
 
 /// The arranged list as the reader sees it: each head, each sub-head, and each row's id, title,
 /// whether it is nested, and whether it is drawn as absent.
-const LIST_JS: &str = "JSON.stringify({ strip: (document.getElementById('arrangeStrip') || {}).innerText || '', warn: !!document.querySelector('#arrangeStrip.warn'), flat: document.getElementById('app').classList.contains('sessions-flat'), items: Array.from(document.querySelectorAll('#tree .arranged-head, #tree .arranged-group, #tree .tree-row.session')).map(function (e) { if (e.classList.contains('arranged-head')) return ['head', e.querySelector('.arranged-label').innerText]; if (e.classList.contains('arranged-group')) return ['group', e.innerText]; return ['row', e.dataset.session, e.querySelector('.tree-title').innerText, e.classList.contains('is-side'), e.classList.contains('is-absent')]; }) })";
+const LIST_JS: &str = "JSON.stringify({ strip: (document.getElementById('arrangeStrip') || {}).innerText || '', warn: !!document.querySelector('#arrangeStrip.warn'), flat: document.getElementById('sessionList').classList.contains('sessions-flat'), items: Array.from(document.querySelectorAll('#tree .arranged-head, #tree .arranged-group, #tree .tree-row.session')).map(function (e) { if (e.classList.contains('arranged-head')) return ['head', e.querySelector('.arranged-label').innerText]; if (e.classList.contains('arranged-group')) return ['group', e.innerText]; return ['row', e.dataset.session, e.querySelector('.tree-title').innerText, e.classList.contains('is-side'), e.classList.contains('is-absent')]; }) })";
 
 fn list(tab: &headless_chrome::Tab) -> serde_json::Value {
     eval(tab, LIST_JS)

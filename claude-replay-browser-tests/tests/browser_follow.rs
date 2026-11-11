@@ -16901,7 +16901,7 @@ const FLAT_QW: &str = "f1a7f1a7-0000-4000-8000-000000000006";
 /// The list as the reader sees it: the order of its session rows (title, the project and agent
 /// the row names, whether it is the selected one), the group heads, whether the two group controls
 /// and the flat toggle are shown and checked, and the app's mode class.
-const FLAT_LIST_JS: &str = "(function () { var t = document.getElementById('tree'); var shown = function (id) { var el = document.getElementById(id); return !!el && getComputedStyle(el).display !== 'none'; }; var flat = document.querySelector('#sessionFilter [data-flat]'); return { rows: Array.from(t.querySelectorAll('.tree-row.session[data-session]')).map(function (r) { var p = r.querySelector('.tree-project'), a = r.querySelector('.tree-agent'), m = a && a.querySelector('.agent-monogram text'), ink = a && (a.querySelector('.brand-icon [fill]:not([fill=none])') || m); return [r.querySelector('.tree-title').textContent, p ? p.textContent : null, a ? a.getAttribute('aria-label') : null, r.classList.contains('selected'), m ? m.textContent : null, ink ? getComputedStyle(ink).fill : a ? getComputedStyle(a.querySelector('.brand-icon')).stroke : null, a ? getComputedStyle(a).color : null]; }), heads: t.querySelectorAll('.agent-label, .tree-row.project').length, collapse: shown('collapseBtn'), expand: shown('expandBtn'), filter: shown('filterBtn'), toggle: flat ? flat.getAttribute('aria-checked') : 'missing', mode: document.getElementById('app').classList.contains('sessions-flat') }; })()";
+const FLAT_LIST_JS: &str = "(function () { var t = document.getElementById('tree'); var shown = function (id) { var el = document.getElementById(id); return !!el && getComputedStyle(el).display !== 'none'; }; var flat = document.querySelector('#sessionFilter [data-flat]'); return { rows: Array.from(t.querySelectorAll('.tree-row.session[data-session]')).map(function (r) { var p = r.querySelector('.tree-project'), a = r.querySelector('.tree-agent'), m = a && a.querySelector('.agent-monogram text'), ink = a && (a.querySelector('.brand-icon [fill]:not([fill=none])') || m); return [r.querySelector('.tree-title').textContent, p ? p.textContent : null, a ? a.getAttribute('aria-label') : null, r.classList.contains('selected'), m ? m.textContent : null, ink ? getComputedStyle(ink).fill : a ? getComputedStyle(a.querySelector('.brand-icon')).stroke : null, a ? getComputedStyle(a).color : null]; }), heads: t.querySelectorAll('.agent-label, .tree-row.project').length, collapse: shown('collapseBtn'), expand: shown('expandBtn'), filter: shown('filterBtn'), toggle: flat ? flat.getAttribute('aria-checked') : 'missing', mode: document.getElementById('sessionList').classList.contains('sessions-flat') }; })()";
 
 /// #s340 (Hong's yes on #s342): a session the Claude desktop app records as started from another
 /// (`spawnedFrom` in its own session store) is drawn under its starter, marked as a side session,
@@ -17027,7 +17027,7 @@ fn the_app_shell_nests_a_desktop_side_session_under_its_starter() {
     click("#sessionFilter [data-flat]");
     harness::until(
         &tab,
-        "document.getElementById('app').classList.contains('sessions-flat')",
+        "document.getElementById('sessionList').classList.contains('sessions-flat')",
         "the flat list is on",
         Duration::from_secs(10),
         "document.getElementById('app').className",
@@ -17398,7 +17398,7 @@ fn a_phone_lists_the_sessions_by_activity_in_its_drawer_and_its_column() {
         phone_tap(&tab, "#sessionFilter [data-flat]");
         harness::until(
             &tab,
-            "!document.getElementById('app').classList.contains('sessions-flat') && document.querySelectorAll('#app>.sidebar .agent-label').length > 0",
+            "!document.getElementById('sessionList').classList.contains('sessions-flat') && document.querySelectorAll('#app>.sidebar .agent-label').length > 0",
             "the toggle to bring the tree back",
             Duration::from_secs(10),
             "document.getElementById('app').className",

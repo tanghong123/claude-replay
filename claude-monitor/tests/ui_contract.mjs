@@ -1112,7 +1112,7 @@ assert.match(viewSource, /if \(target && turnsFollow\) revealInPane\(target\);/,
   assert.notEqual(agentLogo("qwenwork"), agentLogo("qoder"), "and not Qoder's");
   console.log("#s209 agent mark cases passed");
 }
-assert.match(productionCss, /#app\.sessions-flat \.side-head \.head-actions>:is\(#collapseBtn,#expandBtn\)\{display:none\}/, "flat, the group controls go");
+assert.match(productionCss, /#sessionList\.sessions-flat \.side-head \.head-actions>:is\(#collapseBtn,#expandBtn\)\{display:none\}/, "flat, the group controls go (the list keeps its arrangement on its own element, #s430 stage 1)");
 assert.match(appSource, /indexState\.selectedWasRow && !selectedRow\(\)\) sessionGone\(\)/, "a sub-agent child, never a list row, is not declared gone by the index poll");
 assert.match(viewSource, /meta\?\.ancestors\?\.at\(-1\)/, "the parent control reads the last ancestor from the session's own meta");
 assert.match(productionCss, /\.session-parent\.is-live\{display:inline-flex;/, "the reference parent control is shown by a production state, not by editing the shell");
