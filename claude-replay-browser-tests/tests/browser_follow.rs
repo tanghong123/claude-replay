@@ -2379,9 +2379,10 @@ fn the_app_shell_subtitle_after_a_plan_card_gives_one_answer_per_offset() {
 ///
 /// Each step records every value the subtitle shows (an observer's callback reads the text at a
 /// microtask checkpoint) and every `onTurn` from the press until the view is still; then a unit
-/// below grows by 40px with no input; then the view scrolls one pixel, which reads the spy's line.
-/// The turn at rest is the one that pixel names, nothing shown or said during the step passes it,
-/// the growth changes nothing, and nothing is said one pixel on. The turns open three ways, a prompt, a slash command and another
+/// below grows by 40px with no input, and the case waits for the engine to measure it; then the
+/// view scrolls one pixel, which reads the spy's line. The turn at rest is the one that pixel
+/// names, nothing shown or said during the step passes it, the growth changes nothing, and nothing
+/// is said one pixel on. The turns open three ways, a prompt, a slash command and another
 /// session's message, each followed at once by its tool call, and the case holds every opener to
 /// 40px. As drawn, an opener barely fits the band: on a desktop the turn bar puts the line 60px
 /// down and a slash command's card with the head below it takes 120px (a prompt 131px), so none
@@ -2531,7 +2532,16 @@ fn head_step_names_one_turn(port: u16, phone: Option<(u32, u32)>) {
         // the engine measures it in a transaction of its own, with no input and nothing to move.
         let said_grow_from = view_events(&tab, "onTurn").len();
         harness::eval(&tab, "window.__subtitles = []; 'ok'");
-        harness::eval(&tab, "(function(){ var w=document.querySelector('.virtual-window'), u=w.lastElementChild; var d=document.createElement('div'); d.style.height='40px'; u.appendChild(d); return u.dataset.unitKey; })()");
+        harness::eval(&tab, "(function(){ window.__statesBeforeGrowth = window.__viewportHistory.states.length; var w=document.querySelector('.virtual-window'), u=w.lastElementChild; var d=document.createElement('div'); d.style.height='40px'; u.appendChild(d); return u.dataset.unitKey; })()");
+        // The idle tracker does not see a DOM change: wait for the engine to have measured it, a
+        // `measure` transaction after the growth, or the step would test nothing.
+        harness::until(
+            &tab,
+            "window.__viewportHistory.states.slice(window.__statesBeforeGrowth).some(function (s) { return s.cause === 'measure'; })",
+            "the engine to measure the grown unit",
+            bound,
+            "JSON.stringify(window.__viewportHistory.states.slice(window.__statesBeforeGrowth).map(function (s) { return s.cause; }))",
+        );
         let (grown, _) = harness::until_still(&tab, reading, |_| true, bound);
         let grown = parse(&grown);
         let painted_grow: Vec<i64> = harness::eval(&tab, "JSON.stringify(window.__subtitles)")
