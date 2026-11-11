@@ -1335,6 +1335,11 @@ fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
     wait(tab, "document.activeElement===document.getElementById('composeInput') && document.getElementById('sessionView').classList.contains('keyboard-up') && parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--phone-kb'))>80");
     eval(tab, "document.getElementById('composeInput').blur();true");
     wait(tab, "!document.getElementById('sessionView').classList.contains('keyboard-up') && getComputedStyle(document.documentElement).getPropertyValue('--phone-kb').trim()==='0px'");
+    // #s455: nor does the resident composer fit itself to that shortfall with nothing focused. A
+    // viewport left 60px tall would have cut it to one clipped input row (fitComposer read
+    // visualViewport.height); it reads the view's guarded --phone-kb and keeps its full height.
+    eval(tab, "(()=>{Object.defineProperty(visualViewport,'height',{configurable:true,get:()=>60});visualViewport.dispatchEvent(new Event('resize'));return true;})()");
+    wait(tab, "document.activeElement!==document.getElementById('composeInput') && getComputedStyle(document.documentElement).getPropertyValue('--phone-kb').trim()==='0px' && document.getElementById('composer').getAttribute('data-shared-input-only')==='false' && parseFloat(document.getElementById('composer').style.maxHeight)>100");
     eval(tab, "(()=>{delete visualViewport.height;delete visualViewport.scale;delete visualViewport.pageTop;delete visualViewport.offsetTop;document.activeElement.blur();visualViewport.dispatchEvent(new Event('resize'));return true;})()");
 }
 /// Reload uses the real browser journal and gateway receipts, including an accepted
