@@ -111,7 +111,9 @@ Chrome would move focus to the button and hide the bug (`a_phone_s_filter_and_ke
 iOS focuses the field as the search opens, so hiding the funnel while typing hid it always — the
 owner found no filter in either orientation). The dock rides the keyboard through `visualViewport`
 (`--phone-kb` = the app's height less the visible one; iOS never lifts a fixed bottom element above
-it), and iOS also SCROLLS THE PAGE to bring the focused field above its keyboard (322px upright on
+it), counted only while a field that takes a keyboard has focus (#s451: after a keyboard had been up,
+the iOS 26.4 Simulator gave a fresh tab with nothing focused a visual viewport 378px short, and the
+dock floated; `typesInto`, ridden again as focus moves; `a_phone_with_nothing_focused_takes_no_short_viewport_for_the_keyboard`), and iOS also SCROLLS THE PAGE to bring the focused field above its keyboard (322px upright on
 iOS 26), which took the top bar and a wide phone's column head off the screen (#s41): pinning the page
 back with `scrollTo` fights iOS and jitters, so the app is moved back over the scroll
 (`translateY(visualViewport.pageTop)`) and `--phone-top`/`--phone-bottom` are measured against the
