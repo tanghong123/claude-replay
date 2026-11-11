@@ -4502,7 +4502,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listSource, /function chooseSession\(id, push\) \{\n  if \(!id\) return;\n  options\.onOpen\?\.\(\{ id, push \}\);\n\}/, "a choice in the list is said, and the list's selection is the host's to move");
   assert.match(listSource, /^  select: id => \{ if \(id\) take\(id\); \},$/m, "the host's selection is taken and not said");
   assert.match(listSource, /if \(session\) \{ chooseSession\(session\.dataset\.session, true\); return; \}/, "a row is a choice");
-  assert.match(listSource, /rows\[next\]\.focus\(\); chooseSession\(rows\[next\]\.dataset\.session, true\);/, "and so is a list key");
+  assert.match(listSource, /const id = rows\[next\]\.dataset\.session;\n  rows\[next\]\.focus\(\); chooseSession\(id, true\);/, "and so is a list key");
   assert.match(appSource, /^  onOpen: \(\{ id, push \}\) => selectSession\(id, push\),$/m, "the app answers a choice as it opens any session");
   assert.match(appSource, /listHandle\.select\(id\);\n  showSession\(id, push\);/, "and a selection it starts is the list's half, then its own");
   // The list's elements are its element's: no lookup through the page, whose focus alone it reads. A
@@ -4560,9 +4560,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const mount = (options, element = empty()) => { try { return guard(element, options, MOUNT, CONTROLS, MODES); } catch (error) { return `refused: ${error.message}`; } };
   assert.equal(mount({}), "engaged", "engaged by default");
   assert.equal(mount({ keyboard: "page", show: { filter: false, hiding: true, arrangements: false }, onToast: () => {} }), "page", "the page's keyboard, and controls switched on and off by name");
-  for (const [options, why] of [[{ toast: () => {} }, "toast"], [{ compact: () => true }, "compact"], [{ show: { reading: false } }, "reading"], [{ show: { filter: "no" } }, "\"no\""], [{ keyboard: "capture" }, "capture"]]) {
-    assert.match(String(mount(options)), new RegExp(`^refused: .*${why}`), `a retired option, an unknown control, a value that is not a boolean, an unknown keyboard is refused: ${why}`);
+  for (const [options, why] of [[{ toast: () => {} }, "toast"], [{ compact: () => true }, "compact"], [{ show: { reading: false } }, "reading"], [{ show: { filter: "no" } }, "\"no\""], [{ keyboard: "capture" }, "capture"], [{ show: false }, "show as an object.*false"], [{ show: "filter" }, "show as an object.*\"filter\""], [{ show: ["filter"] }, "show as an object"]]) {
+    assert.match(String(mount(options)), new RegExp(`^refused: .*${why}`), `a retired option, an unknown control, a value that is not a boolean, a show that is not an object, an unknown keyboard is refused: ${why}`);
   }
+  assert.equal(mount({ show: null }), "engaged", "a show left empty is no show");
   assert.match(String(mount({}, { id: "tree", childNodes: [] })), /^refused: .*#tree/, "an element with another id is refused");
   assert.match(String(mount({}, { id: "", childNodes: [{ nodeType: 1 }] })), /^refused: .*host's nodes/, "and one holding the host's nodes");
   assert.match(listSource, /^const shows = name => options\.show\?\.\[name\] !== false;$/m, "each control is shown unless switched off");
@@ -4598,9 +4599,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     handlers.length = 0;
     run(element, resolveKey, () => {}, "page", signal);
     assert.equal(handlers.length, 0, "the page's keyboard binds nothing");
+    run(element, resolveKey, () => false, "engaged", signal);
+    assert.equal(press("ArrowDown", row), false, "a step that moves nothing (a project's row, the last session) leaves the key to the page");
   }
+  assert.match(listSource, /^  const at = rows\.indexOf\(page\.active\(\)\); if \(at < 0\) return false;$/m, "a step with no session row focused moves nothing");
+  assert.match(listSource, /^  if \(next === at\) return false;$/m, "nor one past the last row, which chooses the same session no more");
   assert.match(listSource, /^  keys: keyActions,$/m, "the handle's keys are the list's actions");
-  assert.match(listSource, /const focusedRow = tree\.contains\(active\) && active\.matches\?\.\("\.tree-row\.session"\) \? active\.dataset\.session : "";\n  if \(treeHtml !== treeWritten\) \{\n    tree\.innerHTML = treeHtml; treeWritten = treeHtml;\n    if \(focusedRow\) tree\.querySelector\(`\.tree-row\.session\[data-session="\$\{CSS\.escape\(focusedRow\)\}"\]`\)\?\.focus\(\{ preventScroll: true \}\);/, "and a row with the focus keeps it as the tree is redrawn with the selection a key made");
+  assert.match(listSource, /^  if \(!unmounted && !tree\.contains\(page\.active\(\)\)\) tree\.querySelector\(`\.tree-row\.session\[data-session="\$\{CSS\.escape\(id\)\}"\]`\)\?\.focus\(\{ preventScroll: true \}\);$/m, "and the row a step reached keeps the focus as the host's select redraws the tree");
+  assert.match(listSource, /^  if \(treeHtml !== treeWritten\) \{ tree\.innerHTML = treeHtml; treeWritten = treeHtml; \}$/m, "while a redraw carries no row's focus: a row clicked with the mouse gives the page back its keys");
   assert.match(appSource, /^  keyboard: "page",$/m, "the app keeps the page's keyboard");
   assert.match(appSource, /^  \.\.\.listHandle\.keys,$/m, "and its keymap calls the list's keys");
   // Drawn small: the app's call, the flyouts' gate.
@@ -4639,6 +4645,23 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     assert.ok(unmount[0].includes(step), `the unmount does ${step}`);
   }
   assert.match(body, /^const elementBefore = \[\.\.\.element\.attributes\]\.map\(attribute => \[attribute\.name, attribute\.value\]\);\n(?:\/\/[^\n]*\n)*element\.id = "sessionList";$/m, "the element's attributes are read before the list writes any");
+  // A host that unmounts the list from inside its own callback comes back into the list's code: the
+  // redraw and another app's list ask for nothing then.
+  assert.match(listSource, /^function renderTree\(\) \{\n(?:  \/\/[^\n]*\n)*  if \(unmounted\) return;$/m, "an unmounted list draws nothing, whoever asks");
+  assert.match(listSource, /^function refreshLayout\(\) \{\n  if \(unmounted\) return Promise\.resolve\(\);$/m, "and asks for no other app's list");
+  // Hiding off: an arranged list's session the reader hid is drawn as any other, with no restore.
+  assert.match(listSource, /\$\{row\.hidden && shows\("hiding"\) \? "is-hidden" : ""\}/, "hiding off, no row is dimmed as hidden");
+  // The filter's glyph says what its sheet offers, and with every control shown what it always said.
+  {
+    const statement = /^const glyphTitle = [\s\S]*?;$/m.exec(listSource);
+    assert.ok(statement, "the glyph's title is worked out from what is shown");
+    const title = off => new Function("shows", `${statement[0]}\nreturn glyphTitle;`)(name => !off.includes(name));
+    assert.equal(title([]), "Filter the sessions — active in the last 6 hours, blocked, idle — and include hidden ones", "every control shown, the title it always had");
+    assert.equal(title(["hiding"]), "Filter the sessions — active in the last 6 hours, blocked, idle", "hiding off, no hidden ones offered");
+    assert.equal(title(["filter"]), "Include hidden sessions, and arrange the list", "the filter off, what is left");
+    assert.equal(title(["filter", "arrangements"]), "Include hidden sessions");
+    assert.equal(title(["filter", "hiding"]), "Arrange the sessions");
+  }
   // Work still out does nothing when it comes back: the index's read (its store's generation), another
   // app's list, the apps that could be followed, a hide or a restore.
   assert.match(listSource, /if \(unmounted \|\| arrangeSource\(\) !== source\) return;\n      const data = JSON\.parse\(text\);/, "another app's list");

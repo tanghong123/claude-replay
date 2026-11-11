@@ -3742,14 +3742,25 @@ pub fn open_list_host_page_with(tab: &headless_chrome::Tab, monitor: &Monitor, q
 /// `DOMDebugger.getEventListeners`, which sees what an abort signal removed, where a ledger kept in
 /// the page would not): `window:keydown:capture`, sorted (#s429 stage 7).
 pub fn page_listeners(tab: &headless_chrome::Tab) -> Vec<String> {
+    listeners_of(tab, &[("window", "window"), ("document", "document")])
+}
+
+/// Every listener on each of `targets`, a label and the expression that names the object (an
+/// element a component was mounted in, say, which outlives it), as `page_listeners` reads them:
+/// `<label>:keydown:bubble`, sorted (#s430 stage 4). A target the expression finds no object for
+/// reads as `<label>:missing`.
+pub fn listeners_of(tab: &headless_chrome::Tab, targets: &[(&str, &str)]) -> Vec<String> {
     use headless_chrome::protocol::cdp::DOMDebugger::GetEventListeners;
     let mut out = Vec::new();
-    for target in ["window", "document"] {
-        let object = tab
-            .evaluate(target, false)
+    for &(target, expression) in targets {
+        let Some(object) = tab
+            .evaluate(expression, false)
             .expect("the page answers")
             .object_id
-            .expect("an object");
+        else {
+            out.push(format!("{target}:missing"));
+            continue;
+        };
         let listeners = tab
             .call_method(GetEventListeners {
                 object_id: object,
