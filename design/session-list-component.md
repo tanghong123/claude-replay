@@ -173,7 +173,9 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      `"marks"` (appended to the rail). The DOM is node for node what it is now, and the list looks
      up nothing of the app's (today it finds `#sidebarCollapse`, `.side-head` and
      `#sidebarMiniSearch` to anchor its parts). A host that leaves `place` out gets the controls and
-     the sheet in a head at the top of the list's element and no rail. The rail flyout and the
+     the sheet in a head at the top of the list's element, which is the sheet's containing block
+     (the host case opens the sheet there), and no rail. No rule of the list's own bakes in the
+     sidebar's 232px minimum: step 6 measures the list's row against its own pane. The rail flyout and the
      section menu keep floating where `layer` puts them. Stage 4 turns the controls into one strip
      (`controls()`) and the rail into the list's compact form (`compact(on)`).
    - **The template** is cut from the demo's shell by `scripts/extract-agent-monitor-demo.mjs`, as
@@ -209,8 +211,10 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      classifier's lists checked both ways against what the app and the list draw, and `place` and
      `theme` among the option names. Before landing, beyond the suite and the Simulator walk, the
      throwaway probe of stage 5b: every element's computed style, old build against new, on a
-     desktop at three widths in both themes, the 232px sidebar, the rail and each flyout, the sheet,
-     flat and arranged, the section menu, a phone's drawer shut and open and a wide phone's column.
+     desktop at three widths in both themes, the 232px sidebar, the rail with its marks and each
+     flyout, the sheet, flat and arranged, the section menu, native mode's additions to the nav row
+     (they share selectors with what moves), a phone's drawer shut and open and a wide phone's
+     column.
 4. **Options and events as the app uses them.** `keyboard`, `theme`, `show` (the filter, the
    arrangements, hiding), `onOpen`, `compact`, `controls()` and `unmount`; unknown option names are
    refused, as the view's are, and a contract check holds the names. The unmount case follows the
