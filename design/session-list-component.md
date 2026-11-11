@@ -147,9 +147,9 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
    `filtered()` (the session search clears the filter for a row it is hiding). `select(id)` takes no
    `push`, which only the app's half uses; `onIndex` is raised before the list draws the new rows, and
    the list is drawn even if it throws. So the app's half (a selection gone, the view told, a first
-   session chosen) now runs whole before the draw, where the app used to draw between the first and
-   the second; none of it reads the drawn tree. And the mount sets `#sessionList` on its element
-   itself.
+   session chosen, whose `select` draws the tree itself) now runs before the list's own draw, where
+   the app used to draw between the first and the second; none of it reads the drawn tree. And the
+   mount sets `#sessionList` on its element itself.
 3. **Markup and styles apart.** The list builds its markup from a template of its own, and its
    rules hang on its element in a stylesheet of its own, generated as the view's is. Lands as one.
 4. **Options and events as the app uses them.** `keyboard`, `theme`, `show` (the filter, the

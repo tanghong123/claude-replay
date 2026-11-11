@@ -76,8 +76,8 @@ const sessionIndex = new SessionIndexStore({
   update: () => {
     // The host's half first (`onIndex`): in the app, a selection whose row is gone, the view told and
     // the first session chosen while none is. Before #s430 the app drew the tree between the first
-    // and the second; none of it reads the drawn tree, and a first session chosen there is drawn
-    // selected by this draw. A host that throws still gets its list drawn.
+    // and the second; none of it reads the drawn tree (a first session chosen there is drawn by its
+    // `select`, and again here). A host that throws still gets its list drawn.
     try { options.onIndex?.(); } finally {
       renderTree();
       // #s387: an app's list is followed at the index's own pace.
