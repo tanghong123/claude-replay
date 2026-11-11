@@ -72,7 +72,8 @@ const listHandle = mountSessionList(page.$(".sidebar"), {
   layer: kind => (kind === "flyout" ? page.body() : app),
 });
 
-/** The index has new rows (the list draws them next): the app's half, as it ran before the list's. */
+/** The index has new rows (the list draws them next): the app's half. Before #s430 the tree was drawn
+ *  between a gone selection and the view told; nothing here reads the drawn tree. */
 function indexArrived() {
   if (indexState.selected && indexState.selectedWasRow && !selectedRow()) sessionGone();
   // The view follows the index: its top bar, its compose box, and the open session's workers.

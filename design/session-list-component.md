@@ -53,6 +53,9 @@ returns a handle:
   native thread the index has not listed;
 - `refresh()`, `resized()` and `unmount()`.
 
+Stage 2 builds the rows, `select` and `refresh`; `take`, `resized` and `unmount` come with the
+later stages (`take` with native mode's move off `state.js`, `unmount` with stage 4).
+
 ### The list owns the index and the selection
 
 The session index store (`session-index-store.js`, which reads and merges into `indexState`) moves
@@ -142,9 +145,11 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
    keeps that name for the engine), and three more names came out of the code: the option
    `newSession` (native mode's project buttons in the tree) and the handle's `setBuckets` and
    `filtered()` (the session search clears the filter for a row it is hiding). `select(id)` takes no
-   `push`, which only the app's half uses; `onIndex` is raised before the list draws the new rows, so
-   the app's half (a selection gone, the view told, a first session chosen) runs ahead of the draw as
-   it did; and the mount sets `#sessionList` on its element itself.
+   `push`, which only the app's half uses; `onIndex` is raised before the list draws the new rows, and
+   the list is drawn even if it throws. So the app's half (a selection gone, the view told, a first
+   session chosen) now runs whole before the draw, where the app used to draw between the first and
+   the second; none of it reads the drawn tree. And the mount sets `#sessionList` on its element
+   itself.
 3. **Markup and styles apart.** The list builds its markup from a template of its own, and its
    rules hang on its element in a stylesheet of its own, generated as the view's is. Lands as one.
 4. **Options and events as the app uses them.** `keyboard`, `theme`, `show` (the filter, the

@@ -32,7 +32,8 @@ import { page } from "./view-root.js";
  *    list keys), `push` whether it is a new place in the history. The list has not moved its
  *    selection: the host does, with `select(id)`, when it opens the session.
  *  - `onIndex()`: the index has new rows: the host's own work on them (the selection gone, the view
- *    told, a first session chosen) comes before the list draws them.
+ *    told, a first session chosen), raised before the list draws them; the list is drawn even if it
+ *    throws.
  *  - `projectTree(filtered, all)`: the tree the list draws, from the one the filter leaves and the
  *    whole grouped index (native mode's projects); left out, the filtered one.
  *  - `projectActions()`: whether the Codex groups offer a new session and a new project.
@@ -73,12 +74,15 @@ const tree = inList.byId("tree");
 let treeWritten = null;
 const sessionIndex = new SessionIndexStore({
   update: () => {
-    // The host's half first, as the app did it ahead of the list: a selection whose row is gone, the
-    // view told, and the first session chosen while none is (`onIndex`).
-    options.onIndex?.();
-    renderTree();
-    // #s387: an app's list is followed at the index's own pace.
-    refreshLayout();
+    // The host's half first (`onIndex`): in the app, a selection whose row is gone, the view told and
+    // the first session chosen while none is. Before #s430 the app drew the tree between the first
+    // and the second; none of it reads the drawn tree, and a first session chosen there is drawn
+    // selected by this draw. A host that throws still gets its list drawn.
+    try { options.onIndex?.(); } finally {
+      renderTree();
+      // #s387: an app's list is followed at the index's own pace.
+      refreshLayout();
+    }
   },
   error: error => { console.warn("Session index refresh failed", error); toast("Session scan failed — retrying"); }
 });
@@ -564,8 +568,8 @@ document.addEventListener("keydown", event => { if (event.key === "Escape" && !f
 // is one menu, one set of handlers and one remembered choice. Pointing opens it after a beat and it
 // survives the trip from the mark into it (a grace period on leaving either); a click pins it;
 // Escape, a click outside, or expanding the sidebar closes it. `var`, not `const`, so a renderTree
-// that reached `refreshRailFlyout` before this block ran would find it declared; renderTree runs
-// only once the index has rows, after the mount.
+// that reached `refreshRailFlyout` before this block ran would find it declared; nothing draws the
+// tree until the mount has returned (the index's first rows, or a host's `redraw` or `select`).
 var lastShownAgents = [];
 var railFlyout = null, railFlyoutFor = null, railFlyoutAnchor = null, railFlyoutPinned = false, railOpenTimer = 0, railCloseTimer = 0;
 const RAIL_OPEN_MS = 140, RAIL_GRACE_MS = 280;

@@ -23,14 +23,16 @@
 <!--list-markup-->
 </div>
 <script type="module">
-const host = window.__host = { mounted: false, error: null, opened: [], indexed: 0, toasts: [] };
+// `holds`: the host keeps the reader where they are (a draft to keep, say) and opens nothing.
+const host = window.__host = { mounted: false, error: null, opened: [], indexed: 0, toasts: [], holds: false };
 addEventListener("error", event => { host.error = host.error || String(event.message); });
 try {
   const { mountSessionList } = await import("/monitor-ui/session-list-view.js");
   const list = window.__list = mountSessionList(document.querySelector("#hostPane > .sidebar"), {
     toast: message => host.toasts.push(message),
-    // A host opens the session it hears and takes it as the list's selection, as the app does.
-    onOpen: event => { host.opened.push(event); window.__list.select(event.id); },
+    // A host opens the session it hears and takes it as the list's selection, as the app does,
+    // unless it holds the reader.
+    onOpen: event => { host.opened.push(event); if (!host.holds) window.__list.select(event.id); },
     onIndex: () => { host.indexed += 1; },
   });
   list.start();

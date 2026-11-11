@@ -1997,9 +1997,12 @@ fn the_session_view_in_a_host_takes_its_keys_only_while_the_reader_works_in_it()
 /// the case's own (`fixtures/host/session-list-host.html`, answered by the browser itself on the
 /// monitor's origin), with no app shell and no session view, `mountSessionList` fills itself from
 /// the monitor's index, and choosing a session there (a real click on its row) tells the host
-/// through `onOpen`, with that id and a new place in the history, after the list has taken it as its
-/// selection; choosing another moves the selection. Before stage 2 the list was app.js's own code and
-/// there was no `mountSessionList` to import, so the host cannot mount it and the case fails there.
+/// through `onOpen`, with that id and a new place in the history. The list moves no selection
+/// itself: a host that holds the reader leaves the list with none, and one that opens the session
+/// takes it as the list's selection with `select`, as the app does; choosing another moves it.
+/// Before stage 2 the list was app.js's own code and there was no `mountSessionList` to import, so
+/// the host cannot mount it and the case fails there; a list that took the choice as its selection
+/// itself fails the held choice.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_list_in_a_host_tells_it_which_session_the_reader_chose() {
@@ -2038,29 +2041,45 @@ fn the_session_list_in_a_host_tells_it_which_session_the_reader_chose() {
         &tab,
         "({ app: !!document.getElementById('app'), view: !!document.getElementById('sessionView'), list: (document.querySelector('#hostPane > .sidebar') || {}).id || '', indexed: window.__host.indexed > 0, opened: window.__host.opened.length })",
     );
+    let marked = "[].slice.call(document.querySelectorAll('#tree .tree-row.session.selected')).map(function (r) { return r.dataset.session; })";
+    // A host that holds the reader hears the choice and opens nothing.
+    harness::probe(&tab, "(window.__host.holds = true)");
     tab.find_element(&row(&first)).unwrap().click().unwrap();
     harness::until(
         &tab,
         "window.__host.opened.length >= 1",
+        "the host to hear the held choice",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host)",
+    );
+    let held = harness::probe(
+        &tab,
+        &format!("({{ opened: window.__host.opened, selected: window.__list.selected(), marked: {marked} }})"),
+    );
+    harness::probe(&tab, "(window.__host.holds = false)");
+    tab.find_element(&row(&first)).unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        "window.__host.opened.length >= 2",
         "the host to hear the first choice",
         Duration::from_secs(10),
         "JSON.stringify(window.__host)",
     );
     let chose_first = harness::probe(
         &tab,
-        "({ opened: window.__host.opened, selected: window.__list.selected(), marked: [].slice.call(document.querySelectorAll('#tree .tree-row.session.selected')).map(function (r) { return r.dataset.session; }) })",
+        &format!("({{ opened: window.__host.opened.slice(1), selected: window.__list.selected(), marked: {marked} }})"),
     );
     tab.find_element(&row(&second)).unwrap().click().unwrap();
     harness::until(
         &tab,
-        "window.__host.opened.length >= 2",
+        "window.__host.opened.length >= 3",
         "the host to hear the second choice",
         Duration::from_secs(10),
         "JSON.stringify(window.__host)",
     );
     let chose_second = harness::probe(
         &tab,
-        "({ opened: window.__host.opened, selected: window.__list.selected(), marked: [].slice.call(document.querySelectorAll('#tree .tree-row.session.selected')).map(function (r) { return r.dataset.session; }), errors: window.__host.error })",
+        &format!("({{ opened: window.__host.opened.slice(1), selected: window.__list.selected(), marked: {marked}, errors: window.__host.error }})"),
     );
     drop(monitor);
     assert_eq!(
@@ -2069,9 +2088,14 @@ fn the_session_list_in_a_host_tells_it_which_session_the_reader_chose() {
         "the list stands alone in the host's page, its element #sessionList, filled from the index, and nothing chosen yet"
     );
     assert_eq!(
+        held,
+        serde_json::json!({ "opened": [{ "id": first, "push": true }], "selected": "", "marked": [] }),
+        "a click on a row tells the host, and the list moves no selection of its own: a host that holds the reader leaves it with none"
+    );
+    assert_eq!(
         chose_first,
         serde_json::json!({ "opened": [{ "id": first, "push": true }], "selected": first, "marked": [first] }),
-        "a click on a row tells the host, which takes it as the selection (`select`)"
+        "a host that opens the session takes it as the list's selection (`select`)"
     );
     assert_eq!(
         chose_second,
