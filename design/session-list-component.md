@@ -152,7 +152,7 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
    mount sets `#sessionList` on its element itself.
 3. **Markup and styles apart.** The list builds its markup from a template of its own, and its
    rules hang on its element in a stylesheet of its own, generated as the view's is. Lands as one.
-   **Planned** (#s430), in five commits on one landing:
+   **Planned** (#s430), in five commits on one landing; the carve, its four parts and the template are built (below):
 
    - **The carve.** `#sessionList` becomes an element of its own, `div.session-list`, a child of
      the sidebar where the tree stands now, holding the arrangement strip and the tree. In the app
@@ -184,6 +184,23 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      controls, which the list removes today, are cut and not kept. The parts built at runtime
      (expand all, the filter and its sheet, the rail's filter, the strip, the flyout, the section
      menu) stay script-built. The list draws Collapse all's glyph itself.
+
+     **Built** (#s430), the carve, the four parts and the template, not landed. As built: the
+     template is the three pieces in one string, Collapse all, the marks' holder and the tree, which
+     the list parses into a `<template>` and keeps by reference; it looks nothing up, in its element
+     or the page. It calls `place` once for each part at the end of its mount, the controls as one
+     fragment, and the app answers it in `placeListPart`, a function declaration, since it runs before
+     anything below the mount exists. The flyout gives the sheet back where it was placed (its parent
+     and next sibling, remembered as it moves the sheet in). Without `place`, the list's own head is
+     `div.session-list-head`, first in its element, under `#sessionList>.session-list-head`
+     (`position: relative`, a row of the controls); the rail's two parts are built and left
+     unattached. Flat mode's rule is `:is(#collapseBtn,#expandBtn)[data-flat]`, which matches in
+     either head: it weighs one id and one class where the old one weighed two ids and three
+     classes, and the one rule it competes with is `.iconbtn`'s `display: grid` (one class), so
+     nothing changes. The demo's attention controls stay named in the app's chrome lists, so their
+     reference rules stay in `app-shell.css`; the contract counts their markup, which it cuts again,
+     as the app's. The host page gives its pane's element a column box of its own, since the app's
+     stylesheet, which it still loads, draws none for `.session-list`.
    - **The styles.** `scripts/session-view-css.mjs` derives a third file, `session-list.css`,
      linked between `app-shell.css` and `session-view.css`. Its classifier splits the app's chrome
      into the app's own, the list's body (`LIST_CHROME`: the tree, its rows and labels, the strip
