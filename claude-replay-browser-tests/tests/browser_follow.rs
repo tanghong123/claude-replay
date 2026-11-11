@@ -2175,6 +2175,9 @@ fn the_session_list_in_a_host_switches_its_controls_off() {
         "cccccccc-0000-4000-8000-0000000004a2",
     ];
     list_host_world(&stores, &ids);
+    stores.app_session("local_a1", ids[0], "App first", 60, None);
+    stores.app_session("local_a2", ids[1], "App second", 120, None);
+    stores.app_settings(&[("cg-plan", "Planning", &["local_a2"])]);
     let monitor = Monitor::spawn(Kind::V1, 3267, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
@@ -2227,10 +2230,39 @@ fn the_session_list_in_a_host_switches_its_controls_off() {
         &tab,
         &format!("({{ rows: {rows}, dimmed: document.querySelectorAll('#tree .is-hidden').length, includeHidden: !!document.querySelector('[data-include-hidden]'), errors: window.__host.errors }})"),
     );
+    // Arranged like the Claude app, which lists both sessions: an arranged list shows each session the
+    // app lists, the hidden one dimmed with every control shown (#s387), and with hiding off as any other.
+    let arranged = |extra: &str| {
+        harness::eval(
+            &tab,
+            &format!("window.__list.unmount(); window.__host.mount({extra}); 'ok'"),
+        );
+        harness::until(
+            &tab,
+            &format!("!!document.querySelector('#tree .arranged-head') && {rows} === 2"),
+            "the list arranged like the Claude app, both sessions listed",
+            Duration::from_secs(60),
+            "JSON.stringify({ host: window.__host, tree: (document.getElementById('tree') || {}).innerText })",
+        );
+        harness::pause("list host", Duration::from_millis(500));
+        harness::probe(
+            &tab,
+            "({ dimmed: document.querySelectorAll('#tree .tree-row.session.is-hidden').length, errors: window.__host.errors })",
+        )
+    };
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-arrange', 'claude-app'); 'ok'",
+    );
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+    harness::eval(&tab, "window.__host.mount(); 'ok'");
+    until_list_drawn(&tab);
+    let arranged_shown = arranged("");
+    let arranged_off = arranged("{ show: { hiding: false } }");
     // Then the reader's own choice: Blocked alone, one list by activity.
     harness::eval(
         &tab,
-        "localStorage.setItem('am-prod-session-filter', '[\"blocked\"]'); localStorage.setItem('am-prod-session-flat', '1'); 'ok'",
+        "localStorage.setItem('am-prod-session-filter', '[\"blocked\"]'); localStorage.setItem('am-prod-session-flat', '1'); localStorage.removeItem('am-prod-session-arrange'); 'ok'",
     );
     // What the list draws, and what the page asked the monitor for since `from` (a request count).
     let seen = |from: usize| {
@@ -2294,6 +2326,16 @@ fn the_session_list_in_a_host_switches_its_controls_off() {
         "hiding off: what the reader hid stays out, Include hidden still ticked in the page or not, and nothing offers it"
     );
     assert_eq!(
+        arranged_shown,
+        serde_json::json!({ "dimmed": 1, "errors": [] }),
+        "arranged like the Claude app, which lists the session the reader hid, it is drawn dimmed"
+    );
+    assert_eq!(
+        arranged_off,
+        serde_json::json!({ "dimmed": 0, "errors": [] }),
+        "and with hiding off it is drawn as any other, with no dim it could not explain"
+    );
+    assert_eq!(
         shown,
         serde_json::json!({ "rows": 0, "grouped": false, "flat": true, "glyph": "Showing Blocked — 0 of 1", "sheet": true, "everything": true, "buckets": 3, "includeHidden": true, "arrange": 5, "hides": [0, 0], "controls": ["collapseBtn", "expandBtn", "filterBtn"], "filtered": true, "layoutReads": 1, "errors": [] }),
         "every control shown: the reader's filter (Blocked alone) leaves the idle session out, their one list by activity is drawn, and the sheet offers everything, asking which apps it could follow"
@@ -2353,6 +2395,12 @@ fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
     let rows = harness::probe(&tab, order);
     harness::eval(&tab, focus_row);
     let down = press("ArrowDown");
+    // The host moves the selection itself, which rewrites the tree under the row the step reached, as
+    // the index's next read or a fold would: the focus stays on that row.
+    let rewritten = harness::probe(
+        &tab,
+        &format!("(function () {{ var before = document.activeElement; window.__list.select({}); var now = document.activeElement; return {{ replaced: !before.isConnected, focus: (now && now.dataset.session) || '' }}; }})()", rows[0]),
+    );
     let up = press("ArrowUp");
     let other = press("]");
     harness::eval(&tab, "document.getElementById('hostButton').focus()");
@@ -2390,6 +2438,11 @@ fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
         down,
         serde_json::json!({ "taken": true, "opened": 1, "focus": second }),
         "engaged, ↓ on a row is the list's: the next row has the focus, and the host hears the choice"
+    );
+    assert_eq!(
+        rewritten,
+        serde_json::json!({ "replaced": true, "focus": second }),
+        "a rewrite of the tree after the step leaves the focus on the row it reached"
     );
     assert_eq!(
         up,
@@ -2697,11 +2750,13 @@ fn the_session_list_in_a_host_unmounts_and_mounts_again() {
 }
 
 /// A session chosen with the mouse leaves the page's keys to the transcript (#s430 stage 4, from its
-/// review). A click focuses the session's row, and choosing the session redraws the list with its
-/// selection, which drops that focus to the page, so the app's keymap reads the next key as the
+/// review). A click focuses the session's row; choosing another session redraws the list with its
+/// selection, which drops that focus to the page, and the open session clicked again redraws nothing,
+/// so the click itself gives the focus back. Either way the app's keymap reads the next key as the
 /// transcript's. Stage 4 first carried the focus across every redraw, so a clicked row kept it and
-/// `[`, `]`, `j` and Space did nothing until the reader clicked in the transcript. Only a list key's
-/// step keeps the focus on the row it reached now.
+/// `[`, `]`, `j` and Space did nothing until the reader clicked in the transcript; before stage 4 the
+/// open session clicked again kept it too. Only a list key's step keeps the focus on the row it
+/// reached, which the case presses through the app's own keymap, there and back.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {
@@ -2765,16 +2820,74 @@ fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {
         &tab,
         "(document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true })); 'ok'",
     );
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let moved = loop {
-        if harness::eval(&tab, &format!("{scrolled} < {rest} - 20")) == serde_json::json!(true) {
-            break true;
+    let moved_from = |rest: i64| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if harness::eval(&tab, &format!("{scrolled} < {rest} - 20")) == serde_json::json!(true)
+            {
+                return true;
+            }
+            if Instant::now() > deadline {
+                return false;
+            }
+            harness::pause("click keys", Duration::from_millis(200));
         }
-        if Instant::now() > deadline {
-            break false;
-        }
-        harness::pause("click keys", Duration::from_millis(200));
     };
+    let moved = moved_from(rest);
+    // The open session's row clicked again: the app redraws nothing, and the click still hands the
+    // page its keys.
+    let (again_rest, _) = harness::until_still(
+        &tab,
+        scrolled,
+        |v| v.as_i64().unwrap_or(0) > 0,
+        Duration::from_secs(15),
+    );
+    let again_rest = again_rest.as_i64().unwrap_or(0);
+    harness::click_when_settled(&tab, &row, "the open session's row");
+    harness::pause("click keys", Duration::from_millis(300));
+    let again_focus = harness::probe(
+        &tab,
+        "(function () { var a = document.activeElement; return a && a.closest && a.closest('.tree-row') ? 'a row of the list' : (a ? a.tagName.toLowerCase() : 'none'); })()",
+    );
+    harness::eval(
+        &tab,
+        "(document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true })); 'ok'",
+    );
+    let moved_again = moved_from(again_rest);
+    // The list's keys through the app's own keymap: from the open session's row a step to the other
+    // session and back, the row it reached keeping the focus as the app redraws the list.
+    let order = harness::probe(
+        &tab,
+        "[].map.call(document.querySelectorAll('#tree .tree-row.session'), function (r) { return r.dataset.session; })",
+    );
+    let (to_first, to_second) = if order[0] == serde_json::json!(first) {
+        ("ArrowUp", "ArrowDown")
+    } else {
+        ("ArrowDown", "ArrowUp")
+    };
+    let step = |key: &str, to: &str| {
+        harness::eval(
+            &tab,
+            &format!("document.querySelector('#tree .tree-row.session[data-session=\"' + {} + '\"]').focus(); 'ok'", serde_json::json!(if to == first { second } else { first })),
+        );
+        let taken = harness::probe(&tab, &format!("{PRESS}({key:?})"));
+        let to_row = format!("#tree .tree-row.session[data-session=\"{to}\"]");
+        harness::until(
+            &tab,
+            &format!("location.search.indexOf('{to}') >= 0 && !!document.querySelector({to_row:?} + '.selected')"),
+            "the list's key to open the other session",
+            Duration::from_secs(30),
+            "JSON.stringify({ search: location.search, active: document.activeElement && document.activeElement.outerHTML.slice(0, 120) })",
+        );
+        harness::pause("click keys", Duration::from_millis(500));
+        let focus = harness::probe(
+            &tab,
+            "(document.activeElement && document.activeElement.dataset.session) || ''",
+        );
+        serde_json::json!({ "taken": taken, "focus": focus })
+    };
+    let stepped = step(to_first, first);
+    let stepped_back = step(to_second, second);
     drop(monitor);
     assert_eq!(
         focus,
@@ -2784,6 +2897,23 @@ fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {
     assert!(
         moved,
         "so `[` is the transcript's: it steps back a turn from the end ({rest}px)"
+    );
+    assert_eq!(
+        again_focus,
+        serde_json::json!("body"),
+        "the open session's row clicked again, which redraws nothing, keeps no focus either"
+    );
+    assert!(
+        moved_again,
+        "so `[` is still the transcript's ({again_rest}px)"
+    );
+    assert_eq!(
+        (stepped, stepped_back),
+        (
+            serde_json::json!({ "taken": true, "focus": first }),
+            serde_json::json!({ "taken": true, "focus": second })
+        ),
+        "the list's keys, through the app's keymap, open the next session and keep the focus on its row, there and back"
     );
 }
 

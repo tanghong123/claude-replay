@@ -110,11 +110,14 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  removes what it put outside its element (the parts it handed to `place`, wherever the host put
  *  them, and its floating layers), and leaves the element as the host gave it: empty, with its own
  *  attributes. After the unmount every other member of the handle does nothing and answers nothing,
- *  and the list tells its host nothing more, even when the host unmounts it from inside one of its
- *  own callbacks; mounting again in the same element draws a new list. */
+ *  and the list tells its host nothing more, even when the host unmounts it from inside its `onIndex`
+ *  or its `onOpen` (not from inside `projectTree` or `projectActions`, which the list asks while it
+ *  draws); mounting again in the same element draws a new list. */
 export function mountSessionList(element, options = {}) {
 for (const name of Object.keys(options)) if (!MOUNT_OPTIONS.includes(name)) throw new Error(`mountSessionList takes no option named ${name}; its options are ${MOUNT_OPTIONS.join(", ")}`);
-if (options.show != null && (typeof options.show !== "object" || Array.isArray(options.show))) throw new Error(`mountSessionList takes show as an object naming the controls it switches off, as { filter: false }, not ${JSON.stringify(options.show)}`);
+/** A value as a refusal names it: its JSON, or its kind where it has none (a function, a BigInt). */
+const said = value => { try { return JSON.stringify(value) ?? `a ${typeof value}`; } catch { return `a ${typeof value}`; } };
+if (options.show != null && (typeof options.show !== "object" || Array.isArray(options.show))) throw new Error(`mountSessionList takes show as an object naming the controls it switches off, as { filter: false }, not ${said(options.show)}`);
 for (const [name, shown] of Object.entries(options.show || {})) {
   if (!OPTIONAL_CONTROLS.includes(name)) throw new Error(`mountSessionList has no optional control named ${name}; the controls a host may switch off are ${OPTIONAL_CONTROLS.join(", ")}`);
   if (typeof shown !== "boolean") throw new Error(`mountSessionList shows ${name} or not by true or false, not ${JSON.stringify(shown)}`);
@@ -127,8 +130,9 @@ if ([...element.childNodes].some(node => !(node.nodeType === 3 && !node.data.tri
 const shows = name => options.show?.[name] !== false;
 // What the filter's glyph offers, said on it: its states, the hidden sessions and the arrangements,
 // whichever the host shows (stage 4). With every control shown it reads as it always did.
-const glyphTitle = shows("filter") ? `Filter the sessions — active in the last 6 hours, blocked, idle${shows("hiding") ? " — and include hidden ones" : ""}`
-  : shows("hiding") ? `Include hidden sessions${shows("arrangements") ? ", and arrange the list" : ""}` : "Arrange the sessions";
+const glyphName = shows("filter") ? "Filter the sessions" : shows("hiding") ? "Include hidden sessions" : "Arrange the sessions";
+const glyphTitle = shows("filter") ? `${glyphName} — active in the last 6 hours, blocked, idle${shows("hiding") ? " — and include hidden ones" : ""}`
+  : shows("hiding") && shows("arrangements") ? `${glyphName}, and arrange the list` : glyphName;
 // What the list starts outside its element, which `unmount` stops (stage 4), as the view's (its stage
 // 7): every listener it binds on the page carries `signal`, and the timers its code starts are made
 // through the names below, which keep each one until it has run or been cleared. The index's own poll
@@ -577,7 +581,16 @@ function renderTree() {
   // that straddled the write, down on a row and up on its replacement, made no click at all: the
   // session tapped just then was not chosen.
   const treeHtml = html || `<div class="no-results">${filtered ? "No sessions in this filter — Everything, in the filter, shows them all" : "No sessions"}</div>`;
-  if (treeHtml !== treeWritten) { tree.innerHTML = treeHtml; treeWritten = treeHtml; }
+  // A rewrite drops the focus to <body>, where the next key is no longer the list's: the session row
+  // that has it keeps it, across the host's select, the index's next read and a fold (stage 4). Only
+  // the keyboard's reaches here, a step's or Tab's: a row clicked with the mouse gave the focus back as
+  // it was clicked (`tree.onclick`), or every key of the page's would stay in the list.
+  const active = page.active();
+  const carry = tree.contains(active) && active.matches?.(".tree-row.session") ? active.dataset.session : null;
+  if (treeHtml !== treeWritten) {
+    tree.innerHTML = treeHtml; treeWritten = treeHtml;
+    if (carry) tree.querySelector(`.tree-row.session[data-session="${CSS.escape(carry)}"]`)?.focus({ preventScroll: true });
+  }
   renderFilterControl(counts, shown, total);
   refreshRailFlyout();
 
@@ -605,7 +618,7 @@ function renderTree() {
 const filterBtn = document.createElement("button");
 filterBtn.type = "button"; filterBtn.className = "iconbtn session-filter"; filterBtn.id = "filterBtn";
 filterBtn.innerHTML = svg("filterLines");
-filterBtn.setAttribute("aria-label", "Filter the sessions");
+filterBtn.setAttribute("aria-label", glyphName);
 filterBtn.setAttribute("aria-expanded", "false"); filterBtn.setAttribute("aria-haspopup", "true"); filterBtn.setAttribute("aria-controls", "sessionFilter");
 const filterSheet = document.createElement("div");
 filterSheet.className = "navigator-options session-filter-options"; filterSheet.id = "sessionFilter"; filterSheet.hidden = true;
@@ -635,8 +648,8 @@ filterSheet.innerHTML = sheetParts.join(`\n<div class="scope-menu-divider"></div
  *  drawn or handed to the host. */
 const hasSheet = sheetParts.length > 0;
 const filterMini = document.createElement("button");
-filterMini.className = "sidebar-mini-button filter-mini"; filterMini.id = "sidebarMiniFilter"; filterMini.type = "button"; filterMini.title = "Filter the sessions";
-filterMini.setAttribute("aria-label", "Filter the sessions");
+filterMini.className = "sidebar-mini-button filter-mini"; filterMini.id = "sidebarMiniFilter"; filterMini.type = "button"; filterMini.title = glyphName;
+filterMini.setAttribute("aria-label", glyphName);
 filterMini.setAttribute("aria-haspopup", "true"); filterMini.setAttribute("aria-expanded", "false");
 filterMini.innerHTML = svg("filterLines");
 /** Whether the bucket set leaves anything out: never while the filter is switched off (stage 4). */
@@ -935,7 +948,14 @@ tree.onclick = event => {
   if (newSession) { event.stopPropagation(); options.newSession?.({ id: newSession.dataset.nativeProject, cwd: newSession.dataset.nativeCwd }); return; }
   const action = event.target.closest("[data-ignore-op]"); if (action) { event.stopPropagation(); applyIgnore(action.dataset.ignoreOp, action.dataset.ignoreKey); return; }
   const forks = event.target.closest("[data-family-toggle]"); if (forks) { event.stopPropagation(); const key = forks.dataset.familyToggle; indexState.openFamilies.has(key) ? indexState.openFamilies.delete(key) : indexState.openFamilies.add(key); renderTree(); return; }
-  const session = event.target.closest("[data-session]"); if (session) { chooseSession(session.dataset.session, true); return; }
+  const session = event.target.closest("[data-session]");
+  if (session) {
+    // A click with the mouse hands the page its keys (stage 4): the press focused the row, and a
+    // session already open is not redrawn, so the row kept them and `[` or `j` did nothing. Enter on a
+    // row is a click too (`detail` 0), and leaves the focus where the keyboard put it.
+    if (event.detail > 0 && session.contains(page.active())) page.active().blur();
+    chooseSession(session.dataset.session, true); return;
+  }
   const more = event.target.closest("[data-project-more]"); if (more) { const key = more.dataset.projectMore; indexState.expandedProjects.has(key) ? indexState.expandedProjects.delete(key) : indexState.expandedProjects.add(key); persist(); renderTree(); return; }
   const toggle = event.target.closest("[data-toggle]"); if (toggle) { const key = toggle.dataset.toggle; indexState.collapsed.has(key) ? indexState.collapsed.delete(key) : indexState.collapsed.add(key); persist(); renderTree(); }
 };
@@ -961,11 +981,6 @@ function stepList(delta) {
   if (next === at) return false;
   const id = rows[next].dataset.session;
   rows[next].focus(); chooseSession(id, true);
-  // The host's select redraws the tree with its selection (the app's and the test host's at once), and
-  // a rewrite drops the focus to <body>, where the next key is no longer the list's: the row the step
-  // reached keeps it (stage 4). Only a step carries it: a row clicked with the mouse has the focus
-  // too, and carried there it would keep every key of the page's in the list.
-  if (!unmounted && !tree.contains(page.active())) tree.querySelector(`.tree-row.session[data-session="${CSS.escape(id)}"]`)?.focus({ preventScroll: true });
   return true;
 }
 // The list's keys (stage 4), by the keymap's names: the next and the previous session row from the

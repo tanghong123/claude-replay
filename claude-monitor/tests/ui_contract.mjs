@@ -4501,7 +4501,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // (`select`, the list's half, said to nobody) when it opens it, and the app's own half follows.
   assert.match(listSource, /function chooseSession\(id, push\) \{\n  if \(!id\) return;\n  options\.onOpen\?\.\(\{ id, push \}\);\n\}/, "a choice in the list is said, and the list's selection is the host's to move");
   assert.match(listSource, /^  select: id => \{ if \(id\) take\(id\); \},$/m, "the host's selection is taken and not said");
-  assert.match(listSource, /if \(session\) \{ chooseSession\(session\.dataset\.session, true\); return; \}/, "a row is a choice");
+  assert.match(listSource, /if \(session\) \{\n(?:    \/\/[^\n]*\n)*    if \(event\.detail > 0[^\n]*\n    chooseSession\(session\.dataset\.session, true\); return;\n  \}/, "a row is a choice");
   assert.match(listSource, /const id = rows\[next\]\.dataset\.session;\n  rows\[next\]\.focus\(\); chooseSession\(id, true\);/, "and so is a list key");
   assert.match(appSource, /^  onOpen: \(\{ id, push \}\) => selectSession\(id, push\),$/m, "the app answers a choice as it opens any session");
   assert.match(appSource, /listHandle\.select\(id\);\n  showSession\(id, push\);/, "and a selection it starts is the list's half, then its own");
@@ -4560,7 +4560,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const mount = (options, element = empty()) => { try { return guard(element, options, MOUNT, CONTROLS, MODES); } catch (error) { return `refused: ${error.message}`; } };
   assert.equal(mount({}), "engaged", "engaged by default");
   assert.equal(mount({ keyboard: "page", show: { filter: false, hiding: true, arrangements: false }, onToast: () => {} }), "page", "the page's keyboard, and controls switched on and off by name");
-  for (const [options, why] of [[{ toast: () => {} }, "toast"], [{ compact: () => true }, "compact"], [{ show: { reading: false } }, "reading"], [{ show: { filter: "no" } }, "\"no\""], [{ keyboard: "capture" }, "capture"], [{ show: false }, "show as an object.*false"], [{ show: "filter" }, "show as an object.*\"filter\""], [{ show: ["filter"] }, "show as an object"]]) {
+  for (const [options, why] of [[{ toast: () => {} }, "toast"], [{ compact: () => true }, "compact"], [{ show: { reading: false } }, "reading"], [{ show: { filter: "no" } }, "\"no\""], [{ keyboard: "capture" }, "capture"], [{ show: false }, "show as an object.*false"], [{ show: "filter" }, "show as an object.*\"filter\""], [{ show: ["filter"] }, "show as an object"], [{ show: () => {} }, "show as an object.*not a function"], [{ show: 1n }, "show as an object.*not a bigint"]]) {
     assert.match(String(mount(options)), new RegExp(`^refused: .*${why}`), `a retired option, an unknown control, a value that is not a boolean, a show that is not an object, an unknown keyboard is refused: ${why}`);
   }
   assert.equal(mount({ show: null }), "engaged", "a show left empty is no show");
@@ -4605,8 +4605,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listSource, /^  const at = rows\.indexOf\(page\.active\(\)\); if \(at < 0\) return false;$/m, "a step with no session row focused moves nothing");
   assert.match(listSource, /^  if \(next === at\) return false;$/m, "nor one past the last row, which chooses the same session no more");
   assert.match(listSource, /^  keys: keyActions,$/m, "the handle's keys are the list's actions");
-  assert.match(listSource, /^  if \(!unmounted && !tree\.contains\(page\.active\(\)\)\) tree\.querySelector\(`\.tree-row\.session\[data-session="\$\{CSS\.escape\(id\)\}"\]`\)\?\.focus\(\{ preventScroll: true \}\);$/m, "and the row a step reached keeps the focus as the host's select redraws the tree");
-  assert.match(listSource, /^  if \(treeHtml !== treeWritten\) \{ tree\.innerHTML = treeHtml; treeWritten = treeHtml; \}$/m, "while a redraw carries no row's focus: a row clicked with the mouse gives the page back its keys");
+  assert.match(listSource, /^  const carry = tree\.contains\(active\) && active\.matches\?\.\("\.tree-row\.session"\) \? active\.dataset\.session : null;$/m, "a rewrite carries the focus of the session row that has it");
+  assert.match(listSource, /^    tree\.innerHTML = treeHtml; treeWritten = treeHtml;\n    if \(carry\) tree\.querySelector\(`\.tree-row\.session\[data-session="\$\{CSS\.escape\(carry\)\}"\]`\)\?\.focus\(\{ preventScroll: true \}\);$/m, "to the row's new self, as it writes it");
+  assert.match(listSource, /^    if \(event\.detail > 0 && session\.contains\(page\.active\(\)\)\) page\.active\(\)\.blur\(\);\n    chooseSession\(session\.dataset\.session, true\); return;$/m, "while a row clicked with the mouse gives the page back its keys");
   assert.match(appSource, /^  keyboard: "page",$/m, "the app keeps the page's keyboard");
   assert.match(appSource, /^  \.\.\.listHandle\.keys,$/m, "and its keymap calls the list's keys");
   // Drawn small: the app's call, the flyouts' gate.
@@ -4653,9 +4654,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listSource, /\$\{row\.hidden && shows\("hiding"\) \? "is-hidden" : ""\}/, "hiding off, no row is dimmed as hidden");
   // The filter's glyph says what its sheet offers, and with every control shown what it always said.
   {
-    const statement = /^const glyphTitle = [\s\S]*?;$/m.exec(listSource);
-    assert.ok(statement, "the glyph's title is worked out from what is shown");
-    const title = off => new Function("shows", `${statement[0]}\nreturn glyphTitle;`)(name => !off.includes(name));
+    const named = /^const glyphName = [^\n]*;$/m.exec(listSource), statement = /^const glyphTitle = [\s\S]*?;$/m.exec(listSource);
+    assert.ok(named && statement, "the glyph's name and title are worked out from what is shown");
+    const glyph = off => new Function("shows", `${named[0]}\n${statement[0]}\nreturn [glyphName, glyphTitle];`)(name => !off.includes(name));
+    const title = off => glyph(off)[1];
+    assert.deepEqual([[], ["hiding"], ["filter"], ["filter", "arrangements"], ["filter", "hiding"]].map(off => glyph(off)[0]), ["Filter the sessions", "Filter the sessions", "Include hidden sessions", "Include hidden sessions", "Arrange the sessions"], "its name, on the glyph and the rail's, says the same");
+    for (const label of ['filterBtn.setAttribute("aria-label", glyphName);', 'filterMini.title = glyphName;', 'filterMini.setAttribute("aria-label", glyphName);']) assert.ok(listSource.includes(label), `the name is the glyph's label: ${label}`);
     assert.equal(title([]), "Filter the sessions — active in the last 6 hours, blocked, idle — and include hidden ones", "every control shown, the title it always had");
     assert.equal(title(["hiding"]), "Filter the sessions — active in the last 6 hours, blocked, idle", "hiding off, no hidden ones offered");
     assert.equal(title(["filter"]), "Include hidden sessions, and arrange the list", "the filter off, what is left");
