@@ -102,8 +102,10 @@ placed in the rail by the app. Step 6 makes compact a matter of the pane's width
 
 The sidebar's head is two lines by construction (#223): the brand, then one row of controls that
 mixes the app's (the theme, the session search, collapsing the sidebar) with the list's (the
-filter, expand all, collapse all). The list draws its controls as one strip and the handle offers
-it (`controls()`); the app moves that strip into its head's row, so the head looks as it does now.
+filter, expand all, collapse all). The list draws its controls as one strip and hands it to the
+host (`place("controls", strip)`, since stage 3; stage 4 made it one element rather than three loose
+buttons, so a host can hold it and place it again); the app moves that strip into its head's row, so
+the head looks as it does now.
 A host that does not place it gets the strip at the top of the list. `the_app_shell_resizes_the_session_list`,
 which hit-tests every control of that row at the sidebar's minimum, holds the app unchanged.
 
@@ -286,6 +288,52 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
    refused, as the view's are, and a contract check holds the names. The unmount case follows the
    view's (stage 7): the page's listeners the same before and after, no late work, the handle
    fenced, the host's values put back, and a second mount that works. Lands alone.
+
+   **Built** (#s430), not landed.
+   - **Names.** `MOUNT_OPTIONS` (theme, show, keyboard, persist, onOpen, onIndex, onToast,
+     projectTree, projectActions, newSession, layer, place), `OPTIONAL_CONTROLS` (filter, hiding,
+     arrangements) and `KEYBOARD_MODES` (engaged, page), exported as the view's are. Any other name is
+     refused, and so are a control not in the list, a `show` value that is not a boolean and an
+     unknown keyboard. `toast` became `onToast`, the view's name for the same event. The `compact`
+     option became the handle's `compact(on)` (the host says it as the sidebar collapses or opens, and
+     an open flyout closes when the list is no longer drawn small), which retired `flyoutOpen` and
+     `closeFlyout`: the app no longer reaches into the flyout. `step` became `keys`, by the keymap's
+     names, as the view's handle has them.
+   - **`show`.** A control switched off is not drawn, and what it would choose is not applied, so a
+     reader is never left with sessions held back by a choice they cannot see or change; the choice
+     itself stays in storage for a host that shows it. This departs from the view, whose controls off
+     only stop being drawn: none of the view's changes which records are shown. The filter off lists
+     every state; hiding off draws no hide or restore and no Include hidden, and the hidden stay out;
+     the arrangements off draw the tree by agent and project and read no other app's list. The sheet
+     is built from the parts shown, joined as it always was, so with all three on it is byte for byte
+     the sheet it was; with all three off neither its glyph nor its sheet is drawn or handed over.
+   - **Keys.** Engaged, the list binds keydown on its own element and answers ↓ and ↑ only from one
+     of its rows (`resolveKey` with the list's context), every other key and those keys elsewhere left
+     to the page. The list holds the focus itself, so engagement is the focus, simpler than the view's
+     last press: a row is focusable and nothing else in the list takes a key. The app passes
+     `keyboard: "page"` and spreads the handle's `keys` into its keymap. A row with the focus now
+     keeps it as the tree is redrawn, as a rail mark already did (#300): a key's step chose a session,
+     the host's `select` redrew the tree with that selection, and the focus fell to the page, so the
+     next key was not the list's. In the app this also keeps the focus on a row through the index's
+     5-second redraw.
+   - **The strip.** `div.session-list-controls`, `display: contents`, so each control is still an item
+     of the head's one row; the rule that hides the three while the column shows a pane now names the
+     strip. The cases that read the head's children read through it.
+   - **The unmount.** One abort signal on the nine listeners the list binds on the page (the section
+     menu's three, bound when it first opens, the filter's three and the flyout's three); its timers
+     through names it keeps; the index's polls stopped (its store's generation drops a read still out);
+     a late reply to another app's list, the apps it could follow and a hide fenced; the strip, the
+     sheet (from the flyout too), the rail's parts, the flyout, the section menu, its scrim and the
+     safe-area probe removed wherever the host put them; the element emptied and its attributes put
+     back as they were read before the mount; and the handle fenced as the view's. A non-empty element
+     is refused, so a second mount never lays a list over another. Expand all is made beside Collapse
+     all at the mount's start, before anything that draws the tree reads it.
+   - **Checks.** The contract: the exports, the guards run over fakes, the `show` reads, the engaged
+     binding run over a fake element, every page listener carrying the signal, the unmount's steps and
+     the fence run. The browser: `the_session_list_in_a_host_switches_its_controls_off` (the reader's
+     stored filter and arrangement, kept and not applied), `…_takes_its_keys_only_on_its_rows` and
+     `…_unmounts_and_mounts_again` (listeners by the browser's own count, four replies held across the
+     unmount, the handle fenced, a second mount).
 
 To check once stage 7 is on main: `session-index-store.js` imports `indexState`; the rail's write
 button is bound in `native-mode.js` through `page` and stays with the app and native mode, though
