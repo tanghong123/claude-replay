@@ -1289,7 +1289,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(denoteState({ agentState: "idle", stateReason: "exited-mid-work" }), { label: "Exited abnormally", tone: "danger" });
   assert.deepEqual(denoteState({ agentState: "idle", stateReason: "exited", activityTs: 10 }, 5), { label: "New result", tone: "unread" });
   assert.equal(denoteState({ agentState: "idle", stateReason: "exited", activityTs: 10 }, 10), null, "read rows carry no marker");
-  assert.match(appSource, /from "\.\/shared\/state-labels\.js"/, "the shell imports the shared table");
+  for (const source of [appSource, listSource]) assert.match(source, /from "\.\/shared\/state-labels\.js"/, "the shell imports the shared table");
   assert.doesNotMatch(shellSource, /const labels = \{ busy:/, "the shell keeps no label table of its own");
   console.log("seam (f) cases passed");
 }
