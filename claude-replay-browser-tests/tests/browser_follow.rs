@@ -2359,10 +2359,10 @@ fn the_session_list_in_a_host_switches_its_controls_off() {
 
 /// The session list's keys in a host (#s430 stage 4): engaged (the default) the list binds ↓ and ↑
 /// on its own element, so they step through its rows only while one of them has the focus, and leave
-/// every other key, and those keys elsewhere, to the page; with `keyboard: "page"` it binds none, and
+/// every other key, and those keys elsewhere, to the page; with `keyboard: "page"` it takes none, and
 /// the host's keymap calls the handle's `keys`. A key that moves nothing (on a project's row, past the
-/// last session) is not taken, and chooses nothing. The row a step reached keeps the focus as the tree
-/// is rewritten; a row the mouse pressed and left does not. Before stage 4 the list bound no key at
+/// last session) is not taken, and chooses nothing. The row a step or Tab focused keeps the focus as
+/// the tree is rewritten; a row the mouse pressed and left does not, whether or not it had the focus. Before stage 4 the list bound no key at
 /// all (the app's keymap called its `step`), so a host's reader could not step through the list.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
@@ -2434,6 +2434,26 @@ fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
             rows[1]
         ),
     );
+    // A press that gives no focus (on the tree's empty part), then the keyboard's: Tab, and the focus it
+    // brings to the first row. That focus is the keyboard's, and a rewrite carries it.
+    let tabbed = harness::probe(
+        &tab,
+        &format!(
+            "(function () {{ document.getElementById('tree').dispatchEvent(new PointerEvent('pointerdown', {{ bubbles: true }})); document.getElementById('hostButton').dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Tab', bubbles: true, cancelable: true }})); document.querySelector('#tree .tree-row.session').focus(); window.__list.select({}); return {focused}; }})()",
+            rows[0]
+        ),
+    );
+    // Then the mouse presses that row, which has the focus already, and drags off it: the focus stays,
+    // and it is the press's now, so a rewrite does not carry it.
+    harness::drag_select(&tab, xy(0), xy(1), xy(2), xy(3));
+    let pressed_focused = harness::probe(&tab, focused);
+    let pressed_focused_rewritten = harness::probe(
+        &tab,
+        &format!(
+            "(function () {{ window.__list.select({}); return {focused}; }})()",
+            rows[1]
+        ),
+    );
     let engaged = harness::probe(
         &tab,
         "({ opened: window.__host.opened, keys: window.__host.keys.map(function (k) { return k.key + ':' + k.prevented; }) })",
@@ -2494,14 +2514,24 @@ fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
         "a press dragged off a row leaves it the focus the press gave, which a rewrite does not carry"
     );
     assert_eq!(
+        tabbed,
+        first.clone(),
+        "a press that gave no focus, then Tab: the keyboard's focus, which a rewrite carries"
+    );
+    assert_eq!(
+        (pressed_focused, pressed_focused_rewritten),
+        (first.clone(), serde_json::json!("")),
+        "a press on the row the keyboard focused makes its focus the press's, which a rewrite does not carry"
+    );
+    assert_eq!(
         engaged,
-        serde_json::json!({ "opened": [{ "id": second, "push": true }, { "id": first, "push": true }], "keys": ["ArrowDown:true", "ArrowUp:true", "]:false", "ArrowDown:false", "ArrowDown:false", "ArrowDown:false"] }),
+        serde_json::json!({ "opened": [{ "id": second, "push": true }, { "id": first, "push": true }], "keys": ["ArrowDown:true", "ArrowUp:true", "]:false", "ArrowDown:false", "ArrowDown:false", "ArrowDown:false", "Tab:false"] }),
         "the host's own listener, bound before the mount, heard every key after the list, taken or not"
     );
     assert_eq!(
         page_press,
         serde_json::json!({ "taken": false, "opened": 0, "focus": first }),
-        "with keyboard: \"page\" the list binds none, even on its own row"
+        "with keyboard: \"page\" the list takes no key, even on its own row"
     );
     assert_eq!(
         routed,
