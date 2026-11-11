@@ -323,16 +323,19 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      `keyboard: "page"` and spreads the handle's `keys` into its keymap. A key's step keeps the focus
      on the row it reached: the step chose a session, the host's `select` redrew the tree with that
      selection, and the focus fell to the page, so the next key was not the list's (in the app too,
-     before stage 4). Only a step carries it. The first build carried a focused row across every
-     redraw, and the review found what that broke: a row clicked with the mouse is focused too, so
-     after a click the app's keymap read every key as the list's, and `[`, `]`, `j` and Space did
-     nothing until the reader clicked in the transcript. So a click with the mouse hands the page its
-     keys as it chooses the session (the open session clicked again redraws nothing, and its row kept
-     them, on main too), and the tree's rewrite carries the focus of the session row that has it,
-     which is then only ever the keyboard's, a step's or Tab's, across the host's select, the index's
-     next read and a fold: the second review found a refocus in the step alone held only until the
-     next read, five seconds on, rewrote the tree. Enter on a row, a click with no pointer, leaves the
-     focus where the keyboard put it. A step that moves nothing (from a
+     before stage 4). Only the keyboard's focus is carried. The first build carried a focused row
+     across every redraw, and the review found what that broke: a row clicked with the mouse is
+     focused too, so after a click the app's keymap read every key as the list's, and `[`, `]`, `j`
+     and Space did nothing until the reader clicked in the transcript. So a press in the tree marks
+     the focus it gives a row (the first focus the tree takes after its pointerdown), and the tree's
+     rewrite carries a session row's focus only when the keyboard gave it, a step's or Tab's, across
+     the host's select, the index's next read and a fold. The second review found a refocus in the step
+     alone held only until the next read, five seconds on, rewrote the tree; the third, that a carry
+     which left the mouse's focus to the click kept a row pressed and dragged off it, a press that
+     straddled a rewrite (#s72), and in Safari a row whose button was clicked, none of which is a click
+     on the row. And a click with the mouse hands the page its keys as it chooses the session, since
+     the open session clicked again redraws nothing and its row kept them (on main too). Enter on a
+     row, a click with no pointer, leaves the focus where the keyboard put it. A step that moves nothing (from a
      project's row, past the last session) answers `false`, so the key is not taken, engaged or in the
      app's keymap, and the last session is not chosen again.
    - **The strip.** `div.session-list-controls`, `display: contents`, so each control is still an item
@@ -365,13 +368,13 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      shown and not with hiding off; the reader's stored filter and arrangement, the Claude app's
      included, kept and not applied, through the app's own `persist`),
      `…_takes_its_keys_only_on_its_rows` (and not on a project's row or past the last session; the
-     focus kept through the host's rewrite after a step), `…_unmounts_and_mounts_again` (listeners by the
+     focus kept through the host's rewrite after a step, and not after a press dragged off a row), `…_unmounts_and_mounts_again` (listeners by the
      browser's own count, the element's own included, four replies held across the unmount, the
      handle fenced, a second mount, an unmount inside `onIndex`, and a host that placed every part
      and layer outside the element) and `the_app_shell_keeps_its_transcript_keys_after_a_session_is_
      clicked` (another session clicked, the open one clicked again, and the list's keys through the
      app's keymap, there and back). Each late-reply fence, the index's stop, the focus carried by the
-     rewrite, the click's hand-back, the arranged dim and the callback fences were checked red
+     rewrite, the press's mark, the click's hand-back, the arranged dim and the callback fences were checked red
      when taken out.
 
 To check once stage 7 is on main: `session-index-store.js` imports `indexState`; the rail's write
