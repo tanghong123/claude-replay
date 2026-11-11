@@ -3700,6 +3700,13 @@ pub fn open_host_page_with(
 /// for the list, which builds its own markup there (stage 3). Returns once the list is mounted;
 /// panics with the page's error if it failed to.
 pub fn open_list_host_page(tab: &headless_chrome::Tab, monitor: &Monitor) {
+    open_list_host_page_with(tab, monitor, "");
+}
+
+/// [`open_list_host_page`] with the page's query (#s430 stage 4): `hide=filter,hiding` switches
+/// controls off, `keyboard=page` takes the page's keys, `mount=0` leaves the mount to the case
+/// (`__host.mount()`). Returns once the page has run, mounted or not.
+pub fn open_list_host_page_with(tab: &headless_chrome::Tab, monitor: &Monitor, query: &str) {
     let page = include_str!("../fixtures/host/session-list-host.html");
     answer_in_browser(
         tab,
@@ -3710,7 +3717,12 @@ pub fn open_list_host_page(tab: &headless_chrome::Tab, monitor: &Monitor) {
             body: page.to_string(),
         }],
     );
-    tab.navigate_to(&monitor.url("session-list-host")).unwrap();
+    let address = if query.is_empty() {
+        monitor.url("session-list-host")
+    } else {
+        monitor.url(&format!("session-list-host?{query}"))
+    };
+    tab.navigate_to(&address).unwrap();
     tab.wait_until_navigated().unwrap();
     until(
         tab,

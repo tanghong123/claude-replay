@@ -1012,7 +1012,8 @@ console.log("sandbox document cases passed");
   console.log("session visibility cases passed");
 }
 assert.match(listSource, /ignoreQuery\(\{ op, key \}\)/, "the shell hides and restores through /api/ignore with the server's key");
-assert.match(listSource, /visibleTree\(agents, \{ showHidden: indexState\.showHidden/, "the tree is filtered through the tested predicate, not ad hoc");
+assert.match(listSource, /visibleTree\(agents, \{ showHidden: includeHidden\(\)/, "the tree is filtered through the tested predicate, not ad hoc");
+assert.match(listSource, /^const includeHidden = \(\) => shows\("hiding"\) && indexState\.showHidden;$/m, "…which lists the hidden only as the reader asked, and never while hiding is off (#s430 stage 4)");
 assert.match(productionCss, /\.tree-action\{/, "row actions have a production treatment");
 assert.match(productionCss, /\.tree-row\.is-hidden\{/, "a revealed hidden row is visibly different");
 assert.match(viewSource, /referenceAction\(\{ fileSig, revealSig(, reveal: (revealHere\(\)|backend\(\)\.local))? \}\)/, "reference clicks dispatch on the tested precedence (#335: told whether the file manager is the reader's)");
@@ -1439,15 +1440,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // remembered with every bucket by default.
   // Since #s430 stage 3 the list builds them and the app places them (`place`): the controls as one
   // fragment before the sidebar collapse, the sheet appended to the head.
-  assert.match(listSource, /^controls\.append\(collapseBtn, expandBtn, filterBtn\);$/m, "the glyph follows Expand every group, which follows Collapse every group…");
+  assert.match(listSource, /^controls\.append\(collapseBtn, expandBtn\);\nif \(hasSheet\) controls\.append\(filterBtn\);$/m, "the glyph follows Expand every group, which follows Collapse every group (one strip since stage 4)…");
   assert.match(listSource, /^  options\.place\("controls", controls\);$/m, "…placed by the host as one");
   assert.match(appSource, /^  if \(part === "controls"\) page\.byId\("sidebarCollapse"\)\.before\(node\);$/m, "…before the sidebar collapse");
   assert.match(listSource, /filterBtn\.className = "iconbtn session-filter"/, "…as an iconbtn like its neighbours");
-  assert.match(listSource, /^  options\.place\("sheet", filterSheet\);$/m, "the sheet is placed by the host…");
+  assert.match(listSource, /^  if \(hasSheet\) options\.place\("sheet", filterSheet\);$/m, "the sheet is placed by the host…");
   assert.match(appSource, /^  else if \(part === "sheet"\) page\.\$\("#app>\.sidebar>\.side-head"\)\.append\(node\);$/m, "…under the sidebar's head");
   assert.doesNotMatch(appShell, /id="attentionBtn"|id="sidebarMiniAttention"/, "the demo's Needs attention button and the rail's bell are gone (cut from the served shell)");
   assert.doesNotMatch(shellSource, /hiddenBtn|"Show Hidden"/, "…and the Show Hidden control with them");
-  assert.match(listSource, /visibleTree\(agents, \{ showHidden: indexState\.showHidden, buckets: filtered \? indexState\.buckets : null, bucketsOf \}\)/, "the tree is filtered by the shared cover — every bucket chosen is no filter");
+  assert.match(listSource, /visibleTree\(agents, \{ showHidden: includeHidden\(\), buckets: filtered \? indexState\.buckets : null, bucketsOf \}\)/, "the tree is filtered by the shared cover — every bucket chosen is no filter");
   assert.match(listSource, /indexState\.buckets = set\.size \? set : new Set\(FILTER_BUCKETS\);/, "the bucket set is never empty");
   const stateJsSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
   assert.match(stateJsSource, /buckets: new Set\(json\("am-prod-session-filter", \["recent", "blocked"\]\)\)/, "the set is remembered under a new key, Active recently and Blocked by default (the owner's)");
@@ -1459,7 +1460,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listSource, /data-include-hidden/, "and Include hidden");
   assert.match(listSource, /title="\$\{BLOCKED_SUMMARY\}"/, "the Blocked checkbox explains itself with the predicate's sentence");
   assert.match(listSource, /\$\{FILTER_LABELS\.recent\}/, "the checkbox is labelled from the shared table (Active recently)");
-  assert.match(listSource, /^  options\.place\("rail-filter", filterMini\);$/m, "the rail's filter glyph is placed by the host…");
+  assert.match(listSource, /^  if \(hasSheet\) options\.place\("rail-filter", filterMini\);$/m, "the rail's filter glyph is placed by the host…");
   assert.match(appSource, /^  else if \(part === "rail-filter"\) page\.byId\("sidebarMiniSearch"\)\.after\(node\);$/m, "…after search");
   // #300 (the owner): collapsed, the glyph opens the sidebar's own sheet in a flyout beside the rail
   // rather than expanding the sidebar — pointed at, or clicked to pin it.
@@ -2207,7 +2208,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // #77: expand-all beside collapse-all.
 {
   assert.match(listSource, /expandBtn\.onclick = \(\) => \{ indexState\.collapsed\.clear\(\); persist\(\); renderTree\(\); \};/, "expand-all clears every fold and remembers it");
-  assert.match(listSource, /^controls\.append\(collapseBtn, expandBtn, filterBtn\);$/m, "…beside collapse-all");
+  assert.match(listSource, /^controls\.append\(collapseBtn, expandBtn\);$/m, "…beside collapse-all");
   assert.match(listSource, /expandBtn\.innerHTML = svg\("expandStack"\);/, "…with a glyph the sprite has");
   const iconsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/icons.js", import.meta.url), "utf8");
   assert.ok(iconsSrc.includes("expandStack:'"), "the expandStack glyph exists");
@@ -4480,19 +4481,20 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.ok(doc, "mountSessionList carries its doc comment");
   const heads = [...doc[0].matchAll(/^ \*  - ((?:`[^`]*`(?:, | and )?)+):/gm)].map(m => m[1]);
   const documented = new Set(heads.flatMap(head => [...head.matchAll(/`([A-Za-z]+)(?:\([^`]*\))?`/g)].map(m => m[1])));
-  const OPTIONS = ["theme", "toast", "persist", "onOpen", "onIndex", "projectTree", "projectActions", "newSession", "compact", "layer", "place"];
+  const OPTIONS = ["theme", "show", "keyboard", "persist", "onOpen", "onIndex", "onToast", "projectTree", "projectActions", "newSession", "layer", "place"];
   assert.deepEqual([...read].sort(), [...OPTIONS].sort(), "the list reads exactly the options the design gives it");
   assert.deepEqual([...documented].sort(), [...OPTIONS].sort(), "and its doc comment documents each");
-  assert.deepEqual([...passed].sort(), [...OPTIONS].sort(), "and the app passes every one");
+  // Stage 4: the app keeps every optional control, as it does the view's, so it passes no `show`.
+  assert.deepEqual([...passed].sort(), OPTIONS.filter(name => name !== "show").sort(), "and the app passes every one but show");
   // The handle, and what the app calls of it.
-  const at = listSource.lastIndexOf("\nreturn {\n");
-  assert.ok(at > 0, "the list returns its handle as an object literal at the end of mountSessionList");
-  const members = new Set([...listSource.slice(at).matchAll(/^  ([A-Za-z]+)(?=:)/gm)].map(m => m[1]));
-  const HANDLE = ["redraw", "refresh", "start", "stop", "grouped", "rows", "row", "workers", "selected", "select", "step", "flyoutOpen", "closeFlyout", "setSource", "setBuckets", "filtered", "setTheme"];
+  const at = listSource.lastIndexOf("\nreturn fenced({\n");
+  assert.ok(at > 0, "the list returns its handle as an object literal at the end of mountSessionList, fenced (stage 4)");
+  const members = new Set([...listSource.slice(at).matchAll(/^  ([A-Za-z]+)(?=: |\(\) \{)/gm)].map(m => m[1]));
+  const HANDLE = ["redraw", "refresh", "start", "stop", "grouped", "rows", "row", "workers", "selected", "select", "keys", "compact", "setSource", "setBuckets", "filtered", "setTheme", "unmount"];
   assert.deepEqual([...members].sort(), [...HANDLE].sort(), "the handle holds the members the design names");
   const handleDoc = /The handle: ([\s\S]*?)\n \*\n/.exec(doc[0]);
   assert.ok(handleDoc, "the doc comment describes the handle");
-  for (const name of HANDLE) assert.match(handleDoc[1], new RegExp(`\`${name}\\(`), `the doc comment names the handle's ${name}`);
+  for (const name of HANDLE) assert.match(handleDoc[1], new RegExp(`\`${name}[(\`]`), `the doc comment names the handle's ${name}`);
   const called = new Set([...appSource.matchAll(/\blistHandle\??\.([A-Za-z]+)/g)].map(m => m[1]));
   for (const name of called) assert.ok(members.has(name), `the app calls listHandle.${name}, which the list's handle has`);
   // Choosing a session: the list says it and moves nothing; the host takes it as the selection
@@ -4517,12 +4519,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listSource, /^element\.append\(tree\);$/m, "…into the list's element");
   assert.doesNotMatch(listSource, /\b(?:inList|element)\.(?:querySelector|\$|byId)\(/, "and it looks up nothing, in its element or the page: it keeps what it built");
   for (const part of ["controls", "sheet", "rail-filter", "marks"]) {
-    assert.match(listSource, new RegExp(`^  options\\.place\\("${part}", [A-Za-z]+\\);$`, "m"), `the list hands its host the ${part}`);
+    assert.match(listSource, new RegExp(`^  (?:if \\(hasSheet\\) )?options\\.place\\("${part}", [A-Za-z]+\\);$`, "m"), `the list hands its host the ${part}`);
     assert.match(appSource, new RegExp(`^  (?:else )?if \\(part === "${part}"\\) page\\.`, "m"), `and the app places the ${part}`);
   }
   assert.match(appSource, /^  else if \(part === "marks"\) page\.byId\("sidebarMini"\)\.append\(node\);$/m, "the marks at the rail's end");
   assert.match(appSource, /^  place: placeListPart,$/m, "the app answers `place`");
-  assert.match(listSource, /\} else \{\n  const head = document\.createElement\("div"\);\n  head\.className = "session-list-head";\n  head\.append\(controls, filterSheet\);\n  element\.prepend\(head\);\n\}/, "a host that places nothing gets the controls and the sheet in a head at the top of the list");
+  assert.match(listSource, /\} else \{\n  const head = document\.createElement\("div"\);\n  head\.className = "session-list-head";\n  head\.append\(controls\);\n  if \(hasSheet\) head\.append\(filterSheet\);\n  element\.prepend\(head\);\n\}/, "a host that places nothing gets the controls and the sheet in a head at the top of the list");
   assert.match(productionCss, /\n#sessionList>\.session-list-head\{position:relative;/, "…the sheet's containing block");
   // The rail's flyout hosts the sheet and gives it back where it was placed, never to a head it finds.
   assert.match(listSource, /sheetHome = \{ parent: filterSheet\.parentNode, next: filterSheet\.nextSibling \}; railFlyout\.appendChild\(filterSheet\);/, "the flyout remembers where the sheet stood");
@@ -4533,6 +4535,134 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   for (const name of ["renderTree", "groupedSessions", "sessionTreeRow", "openRailFlyout", "openSectionMenu", "setBuckets", "refreshLayout", "applyIgnore", "stepList"]) assert.doesNotMatch(appSource, new RegExp(`function ${name}\\(`), `app.js no longer holds ${name}`);
   assert.doesNotMatch(appSource, /new SessionIndexStore|tree\.onclick/, "nor the index or the tree's handlers");
   console.log("#s430 list mount interface cases passed");
+}
+
+// #s430 stage 4 (design/session-list-component.md): the options and the events as the app uses them,
+// as the view's (its stages 6 and 7). The names are the list's own exports and any other is refused; a
+// control switched off is not drawn and what it would choose is not applied, while the reader's choice
+// is kept; engaged, the list's keys answer only on its own rows; the app tells the list when it is drawn
+// small; and the unmount stops all the list started and leaves the element as the host gave it.
+{
+  const literal = name => {
+    const m = new RegExp(`^export const ${name} = Object\\.freeze\\(\\[([\\s\\S]*?)\\]\\);$`, "m").exec(listSource);
+    assert.ok(m, `the list exports ${name}`);
+    return [...m[1].matchAll(/"([^"]+)"/g)].map(x => x[1]);
+  };
+  const MOUNT = literal("MOUNT_OPTIONS"), CONTROLS = literal("OPTIONAL_CONTROLS"), MODES = literal("KEYBOARD_MODES");
+  assert.deepEqual(MOUNT.slice().sort(), ["keyboard", "layer", "newSession", "onIndex", "onOpen", "onToast", "persist", "place", "projectActions", "projectTree", "show", "theme"], "MOUNT_OPTIONS names every option the list reads, and no other");
+  assert.deepEqual(CONTROLS, ["filter", "hiding", "arrangements"], "the controls a host may switch off");
+  assert.deepEqual(MODES, ["engaged", "page"], "and the two keyboards");
+  // The guards, run over fakes: the prologue from the first name check to the empty element's.
+  const guards = /^(for \(const name of Object\.keys\(options\)\)[\s\S]*?this one holds the host's nodes"\);)$/m.exec(listSource);
+  assert.ok(guards, "the list checks its options and its element before it touches anything");
+  const guard = new Function("element", "options", "MOUNT_OPTIONS", "OPTIONAL_CONTROLS", "KEYBOARD_MODES", `${guards[1]}\nreturn keyboardMode;`);
+  const empty = () => ({ id: "", childNodes: [{ nodeType: 3, data: "\n  " }] });
+  const mount = (options, element = empty()) => { try { return guard(element, options, MOUNT, CONTROLS, MODES); } catch (error) { return `refused: ${error.message}`; } };
+  assert.equal(mount({}), "engaged", "engaged by default");
+  assert.equal(mount({ keyboard: "page", show: { filter: false, hiding: true, arrangements: false }, onToast: () => {} }), "page", "the page's keyboard, and controls switched on and off by name");
+  for (const [options, why] of [[{ toast: () => {} }, "toast"], [{ compact: () => true }, "compact"], [{ show: { reading: false } }, "reading"], [{ show: { filter: "no" } }, "\"no\""], [{ keyboard: "capture" }, "capture"]]) {
+    assert.match(String(mount(options)), new RegExp(`^refused: .*${why}`), `a retired option, an unknown control, a value that is not a boolean, an unknown keyboard is refused: ${why}`);
+  }
+  assert.match(String(mount({}, { id: "tree", childNodes: [] })), /^refused: .*#tree/, "an element with another id is refused");
+  assert.match(String(mount({}, { id: "", childNodes: [{ nodeType: 1 }] })), /^refused: .*host's nodes/, "and one holding the host's nodes");
+  assert.match(listSource, /^const shows = name => options\.show\?\.\[name\] !== false;$/m, "each control is shown unless switched off");
+  // A control off: not drawn, and what it chose not applied, the choice itself untouched.
+  assert.match(listSource, /^const bucketFilterActive = \(\) => shows\("filter"\) && FILTER_BUCKETS\.some/m, "the filter off narrows nothing");
+  assert.match(listSource, /^function treeAction\(target, kind\) \{\n  if \(!shows\("hiding"\)\) return "";/m, "hiding off draws no hide or restore");
+  assert.match(listSource, /^function arrangement\(\) \{ return shows\("arrangements"\) \? indexState\.arrange : "tree"; \}$/m, "the arrangements off draw the tree");
+  assert.match(listSource, /^function arrangeSource\(\) \{ return ARRANGE_SOURCES\.includes\(arrangement\(\)\) \? indexState\.arrange : null; \}$/m, "and read no other app's list");
+  assert.match(listSource, /if \(open && shows\("arrangements"\)\) refreshSources\(\);/, "nor which apps could be followed");
+  assert.match(listSource, /const flat = arrangement\(\) === "flat" \|\|/, "the tree reads the arrangement it draws");
+  assert.doesNotMatch(listSource.slice(listSource.indexOf("function renderTree(")), /indexState\.flat\b/, "never the reader's own choice past it");
+  for (const part of ["filter", "hiding", "arrangements"]) assert.match(listSource, new RegExp(`^if \\(shows\\("${part}"\\)\\) sheetParts\\.push\\(`, "m"), `the filter's sheet draws the ${part} part only while it is shown`);
+  assert.match(listSource, /^filterSheet\.innerHTML = sheetParts\.join\(`\\n<div class="scope-menu-divider"><\/div>\\n`\);$/m, "joined as the sheet always was");
+  assert.match(listSource, /^const hasSheet = sheetParts\.length > 0;$/m, "and with nothing to offer it is neither drawn nor handed over");
+  // Keys: engaged, the list's element hears them and answers only on a row; the page's, the app's
+  // keymap calls the handle's.
+  const keymapBlock = /^const keyActions = \{ "list-next": \(\) => stepList\(1\), "list-prev": \(\) => stepList\(-1\) \};\nif \(keyboardMode === "engaged"\) element\.addEventListener\("keydown", event => \{\n[\s\S]*?\n\}, \{ signal \}\);$/m.exec(listSource);
+  assert.ok(keymapBlock, "the list's keys are two actions, bound on its own element only when engaged");
+  {
+    const steps = [], handlers = [];
+    const element = { addEventListener: (type, fn, options) => handlers.push({ type, fn, signal: options?.signal }) };
+    const signal = { lifetime: "the list's" };
+    const run = new Function("element", "resolveKey", "stepList", "keyboardMode", "signal", `${keymapBlock[0]}\nreturn keyActions;`);
+    const row = { tagName: "BUTTON", closest: sel => (sel === ".tree-row" ? row : null) }, other = { tagName: "DIV", closest: () => null };
+    const press = (key, target) => { const event = { key, target, prevented: false, preventDefault() { this.prevented = true; } }; handlers[0].fn(event); return event.prevented; };
+    const actions = run(element, resolveKey, delta => steps.push(delta), "engaged", signal);
+    assert.equal(handlers.length, 1, "engaged, one listener on the list's element");
+    assert.equal(handlers[0].signal, signal, "carrying the list's signal");
+    assert.deepEqual([press("ArrowDown", row), press("ArrowUp", row), press("ArrowDown", other), press("]", row), press("j", row)], [true, true, false, false, false], "↓ and ↑ on a row are the list's; on anything else, and any other key, they are the page's");
+    assert.deepEqual(steps, [1, -1], "a step each");
+    actions["list-next"](); actions["list-prev"]();
+    assert.deepEqual(steps, [1, -1, 1, -1], "and the handle's keys step the same");
+    handlers.length = 0;
+    run(element, resolveKey, () => {}, "page", signal);
+    assert.equal(handlers.length, 0, "the page's keyboard binds nothing");
+  }
+  assert.match(listSource, /^  keys: keyActions,$/m, "the handle's keys are the list's actions");
+  assert.match(listSource, /const focusedRow = tree\.contains\(active\) && active\.matches\?\.\("\.tree-row\.session"\) \? active\.dataset\.session : "";\n  if \(treeHtml !== treeWritten\) \{\n    tree\.innerHTML = treeHtml; treeWritten = treeHtml;\n    if \(focusedRow\) tree\.querySelector\(`\.tree-row\.session\[data-session="\$\{CSS\.escape\(focusedRow\)\}"\]`\)\?\.focus\(\{ preventScroll: true \}\);/, "and a row with the focus keeps it as the tree is redrawn with the selection a key made");
+  assert.match(appSource, /^  keyboard: "page",$/m, "the app keeps the page's keyboard");
+  assert.match(appSource, /^  \.\.\.listHandle\.keys,$/m, "and its keymap calls the list's keys");
+  // Drawn small: the app's call, the flyouts' gate.
+  assert.match(listSource, /^  compact: on => \{ compactOn = !!on; if \(!compactOn && !railFlyout\.hidden\) closeRailFlyout\(false\); \},$/m, "the host says when the list is drawn small, and a flyout open closes when it is no longer");
+  assert.match(listSource, /clearTimeout\(railOpenTimer\); clearTimeout\(railCloseTimer\);\n  if \(!compactOn\) return;/, "the rail's flyouts open only then");
+  assert.match(appSource, /^  app\.classList\.toggle\("sidebar-off", [^\n]*\);\n  listHandle\.compact\(app\.classList\.contains\("sidebar-off"\)\);$/m, "the app tells the list as it collapses or opens the sidebar");
+  assert.equal((appSource.match(/classList\.(?:toggle|add|remove)\("sidebar-off"/g) || []).length, 1, "which is the one place it does");
+  assert.doesNotMatch(appSource, /flyoutOpen|closeFlyout/, "the app no longer reaches into the flyout");
+  // The controls are one strip a host can hold, drawn as no box.
+  assert.match(listSource, /^const controls = document\.createElement\("div"\);\ncontrols\.className = "session-list-controls";$/m, "the controls are one element");
+  assert.match(productionCss, /\n\.session-list-controls\{display:contents\}\n/, "that draws no box");
+  assert.match(productionCss, /#app\.column-pane-on \.side-head \.head-actions>\.session-list-controls\{display:none\}/, "and goes while the column shows a pane");
+  // The unmount. Every listener the list binds on the page carries its signal (read to its closing
+  // parenthesis, past strings and nested brackets).
+  const body = listSource.slice(listSource.indexOf("export function mountSessionList(element, options = {}) {"));
+  const calls = [];
+  for (const m of body.matchAll(/(?:\b(?:document|window)\.|(?<![.\w]))addEventListener\(/g)) {
+    let depth = 0, i = m.index + m[0].length, quote = null;
+    for (; i < body.length; i++) {
+      const c = body[i];
+      if (quote) { if (c === "\\") i++; else if (c === quote) quote = null; continue; }
+      if (c === '"' || c === "'" || c === "`") { quote = c; continue; }
+      if (c === "(" || c === "[" || c === "{") depth++;
+      else if (c === ")" || c === "]" || c === "}") { if (depth === 0) break; depth--; }
+    }
+    calls.push(body.slice(m.index, i + 1));
+  }
+  assert.equal(calls.length, 9, `the scan read the list's listeners on the page: the section menu's, the filter's and the flyout's three each (${calls.length})`);
+  assert.deepEqual(calls.filter(call => !/\bsignal \}\)$/.test(call)), [], "every one carries the list's signal");
+  assert.match(body, /^const life = new AbortController\(\), signal = life\.signal;$/m, "the list's lifetime is one signal");
+  for (const name of ["setTimeout", "clearTimeout"]) assert.match(body, new RegExp(`^const ${name} = `, "m"), `the list keeps every timer it starts (${name})`);
+  assert.doesNotMatch(body, /\b(?:setInterval|requestAnimationFrame|ResizeObserver|MutationObserver)\(/, "and starts nothing else it would not keep");
+  const unmount = /^  unmount\(\) \{\n[\s\S]*?\n  \},\n/m.exec(body);
+  assert.ok(unmount, "the handle has an unmount");
+  for (const step of ["if (unmounted) return;", "unmounted = true;", "sessionIndex.stop();", "life.abort();", "globalThis.clearTimeout(id)", "for (const node of [controls, filterSheet, filterMini, railMarks, railFlyout, sectionMenu, sectionScrim, insetProbe]) node?.remove();", "element.replaceChildren();", "element.removeAttribute(name)", "for (const [name, value] of elementBefore) element.setAttribute(name, value);"]) {
+    assert.ok(unmount[0].includes(step), `the unmount does ${step}`);
+  }
+  assert.match(body, /^const elementBefore = \[\.\.\.element\.attributes\]\.map\(attribute => \[attribute\.name, attribute\.value\]\);\n(?:\/\/[^\n]*\n)*element\.id = "sessionList";$/m, "the element's attributes are read before the list writes any");
+  // Work still out does nothing when it comes back: the index's read (its store's generation), another
+  // app's list, the apps that could be followed, a hide or a restore.
+  assert.match(listSource, /if \(unmounted \|\| arrangeSource\(\) !== source\) return;\n      const data = JSON\.parse\(text\);/, "another app's list");
+  assert.match(listSource, /if \(unmounted \|\| arrangeSource\(\) !== source\) return;\n      const changed = layoutState\.error !== error\.message;/, "and its failure");
+  assert.match(listSource, /if \(!data \|\| unmounted\) return;\n      sourceState = /, "the apps that could be followed");
+  assert.match(listSource, /if \(unmounted\) return;\n    if \(!response\.ok\) throw new Error/, "a hide or a restore");
+  assert.match(listSource, /\} catch \(error\) \{ if \(!unmounted\) onToast\(/, "and its failure");
+  const indexStore = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-index-store.js", import.meta.url), "utf8");
+  assert.match(indexStore, /stop\(\) \{ this\.stopped = true; this\.generation\+\+;/, "the index's stop moves its generation");
+  assert.match(indexStore, /if \(generation !== this\.generation \|\| this\.stopped\) return;/, "so a read from before it is dropped");
+  // After the unmount the handle does nothing: run the list's fence over a handle like its own.
+  {
+    const fencedFn = /^function fenced\(handle\) \{\n[\s\S]*?\n\}\n/m.exec(body);
+    assert.ok(fencedFn, "the handle is fenced in one place");
+    let unmountedFlag = false;
+    const calls = [];
+    const make = new Function("isUnmounted", `const fenced = (() => { ${fencedFn[0].replace("unmounted ?", "isUnmounted() ?")} return fenced; })(); return fenced;`);
+    const handle = make(() => unmountedFlag)({ rows: () => ["r"], select: id => calls.push(["select", id]), keys: { "list-next": () => calls.push(["next"]), label: "x" }, unmount() { unmountedFlag = true; calls.push(["unmount"]); } });
+    assert.deepEqual(handle.rows(), ["r"]); handle.select("a"); handle.keys["list-next"]();
+    handle.unmount(); handle.unmount();
+    assert.deepEqual([handle.rows(), handle.select("b"), handle.keys["list-next"](), handle.keys.label], [undefined, undefined, undefined, "x"], "once unmounted every member does nothing and answers nothing");
+    assert.deepEqual(calls, [["select", "a"], ["next"], ["unmount"], ["unmount"]], "the unmount itself stays callable (and is idempotent inside)");
+  }
+  console.log("#s430 list options and unmount cases passed");
 }
 
 // #s429 stage 6: the optional controls and the keys a host may change. A control switched off is

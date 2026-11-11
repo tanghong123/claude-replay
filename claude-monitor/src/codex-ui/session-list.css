@@ -150,6 +150,7 @@
 :where(#sessionList):is(*,div){-webkit-text-size-adjust:100%;text-size-adjust:100%}
 :where(#sessionList).session-list{color-scheme:light}
 :where(#sessionList).session-list[data-theme="dark"]{color-scheme:dark}
+:where(#sessionList) .session-list-controls{display:contents}
 #sessionList>.session-list-head{position:relative;display:flex;justify-content:flex-end;gap:2px;padding:4px 8px;flex:none}
 :where(#sessionList) .session-state.inferred{box-shadow:0 0 0 1px currentColor;background:transparent}
 :where(#sessionList):where([data-theme="dark"]) .agent-label{color:var(--faint)}
