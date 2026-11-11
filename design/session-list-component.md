@@ -152,7 +152,8 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
    mount sets `#sessionList` on its element itself.
 3. **Markup and styles apart.** The list builds its markup from a template of its own, and its
    rules hang on its element in a stylesheet of its own, generated as the view's is. Lands as one.
-   **Planned** (#s430), in five commits on one landing; the carve, its four parts and the template are built (below):
+   **Planned** (#s430), in five commits on one landing; the carve, its four parts, the template, the
+   styles and the theme are built (below):
 
    - **The carve.** `#sessionList` becomes an element of its own, `div.session-list`, a child of
      the sidebar where the tree stands now, holding the arrangement strip and the tree. In the app
@@ -216,9 +217,51 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      id for id, while `#sessionList` is still the sidebar. Flat mode's rule that hides Collapse and
      Expand all read `#sessionList.sessions-flat` around the head, which the head is no longer
      inside: the list marks the two controls it places instead (`[data-flat]`).
+
+     **Built** (#s430), the styles, not landed. As built: `deriveStylesheets` returns `{view, list,
+     app}`, and `session-view.css` is byte for byte what it was. Each selector gets the view's
+     decision, unchanged, and beside it the list's (`classifyList`): the list's file takes a copy,
+     and the app's file keeps its own unless the rule is the list's alone. One thing the plan did not
+     see: the rail's flyout, in the page's body, draws an agent's rows with the functions the tree
+     draws them with, and the bare `.tree-row`, `.tree-title`, `.session-state`… rules style them
+     there. So a rule naming only those names is in both files, as the view's `OUTSIDE` are
+     (`LIST_SHOWN_OUTSIDE`, which the contract holds to what the flyout's functions draw, both ways);
+     what leaves `app-shell.css` is the list's body that only the list's element holds: the tree,
+     the agent heads, the strip and the arranged sections, and every rule led by `#sessionList`. A
+     word beside one of the list's names is a modifier of it (a state chip's `.busy`), and the rules
+     with no name of the list's own (`button`, `*`, `.iconbtn`, `.icon`, the popover rows the sheet
+     borrows) are in both, so a host loading the list's file alone gets its controls and its sheet.
+     `.no-results` moved from the app's chrome to the list's body (the tree draws it; the flyout and
+     ⌘K too, so it is in both). On the list's element: the page's tokens and inherited properties as
+     the view's element takes them (`.session-list` for `:root`, `:is(*,div)` for `html` or `body`),
+     and the sidebar's `--state-*` tokens (`.session-list` for `.sidebar`, so the dark one reads
+     `.session-list.session-list[data-theme="dark"]`); the derivation stops on an inherited property
+     or a token the sidebar sets that would be hidden, and on a copied token whose value names one an
+     element above the list declares. The list's file has no reset of its own (the view's pins
+     `select` and `code`, which the list draws none of). The list's tie check takes every app rule
+     with no copy in the list's file whose subject could be inside `#sessionList` (the list's body or
+     shared words, under the grid, its states, the sidebar or the list) against every earlier rule
+     with a copy there: none. The two `>:where(.session-list)>` rules and the strip's
+     `.sidebar>:where(.session-list)>.arrange-strip` (its padding) stay the app's, so in a host the
+     strip has no padding and the tree no fixed width. The split: `app-shell.css` 612 rules (682
+     selectors) before, 570 (636) after; `session-list.css` 227 rules (244 selectors): 46 the list's
+     alone (32 by name, 14 led by `#sessionList`), 89 shown outside it too, 33 its placed parts, 43
+     with no name of its own, the rest on its element (the page's root and the sidebar's tokens).
+     Keyframes `sl-pop` and `sl-status-breathe`; the app keeps `pop` and `status-breathe` for the
+     flyout's rows and its own. So the one computed value that differs inside the list in the app is
+     `animation-name` on a busy row's dot (`sl-status-breathe`), the same frames. The host page loads
+     `session-list.css` alone. `ui.rs` `the_list_s_stylesheet_names_nothing_outside_its_element`
+     holds every selector to the list's element, its keyframes to `sl-`, and the three links' order.
    - **The theme comes forward from stage 4**, as the view's did in its stage 5b: the list takes
      `theme` and has `setTheme`, so its dark rules and tokens hang on its own element; the app sets
      both components from one value.
+
+     **Built** (#s430), not landed. The mount adds `session-list` to its element's classes, as the
+     view's adds `session-view`, and stamps `data-theme` on it alone. The app passes the root's theme
+     as it mounts the list, and tells both components together (`tellTheme`) from its toggle and from
+     its observer of the root's `data-theme`, which since ed887b59 is how the view follows any change.
+     The list mounts before the stored theme is put on the root, so that first change reaches it
+     through the observer, before the page is drawn.
    - **Names.** No class of the list's is styled by the collaboration app's own styles in a way
      that reaches it (measured, its vendored copy of our CSS left out: the one rule naming a class
      the list draws is scoped under that app's own navigation), so the list renames nothing,
