@@ -418,9 +418,9 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .section-view-menu{display:block;position:fixed;right:auto;top:0;left:0;width:236px;z-index:60;max-height:calc(100vh - 16px)}
 .section-view-menu[hidden]{display:none}
 @media(hover:none){
-#app :is(.arranged-view:not([aria-expanded="true"]),.arrange-strip-close):hover{background:transparent}
-#app .arranged-view:not(.on):not([aria-expanded="true"]):hover{color:var(--sub)}
-#app .arrange-strip-close:hover{color:var(--faint)}
+#sessionList :is(.arranged-view:not([aria-expanded="true"]),.arrange-strip-close):hover{background:transparent}
+#sessionList .arranged-view:not(.on):not([aria-expanded="true"]):hover{color:var(--sub)}
+#sessionList .arrange-strip-close:hover{color:var(--faint)}
 }
 .section-view-scrim{display:none}
 .section-view-menu .scope-option{grid-template-columns:18px minmax(0,1fr)}
@@ -568,10 +568,10 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .drawer-handle .icon{width:22px;height:22px}
 #app .side-head{height:auto;min-height:52px;padding-left:52px}
 #app .side-head .iconbtn{width:40px;height:44px}
-#app .tree-row.session,#app .tree-row.project,#app .agent-label{min-height:44px}
-#app .arranged-view{width:44px;height:44px;margin-top:-10px;margin-bottom:-10px}
-#app .arranged-view .icon{width:18px;height:18px}
-#app .arrange-strip-close{width:44px;height:44px;margin:-10px -6px -10px 0}
+#sessionList .tree-row.session,#sessionList .tree-row.project,#sessionList .agent-label{min-height:44px}
+#sessionList .arranged-view{width:44px;height:44px;margin-top:-10px;margin-bottom:-10px}
+#sessionList .arranged-view .icon{width:18px;height:18px}
+#sessionList .arrange-strip-close{width:44px;height:44px;margin:-10px -6px -10px 0}
 #app .section-view-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:59;background:transparent}
 #app .section-view-scrim.dim:not([hidden]){background:rgba(14,19,31,.32)}
 #app .section-view-menu.sheet{left:calc(8px + env(safe-area-inset-left,0px))!important;right:calc(8px + env(safe-area-inset-right,0px));top:auto!important;bottom:calc(8px + env(safe-area-inset-bottom,0px));width:auto;max-height:calc(100dvh - 72px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));padding:12px 14px;border-radius:16px}

@@ -649,6 +649,10 @@ mod tests {
             } else if !outside(&names, rest) {
                 Some(if lead.starts_with("#sessionView") {
                     "the view's"
+                } else if lead.starts_with("#sessionList") {
+                    // The session list's own element (#s430): its state since stage 1, and its
+                    // phone rules since stage 3 (they were led by `#app`).
+                    "the list's"
                 } else {
                     "hangs on nothing outside"
                 })
@@ -671,7 +675,8 @@ mod tests {
             selectors.len() > 1000
                 && count("the view's") >= 250
                 && count("shared") >= 20
-                && count("the app's chrome") >= 20
+                && count("the app's chrome") >= 15
+                && count("the list's") >= 10
                 && count("an app state") >= 40
                 && count("tokens on the app's grid") >= 3,
             "read {} selectors: {counts:?}",
