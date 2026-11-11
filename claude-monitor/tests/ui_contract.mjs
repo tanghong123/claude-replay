@@ -117,10 +117,10 @@ let droppedAttention = "";
   console.log("#s429 view markup cases passed");
   console.log("#s430 list markup cases passed");
 }
-// #s429 stage 5b: the page loads two stylesheets, both derived from reference.css and production.css
-// by the extraction script (scripts/session-view-css.mjs): the app's chrome and the page's, then the
-// session view's, every rule of which hangs on #sessionView. They are derived again here and must
-// agree byte for byte. The classifier's lists name what the app draws; every class or id the app's
+// #s429 stage 5b, #s430 stage 3: the page loads three stylesheets, all derived from reference.css and
+// production.css by the extraction script (scripts/session-view-css.mjs): the app's chrome and the
+// page's, then the session list's, every rule of which hangs on #sessionList, then the session view's,
+// every rule of which hangs on #sessionView. They are derived again here and must agree byte for byte. The classifier's lists name what the app draws; every class or id the app's
 // shell, app.js and session-list.js draw that a selector uses is in one of them, and every name the
 // app's lists hold is one the app draws, so a list cannot drift from the app it describes.
 {
@@ -129,13 +129,14 @@ let droppedAttention = "";
   const read = name => readFileSync(new URL(`../../claude-monitor/src/codex-ui/${name}`, import.meta.url), "utf8");
   assert.equal(read("session-view.css"), derived.view, "session-view.css is derived from reference.css and production.css (run scripts/extract-agent-monitor-demo.mjs)");
   assert.equal(read("app-shell.css"), derived.app, "app-shell.css is derived from reference.css and production.css (run scripts/extract-agent-monitor-demo.mjs)");
+  assert.equal(read("session-list.css"), derived.list, "session-list.css is derived from reference.css and production.css (run scripts/extract-agent-monitor-demo.mjs)");
   // #s430 stage 3: the app's file takes one rewrite, the demo's two rules naming the tree as the
   // sidebar's child, which go on through the list's element at the same weight.
   assert.deepEqual(derived.report.listChild, [".app.sidebar-off .sidebar>:where(.session-list)>.tree", ".sidebar>:where(.session-list)>.tree"], "the demo's two sidebar>tree rules go on through #sessionList, and only they");
   assert.doesNotMatch(productionCss, /\.sidebar>\.(?:tree|arrange-strip)(?![\w-])/, "production.css names no part of the list as the sidebar's child");
   const head = read("page-head.html");
   const links = [...head.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map(m => m[1]);
-  assert.deepEqual(links, ["monitor-ui/app-shell.css", "monitor-ui/session-view.css"], "the page loads the app's stylesheet, then the view's, and nothing else of ours");
+  assert.deepEqual(links, ["monitor-ui/app-shell.css", "monitor-ui/session-list.css", "monitor-ui/session-view.css"], "the page loads the app's stylesheet, then the list's, then the view's, and nothing else of ours");
   // What the app draws: the class and id names in its shell and its scripts (the quoted words of a
   // template's pieces too), and the names its own lookups use. The list's markup is the app's too
   // (#s430 stage 3), and so are the demo's attention controls the served shell no longer carries: their
@@ -259,7 +260,45 @@ let droppedAttention = "";
   assert.match(spun.view, /:where\(#sessionView\) \.turn\{animation:sv-spin 1s linear\}/);
   assert.match(spun.view, /@keyframes sv-spin\{to\{opacity:0\}\}/);
   assert.match(spun.app, /\.tree-row\{animation:spin 2s\}\n@keyframes spin\{/, "the app's file keeps its own names");
+  assert.match(spun.list, /:where\(#sessionList\) \.tree-row\{animation:sl-spin 2s\}/, "the list's file names its keyframes sl-<name>");
+  assert.match(spun.list, /@keyframes sl-spin\{to\{opacity:0\}\}/);
+  assert.doesNotMatch(spun.list, /\.turn/, "and holds nothing of the view's");
   console.log("#s429 stylesheet cases passed");
+  // #s430 stage 3: the list's file. Its body leaves the app's file, unless the page shows it outside
+  // the list's element too (the rail's flyout's rows, the empty line); its placed parts and the rules
+  // with no name of its own are in both; an app state or the app's chrome stays the app's alone.
+  assert.deepEqual(derived.report.list.ties, [], "no app rule that may style an element inside #sessionList weighs the same as a rule of the list's file it used to follow");
+  assert.ok(derived.report.list.left.length > 30 && derived.report.list.left.every(sel => /^#sessionList(?![\w-])/.test(sel) || styles.classifyList(sel).kind === "the list's"), `what left the app's file is the list's body alone: ${derived.report.list.left.join(", ")}`);
+  assert.deepEqual([...derived.report.keyframes.list].sort(), ["pop", "status-breathe"], "the list's file renames the keyframes its rules run");
+  for (const name of styles.LIST_SHOWN_OUTSIDE) assert.ok(styles.LIST_CHROME.includes(name), `${name}, which the page shows outside the list, is a name of the list's body`);
+  const listOf = sel => { const d = styles.classifyList(sel); return d.list.length ? (d.keepApp ? "both" : "list") : "app"; };
+  assert.equal(listOf(".agent-label:hover"), "list", "the list's body is the list's alone");
+  assert.equal(listOf("#sessionList .tree-row.session"), "list", "a rule on #sessionList is the list's alone");
+  assert.equal(listOf(".tree-row.session.selected .tree-title"), "both", "a row the flyout draws too is in both files");
+  assert.equal(listOf(".session-state.busy"), "both", "a word beside the list's name modifies it");
+  assert.equal(listOf(".rail-flyout"), "both", "a part the app places is in both files");
+  assert.equal(listOf(".iconbtn"), "both", "a shared name alone is in both files");
+  assert.equal(listOf(".turn"), "app", "the view's names are no rule of the list's");
+  assert.equal(listOf(".app.sidebar-off .sidebar>:where(.session-list)>.tree"), "app", "an app state stays the app's");
+  assert.equal(listOf(".session-list"), "app", "the app placing the list stays the app's");
+  assert.deepEqual(styles.classifyList(':root[data-theme="dark"] .sidebar').list, [':where(#sessionList).session-list.session-list[data-theme="dark"]'], "the sidebar's tokens go on the list's element at their weight");
+  assert.deepEqual(styles.classifyList(':root[data-theme="dark"] .tree-row').list, [':where(#sessionList).session-list[data-theme="dark"] .tree-row'], "the page's theme moves onto the list's element");
+  for (const sel of ["#sessionList+.x", ".session-list~.x", "body[data-shared-codex] .tree-row"]) {
+    assert.throws(() => styles.classifyList(sel), /session-list\.css/, `the build refuses \`${sel}\`, which cannot hang under the list's element as written`);
+  }
+  // What the rail's flyout draws (an agent's rows, through the functions the tree draws them with, in
+  // the page's body), held to LIST_SHOWN_OUTSIDE both ways.
+  {
+    const listView = read("session-list-view.js");
+    const fn = name => { const at = listView.indexOf(`function ${name}(`); assert.ok(at >= 0, `the list draws with ${name}`); return listView.slice(at, listView.indexOf("\n}\n", at)); };
+    assert.match(fn("railFlyoutBody"), /flatSessionsHtml\(\[agent\][^)]*\) : agentProjectsHtml\(agent\)/, "the flyout draws an agent's rows as the tree draws them");
+    const flyoutText = ["railFlyoutBody", "agentProjectsHtml", "flatSessionsHtml", "familyRowsHtml", "sessionTreeRow", "treeAction", "agentGlyph"].map(fn).join("\n");
+    const flyoutNames = new Set();
+    for (const m of flyoutText.matchAll(/class=\\?["']((?:[^"'\\$]|\$\{[^}]*\})*)\\?["']/g)) for (const w of words(m[1])) flyoutNames.add(`.${w}`);
+    const shown = [...flyoutNames].filter(n => styles.LIST_CHROME.includes(n)).sort();
+    assert.deepEqual(shown, [...styles.LIST_SHOWN_OUTSIDE].sort(), "LIST_SHOWN_OUTSIDE is exactly the names of the list's body the rail's flyout draws");
+  }
+  console.log("#s430 stylesheet cases passed");
 }
 assert.match(productionCss, /\.monitor-empty\[hidden\]\{display:none!important\}/, "a loaded session must not retain the loading placeholder in layout");
 assert.match(viewportSource, /USER_INTENT_MS/, "follow state must distinguish user scroll intent");

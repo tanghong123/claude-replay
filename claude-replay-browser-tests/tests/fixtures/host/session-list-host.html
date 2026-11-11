@@ -10,14 +10,15 @@
      own modules and routes. The page carries nothing of the app's: the list builds its own markup
      (stage 3) in the empty element it is given, and with no `place` it draws its controls and the
      filter's sheet in a head of its own at its top. What the list says reaches `window.__host`: each
-     `onOpen`, each `onIndex` and each toast. -->
-<link rel="stylesheet" href="/monitor-ui/app-shell.css">
+     `onOpen`, each `onIndex` and each toast. The page loads the list's own stylesheet alone (stage 3),
+     every rule of which hangs on #sessionList, and nothing of the app's. -->
+<link rel="stylesheet" href="/monitor-ui/session-list.css">
 <style>
 /* The host's own rules keep to its own elements. */
 .host-bar { position: fixed; top: 0; left: 0; right: 0; height: 40px; display: flex; gap: 8px; align-items: center; padding: 0 12px; }
 .host-pane { position: fixed; top: 40px; left: 0; bottom: 0; width: 320px; overflow: auto; display: flex; }
-/* The element the host gives the list: a column filling the pane. (The app's stylesheet draws no box
-   for it, `display: contents`, which is the app placing the list in its sidebar.) */
+/* The element the host gives the list: a column filling the pane, which the list's stylesheet leaves to
+   its host (in the app it is `display: contents`, the app placing the list in its sidebar). */
 .host-pane > #sessionList { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
 </style>
 </head>

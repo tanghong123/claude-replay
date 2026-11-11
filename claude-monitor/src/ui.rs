@@ -120,12 +120,17 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
         "icon-192.png" => ("image/png", include_bytes!("icons/icon-192.png").as_slice()),
         "icon-512.png" => ("image/png", include_bytes!("icons/icon-512.png").as_slice()),
         "manifest.webmanifest" => ("application/manifest+json", MANIFEST.as_bytes()),
-        // The page's two stylesheets (#s429 stage 5b), both derived from reference.css and
-        // production.css by the extraction script: the app's chrome and the page's, then the session
+        // The page's three stylesheets (#s429 stage 5b, #s430 stage 3), all derived from
+        // reference.css and production.css by the extraction script: the app's chrome and the page's,
+        // then the session list's, every rule of which hangs on `#sessionList`, then the session
         // view's, every rule of which hangs on `#sessionView`. The page links them in that order.
         "monitor-ui/app-shell.css" => (
             "text/css; charset=utf-8",
             include_bytes!("codex-ui/app-shell.css").as_slice(),
+        ),
+        "monitor-ui/session-list.css" => (
+            "text/css; charset=utf-8",
+            include_bytes!("codex-ui/session-list.css").as_slice(),
         ),
         "monitor-ui/session-view.css" => (
             "text/css; charset=utf-8",
@@ -902,6 +907,95 @@ mod tests {
         );
     }
 
+    /// #s430 stage 3 (design/session-list-component.md): the session list's stylesheet names nothing
+    /// outside its own element, as the view's does not, so a host's page can load it beside its own.
+    /// Every selector in session-list.css starts at the list's element — `:where(#sessionList)`,
+    /// which weighs nothing, or `#sessionList` (the rules that already hung on it) — none names the
+    /// page, the app or the view around it, and none goes on from the element to its siblings; its
+    /// keyframes are its own (`sl-<name>`). The rules for the parts the app places outside the
+    /// element (the controls, the sheet, the rail's parts, the flyout) are prefixed the same way, and
+    /// in the app match nothing: their copies in app-shell.css style them there. The page links the
+    /// app's file, then the list's, then the view's.
+    #[test]
+    fn the_list_s_stylesheet_names_nothing_outside_its_element() {
+        let css = include_str!("codex-ui/session-list.css");
+        let bare = |selector: &str, word: &str| {
+            let ident = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '#');
+            selector.match_indices(word).any(|(at, _)| {
+                !selector[..at].ends_with(ident) && !selector[at + word.len()..].starts_with(ident)
+            })
+        };
+        let selectors = style_selectors(css);
+        for (line, selector) in &selectors {
+            let rooted = [":where(#sessionList)", "#sessionList"].iter().any(|root| {
+                selector.strip_prefix(root).is_some_and(|rest| {
+                    !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+                })
+            });
+            let (lead, _) = leading_compound(selector);
+            let to_siblings = selector[lead.len()..].trim_start().starts_with(['+', '~']);
+            let outside = to_siblings
+                || selector_names(selector)
+                    .iter()
+                    .any(|n| matches!(*n, "#app" | ".app" | "#sessionView" | ".session-view"))
+                || ["body", "html", ":root"].iter().any(|w| bare(selector, w));
+            assert!(
+                rooted && !outside,
+                "session-list.css:{line}: `{selector}` reaches outside the session list's element. \
+                 Every rule of the list's hangs on #sessionList; change the demo \
+                 (design/agent-monitor-codex-demo.html) or production.css and run \
+                 scripts/extract-agent-monitor-demo.mjs \
+                 (design/session-list-component.md, stage 3)"
+            );
+        }
+        let at_rules: Vec<&str> = css
+            .lines()
+            .filter(|line| line.starts_with('@'))
+            .filter(|line| {
+                !["@media", "@supports", "@container", "@layer"]
+                    .iter()
+                    .any(|at| line.starts_with(at))
+            })
+            .collect();
+        assert!(
+            !at_rules.is_empty()
+                && at_rules
+                    .iter()
+                    .all(|line| line.starts_with("@keyframes sl-")),
+            "session-list.css holds {at_rules:?}; its keyframes are named sl-<name>"
+        );
+        assert!(
+            selectors.len() > 200,
+            "read {} selectors of session-list.css",
+            selectors.len()
+        );
+        // The list's body is styled here: the tree, a row, the strip.
+        for name in [".tree", ".tree-row", ".agent-label", ".arrange-strip-box"] {
+            assert!(
+                selectors
+                    .iter()
+                    .any(|(_, s)| selector_names(s).contains(&name)),
+                "session-list.css styles {name}"
+            );
+        }
+        let links: Vec<usize> = [
+            "monitor-ui/app-shell.css",
+            "monitor-ui/session-list.css",
+            "monitor-ui/session-view.css",
+        ]
+        .iter()
+        .map(|href| {
+            PAGE_HEAD
+                .find(&format!(r#"href="{href}""#))
+                .unwrap_or_else(|| panic!("the page links {href}"))
+        })
+        .collect();
+        assert!(
+            links.windows(2).all(|pair| pair[0] < pair[1]),
+            "the page links app-shell.css, then session-list.css, then session-view.css"
+        );
+    }
+
     /// #s429, #s438: the collaboration app mounts the session view in a pane of its own page and
     /// styles these classes there. Our rules hang on `#sessionView` and cannot reach its elements,
     /// but its rules reach ours by class, so the view names none of them: its own are `sv-<name>`
@@ -1232,6 +1326,10 @@ mod tests {
         let mut wide_phones = 0;
         for (name, css) in [
             ("monitor-ui/app-shell.css", body("monitor-ui/app-shell.css")),
+            (
+                "monitor-ui/session-list.css",
+                body("monitor-ui/session-list.css"),
+            ),
             (
                 "monitor-ui/session-view.css",
                 body("monitor-ui/session-view.css"),

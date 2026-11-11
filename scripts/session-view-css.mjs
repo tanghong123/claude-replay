@@ -1,10 +1,22 @@
-// The session view's stylesheet and the app's, derived from reference.css and production.css
-// (#s429 stage 5b, design/session-view-component.md). `extract-agent-monitor-demo.mjs` writes both,
-// and the frontend contract derives them again and compares them byte for byte, so neither is ever
-// edited by hand. The two sources stay as they are: reference.css is the demo's own extraction, and
+// The session view's stylesheet, the session list's and the app's, derived from reference.css and
+// production.css (#s429 stage 5b, design/session-view-component.md; the list's, #s430 stage 3,
+// design/session-list-component.md). `extract-agent-monitor-demo.mjs` writes all three, and the
+// frontend contract derives them again and compares them byte for byte, so none is ever edited by
+// hand. The two sources stay as they are: reference.css is the demo's own extraction, and
 // production.css is where production rules are written.
 //
 // What it makes:
+// - `session-list.css` (#s430 stage 3): every rule that styles what the list draws, each selector
+//   hung under the list's element, `#sessionList`, as the view's are under its own: the prefix
+//   `:where(#sessionList) `, a rule led by `#sessionList` kept as written, and the page's root stood
+//   in for by the list's element (`.session-list` for `:root`, `:is(*,div)` for `html` or `body`, the
+//   theme moved onto it), which takes the tokens and the inherited properties, and the sidebar's own
+//   tokens (`--state-*`), which the list's rows read from the element they sit in. Its keyframes are
+//   named `sl-<name>`. A rule naming the list's body goes in it alone, unless the page shows what it
+//   names outside the list's element too (`LIST_SHOWN_OUTSIDE`: the rail's flyout draws an agent's
+//   rows in the page's body), and then the app keeps its copy, as it does for the list's placed parts
+//   (`LIST_OUTSIDE`) and for the rules with no name of the list's own (a glyph button, `button`, `*`).
+//   A rule that reads an app state, or names the app's chrome, stays the app's alone.
 // - `session-view.css`: every rule that styles what the view draws, with each selector hung under
 //   the view's element. A plain selector gets the prefix `:where(#sessionView) `, which weighs
 //   nothing. A rule that already hangs on `#sessionView` (stage 5a) keeps its own. A rule on the
@@ -19,9 +31,10 @@
 //   (`.sidebar>.tree`, and under `sidebar-off`) go on through it, `.sidebar>:where(.session-list)>.tree`,
 //   weighing what they did. reference.css keeps the demo's words; production.css writes its own so.
 //
-// The app shell loads `app-shell.css` first and `session-view.css` after it. A rule in both files is
-// then the same rule twice, its later copy in the view's file, so for an element of the view the
-// view's file alone decides, in the order and at the weight the sources gave every rule.
+// The app shell loads `app-shell.css` first, `session-list.css` next and `session-view.css` last. A
+// rule in two files is then the same rule twice, its later copy in the component's file, so for an
+// element of the view (or the list) that file alone decides, in the order and at the weight the
+// sources gave every rule. Neither component's file reaches the other's element.
 //
 // The weight is kept EXACTLY, so no rule's standing against another of ours moves:
 // - the prefix is `:where(…)`, which weighs nothing;
@@ -253,7 +266,7 @@ export const APP_CHROME = Object.freeze([
   ".column-pane", ".column-switch", ".column-switch-count",
   ".confirm-layer", ".dialog-actions", ".passcode-input", ".primary",
   ".drawer-handle", ".drawer-scrim", ".head-actions",
-  ".nav", ".nav-tooltip", ".navbtn", ".no-results",
+  ".nav", ".nav-tooltip", ".navbtn",
   ".result-copy", ".result-kind", ".result-why",
   ".search-input", ".search-layer", ".search-result", ".search-result-stale", ".search-results", ".searchbox",
   ".side-head", ".sidebar", ".sidebar-collapse", ".sidebar-mini", ".sidebar-mini-badge", ".sidebar-mini-button", ".sidebar-mini-separator", ".sidebar-resizer",
@@ -265,15 +278,29 @@ export const APP_CHROME = Object.freeze([
  *  its rows and labels, the arrangement strip and the arranged sections, and the state chips; the
  *  element itself (`.session-list`), with the arrangement it carries (`sessions-flat`,
  *  `sessions-arranged`, on `#app` until stage 1); and the head it draws its controls and the filter
- *  sheet in where its host places them nowhere (`.session-list-head`). Like the app's chrome, a rule
- *  naming one is not the view's. */
+ *  sheet in where its host places them nowhere (`.session-list-head`); and the empty line it draws in
+ *  its tree (`.no-results`), which the app's session search (⌘K) draws too. Like the app's chrome, a
+ *  rule naming one is not the view's. */
 export const LIST_CHROME = Object.freeze([
   "#sessionList", ".session-list", ".session-list-head",
   ".agent-label", ".agent-monogram",
   ".arrange-strip", ".arrange-strip-box", ".arrange-strip-close", ".arrange-strip-text",
   ".arranged-empty", ".arranged-group", ".arranged-head", ".arranged-label", ".arranged-rest", ".arranged-view",
+  ".no-results",
   ".session-age", ".session-end", ".session-state", ".sessions-arranged", ".sessions-flat",
   ".tree", ".tree-action", ".tree-agent", ".tree-context", ".tree-forks", ".tree-main", ".tree-project", ".tree-project-more", ".tree-row", ".tree-side", ".tree-title",
+]);
+
+/** The names of the list's body that the page also shows OUTSIDE `#sessionList`: the rows the rail's
+ *  flyout draws in the page's body (an agent's projects and sessions, through the same functions the
+ *  tree draws them with), and the empty line, which the flyout and the app's session search draw too.
+ *  A rule naming only these (and shared words) is in both files, as the view's `OUTSIDE` are: the
+ *  app's copy styles them where they are shown, the list's in its element. The contract reads the
+ *  flyout's functions and holds this list to what they draw. */
+export const LIST_SHOWN_OUTSIDE = Object.freeze([
+  ".agent-monogram", ".no-results",
+  ".session-age", ".session-end", ".session-state",
+  ".tree-action", ".tree-agent", ".tree-context", ".tree-forks", ".tree-main", ".tree-project", ".tree-project-more", ".tree-row", ".tree-side", ".tree-title",
 ]);
 
 /** What the list draws that the page shows outside `#sessionList` (#s430 stage 3): its head controls
@@ -484,7 +511,89 @@ export function classify(selector) {
   return { kind: "the view's", app: null, view: selectors };
 }
 
-// ── the two stylesheets ──────────────────────────────────────────────────────────────────────────
+// ── the list's decision (#s430 stage 3) ───────────────────────────────────────────────────────────
+
+const LIST_ROOT = ":where(#sessionList)";
+const LIST_CLASS_WEIGHT = ".session-list";
+/** The classes the list's element carries: its class and its arrangement. A rule led by one may style
+ *  the list's element itself. */
+export const LIST_ROOT_CLASSES = Object.freeze([".session-list", ".sessions-flat", ".sessions-arranged"]);
+const LIST_NAMES = new Set([...LIST_CHROME, ...LIST_OUTSIDE]);
+const LIST_PLACED = new Set(LIST_OUTSIDE);
+const LIST_INSIDE = new Set(LIST_CHROME.filter(n => !LIST_SHOWN_OUTSIDE.includes(n)));
+const LIST_ROOT_NAMES = new Set(LIST_ROOT_CLASSES);
+const APP_NAMES = new Set([...APP_CHROME, "#app", ".app", "#sessionView"]);
+
+/** The conditions a page compound carried, as the list's element carries them: its theme. Anything
+ *  else cannot move, and stops the build. */
+function listMovable(conditions, selector) {
+  for (const piece of conditions.match(/\[[^\]]*\]|:not\(\[[^\]]*\]\)|:where\(\[[^\]]*\]\)|[^[:]+|:[^:]*/g) || []) {
+    if (!/^(?::not\(|:where\()?\[data-theme(=[^\]]*)?\]\)?$/.test(piece)) {
+      throw new Error(`session-list.css: \`${selector}\` reads the page around the list through \`${piece}\`, which the list's element does not carry`);
+    }
+  }
+  return conditions;
+}
+
+/** Where one selector goes for the list: `{kind, list, keepApp}`, the list's selectors (none, one,
+ *  or two where it may also match the list's own element) and whether the app's file keeps its copy
+ *  (where it had one). `root` marks a selector on the page's root, whose rule the list's element takes
+ *  only in part; `sidebar` one on the sidebar alone, whose tokens it takes. */
+export function classifyList(selector) {
+  const parts = compounds(selector);
+  let weight = "";
+  let conditions = "";
+  let k = 0;
+  for (; k < parts.length; k += 1) {
+    const page = pageCompound(parts[k].text);
+    if (!page) break;
+    weight += page.weight === CLASS_WEIGHT ? LIST_CLASS_WEIGHT : page.weight;
+    conditions += page.conditions;
+  }
+  const rest = parts.slice(k);
+  const root = () => `${LIST_ROOT}${weight}${listMovable(conditions, selector)}`;
+  const none = kind => ({ kind, list: [], keepApp: true });
+  if (!rest.length) return { kind: "page root", list: [root()], keepApp: true, root: true };
+  const lead = rest[0].text;
+  const tail = rest.slice(1);
+  const tailText = tail.length ? joinCompounds([{ comb: "", text: "" }, ...tail]) : "";
+  const sibling = tail.length > 0 && (tail[0].comb === "+" || tail[0].comb === "~");
+  // The sidebar's own tokens, which the list's rows read from the element they sit in: on the list's
+  // element, the sidebar's class stood in for by the list's.
+  if (rest.length === 1 && lead === ".sidebar") return { kind: "the sidebar's tokens", list: [`${LIST_ROOT}${weight}${LIST_CLASS_WEIGHT}${listMovable(conditions, selector)}`], keepApp: true, sidebar: true };
+  if (/^(#app|\.app)(?![\w-])/.test(lead) || lead.startsWith(":is(#sessionView,#app)") || /^#sessionView(?![\w-])/.test(lead)) return none("not the list's");
+  if (lead === ".session-list" && !tail.length && !weight && !conditions) return none("the app placing the list");
+  if (/^#sessionList(?![\w-])/.test(lead)) {
+    if (sibling) throw new Error(`session-list.css: \`${selector}\` goes on from the list's element to its siblings, which are no part of the list`);
+    return { kind: "the list's, on #sessionList", list: [`#sessionList${weight}${listMovable(conditions, selector)}${lead.slice("#sessionList".length)}${tailText}`], keepApp: false };
+  }
+  const names = [...new Set(rest.flatMap(p => namesIn(withoutNot(p.text))))];
+  if (names.some(n => STATE_NAMES.has(n) || APP_NAMES.has(n))) return none("the app's");
+  // Beside a name of the list's, any other word is a modifier of what the list draws (a state chip's
+  // tone, `.busy`, `.wait`); without one, a name of the view's own (or of the view's element's state)
+  // is no rule of the list's.
+  const own = names.filter(n => LIST_NAMES.has(n));
+  if (!own.length && names.some(n => !SHARED_NAMES.has(n))) return none("not the list's");
+  for (const p of rest) {
+    for (const [, list] of withoutNot(p.text).matchAll(ALTERNATIVES)) {
+      const alt = splitTop(list).map(namesIn);
+      if (alt.some(ns => ns.some(n => LIST_NAMES.has(n))) && alt.some(ns => ns.some(n => APP_NAMES.has(n) || STATE_NAMES.has(n)))) {
+        throw new Error(`session-list.css: \`${selector}\` names the list's and the app's chrome as alternatives; write one rule for each`);
+      }
+    }
+  }
+  const onRoot = lead.startsWith("*") || namesIn(withoutNot(lead)).some(n => LIST_ROOT_NAMES.has(n));
+  if (onRoot && /^[A-Za-z]/.test(lead)) throw new Error(`session-list.css: \`${selector}\` leads with a type and a class the list's element carries`);
+  if (onRoot && sibling) throw new Error(`session-list.css: \`${selector}\` goes on from what may be the list's element to its siblings, which are no part of the list`);
+  const under = `${root()} ${joinCompounds(rest)}`;
+  const list = onRoot ? [`${root()}${lead.replace(/^\*/, "")}${tailText}`, under] : [under];
+  if (!own.length) return { kind: "both: no name of the list's own", list, keepApp: true };
+  if (own.some(n => LIST_PLACED.has(n))) return { kind: "both: the list's parts the app places", list, keepApp: true };
+  if (own.some(n => LIST_INSIDE.has(n))) return { kind: "the list's", list, keepApp: false };
+  return { kind: "both: the list's, shown outside it", list, keepApp: true };
+}
+
+// ── the three stylesheets ─────────────────────────────────────────────────────────────────────────
 
 /** The reset (stage 5b): what a host's page may leave at the browser's defaults or set otherwise,
  *  pinned under the view's element as the app's page has it. The page's own rules give most of it,
@@ -510,21 +619,37 @@ const HEADER = {
    The first two rules are the reset, for what a host's page leaves at the browser's defaults. The
    app shell loads app-shell.css first and this after it. */
 `,
+  list: `/* Generated by scripts/extract-agent-monitor-demo.mjs from reference.css and production.css (#s430
+   stage 3, design/session-list-component.md). Never hand-edit: change a source and run the script.
+   The session list's styles: every rule hangs on the list's element, #sessionList. The prefix
+   :where(#sessionList) weighs nothing; where a source named the page's root, .session-list stands for
+   :root and :is(*,div) for html or body, and for the sidebar, whose tokens the list's rows read, each
+   weighing what it replaces, so every rule keeps its weight exactly. Its keyframes are named
+   sl-<name>. The rules for what the list shows outside its element (the rail's flyout's rows, its
+   placed parts) and those with no name of its own are in app-shell.css too, which loads before this;
+   session-view.css loads after it. */
+`,
   app: `/* Generated by scripts/extract-agent-monitor-demo.mjs from reference.css and production.css (#s429
    stage 5b, design/session-view-component.md). Never hand-edit: change a source and run the script.
    The app shell's own styles: its chrome, the rules that read an app state on #app, and the page's.
-   A rule that styles both the app and the view is in session-view.css too, which loads after this.
-   The demo's rules naming the tree as the sidebar's child go on through the session list's element,
-   .sidebar>:where(.session-list)>.tree, weighing what they did (#s430 stage 3). */
+   A rule that styles both the app and the session list is in session-list.css too, and one that
+   styles both the app and the view in session-view.css, which load after this, in that order; the
+   list's own body is in session-list.css alone (#s430 stage 3). The demo's rules naming the tree as
+   the sidebar's child go on through the session list's element, .sidebar>:where(.session-list)>.tree,
+   weighing what they did. */
 `,
 };
 
-/** Derive `{view, app}`, the text of `session-view.css` and `app-shell.css`, and what was decided
- *  (`report`), from the texts of reference.css and production.css. */
+/** Derive `{view, list, app}`, the text of `session-view.css`, `session-list.css` and `app-shell.css`,
+ *  and what was decided (`report`), from the texts of reference.css and production.css. */
 export function deriveStylesheets({ reference, production }) {
   const sources = [parseCss(stripComments(reference)), parseCss(stripComments(production))];
   // `listChild`: the app's selectors that go on through the list's element (below), as written.
-  const report = { kinds: {}, keyframes: { view: [], app: [] }, reachIn: [], rootDeclarations: [], ties: [], listChild: [] };
+  // `list`: the list's decisions, kept apart so the view's report reads as it did.
+  const report = {
+    kinds: {}, keyframes: { view: [], list: [], app: [] }, reachIn: [], rootDeclarations: [], ties: [], listChild: [],
+    list: { kinds: {}, rootDeclarations: [], ties: [], left: [] },
+  };
   // The one rewrite the app's file takes (#s430 stage 3): the tree is a child of the list's element,
   // `#sessionList.session-list`, which is the sidebar's child and draws no box in the app. A selector
   // naming the tree as the sidebar's child (the demo's own, which reference.css keeps exactly) goes on
@@ -537,41 +662,70 @@ export function deriveStylesheets({ reference, production }) {
     return out;
   };
   const count = kind => { report.kinds[kind] = (report.kinds[kind] || 0) + 1; };
+  const countList = kind => { report.list.kinds[kind] = (report.list.kinds[kind] || 0) + 1; };
   // Every selector in source order: where it went, its weight, what it styles and with what.
   const ledger = [];
 
   // Tokens an `#app` rule declares stay the app's (the grid's `--sidebar`, the reading properties).
+  // What a rule on the sidebar declares (the list's element is its child): its own tokens, which the
+  // list's element takes a copy of, from a rule on the sidebar alone and nowhere else.
   const pageTokens = new Set(SCRIPT_TOKENS);
   const appDeclared = new Set();
+  const sidebarDeclared = new Set();
+  const sidebarTokens = new Set();
   const visit = (nodes, fn) => { for (const node of nodes) { if (node.kind === "group") visit(node.children, fn); else if (node.kind === "rule") fn(node); } };
   for (const nodes of sources) visit(nodes, rule => {
     for (const sel of splitTop(rule.prelude)) {
       const parts = compounds(sel);
-      if (/^(#app|\.app)(?![\w-])/.test(parts[parts.length - 1].text)) for (const [prop] of declarations(rule.body)) { appDeclared.add(prop); if (prop.startsWith("--")) pageTokens.add(prop); }
+      const subject = parts[parts.length - 1].text;
+      if (/^(#app|\.app)(?![\w-])/.test(subject)) for (const [prop] of declarations(rule.body)) { appDeclared.add(prop); if (prop.startsWith("--")) pageTokens.add(prop); }
+      if (/^\.sidebar(?![\w-])/.test(subject)) {
+        const alone = classifyList(sel).sidebar;
+        for (const [prop, text] of declarations(rule.body)) {
+          sidebarDeclared.add(prop);
+          if (!prop.startsWith("--")) continue;
+          if (!alone) throw new Error(`session-list.css: \`${sel}\` declares \`${text}\` on the sidebar; the list's element takes the sidebar's tokens only from a rule on the sidebar alone`);
+          sidebarTokens.add(prop);
+        }
+      }
     }
   });
+  const varNames = text => [...text.matchAll(/var\(\s*(--[\w-]+)/g)].map(m => m[1]);
 
   const rootProps = new Map(); // property → [{spec, element}] on the view's element
+  const listRootProps = new Set(); // what the list's element takes from the page's root
   const emit = (nodes, depth) => {
-    const out = { view: [], app: [] };
+    const out = { view: [], list: [], app: [] };
     for (const node of nodes) {
       if (node.kind === "group") {
         const inner = emit(node.children, depth + 1);
-        for (const side of ["view", "app"]) if (inner[side].length) out[side].push(`${node.prelude}{`, ...inner[side], "}");
+        for (const side of ["view", "list", "app"]) if (inner[side].length) out[side].push(`${node.prelude}{`, ...inner[side], "}");
       } else if (node.kind === "at") {
         out.app.push(node.body === null ? `${node.prelude};` : `${node.prelude}{${node.body}}`);
         out.view.push({ keyframes: node });
+        out.list.push({ keyframes: node });
       } else {
         const viewPlain = [];
         const viewRoot = [];
+        const listPlain = [];
+        const listRoot = [];
+        const listSidebar = [];
         const app = [];
         for (const sel of splitTop(node.prelude)) {
           const decision = classify(sel);
+          const listDecision = classifyList(sel);
           count(decision.kind);
+          countList(listDecision.kind);
           const parts = compounds(sel);
-          ledger.push({ sel, kind: decision.kind, spec: specificity(sel), subject: namesIn(withoutNot(parts[parts.length - 1].text)), props: declarations(node.body).map(([prop]) => prop), view: decision.view.length > 0 });
+          const ancestors = parts.slice(0, -1).flatMap(p => namesIn(withoutNot(p.text)));
+          ledger.push({
+            sel, kind: decision.kind, spec: specificity(sel), subject: namesIn(withoutNot(parts[parts.length - 1].text)), ancestors,
+            props: declarations(node.body).map(([prop]) => prop), view: decision.view.length > 0,
+            list: listDecision.list.length > 0, appOnly: !!decision.app && !listDecision.list.length,
+          });
           if (decision.kind === "an app state on the view") report.reachIn.push(sel);
-          if (decision.app) app.push(appSelector(decision.app));
+          if (decision.app && listDecision.keepApp) app.push(appSelector(decision.app));
+          else if (decision.app) report.list.left.push(sel);
           for (const written of decision.view) {
             const before = specificity(sel);
             const now = specificity(written);
@@ -584,6 +738,12 @@ export function deriveStylesheets({ reference, production }) {
                 rootProps.get(prop).push({ spec: before, element, sel });
               }
             }
+          }
+          for (const written of listDecision.list) {
+            const before = specificity(sel);
+            const now = specificity(written);
+            if (compare(before, now)) throw new Error(`session-list.css: \`${written}\` weighs ${now} where \`${sel}\` weighed ${before}`);
+            (listDecision.root ? listRoot : listDecision.sidebar ? listSidebar : listPlain).push(written);
           }
         }
         if (app.length) out.app.push(`${app.join(",")}{${node.body}}`);
@@ -600,17 +760,53 @@ export function deriveStylesheets({ reference, production }) {
             report.rootDeclarations.push(...kept.map(([prop]) => prop));
           }
         }
+        if (listPlain.length) out.list.push(`${listPlain.join(",")}{${node.body}}`);
+        // The list's element takes from the page's root what the view's does, and from the sidebar
+        // its tokens; neither may name a token the page or the sidebar declares above the list's
+        // element, which would read another value there (a root token naming the sidebar's
+        // `--state-*`, a sidebar token naming the grid's `--sidebar`).
+        if (listRoot.length) {
+          const kept = declarations(node.body).filter(([prop]) => (prop.startsWith("--") ? !pageTokens.has(prop) : INHERITED.has(prop)));
+          for (const [prop, text] of kept) {
+            if (sidebarTokens.has(prop)) throw new Error(`session-list.css: \`${prop}\` is declared on the page's root and on the sidebar; the list's element would take both`);
+            if (!prop.startsWith("--") && sidebarDeclared.has(prop)) throw new Error(`session-list.css: \`${prop}\` is set on the sidebar and on the page's root; the list's element would hide the sidebar's`);
+            const named = varNames(text).find(name => pageTokens.has(name) || sidebarTokens.has(name));
+            if (named) throw new Error(`session-list.css: \`${text}\` on the page's root names \`${named}\`, which an element above the list declares; on the list's element it would read that one`);
+            listRootProps.add(prop);
+          }
+          if (kept.length) {
+            out.list.push(`${listRoot.join(",")}{${kept.map(([, text]) => text).join(";")}}`);
+            report.list.rootDeclarations.push(...kept.map(([prop]) => prop));
+          }
+        }
+        if (listSidebar.length) {
+          const kept = declarations(node.body).filter(([prop, text]) => {
+            if (prop.startsWith("--")) {
+              const named = varNames(text).find(name => pageTokens.has(name));
+              if (named) throw new Error(`session-list.css: \`${text}\` on the sidebar names \`${named}\`, which an element above the sidebar declares`);
+              return true;
+            }
+            if (INHERITED.has(prop)) throw new Error(`session-list.css: \`${node.prelude}\` sets \`${text}\` on the sidebar, which the list's rows inherit; say here whether the list's element takes it`);
+            return false;
+          });
+          if (kept.length) {
+            out.list.push(`${listSidebar.join(",")}{${kept.map(([, text]) => text).join(";")}}`);
+            report.list.rootDeclarations.push(...kept.map(([prop]) => prop));
+          }
+        }
       }
     }
     return out;
   };
   const halves = sources.map(nodes => emit(nodes, 0));
   let view = halves.flatMap(h => h.view);
+  let list = halves.flatMap(h => h.list);
   let app = halves.flatMap(h => h.app);
 
   // A property on the view's element from two rules that stood on different elements (html, body)
   // would now be decided by weight, not by which element is nearer; and one the app's grid declares
-  // too would now hide the grid's. Neither happens today; either stops the build.
+  // too would now hide the grid's. Neither happens today; either stops the build. The list's element
+  // takes the same properties from the same rules, so the same check holds it.
   for (const [prop, rules] of rootProps) {
     if (prop.startsWith("--") ? pageTokens.has(prop) : !INHERITED.has(prop)) continue;
     if (new Set(rules.map(r => r.element)).size > 1) throw new Error(`session-view.css: \`${prop}\` is set on both html and body (${rules.map(r => r.sel).join(", ")})`);
@@ -632,33 +828,60 @@ export function deriveStylesheets({ reference, production }) {
       if (props.length) report.ties.push({ app: a.sel, view: v.sel, props });
     }
   });
+  // The same for the list: an app rule with no copy in the list's file whose subject could be an
+  // element inside `#sessionList` (it names nothing but the list's body and shared words, under
+  // nothing but the app's grid, its states, the sidebar and the list), checked against every rule
+  // with a copy in the list's file written BEFORE it: that copy loads after the app's file now.
+  const LIST_BODY = new Set(LIST_CHROME);
+  const ABOVE_LIST = new Set(["#app", ".app", ".sidebar", ...APP_STATES, ...LIST_CHROME]);
+  const intoList = a => a.appOnly && a.subject.every(n => LIST_BODY.has(n) || SHARED_NAMES.has(n)) && a.ancestors.every(n => ABOVE_LIST.has(n) || SHARED_NAMES.has(n));
+  ledger.forEach((a, at) => {
+    if (!intoList(a)) return;
+    for (const v of ledger.slice(0, at)) {
+      if (!v.list || compare(v.spec, a.spec)) continue;
+      if (v.subject.length && a.subject.length && !v.subject.some(n => a.subject.includes(n))) continue;
+      const props = v.props.filter(p => a.props.some(q => overlaps(p, q)));
+      if (props.length) report.list.ties.push({ app: a.sel, list: v.sel, props });
+    }
+  });
 
   // Keyframes go where an animation names them. A keyframe's name is global, so in the view's file
-  // each is renamed `sv-<name>` and every animation there names it so: a host's keyframes of the same
-  // name can neither replace the view's nor be replaced by them. The app's file keeps its names. A
-  // keyframe no animation in either file names stops the build, rather than going without a word.
+  // each is renamed `sv-<name>`, and in the list's `sl-<name>`, and every animation there names it
+  // so: a host's keyframes of the same name can neither replace a component's nor be replaced by
+  // them. The app's file keeps its names. A keyframe no animation in any file names stops the build,
+  // rather than going without a word.
   const animated = text => new Set([...text.matchAll(ANIMATION)].flatMap(m => m[2].split(/[\s,]+/)));
   const viewNames = animated(view.filter(line => typeof line === "string").join("\n"));
+  const listNames = animated(list.filter(line => typeof line === "string").join("\n"));
   const appNames = animated(app.join("\n"));
-  const renamed = new Set();
-  view = view.flatMap(line => {
-    if (typeof line === "string") return [line];
-    const m = KEYFRAMES.exec(line.keyframes.prelude);
-    if (!m || line.keyframes.body === null) throw new Error(`session-view.css: no rule for \`${line.keyframes.prelude}\``);
-    if (!viewNames.has(m[1]) && !appNames.has(m[1])) throw new Error(`session-view.css: no animation names the keyframes \`${m[1]}\`; remove them, or say here who runs them`);
-    if (!viewNames.has(m[1])) return [];
-    renamed.add(m[1]);
-    report.keyframes.view.push(m[1]);
-    return [`${line.keyframes.prelude.replace(m[1], `${KEYFRAME_PREFIX}${m[1]}`)}{${line.keyframes.body}}`];
-  });
-  view = view.map(line => line.replace(ANIMATION, (all, property, value) => property + value.replace(/-?[A-Za-z_][\w-]*/g, word => (renamed.has(word) ? `${KEYFRAME_PREFIX}${word}` : word))));
+  const prefixed = (lines, names, prefix, file, into) => {
+    const renamed = new Set();
+    const kept = lines.flatMap(line => {
+      if (typeof line === "string") return [line];
+      const m = KEYFRAMES.exec(line.keyframes.prelude);
+      if (!m || line.keyframes.body === null) throw new Error(`${file}: no rule for \`${line.keyframes.prelude}\``);
+      if (!viewNames.has(m[1]) && !listNames.has(m[1]) && !appNames.has(m[1])) throw new Error(`${file}: no animation names the keyframes \`${m[1]}\`; remove them, or say here who runs them`);
+      if (!names.has(m[1])) return [];
+      renamed.add(m[1]);
+      into.push(m[1]);
+      return [`${line.keyframes.prelude.replace(m[1], `${prefix}${m[1]}`)}{${line.keyframes.body}}`];
+    });
+    return kept.map(line => line.replace(ANIMATION, (all, property, value) => property + value.replace(/-?[A-Za-z_][\w-]*/g, word => (renamed.has(word) ? `${prefix}${word}` : word))));
+  };
+  view = prefixed(view, viewNames, KEYFRAME_PREFIX, "session-view.css", report.keyframes.view);
+  list = prefixed(list, listNames, LIST_KEYFRAME_PREFIX, "session-list.css", report.keyframes.list);
   app = app.filter(line => {
     const m = KEYFRAMES.exec(line);
     if (!m) return true;
     if (appNames.has(m[1])) { report.keyframes.app.push(m[1]); return true; }
     return false;
   });
-  return { view: `${HEADER.view}${[...RESET, ...view].join("\n")}\n`, app: `${HEADER.app}${app.join("\n")}\n`, report };
+  return {
+    view: `${HEADER.view}${[...RESET, ...view].join("\n")}\n`,
+    list: `${HEADER.list}${list.join("\n")}\n`,
+    app: `${HEADER.app}${app.join("\n")}\n`,
+    report,
+  };
 }
 
 // The longhands a shorthand sets that its name does not lead (`padding` leads `padding-left`).
@@ -679,6 +902,8 @@ function overlaps(p, q) {
 
 /** The view's own keyframes are named with this before their source name. */
 export const KEYFRAME_PREFIX = "sv-";
+/** The list's own keyframes are named with this before their source name (#s430 stage 3). */
+export const LIST_KEYFRAME_PREFIX = "sl-";
 const KEYFRAMES = /^@(?:-webkit-)?keyframes\s+([^{\s]+)/;
 // An animation's declaration, its property and its value: what names a keyframe.
 const ANIMATION = /((?:-webkit-)?animation(?:-name)?\s*:)([^;}]*)/g;

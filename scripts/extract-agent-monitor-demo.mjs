@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // Copy the immutable design reference into production assets without hand-editing it, and derive the
-// two stylesheets the page loads from it and production.css. Run from anywhere (after an edit to the
+// three stylesheets the page loads from it and production.css. Run from anywhere (after an edit to the
 // demo or to production.css); paths are resolved from this script. The generated files are tracked.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -88,9 +88,10 @@ await writeFile(resolve(out, "session-view-markup.js"), markupModule);
 await writeFile(resolve(out, "session-list-markup.js"), listModule);
 await writeFile(resolve(out, "icons.js"), icons);
 
-// The session view's stylesheet and the app's (#s429 stage 5b), derived from reference.css and
-// production.css, which stay the sources: every rule of the view's hangs on its element, and the
-// app's chrome and the page keep the rest (`session-view-css.mjs` says how it decides).
+// The session view's stylesheet, the session list's and the app's (#s429 stage 5b, #s430 stage 3),
+// derived from reference.css and production.css, which stay the sources: every rule of the view's
+// hangs on its element, every rule of the list's on its own, and the app's chrome and the page keep
+// the rest (`session-view-css.mjs` says how it decides).
 const production = await readFile(resolve(out, "production.css"), "utf8");
 const styles = deriveStylesheets({ reference: css, production });
 // The demo names the tree as the sidebar's child twice (`.sidebar>.tree`, and under `sidebar-off`),
@@ -98,4 +99,5 @@ const styles = deriveStylesheets({ reference: css, production });
 // read; production.css writes its own through `:where(.session-list)` already.
 if (styles.report.listChild.length !== 2) throw new Error(`app-shell.css: ${styles.report.listChild.length} selectors name the tree as the sidebar's child, where the demo had two: ${styles.report.listChild.join(", ")}`);
 await writeFile(resolve(out, "session-view.css"), styles.view);
+await writeFile(resolve(out, "session-list.css"), styles.list);
 await writeFile(resolve(out, "app-shell.css"), styles.app);
