@@ -64,22 +64,25 @@ const listHandle = mountSessionList(page.byId("sessionList"), {
   // The page's theme as it stands; the stored one, put on the root below, reaches the list through the
   // root's observer, as every later change does.
   theme: page.html().dataset.theme === "dark" ? "dark" : "light",
-  toast,
+  // Every optional control stays on, and the app keeps the page's keyboard (`keyboard: "page"`, the
+  // keymap below), as it does for the view.
+  keyboard: "page",
+  onToast: toast,
   persist,
   onOpen: ({ id, push }) => selectSession(id, push),
   onIndex: () => indexArrived(),
   projectTree: (filtered, all) => viewHandle.controls.projectTree?.(filtered, all),
   projectActions: () => viewHandle.controls.projectActions,
   newSession: project => viewHandle.controls.newSession?.(project),
-  compact: () => app.classList.contains("sidebar-off"),
   // The rail's flyout floats in the body, a section's menu and its scrim in the app, as they did.
   layer: kind => (kind === "flyout" ? page.body() : app),
   place: placeListPart,
 });
 
 /** Where the list's parts go in the sidebar (stage 3), node for node where the list put them when it
- *  found the sidebar itself: its head controls in the head's one row before the sidebar's collapse
- *  (Collapse every group, Expand every group, the filter), the filter's sheet under the head, the
+ *  found the sidebar itself: its strip of head controls in the head's one row before the sidebar's
+ *  collapse (Collapse every group, Expand every group, the filter; the strip draws no box, stage 4),
+ *  the filter's sheet under the head, the
  *  rail's filter after its search, and the agent marks at the rail's end. Called as the list mounts,
  *  so it reads nothing declared below the mount. */
 function placeListPart(part, node) {
@@ -257,8 +260,13 @@ if (localStorage.getItem("am-demo-theme") === "dark") page.html().dataset.theme 
 // held sideways as a desktop, and the owner collapsed it there) opened a blank drawer with no
 // control left to expand it. So the class never goes on there; the choice stays remembered, and a
 // window grown past the phone wears it again.
-function applySidebar() { app.classList.toggle("sidebar-off", !indexState.sidebarOpen && !matchMedia(PHONE_QUERY).matches); }
-function toggleSidebar(open) { if (open && listHandle.flyoutOpen()) listHandle.closeFlyout(false); indexState.sidebarOpen = open; applySidebar(); persist(); viewHandle.resized(); }
+// The rail is the list drawn small (stage 4): the app decides when, and tells the list, which opens its
+// flyouts only then and closes one open when the sidebar comes back.
+function applySidebar() {
+  app.classList.toggle("sidebar-off", !indexState.sidebarOpen && !matchMedia(PHONE_QUERY).matches);
+  listHandle.compact(app.classList.contains("sidebar-off"));
+}
+function toggleSidebar(open) { indexState.sidebarOpen = open; applySidebar(); persist(); viewHandle.resized(); }
 page.byId("sidebarCollapse").onclick = () => toggleSidebar(false); page.byId("sidebarMiniExpand").onclick = () => toggleSidebar(true);
 page.byId("sidebarCollapse").title = `Collapse the sidebar into its icon rail  ( ${hintFor("sidebar-toggle")} )`;
 page.byId("sidebarMiniExpand").title = `Expand the sidebar  ( ${hintFor("sidebar-toggle")} )`;
@@ -542,7 +550,7 @@ setSidebarWidth(localStorage.getItem(SIDEBAR_WIDTH_KEY) || SIDEBAR_DEFAULT, fals
 const keyActions = {
   ...viewHandle.keys,
   "search": () => { if (indexState.selected) viewHandle.keys.search(); else openGlobalSearch(); },
-  "list-next": () => listHandle.step(1), "list-prev": () => listHandle.step(-1),
+  ...listHandle.keys,
   "sidebar-toggle": () => toggleSidebar(!indexState.sidebarOpen),
 };
 // A key with no action here (a control a host switched off) is left to the page, as the view's own

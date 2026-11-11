@@ -313,7 +313,7 @@ export const LIST_OUTSIDE = Object.freeze([
   ".brand-icon", ".filter-mini",
   ".rail-flyout", ".rail-flyout-filter", ".rail-flyout-head", ".rail-flyout-tree",
   ".section-menu-name", ".section-view-menu", ".section-view-scrim",
-  ".session-filter", ".session-filter-options",
+  ".session-filter", ".session-filter-options", ".session-list-controls",
   ".sidebar-mini-agent", ".sidebar-mini-agents",
 ]);
 

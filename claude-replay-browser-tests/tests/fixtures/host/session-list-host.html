@@ -10,8 +10,14 @@
      own modules and routes. The page carries nothing of the app's: the list builds its own markup
      (stage 3) in the empty element it is given, and with no `place` it draws its controls and the
      filter's sheet in a head of its own at its top. What the list says reaches `window.__host`: each
-     `onOpen`, each `onIndex` and each toast. The page loads the list's own stylesheet alone (stage 3),
-     every rule of which hangs on #sessionList, and nothing of the app's. -->
+     `onOpen`, each `onIndex`, each toast and each tree it draws (`projectTree`). The page loads the
+     list's own stylesheet alone (stage 3), every rule of which hangs on #sessionList, and nothing of
+     the app's.
+     Stage 4: the query names the options. `hide=filter,hiding` switches controls off, `keyboard=page`
+     takes the page's keys, and `mount=0` leaves the mount to the case (`__host.mount()`), which can
+     unmount the list and mount it again in the same element. The page records every request and what
+     it throws, and holds the replies whose address matches `__host.hold` (a pattern) until the case
+     calls `__host.release()`: how a case keeps work out across an unmount. -->
 <link rel="stylesheet" href="/monitor-ui/session-list.css">
 <style>
 /* The host's own rules keep to its own elements. */
@@ -23,22 +29,48 @@
 </style>
 </head>
 <body>
-<header class="host-bar"><span id="hostLabel">A host</span></header>
+<header class="host-bar"><span id="hostLabel">A host</span><button type="button" id="hostButton">The host's</button></header>
 <div class="host-pane" id="hostPane"><div class="session-list" id="sessionList"></div></div>
 <script type="module">
 // `holds`: the host keeps the reader where they are (a draft to keep, say) and opens nothing.
-const host = window.__host = { mounted: false, error: null, opened: [], indexed: 0, toasts: [], holds: false };
-addEventListener("error", event => { host.error = host.error || String(event.message); });
+const host = window.__host = { mounted: false, error: null, opened: [], indexed: 0, toasts: [], drawn: 0, holds: false, keys: [], errors: [], requests: [], hold: null, held: 0 };
+addEventListener("error", event => { host.error = host.error || String(event.message); host.errors.push(String(event.message)); });
+addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
+// Every request the page makes, with when; a reply the case holds waits for `release`.
+const fetched = window.fetch, waiting = [];
+window.fetch = (input, init) => {
+  const url = String(input && input.url || input);
+  host.requests.push({ url, at: performance.now() });
+  const reply = fetched(input, init);
+  if (!host.hold || !new RegExp(host.hold).test(url)) return reply;
+  host.held += 1;
+  return new Promise(done => waiting.push(() => done(reply)));
+};
+host.release = () => { const all = waiting.splice(0); for (const go of all) go(); return all.length; };
+// The host's own keyboard, bound before the list mounts, as a host's page would be: what reaches it,
+// and whether the list had already taken it.
+document.addEventListener("keydown", event => host.keys.push({ key: event.key, prevented: event.defaultPrevented }));
 try {
   const { mountSessionList } = await import("/monitor-ui/session-list-view.js");
-  const list = window.__list = mountSessionList(document.querySelector("#hostPane > #sessionList"), {
-    toast: message => host.toasts.push(message),
+  const params = new URLSearchParams(location.search);
+  const off = (params.get("hide") || "").split(",").filter(Boolean);
+  const options = {
+    onToast: message => host.toasts.push(message),
     // A host opens the session it hears and takes it as the list's selection, as the app does,
     // unless it holds the reader.
     onOpen: event => { host.opened.push(event); if (!host.holds) window.__list.select(event.id); },
     onIndex: () => { host.indexed += 1; },
-  });
-  list.start();
+    // Each tree the list draws, counted: how a case sees that an unmounted list draws nothing.
+    projectTree: filtered => { host.drawn += 1; return filtered; },
+  };
+  if (off.length) options.show = Object.fromEntries(off.map(name => [name, false]));
+  if (params.get("keyboard")) options.keyboard = params.get("keyboard");
+  host.mount = () => {
+    const list = window.__list = mountSessionList(document.querySelector("#hostPane > #sessionList"), options);
+    list.start();
+    return "mounted";
+  };
+  if (params.get("mount") !== "0") host.mount();
   host.mounted = true;
 } catch (error) {
   host.error = String(error && error.stack || error);

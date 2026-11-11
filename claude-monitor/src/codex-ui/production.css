@@ -17,6 +17,10 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    placed in the sidebar's head and its rail parts in the rail (`place`); a host that places nothing
    gets them in a head of the list's own, which the sheet hangs from. */
 .session-list{display:contents}
+/* #s430 stage 4: the list's controls are one strip (`place("controls")`), an element a host can hold
+   and place again. It draws no box, so each control stays an item of the row it is placed in: the
+   sidebar head's one row here, the list's own head in a host that places nothing. */
+.session-list-controls{display:contents}
 #sessionList>.session-list-head{position:relative;display:flex;justify-content:flex-end;gap:2px;padding:4px 8px;flex:none}
 /* #s429 stage 5a: the view's rules hang on its element, `#sessionView`, never on the app's `#app`, so
    they hold wherever a host mounts it. Two kinds still name `#app`, both on purpose:
@@ -1698,7 +1702,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app.column-pane-on>.sidebar>.nav,#app.column-pane-on>.sidebar>:where(.session-list)>.tree,#app.column-pane-on>.sidebar>:where(.session-list)>.arrange-strip{display:none}
   /* Collapse all, Expand all and the session filter act on the session list alone: while the column
      shows a pane they go (the owner); the theme applies everywhere and stays. */
-  #app.column-pane-on .side-head .head-actions>:is(#collapseBtn,#expandBtn,#filterBtn){display:none}
+  #app.column-pane-on .side-head .head-actions>.session-list-controls{display:none}
 }
 
 /* #s41 — held sideways a sheet is a POPOVER at its control's side, as iOS draws them at a regular

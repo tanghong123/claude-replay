@@ -347,6 +347,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 :root[data-theme="dark"]{color-scheme:dark}
 .session-view{display:contents}
 .session-list{display:contents}
+.session-list-controls{display:contents}
 .session-state.inferred{box-shadow:0 0 0 1px currentColor;background:transparent}
 .write-help.show{display:block}
 .confirm-layer.production-open,.search-layer.production-open{display:grid}
@@ -596,7 +597,7 @@ input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea,select{f
 #app:not(.phone-column-off) .transcript{padding-left:0}
 #app.column-pane-on:not(.phone-column-off) .column-pane{display:block}
 #app.column-pane-on>.sidebar>.nav,#app.column-pane-on>.sidebar>:where(.session-list)>.tree,#app.column-pane-on>.sidebar>:where(.session-list)>.arrange-strip{display:none}
-#app.column-pane-on .side-head .head-actions>:is(#collapseBtn,#expandBtn,#filterBtn){display:none}
+#app.column-pane-on .side-head .head-actions>.session-list-controls{display:none}
 }
 @media(pointer:coarse) and (max-height:500px){
 #app:not(.preview-off)>:where(.session-view)>.workspace{width:50%}
