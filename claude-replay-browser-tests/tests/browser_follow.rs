@@ -2361,8 +2361,9 @@ fn the_session_list_in_a_host_switches_its_controls_off() {
 /// on its own element, so they step through its rows only while one of them has the focus, and leave
 /// every other key, and those keys elsewhere, to the page; with `keyboard: "page"` it binds none, and
 /// the host's keymap calls the handle's `keys`. A key that moves nothing (on a project's row, past the
-/// last session) is not taken, and chooses nothing. Before stage 4 the list bound no key at all (the
-/// app's keymap called its `step`), so a host's reader could not step through the list.
+/// last session) is not taken, and chooses nothing. The row a step reached keeps the focus as the tree
+/// is rewritten; a row the mouse pressed and left does not. Before stage 4 the list bound no key at
+/// all (the app's keymap called its `step`), so a host's reader could not step through the list.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
@@ -2415,6 +2416,24 @@ fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
         "(function () { var r = document.querySelectorAll('#tree .tree-row.session'); r[r.length - 1].focus(); return 'ok'; })()",
     );
     let past_last = press("ArrowDown");
+    // The mouse's own press on the first row, dragged off it to the host's button: no click, so no
+    // session is chosen and nothing gives the focus back, and the row has the focus the press gave it.
+    // A rewrite (the host's select) does not carry that focus, as it carries the keyboard's.
+    let at = harness::probe(
+        &tab,
+        "(function () { var r = document.querySelector('#tree .tree-row.session').getBoundingClientRect(), b = document.getElementById('hostButton').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, b.left + b.width / 2, b.top + b.height / 2]; })()",
+    );
+    let xy = |i: usize| at[i].as_f64().unwrap_or(0.0);
+    harness::drag_select(&tab, xy(0), xy(1), xy(2), xy(3));
+    let focused = "(document.activeElement && (document.activeElement.dataset.session || document.activeElement.id)) || ''";
+    let pressed = harness::probe(&tab, focused);
+    let pressed_rewritten = harness::probe(
+        &tab,
+        &format!(
+            "(function () {{ window.__list.select({}); return {focused}; }})()",
+            rows[1]
+        ),
+    );
     let engaged = harness::probe(
         &tab,
         "({ opened: window.__host.opened, keys: window.__host.keys.map(function (k) { return k.key + ':' + k.prevented; }) })",
@@ -2468,6 +2487,11 @@ fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
         past_last,
         serde_json::json!({ "taken": false, "opened": 2, "focus": second }),
         "and so does ↓ on the last session, which chooses it no more"
+    );
+    assert_eq!(
+        (pressed, pressed_rewritten),
+        (first.clone(), serde_json::json!("")),
+        "a press dragged off a row leaves it the focus the press gave, which a rewrite does not carry"
     );
     assert_eq!(
         engaged,
@@ -2755,8 +2779,8 @@ fn the_session_list_in_a_host_unmounts_and_mounts_again() {
 /// so the click itself gives the focus back. Either way the app's keymap reads the next key as the
 /// transcript's. Stage 4 first carried the focus across every redraw, so a clicked row kept it and
 /// `[`, `]`, `j` and Space did nothing until the reader clicked in the transcript; before stage 4 the
-/// open session clicked again kept it too. Only a list key's step keeps the focus on the row it
-/// reached, which the case presses through the app's own keymap, there and back.
+/// open session clicked again kept it too. Only the keyboard's focus on a row, a step's or Tab's, is
+/// kept as the list is rewritten, which the case presses through the app's own keymap, there and back.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {

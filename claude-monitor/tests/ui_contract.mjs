@@ -4502,7 +4502,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listSource, /function chooseSession\(id, push\) \{\n  if \(!id\) return;\n  options\.onOpen\?\.\(\{ id, push \}\);\n\}/, "a choice in the list is said, and the list's selection is the host's to move");
   assert.match(listSource, /^  select: id => \{ if \(id\) take\(id\); \},$/m, "the host's selection is taken and not said");
   assert.match(listSource, /if \(session\) \{\n(?:    \/\/[^\n]*\n)*    if \(event\.detail > 0[^\n]*\n    chooseSession\(session\.dataset\.session, true\); return;\n  \}/, "a row is a choice");
-  assert.match(listSource, /const id = rows\[next\]\.dataset\.session;\n  rows\[next\]\.focus\(\); chooseSession\(id, true\);/, "and so is a list key");
+  assert.match(listSource, /const id = rows\[next\]\.dataset\.session;\n  pressing = false; rows\[next\]\.focus\(\); chooseSession\(id, true\);/, "and so is a list key");
   assert.match(appSource, /^  onOpen: \(\{ id, push \}\) => selectSession\(id, push\),$/m, "the app answers a choice as it opens any session");
   assert.match(appSource, /listHandle\.select\(id\);\n  showSession\(id, push\);/, "and a selection it starts is the list's half, then its own");
   // The list's elements are its element's: no lookup through the page, whose focus alone it reads. A
@@ -4560,7 +4560,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const mount = (options, element = empty()) => { try { return guard(element, options, MOUNT, CONTROLS, MODES); } catch (error) { return `refused: ${error.message}`; } };
   assert.equal(mount({}), "engaged", "engaged by default");
   assert.equal(mount({ keyboard: "page", show: { filter: false, hiding: true, arrangements: false }, onToast: () => {} }), "page", "the page's keyboard, and controls switched on and off by name");
-  for (const [options, why] of [[{ toast: () => {} }, "toast"], [{ compact: () => true }, "compact"], [{ show: { reading: false } }, "reading"], [{ show: { filter: "no" } }, "\"no\""], [{ keyboard: "capture" }, "capture"], [{ show: false }, "show as an object.*false"], [{ show: "filter" }, "show as an object.*\"filter\""], [{ show: ["filter"] }, "show as an object"], [{ show: () => {} }, "show as an object.*not a function"], [{ show: 1n }, "show as an object.*not a bigint"]]) {
+  for (const [options, why] of [[{ toast: () => {} }, "toast"], [{ compact: () => true }, "compact"], [{ show: { reading: false } }, "reading"], [{ show: { filter: "no" } }, "\"no\""], [{ keyboard: "capture" }, "capture"], [{ show: false }, "show as an object.*false"], [{ show: "filter" }, "show as an object.*\"filter\""], [{ show: ["filter"] }, "show as an object"], [{ show: () => {} }, "show as an object.*not a function"], [{ show: 1n }, "show as an object.*not a bigint"], [{ show: { filter: 1n } }, "true or false, not a bigint"]]) {
     assert.match(String(mount(options)), new RegExp(`^refused: .*${why}`), `a retired option, an unknown control, a value that is not a boolean, a show that is not an object, an unknown keyboard is refused: ${why}`);
   }
   assert.equal(mount({ show: null }), "engaged", "a show left empty is no show");
@@ -4605,8 +4605,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listSource, /^  const at = rows\.indexOf\(page\.active\(\)\); if \(at < 0\) return false;$/m, "a step with no session row focused moves nothing");
   assert.match(listSource, /^  if \(next === at\) return false;$/m, "nor one past the last row, which chooses the same session no more");
   assert.match(listSource, /^  keys: keyActions,$/m, "the handle's keys are the list's actions");
-  assert.match(listSource, /^  const carry = tree\.contains\(active\) && active\.matches\?\.\("\.tree-row\.session"\) \? active\.dataset\.session : null;$/m, "a rewrite carries the focus of the session row that has it");
-  assert.match(listSource, /^    tree\.innerHTML = treeHtml; treeWritten = treeHtml;\n    if \(carry\) tree\.querySelector\(`\.tree-row\.session\[data-session="\$\{CSS\.escape\(carry\)\}"\]`\)\?\.focus\(\{ preventScroll: true \}\);$/m, "to the row's new self, as it writes it");
+  assert.match(listSource, /^  const carry = !focusPressed && tree\.contains\(active\) && active\.matches\?\.\("\.tree-row\.session"\) \? active\.dataset\.session : null;$/m, "a rewrite carries the focus of the session row that has it, unless a press gave it");
+  assert.match(listSource, /^    tree\.innerHTML = treeHtml; treeWritten = treeHtml;\n    if \(carry\) \{ pressing = false; tree\.querySelector\(`\.tree-row\.session\[data-session="\$\{CSS\.escape\(carry\)\}"\]`\)\?\.focus\(\{ preventScroll: true \}\); \}$/m, "to the row's new self, as it writes it");
+  assert.match(listSource, /^tree\.onpointerdown = \(\) => \{ pressing = true; \};\ntree\.addEventListener\("focusin", \(\) => \{ focusPressed = pressing; pressing = false; \}\);$/m, "a press marks the focus it gives, the first the tree takes after it");
   assert.match(listSource, /^    if \(event\.detail > 0 && session\.contains\(page\.active\(\)\)\) page\.active\(\)\.blur\(\);\n    chooseSession\(session\.dataset\.session, true\); return;$/m, "while a row clicked with the mouse gives the page back its keys");
   assert.match(appSource, /^  keyboard: "page",$/m, "the app keeps the page's keyboard");
   assert.match(appSource, /^  \.\.\.listHandle\.keys,$/m, "and its keymap calls the list's keys");
