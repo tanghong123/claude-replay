@@ -3694,6 +3694,47 @@ pub fn open_host_page_with(
     );
 }
 
+/// The session list's test host page (`tests/fixtures/host/session-list-host.html`, #s430 stage 2):
+/// the session list mounted alone in a page of the case's own, on the monitor's origin at
+/// `/session-list-host`, with no app shell and no session view. Until the list builds its own markup
+/// (stage 3) the page carries the app's sidebar, cut here from `app-shell.html` so it cannot drift.
+/// Returns once the list is mounted; panics with the page's error if it failed to.
+pub fn open_list_host_page(tab: &headless_chrome::Tab, monitor: &Monitor) {
+    let shell = include_str!("../../../claude-monitor/src/codex-ui/app-shell.html");
+    let start = shell
+        .find("<aside class=\"sidebar\"")
+        .expect("the app shell holds the sidebar");
+    let end = shell[start..].find("</aside>").expect("the sidebar ends") + start + "</aside>".len();
+    let page = include_str!("../fixtures/host/session-list-host.html");
+    assert!(
+        page.contains("<!--list-markup-->"),
+        "the host page has a place for the list's markup"
+    );
+    answer_in_browser(
+        tab,
+        vec![Answer {
+            pattern: "*/session-list-host*".into(),
+            path: "/session-list-host".into(),
+            content_type: "text/html; charset=utf-8".into(),
+            body: page.replace("<!--list-markup-->", &shell[start..end]),
+        }],
+    );
+    tab.navigate_to(&monitor.url("session-list-host")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    until(
+        tab,
+        "!!(window.__host && (window.__host.mounted || window.__host.error))",
+        "the test host to mount the session list",
+        Duration::from_secs(20),
+        "JSON.stringify(window.__host || null)",
+    );
+    let error = eval(tab, "window.__host.error");
+    assert!(
+        error.is_null(),
+        "the test host could not mount the list: {error}"
+    );
+}
+
 /// Every listener on the page's window and document, as the browser itself reports them (CDP's
 /// `DOMDebugger.getEventListeners`, which sees what an abort signal removed, where a ledger kept in
 /// the page would not): `window:keydown:capture`, sorted (#s429 stage 7).

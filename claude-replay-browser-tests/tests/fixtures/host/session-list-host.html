@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Session list host</title>
+<!-- A test host (#s430 stage 2): a page of the case's own that mounts the session list alone, as a
+     host app would, on the monitor's origin, with no app shell and no session view. The case answers
+     this page itself through the browser (harness::answer_in_browser); the monitor serves only its
+     own modules and routes. Until the list builds its own markup (stage 3) it draws into the app's
+     sidebar markup, which the case puts where `list-markup` stands, cut from app-shell.html. What the
+     list says reaches `window.__host`: each `onOpen`, each `onIndex` and each toast. -->
+<link rel="stylesheet" href="/monitor-ui/app-shell.css">
+<style>
+/* The host's own rules keep to its own elements. */
+.host-bar { position: fixed; top: 0; left: 0; right: 0; height: 40px; display: flex; gap: 8px; align-items: center; padding: 0 12px; }
+.host-pane { position: fixed; top: 40px; left: 0; bottom: 0; width: 320px; overflow: auto; display: flex; }
+</style>
+</head>
+<body>
+<header class="host-bar"><span id="hostLabel">A host</span></header>
+<div class="host-pane" id="hostPane">
+<!--list-markup-->
+</div>
+<script type="module">
+const host = window.__host = { mounted: false, error: null, opened: [], indexed: 0, toasts: [] };
+addEventListener("error", event => { host.error = host.error || String(event.message); });
+try {
+  const { mountSessionList } = await import("/monitor-ui/session-list-view.js");
+  const list = window.__list = mountSessionList(document.querySelector("#hostPane > .sidebar"), {
+    toast: message => host.toasts.push(message),
+    onOpen: event => host.opened.push(event),
+    onIndex: () => { host.indexed += 1; },
+  });
+  list.start();
+  host.mounted = true;
+} catch (error) {
+  host.error = String(error && error.stack || error);
+}
+</script>
+</body>
+</html>

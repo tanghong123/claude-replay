@@ -1993,6 +1993,93 @@ fn the_session_view_in_a_host_takes_its_keys_only_while_the_reader_works_in_it()
     );
 }
 
+/// The session list mounted alone (#s430, design/session-list-component.md, stage 2): in a page of
+/// the case's own (`fixtures/host/session-list-host.html`, answered by the browser itself on the
+/// monitor's origin), with no app shell and no session view, `mountSessionList` fills itself from
+/// the monitor's index, and choosing a session there (a real click on its row) tells the host
+/// through `onOpen`, with that id and a new place in the history, after the list has taken it as its
+/// selection; choosing another moves the selection. Before stage 2 the list was app.js's own code and
+/// there was no `mountSessionList` to import, so the host cannot mount it and the case fails there.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_list_in_a_host_tells_it_which_session_the_reader_chose() {
+    let _serial = serial();
+    let base = base("list-host-open");
+    let stores = Stores::new(&base);
+    let first = "cccccccc-0000-4000-8000-0000000000f1".to_string();
+    let second = "cccccccc-0000-4000-8000-0000000000f2".to_string();
+    stores.claude_session(
+        &first,
+        &(harness::user_at("the first errand", &harness::at("00:01"))
+            + &harness::assistant_at("on it", &harness::at("00:02"))),
+    );
+    stores.claude_session(
+        &second,
+        &(harness::user_at("the second errand", &harness::at("00:03"))
+            + &harness::assistant_at("done", &harness::at("00:04"))),
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3264, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::open_list_host_page(&tab, &monitor);
+    let row = |sid: &str| format!("#tree .tree-row.session[data-session=\"{sid}\"]");
+    harness::until(
+        &tab,
+        &format!(
+            "!!document.querySelector('{}') && !!document.querySelector('{}')",
+            row(&first).replace('\'', "\\'"),
+            row(&second).replace('\'', "\\'")
+        ),
+        "both sessions listed in the host's list",
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host, tree: (document.getElementById('tree') || {}).innerText })",
+    );
+    let page = harness::probe(
+        &tab,
+        "({ app: !!document.getElementById('app'), view: !!document.getElementById('sessionView'), list: (document.querySelector('#hostPane > .sidebar') || {}).id || '', indexed: window.__host.indexed > 0, opened: window.__host.opened.length })",
+    );
+    tab.find_element(&row(&first)).unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        "window.__host.opened.length >= 1",
+        "the host to hear the first choice",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host)",
+    );
+    let chose_first = harness::probe(
+        &tab,
+        "({ opened: window.__host.opened, selected: window.__list.selected(), marked: [].slice.call(document.querySelectorAll('#tree .tree-row.session.selected')).map(function (r) { return r.dataset.session; }) })",
+    );
+    tab.find_element(&row(&second)).unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        "window.__host.opened.length >= 2",
+        "the host to hear the second choice",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host)",
+    );
+    let chose_second = harness::probe(
+        &tab,
+        "({ opened: window.__host.opened, selected: window.__list.selected(), marked: [].slice.call(document.querySelectorAll('#tree .tree-row.session.selected')).map(function (r) { return r.dataset.session; }), errors: window.__host.error })",
+    );
+    drop(monitor);
+    assert_eq!(
+        page,
+        serde_json::json!({ "app": false, "view": false, "list": "sessionList", "indexed": true, "opened": 0 }),
+        "the list stands alone in the host's page, its element #sessionList, filled from the index, and nothing chosen yet"
+    );
+    assert_eq!(
+        chose_first,
+        serde_json::json!({ "opened": [{ "id": first, "push": true }], "selected": first, "marked": [first] }),
+        "a click on a row tells the host, after the list has taken it"
+    );
+    assert_eq!(
+        chose_second,
+        serde_json::json!({ "opened": [{ "id": first, "push": true }, { "id": second, "push": true }], "selected": second, "marked": [second], "errors": null }),
+        "and choosing another moves the selection"
+    );
+}
+
 /// #s450: right after `]` lands a turn, scrolling DOWN never makes the subtitle
 /// (`#turnSubtitle`, which names the turn the reader is in) name a turn before the one landed on,
 /// and at any one offset every value it is given is the same. The scroll path reads the unit under
