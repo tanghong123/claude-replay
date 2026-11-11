@@ -2071,7 +2071,7 @@ fn the_session_list_in_a_host_tells_it_which_session_the_reader_chose() {
     assert_eq!(
         chose_first,
         serde_json::json!({ "opened": [{ "id": first, "push": true }], "selected": first, "marked": [first] }),
-        "a click on a row tells the host, after the list has taken it"
+        "a click on a row tells the host, which takes it as the selection (`select`)"
     );
     assert_eq!(
         chose_second,

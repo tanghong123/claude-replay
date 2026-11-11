@@ -29,8 +29,8 @@ import { page } from "./view-root.js";
  *  - `toast(message)`: say something briefly (a scan that failed, a hide or a restore).
  *  - `persist()`: remember the list's choices, at each moment the list changes one.
  *  - `onOpen({ id, push })`: the reader chose a session in the list (a row, the rail's flyout, the
- *    list keys), `push` whether it is a new place in the history. The list has taken it as its
- *    selection by then, and marked it read, unless it was the selection already.
+ *    list keys), `push` whether it is a new place in the history. The list has not moved its
+ *    selection: the host does, with `select(id)`, when it opens the session.
  *  - `onIndex()`: the index has new rows: the host's own work on them (the selection gone, the view
  *    told, a first session chosen) comes before the list draws them.
  *  - `projectTree(filtered, all)`: the tree the list draws, from the one the filter leaves and the
@@ -827,11 +827,11 @@ function take(id) {
   const row = selectedRow(); if (row) { indexState.read[id] = row.activityTs || Date.now() / 1000; persist(); }
   renderTree();
 }
-/** The reader chose a session in the list: the list takes it, unless it is the selection already,
- *  and tells the host, which opens it. */
+/** The reader chose a session in the list: the list tells the host, which takes it as the
+ *  selection (`select`) when it opens it. The list's selection is the host's to move, so a host
+ *  that holds the reader (a draft to keep, say) leaves it where it is. */
 function chooseSession(id, push) {
   if (!id) return;
-  if (id !== indexState.selected) take(id);
   options.onOpen?.({ id, push });
 }
 

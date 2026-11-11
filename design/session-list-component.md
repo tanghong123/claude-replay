@@ -72,10 +72,12 @@ options need (`selectedId`, `sessionRow`, `sessionWorkers`) and for the session 
 ### Opening a session is an event
 
 The list raises `onOpen({id, push})` when the reader chooses a session: a row, the rail's flyout,
-the list keys. It has already marked the row selected and read. The app answers it as
-`selectSession` does now: closes the drawer, opens the session in the view and writes the history.
-A selection that starts elsewhere (the history, the session search, the view's parent control)
-goes the other way, through `select(id)`.
+the list keys. It does not move its selection itself: the host does, with `select(id)`, when it
+opens the session, so a host that holds the reader (a draft to keep) leaves it where it is. The app
+answers with `selectSession`, as before: it closes the drawer, takes the session as the list's
+selection, opens it in the view and writes the history, and the session already open does nothing
+but close the drawer. A selection that starts elsewhere (the history, the session search, the view's
+parent control) takes the same path.
 
 ### What stays the app's
 

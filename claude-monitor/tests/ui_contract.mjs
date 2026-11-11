@@ -4391,13 +4391,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   for (const name of HANDLE) assert.match(handleDoc[1], new RegExp(`\`${name}\\(`), `the doc comment names the handle's ${name}`);
   const called = new Set([...appSource.matchAll(/\blistHandle\??\.([A-Za-z]+)/g)].map(m => m[1]));
   for (const name of called) assert.ok(members.has(name), `the app calls listHandle.${name}, which the list's handle has`);
-  // Choosing a session: the list's half, then the host hears it; a selection the host makes is the
-  // list's half alone, and the app's own half follows either.
-  assert.match(listSource, /function chooseSession\(id, push\) \{\n  if \(!id\) return;\n  if \(id !== indexState\.selected\) take\(id\);\n  options\.onOpen\?\.\(\{ id, push \}\);\n\}/, "a choice in the list is taken, then said");
+  // Choosing a session: the list says it and moves nothing; the host takes it as the selection
+  // (`select`, the list's half, said to nobody) when it opens it, and the app's own half follows.
+  assert.match(listSource, /function chooseSession\(id, push\) \{\n  if \(!id\) return;\n  options\.onOpen\?\.\(\{ id, push \}\);\n\}/, "a choice in the list is said, and the list's selection is the host's to move");
   assert.match(listSource, /^  select: id => \{ if \(id\) take\(id\); \},$/m, "the host's selection is taken and not said");
   assert.match(listSource, /if \(session\) \{ chooseSession\(session\.dataset\.session, true\); return; \}/, "a row is a choice");
   assert.match(listSource, /rows\[next\]\.focus\(\); chooseSession\(rows\[next\]\.dataset\.session, true\);/, "and so is a list key");
-  assert.match(appSource, /^  onOpen: \(\{ id, push \}\) => sessionChosen\(id, push\),$/m, "the app answers a choice");
+  assert.match(appSource, /^  onOpen: \(\{ id, push \}\) => selectSession\(id, push\),$/m, "the app answers a choice as it opens any session");
   assert.match(appSource, /listHandle\.select\(id\);\n  showSession\(id, push\);/, "and a selection it starts is the list's half, then its own");
   // The list's elements are its element's: no lookup through the page, whose focus and body alone it
   // reads (the body is where a layer floats when the host names none).

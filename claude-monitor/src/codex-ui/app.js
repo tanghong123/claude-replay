@@ -62,7 +62,7 @@ function toast(message) {
 const listHandle = mountSessionList(page.$(".sidebar"), {
   toast,
   persist,
-  onOpen: ({ id, push }) => sessionChosen(id, push),
+  onOpen: ({ id, push }) => selectSession(id, push),
   onIndex: () => indexArrived(),
   projectTree: (filtered, all) => viewHandle.controls.projectTree?.(filtered, all),
   projectActions: () => viewHandle.controls.projectActions,
@@ -97,11 +97,9 @@ function sessionUrl(id) {
   url.searchParams.delete("ui");
   url.hash = ""; return url;
 }
-// The session the app last opened, as the list's selection stood when it did ("" once it is gone): a
-// choice in the list is measured against it, since the list has taken the choice by the time it says.
-let opened = "";
-/** A selection the app starts (the history, ⌘K, the view's parent control, the first session): the
- *  list's half, then the app's. */
+/** Open a session: one the reader chose in the list (`onOpen`), or one the app chose (the history,
+ *  ⌘K, the view's parent control, the first session). The list's half (`select`: the selection, its
+ *  read mark, remembered and drawn), then the app's: the view, then the address. */
 function selectSession(id, push) {
   if (!id) return;
   // On a phone choosing a session closes the drawer AT ONCE (#313) — the one already open too —
@@ -111,25 +109,15 @@ function selectSession(id, push) {
   listHandle.select(id);
   showSession(id, push);
 }
-/** The reader chose a session in the list (`onOpen`), which has taken it unless it was the selection
- *  already: the open session chosen again does nothing but close the drawer, and the selection the
- *  view is not showing is taken again, as `selectSession` does both. */
-function sessionChosen(id, push) {
-  mobileShell?.setDrawer(false);
-  if (id === opened && viewHandle.session() === id) return;
-  if (id === opened) listHandle.select(id);
-  showSession(id, push);
-}
 /** The app's half of a selection: the view, then the address. */
 function showSession(id, push) {
-  opened = id;
   // The view takes the selection before the address does: its loading veil, the pane's tabs, its
   // top bar and its compose box (a parent's Back is written from the top bar, `parentShown`).
   viewHandle.select(id);
   const url = new URL(location.href); url.searchParams.set("session", id); url.searchParams.delete("ui"); if (push) url.hash = ""; history[push ? "pushState" : "replaceState"]({}, "", url);
   viewHandle.open(id);
 }
-function sessionGone() { indexState.selected = ""; opened = ""; viewHandle.close("Session is gone", "It may have been deleted or moved. The list keeps scanning."); }
+function sessionGone() { indexState.selected = ""; viewHandle.close("Session is gone", "It may have been deleted or moved. The list keeps scanning."); }
 /** The browser's Back to the parent the view's top bar offers (#82, the classic view's
  *  `synthesizeBack`): a deep-linked child gets a history entry for its parent, once. */
 let synthesizedFor = "";
