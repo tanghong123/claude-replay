@@ -63,8 +63,10 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    With all three off the filter has nothing to offer, and neither its glyph nor its sheet is drawn.
  *  - `keyboard`: "engaged" (the default) or "page", as `KEYBOARD_MODES` says. Engaged, the list
  *    answers its keys (the next and the previous session, ↓ and ↑) only while a row of its own has the
- *    focus, and leaves every other key to the page. "page" is the app's mode: the list binds none, and
- *    the host calls `keys[action]` from its own keymap (shared/keymap.js's "list" actions).
+ *    focus, and leaves every other key to the page. "page" is the app's mode: the list takes no key,
+ *    and the host calls `keys[action]` from its own keymap (shared/keymap.js's "list" actions). In
+ *    either mode the list hears the document's keys, taking none, to tell the keyboard's focus on a row
+ *    from a press's: only the keyboard's is given back when the tree is rewritten.
  *  - `persist()`: remember the list's choices, at each moment the list changes one.
  *  - `onOpen({ id, push })`: the reader chose a session in the list (a row, the rail's flyout, the
  *    list keys), `push` whether it is a new place in the history. The list has not moved its
@@ -123,7 +125,7 @@ for (const [name, shown] of Object.entries(options.show || {})) {
   if (typeof shown !== "boolean") throw new Error(`mountSessionList shows ${name} or not by true or false, not ${said(shown)}`);
 }
 const keyboardMode = options.keyboard ?? "engaged";
-if (!KEYBOARD_MODES.includes(keyboardMode)) throw new Error(`mountSessionList takes its keyboard "engaged" or "page", not ${JSON.stringify(keyboardMode)}`);
+if (!KEYBOARD_MODES.includes(keyboardMode)) throw new Error(`mountSessionList takes its keyboard "engaged" or "page", not ${said(keyboardMode)}`);
 if (element.id && element.id !== "sessionList") throw new Error(`mountSessionList draws into an element whose id is sessionList, or that has none; this one is #${element.id}`);
 if ([...element.childNodes].some(node => !(node.nodeType === 3 && !node.data.trim()))) throw new Error("mountSessionList draws into an empty element; this one holds the host's nodes");
 /** Whether an optional control is drawn: each is, unless the host switched it off. */
@@ -192,10 +194,12 @@ expandBtn.title = "Expand every group";
 expandBtn.setAttribute("aria-label", "Expand every group");
 // What `renderTree` last wrote into the list, so an unchanged refresh leaves the rows in place (#s72).
 let treeWritten = null;
-// Where the focus in the tree came from (stage 4): a press, with the mouse or a finger, gives a row the
-// focus as it goes down, the first the tree takes after its pointerdown; the keyboard's (a step, Tab)
-// comes with no press. Only the keyboard's is carried across a rewrite.
-let pressing = false, focusPressed = false;
+// Where the focus in the tree came from (stage 4): the input just before it, a press in the tree (the
+// mouse's, which focuses a row as it goes down, or a finger's, whose focus comes as it lifts) or a key
+// anywhere (Tab, a step), a modifier alone not counting, so the window giving the focus back after
+// Cmd-Tab leaves it as it was. A press on the row that already has the focus makes that focus the
+// press's. Only the keyboard's is carried across a rewrite.
+let lastInput = "key", focusPressed = false;
 const sessionIndex = new SessionIndexStore({
   update: () => {
     // The host's half first (`onIndex`): in the app, a selection whose row is gone, the view told and
@@ -594,7 +598,7 @@ function renderTree() {
   const carry = !focusPressed && tree.contains(active) && active.matches?.(".tree-row.session") ? active.dataset.session : null;
   if (treeHtml !== treeWritten) {
     tree.innerHTML = treeHtml; treeWritten = treeHtml;
-    if (carry) { pressing = false; tree.querySelector(`.tree-row.session[data-session="${CSS.escape(carry)}"]`)?.focus({ preventScroll: true }); }
+    if (carry) { tree.querySelector(`.tree-row.session[data-session="${CSS.escape(carry)}"]`)?.focus({ preventScroll: true }); focusPressed = false; }
   }
   renderFilterControl(counts, shown, total);
   refreshRailFlyout();
@@ -965,8 +969,9 @@ tree.onclick = event => {
   const toggle = event.target.closest("[data-toggle]"); if (toggle) { const key = toggle.dataset.toggle; indexState.collapsed.has(key) ? indexState.collapsed.delete(key) : indexState.collapsed.add(key); persist(); renderTree(); }
 };
 tree.onkeydown = event => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); event.target.click(); } };
-tree.onpointerdown = () => { pressing = true; };
-tree.addEventListener("focusin", () => { focusPressed = pressing; pressing = false; });
+tree.onpointerdown = () => { lastInput = "press"; if (tree.contains(page.active())) focusPressed = true; };
+tree.addEventListener("focusin", () => { focusPressed = lastInput === "press"; });
+document.addEventListener("keydown", event => { if (!["Meta", "Control", "Alt", "Shift"].includes(event.key)) lastInput = "key"; }, { capture: true, signal });
 // A mark's click PINS its flyout (#300) — it used to jump to the agent's newest session, which the
 // flyout now lists first under its project. Enter and Space are the same click; ArrowRight too.
 railMarks.onclick = event => {
@@ -987,7 +992,7 @@ function stepList(delta) {
   const next = Math.max(0, Math.min(rows.length - 1, at + delta));
   if (next === at) return false;
   const id = rows[next].dataset.session;
-  pressing = false; rows[next].focus(); chooseSession(id, true);
+  rows[next].focus(); focusPressed = false; chooseSession(id, true);
   return true;
 }
 // The list's keys (stage 4), by the keymap's names: the next and the previous session row from the
