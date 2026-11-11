@@ -135,7 +135,11 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
    list's state and `onOpen`, and finds its elements inside its element, never the document. The
    app mounts it and answers the event. The contract's assertions on the list's source keep their
    words and move to the new module in the same commit. A new browser case mounts the list alone in
-   a host page, chooses a session and hears `onOpen`. Lands with stage 1.
+   a host page, chooses a session and hears `onOpen`. Lands with stage 1. **Built** (#s430), not
+   landed. As built, the handle's redraw is `redraw()` (a ban on `.render()` in the shell's sources
+   keeps that name for the engine), and three more names came out of the code: the option
+   `newSession` (native mode's project buttons in the tree) and the handle's `setBuckets` and
+   `filtered()` (the session search clears the filter for a row it is hiding).
 3. **Markup and styles apart.** The list builds its markup from a template of its own, and its
    rules hang on its element in a stylesheet of its own, generated as the view's is. Lands as one.
 4. **Options and events as the app uses them.** `keyboard`, `theme`, `show` (the filter, the
