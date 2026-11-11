@@ -4092,26 +4092,45 @@ var phoneDock;
   // back over the scroll instead (`translateY` of the visual viewport's page offset) and looks as if
   // nothing scrolled; the field, lifted above the keyboard, gives iOS no reason to scroll again. The
   // transform makes the app the box its fixed children are placed in, which is the screen's box here.
+  // #s451: a short visual viewport is the keyboard only while a field that takes one has focus.
+  // Measured on the iOS 26.4 Simulator: after the software keyboard had been up once, a FRESH Safari
+  // tab with focus on the body and no keyboard on screen reported `visualViewport.height` 336 against
+  // an `innerHeight` of 714, at 6 s and at 15 s alike, and the dock and the toast floated 378px up the
+  // screen over nothing. Whether a real iPhone does the same is not known; the guard holds either way,
+  // since iOS raises a keyboard (or a select's picker) only for a focused field. An iframe counts, as
+  // its inside cannot be seen. The page-scroll compensation below is left as it was: it answers
+  // iOS's scroll, not the keyboard.
+  const NO_KEYBOARD_INPUTS = new Set(["button", "checkbox", "radio", "range", "color", "file", "image", "reset", "submit", "hidden"]);
+  const typesInto = () => {
+    let at = viewRoot.active();
+    while (at?.shadowRoot?.activeElement) at = at.shadowRoot.activeElement;
+    if (!at) return false;
+    if (at.localName === "input") return !NO_KEYBOARD_INPUTS.has(at.type);
+    return at.localName === "textarea" || at.localName === "select" || at.localName === "iframe" || !!at.isContentEditable;
+  };
   const viewport2 = window.visualViewport;
   if (viewport2) {
     const root = viewRoot.styleRoot();
     const ride = () => {
+      const typing = typesInto();
       if (controls.nativeActive && PHONE.matches) {
         const frame = sharedKeyboardFrame(grid.getBoundingClientRect().height, viewport2);
         // Keep one containing block even at zero offset; Safari pans during keyboard animation.
         writeStyle(grid, "transform", Math.abs(viewport2.scale - 1) < 0.01 ? `translateY(${frame.shift}px)` : "");
-        sessionView.classList.toggle("keyboard-up", frame.keyboardOpen);
-        writeStyle(root, "--phone-kb", `${frame.inset}px`);
+        sessionView.classList.toggle("keyboard-up", typing && frame.keyboardOpen);
+        writeStyle(root, "--phone-kb", `${typing ? frame.inset : 0}px`);
         place();
         // The shared listener can run first; fit again after applying the current viewport frame.
         controls.fitComposer();
         return;
       }
       const steady = PHONE.matches && Math.abs(viewport2.scale - 1) < 0.01;
-      const covered = steady ? Math.max(0, Math.round(root.clientHeight - viewport2.height)) : 0;
+      const shortfall = steady ? Math.max(0, Math.round(root.clientHeight - viewport2.height)) : 0;
+      const covered = typing ? shortfall : 0;
       const shift = steady ? Math.max(0, Math.round(viewport2.pageTop)) : 0;
-      // Once the keyboard is down there is nothing to fight: the page goes back to the top.
-      if (steady && !covered && shift) scrollTo(0, 0);
+      // Once the keyboard is down there is nothing to fight: the page goes back to the top. This reads
+      // the viewport as it is, unguarded, so it acts only as it did before #s451.
+      if (steady && !shortfall && shift) scrollTo(0, 0);
       writeStyle(grid, "transform", shift ? `translateY(${shift}px)` : "");
       sessionView.classList.toggle("keyboard-up", covered > 0);
       writeStyle(root, "--phone-kb", `${covered}px`);
@@ -4121,6 +4140,10 @@ var phoneDock;
     viewport2.addEventListener("scroll", ride, { signal });
     // The page itself scrolls only under iOS's keyboard; off a phone this listener has nothing to do.
     addEventListener("scroll", () => { if (PHONE.matches || grid.style.transform) ride(); }, { passive: true, signal });
+    // Focus moving may come with no resize of the visual viewport (a stale shortfall stays short, and
+    // a keyboard rising into it leaves the height as it was), so the ride is asked again once focus
+    // has settled where it went, whether it left a field or came to one.
+    for (const type of ["focusin", "focusout"]) document.addEventListener(type, () => requestAnimationFrame(ride), { signal });
     ride();
   }
   // Across the breakpoint the Tasks list changes what it shows (#319: every state on a phone); the
