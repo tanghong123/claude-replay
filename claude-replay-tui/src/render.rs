@@ -764,6 +764,10 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                     for l in receipt.lines() {
                         out.push(Line::styled(format!("     {l}"), theme::dim()));
                     }
+                    // #s456: the resumed sub-agent's report the send brought back, under it.
+                    for l in crate::present::send_reply(o).unwrap_or("").lines() {
+                        out.push(Line::styled(format!("     {l}"), theme::result()));
+                    }
                 }
                 return out;
             }
@@ -1378,7 +1382,10 @@ fn body_len(b: &Block) -> usize {
                 + output
                     .as_deref()
                     .filter(|o| !o.trim().is_empty())
-                    .map_or(0, |o| crate::present::send_receipt(o).lines().count())
+                    .map_or(0, |o| {
+                        crate::present::send_receipt(o).lines().count()
+                            + crate::present::send_reply(o).map_or(0, |r| r.lines().count())
+                    })
         }
         Block::ToolUse {
             name,

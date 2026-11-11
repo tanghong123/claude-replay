@@ -1916,6 +1916,11 @@ impl Emitter<'_> {
                             body.push(
                                 json!({ "p": "note", "x": crate::present::send_receipt(out) }),
                             );
+                            // #s456: a resumed sub-agent's report, brought back by the send, is
+                            // the reply under the receipt — Markdown, as on its Agent card.
+                            if let Some(reply) = crate::present::send_reply(out) {
+                                body.push(json!({ "p": "md", "h": md_html(reply) }));
+                            }
                         }
                     }
                     _ => {

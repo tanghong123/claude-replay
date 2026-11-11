@@ -154,7 +154,9 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // wrote v27 caches without diagram hosts; these must rebuild along with v25-v26 caches.
     // v29: #s355 — a SendMessage card's head names who it went to ahead of its summary
     // (`→ skua-HD · …`).
-    const RECORD_SCHEMA: u16 = 29;
+    // v30: #s456 — a SendMessage that brought a resumed sub-agent's report back draws the report
+    // as an `md` part under the receipt's first sentence.
+    const RECORD_SCHEMA: u16 = 30;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);
