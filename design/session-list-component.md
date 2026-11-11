@@ -180,7 +180,7 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      (the host case opens the sheet there), and no rail. No rule of the list's own bakes in the
      sidebar's 232px minimum: step 6 measures the list's row against its own pane. The rail flyout and the
      section menu keep floating where `layer` puts them. Stage 4 turns the controls into one strip
-     (`controls()`) and the rail into the list's compact form (`compact(on)`).
+     (handed over through `place`) and the rail into the list's compact form (`compact(on)`).
    - **The template** is cut from the demo's shell by `scripts/extract-agent-monitor-demo.mjs`, as
      the view's is: `session-list-markup.js` holds the tree, `#collapseBtn` and the marks' holder;
      the served shell keeps an empty `#sessionList` and loses them, and the demo's two attention
@@ -284,7 +284,7 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      (they share selectors with what moves), a phone's drawer shut and open and a wide phone's
      column.
 4. **Options and events as the app uses them.** `keyboard`, `theme`, `show` (the filter, the
-   arrangements, hiding), `onOpen`, `compact`, `controls()` and `unmount`; unknown option names are
+   arrangements, hiding), `onOpen`, `compact`, the controls' strip and `unmount`; unknown option names are
    refused, as the view's are, and a contract check holds the names. The unmount case follows the
    view's (stage 7): the page's listeners the same before and after, no late work, the handle
    fenced, the host's values put back, and a second mount that works. Lands alone.
@@ -293,32 +293,49 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
    - **Names.** `MOUNT_OPTIONS` (theme, show, keyboard, persist, onOpen, onIndex, onToast,
      projectTree, projectActions, newSession, layer, place), `OPTIONAL_CONTROLS` (filter, hiding,
      arrangements) and `KEYBOARD_MODES` (engaged, page), exported as the view's are. Any other name is
-     refused, and so are a control not in the list, a `show` value that is not a boolean and an
-     unknown keyboard. `toast` became `onToast`, the view's name for the same event. The `compact`
+     refused, and so are a `show` that is not an object, a control not in the list, a `show` value
+     that is not a boolean and an unknown keyboard. (The view takes a `show` that is not an object,
+     `false` say, as no `show` at all; its guard is left as it is, a landed mount the collaboration
+     app calls.) `toast` became `onToast`, the view's name for the same event. The `compact`
      option became the handle's `compact(on)` (the host says it as the sidebar collapses or opens, and
      an open flyout closes when the list is no longer drawn small), which retired `flyoutOpen` and
      `closeFlyout`: the app no longer reaches into the flyout. `step` became `keys`, by the keymap's
      names, as the view's handle has them.
-   - **`show`.** A control switched off is not drawn, and what it would choose is not applied, so a
-     reader is never left with sessions held back by a choice they cannot see or change; the choice
-     itself stays in storage for a host that shows it. This departs from the view, whose controls off
-     only stop being drawn: none of the view's changes which records are shown. The filter off lists
-     every state; hiding off draws no hide or restore and no Include hidden, and the hidden stay out;
-     the arrangements off draw the tree by agent and project and read no other app's list. The sheet
+   - **`show`.** A control switched off is not drawn, and the page's choice it would make is not
+     applied, so a reader is never left with sessions held back by a choice they cannot see or change;
+     the choice itself stays in storage for a host that shows it. This departs from the view, whose
+     controls off only stop being drawn: none of the view's changes which records are shown. The
+     filter off lists every state; the arrangements off draw the tree by agent and project and read no
+     other app's list, whatever arrangement the reader stored. A hide is not the page's choice: the
+     monitor keeps it, for every page that reads it, so hiding off draws no hide or restore and no
+     Include hidden, and what the reader hid stays out, even while Include hidden is still ticked in
+     the page's state. An arranged list still shows each session the other app lists, hidden or not,
+     as #s387 has it, and with hiding off draws none of them dimmed, a dim it could not explain. The
+     filter's glyph says what its sheet offers ("Include hidden sessions" with the filter and the
+     arrangements off), and with every control shown it reads as it did. The sheet
      is built from the parts shown, joined as it always was, so with all three on it is byte for byte
      the sheet it was; with all three off neither its glyph nor its sheet is drawn or handed over.
    - **Keys.** Engaged, the list binds keydown on its own element and answers ↓ and ↑ only from one
      of its rows (`resolveKey` with the list's context), every other key and those keys elsewhere left
      to the page. The list holds the focus itself, so engagement is the focus, simpler than the view's
      last press: a row is focusable and nothing else in the list takes a key. The app passes
-     `keyboard: "page"` and spreads the handle's `keys` into its keymap. A row with the focus now
-     keeps it as the tree is redrawn, as a rail mark already did (#300): a key's step chose a session,
-     the host's `select` redrew the tree with that selection, and the focus fell to the page, so the
-     next key was not the list's. In the app this also keeps the focus on a row through the index's
-     5-second redraw.
+     `keyboard: "page"` and spreads the handle's `keys` into its keymap. A key's step keeps the focus
+     on the row it reached: the step chose a session, the host's `select` redrew the tree with that
+     selection, and the focus fell to the page, so the next key was not the list's (in the app too,
+     before stage 4). Only a step carries it. The first build carried a focused row across every
+     redraw, and the review found what that broke: a row clicked with the mouse is focused too, so
+     after a click the app's keymap read every key as the list's, and `[`, `]`, `j` and Space did
+     nothing until the reader clicked in the transcript. A step that moves nothing (from a project's
+     row, past the last session) answers `false`, so the key is not taken, engaged or in the app's
+     keymap, and the last session is not chosen again.
    - **The strip.** `div.session-list-controls`, `display: contents`, so each control is still an item
      of the head's one row; the rule that hides the three while the column shows a pane now names the
-     strip. The cases that read the head's children read through it.
+     strip. The cases that read the head's children read through it. The rule is the list's and the
+     app's stylesheets', which reach the strip in the list's element and in the app; a host placing it
+     anywhere else styles it, as it styles the controls it holds (stage 3's rule for every placed part).
+   - **Compact.** The app says `compact(on)` from `applySidebar`, the one place it sets the collapsed
+     rail, so an open flyout now closes whenever the rail goes, a phone's breakpoint crossed included,
+     where it used to close only as the reader opened the sidebar.
    - **The unmount.** One abort signal on the nine listeners the list binds on the page (the section
      menu's three, bound when it first opens, the filter's three and the flyout's three); its timers
      through names it keeps; the index's polls stopped (its store's generation drops a read still out);
@@ -327,13 +344,22 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      safe-area probe removed wherever the host put them; the element emptied and its attributes put
      back as they were read before the mount; and the handle fenced as the view's. A non-empty element
      is refused, so a second mount never lays a list over another. Expand all is made beside Collapse
-     all at the mount's start, before anything that draws the tree reads it.
+     all at the mount's start, before anything that draws the tree reads it. A host that unmounts the
+     list inside its own `onIndex` (a host that closes the list as its selection goes, say) comes back
+     into the list's code, which then drew the tree, told the host and asked for another app's list
+     again: the redraw and that read now do nothing once the list is unmounted.
    - **Checks.** The contract: the exports, the guards run over fakes, the `show` reads, the engaged
      binding run over a fake element, every page listener carrying the signal, the unmount's steps and
-     the fence run. The browser: `the_session_list_in_a_host_switches_its_controls_off` (the reader's
-     stored filter and arrangement, kept and not applied), `…_takes_its_keys_only_on_its_rows` and
-     `…_unmounts_and_mounts_again` (listeners by the browser's own count, four replies held across the
-     unmount, the handle fenced, a second mount).
+     the fence run, the glyph's title worked out for each set of controls. The browser:
+     `the_session_list_in_a_host_switches_its_controls_off` (a hide kept with hiding off, Include
+     hidden ticked or not; the reader's stored filter and arrangement, the Claude app's included, kept
+     and not applied, through the app's own `persist`), `…_takes_its_keys_only_on_its_rows` (and not
+     on a project's row or past the last session), `…_unmounts_and_mounts_again` (listeners by the
+     browser's own count, the element's own included, four replies held across the unmount, the
+     handle fenced, a second mount, an unmount inside `onIndex`, and a host that placed every part
+     and layer outside the element) and `the_app_shell_keeps_its_transcript_keys_after_a_session_is_
+     clicked`. Each late-reply fence, the index's stop, the step's focus and the callback fences were
+     checked red when taken out.
 
 To check once stage 7 is on main: `session-index-store.js` imports `indexState`; the rail's write
 button is bound in `native-mode.js` through `page` and stays with the app and native mode, though
