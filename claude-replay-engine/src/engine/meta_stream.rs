@@ -352,11 +352,16 @@ pub const COMPACT_AFTER: usize = 256;
 /// Code. 1.483.0 shipped the change at v73, so a Qwenwork session folded before it kept the reply
 /// as plain `AssistantText` on a resume; a v73 stream may hold either.
 ///
+/// v75: #s456 — a sub-agent's report that carries the client's notes or tails (Claude Code 2.1.317
+/// and later), and a SendMessage that waited for a resumed agent's report (`inlineHandback`), are
+/// unframed: the report, then the kept notes and tails behind a rule; the SendMessage's receipt line
+/// first. A v74 stream holds the framed text the model was sent.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 74;
+pub const FOLD_VERSION: u16 = 75;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
