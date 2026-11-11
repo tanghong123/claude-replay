@@ -292,7 +292,12 @@ export class MonitorControls {
       // the app over that scroll, so every edge must use the same app box.
       const app = byId("app").getBoundingClientRect();
       const top = app.top + safe("top");
-      const bottom = app.top + Math.min(app.height, view?.height || app.height) - safe("bottom") - 8;
+      // The keyboard is the session view's `--phone-kb`, which the composer is placed by too: the
+      // view counts a short visual viewport as the keyboard only while a field that takes one has
+      // focus (#s451), and Safari can report a viewport 378px short with nothing focused (#s455).
+      // While a field is focused it is the app's height less the visible one, as before.
+      const keyboard = parseFloat(style.getPropertyValue("--phone-kb")) || 0;
+      const bottom = app.top + app.height - keyboard - safe("bottom") - 8;
       const box = composer.getBoundingClientRect(), field = input.getBoundingClientRect();
       const header = document.querySelector(".workspace>.topbar")?.getBoundingClientRect().bottom || top;
       let available = Math.max(0, Math.min(box.bottom, bottom) - Math.max(top, header) - 4);
