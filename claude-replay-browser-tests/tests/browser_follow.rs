@@ -2364,6 +2364,207 @@ fn the_app_shell_subtitle_after_a_plan_card_gives_one_answer_per_offset() {
     );
 }
 
+/// #s454: a smooth head step (`j`) gives the turn one answer. `stepHead` brings a head it has to
+/// move to 160px from the top, smoothly; each scroll event of that travel paints the turn bar and
+/// the subtitle from the unit under the spy's line (the landing plus 8), and on arrival the
+/// engine's position, a command's, names the revealed head's unit. Where a turn's opener lies
+/// between the spy's line and the head, the two readings name different turns, and the review of
+/// #s450 asked whether the host's `onTurn` then hears the turn flip. It does not: the engine hears
+/// the arrival only in a scroll event (`ownScroll`), whose handler paints from the spy's line right
+/// after the arrival's paint, in the same task, so no frame shows the head's turn and the turn said
+/// (`queueTurn`, a microtask) is the spy's. Deferring the arrival's paint to a task of its own makes
+/// this case fail at the band's steps, the head's turn at rest and the turn before one pixel on.
+///
+/// Each step records every value the subtitle shows (an observer's callback reads the text a frame
+/// could show, one value per task) and every `onTurn` from the press until the view is still, then
+/// scrolls one pixel, which reads the spy's line: the turn at rest is the one that pixel names, and
+/// nothing is said one pixel on. The turns open three ways, a prompt, a slash command and another
+/// session's message, each followed at once by its tool call, and the case holds every opener to
+/// 40px. As drawn, an opener barely fits the band: on a desktop the turn bar puts the line 60px
+/// down and a slash command's card with the head below it takes 120px (a prompt 131px), so none
+/// does; on a phone the line is 20px down and the card sits 3px under it (measured on macOS). At
+/// 40px the opener of every head a step moves is in the band on both, and most steps must have it
+/// there, or the case proves nothing.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_head_step_names_one_turn() {
+    head_step_names_one_turn(3265, None);
+}
+
+/// #s454 on a phone's size, where the band between the spy's line and 160px holds a prompt.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_head_step_names_one_turn() {
+    head_step_names_one_turn(3266, Some((390, 844)));
+}
+
+fn head_step_names_one_turn(port: u16, phone: Option<(u32, u32)>) {
+    let _serial = serial();
+    let base = base(&format!("head-step-one-turn-{port}"));
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000454";
+    let mut session = String::new();
+    // Each turn opens one of three ways, a prompt, a slash command or another session's message,
+    // each as short as it comes, and goes straight on to its tool call.
+    for i in 0..14u32 {
+        let ts = harness::at(&format!("{:02}:00", 4 * i));
+        session += &match i % 3 {
+            0 => harness::user(&format!("question {i}"), 4 * i),
+            1 => harness::command_at("review", &format!("{i}"), "", &ts),
+            _ => format!(
+                "{}\n",
+                serde_json::json!({
+                    "type": "user", "cwd": "/r", "timestamp": ts, "isMeta": true,
+                    "promptSource": "system", "turnOrigin": "peer",
+                    "origin": {"kind": "peer", "from": "uds:/tmp/s.sock", "verifiedPeerPid": 1, "msg_id": format!("m{i}"),
+                               "name": "skua-HD", "fromMode": "bypass", "body": format!("note {i}")},
+                    "message": {"role": "user", "content": format!("Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/s.sock\" from-name=\"skua-HD\" from-mode=\"bypass\">\nnote {i}\n</cross-session-message>\n\nThis came from another Claude session — not typed by your user.")}
+                })
+            ),
+        };
+        session += &harness::tool_open(&format!("call{i}"), 4 * i + 1);
+        session += &harness::tool_result(&format!("call{i}"), 4 * i + 2);
+        session += &harness::assistant(
+            &format!(
+                "answer {i}: {}",
+                "sed do eiusmod tempor incididunt ut labore. ".repeat(60)
+            ),
+            4 * i + 3,
+        );
+    }
+    stores.claude_session(sid, &session);
+    let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    if let Some((w, h)) = phone {
+        harness::phone(&tab, w, h);
+    }
+    monitor.pair(&tab);
+    harness::track_idle(&tab);
+    // The view mounted through the case's wrapper, which records what it tells the app.
+    harness::answer_in_browser(
+        &tab,
+        vec![harness::Answer {
+            pattern: "*/monitor-ui/session-view.js".into(),
+            path: "/monitor-ui/session-view.js".into(),
+            content_type: "text/javascript; charset=utf-8".into(),
+            body: include_str!("fixtures/host/session-view-spy.js").into(),
+        }],
+    );
+    tab.navigate_to(&monitor.url(&format!("?ui=app&session={sid}")))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let bound = std::time::Duration::from_secs(20);
+    harness::until(
+        &tab,
+        "!!window.__viewHeard && document.querySelectorAll('.virtual-window .turn.user').length >= 2 && !!document.querySelector('.virtual-window button.renderer-head')",
+        "the session's turns and a tool head drawn, through the wrapper",
+        bound,
+        "document.querySelectorAll('.virtual-window .turn.user').length + ' turns'",
+    );
+    // Every opener 40px tall, whatever the fonts: a head brought to 160px then has its opener
+    // between the spy's line and itself, on a desktop as on a phone.
+    harness::eval(&tab, "(function(){ var st=document.createElement('style'); st.textContent='.virtual-window .turn.user, .virtual-window .turn.peer { height: 40px !important; min-height: 0 !important; box-sizing: border-box !important; overflow: hidden !important; }'; document.head.appendChild(st); return 'ok'; })()");
+    harness::eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:-1})); s.scrollTop = 0; return 'ok'; })()");
+    harness::until_reader_owns_the_view(&tab);
+    harness::eval(&tab, "(function(){ var t=document.getElementById('turnSubtitle'); window.__subtitles=[]; new MutationObserver(function(){ window.__subtitles.push(t.textContent); }).observe(t, {childList:true, characterData:true, subtree:true}); return 'ok'; })()");
+    // "Turn 7 — question 6" → 7.
+    let turn_of = |text: &str| -> i64 {
+        text.strip_prefix("Turn ")
+            .and_then(|t| t.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(-1)
+    };
+    // Where the view is, the focused head, the subtitle; and the prompt the focused head's turn
+    // opened with, with whether it lies under the spy's line (the landing plus 8, as `unitAtTop`).
+    let reading = "(function(){ var s=document.querySelector('.transcript'), top=s.getBoundingClientRect().top; var line=top+(parseFloat(getComputedStyle(s).scrollPaddingTop)||18)+8; var h=document.activeElement, head=h && h.matches && h.matches('button.renderer-head') ? h : null; var unit=head && head.closest('[data-unit-key]'), prompt=unit; while (prompt && !prompt.classList.contains('user') && !prompt.classList.contains('peer')) prompt=prompt.previousElementSibling; return JSON.stringify({ at: Math.round(s.scrollTop), head: unit ? unit.dataset.unitKey : null, headTop: head ? Math.round(head.getBoundingClientRect().top - top) : null, headBottom: head ? Math.round(head.getBoundingClientRect().bottom - top) : null, h: s.clientHeight, prompt: prompt ? prompt.className + ' ' + prompt.textContent.trim().slice(0, 16) : null, promptBelowSpy: prompt ? prompt.getBoundingClientRect().top > line : null, promptTop: prompt ? Math.round(prompt.getBoundingClientRect().top - top) : null, line: Math.round(line - top), subtitle: document.getElementById('turnSubtitle').textContent }); })()";
+    let parse = |v: &serde_json::Value| -> serde_json::Value {
+        v.as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let said_turns = |from: usize| -> Vec<i64> {
+        view_events(&tab, "onTurn")
+            .iter()
+            .skip(from)
+            .map(|e| e["args"][0]["turn"].as_i64().unwrap_or(-1))
+            .collect()
+    };
+    let mut steps: Vec<String> = Vec::new();
+    let mut in_band = 0;
+    let mut head = serde_json::Value::Null;
+    for step in 1..=8 {
+        let said_from = view_events(&tab, "onTurn").len();
+        harness::eval(&tab, "window.__subtitles = []; 'ok'");
+        harness::key(&tab, "j", false);
+        let before = head.clone();
+        // Focus moves at once and the travel after it: done once the new head sits where
+        // `stepHead` leaves one, clear of the top 100px and of the bottom 60px.
+        let (rest, _) = harness::until_still(
+            &tab,
+            reading,
+            |v| {
+                let r = parse(v);
+                let (top, bottom, h) = (
+                    r["headTop"].as_i64().unwrap_or(-1),
+                    r["headBottom"].as_i64().unwrap_or(-1),
+                    r["h"].as_i64().unwrap_or(0),
+                );
+                !r["head"].is_null() && r["head"] != before && top >= 100 && bottom <= h - 60
+            },
+            bound,
+        );
+        let rest = parse(&rest);
+        head = rest["head"].clone();
+        let painted: Vec<i64> = harness::eval(&tab, "JSON.stringify(window.__subtitles)")
+            .as_str()
+            .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+            .unwrap_or_default()
+            .iter()
+            .map(|t| turn_of(t))
+            .collect();
+        let said = said_turns(said_from);
+        let at_rest = turn_of(rest["subtitle"].as_str().unwrap_or(""));
+        // One pixel down: the scroll path reads the spy's line.
+        let said_nudge_from = view_events(&tab, "onTurn").len();
+        let offset = rest["at"].as_i64().unwrap_or(-1);
+        harness::eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:1, bubbles:true})); s.scrollTop += 1; return 'ok'; })()");
+        let (nudged, _) = harness::until_still(
+            &tab,
+            reading,
+            |v| parse(v)["at"].as_i64().unwrap_or(-1) != offset,
+            bound,
+        );
+        let nudged = parse(&nudged);
+        let spy = turn_of(nudged["subtitle"].as_str().unwrap_or(""));
+        let said_nudge = said_turns(said_nudge_from);
+        if rest["promptBelowSpy"] == serde_json::json!(true)
+            && rest["headTop"].as_i64().unwrap_or(0) > 100
+        {
+            in_band += 1;
+        }
+        steps.push(format!(
+            "step {step}: {rest} painted {painted:?} said {said:?}; one pixel on: turn {spy}, said {said_nudge:?}"
+        ));
+        assert_eq!(
+            at_rest, spy,
+            "after `j` the subtitle at rest names the turn the spy's line is in, as one pixel of scroll then does: every step so far: {steps:?}"
+        );
+        assert!(
+            said.last().is_none_or(|&t| t == at_rest) && said_nudge.is_empty(),
+            "the host hears the step's turn last and nothing more one pixel on: every step so far: {steps:?}"
+        );
+    }
+    eprintln!(
+        "head steps ({}): {steps:#?}",
+        if phone.is_some() { "phone" } else { "desktop" }
+    );
+    // Every step after the first moves a head to 160px; the first finds one already in place.
+    assert!(
+        in_band >= 4,
+        "most steps put the head's opener under the spy's line with the head well below it ({in_band} of 8): {steps:?}"
+    );
+}
+
 /// The native app's own frame for an agent's page (#s429 stage 7, #s436; design/monitor-hub.md D3).
 /// The artifact pane shows an HTML page an agent wrote in a frame whose document is its `srcdoc`,
 /// and a `srcdoc` takes the policy of the page around it: under a host page whose policy allows no
