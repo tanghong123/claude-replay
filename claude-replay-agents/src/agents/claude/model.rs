@@ -1330,6 +1330,22 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             "cronKind",
             "taskKind",
             "commandRun",
+            // #s457 (client 2.1.322): an object on the `local_command` record that carries
+            // /context's output, beside `commandRun`: {model, total_tokens, raw_max_tokens,
+            // percentage, categories: [{name, tokens, kind}], mcp_tools, memory_files: [{path,
+            // type, tokens}], agents: [{agent_type, source, tokens}], skills: [{name, source,
+            // tokens}]}. Measured 2026-11-12 on hong-devserver: one record, the only one on the
+            // machine. The record's `content` already states every value as the report's
+            // Markdown (the model, the total and its share of the window, the nine category rows
+            // rounded to 0.1k, the agents, memory files and skills), which the command card draws
+            // whole, and the /context turn handling (#235) reads only `subtype` and `content`:
+            // a structured copy of what the card shows. REVISIT when it arrives on a record whose
+            // content does not carry the report (empty, or another command's), on a record that
+            // is not a `local_command` output, or with `mcp_tools` not empty and the text not
+            // listing them. Whether the monitor should chart context use per /context run from
+            // its exact counts, its kind per category and the raw window size (the text rounds)
+            // is a RENDER question for the owner, not decided here.
+            "contextUsage",
             "originalModel",
             "error",
             "retryInMs",
@@ -7685,6 +7701,37 @@ mod tests {
             command.1,
             vec!["99.2k/1m tokens (10%)".to_string()],
             "its stdout attaches to it, as a standalone stdout does after a user-record command"
+        );
+    }
+
+    /// #s457: the 2.1.322 `contextUsage` copy of the report on /context's output record is known,
+    /// not reported while the sweep asks, and a key the census does not hold beside it still is.
+    /// Removing the key from the system arm of the census turns this red. The made-up key is named
+    /// for this case alone, since the report is process-global and other cases filter it.
+    #[test]
+    fn a_context_usage_key_is_known() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.322","sessionId":"s-s457","uuid":"u1","timestamp":"2026-11-12T01:00:00.000Z","message":{"role":"user","content":"look"}}
+{"type":"system","version":"2.1.322","sessionId":"s-s457","uuid":"c1","subtype":"local_command","timestamp":"2026-11-12T01:00:01.000Z","content":"<command-name>/context</command-name>\n<command-message>context</command-message>\n<command-args></command-args>"}
+{"type":"system","version":"2.1.322","sessionId":"s-s457","uuid":"c2","subtype":"local_command","timestamp":"2026-11-12T01:00:02.000Z","content":"<local-command-stdout>## Context Usage\n\n**Model:** claude-opus-5-5\n**Tokens:** 41.3k / 1m (4%)\n\n| Category | Tokens |\n|---|---|\n| System prompt | 6.2k |\n| Messages | 35.1k |</local-command-stdout>","commandRun":{"command":"context","args":""},"contextUsage":{"model":"claude-opus-5-5","total_tokens":41312,"raw_max_tokens":1000000,"percentage":4,"categories":[{"name":"System prompt","tokens":6204,"kind":"system"},{"name":"Messages","tokens":35108,"kind":"messages"}],"mcp_tools":[],"memory_files":[{"path":"~/tern/CLAUDE.md","type":"Project","tokens":812}],"agents":[{"agent_type":"skua-scout","source":"projectSettings","tokens":96}],"skills":[{"name":"petrel-notes","source":"userSettings","tokens":41}]},"aKeyBesideContextUsageS457":1}
+"##;
+        let blocks = parse(jsonl);
+        assert!(
+            blocks
+                .iter()
+                .any(|b| matches!(b, Block::Command { name, .. } if name == "/context")),
+            "the record still reads as /context's output: {blocks:?}"
+        );
+        let mine: Vec<String> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.at == UnknownAt::RecordKey && s.example.as_deref() == Some("s-s457"))
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(
+            mine,
+            vec!["system.aKeyBesideContextUsageS457".to_string()],
+            "contextUsage and commandRun are known; the made-up key beside them is reported"
         );
     }
 
