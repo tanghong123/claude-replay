@@ -2155,12 +2155,15 @@ fn until_list_drawn(tab: &headless_chrome::Tab) {
 
 /// A host switches the session list's optional controls off (#s430 stage 4, design/session-list-
 /// component.md): the session filter, hiding and the arrangements, each by name in `show`. A control
-/// switched off is not drawn, and what it would choose is not applied: with the reader's filter stored
-/// as Blocked alone and their arrangement as one list by activity, the list shows both idle sessions,
-/// grouped by agent and project, and reads no other app's list, and never writes over the reader's
-/// choice, which a host that shows the controls still finds. With all three off the filter has nothing
-/// to offer, and neither its glyph nor its sheet is drawn. Before stage 4 `show` was refused as an
-/// option no list took (or, before the refusal, ignored), so every load drew the reader's choice.
+/// switched off is not drawn, and the page's choice it would make is not applied: with the reader's
+/// filter stored as Blocked alone and their arrangement as one list by activity, then as the Claude
+/// app's, the list shows the idle session, grouped by agent and project, and reads no other app's list.
+/// It never writes over the reader's choice, which the host's `persist` (the app's) would store: a host
+/// that shows the controls still finds it. A hide is not such a choice, the monitor keeping it for
+/// every page: a session the reader hid stays out with hiding off, even while Include hidden is still
+/// ticked in the page. The filter's glyph says what its sheet offers, and with all three off neither
+/// the glyph nor the sheet is drawn. Before stage 4 `show` was refused as an option no list took (or,
+/// before the refusal, ignored), so every load drew the reader's choice.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_list_in_a_host_switches_its_controls_off() {
@@ -2175,7 +2178,56 @@ fn the_session_list_in_a_host_switches_its_controls_off() {
     let monitor = Monitor::spawn(Kind::V1, 3267, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
+    let rows = "document.querySelectorAll('#tree .tree-row.session').length";
+    let until_rows = |n: usize, what: &str| {
+        harness::until(
+            &tab,
+            &format!("{rows} === {n}"),
+            what,
+            Duration::from_secs(30),
+            "JSON.stringify({ host: window.__host, tree: (document.getElementById('tree') || {}).innerText })",
+        );
+    };
+    // First the reader hides one session of the two, and asks to see hidden ones.
     harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-filter', '[\"recent\",\"blocked\",\"idle\"]'); localStorage.removeItem('am-prod-session-flat'); localStorage.removeItem('am-prod-session-arrange'); 'ok'",
+    );
+    harness::open_list_host_page_with(&tab, &monitor, "");
+    until_rows(2, "both sessions listed");
+    harness::eval(
+        &tab,
+        "document.querySelector('#tree .tree-row.session .tree-action[data-ignore-op=\"add\"]').click(); 'ok'",
+    );
+    until_rows(1, "the hidden session gone from the list");
+    harness::eval(
+        &tab,
+        "document.getElementById('filterBtn').click(); document.querySelector('#sessionFilter [data-include-hidden]').click(); 'ok'",
+    );
+    until_rows(2, "the hidden session back under Include hidden");
+    let included = harness::probe(
+        &tab,
+        "document.querySelectorAll('#tree .tree-row.session.is-hidden').length",
+    );
+    // The same page mounts the list again with hiding off, Include hidden still ticked in its state.
+    harness::eval(
+        &tab,
+        "window.__list.unmount(); window.__host.mount({ show: { hiding: false } }); 'ok'",
+    );
+    harness::until(
+        &tab,
+        &format!("{rows} > 0"),
+        "the list mounted again with hiding off to draw its sessions",
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host, tree: (document.getElementById('tree') || {}).innerText })",
+    );
+    harness::pause("list host", Duration::from_millis(500));
+    let remounted = harness::probe(
+        &tab,
+        &format!("({{ rows: {rows}, dimmed: document.querySelectorAll('#tree .is-hidden').length, includeHidden: !!document.querySelector('[data-include-hidden]'), errors: window.__host.errors }})"),
+    );
+    // Then the reader's own choice: Blocked alone, one list by activity.
     harness::eval(
         &tab,
         "localStorage.setItem('am-prod-session-filter', '[\"blocked\"]'); localStorage.setItem('am-prod-session-flat', '1'); 'ok'",
@@ -2184,7 +2236,7 @@ fn the_session_list_in_a_host_switches_its_controls_off() {
     let seen = |from: usize| {
         harness::probe(
             &tab,
-            &format!("(function () {{ var list = document.getElementById('sessionList'), sheet = document.getElementById('sessionFilter'), q = function (sel) {{ return !!(sheet && sheet.querySelector(sel)); }}; return {{ rows: document.querySelectorAll('#tree .tree-row.session').length, grouped: !!document.querySelector('#tree .agent-label'), flat: list.classList.contains('sessions-flat'), glyph: !!document.getElementById('filterBtn'), sheet: !!sheet, everything: q('[data-filter-reset]'), buckets: sheet ? sheet.querySelectorAll('[data-bucket]').length : 0, includeHidden: q('[data-include-hidden]'), arrange: sheet ? sheet.querySelectorAll('[data-arrange]').length : 0, hides: [document.querySelectorAll('#tree .tree-row.session .tree-action[data-ignore-op]').length, document.querySelectorAll('#tree .tree-action[data-ignore-op]').length - document.querySelectorAll('#tree .tree-row.session .tree-action[data-ignore-op]').length], controls: [].map.call(list.querySelectorAll(':scope > .session-list-head > .session-list-controls > *'), function (c) {{ return c.id; }}), filtered: window.__list.filtered(), layoutReads: window.__host.requests.slice({from}).filter(function (r) {{ return r.url.indexOf('/api/layout') >= 0; }}).length, errors: window.__host.errors }}; }})()"),
+            &format!("(function () {{ var list = document.getElementById('sessionList'), sheet = document.getElementById('sessionFilter'), glyph = document.getElementById('filterBtn'), q = function (sel) {{ return !!(sheet && sheet.querySelector(sel)); }}; return {{ rows: {rows}, grouped: !!document.querySelector('#tree .agent-label'), flat: list.classList.contains('sessions-flat'), glyph: glyph ? glyph.title : null, sheet: !!sheet, everything: q('[data-filter-reset]'), buckets: sheet ? sheet.querySelectorAll('[data-bucket]').length : 0, includeHidden: q('[data-include-hidden]'), arrange: sheet ? sheet.querySelectorAll('[data-arrange]').length : 0, hides: [document.querySelectorAll('#tree .tree-row.session .tree-action[data-ignore-op]').length, document.querySelectorAll('#tree .tree-action[data-ignore-op]').length - document.querySelectorAll('#tree .tree-row.session .tree-action[data-ignore-op]').length], controls: [].map.call(list.querySelectorAll(':scope > .session-list-head > .session-list-controls > *'), function (c) {{ return c.id; }}), filtered: window.__list.filtered(), layoutReads: window.__host.requests.slice({from}).filter(function (r) {{ return r.url.indexOf('/api/layout') >= 0; }}).length, errors: window.__host.errors }}; }})()"),
         )
     };
     let open_sheet = || {
@@ -2205,50 +2257,70 @@ fn the_session_list_in_a_host_switches_its_controls_off() {
     let from = requests();
     open_sheet();
     let shown = seen(from);
+    // The reader then chose to arrange it like the Claude app, which the next two lists must not read.
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-arrange', 'claude-app'); 'ok'",
+    );
     // The filter and the arrangements off: hiding is all the sheet offers.
     harness::open_list_host_page_with(&tab, &monitor, "hide=filter,arrangements");
     until_list_drawn(&tab);
     let from = requests();
     open_sheet();
     let partly = seen(from);
-    // All three off.
+    // All three off; the reader folds and unfolds the groups, which the host's `persist` stores.
     harness::open_list_host_page_with(&tab, &monitor, "hide=filter,hiding,arrangements");
     until_list_drawn(&tab);
     let from = requests();
     open_sheet();
     let none = seen(from);
+    harness::eval(
+        &tab,
+        "document.getElementById('collapseBtn').click(); document.getElementById('expandBtn').click(); 'ok'",
+    );
     let stored = harness::probe(
         &tab,
-        "({ filter: localStorage.getItem('am-prod-session-filter'), flat: localStorage.getItem('am-prod-session-flat') })",
+        "({ filter: localStorage.getItem('am-prod-session-filter'), flat: localStorage.getItem('am-prod-session-flat'), arrange: localStorage.getItem('am-prod-session-arrange') })",
     );
     drop(monitor);
     assert_eq!(
+        included,
+        serde_json::json!(1),
+        "the reader hid one session, and Include hidden shows it, dimmed"
+    );
+    assert_eq!(
+        remounted,
+        serde_json::json!({ "rows": 1, "dimmed": 0, "includeHidden": false, "errors": [] }),
+        "hiding off: what the reader hid stays out, Include hidden still ticked in the page or not, and nothing offers it"
+    );
+    assert_eq!(
         shown,
-        serde_json::json!({ "rows": 0, "grouped": false, "flat": true, "glyph": true, "sheet": true, "everything": true, "buckets": 3, "includeHidden": true, "arrange": 5, "hides": [0, 0], "controls": ["collapseBtn", "expandBtn", "filterBtn"], "filtered": true, "layoutReads": 1, "errors": [] }),
-        "every control shown: the reader's filter (Blocked alone) leaves the two idle sessions out, their one list by activity is drawn, and the sheet offers everything, asking which apps it could follow"
+        serde_json::json!({ "rows": 0, "grouped": false, "flat": true, "glyph": "Showing Blocked — 0 of 1", "sheet": true, "everything": true, "buckets": 3, "includeHidden": true, "arrange": 5, "hides": [0, 0], "controls": ["collapseBtn", "expandBtn", "filterBtn"], "filtered": true, "layoutReads": 1, "errors": [] }),
+        "every control shown: the reader's filter (Blocked alone) leaves the idle session out, their one list by activity is drawn, and the sheet offers everything, asking which apps it could follow"
     );
     assert_eq!(
         partly,
-        serde_json::json!({ "rows": 2, "grouped": true, "flat": false, "glyph": true, "sheet": true, "everything": false, "buckets": 0, "includeHidden": true, "arrange": 0, "hides": [2, 1], "controls": ["collapseBtn", "expandBtn", "filterBtn"], "filtered": false, "layoutReads": 0, "errors": [] }),
-        "the filter and the arrangements off: every session is listed, by agent and project, each with its hide and the project with its own, the sheet offers Include hidden alone, and no other app's list is asked for"
+        serde_json::json!({ "rows": 1, "grouped": true, "flat": false, "glyph": "Include hidden sessions", "sheet": true, "everything": false, "buckets": 0, "includeHidden": true, "arrange": 0, "hides": [1, 1], "controls": ["collapseBtn", "expandBtn", "filterBtn"], "filtered": false, "layoutReads": 0, "errors": [] }),
+        "the filter and the arrangements off: the idle session is listed, by agent and project, with its hide and the project with its own, the glyph and the sheet offer Include hidden alone, and the Claude app's list is not asked for"
     );
     assert_eq!(
         none,
-        serde_json::json!({ "rows": 2, "grouped": true, "flat": false, "glyph": false, "sheet": false, "everything": false, "buckets": 0, "includeHidden": false, "arrange": 0, "hides": [0, 0], "controls": ["collapseBtn", "expandBtn"], "filtered": false, "layoutReads": 0, "errors": [] }),
+        serde_json::json!({ "rows": 1, "grouped": true, "flat": false, "glyph": null, "sheet": false, "everything": false, "buckets": 0, "includeHidden": false, "arrange": 0, "hides": [0, 0], "controls": ["collapseBtn", "expandBtn"], "filtered": false, "layoutReads": 0, "errors": [] }),
         "all three off: no hide on a session or a group, and no filter glyph or sheet, which would offer nothing"
     );
     assert_eq!(
         stored,
-        serde_json::json!({ "filter": "[\"blocked\"]", "flat": "1" }),
-        "and the reader's own choice is kept as they made it"
+        serde_json::json!({ "filter": "[\"blocked\"]", "flat": "1", "arrange": "claude-app" }),
+        "and the reader's own choice is stored as they made it, though the list wrote its state since"
     );
 }
 
 /// The session list's keys in a host (#s430 stage 4): engaged (the default) the list binds ↓ and ↑
 /// on its own element, so they step through its rows only while one of them has the focus, and leave
 /// every other key, and those keys elsewhere, to the page; with `keyboard: "page"` it binds none, and
-/// the host's keymap calls the handle's `keys`. Before stage 4 the list bound no key at all (the app's
-/// keymap called its `step`), so a host's reader could not step through the list.
+/// the host's keymap calls the handle's `keys`. A key that moves nothing (on a project's row, past the
+/// last session) is not taken, and chooses nothing. Before stage 4 the list bound no key at all (the
+/// app's keymap called its `step`), so a host's reader could not step through the list.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
@@ -2285,6 +2357,16 @@ fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
     let other = press("]");
     harness::eval(&tab, "document.getElementById('hostButton').focus()");
     let outside = press("ArrowDown");
+    harness::eval(
+        &tab,
+        "document.querySelector('#tree .tree-row.project').focus()",
+    );
+    let on_project = press("ArrowDown");
+    harness::eval(
+        &tab,
+        "(function () { var r = document.querySelectorAll('#tree .tree-row.session'); r[r.length - 1].focus(); return 'ok'; })()",
+    );
+    let past_last = press("ArrowDown");
     let engaged = harness::probe(
         &tab,
         "({ opened: window.__host.opened, keys: window.__host.keys.map(function (k) { return k.key + ':' + k.prevented; }) })",
@@ -2325,8 +2407,18 @@ fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
         "and ↓ with the focus in the host is the host's"
     );
     assert_eq!(
+        on_project,
+        serde_json::json!({ "taken": false, "opened": 2, "focus": "" }),
+        "↓ on a project's row moves nothing, so the page keeps it"
+    );
+    assert_eq!(
+        past_last,
+        serde_json::json!({ "taken": false, "opened": 2, "focus": second }),
+        "and so does ↓ on the last session, which chooses it no more"
+    );
+    assert_eq!(
         engaged,
-        serde_json::json!({ "opened": [{ "id": second, "push": true }, { "id": first, "push": true }], "keys": ["ArrowDown:true", "ArrowUp:true", "]:false", "ArrowDown:false"] }),
+        serde_json::json!({ "opened": [{ "id": second, "push": true }, { "id": first, "push": true }], "keys": ["ArrowDown:true", "ArrowUp:true", "]:false", "ArrowDown:false", "ArrowDown:false", "ArrowDown:false"] }),
         "the host's own listener, bound before the mount, heard every key after the list, taken or not"
     );
     assert_eq!(
@@ -2378,7 +2470,13 @@ fn the_session_list_in_a_host_unmounts_and_mounts_again() {
     // holds, and the host's pane.
     let page = "(function () { var list = document.getElementById('sessionList'); return { element: list ? list.outerHTML : null, bodyKids: document.body.children.length, pane: document.getElementById('hostPane').children.length, errors: window.__host.errors }; })()";
     let before = harness::probe(&tab, page);
-    let listeners_before = harness::page_listeners(&tab);
+    // The page's listeners, and the element's own, which outlives the list.
+    let targets = [
+        ("window", "window"),
+        ("document", "document"),
+        ("list", "document.getElementById('sessionList')"),
+    ];
+    let listeners_before = harness::listeners_of(&tab, &targets);
     harness::eval(&tab, "window.__host.mount()");
     until_list_drawn(&tab);
     harness::until(
@@ -2405,7 +2503,7 @@ fn the_session_list_in_a_host_unmounts_and_mounts_again() {
     harness::eval(&tab, "document.getElementById('filterBtn').click()");
     harness::pause("list host", Duration::from_millis(300));
     harness::eval(&tab, escape);
-    let listeners_mounted = harness::page_listeners(&tab);
+    let listeners_mounted = harness::listeners_of(&tab, &targets);
     let floating = harness::probe(&tab, "({ menu: !!document.getElementById('sectionViewMenu'), sheet: !!document.getElementById('sessionFilter') })");
     // Work out across the unmount: another app's list (asked for after the index's read), the apps
     // it could follow (as the sheet opens), a hide and the index's read itself, each reply held.
@@ -2464,7 +2562,7 @@ fn the_session_list_in_a_host_unmounts_and_mounts_again() {
     let at_unmount = harness::probe(&tab, told);
     harness::eval(&tab, "window.__list.unmount(); 'ok'");
     let after = harness::probe(&tab, page);
-    let listeners_after = harness::page_listeners(&tab);
+    let listeners_after = harness::listeners_of(&tab, &targets);
     let released = harness::eval(&tab, "window.__host.release()");
     harness::pause("list host", Duration::from_millis(1500));
     let late = harness::probe(&tab, told);
@@ -2487,10 +2585,58 @@ fn the_session_list_in_a_host_unmounts_and_mounts_again() {
         &tab,
         "({ trees: document.querySelectorAll('#sessionList > .tree').length, heads: document.querySelectorAll('#sessionList > .session-list-head').length, errors: window.__host.errors })",
     );
+    // The host unmounts the list from inside its own `onIndex`: back in the list's code, nothing more
+    // is drawn, said or asked for (another app's list follows each index read).
+    let since_unmount = "({ drawn: window.__host.drawn - window.__host.drawnAtUnmount, requests: window.__host.requests.filter(function (r) { return r.at > window.__host.unmountedAt; }).map(function (r) { return r.url; }), errors: window.__host.errors })";
+    harness::eval(
+        &tab,
+        "window.__host.unmountIn = 'onIndex'; window.__host.unmountedAt = null; window.__list.refresh(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "window.__host.unmountedAt !== null",
+        "the host to unmount the list inside onIndex",
+        Duration::from_secs(20),
+        "JSON.stringify(window.__host.errors)",
+    );
+    harness::pause("list host", Duration::from_millis(1500));
+    let in_callback = harness::probe(&tab, since_unmount);
+    let after_callback = harness::probe(&tab, page);
+    // A host that places the list's parts in its own bar and rail, and its floating layers in the
+    // body: the unmount takes them from wherever the host put them.
+    harness::eval(&tab, "window.__host.mount(window.__host.placing)");
+    harness::until(
+        &tab,
+        "!!document.querySelector('#tree .arranged-head [data-section-view]')",
+        "a list mounted by a placing host to draw the Claude app's sections",
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host, tree: (document.getElementById('tree') || {}).innerText })",
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('#tree .arranged-head [data-section-view]').click()",
+    );
+    harness::until(
+        &tab,
+        "!!document.getElementById('sectionViewMenu') && !document.getElementById('sectionViewMenu').hidden",
+        "the section's menu to open in the body",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host.errors)",
+    );
+    harness::eval(&tab, escape);
+    let parts = "({ controls: document.querySelectorAll('#hostControls > *').length, sheet: document.querySelectorAll('#hostSheet > *').length, rail: document.querySelectorAll('#hostRail > *').length, menu: !!document.querySelector('body > #sectionViewMenu'), flyout: !!document.querySelector('body > #railFlyout'), inList: document.querySelectorAll('#sessionList .session-list-controls, #sessionList #sessionFilter, #sessionList #railFlyout').length })";
+    let placed = harness::probe(&tab, parts);
+    harness::eval(&tab, "window.__list.unmount(); 'ok'");
+    let placed_after = harness::probe(&tab, parts);
+    let page_after_placed = harness::probe(&tab, page);
     drop(monitor);
     assert!(
         listeners_mounted.len() > listeners_before.len(),
         "the mounted list binds listeners on the page: {listeners_before:?} -> {listeners_mounted:?}"
+    );
+    assert!(
+        listeners_mounted.contains(&"list:keydown:bubble".to_string()),
+        "and its keys on its element: {listeners_mounted:?}"
     );
     assert_eq!(
         floating,
@@ -2527,6 +2673,117 @@ fn the_session_list_in_a_host_unmounts_and_mounts_again() {
         again,
         serde_json::json!({ "trees": 1, "heads": 1, "errors": [] }),
         "and a second mount in the same element draws one new list"
+    );
+    assert_eq!(
+        in_callback,
+        serde_json::json!({ "drawn": 0, "requests": [], "errors": [] }),
+        "unmounted from inside the host's onIndex, the list draws nothing more and asks for nothing"
+    );
+    assert_eq!(
+        after_callback, before,
+        "and leaves its element as the host gave it"
+    );
+    assert_eq!(
+        placed,
+        serde_json::json!({ "controls": 1, "sheet": 1, "rail": 2, "menu": true, "flyout": true, "inList": 0 }),
+        "a placing host holds the list's strip, its sheet and its rail parts, its layers in the body"
+    );
+    assert_eq!(
+        placed_after,
+        serde_json::json!({ "controls": 0, "sheet": 0, "rail": 0, "menu": false, "flyout": false, "inList": 0 }),
+        "and the unmount takes every one of them back"
+    );
+    assert_eq!(page_after_placed, before, "leaving the page as it was");
+}
+
+/// A session chosen with the mouse leaves the page's keys to the transcript (#s430 stage 4, from its
+/// review). A click focuses the session's row, and choosing the session redraws the list with its
+/// selection, which drops that focus to the page, so the app's keymap reads the next key as the
+/// transcript's. Stage 4 first carried the focus across every redraw, so a clicked row kept it and
+/// `[`, `]`, `j` and Space did nothing until the reader clicked in the transcript. Only a list key's
+/// step keeps the focus on the row it reached now.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {
+    let _serial = serial();
+    let base = base("appshell-click-keys");
+    let stores = Stores::new(&base);
+    let first = "cccccccc-0000-4000-8000-0000000004c1";
+    let second = "cccccccc-0000-4000-8000-0000000004c2";
+    for sid in [first, second] {
+        stores.claude_session(
+            sid,
+            &harness::long_session(
+                30,
+                harness::Shape {
+                    tool_every: 3,
+                    think_every: 5,
+                    prose_repeat: 6,
+                },
+            ),
+        );
+    }
+    let monitor = Monitor::spawn(Kind::V1, 3270, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::track_idle(&tab);
+    harness::show_every_session(
+        &tab,
+        &format!("http://127.0.0.1:3270/?ui=app&session={first}"),
+    );
+    let row = format!("#tree .tree-row.session[data-session=\"{second}\"]");
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector({row:?}) && document.querySelectorAll('.virtual-window .turn.user').length >= 3"),
+        "the list drawn and the first session's turns mounted",
+        Duration::from_secs(30),
+        "JSON.stringify({ tree: (document.getElementById('tree') || {}).innerText, turns: document.querySelectorAll('.virtual-window .turn.user').length })",
+    );
+    // The mouse's own click, which focuses the row as it presses it.
+    harness::click_when_settled(&tab, &row, "the second session's row");
+    harness::until(
+        &tab,
+        &format!("location.search.indexOf('{second}') >= 0 && !!document.querySelector({row:?} + '.selected') && document.querySelectorAll('.virtual-window .turn.user').length >= 3"),
+        "the second session shown, its row selected",
+        Duration::from_secs(30),
+        "JSON.stringify({ search: location.search, turns: document.querySelectorAll('.virtual-window .turn.user').length })",
+    );
+    let scrolled = "Math.round(document.querySelector('.transcript').scrollTop)";
+    let (rest, _) = harness::until_still(
+        &tab,
+        scrolled,
+        |v| v.as_i64().unwrap_or(0) > 0,
+        Duration::from_secs(15),
+    );
+    let rest = rest.as_i64().unwrap_or(0);
+    let focus = harness::probe(
+        &tab,
+        "(function () { var a = document.activeElement; return a && a.closest && a.closest('.tree-row') ? 'a row of the list' : (a ? a.tagName.toLowerCase() : 'none'); })()",
+    );
+    // A key goes where the focus is, as a real one would.
+    harness::eval(
+        &tab,
+        "(document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true })); 'ok'",
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let moved = loop {
+        if harness::eval(&tab, &format!("{scrolled} < {rest} - 20")) == serde_json::json!(true) {
+            break true;
+        }
+        if Instant::now() > deadline {
+            break false;
+        }
+        harness::pause("click keys", Duration::from_millis(200));
+    };
+    drop(monitor);
+    assert_eq!(
+        focus,
+        serde_json::json!("body"),
+        "the click chose the session and the redraw left no row of the list with the focus"
+    );
+    assert!(
+        moved,
+        "so `[` is the transcript's: it steps back a turn from the end ({rest}px)"
     );
 }
 

@@ -17,7 +17,12 @@
      takes the page's keys, and `mount=0` leaves the mount to the case (`__host.mount()`), which can
      unmount the list and mount it again in the same element. The page records every request and what
      it throws, and holds the replies whose address matches `__host.hold` (a pattern) until the case
-     calls `__host.release()`: how a case keeps work out across an unmount. -->
+     calls `__host.release()`: how a case keeps work out across an unmount. The host remembers the
+     list's choices as the app does (state.js's `persist`, the list's state being state.js's for now),
+     so a case can see what the list wrote. `__host.mount(extra)` mounts with options of the case's own
+     on top; `__host.placing` is a host that places the list's parts in its own bar and rail and its
+     floating layers in the body; and `__host.unmountIn = "onIndex"` or `"onOpen"` makes the host
+     unmount the list from inside that callback, once. -->
 <link rel="stylesheet" href="/monitor-ui/session-list.css">
 <style>
 /* The host's own rules keep to its own elements. */
@@ -26,14 +31,19 @@
 /* The element the host gives the list: a column filling the pane, which the list's stylesheet leaves to
    its host (in the app it is `display: contents`, the app placing the list in its sidebar). */
 .host-pane > #sessionList { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+/* Where a placing host shows the list's parts: its bar, a positioned holder for the sheet, a rail. */
+#hostControls { display: flex; gap: 4px; }
+#hostSheet { position: relative; }
+.host-rail { position: fixed; top: 40px; right: 0; width: 48px; }
 </style>
 </head>
 <body>
-<header class="host-bar"><span id="hostLabel">A host</span><button type="button" id="hostButton">The host's</button></header>
+<header class="host-bar"><span id="hostLabel">A host</span><button type="button" id="hostButton">The host's</button><div id="hostControls"></div><div id="hostSheet"></div></header>
 <div class="host-pane" id="hostPane"><div class="session-list" id="sessionList"></div></div>
+<div class="host-rail" id="hostRail"></div>
 <script type="module">
 // `holds`: the host keeps the reader where they are (a draft to keep, say) and opens nothing.
-const host = window.__host = { mounted: false, error: null, opened: [], indexed: 0, toasts: [], drawn: 0, holds: false, keys: [], errors: [], requests: [], hold: null, held: 0 };
+const host = window.__host = { mounted: false, error: null, opened: [], indexed: 0, toasts: [], drawn: 0, holds: false, keys: [], errors: [], requests: [], hold: null, held: 0, unmountIn: null, unmountedAt: null, drawnAtUnmount: null };
 addEventListener("error", event => { host.error = host.error || String(event.message); host.errors.push(String(event.message)); });
 addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
 // Every request the page makes, with when; a reply the case holds waits for `release`.
@@ -52,23 +62,37 @@ host.release = () => { const all = waiting.splice(0); for (const go of all) go()
 document.addEventListener("keydown", event => host.keys.push({ key: event.key, prevented: event.defaultPrevented }));
 try {
   const { mountSessionList } = await import("/monitor-ui/session-list-view.js");
+  const { persist } = await import("/monitor-ui/state.js");
+  // The host unmounts the list from inside one of its callbacks, once, when the case asks.
+  const unmountHere = name => {
+    if (host.unmountIn !== name) return false;
+    host.unmountIn = null; host.drawnAtUnmount = host.drawn; host.unmountedAt = performance.now();
+    window.__list.unmount();
+    return true;
+  };
   const params = new URLSearchParams(location.search);
   const off = (params.get("hide") || "").split(",").filter(Boolean);
   const options = {
     onToast: message => host.toasts.push(message),
     // A host opens the session it hears and takes it as the list's selection, as the app does,
     // unless it holds the reader.
-    onOpen: event => { host.opened.push(event); if (!host.holds) window.__list.select(event.id); },
-    onIndex: () => { host.indexed += 1; },
+    onOpen: event => { host.opened.push(event); if (unmountHere("onOpen")) return; if (!host.holds) window.__list.select(event.id); },
+    onIndex: () => { host.indexed += 1; unmountHere("onIndex"); },
+    persist,
     // Each tree the list draws, counted: how a case sees that an unmounted list draws nothing.
     projectTree: filtered => { host.drawn += 1; return filtered; },
   };
   if (off.length) options.show = Object.fromEntries(off.map(name => [name, false]));
   if (params.get("keyboard")) options.keyboard = params.get("keyboard");
-  host.mount = () => {
-    const list = window.__list = mountSessionList(document.querySelector("#hostPane > #sessionList"), options);
+  host.mount = extra => {
+    const list = window.__list = mountSessionList(document.querySelector("#hostPane > #sessionList"), Object.assign({}, options, extra || {}));
     list.start();
     return "mounted";
+  };
+  // A host that shows the list's parts in its own bar and rail, and its floating layers in the body.
+  host.placing = {
+    place: (part, node) => document.getElementById({ controls: "hostControls", sheet: "hostSheet" }[part] || "hostRail").append(node),
+    layer: () => document.body,
   };
   if (params.get("mount") !== "0") host.mount();
   host.mounted = true;

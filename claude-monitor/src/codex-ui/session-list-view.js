@@ -45,15 +45,18 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  Options, each named in `MOUNT_OPTIONS` (any other name is refused), each optional:
  *  - `theme`: "light" (the default) or "dark", which the list's element carries (`data-theme`) and
  *    its stylesheet reads, as the view's does; the handle's `setTheme` changes it.
- *  - `show`: which optional controls are drawn, by name, as `{ filter: false }`. Each is shown unless it
- *    is `false`; a name not in `OPTIONAL_CONTROLS`, or a value that is not a boolean, is refused. A
- *    control switched off is not drawn, and what it would choose is not applied, so a reader is never
- *    left with sessions held back by a choice they cannot see or change; what the reader chose is kept
- *    as it is, for a host that shows it.
+ *  - `show`: which optional controls are drawn, an object naming them, as `{ filter: false }`. Each is
+ *    shown unless it is `false`; a `show` that is not an object, a name not in `OPTIONAL_CONTROLS`, or
+ *    a value that is not a boolean, is refused. A control switched off is not drawn, and the page's
+ *    choice it would make is not applied, so a reader is never left with sessions held back by a
+ *    choice they cannot see or change; what the reader chose is kept as it is, for a host that shows
+ *    it. A hide is not such a choice: the monitor keeps it, for every page that reads it.
  *    - `filter`: the session filter's states (active in the last 6 hours, blocked, idle) and its
  *      Everything. Off, every state is listed.
  *    - `hiding`: hiding and restoring a session, a project or an agent, and the filter's Include
- *      hidden. Off, neither control is drawn and what the reader hid stays out of the list.
+ *      hidden. Off, neither control is drawn, and what the reader hid stays out of the list, as the
+ *      monitor's hides do on every page; an arranged list still shows each session the other app
+ *      lists, hidden or not, as it always has (#s387), and draws none of them dimmed.
  *    - `arrangements`: the filter's Arrange choices (one list by activity, like another app) and an
  *      arranged list's section menus. Off, the list is grouped by agent and project, and reads no
  *      other app's list.
@@ -80,8 +83,10 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    element, where the list's stylesheet styles them (a fixed layer still floats free of it).
  *  - `place(part, node)`: put one of the list's parts where the host shows it, called once for each
  *    as the list mounts: "controls" (the list's strip of controls, `div.session-list-controls`:
- *    Collapse every group, Expand every group and the filter's glyph, in that order; it is
- *    `display: contents`, so each is an item of whatever row holds it), "sheet" (the filter's sheet,
+ *    Collapse every group, Expand every group and the filter's glyph, in that order; where the list's
+ *    stylesheet or the app's reaches it, it is `display: contents`, so each is an item of whatever row
+ *    holds it, and placed anywhere else it takes the host's styles, as the parts it holds do), "sheet"
+ *    (the filter's sheet,
  *    which hangs below what holds it, `top: 100%` of a positioned parent), "rail-filter" (the filter's
  *    button for a rail) and "marks" (the agent marks' holder for a rail). A part switched off is not
  *    handed over (the filter's sheet and rail button, with the filter's three controls off). Left out,
@@ -91,7 +96,8 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  The handle: `redraw()`, `refresh()`, `start()` and `stop()` (the index's polls), `grouped()`,
  *  `rows()`, `row(id)`, `workers(id)`, `selected()`, `select(id)` (a selection the host
  *  made: the list takes it, marks it read and draws it, and says nothing), `keys` (the list's key
- *  actions, by the keymap's names: `keys["list-next"]()` and `keys["list-prev"]()`), `compact(on)`
+ *  actions, by the keymap's names: `keys["list-next"]()` and `keys["list-prev"]()`, each answering
+ *  `false` when it moves nothing, so the key stays the page's), `compact(on)`
  *  (the list is drawn small, as the collapsed sidebar's rail of agent marks, whose flyouts open only
  *  then; turned off, an open flyout closes), `setSource({ load, group })` (where the index reads its
  *  rows and how it groups them: native mode's), `setBuckets(buckets)` and `filtered()` (the session
@@ -104,9 +110,11 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  removes what it put outside its element (the parts it handed to `place`, wherever the host put
  *  them, and its floating layers), and leaves the element as the host gave it: empty, with its own
  *  attributes. After the unmount every other member of the handle does nothing and answers nothing,
- *  and the list tells its host nothing more; mounting again in the same element draws a new list. */
+ *  and the list tells its host nothing more, even when the host unmounts it from inside one of its
+ *  own callbacks; mounting again in the same element draws a new list. */
 export function mountSessionList(element, options = {}) {
 for (const name of Object.keys(options)) if (!MOUNT_OPTIONS.includes(name)) throw new Error(`mountSessionList takes no option named ${name}; its options are ${MOUNT_OPTIONS.join(", ")}`);
+if (options.show != null && (typeof options.show !== "object" || Array.isArray(options.show))) throw new Error(`mountSessionList takes show as an object naming the controls it switches off, as { filter: false }, not ${JSON.stringify(options.show)}`);
 for (const [name, shown] of Object.entries(options.show || {})) {
   if (!OPTIONAL_CONTROLS.includes(name)) throw new Error(`mountSessionList has no optional control named ${name}; the controls a host may switch off are ${OPTIONAL_CONTROLS.join(", ")}`);
   if (typeof shown !== "boolean") throw new Error(`mountSessionList shows ${name} or not by true or false, not ${JSON.stringify(shown)}`);
@@ -117,6 +125,10 @@ if (element.id && element.id !== "sessionList") throw new Error(`mountSessionLis
 if ([...element.childNodes].some(node => !(node.nodeType === 3 && !node.data.trim()))) throw new Error("mountSessionList draws into an empty element; this one holds the host's nodes");
 /** Whether an optional control is drawn: each is, unless the host switched it off. */
 const shows = name => options.show?.[name] !== false;
+// What the filter's glyph offers, said on it: its states, the hidden sessions and the arrangements,
+// whichever the host shows (stage 4). With every control shown it reads as it always did.
+const glyphTitle = shows("filter") ? `Filter the sessions — active in the last 6 hours, blocked, idle${shows("hiding") ? " — and include hidden ones" : ""}`
+  : shows("hiding") ? `Include hidden sessions${shows("arrangements") ? ", and arrange the list" : ""}` : "Arrange the sessions";
 // What the list starts outside its element, which `unmount` stops (stage 4), as the view's (its stage
 // 7): every listener it binds on the page carries `signal`, and the timers its code starts are made
 // through the names below, which keep each one until it has run or been cleared. The index's own poll
@@ -379,7 +391,7 @@ function sessionTreeRow(row, fam = null, member = false, context = null, side = 
   // Over a context line (an arranged row, #s387) the mark rides inside the title's line.
   const title = context && sideMark ? `<span class="tree-title">${sideMark}${escapeText(name || row.name || row.id)}</span>` : `${sideMark}<span class="tree-title">${escapeText(name || row.name || row.id)}</span>`;
   const main = context ? `<span class="tree-main">${title}<span class="tree-context"><span class="tree-agent" role="img" aria-label="${escapeText(context.agent.name)}" title="${escapeText(context.agent.name)}">${agentGlyph(context.agent.id, context.agent.name)}</span><span class="tree-project" title="${escapeText(context.project.path || context.project.name)}">${escapeText(context.project.name)}</span></span></span>` : title;
-  return `<div class="tree-row session ${context ? "flat" : ""} ${row.id === indexState.selected ? "selected" : ""} ${row.hidden ? "is-hidden" : ""} ${member ? "is-member" : ""} ${side ? "is-side" : ""}"${side ? ` style="--side-depth:${side.depth}"` : ""} role="treeitem" tabindex="0" data-session="${escapeText(row.id)}" title="${escapeText(displayState(row).label)} · ${escapeText(row.stateDetail || "")}">${main}<span class="session-end">${chip}${treeAction(row, "session")}${marker}<span class="session-age">${escapeText(newest.activity || row.activity || "")}</span></span></div>`;
+  return `<div class="tree-row session ${context ? "flat" : ""} ${row.id === indexState.selected ? "selected" : ""} ${row.hidden && shows("hiding") ? "is-hidden" : ""} ${member ? "is-member" : ""} ${side ? "is-side" : ""}"${side ? ` style="--side-depth:${side.depth}"` : ""} role="treeitem" tabindex="0" data-session="${escapeText(row.id)}" title="${escapeText(displayState(row).label)} · ${escapeText(row.stateDetail || "")}">${main}<span class="session-end">${chip}${treeAction(row, "session")}${marker}<span class="session-age">${escapeText(newest.activity || row.activity || "")}</span></span></div>`;
 }
 
 /** A family as the list draws it: its representative, its forks while open, then the Claude
@@ -522,6 +534,9 @@ function agentProjectsHtml(agent) {
   return html;
 }
 function renderTree() {
+  // A host that unmounts the list from inside one of its own callbacks (`onIndex`, `onOpen`) is back
+  // in the list's code when it returns, which would draw, tell the host and ask the monitor again.
+  if (unmounted) return;
   const agents = groupedSessions(); let html = "";
   // The filter's buckets over the rows in view (hidden rows count only under Include hidden;
   // a row can be recent AND blocked), and the tree filtered by the chosen set — every bucket
@@ -562,15 +577,7 @@ function renderTree() {
   // that straddled the write, down on a row and up on its replacement, made no click at all: the
   // session tapped just then was not chosen.
   const treeHtml = html || `<div class="no-results">${filtered ? "No sessions in this filter — Everything, in the filter, shows them all" : "No sessions"}</div>`;
-  // A session row with the focus is carried across a rewrite, as a mark is below (stage 4): choosing
-  // a session redraws the tree with its selection, so a list key moved the focus to the next row and
-  // the redraw dropped it to <body>, and the next key was no longer the list's.
-  const active = page.active();
-  const focusedRow = tree.contains(active) && active.matches?.(".tree-row.session") ? active.dataset.session : "";
-  if (treeHtml !== treeWritten) {
-    tree.innerHTML = treeHtml; treeWritten = treeHtml;
-    if (focusedRow) tree.querySelector(`.tree-row.session[data-session="${CSS.escape(focusedRow)}"]`)?.focus({ preventScroll: true });
-  }
+  if (treeHtml !== treeWritten) { tree.innerHTML = treeHtml; treeWritten = treeHtml; }
   renderFilterControl(counts, shown, total);
   refreshRailFlyout();
 
@@ -809,6 +816,7 @@ function setArrange(next) {
   persist(); renderTree(); refreshLayout();
 }
 function refreshLayout() {
+  if (unmounted) return Promise.resolve();
   const source = arrangeSource();
   if (!source || layoutState.loading) return layoutState.loading || Promise.resolve();
   const loading = backend().fetch(`/api/layout?source=${encodeURIComponent(source)}`, { cache: "no-store" })
@@ -882,7 +890,7 @@ function renderFilterControl(counts, shown, total) {
   const filtered = bucketFilterActive();
   const chosen = FILTER_BUCKETS.filter(bucket => indexState.buckets.has(bucket)).map(bucket => FILTER_LABELS[bucket]);
   filterBtn.classList.toggle("on", filtered); filterMini.classList.toggle("on", filtered);
-  filterBtn.title = filtered ? `Showing ${chosen.join(" and ")} — ${shown} of ${total}` : "Filter the sessions — active in the last 6 hours, blocked, idle — and include hidden ones";
+  filterBtn.title = filtered ? `Showing ${chosen.join(" and ")} — ${shown} of ${total}` : glyphTitle;
   for (const option of filterSheet.querySelectorAll("[data-bucket]")) {
     const on = indexState.buckets.has(option.dataset.bucket);
     option.classList.toggle("on", on); option.setAttribute("aria-checked", String(on));
@@ -943,21 +951,32 @@ railMarks.onclick = event => {
 railMarks.onkeydown = event => { if (event.key === "ArrowRight") { const mark = event.target.closest("[data-mini-agent]"); if (mark) { event.preventDefault(); mark.click(); } } };
 collapseBtn.onclick = () => { for (const agent of groupedSessions()) { indexState.collapsed.add(`a:${agent.id}`); for (const project of agent.projects) indexState.collapsed.add(`p:${project.id}`); } persist(); renderTree(); };
 expandBtn.onclick = () => { indexState.collapsed.clear(); persist(); renderTree(); };
+/** The next or the previous session row from the focused one, chosen. It answers `false` when it
+ *  moves nothing (no session row has the focus, or the focused one is the last that way), so the
+ *  key stays the page's (stage 4), as an action of the view's does. */
 function stepList(delta) {
   const rows = [...tree.querySelectorAll(".tree-row.session")];
-  const at = rows.indexOf(page.active()); if (at < 0) return;
+  const at = rows.indexOf(page.active()); if (at < 0) return false;
   const next = Math.max(0, Math.min(rows.length - 1, at + delta));
-  rows[next].focus(); chooseSession(rows[next].dataset.session, true);
+  if (next === at) return false;
+  const id = rows[next].dataset.session;
+  rows[next].focus(); chooseSession(id, true);
+  // The host's select redraws the tree with its selection (the app's and the test host's at once), and
+  // a rewrite drops the focus to <body>, where the next key is no longer the list's: the row the step
+  // reached keeps it (stage 4). Only a step carries it: a row clicked with the mouse has the focus
+  // too, and carried there it would keep every key of the page's in the list.
+  if (!unmounted && !tree.contains(page.active())) tree.querySelector(`.tree-row.session[data-session="${CSS.escape(id)}"]`)?.focus({ preventScroll: true });
+  return true;
 }
 // The list's keys (stage 4), by the keymap's names: the next and the previous session row from the
 // focused one. Engaged (the default), the list binds them on its own element, so they answer only while
 // one of its rows has the focus, and every other key is the page's; with the page's keyboard (the
-// app's) the host's keymap calls them through the handle.
+// app's) the host's keymap calls them through the handle. A key that moves nothing is not taken.
 const keyActions = { "list-next": () => stepList(1), "list-prev": () => stepList(-1) };
 if (keyboardMode === "engaged") element.addEventListener("keydown", event => {
   if (!event.target?.closest?.(".tree-row")) return;
   const run = keyActions[resolveKey(event, "list", event.target)?.action];
-  if (run) { event.preventDefault(); run(); }
+  if (run && run() !== false) event.preventDefault();
 }, { signal });
 
 // The list's parts its host shows (stage 3): the head's controls, Collapse every group, Expand every
