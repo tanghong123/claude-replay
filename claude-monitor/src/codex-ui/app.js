@@ -61,6 +61,9 @@ function toast(message) {
 // the view (native mode's projects) is read as it draws, once the view is mounted; it starts reading
 // the index at the end, as it did.
 const listHandle = mountSessionList(page.byId("sessionList"), {
+  // The page's theme as it stands; the stored one, put on the root below, reaches the list through the
+  // root's observer, as every later change does.
+  theme: page.html().dataset.theme === "dark" ? "dark" : "light",
   toast,
   persist,
   onOpen: ({ id, push }) => selectSession(id, push),
@@ -240,12 +243,14 @@ page.byId("searchInput").onkeydown = event => {
   } else if (event.key === "Enter") { event.preventDefault(); chooseGlobal(searchState.globalIndex); }
 };
 page.byId("searchLayer").onclick = event => { if (event.target === page.byId("searchLayer")) page.byId("searchLayer").classList.remove("production-open"); };
-// The theme is the app's: its chrome reads it on the page's root, and the view, which carries its own
-// on its element (#s429 stage 5b), is told.
-page.byId("themeBtn").onclick = () => { const dark = page.html().dataset.theme !== "dark"; page.html().dataset.theme = dark ? "dark" : ""; viewHandle?.setTheme(dark ? "dark" : "light"); localStorage.setItem("am-demo-theme", dark ? "dark" : "light"); };
-// The page's theme is the root's `data-theme`, however it changes (the toggle, a script): the view
-// follows it, as everything on the page did while the view read the root's.
-new MutationObserver(() => viewHandle?.setTheme(page.html().dataset.theme === "dark" ? "dark" : "light")).observe(page.html(), { attributes: true, attributeFilter: ["data-theme"] });
+// The theme is the app's: its chrome reads it on the page's root, and the list and the view, which
+// each carry their own on their element (#s430 stage 3, #s429 stage 5b), are told together, one value.
+const tellTheme = theme => { listHandle.setTheme(theme); viewHandle?.setTheme(theme); };
+page.byId("themeBtn").onclick = () => { const dark = page.html().dataset.theme !== "dark"; page.html().dataset.theme = dark ? "dark" : ""; tellTheme(dark ? "dark" : "light"); localStorage.setItem("am-demo-theme", dark ? "dark" : "light"); };
+// The page's theme is the root's `data-theme`, however it changes (the toggle, a script, the stored
+// theme just below): the list and the view follow it, as everything on the page did while they read
+// the root's.
+new MutationObserver(() => tellTheme(page.html().dataset.theme === "dark" ? "dark" : "light")).observe(page.html(), { attributes: true, attributeFilter: ["data-theme"] });
 if (localStorage.getItem("am-demo-theme") === "dark") page.html().dataset.theme = "dark";
 // #s33: the collapsed rail is the DESKTOP's. On a phone the sidebar is the drawer, and the rail's
 // rules hide its head, its nav and its list: a phone that had the rail stored (1.355 drew a phone

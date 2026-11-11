@@ -26,6 +26,8 @@ import { page } from "./view-root.js";
  *  (state.js) for now; the host's `persist` writes them.
  *
  *  Options, each optional:
+ *  - `theme`: "light" (the default) or "dark", which the list's element carries (`data-theme`) and
+ *    its stylesheet reads, as the view's does; the handle's `setTheme` changes it.
  *  - `toast(message)`: say something briefly (a scan that failed, a hide or a restore).
  *  - `persist()`: remember the list's choices, at each moment the list changes one.
  *  - `onOpen({ id, push })`: the reader chose a session in the list (a row, the rail's flyout, the
@@ -53,8 +55,9 @@ import { page } from "./view-root.js";
  *  `rows()`, `row(id)`, `workers(id)`, `selected()`, `select(id)` (a selection the host
  *  made: the list takes it, marks it read and draws it, and says nothing), `step(delta)` (the list
  *  keys), `flyoutOpen()` and `closeFlyout(refocus)`, `setSource({ load, group })` (where the index
- *  reads its rows and how it groups them: native mode's), and `setBuckets(buckets)` and
- *  `filtered()` (the session filter, for the host's session search).
+ *  reads its rows and how it groups them: native mode's), `setBuckets(buckets)` and
+ *  `filtered()` (the session filter, for the host's session search), and `setTheme(theme)` (light or
+ *  dark, on the list's element).
  *
  *  What it binds outside its element, which the unmount (stage 4) will fence: on the document, the
  *  section menu's pointerdown and Escape (bound as it first opens), the filter sheet's click and
@@ -67,6 +70,12 @@ if (element.id && element.id !== "sessionList") throw new Error(`mountSessionLis
 // it is the sidebar's child where the tree stood (stage 3), `display: contents`, so what it holds stays
 // in the sidebar's column. An id, so the rules that read the state weigh what they did on `#app`.
 element.id = "sessionList";
+// Its class and its theme (stage 3): its stylesheet hangs every rule on #sessionList, the page's root
+// stood in for by `.session-list`, and reads the theme there, light or dark, as the host says, as the
+// view's does on #sessionView.
+element.classList.add("session-list");
+const applyTheme = theme => { element.dataset.theme = theme === "dark" ? "dark" : "light"; };
+applyTheme(options.theme);
 const sessionList = element;
 const { toast = () => {}, persist = () => {} } = options;
 const layer = kind => options.layer?.(kind) || page.body();
@@ -907,5 +916,7 @@ return {
   /** The session filter: set its buckets (never none), and whether it leaves anything out. */
   setBuckets: buckets => setBuckets(buckets),
   filtered: () => bucketFilterActive(),
+  /** The list's theme, "light" or "dark", on its element. */
+  setTheme: theme => applyTheme(theme),
 };
 }

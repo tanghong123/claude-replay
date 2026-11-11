@@ -4441,7 +4441,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.ok(doc, "mountSessionList carries its doc comment");
   const heads = [...doc[0].matchAll(/^ \*  - ((?:`[^`]*`(?:, | and )?)+):/gm)].map(m => m[1]);
   const documented = new Set(heads.flatMap(head => [...head.matchAll(/`([A-Za-z]+)(?:\([^`]*\))?`/g)].map(m => m[1])));
-  const OPTIONS = ["toast", "persist", "onOpen", "onIndex", "projectTree", "projectActions", "newSession", "compact", "layer", "place"];
+  const OPTIONS = ["theme", "toast", "persist", "onOpen", "onIndex", "projectTree", "projectActions", "newSession", "compact", "layer", "place"];
   assert.deepEqual([...read].sort(), [...OPTIONS].sort(), "the list reads exactly the options the design gives it");
   assert.deepEqual([...documented].sort(), [...OPTIONS].sort(), "and its doc comment documents each");
   assert.deepEqual([...passed].sort(), [...OPTIONS].sort(), "and the app passes every one");
@@ -4449,7 +4449,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const at = listSource.lastIndexOf("\nreturn {\n");
   assert.ok(at > 0, "the list returns its handle as an object literal at the end of mountSessionList");
   const members = new Set([...listSource.slice(at).matchAll(/^  ([A-Za-z]+)(?=:)/gm)].map(m => m[1]));
-  const HANDLE = ["redraw", "refresh", "start", "stop", "grouped", "rows", "row", "workers", "selected", "select", "step", "flyoutOpen", "closeFlyout", "setSource", "setBuckets", "filtered"];
+  const HANDLE = ["redraw", "refresh", "start", "stop", "grouped", "rows", "row", "workers", "selected", "select", "step", "flyoutOpen", "closeFlyout", "setSource", "setBuckets", "filtered", "setTheme"];
   assert.deepEqual([...members].sort(), [...HANDLE].sort(), "the handle holds the members the design names");
   const handleDoc = /The handle: ([\s\S]*?)\n \*\n/.exec(doc[0]);
   assert.ok(handleDoc, "the doc comment describes the handle");
