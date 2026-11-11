@@ -4503,10 +4503,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listSource, /rows\[next\]\.focus\(\); chooseSession\(rows\[next\]\.dataset\.session, true\);/, "and so is a list key");
   assert.match(appSource, /^  onOpen: \(\{ id, push \}\) => selectSession\(id, push\),$/m, "the app answers a choice as it opens any session");
   assert.match(appSource, /listHandle\.select\(id\);\n  showSession\(id, push\);/, "and a selection it starts is the list's half, then its own");
-  // The list's elements are its element's: no lookup through the page, whose focus and body alone it
-  // reads (the body is where a layer floats when the host names none).
+  // The list's elements are its element's: no lookup through the page, whose focus alone it reads. A
+  // layer floats in the list's own element when the host names none, where the list's stylesheet
+  // reaches it (stage 3); the page's body is out of that stylesheet's reach.
   assert.doesNotMatch(listSource, /\bpage\.(?:byId|\$\$?)\(/, "the list looks nothing up in the page");
-  assert.deepEqual([...new Set([...listSource.matchAll(/\bpage\.([A-Za-z$]+)/g)].map(m => m[1]))].sort(), ["active", "body"], "it reads the page's focus and its body, nothing else");
+  assert.deepEqual([...new Set([...listSource.matchAll(/\bpage\.([A-Za-z$]+)/g)].map(m => m[1]))].sort(), ["active"], "it reads the page's focus, nothing else");
+  assert.match(listSource, /const layer = kind => options\.layer\?\.\(kind\) \|\| sessionList;/, "a host that names no layer gets the list's floating layers in the list's own element");
   // Since stage 3 it builds its markup from its own template and keeps what it built: the tree goes in
   // its element, and every part its host shows elsewhere goes through `place`, which the app answers
   // where the list used to put each itself.

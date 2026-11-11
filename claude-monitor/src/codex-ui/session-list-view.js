@@ -43,7 +43,8 @@ import { page } from "./view-root.js";
  *  - `compact()`: whether the list is drawn small, as the collapsed sidebar's rail of agent marks,
  *    whose flyouts open only then.
  *  - `layer(kind)`: the element a floating layer is appended to: "flyout" (the rail's flyout) and
- *    "menu" (a section's menu, its scrim and the safe-area probe); left out, the page's body.
+ *    "menu" (a section's menu, its scrim and the safe-area probe); left out, the list's own
+ *    element, where the list's stylesheet styles them (a fixed layer still floats free of it).
  *  - `place(part, node)`: put one of the list's parts where the host shows it, called once for each
  *    as the list mounts: "controls" (a fragment of Collapse every group, Expand every group and the
  *    filter's glyph, in that order), "sheet" (the filter's sheet, which hangs below what holds it,
@@ -78,7 +79,9 @@ const applyTheme = theme => { element.dataset.theme = theme === "dark" ? "dark" 
 applyTheme(options.theme);
 const sessionList = element;
 const { toast = () => {}, persist = () => {} } = options;
-const layer = kind => options.layer?.(kind) || page.body();
+// Left out, a floating layer goes in the list's own element, where the list's stylesheet reaches it
+// (its rules hang on `#sessionList`); the app passes its own, the page's body and `#app`.
+const layer = kind => options.layer?.(kind) || sessionList;
 // The list's markup (stage 3), built from its own template, cut from the demo's shell: the tree, which
 // goes in its element, and Collapse every group and the agent marks' holder, which the host places
 // (`place`, at the end of the mount). The list keeps each, and finds nothing of them in the page.
@@ -601,7 +604,9 @@ var sheetHome = null;
 function returnFilterSheet() {
   if (!sheetHome) return;
   const { parent, next } = sheetHome;
-  parent.insertBefore(filterSheet, next && next.parentNode === parent ? next : null);
+  // A host that left the sheet unplaced gets it back unattached, as it was.
+  if (parent) parent.insertBefore(filterSheet, next && next.parentNode === parent ? next : null);
+  else filterSheet.remove();
   sheetHome = null;
 }
 const RAIL_OPEN_MS = 140, RAIL_GRACE_MS = 280;

@@ -200,8 +200,14 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      classes, and the one rule it competes with is `.iconbtn`'s `display: grid` (one class), so
      nothing changes. The demo's attention controls stay named in the app's chrome lists, so their
      reference rules stay in `app-shell.css`; the contract counts their markup, which it cuts again,
-     as the app's. The host page gives its pane's element a column box of its own, since the app's
-     stylesheet, which it still loads, draws none for `.session-list`.
+     as the app's. The host page gives its pane's element a column box of its own, since it loads
+     the list's stylesheet alone, which gives `.session-list` no layout of its own (step 6's).
+     A host that passes no `layer` gets the list's floating layers (a section's menu and its scrim,
+     the rail's flyout) in the list's own element, where the list's stylesheet reaches them; the
+     page's body, the default before, is out of that stylesheet's reach. The host case opens no
+     section menu yet: arrangements in a host come with stage 4's `show`, and its case with them.
+     A host that places some parts and not others gets the unplaced ones unattached, the filter's
+     sheet back unattached after the rail's flyout borrowed it.
    - **The styles.** `scripts/session-view-css.mjs` derives a third file, `session-list.css`,
      linked between `app-shell.css` and `session-view.css`. Its classifier splits the app's chrome
      into the app's own, the list's body (`LIST_CHROME`: the tree, its rows and labels, the strip
