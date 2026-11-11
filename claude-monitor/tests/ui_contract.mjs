@@ -44,7 +44,10 @@ const appSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js
 // the app's (the list, the drawer, the chrome) is app.js. A pattern reads the module that holds its
 // code; a ban reads both, as it read the one file both were.
 const viewSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-view.js", import.meta.url), "utf8");
-const shellSource = `${appSource}\n${viewSource}`;
+// #s430 (design/session-list-component.md, stage 2): the session list's code is session-list-view.js,
+// mounted by the app as a host would; its patterns read that module, and the bans read it too.
+const listSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-list-view.js", import.meta.url), "utf8");
+const shellSource = `${appSource}\n${listSource}\n${viewSource}`;
 const previewSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
 const componentsText = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
 const classicExportSource = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
@@ -86,7 +89,7 @@ const { SESSION_VIEW_MARKUP } = await import("../src/codex-ui/session-view-marku
   assert.deepEqual(links, ["monitor-ui/app-shell.css", "monitor-ui/session-view.css"], "the page loads the app's stylesheet, then the view's, and nothing else of ours");
   // What the app draws: the class and id names in its shell and its scripts (the quoted words of a
   // template's pieces too), and the names its own lookups use.
-  const appText = [appShell, appSource, read("session-list.js")].join("\n");
+  const appText = [appShell, appSource, read("session-list-view.js"), read("session-list.js")].join("\n");
   const drawn = new Set();
   const words = s => `${s.replace(/\$\{[^}]*\}/g, " ")} ${(s.match(/\$\{[^}]*\}/g) || []).flatMap(d => d.match(/"[^"]*"|'[^']*'/g) || []).join(" ")}`.split(/[\s"'`\\]+/).filter(w => /^-?[A-Za-z_][A-Za-z0-9_-]*$/.test(w));
   for (const m of appText.matchAll(/class=\\?["']((?:[^"'\\$]|\$\{[^}]*\}|\\.)*)\\?["']/g)) for (const w of words(m[1])) drawn.add(`.${w}`);
@@ -234,7 +237,7 @@ assert.match(viewportSource, /jumpToRecord\(recordIndex, reveal = "record"\)/, "
 assert.match(viewportSource, /reveal = "record"/, "navigation must carry an explicit reveal depth");
 assert.match(viewportSource, /processExpanded\.add\(process\.key\)/, "turn navigation must reveal the following process list");
 assert.match(viewportSource, /folds\.set\(target\.id, false\)/, "task, agent and search navigation must open the target execution block");
-assert.match(appSource, /SIDEBAR_SESSION_LIMIT = 5/, "the sidebar must initially bound each project to five sessions");
+assert.match(listSource, /SIDEBAR_SESSION_LIMIT = 5/, "the sidebar must initially bound each project to five sessions");
 assert.match(previewSource, /setSession\(sessionId\)/, "preview tabs must be scoped by session");
 assert.match(previewSource, /SESSION_CACHE_LIMIT = 6/, "restored preview state must remain session-bounded");
 assert.match(previewSource, /SESSION_CACHE_BYTES = 12 \* 1024 \* 1024/, "restored preview payloads must have a memory budget");
@@ -308,7 +311,7 @@ assert.match(viewSource, /footerCost\.textContent = display\.label \|\| ownCost 
 assert.match(classicExportSource, /var usageCost = u\.cost \|\| \(u\.cost_partial \? "unpriced" : null\)/, "the classic transcript Usage panel must distinguish wholly unpriced from no usage");
 assert.match(classicExportSource, /if \(usageCost\) row\("est\. cost", usageCost, "total"\)/, "the classic transcript Usage row must render the four-state cost label");
 
-for (const moduleName of ["app.js", "session-view.js", "control-store.js", "preview.js"]) {
+for (const moduleName of ["app.js", "session-list-view.js", "session-view.js", "control-store.js", "preview.js"]) {
   const module = readFileSync(new URL(`../../claude-monitor/src/codex-ui/${moduleName}`, import.meta.url), "utf8");
   for (const [, id] of module.matchAll(/byId\("([^"]+)"\)/g)) {
     // The page as it is drawn: the app's shell, and the view's markup inside #sessionView (stage 4).
@@ -915,8 +918,8 @@ console.log("sandbox document cases passed");
   assert.equal(ignoreQuery({ op: "add", key: "p:/w/my repo" }), "/api/ignore?add=p%3A%2Fw%2Fmy%20repo", "the key travels verbatim, encoded once");
   console.log("session visibility cases passed");
 }
-assert.match(appSource, /ignoreQuery\(\{ op, key \}\)/, "the shell hides and restores through /api/ignore with the server's key");
-assert.match(appSource, /visibleTree\(agents, \{ showHidden: indexState\.showHidden/, "the tree is filtered through the tested predicate, not ad hoc");
+assert.match(listSource, /ignoreQuery\(\{ op, key \}\)/, "the shell hides and restores through /api/ignore with the server's key");
+assert.match(listSource, /visibleTree\(agents, \{ showHidden: indexState\.showHidden/, "the tree is filtered through the tested predicate, not ad hoc");
 assert.match(productionCss, /\.tree-action\{/, "row actions have a production treatment");
 assert.match(productionCss, /\.tree-row\.is-hidden\{/, "a revealed hidden row is visibly different");
 assert.match(viewSource, /referenceAction\(\{ fileSig, revealSig(, reveal: (revealHere\(\)|backend\(\)\.local))? \}\)/, "reference clicks dispatch on the tested precedence (#335: told whether the file manager is the reader's)");
@@ -945,7 +948,7 @@ console.log("reveal cases passed");
   assert.equal(families([{ id: "x" }])[0].key, "x", "a row without a family field is a family of one, keyed by its id");
   console.log("family cases passed");
 }
-assert.match(appSource, /families\(rows\)/, "the tree clusters fork families through the tested function");
+assert.match(listSource, /families\(rows\)/, "the tree clusters fork families through the tested function");
 
 // #s206: the flat list — every family the tree shows, across agents and projects, in the server's
 // calm order: active families (the last ten minutes) tied and named in turn, then the rest newest
@@ -985,7 +988,7 @@ assert.match(appSource, /families\(rows\)/, "the tree clusters fork families thr
   assert.deepEqual(flatFamilies([], now), []);
   console.log("flat list cases passed");
 }
-assert.match(appSource, /flatFamilies\(agents, Date\.now\(\) \/ 1000\)/, "the flat list orders through the tested function");
+assert.match(listSource, /flatFamilies\(agents, Date\.now\(\) \/ 1000\)/, "the flat list orders through the tested function");
 // #s387 (design/layout-sync.md): another app's list over the monitor's rows shows the SAME sessions
 // the app shows — every entry, a hidden or filtered row included, an id the monitor has no row for
 // kept with the app's title — each once (the first entry wins and a repeat goes with its children),
@@ -1061,7 +1064,7 @@ assert.match(appSource, /flatFamilies\(agents, Date\.now\(\) \/ 1000\)/, "the fl
   assert.ok(isDefaultView({}) && !isDefaultView({ sort: "name" }));
   console.log("section view cases passed");
 }
-assert.match(appSource, /arrangeSessions\(layout, rowLookup\(indexState\.rows\), paneLookup\(indexState\.rows\)\)/, "the arranged list places rows through the tested functions");
+assert.match(listSource, /arrangeSessions\(layout, rowLookup\(indexState\.rows\), paneLookup\(indexState\.rows\)\)/, "the arranged list places rows through the tested functions");
 // #s340: a Claude desktop side session nests under the family of the session that started it, in
 // the tree and the flat list; one whose starter is left out stays a family of its own, a loop nests
 // nothing, and a side session of a side session nests under that one.
@@ -1340,30 +1343,30 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // checkboxes and Include hidden, no All (Everything in the head is the way back, and it
   // leaves Include hidden alone), the demo's two controls removed, the set never empty and
   // remembered with every bucket by default.
-  assert.match(appSource, /page\.byId\("sidebarCollapse"\)\.insertAdjacentElement\("beforebegin", filterBtn\)/, "the glyph sits before the sidebar collapse");
-  assert.match(appSource, /page\.byId\("collapseBtn"\)\.insertAdjacentElement\("afterend", expandBtn\)/, "…and Expand every group after Collapse every group, so the filter follows expand");
-  assert.match(appSource, /filterBtn\.className = "iconbtn session-filter"/, "…as an iconbtn like its neighbours");
-  assert.match(appSource, /page\.\$\("\.side-head"\)\.appendChild\(filterSheet\)/, "the sheet hangs under the sidebar's head");
-  assert.match(appSource, /page\.byId\("attentionBtn"\)\.remove\(\);\npage\.byId\("sidebarMiniAttention"\)\.remove\(\);/, "the demo's Needs attention button and the rail's bell are gone");
+  assert.match(listSource, /inList\.byId\("sidebarCollapse"\)\.insertAdjacentElement\("beforebegin", filterBtn\)/, "the glyph sits before the sidebar collapse");
+  assert.match(listSource, /inList\.byId\("collapseBtn"\)\.insertAdjacentElement\("afterend", expandBtn\)/, "…and Expand every group after Collapse every group, so the filter follows expand");
+  assert.match(listSource, /filterBtn\.className = "iconbtn session-filter"/, "…as an iconbtn like its neighbours");
+  assert.match(listSource, /inList\.\$\("\.side-head"\)\.appendChild\(filterSheet\)/, "the sheet hangs under the sidebar's head");
+  assert.match(listSource, /inList\.byId\("attentionBtn"\)\.remove\(\);\ninList\.byId\("sidebarMiniAttention"\)\.remove\(\);/, "the demo's Needs attention button and the rail's bell are gone");
   assert.doesNotMatch(shellSource, /hiddenBtn|"Show Hidden"/, "…and the Show Hidden control with them");
-  assert.match(appSource, /visibleTree\(agents, \{ showHidden: indexState\.showHidden, buckets: filtered \? indexState\.buckets : null, bucketsOf \}\)/, "the tree is filtered by the shared cover — every bucket chosen is no filter");
-  assert.match(appSource, /indexState\.buckets = set\.size \? set : new Set\(FILTER_BUCKETS\);/, "the bucket set is never empty");
+  assert.match(listSource, /visibleTree\(agents, \{ showHidden: indexState\.showHidden, buckets: filtered \? indexState\.buckets : null, bucketsOf \}\)/, "the tree is filtered by the shared cover — every bucket chosen is no filter");
+  assert.match(listSource, /indexState\.buckets = set\.size \? set : new Set\(FILTER_BUCKETS\);/, "the bucket set is never empty");
   const stateJsSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
   assert.match(stateJsSource, /buckets: new Set\(json\("am-prod-session-filter", \["recent", "blocked"\]\)\)/, "the set is remembered under a new key, Active recently and Blocked by default (the owner's)");
   assert.match(stateJsSource, /localStorage\.setItem\("am-prod-session-filter", JSON\.stringify\(\[\.\.\.indexState\.buckets\]\)\)/, "persist writes it");
   assert.doesNotMatch(stateJsSource, /attention:/, "no attention flag remains");
-  for (const bucket of FILTER_BUCKETS) assert.match(appSource, new RegExp(`data-bucket="${bucket}"`), `the sheet offers ${bucket}`);
+  for (const bucket of FILTER_BUCKETS) assert.match(listSource, new RegExp(`data-bucket="${bucket}"`), `the sheet offers ${bucket}`);
   assert.doesNotMatch(shellSource, /data-bucket="all"/, "no All checkbox — Everything in the head is the way back");
-  assert.match(appSource, /if \(event\.target\.closest\("\[data-filter-reset\]"\)\) \{ setBuckets\(FILTER_BUCKETS\); return; \}/, "Everything checks the three and touches nothing else — Include hidden stays");
-  assert.match(appSource, /data-include-hidden/, "and Include hidden");
-  assert.match(appSource, /title="\$\{BLOCKED_SUMMARY\}"/, "the Blocked checkbox explains itself with the predicate's sentence");
-  assert.match(appSource, /\$\{FILTER_LABELS\.recent\}/, "the checkbox is labelled from the shared table (Active recently)");
-  assert.match(appSource, /page\.byId\("sidebarMiniSearch"\)\.insertAdjacentElement\("afterend", filterMini\)/, "the rail's filter glyph sits after search");
+  assert.match(listSource, /if \(event\.target\.closest\("\[data-filter-reset\]"\)\) \{ setBuckets\(FILTER_BUCKETS\); return; \}/, "Everything checks the three and touches nothing else — Include hidden stays");
+  assert.match(listSource, /data-include-hidden/, "and Include hidden");
+  assert.match(listSource, /title="\$\{BLOCKED_SUMMARY\}"/, "the Blocked checkbox explains itself with the predicate's sentence");
+  assert.match(listSource, /\$\{FILTER_LABELS\.recent\}/, "the checkbox is labelled from the shared table (Active recently)");
+  assert.match(listSource, /inList\.byId\("sidebarMiniSearch"\)\.insertAdjacentElement\("afterend", filterMini\)/, "the rail's filter glyph sits after search");
   // #300 (the owner): collapsed, the glyph opens the sidebar's own sheet in a flyout beside the rail
   // rather than expanding the sidebar — pointed at, or clicked to pin it.
-  assert.match(appSource, /filterMini\.onclick = \(\) => \{ [^\n]*openRailFlyout\("filter", filterMini, true\)/, "…and a click opens the sheet in the rail's flyout");
-  assert.match(appSource, /filterMini\.addEventListener\("pointerenter", \(\) => railFlyoutHover\("filter", filterMini\)\)/, "…as pointing at it does");
-  assert.match(appSource, /railFlyout\.appendChild\(filterSheet\)/, "…hosting THE sheet, not a copy");
+  assert.match(listSource, /filterMini\.onclick = \(\) => \{ [^\n]*openRailFlyout\("filter", filterMini, true\)/, "…and a click opens the sheet in the rail's flyout");
+  assert.match(listSource, /filterMini\.addEventListener\("pointerenter", \(\) => railFlyoutHover\("filter", filterMini\)\)/, "…as pointing at it does");
+  assert.match(listSource, /railFlyout\.appendChild\(filterSheet\)/, "…hosting THE sheet, not a copy");
   console.log("#202 bucket cases passed");
 }
 
@@ -1685,7 +1688,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /"sidebar-toggle": \(\) => toggleSidebar\(!indexState\.sidebarOpen\)/, "the shell acts on it");
   assert.match(appSource, /page\.byId\("sidebarMiniWrite"\)\.onclick = \(\) => page\.byId\("writeSwitch"\)\.click\(\);/, "the rail's write button reaches the switch");
   assert.match(appSource, /page\.byId\("sidebarMiniSearch"\)\.onclick = openGlobalSearch;/, "…its search button the global search");
-  assert.match(appSource, /filterMini\.onclick = \(\) => \{ [^\n]*openRailFlyout\("filter", filterMini, true\)/, "…its filter glyph the session filter, in the rail's flyout (#202 replaced the attention button; #300 the flyout)");
+  assert.match(listSource, /filterMini\.onclick = \(\) => \{ [^\n]*openRailFlyout\("filter", filterMini, true\)/, "…its filter glyph the session filter, in the rail's flyout (#202 replaced the attention button; #300 the flyout)");
   const prodCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   // #91 → #202: the one control that changes what the list shows is lit when it does — the
   // session filter's glyph takes the primary tint, where the shell's own `.iconbtn:hover` is
@@ -2099,9 +2102,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 
 // #77: expand-all beside collapse-all.
 {
-  assert.match(appSource, /expandBtn\.onclick = \(\) => \{ indexState\.collapsed\.clear\(\); persist\(\); renderTree\(\); \};/, "expand-all clears every fold and remembers it");
-  assert.match(appSource, /page\.byId\("collapseBtn"\)\.insertAdjacentElement\("afterend", expandBtn\);/, "…beside collapse-all");
-  assert.match(appSource, /expandBtn\.innerHTML = svg\("expandStack"\);/, "…with a glyph the sprite has");
+  assert.match(listSource, /expandBtn\.onclick = \(\) => \{ indexState\.collapsed\.clear\(\); persist\(\); renderTree\(\); \};/, "expand-all clears every fold and remembers it");
+  assert.match(listSource, /inList\.byId\("collapseBtn"\)\.insertAdjacentElement\("afterend", expandBtn\);/, "…beside collapse-all");
+  assert.match(listSource, /expandBtn\.innerHTML = svg\("expandStack"\);/, "…with a glyph the sprite has");
   const iconsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/icons.js", import.meta.url), "utf8");
   assert.ok(iconsSrc.includes("expandStack:'"), "the expandStack glyph exists");
   console.log("#77 expand-all cases passed");
@@ -4354,6 +4357,59 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const called = new Set([...appSource.matchAll(/\bviewHandle\??\.([A-Za-z]+)/g)].map(m => m[1]));
   for (const name of called) assert.ok(members.has(name), `the app calls viewHandle.${name}, which the view's handle has`);
   console.log("#s429 mount interface cases passed");
+}
+
+// #s430 stage 2 (design/session-list-component.md): the session list is one component the app mounts
+// as a host would, and the two call each other by NAME, as the app and the view do: every option the
+// list reads is documented and passed, every member of the handle the app calls is one the list
+// returns, and the list finds its elements inside its own element.
+{
+  const call = /^const listHandle = mountSessionList\(page\.\$\("\.sidebar"\), \{\n([\s\S]*?)\n\}\);/m.exec(appSource);
+  assert.ok(call, "the app mounts the list in one call with an options literal, on the sidebar");
+  const passed = new Set([...call[1].matchAll(/^  ([A-Za-z]+)(?=[:,])/gm)].map(m => m[1]));
+  const destructured = /^const \{ (.+) \} = options;$/m.exec(listSource);
+  assert.ok(destructured, "the list takes its plain options by destructuring");
+  assert.doesNotMatch(listSource, /\boptions\[/, "no option is read by a computed name");
+  const read = new Set([...listSource.matchAll(/\boptions\.([A-Za-z]+)/g)].map(m => m[1]));
+  for (const m of destructured[1].matchAll(/(?:^|\}, |, )([A-Za-z]+) = /g)) read.add(m[1]);
+  const doc = /\/\*\* Draw the session list in `element`[\s\S]*?\*\/\nexport function mountSessionList\(element, options = \{\}\) \{/.exec(listSource);
+  assert.ok(doc, "mountSessionList carries its doc comment");
+  const heads = [...doc[0].matchAll(/^ \*  - ((?:`[^`]*`(?:, | and )?)+):/gm)].map(m => m[1]);
+  const documented = new Set(heads.flatMap(head => [...head.matchAll(/`([A-Za-z]+)(?:\([^`]*\))?`/g)].map(m => m[1])));
+  const OPTIONS = ["toast", "persist", "onOpen", "onIndex", "projectTree", "projectActions", "newSession", "compact", "layer"];
+  assert.deepEqual([...read].sort(), [...OPTIONS].sort(), "the list reads exactly the options the design gives it");
+  assert.deepEqual([...documented].sort(), [...OPTIONS].sort(), "and its doc comment documents each");
+  assert.deepEqual([...passed].sort(), [...OPTIONS].sort(), "and the app passes every one");
+  // The handle, and what the app calls of it.
+  const at = listSource.lastIndexOf("\nreturn {\n");
+  assert.ok(at > 0, "the list returns its handle as an object literal at the end of mountSessionList");
+  const members = new Set([...listSource.slice(at).matchAll(/^  ([A-Za-z]+)(?=:)/gm)].map(m => m[1]));
+  const HANDLE = ["redraw", "refresh", "start", "stop", "grouped", "rows", "row", "workers", "selected", "select", "step", "flyoutOpen", "closeFlyout", "setSource", "setBuckets", "filtered"];
+  assert.deepEqual([...members].sort(), [...HANDLE].sort(), "the handle holds the members the design names");
+  const handleDoc = /The handle: ([\s\S]*?)\n \*\n/.exec(doc[0]);
+  assert.ok(handleDoc, "the doc comment describes the handle");
+  for (const name of HANDLE) assert.match(handleDoc[1], new RegExp(`\`${name}\\(`), `the doc comment names the handle's ${name}`);
+  const called = new Set([...appSource.matchAll(/\blistHandle\??\.([A-Za-z]+)/g)].map(m => m[1]));
+  for (const name of called) assert.ok(members.has(name), `the app calls listHandle.${name}, which the list's handle has`);
+  // Choosing a session: the list's half, then the host hears it; a selection the host makes is the
+  // list's half alone, and the app's own half follows either.
+  assert.match(listSource, /function chooseSession\(id, push\) \{\n  if \(!id\) return;\n  if \(id !== indexState\.selected\) take\(id\);\n  options\.onOpen\?\.\(\{ id, push \}\);\n\}/, "a choice in the list is taken, then said");
+  assert.match(listSource, /^  select: id => \{ if \(id\) take\(id\); \},$/m, "the host's selection is taken and not said");
+  assert.match(listSource, /if \(session\) \{ chooseSession\(session\.dataset\.session, true\); return; \}/, "a row is a choice");
+  assert.match(listSource, /rows\[next\]\.focus\(\); chooseSession\(rows\[next\]\.dataset\.session, true\);/, "and so is a list key");
+  assert.match(appSource, /^  onOpen: \(\{ id, push \}\) => sessionChosen\(id, push\),$/m, "the app answers a choice");
+  assert.match(appSource, /listHandle\.select\(id\);\n  showSession\(id, push\);/, "and a selection it starts is the list's half, then its own");
+  // The list's elements are its element's: no lookup through the page, whose focus and body alone it
+  // reads (the body is where a layer floats when the host names none).
+  assert.doesNotMatch(listSource, /\bpage\.(?:byId|\$\$?)\(/, "the list looks nothing up in the page");
+  assert.deepEqual([...new Set([...listSource.matchAll(/\bpage\.([A-Za-z$]+)/g)].map(m => m[1]))].sort(), ["active", "body"], "it reads the page's focus and its body, nothing else");
+  assert.match(listSource, /^const tree = inList\.byId\("tree"\);$/m, "the tree is the element's");
+  assert.match(listSource, /^layer\("flyout"\)\.appendChild\(railFlyout\);$/m, "the rail's flyout floats where the host says");
+  assert.match(appSource, /^  layer: kind => \(kind === "flyout" \? page\.body\(\) : app\),$/m, "which is the body, and the app for a section's menu, as before");
+  // The app holds none of the list's code any more.
+  for (const name of ["renderTree", "groupedSessions", "sessionTreeRow", "openRailFlyout", "openSectionMenu", "setBuckets", "refreshLayout", "applyIgnore", "stepList"]) assert.doesNotMatch(appSource, new RegExp(`function ${name}\\(`), `app.js no longer holds ${name}`);
+  assert.doesNotMatch(appSource, /new SessionIndexStore|tree\.onclick/, "nor the index or the tree's handlers");
+  console.log("#s430 list mount interface cases passed");
 }
 
 // #s429 stage 6: the optional controls and the keys a host may change. A control switched off is

@@ -158,6 +158,11 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/session-list.js").as_slice(),
         ),
+        // The session list as a component (#s430, design/session-list-component.md, stage 2).
+        "monitor-ui/session-list-view.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/session-list-view.js").as_slice(),
+        ),
         "monitor-ui/view-model.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/view-model.js").as_slice(),
@@ -988,6 +993,10 @@ mod tests {
                 include_str!("codex-ui/session-index-store.js"),
             ),
             ("session-list.js", include_str!("codex-ui/session-list.js")),
+            (
+                "session-list-view.js",
+                include_str!("codex-ui/session-list-view.js"),
+            ),
             (
                 "shared/session-visibility.js",
                 claude_replay_html::shared_source("session-visibility").unwrap(),
