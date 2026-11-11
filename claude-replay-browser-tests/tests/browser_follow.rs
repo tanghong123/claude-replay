@@ -2368,17 +2368,20 @@ fn the_app_shell_subtitle_after_a_plan_card_gives_one_answer_per_offset() {
 /// move to 160px from the top, smoothly; each scroll event of that travel paints the turn bar and
 /// the subtitle from the unit under the spy's line (the landing plus 8), and on arrival the
 /// engine's position, a command's, names the revealed head's unit. Where a turn's opener lies
-/// between the spy's line and the head, the two readings name different turns, and the review of
-/// #s450 asked whether the host's `onTurn` then hears the turn flip. It does not: the engine hears
-/// the arrival only in a scroll event (`ownScroll`), whose handler paints from the spy's line right
-/// after the arrival's paint, in the same task, so no frame shows the head's turn and the turn said
-/// (`queueTurn`, a microtask) is the spy's. Deferring the arrival's paint to a task of its own makes
-/// this case fail at the band's steps, the head's turn at rest and the turn before one pixel on.
+/// between the spy's line and the head, the two readings name different turns. The arrival itself
+/// shows none of it: the engine hears it only in a scroll event (`ownScroll`), whose handler paints
+/// from the spy's line right after the arrival's paint, in the same task, and the turn said
+/// (`queueTurn`, a microtask) is the last. But the command holds its target until the reader
+/// moves, and any transaction while they rest (a unit below measured, a live append) painted from
+/// that key with no scroll after it: the subtitle named the head's turn and the host heard it,
+/// where a pixel of scroll named the turn before again. `keyAtSpyLine` reads a command placed
+/// below the landing at the spy's line now.
 ///
-/// Each step records every value the subtitle shows (an observer's callback reads the text a frame
-/// could show, one value per task) and every `onTurn` from the press until the view is still, then
-/// scrolls one pixel, which reads the spy's line: the turn at rest is the one that pixel names, and
-/// nothing is said one pixel on. The turns open three ways, a prompt, a slash command and another
+/// Each step records every value the subtitle shows (an observer's callback reads the text at a
+/// microtask checkpoint) and every `onTurn` from the press until the view is still; then a unit
+/// below grows by 40px with no input; then the view scrolls one pixel, which reads the spy's line.
+/// The turn at rest is the one that pixel names, nothing shown or said during the step passes it,
+/// the growth changes nothing, and nothing is said one pixel on. The turns open three ways, a prompt, a slash command and another
 /// session's message, each followed at once by its tool call, and the case holds every opener to
 /// 40px. As drawn, an opener barely fits the band: on a desktop the turn bar puts the line 60px
 /// down and a slash command's card with the head below it takes 120px (a prompt 131px), so none
@@ -2524,6 +2527,22 @@ fn head_step_names_one_turn(port: u16, phone: Option<(u32, u32)>) {
             .collect();
         let said = said_turns(said_from);
         let at_rest = turn_of(rest["subtitle"].as_str().unwrap_or(""));
+        // While the reader rests, a unit below grows (a live session's output, an image arriving):
+        // the engine measures it in a transaction of its own, with no input and nothing to move.
+        let said_grow_from = view_events(&tab, "onTurn").len();
+        harness::eval(&tab, "window.__subtitles = []; 'ok'");
+        harness::eval(&tab, "(function(){ var w=document.querySelector('.virtual-window'), u=w.lastElementChild; var d=document.createElement('div'); d.style.height='40px'; u.appendChild(d); return u.dataset.unitKey; })()");
+        let (grown, _) = harness::until_still(&tab, reading, |_| true, bound);
+        let grown = parse(&grown);
+        let painted_grow: Vec<i64> = harness::eval(&tab, "JSON.stringify(window.__subtitles)")
+            .as_str()
+            .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+            .unwrap_or_default()
+            .iter()
+            .map(|t| turn_of(t))
+            .collect();
+        let said_grow = said_turns(said_grow_from);
+        let at_grown = turn_of(grown["subtitle"].as_str().unwrap_or(""));
         // One pixel down: the scroll path reads the spy's line.
         let said_nudge_from = view_events(&tab, "onTurn").len();
         let offset = rest["at"].as_i64().unwrap_or(-1);
@@ -2537,21 +2556,31 @@ fn head_step_names_one_turn(port: u16, phone: Option<(u32, u32)>) {
         let nudged = parse(&nudged);
         let spy = turn_of(nudged["subtitle"].as_str().unwrap_or(""));
         let said_nudge = said_turns(said_nudge_from);
+        // A step that brought its head to 160px with the head's opener under the spy's line.
         if rest["promptBelowSpy"] == serde_json::json!(true)
-            && rest["headTop"].as_i64().unwrap_or(0) > 100
+            && (rest["headTop"].as_i64().unwrap_or(0) - 160).abs() <= 2
         {
             in_band += 1;
         }
         steps.push(format!(
-            "step {step}: {rest} painted {painted:?} said {said:?}; one pixel on: turn {spy}, said {said_nudge:?}"
+            "step {step}: {rest} painted {painted:?} said {said:?}; a unit below grown: turn {at_grown}, painted {painted_grow:?}, said {said_grow:?}; one pixel on: turn {spy}, said {said_nudge:?}"
         ));
         assert_eq!(
             at_rest, spy,
             "after `j` the subtitle at rest names the turn the spy's line is in, as one pixel of scroll then does: every step so far: {steps:?}"
         );
+        // `j` moves the spy's line down through the turns before the one it lands in, never past it.
         assert!(
-            said.last().is_none_or(|&t| t == at_rest) && said_nudge.is_empty(),
-            "the host hears the step's turn last and nothing more one pixel on: every step so far: {steps:?}"
+            painted.iter().chain(said.iter()).all(|&t| t <= at_rest)
+                && said.last().is_none_or(|&t| t == at_rest)
+                && said_nudge.is_empty(),
+            "the step shows and says no turn past the one it rests in, the host hears that turn last, and nothing more one pixel on: every step so far: {steps:?}"
+        );
+        assert!(
+            at_grown == at_rest
+                && painted_grow.iter().all(|&t| t == at_rest)
+                && said_grow.is_empty(),
+            "a unit below growing while the reader rests changes neither the turn shown nor the turn the host heard: every step so far: {steps:?}"
         );
     }
     eprintln!(

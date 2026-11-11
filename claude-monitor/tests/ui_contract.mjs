@@ -1557,7 +1557,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /return currentTurnIndex\(units, atKey === undefined \? unitAtTop\(\) : keyAtSpyLine\(atKey\)\);/, "…and everywhere else the turn of the unit at the top, unless the engine named one (#209), read at the same line (#s450)");
   // #s450: the engine's position names the unit crossing the viewport's top, behind the turn bar;
   // the walk from it reaches the spy's line, `landing + 8`, the one `unitAtTop` reads.
-  assert.match(viewSource, /function keyAtSpyLine\(key\) \{\s*\n\s*const p = viewport\.position;\s*\n\s*if \(!p \|\| p\.key !== key \|\| p\.commanded \|\| p\.source !== "anchor" \|\| p\.index == null\) return key;\s*\n\s*const line = viewport\.landing \+ 8;/, "…which walks from the position's unit to that line, and takes a position a command set as it is");
+  // #s454: a command holds its target until the reader moves; one placed at the landing (a turn
+  // step) names its target, one placed lower (a head step's 160px) is read at the line, as the
+  // scroll path reads it, so a transaction while the reader rests names the same turn.
+  assert.match(viewSource, /function keyAtSpyLine\(key\) \{\s*\n\s*const p = viewport\.position;\s*\n\s*if \(!p \|\| p\.key !== key \|\| p\.index == null\) return key;\s*\n\s*if \(p\.commanded\) return Math\.abs\(p\.top - viewport\.landing\) <= 1 \? key : unitAtTop\(\) \?\? key;\s*\n\s*if \(p\.source !== "anchor"\) return key;\s*\n\s*const line = viewport\.landing \+ 8;/, "…which walks from the position's unit to that line; a position a command set at the landing is taken as it is, and one it set lower is read at the line");
   assert.match(viewSource, /if \(child\.getBoundingClientRect\(\)\.top <= line\) key = child\.dataset\.unitKey;\s*\n\s*else break;/, "the unit at the top is the LAST one whose top is above the line — a unit spanning the viewport names itself");
   assert.match(viewSource, /const line = viewport\.scroller\.getBoundingClientRect\(\)\.top \+ viewport\.landing \+ 8;/, "…and the line sits just below where a jump lands its target, so a clicked turn is the turn named");
   assert.match(viewSource, /return key \?\? viewport\.window\.firstElementChild\?\.dataset\.unitKey \?\? null;/, "…and the first child stands in when nothing has scrolled past the line");

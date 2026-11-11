@@ -395,7 +395,9 @@ const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, 
   // the reader is. `afterRender` fires before the transaction's placement, so a bar painted there
   // can name a window the place has since moved — measured at three turns behind, until a
   // one-pixel nudge put it right. The key costs no layout read; reading the DOM here does, and
-  // that forced flush moved the reader (the smooth-step case's record went 190px).
+  // that forced flush, made while a smooth write travelled, moved the reader (the smooth-step
+  // case's record went 190px). The engine no longer calls this mid-travel, and the one position
+  // read off the window is a command's placed below the landing (`keyAtSpyLine`, #s454).
   afterTransaction: () => { const p = viewport.position; if (p && p.key) queueTurn(updateTurnBar(p.key)); wantWindow(); },
   afterScroll: () => {
     updateStickyHeaders(); updateOutlineFocus(); queueTurn(updateTurnBar());
@@ -3514,17 +3516,28 @@ function currentUserUnitIndex(atKey) {
  *  reader's scroll set names the unit crossing the viewport's TOP, and right after a landing that
  *  is the turn before's tail, under the turn bar: one 4px scroll down from a `]` named the turn
  *  before. The line sits `landing + 8` below the top, so walk the engine's heights from that unit
- *  to it. A position a command set holds its target where it put it and is taken as it is, as is
- *  a key that is not the position's.
+ *  to it. A key that is not the position's is taken as it is.
  *
- *  The position's `top` is the unit's border box, the edge `unitAtTop` compares, while the
+ *  A position a command set holds its target where it put it, until the reader moves. Put at the
+ *  landing (a turn step, `]`), the target is the unit the line crosses and is taken as it is. Put
+ *  lower (a head step's 160px, a search's landing, #s454), the line can cross a unit above it, the
+ *  opener of the target's own turn among them, and a transaction while the reader rests (a unit
+ *  below measured, a live append) named the target's turn where a pixel of scroll named the line's,
+ *  so the host heard the turn flip and flip back. That line is read from the window as
+ *  `unitAtTop` reads it: the command's `top` is its row's when it named one, not the unit's, so
+ *  the walk below has no edge to start from; and a placement has just laid the window out (a
+ *  smooth write calls this only on arrival, in the scroll event that reads the same line next).
+ *
+ *  A captured position's `top` is the unit's border box, the edge `unitAtTop` compares, while the
  *  engine's heights are margin boxes: the walk steps from slot to slot and compares each unit's
  *  own border top, its top margin added (a plan card's 8px, the loading card's 6px). Stepping by
  *  border tops alone put every unit after a plan card 8px low, so in that band the two readings
  *  named different turns. The margin is a style, read without a layout. */
 function keyAtSpyLine(key) {
   const p = viewport.position;
-  if (!p || p.key !== key || p.commanded || p.source !== "anchor" || p.index == null) return key;
+  if (!p || p.key !== key || p.index == null) return key;
+  if (p.commanded) return Math.abs(p.top - viewport.landing) <= 1 ? key : unitAtTop() ?? key;
+  if (p.source !== "anchor") return key;
   const line = viewport.landing + 8;
   const margin = index => {
     const row = unitRow(viewport.identityAt(index));
