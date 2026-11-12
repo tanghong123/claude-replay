@@ -1,12 +1,12 @@
 # Each component lays itself out by its pane
 
-> **DRAFT 3.1** (#s431, 2026-11-12). Step 6 of `design/embedding.md` ("Layout decides itself", "The
-> order of the work"). Not built. The owner's ruling (#s459): start it now, and fix in it the
-> transcript column that the right pane squeezes to 126px just past 1180px. The owner's notes on the
-> width-study videos may still change it; every number they can touch is in one table.
-> Two decisions are the owner's, and only stages 2 and 3 wait on them: how a component counts its
-> pane's width (the host says what it has beside it, or not), and which gives way first when the
-> right pane leaves a short line (the pane or the outline). Stage 1 waits on neither.
+> **DRAFT 4** (#s431, 2026-11-12). Step 6 of `design/embedding.md` ("Layout decides itself", "The
+> order of the work"). Stage 1 is built; stages 2 to 4 are not. The owner's ruling (#s459): start it
+> now, and fix in it the transcript column that the right pane squeezes to 126px just past 1180px.
+> The owner ruled how a component counts its room (#s461): by its own width, height and touch, with
+> nothing from the host. One decision is still the owner's: which gives way first when the right
+> pane leaves a short line, the pane or the outline (#s462). Only stage 3 waits on it, and stage 2
+> lands with stage 3.
 
 ## What it is for
 
@@ -21,8 +21,9 @@ the size of the PANE it is mounted in, and from the device, as `design/embedding
 - in a narrow pane (a side column, about 380px), the transcript alone, the rest one tap away;
 - on a phone, the phone reader the app has today.
 
-The app is a host like any other, so it must look and behave as it does now. The exceptions are the
-126px column, which the owner asked to fix, and the few listed under "What the app changes".
+The app is a host like any other, so it must look and behave as it does now at a desktop window and
+on a phone. The exceptions are the 126px column, which the owner asked to fix, and the places listed
+under "What the app changes", where the view now follows the room it really has.
 
 ## What asks the window today
 
@@ -82,73 +83,125 @@ reaches its 820px measure only from 1895px.
 
 ## Decisions
 
-### One effective width
+### Its own size, and touch
 
-Today's layout is a set of conditions on the window's width. Each component keeps those conditions
-exactly and reads them from one number instead: its EFFECTIVE WIDTH, `E`, the width of the window
-the app would need to give the component this pane.
+The owner's ruling (#s461): the view decides its layout from its own width and height, and from
+whether the screen is touch. Nothing reads the window or what sits beside the view, and a host
+tells it nothing: "why cannot the session view to decide its own layout simply by its own height,
+width and whether it is on desktop (no touch) or mobile? No calculation of window width minus side
+pane. This would make it even more general, e.g. embedding the view anywhere on the page?"
 
-**Recommended: the host says what it has beside the pane.** `E` is the pane's width plus
-`--pane-beside`, a length the host may set on the component's element: 300px (the app's default
-sidebar) unless it does. The app sets it, in its own stylesheet, to the first track of its grid in
-every state: the sidebar's width, 64px on the rail, 0 under a phone's drawer, and the column beside
-the session on a wide phone held sideways. So in the app `E` is always the window's width, and
-every band reads the number it reads today, at every sidebar width, on the rail and on a phone.
+- **Touch** is the screen's primary pointer, `(pointer:coarse)`: a phone or a tablet.
+- **The phone family** is a view no wider than 460px, on any screen, or a touch view no taller than
+  500px (a phone held sideways). Every phone held upright is 460px or narrower. A side column on a
+  desktop, about 380px, is the phone reader, which is the narrow layout `design/embedding.md` asks
+  for.
+- **The bands.** Inside the phone family each band keeps today's number, read from the view's
+  width: on a phone the view is the screen, so it reads what the window read. Outside the family
+  each band is today's number less 300px. Today's numbers were window widths with the default 300px
+  sidebar beside the view, so a desktop window at the default sidebar reads exactly what it reads
+  today. The 300 is part of each threshold, written once; nothing measures a sidebar.
 
-- **The phone family** is `E ≤ 760`, or a screen that is a phone held sideways (a coarse pointer and
-  a short side of at most 500px). In the app that is `PHONE_QUERY` exactly, so native mode, which
-  keeps its own queries, always agrees with the view.
-- **In a host:** a 380px column on a desktop is `E` 680, the phone reader drawn in the pane, which
-  is the narrow layout `design/embedding.md` asks for; a 700px pane is a desktop window of 1000 (the
-  outline gives way and the right pane lies over the session); a 1100px pane is a window of 1400; a
-  450px pane on a phone held sideways is `E` 750, laid out by its pane rather than by the screen.
+| Today, the window | The view outside the phone family | Inside it |
+|---|---|---|
+| `≤1180` | `≤880` | every phone |
+| `≤900` | `≤600` | `≤900` |
+| `≤760`, or a short touch screen: the phone | the family itself | the family |
+| `≤700`, `≤620`, `≤560` | never: `≤400` and under is the family | `≤700`, `≤620`, `≤560` |
+| a wide phone held sideways, `≥900` | never | a short touch view of `≥900` |
+| the complements, each "not a phone" (`≥761`, `≥901`, `901–1180`, `701–900` …) | any desktop view, `>600`, `601–880`, `401–600` … | never |
 
-This adds to what a host may rely on: one CSS property, optional, with a default. The view
-registers it (`@property --pane-beside { syntax: '<length>'; inherits: false; initial-value: 300px
-}`) so that it computes to a length the module can read: the wide phone's
-`calc(var(--sidebar) + env(safe-area-inset-left,0px))` would otherwise come back as that text.
-A registration holds for the whole page, which is part of the contract too. So it waits for the
-owner's yes (#s461). **The alternative with no contract change** (draft 2's): on a phone screen
-`E` is the window; elsewhere a pane of 460px or less is the phone family with `E` the pane; else
-`E` is the pane plus 300. It differs in three ways:
+So the module works out one number, `B`, the width the bands read: the view's width inside the
+family, and its width plus 300 outside. Every condition reads `B` the way it read the window, and
+the old phone query, rewritten, reads exactly the family. A height in a condition reads the view's height,
+which in the app is the window's.
 
-- a host's pane on a phone screen is laid out as the whole screen, against `design/embedding.md`
-  ("Every rule that today asks the window's size asks the pane's instead");
-- the app's bands move with a resized sidebar and with the rail (on the rail at a 1000px window the
-  view is laid out as a 1236px one);
-- the app must cap its sidebar at the window less 461px, or a 761–980px window with a wide sidebar
-  would turn the view into the phone reader beside a desktop sidebar. That shrinks a wide sidebar
-  in a narrow window, a change to the app.
+What each place gets, the app at the default sidebar unless it says otherwise:
+
+| Where | The view | Today | Under the rule |
+|---|---|---|---|
+| A desktop window over 760px | the window less the sidebar | the bands by the window | the same |
+| A desktop window over 760px on the rail | the window less 64px | the bands by the window | the bands by its own width: at 1000px, a 936px view takes the wide layout, where today the pane lay over the session |
+| A desktop window of 761–980px with a 520px sidebar | 241–460px | the desktop layout squeezed into it | the phone reader beside the sidebar |
+| A desktop window of 461–760px | the window (the list in its drawer) | the phone reader | the compact desktop layout of a 761–1060px window, under the drawer's handle |
+| A desktop window of 460px or less | the window | the phone reader | the same |
+| A tablet upright with its sidebar, from 761px (an iPad but the mini) | the window less the sidebar | the bands by the window | the same |
+| A touch window of 461–760px that is not short: an iPad mini upright, an iPad in split view, a foldable open | the window (the list in its drawer) | the phone reader | the compact desktop layout, under the drawer's handle |
+| A phone upright | the screen, 460px or less | the phone reader | the same |
+| A phone held sideways | the screen, 667–956px by 375–440px | the phone reader, by its width | the same |
+| A wide phone held sideways, its list column hidden | the screen, 932–956px | the wide phone's | the same |
+| A wide phone held sideways, its list column shown | 652–676px by 430–440px | the wide phone's | a 676px phone held sideways: the `≤900` and `≤700` tiers apply and the two wide rules do not |
+
+The last row is the one phone state that changes. No rule on the view's own size can keep it: phones
+held sideways are 667–956px wide, and the column leaves the view 652–676px, narrower than the
+narrowest of them. So the view takes what its width says. Stage 2 lists what that changes, every
+element's computed style in that state before and after (the rendering audit's instrument). The
+app's own rules for its column keep the view's fixed layers clear of it, as `app-shell.css` already
+does for the dock while a search is open, until stage 4 draws them inside the view. The Simulator
+walk covers it.
+
+**The app's chrome is unchanged.** Its drawer and handle still follow the window's phone query, the
+one query of #s32, so the app's own rules and `reference.css` keep reading the window. Two things
+follow:
+
+- At 461–760px the drawer's handle (44px, fixed at the top left) sits over a desktop top bar. The
+  room for it is the app's, not the view's. Today the phone top bar keeps 44px at its left for the
+  handle. That rule moves to the app, which gives the room while its handle shows, whatever the
+  view's family. A phone reader in a host, or beside a 520px sidebar, then wastes no 44px.
+- Everything that draws inside the view reads the view's family, never the window's phone query:
+  the view's scripts (`layout.phone()`), the reach-in rules in `app-shell.css` that style the view's
+  parts, and native mode, whose composer and runtime panel live in the view (`monitor.css` 11
+  blocks, `native-entry.css` 2, `monitor-controls.js` 4 reads). In the app the two disagree only in
+  the rows above that change, but there they must agree. Native mode's pickers, placed from
+  `innerWidth`, wait for stage 4 with the other fixed layers.
+
+**The pinned mdrev guest** in the right pane reads the window through its own queries, and this
+repository does not change it. At a 461–760px desktop window it shows its phone toolbar inside the
+pane, as it does today; in a host's narrow pane on a wide desktop it shows its desktop form. Its
+embedding kit decides that.
 
 ### Units and lengths
 
-- **Width units** in a component rule become `E` units: `36vw` is `calc(var(--pl-vw) * 36)`, where
-  `--pl-vw` is `E / 100`. In the app that is `1vw`.
-- **Height units** (`vh`, `dvh`) become `--pl-vh` and `--pl-dvh`. Where the pane is as tall as the
-  window, which is always in the app, those are the literal `1vh` and `1dvh`, so iPhone Safari's
-  difference between the two, as its bars show and hide, is kept. Elsewhere both are the pane's
-  height over 100.
-- **The three lengths measured from the app's sidebar** are written against the pane:
-  `calc(100vw - var(--sidebar) - 46px)` is `calc(var(--pl-w) - 46px)`, with `--pl-w` the pane's
-  width, and the turn menu's `left: calc(var(--sidebar) + 18px)` is `calc(var(--pane-x) + 18px)`,
-  with `--pane-x` the pane's left edge in the window (until stage 4 draws the menu inside the
-  pane). In the app these are the same numbers, except on the rail (below).
+A length in a component rule that is a share of the window becomes a share of the view, and which
+share depends on what the length is for:
+
+- **A length that keeps something on the screen** (`calc(100vw - 46px)`, the overlaid pane's
+  `min(620px,72vw)`, the outline overlay's `min(310px,84vw)`, the popovers' `calc(100vw - 24px)`)
+  keeps it inside the view: `calc(var(--pl-w) - 46px)` and the like, with `--pl-w` the view's width.
+  In the app this changes one thing: the transcript panel at a 761–815px window narrows to fit its
+  461–515px view, where today it is 470px.
+- **A length that sizes a control** (the session title's cap, `min(52vw,700px)` and `45vw`; the
+  focused search box, `min(460px,36vw)` and its kin) is the same share of `B`. In the app at the
+  default sidebar that is the same length as today; as a share of the view it would shrink the
+  focused search box at 1440px from 460 to 410px.
+- **The three lengths measured from the app's sidebar** become lengths against the view:
+  `calc(100vw - var(--sidebar) - 46px)` is `calc(var(--pl-w) - 46px)`, and the turn menu's
+  `left: calc(var(--sidebar) + 18px)` is `calc(var(--pane-x) + 18px)`, with `--pane-x` the view's
+  left edge in the window, until stage 4 draws the menu inside the view. In the app these are the
+  same numbers, except on the rail (below).
+- **Heights** (`vh`, `dvh`) become shares of the view's height, `--pl-vh` and `--pl-dvh`. While the
+  view is as tall as the window, which is always in the app, those are the literal `1vh` and `1dvh`,
+  so iPhone Safari's difference between the two, as its bars show and hide, is kept.
+- On a phone, `B` is the view's width, so the two kinds of width agree.
 
 ### One decision, read by styles and scripts
 
-A container query lets styles ask the pane, but a script needs the answer before the first render
-(the outline's default), and "the pane plus what the host has beside it" is no container condition.
-So one module decides (`pane-layout.js`), and everything reads its answer.
+A container query lets styles ask the view's box, but a script needs the answer before the first
+render (the outline's default), and each band reads its number by family, which a container query
+could say only by writing every band twice. So one module decides (`pane-layout.js`), and everything
+reads its answer.
 
-- **It measures.** It reads the component's box at mount, synchronously before the first render,
-  and again through a `ResizeObserver`, with `--pane-beside` from the element's computed style. It
-  hears the device through `matchMedia` listeners, and the reader's text size (`--code-size`),
-  chosen pane width (`--preview`) and outline choice (`navigatorOpen`) from the view.
+- **It measures.** It reads the component's box, its width and its height, at mount, synchronously
+  before the first render, and again through a `ResizeObserver`. It hears the screen's pointer
+  through a `matchMedia` listener, and the reader's text size (`--code-size`), chosen pane width
+  (`--preview`) and outline choice (`navigatorOpen`) from the view.
 - **It writes classes and sizes** on the component's element: the family (`pl-phone`), one class per
-  condition the stylesheets use (below), the readable line's results (stage 3), and `--pl-e`,
-  `--pl-w`, `--pl-h`, `--pl-vw`, `--pl-vh`, `--pl-dvh`, `--pane-x`, `--pane-y` and `--preview-fit`.
-- **Scripts ask it**: `layout.phone()`, and its change events. No component script reads
-  `PHONE_QUERY` itself; native mode, the app's, keeps its own reads.
+  condition the stylesheets use (below), the readable line's results (stage 3), and the lengths
+  the rules read: `--pl-b` (`B` over 100), `--pl-w` and `--pl-h` (the view's box), `--pl-vh` and
+  `--pl-dvh`, `--pane-x`, `--pane-y` and `--preview-fit`.
+- **Scripts ask it**: `layout.phone()`, `layout.query(…)` for the wide phone, and its change events.
+  No script that draws inside the view reads `PHONE_QUERY` itself, native mode's included; the app's
+  chrome keeps its own reads.
 - **After every decision it calls `paneLayoutChanged`**, which remeasures the transcript only when
   its width changed. A band moving, the outline folding and the pane narrowing all change it without
   a resize of the transcript's own making.
@@ -163,11 +216,12 @@ So one module decides (`pane-layout.js`), and everything reads its answer.
 `scripts/session-view-css.mjs` rewrites every component rule under a `@media` that has a WIDTH
 feature into the same rule gated by classes, feature by feature:
 
-- a width feature reads `E`: `(max-width:1180px)` is `pl-max-w-1180`, `(min-width:761px)` is
+- a width feature reads `B`: `(max-width:1180px)` is `pl-max-w-1180`, `(min-width:761px)` is
   `pl-min-w-761`;
-- the other features in the same query read the screen, as today, and the module mirrors each as a
-  class: `(max-height:500px)` is `pl-max-h-500`, `(min-height:501px)` is `pl-min-h-501`,
-  `(pointer:coarse)` is `pl-coarse`, `(pointer:fine)` is `pl-fine`;
+- a height feature reads the view's height: `(max-height:500px)` is `pl-max-h-500`,
+  `(min-height:501px)` is `pl-min-h-501`;
+- a pointer feature reads the screen, as today, mirrored as a class: `(pointer:coarse)` is
+  `pl-coarse`, `(pointer:fine)` is `pl-fine`;
 - a query list is a `:where()` list on the component's element, so weight and source order are
   what they were.
 
@@ -183,9 +237,13 @@ feature into the same rule gated by classes, feature by feature:
 
 - **Exact by construction.** The 701–900 rules still apply on a tall 701–760 window, as they do
   today, because each feature is carried over and none is replaced by "not a phone".
-- **What stays `@media`**: a query with no width feature (`hover`, `pointer`, `prefers-*`, and
-  `(pointer:coarse) and (max-height:500px)` alone), and everything in `reference.css`, the demo,
-  `app-shell.css` and native mode's sheets.
+- **What stays `@media`**: a query with no size feature (`hover`, `pointer`, `prefers-*`), and
+  everything in `reference.css`, the demo, and the app's own rules in `app-shell.css`. A short touch
+  screen alone, `(pointer:coarse) and (max-height:500px)`, is rewritten like the rest, since its
+  height is the view's.
+- **Native mode's sheets** are not derived: their rules that draw inside the view are rewritten by
+  hand to read the view's classes, and a contract case holds that none of them asks the window's
+  phone query.
 - **Checks.** A feature missing from the table, a nested group or an `@supports` fails the
   derivation (none exist today). Every rewritten selector weighs what it did, as the script already
   asserts for the selectors it moves. The contract case holds the classes the derivation writes to
@@ -207,7 +265,8 @@ the low end of a readable line. It is decided from the reader's inputs, never fr
 so it cannot feed back on itself: the component's width, the chosen pane width, whether the reader
 wants the outline, and the text size.
 
-**Recommended: the pane gives way first** (the owner's decision, #s462). Above `E` 1180:
+**Recommended: the pane gives way first** (the owner's decision, #s462). Above `B` 1180, a desktop
+view over 880px:
 
 1. The pane narrows from the reader's width toward its 340px minimum, until the text beside the
    outline has `READABLE` and the session its 480px floor.
@@ -229,15 +288,13 @@ default 420px:
 In general the rule acts below a window of 655 + the pane's width + `READABLE` at the default
 sidebar: 1395 at the defaults, 1655 with a 680px pane, wider with a larger text size.
 
-**The pane is a column only while the component is at least 821px wide** (the session's 480px
-floor, the resizer, the pane's 340px minimum); below that, or at `E` 1180 and under, it lies over
-the session, as today below the 1180 line, its left edge at `--pane-x` plus 10px. At the default
-sidebar the two lines meet: `E` over 1180 is a component over 880px. A wider sidebar (or a host's
-`--pane-beside` over 300px) parts them. At a 1200px window with a 520px sidebar, `E` is 1200 but
-the component is 680px, so the pane lies over the session, where today the grid runs 221px past
-the window. Where the pane is a column, the outline folded and the pane at 340px leave at least
-348px of text; a text size whose `READABLE` is more than that runs the line short rather than
-laying the pane over the session.
+**The pane is a column only while the view is over 880px and not a phone** (`B` over 1180). At 880px
+and under it lies over the session, as it does today below the 1180 line, its left edge 10px inside
+the view. A column needs 821px (the session's 480px floor, the resizer, the pane's 340px minimum),
+less than 880, so the band decides. At a 1200px window with a 520px sidebar the view is 680px, so
+the pane lies over the session, where today the grid runs 221px past the window. Where the pane is
+a column, the outline folded and the pane at 340px leave at least 348px of text; a text size whose
+`READABLE` is more than that runs the line short rather than laying the pane over the session.
 
 - **The fold** is the existing `navigator-off`, set when the reader does not want the outline OR
   the layout folds it, so every rule that reads it already does the right thing. The reader's choice
@@ -271,7 +328,7 @@ it does in a host, and `reference.css` still does not change. What moves:
   It takes the same transition, for the pane.
 - **Its width is its track's, never its content's**: `contain: inline-size`. With the pane open its
   content's minimum is 901px (480 + 1 + 420), which in an `auto`-minimum track or a flex item would
-  hold a 1100px window's view at 901px, and so `E` at 1201, and keep the layout that made it so.
+  hold a 1100px window's view at 901px, and so `B` at 1201, and keep the layout that made it so.
   Containment of the inline size captures no fixed layers and forms no stacking context.
 - **Its height**: `height: 100%; min-height: 0; grid-template-rows: minmax(0,1fr)`, which `.app`
   carries today. On a phone, where `.app` is a block, the view takes the whole height.
@@ -280,7 +337,7 @@ it does in a host, and `reference.css` still does not change. What moves:
 - **The wide phone.** `#app:not(.phone-column-off)>…>.workspace{grid-column:2}` becomes the view
   in column 2 and the workspace in the view's column 1.
 - **The reach-in rules** keep reading `#app`'s copies of the pane's states in stage 1. They move
-  into the view, keyed by its own classes and `--pane-beside`, in stage 2, and the copies go once
+  into the view, keyed by its own classes, in stage 2, and the copies go once
   nothing reads them.
 - **The list's box** takes `flex:1; min-height:0; display:flex; flex-direction:column`, or the
   tree's scroll breaks, and the tree's `width: var(--sidebar)` is read against it.
@@ -316,21 +373,24 @@ toasts, the review sheet above the drawer. Stage 4 lists each one before choosin
 
 ### What stays the host's
 
-The host keeps the drawer and its handle, the rail, the sidebar's width and its `sidebar-tight`, the
-app's grid, a wide phone's column beside the session, and `--pane-beside`. It lays the two
-components out against each other, by the window. Native mode is the standalone app's alone and
-keeps its queries, which agree with the view's family in the app because `E` is the window there; a
-case holds that.
+The host keeps the drawer and its handle, with the room the handle takes at the top bar's left; the
+rail; the sidebar's width and its `sidebar-tight`; the app's grid; and a wide phone's column beside
+the session, with the rules that keep the view's fixed layers clear of it until stage 4. It lays the
+two components out against each other, by the window: the app's chrome is the one part of the page
+that still reads it. Native mode is the standalone app's alone, but what it draws inside the view
+reads the view's family (above).
 
 ### The session list
 
 `design/embedding.md` asks for full rows where there is room and compact rows where there is not.
 On a desktop the list's rows are already one line of 32px: a state mark, the title cut with an
 ellipsis, a fork chip, and in the flat list the agent's mark and the project. On a phone they are
-44px touch rows. So:
+44px touch rows. The list follows the same rule as the view, its own size and touch:
 
-- **Its family is the screen's** (`PHONE_QUERY`): its phone form is touch rows, which a narrow
-  column on a desktop does not want.
+- **Touch rows on a touch screen**, `(pointer:coarse)`. The list's own size cannot tell a phone's
+  drawer from a desktop's sidebar (both are about 300px wide and the window's height), and a finger
+  needs 44px wherever it is. In the app this changes two places: an iPad's sidebar gets 44px rows,
+  and a desktop window of 760px or less gets 32px rows in its drawer.
 - **Compact rows** are a band of its own width: below 232px, the app's minimum sidebar, so the app
   never draws them. There the flat list's project name goes and the agent's mark stays, and a
   session's indent narrows from 32px to 20px. The same module measures the list's box and sets the
@@ -338,24 +398,32 @@ ellipsis, a fork chip, and in the flat list the agent's mark and the project. On
   class is not set.
 - Its stylesheet's other size rules are the phone's and two stray copies of the view's
   `--navigator`, which go. `sidebar-tight` belongs to the app's head, not to the list.
-- In stage 4 its floating layers (the filter sheet, the section menu, the rail flyout) are drawn in
-  the pane.
+- Its floating layers (the filter sheet, the section menu, the rail flyout) keep reading the window
+  until stage 4 draws them in the pane.
 
 ### What the app changes
 
 At the default text size, the pane at the reader's width:
 
 - **The 126px column**, by the readable line, at windows below 655 + the pane's width + 320px.
-- **The rail's three lengths.** On the rail `--sidebar` still holds the hidden sidebar's width, so
-  today the turn menu opens 254px into the session at the default width. It moves to the rail's
-  edge.
+- **A desktop window of 461–760px**, and a touch window that size that is not short (an iPad mini
+  upright, an iPad in split view, a foldable open): the compact desktop layout under the drawer's
+  handle, where today the phone reader. Below 461px the phone reader, as today.
+- **A wide sidebar in a narrow window**: with a 520px sidebar, at 761–980px the view is 460px or
+  less and is the phone reader beside the sidebar, where today it is the desktop layout squeezed
+  into it; at 1181–1340px the open pane lies over the session, where today the grid runs past the
+  window.
+- **The rail**: the view reads its own width, 64px less than the window, so at 981–1180px the right
+  pane is a column beside the session, where today it lies over it; stage 3's readable line decides
+  how much room it takes. The overlaid pane starts 10px inside the view, not over the rail. The
+  turn menu and the two other lengths measured from `--sidebar`, which on the rail still holds the
+  hidden sidebar's width (so today the turn menu opens 254px into the session), move to the rail's
+  edge. The empty column under the open pane at `≤1180` goes.
+- **A wide phone held sideways with its list column shown**: the layout of a 676px phone held
+  sideways, where today the wide phone's; stage 2 lists each change.
+- **The list's rows**: 44px on any touch screen, 32px with a mouse.
+- **The transcript panel** at a 761–815px window narrows to fit the view, where today it is 470px.
 - **The drag** of the right pane, which stops at the readable line (pane first).
-- **The empty column on the rail** at `≤1180`, under the open pane, which stage 2 removes.
-- **A wide sidebar in a narrow window**: with the sidebar wider than the window less 821px (at
-  1181–1340px with a 520px sidebar), the open pane lies over the session, where today the grid runs
-  past the window.
-- Under the alternative width model: the sidebar's cap, and bands that move with the sidebar,
-  instead of the line above.
 
 ## Tests
 
@@ -364,39 +432,50 @@ At the default text size, the pane at the reader's width:
   both, and 1440 is the control, unchanged.
 - **Widths in a host.** The view and the list each in a host fixture's pane that is smaller than
   the window and does not start at its edge: 380px at x=500 in a 1400px window, 700px, 1000px,
-  1100px, light and dark. In stage 2 each asserts its family, condition classes and `E`. From
-  stage 4 each also asserts that nothing overflows the pane, and that every control is inside it
-  and is the element `elementFromPoint` finds there; a rect alone proves nothing.
-- **On an emulated phone.** A 390×844 phone with the host's pane the whole screen (`E` 390), and a
-  932×430 phone held sideways with a 450px pane (`E` 750 under the recommended model; the screen's
-  932 under the alternative). Each asserts its family and classes, and from stage 4, the dock and
-  sheets inside the pane.
-- **The app's `E` is the window.** At a 1000px window with the sidebar at 232 and at 520, on the
-  rail, on a phone with its drawer, and on a wide phone held sideways with its column: `E` equals
-  `innerWidth`, and the classes match the window's media.
+  1100px, light and dark. In stage 2 each asserts its family, condition classes and `B` (380 the
+  phone reader with `B` 380; 700 `B` 1000; 1100 `B` 1400). From stage 4 each also asserts that
+  nothing overflows the pane, and that every control is inside it and is the element
+  `elementFromPoint` finds there; a rect alone proves nothing.
+- **On an emulated phone.** A 390×844 phone with the host's pane the whole screen (`B` 390), and a
+  932×430 phone held sideways with a 450px pane (the phone family by its height, `B` 450). Each
+  asserts its family and classes, and from stage 4, the dock and sheets inside the pane.
+- **The app reads what the window read** wherever the table above says "the same": a 1440, 1180,
+  1000 and 820px window at the default sidebar, an iPad-sized touch window of 834×1194 with its
+  sidebar, a phone upright and held sideways, and a wide phone with its column hidden. In each the
+  view's classes match the window's media exactly as the old queries read it.
+- **The app where it changes**, each red on the old code: a 700px mouse window (the compact desktop,
+  the drawer's handle clear of the title), a 900px window with a 520px sidebar (the phone reader
+  beside the sidebar, no empty 44px at its left), a 1000px window on the rail (the pane a column), a
+  wide phone with its column (its listed changes), and the list's rows on a touch screen.
 - **Mutations.** Point the layout module back at the window, drop a condition from the rewrite's
-  table, or let the readable rule read what it drew: a width case goes red, or the derivation fails.
-- **The contract.** The component stylesheets carry no `@media` with a width feature. Every class
-  the derivation writes is one the module sets. No component script reads `PHONE_QUERY`.
-- **The app's suite**, whole and unchanged, at every stage. The expected changes: the cases that
-  open the right pane at a 1181–1394px window, the case that draws a 760px pane at 1440
-  (`files.rs`, which today runs the grid 101px past the window), the rail's turn menu, and a drag
-  past the readable line. Stage 3 lists each one, with what it asserted before.
-- **The Simulator walk.** The app as today, and the host fixture with a narrow pane on a phone,
-  upright and sideways, light and dark.
+  table, give the family the window's height, or let the readable rule read what it drew: a width
+  case goes red, or the derivation fails.
+- **The contract.** The component stylesheets carry no `@media` with a width or height feature.
+  Every class the derivation writes is one the module sets. No component script, and none of native
+  mode's rules that draw inside the view, reads `PHONE_QUERY`.
+- **The app's suite**, whole, at every stage, with each change named before it lands: the filter
+  popover case at a 680px window (`browser_follow.rs`, the phone reader today), the wide phone's
+  column cases, the cases that open the right pane at a 1181–1394px window, the case that draws a
+  760px pane at 1440 (`files.rs`, which today runs the grid 101px past the window), the rail's turn
+  menu, and a drag past the readable line. Each is listed with what it asserted before.
+- **The Simulator walk.** The app on a phone upright and sideways, a wide phone with its column
+  shown and hidden, and the host fixture with a narrow pane on a phone, light and dark.
 
 ## The order
 
 Each stage is page code: the whole local browser suite and an iOS Simulator walk before it lands.
 
 1. **A box for each component**, as above. No threshold moves; the suite is unchanged.
-2. **One decision** (after #s461). `pane-layout.js`, `--pane-beside` and the app's settings of it,
-   the derive script's rewrite and its table, the units, the tokens, the scripts asking the module,
-   and the reach-in rules moved into the view. The host-fixture width cases at the classes and `E`.
+2. **One decision** (#s461). `pane-layout.js` (the family from the view's own size and the screen's
+   pointer, and `B`), the derive script's rewrite and its table, the units, the tokens, the scripts
+   asking the module, native mode's rules inside the view, the reach-in rules moved into the view or
+   kept as the app's (the handle's room, the wide phone's column), the list's rows, and the width
+   cases in the host fixture and the app. It lands with stage 3: on its own it would give the rail at
+   981–1180px windows the short line that 1181–1394px windows have today.
 3. **A readable line** (after #s462). The fold, the narrowed pane and the drag, with the red case.
 4. **Drawn inside the pane.** Containment, the layers in the box's coordinates, the width cases'
    containment checks on a desktop and an emulated phone, and the Simulator walk of a narrow pane.
    The lengths that fit a fixed layer to the window (`calc(100vw - 24px)` and its kin in the task
    card, the sheets and the menus) take a unit of their own there: `1vw` while the box is not
-   contained, the pane's width over 100 once it is. Stage 2's `E` units would size them to `E`, which
-   in a host's 380px pane is 680px.
+   contained, the pane's width over 100 once it is. Stage 2's shares of `B` would size them to `B`,
+   which in a host's 500px desktop pane is 800px.
