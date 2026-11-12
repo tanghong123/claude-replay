@@ -740,13 +740,17 @@ fn harness_count(src: &Value, key: &str) -> Option<usize> {
     }
 }
 
-/// The note and tail counts, for the text path: `None` when either does not read, so a part is
-/// shown rather than dropped.
+/// The note and tail counts, for the text path: `None` when either does not read, or when the
+/// copy holds too few blocks for them and so refutes them, so a part is shown rather than dropped.
 fn text_counts(src: &Value) -> Option<(usize, usize)> {
-    Some((
-        harness_count(src, "harnessNoteCount")?,
-        harness_count(src, "harnessTailCount")?,
-    ))
+    let notes = harness_count(src, "harnessNoteCount")?;
+    let tails = harness_count(src, "harnessTailCount")?;
+    if let Some(Value::Array(blocks)) = src.get("content") {
+        if notes.checked_add(tails)? >= blocks.len() {
+            return None;
+        }
+    }
+    Some((notes, tails))
 }
 
 /// The report, and the notes and tails a reader keeps, from a hand-back's `content` (`src` is the
@@ -800,11 +804,13 @@ fn handback_from_content(src: &Value) -> Option<(String, Vec<String>)> {
 /// The report cut from the text the model was sent, when no clean copy came with it: the indented
 /// lines after the frame, two spaces off each, up to the first line at column zero (the client's
 /// trailer); and what stood between `start` and the frame (the notes and tails, indented), as its
-/// paragraphs, less a tools-used element among the first `notes` of them. The notes come first,
-/// and the text marks no boundary between parts, so a tail, or a tail's paragraph, that is one
-/// is kept; a note of several paragraphs may leave a tools-used note after it shown. The counts
-/// are believed only where they can describe the paragraphs, every part one at least: a blank
-/// part, a count past the text or one that does not read (`None`), and nothing is dropped.
+/// paragraphs, less a tools-used element among the first `notes` of them. The text marks no
+/// boundary between parts, but the notes come first and every part keeps a place at least (a
+/// blank one an empty paragraph, which the client's two-space line between parts leaves), so
+/// while the counts are right the first `notes` places are notes: a tail, or a tail's paragraph,
+/// that is the element is kept, and a note of several paragraphs may leave a tools-used note
+/// after it shown. Counts that do not read or that a copy refutes (`None`), or more parts than
+/// the text has places, drop nothing.
 fn handback_from_text(
     txt: &str,
     start: usize,
@@ -831,21 +837,16 @@ fn handback_from_text(
         .map(|line| line.strip_prefix("  ").unwrap_or(line))
         .collect::<Vec<_>>()
         .join("\n");
-    let paragraphs: Vec<&str> = above
-        .split("\n\n")
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .collect();
+    // Every place, a blank part's empty one too: dropping those first let a tail slide into the
+    // notes' places (#s456's third review).
+    let places: Vec<&str> = above.split("\n\n").map(str::trim).collect();
     let notes = counts
-        .filter(|&(n, t)| {
-            n.checked_add(t)
-                .is_some_and(|parts| parts <= paragraphs.len())
-        })
+        .filter(|&(n, t)| n.checked_add(t).is_some_and(|parts| parts <= places.len()))
         .map_or(0, |(n, _)| n);
-    let extras = paragraphs
+    let extras = places
         .into_iter()
         .enumerate()
-        .filter(|&(i, p)| !(i < notes && is_tools_used_note(p)))
+        .filter(|&(i, p)| !p.is_empty() && !(i < notes && is_tools_used_note(p)))
         .map(|(_, p)| p.to_string())
         .collect();
     Some((report, extras))
@@ -8351,6 +8352,34 @@ mod tests {
                 agent_result_of(&jsonl),
                 format!("{S5_REPORT}\n\n---\n\n{TOOLS_BASH}"),
                 "{notes:?} {tur}"
+            );
+        }
+        // The third review: a blank note beside a part of several paragraphs, which together
+        // left the count of paragraphs right; and counts the copy refutes that the text could
+        // hold.
+        let tools_more = format!("{TOOLS_BASH}\n\nmore");
+        for (notes, tails, tur) in [
+            (
+                &[""][..],
+                &[TOOLS_BASH, "a\n\nb"][..],
+                serde_json::json!({"content": null}),
+            ),
+            (
+                &[""][..],
+                &[tools_more.as_str()][..],
+                serde_json::json!({"content": null}),
+            ),
+            (
+                &[][..],
+                &[TOOLS_BASH, "a\n\nb"][..],
+                serde_json::json!({"harnessNoteCount": 1}),
+            ),
+        ] {
+            let jsonl = s456_agent_session(notes, tails, tur.clone());
+            assert_eq!(
+                agent_result_of(&jsonl),
+                format!("{S5_REPORT}\n\n---\n\n{}", tails.join("\n\n")),
+                "{notes:?} {tails:?} {tur}"
             );
         }
     }
