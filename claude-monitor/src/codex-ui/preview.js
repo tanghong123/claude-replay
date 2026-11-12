@@ -3,7 +3,7 @@ import { backend } from "./backend.js";
 import { sandboxDocument } from "./sandbox.js";
 import { createImageView } from "./shared/image-view.js";
 import { isMarkdownName, mdrevVersion, mountMarkdown } from "./mdrev-pane.js";
-import { besideAction, onPhone, RASTER_FILE } from "./shared/capabilities.js";
+import { besideAction, RASTER_FILE } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
 import { page, viewRoot } from "./view-root.js";
 
@@ -357,10 +357,10 @@ export class Preview {
       if (!handle) throw new Error("no mdrev");
       this.markdown = handle;
       // #335: not on a phone — the new tab is a page with no way back to the monitor.
-      this.newTab.hidden = onPhone();
+      this.newTab.hidden = this.actions.phone();
       this.newTab.setAttribute("aria-label", `Open this ${isMarkdownName(item.name) ? "document" : "file"} in a new tab`);
       // #s13: shared review is threads on a document's notes, and mdrev files no notes on code.
-      this.reviewBtn.hidden = !onPhone() || handle.held || !isMarkdownName(item.name);
+      this.reviewBtn.hidden = !this.actions.phone() || handle.held || !isMarkdownName(item.name);
       // #s30: where mdrev's toolbar offers no print of its own — a held reader (mdrev 1.1.24 prints
       // from its own Aa menu on a phone, #s31).
       this.printBtn.hidden = !isMarkdownName(item.name) || !handle.held;
@@ -470,7 +470,7 @@ export class Preview {
       // back). What the tab reads is what the pane was offered: the file by its stamp, or the
       // embedded bytes themselves.
       this.image = { item, data };
-      this.newTab.hidden = onPhone();
+      this.newTab.hidden = this.actions.phone();
       this.newTab.setAttribute("aria-label", "Open this image in a new tab");
       return;
     }

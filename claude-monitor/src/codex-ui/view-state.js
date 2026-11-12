@@ -1,5 +1,4 @@
 import { DEFAULT_READING, READING_KEY, parseReading } from "./shared/reading.js";
-import { PHONE_QUERY } from "./shared/capabilities.js";
 
 const json = (key, fallback) => {
   try { return JSON.parse(localStorage.getItem(key) || "") || fallback; }
@@ -53,11 +52,12 @@ export const createRecordState = () => ({
 /** How the view is laid out and read: the artifact pane, the outline and its panes, the in-session
  *  search, the reading options. The reader's choices among them are read from this origin's storage
  *  as the view mounts, and `persistView` writes them back. */
-export const createViewState = () => ({
+export const createViewState = ({ phone = false } = {}) => ({
   preview: false, previewTabs: [], previewId: null,
   // Until the reader chooses, the outline starts open — except on a phone (#310), where it is an
-  // overlay over most of the transcript rather than a column beside it.
-  navigatorOpen: (stored => stored === null ? !matchMedia(PHONE_QUERY).matches : stored !== "0")(localStorage.getItem("am-demo-navigator")),
+  // overlay over most of the transcript rather than a column beside it. `phone` is the view's own
+  // family as its layout decided it at mount (pane-layout.js, #s431), not the window's.
+  navigatorOpen: (stored => stored === null ? !phone : stored !== "0")(localStorage.getItem("am-demo-navigator")),
   navCards: new Set(json("am-prod-nav-cards", ["turns"])),
   // Which panes EXIST in the outline at all (#159). Distinct from `navCards`, which is whether a
   // pane that exists is open: a pane turned off here costs nothing — no body, no head, no slot,

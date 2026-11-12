@@ -15,7 +15,7 @@ import { SESSION_VIEW_MARKUP } from "./session-view-markup.js";
 import { backend, useBackend } from "./backend.js";
 import { AttachmentViewer } from "./attachment-viewer.js";
 import { bindComponentEvents, fleetHtml, pendingHeadText } from "./components.js";
-import { PHONE_QUERY, referenceAction, WIDE_PHONE_QUERY } from "./shared/capabilities.js";
+import { referenceAction } from "./shared/capabilities.js";
 import { mountPaneLayout } from "./pane-layout.js";
 import { costDisplay, reportedCostDisplay } from "./shared/cost-display.js";
 import { chainWalk, toolTree } from "./shared/filter.js";
@@ -218,8 +218,7 @@ function writeStyle(node, name, value) {
 }
 // The view's own stores, fresh for this mount (stage 7): the open session's records and how they are
 // drawn, and how the view is laid out and read, with the reader's remembered choices.
-const recordState = createRecordState(), uiState = createViewState();
-const persist = () => persistView(uiState);
+const recordState = createRecordState();
 if (options.backend) useBackend(options.backend);
 // The view builds its three parts inside its element from its own markup (stage 4), so a host's
 // page carries none of the view's markup, and draws the glyphs that markup names.
@@ -248,6 +247,10 @@ element.classList.add("sv-mounting");
 // since the first decision comes before the code that remeasures exists).
 let layoutHeard = null;
 const layout = mountPaneLayout(element, { signal, onChange: () => layoutHeard?.() });
+// How the view is laid out and read, made once the layout has decided (the outline's default is the
+// view's phone family's).
+const uiState = createViewState({ phone: layout.phone() });
+const persist = () => persistView(uiState);
 const applyTheme = theme => { element.dataset.theme = theme === "dark" ? "dark" : "light"; };
 applyTheme(options.theme);
 const { selectSession } = options;
@@ -532,7 +535,7 @@ const paneLayoutChanged = () => {
   viewport.remeasure();
 };
 layoutHeard = paneLayoutChanged;
-const preview = new Preview({ layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
+const preview = new Preview({ phone: () => layout.phone(), layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
 const attachmentViewer = new AttachmentViewer({ toast });
 // What the compose box asks of the app goes nowhere once the view is unmounted: a dialog's answer
 // still settling, a send still out.
@@ -1571,7 +1574,7 @@ function renderNavigator() {
   // #319: except on a phone, which has no way to reach that filter (it lives in the outline's
   // menu) — its Tasks drop-down lists every state, and its head jumps between them. The reader's
   // remembered choice is left as it is, for the desktop.
-  const shownGroups = matchMedia(PHONE_QUERY).matches ? new Set(TASK_GROUP_ROWS.map(g => g.key)) : uiState.taskGroupsShown;
+  const shownGroups = layout.phone() ? new Set(TASK_GROUP_ROWS.map(g => g.key)) : uiState.taskGroupsShown;
   const liveTasksOnly = !TASK_GROUP_ROWS.every(g => shownGroups.has(g.key));
   // Filter the GROUPS, never the list. Each row carries `index`, the position in `meta.tasks`,
   // and `data-task-open` hands that index straight to `openTaskPopover`, which reads the FULL
@@ -1650,7 +1653,7 @@ function renderNavigator() {
  *  `phoneAgentsFilter`), and its Tasks pane shows every state already (#319). */
 function showFilteredControl(pane, hidden) {
   const what = pane === "agents" ? `${hidden} finished ${hidden === 1 ? "agent" : "agents"}` : `${hidden} finished ${hidden === 1 ? "task" : "tasks"}`;
-  const hint = matchMedia(PHONE_QUERY).matches
+  const hint = layout.phone()
     ? ""
     : pane === "agents"
       ? "Active only, in the Outline menu, hides them again"
@@ -1663,7 +1666,7 @@ function showFilteredControl(pane, hidden) {
  *  is not empty and the emptied pane's control is not there. At the TOP of the list, which can run to
  *  149 agents. Every row here is a phone's alone: a desktop keeps the menu. */
 function phoneAgentsFilter(liveOnly, hidden, finished) {
-  if (!matchMedia(PHONE_QUERY).matches) return "";
+  if (!layout.phone()) return "";
   const what = n => `${n} finished ${n === 1 ? "agent" : "agents"}`;
   if (liveOnly) return hidden ? `<button class="agents-filter-row" type="button" data-show-filtered="agents">Show ${what(hidden)}</button>` : "";
   return finished ? `<button class="agents-filter-row" type="button" data-hide-finished="agents" aria-label="Hide the ${what(finished)}">Hide finished agents</button>` : "";
@@ -2364,12 +2367,12 @@ function fitSearchField() {
   if (input.selectionStart === input.value.length) searchField.scrollLeft = searchField.scrollWidth;
 }
 addEventListener("resize", () => fitSearchField(), { signal });
-// #310, #313: on a phone (`PHONE_QUERY`, the shell's one breakpoint; #s32 a landscape phone too) the search box is an icon with its
+// #310, #313: on a phone (the view's phone family, `PHONE_QUERY` read from its own classes, #s431; #s32 a landscape phone too) the search box is an icon with its
 // input hidden. A tap on it OPENS it across the bar's second row, and it stays open until a tap lands outside the search's own
 // surfaces (the box, the drop-down, the filter popover) or Escape — never on blur, since a touch
 // browser does not focus a tapped button and the steps would vanish under the finger. The query,
 // its count and its marks outlive the box closing, as they outlive a blur on a wider window.
-const phoneSearch = matchMedia(PHONE_QUERY), searchBox = viewRoot.$(".header-searchbox");
+const phoneSearch = layout.query("phone"), searchBox = viewRoot.$(".header-searchbox");
 function setPhoneSearch(open) {
   if (!open && byId("navigatorOptions").classList.contains("open")) setPopover(null);
   searchBox.classList.toggle("phone-open", open && phoneSearch.matches);
@@ -3779,7 +3782,7 @@ var sessionLoading;
   };
 }
 
-// #313 — the phone shell (the owner: "it does not feel native at all"). One breakpoint, `PHONE_QUERY` (760px, or a landscape phone, #s32):
+// #313 — the phone shell (the owner: "it does not feel native at all"). One breakpoint, the view's phone family (`PHONE_QUERY` read from its own classes, #s431: 760px, or a landscape phone, #s32):
 //  - The session list is a DRAWER over part of the session view, never all of it. A handle fixed at
 //    the top left opens and closes it, and stays where it is either way — it is a sibling of the
 //    drawer in #app, not inside the top bar, whose layer sits under the drawer. A tap on the dimmed
@@ -3798,8 +3801,8 @@ var mobileShell;
 var infoPopoverToggle;
 var phoneDock;
 {
-  const PHONE = matchMedia(PHONE_QUERY);
-  const WIDE = matchMedia(WIDE_PHONE_QUERY);
+  const PHONE = layout.query("phone");
+  const WIDE = layout.query("wide");
   const topbar = viewRoot.$(".topbar");
 
   const info = document.createElement("button");
