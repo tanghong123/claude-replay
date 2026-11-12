@@ -18063,6 +18063,18 @@ fn a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_wh
     )
     .as_i64()
     .unwrap_or(9999);
+    // The shut right pane is off the screen, not over the session's right (#s431 stage 2: it takes
+    // the view's width, so it moves from the view's edge).
+    let shut = harness::eval(
+        &tab,
+        "Math.round(document.getElementById('preview').getBoundingClientRect().left) - innerWidth",
+    )
+    .as_i64()
+    .unwrap_or(-1);
+    assert!(
+        shut >= 0,
+        "the shut right pane lies past the screen's right edge, {shut}px beyond it"
+    );
     // The handle by the title wears the sidebar glyph; the Sessions tab does not.
     assert_eq!(
         harness::eval(&tab, "!!document.querySelector('#drawerHandle svg rect') && !document.querySelector('#columnSwitch [data-column-tab=sessions] svg rect')"),

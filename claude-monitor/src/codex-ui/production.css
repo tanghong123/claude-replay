@@ -1822,7 +1822,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
   #sessionView:not(.preview-off) .reading-cluster>.reading-options,#sessionView:not(.preview-off) .phone-pane-menu:not([hidden]){right:calc(50% + 12px)}
   #app:not(.phone-column-off):not(.preview-off)>:where(.session-view)>.workspace{width:auto}
-  #app:not(.phone-column-off):not(.preview-off)>:where(.session-view)>.preview{left:calc(var(--sidebar) + env(safe-area-inset-left,0px))}
+  /* The pane covers the view, beside the column, shut as well as open: the view's own rule gives it the
+     view's width at the screen's left edge, so shut (moved its width to the right) it stayed partly on
+     the screen, over the top bar's Info and the session, where the column shows (#s431 stage 2). */
+  #app:not(.phone-column-off)>:where(.session-view)>.preview{left:calc(var(--sidebar) + env(safe-area-inset-left,0px))}
   #app:not(.phone-column-off):not(.preview-off) .phone-dock{display:none}
   /* The handle by the title stays reachable over the pane (it hides the list, which turns the pane
      into the second column), the pane's head making room for it; at the whole screen it waits. */

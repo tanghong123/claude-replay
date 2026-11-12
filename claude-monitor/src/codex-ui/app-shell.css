@@ -609,7 +609,7 @@ input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea,select{f
 }
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
 #app:not(.phone-column-off):not(.preview-off)>:where(.session-view)>.workspace{width:auto}
-#app:not(.phone-column-off):not(.preview-off)>:where(.session-view)>.preview{left:calc(var(--sidebar) + env(safe-area-inset-left,0px))}
+#app:not(.phone-column-off)>:where(.session-view)>.preview{left:calc(var(--sidebar) + env(safe-area-inset-left,0px))}
 #app:not(.phone-column-off):not(.preview-off) .phone-dock{display:none}
 #app:not(.phone-column-off):not(.preview-off):not(.preview-full) .drawer-handle{z-index:56}
 #app:not(.phone-column-off):not(.preview-off):not(.preview-full)>:where(.session-view)>.preview .preview-head{padding-left:52px}
