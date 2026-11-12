@@ -58,6 +58,12 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  id the view's stylesheet hangs every rule on; one with another id is refused. The view always
  *  draws into the page (#s438): no shadow root.
  *
+ *  The element is the view's box (#s431, the owner's choice on #s464): the host gives it a place and
+ *  a size and styles nothing else of it. The view lays its parts out inside it; its display, its grid,
+ *  its containment and its glides are the view's, at the id's weight, which a host's rule on the
+ *  element by class or tag does not reach. To hide the view, set the element's `hidden` attribute, or
+ *  hide what holds it.
+ *
  *  A host's page carries nothing of the view's: no markup, no element the view binds by id, and no
  *  store (stage 7: the view makes its own as it mounts, view-state.js).
  *
