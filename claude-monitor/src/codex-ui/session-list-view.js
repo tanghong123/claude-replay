@@ -175,6 +175,13 @@ const markup = document.createElement("template");
 markup.innerHTML = SESSION_LIST_MARKUP;
 const built = id => markup.content.querySelector(`#${id}`);
 const tree = built("tree");
+// The list's own width (#s431 stage 2, design/pane-layout.md): narrower than the app's minimum
+// sidebar, 232px, its rows are compact, the flat list naming no project and a session's indent
+// narrower. The app never draws it so; on the app's rail the tree is hidden and the class is not set.
+const fitWidth = () => sessionList.classList.toggle("pl-max-w-231", tree.getBoundingClientRect().width > 0 && sessionList.getBoundingClientRect().width < 232);
+const widthWatch = new ResizeObserver(fitWidth);
+widthWatch.observe(sessionList);
+widthWatch.observe(tree);
 const collapseBtn = built("collapseBtn");
 const railMarks = built("sidebarMiniAgents");
 element.append(tree);
@@ -1105,6 +1112,7 @@ return fenced({
     unmounted = true;
     sessionIndex.stop();
     life.abort();
+    widthWatch.disconnect();
     for (const id of timers) globalThis.clearTimeout(id);
     timers.clear();
     for (const node of [controls, filterSheet, filterMini, railMarks, railFlyout, sectionMenu, sectionScrim, insetProbe]) node?.remove();

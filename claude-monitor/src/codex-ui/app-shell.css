@@ -188,9 +188,6 @@ body{padding:0;background:#eef1f4}
 .work-copy small{display:block;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--faint);font-size:9px}
 .work-tail{color:var(--faint);font:8.5px var(--mono);padding-top:2px}
 .work-task.open .work-children{display:block}
-@media(max-width:1180px){
-.app:not(.preview-off) .preview{z-index:55}
-}
 :root{--navigator:268px}
 .navigator-list{width:100%;min-width:0;max-width:100%}
 .navigator-list{overflow-x:hidden;overflow-y:auto}
@@ -347,11 +344,8 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 :root[data-theme="dark"]{color-scheme:dark}
 #app{grid-template-columns:var(--sidebar) minmax(0,1fr)}
 #app.sidebar-off{grid-template-columns:64px minmax(0,1fr)}
-#app.sidebar-off>.session-view{grid-template-columns:minmax(480px,1fr) 1px var(--preview,420px)}
-#app.sidebar-off>.session-view.preview-off{grid-template-columns:minmax(480px,1fr) 0 0}
 @media(max-width:700px){
 #app.sidebar-off{grid-template-columns:0 minmax(0,1fr)}
-#app.sidebar-off>.session-view,#app.sidebar-off>.session-view.preview-off{grid-template-columns:minmax(0,1fr)}
 }
 @media(max-width:1180px){
 #app{transition:none}
@@ -545,6 +539,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .drawer-handle{display:grid;place-items:center;position:fixed;z-index:22;left:4px;top:calc(env(safe-area-inset-top,0px) + 2px);width:44px;height:44px;border-radius:10px;background:transparent;color:var(--ink);cursor:pointer}
 .drawer-handle:focus-visible{background:var(--hover)}
 .drawer-handle .icon{width:22px;height:22px}
+#app #sessionView .workspace>.topbar{padding-left:calc(50px + env(safe-area-inset-left,0px))}
 #app .side-head{height:auto;min-height:52px;padding-left:52px}
 #app .side-head .iconbtn{width:40px;height:44px}
 #app .section-view-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:59;background:transparent}
@@ -571,7 +566,6 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea,select{font-size:16px!important}
 }
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){
-#app{--phone-dock-h:calc(64px + env(safe-area-inset-bottom,0px));--phone-glass:color-mix(in srgb,var(--bg) 78%,transparent)}
 :is(#sessionView,#app) button{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 .toast{bottom:calc(max(calc(64px + env(safe-area-inset-bottom,0px)),calc(var(--phone-kb,0px) + 64px)) + 10px)}
 }
@@ -605,25 +599,13 @@ input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea,select{f
 .column-switch .iconbtn.on .column-switch-count{background:var(--bg)}
 .column-switch-count:empty{display:none}
 #app:not(.phone-column-off) .drawer-handle{left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 4px)}
-#app:not(.phone-column-off) .workspace>.topbar{padding-left:6px}
+#app:not(.phone-column-off) #sessionView .workspace>.topbar{padding-left:50px}
 #app:not(.phone-column-off) .transcript{padding-left:0}
 #app.column-pane-on:not(.phone-column-off) .column-pane{display:block}
 #app.column-pane-on>.sidebar>.nav,#app.column-pane-on>.sidebar>:where(.session-list)>.tree,#app.column-pane-on>.sidebar>:where(.session-list)>.arrange-strip{display:none}
 #app.column-pane-on .side-head .head-actions>.session-list-controls{display:none}
 }
-@media(pointer:coarse) and (max-height:500px){
-#app:not(.preview-off)>:where(.session-view)>.workspace{width:50%}
-#app:not(.preview-off)>:where(.session-view)>.preview{left:50%;right:0;width:auto;padding-left:0;box-shadow:-1px 0 0 var(--line)}
-#app:not(.preview-off) .transcript{padding-right:0}
-#app:not(.preview-off) .workspace>.topbar{padding-right:6px}
-#app:not(.preview-off) .phone-dock{right:calc(50% + 12px)}
-#app:not(.preview-off) .workspace .composer.production-show{right:calc(50% + 12px)}
-#app:not(.preview-off) .header-search-cluster>.navigator-options,#app:not(.preview-off) .header-search-cluster>.search-suggest{right:calc(50% + 12px);width:min(380px,calc(50% - 24px - env(safe-area-inset-left,0px)))}
-#app:not(.preview-off) .info-popover{right:calc(50% + 8px);width:min(420px,calc(50% - 16px - env(safe-area-inset-left,0px)))}
-#app:not(.preview-off) .reading-cluster>.reading-options,#app:not(.preview-off) .phone-pane-menu:not([hidden]){width:min(380px,calc(50% - 24px - env(safe-area-inset-left,0px)))}
-}
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
-#app:not(.preview-off) .reading-cluster>.reading-options,#app:not(.preview-off) .phone-pane-menu:not([hidden]){right:calc(50% + 12px)}
 #app:not(.phone-column-off):not(.preview-off)>:where(.session-view)>.workspace{width:auto}
 #app:not(.phone-column-off):not(.preview-off)>:where(.session-view)>.preview{left:calc(var(--sidebar) + env(safe-area-inset-left,0px))}
 #app:not(.phone-column-off):not(.preview-off) .phone-dock{display:none}
@@ -635,10 +617,6 @@ input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea,select{f
 @media(pointer:coarse) and (max-height:500px){
 #app.preview-full:not(.preview-off) .drawer-handle{display:none}
 #app:has(.reading-cluster>.reading-options.open,.header-search-cluster>.navigator-options.open,.header-search-cluster>.search-suggest:not([hidden]))>.drawer-handle{z-index:13}
-}
-@media(min-width:761px) and (max-width:1180px) and (min-height:501px),(min-width:761px) and (max-width:1180px) and (pointer:fine){
-.app:not(.preview-off)>:where(.session-view)>.preview{left:calc(var(--sidebar) + 10px);width:auto}
-.app.sidebar-off:not(.preview-off)>:where(.session-view)>.preview{left:10px}
 }
 :root{--peer:#2b6f8e}
 :root[data-theme="dark"]{--peer:#7ab8d6}

@@ -1377,8 +1377,27 @@ mod tests {
                 }
             }
         }
+        // The session view lays itself out by its own size and the screen's pointer (#s431 stage 2,
+        // design/pane-layout.md): its sheet asks no size query, and reads a phone as the classes
+        // pane-layout.js sets, which the node contract holds to the old query exactly.
+        let view = body("monitor-ui/session-view.css");
+        for prelude in view
+            .split("@media")
+            .skip(1)
+            .map(|rest| rest.split('{').next().unwrap())
+        {
+            assert!(
+                !prelude.contains("width") && !prelude.contains("height"),
+                "session-view.css asks the window `{}`, where it reads its own size",
+                prelude.trim()
+            );
+        }
         assert!(
-            phones >= 15 && wides >= 8 && wide_phones >= 1,
+            view.matches(":where(.pl-max-w-760,.pl-coarse.pl-max-h-500)").count() >= 100,
+            "session-view.css reads a phone as the layout module's classes"
+        );
+        assert!(
+            phones >= 10 && wides >= 2 && wide_phones >= 1,
             "read the stylesheets: {phones} phone rules, {wides} wide ones, {wide_phones} for a wide phone"
         );
     }

@@ -49,7 +49,8 @@
 .native-project-new>.icon{width:15px;height:15px}
 .native-project-add:hover,.native-project-new:hover{background:var(--hover);color:var(--ink)}
 .native-project-add:focus-visible,.native-project-new:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
-@media(max-width:760px),(pointer:coarse) and (max-height:500px){.native-project-add,.native-project-new{width:44px;height:44px}.agent-label:has(.native-project-add){min-height:44px}.tree-row.project:has(.native-project-new){min-height:44px}}
+/* The list's project actions are touch targets on any touch screen, as its rows are (#s431 stage 2). */
+@media(pointer:coarse){.native-project-add,.native-project-new{width:44px;height:44px}.agent-label:has(.native-project-add){min-height:44px}.tree-row.project:has(.native-project-new){min-height:44px}}
 @media(prefers-reduced-motion:reduce){.native-project-add,.native-project-new{transition:none}}
 
 /* Stopping an owned server also disconnects Codex App: disclose that before the request. */

@@ -1,12 +1,15 @@
-// The session view's one layout decision (#s431 stage 2, design/pane-layout.md, "One decision, read
-// by styles and scripts"). The view is laid out by the pane a host gives it, not by the window: every
-// rule its sources wrote under a width query now reads a class this module sets on the view's
-// element (the derivation rewrites `(max-width:1180px)` as `pl-max-w-1180`, scripts/session-view-css.mjs),
-// and the view's scripts ask `phone()` here rather than matching `PHONE_QUERY` themselves.
+// The session view's one layout decision (#s431 stage 2, design/pane-layout.md, "Its own size, and
+// touch" and "One decision, read by styles and scripts"). The view is laid out by its own box and the
+// screen's pointer, never by the window or by what a host has beside it (the owner's ruling, #s461):
+// every rule its sources wrote under a size query reads a class this module sets on the view's element
+// (the derivation rewrites `(max-width:1180px)` as `pl-max-w-1180`, scripts/session-view-css.mjs), and
+// the view's scripts ask `phone()` here rather than matching `PHONE_QUERY` themselves.
 //
-// A width class reads the view's EFFECTIVE width, `effectiveWidth`. Every other feature a width query
-// carried (a short screen, a coarse pointer) still reads the screen, as it did: its class mirrors the
-// browser's own answer to that feature, through `matchMedia`, so it is exact by construction.
+// The view is a phone (`pl-phone`) when it is 460px wide or less, or a touch screen's view 500px tall or
+// less. A width class reads `B`, the width the bands read: the view's own inside that family, where a
+// phone's view is its screen, and 300px more outside it, since the stylesheets' numbers were windows
+// with the default 300px sidebar beside the view. A height class reads the view's height; a pointer
+// class mirrors the screen's, through `matchMedia`.
 
 /** Every class the view's rules read, as the derivation reports them (`report.layoutClasses`): the
  *  contract holds the two to one list. */
@@ -18,20 +21,9 @@ export const LAYOUT_CLASSES = Object.freeze([
 
 const SHAPE = /^pl-(max|min)-(w|h)-(\d+)$/;
 
-/** The media feature a class stands for: `pl-max-w-760` is `(max-width:760px)`. */
-export function featureOf(name) {
-  if (name === "pl-coarse") return "(pointer:coarse)";
-  if (name === "pl-fine") return "(pointer:fine)";
-  const m = SHAPE.exec(name);
-  if (!m) throw new Error(`pane-layout: no feature for ${name}`);
-  return `(${m[1]}-${m[2] === "w" ? "width" : "height"}:${m[3]}px)`;
-}
-
-/** Whether a class reads the effective width (and not the screen). */
-export const readsWidth = name => SHAPE.test(name) && SHAPE.exec(name)[2] === "w";
-
-/** Whether a class holds for a width, a screen height and a pointer: the rule the page applies, kept
- *  pure so the contract can check it against the media queries it replaced. */
+/** Whether a class holds for a band width `width` (`B`), the view's `height` and the screen's pointer:
+ *  the rule the page applies, kept pure so the contract can check it against the media queries it
+ *  replaced. */
 export function holds(name, { width, height, coarse, fine }) {
   if (name === "pl-coarse") return !!coarse;
   if (name === "pl-fine") return !!fine;
@@ -41,56 +33,68 @@ export function holds(name, { width, height, coarse, fine }) {
   return m[1] === "max" ? value <= Number(m[3]) : value >= Number(m[3]);
 }
 
-/** The families the view's scripts ask about, each a query the stylesheets used, read from the
- *  classes. `phone` is `PHONE_QUERY`: an effective width of 760px or less, or a coarse pointer on a
- *  screen 500px tall or less (a phone held sideways). `wide` is `WIDE_PHONE_QUERY`: a phone held
- *  sideways whose effective width is 900px or more. */
-const FAMILIES = {
-  phone: has => has("pl-max-w-760") || (has("pl-coarse") && has("pl-max-h-500")),
-  wide: has => has("pl-coarse") && has("pl-max-h-500") && has("pl-min-w-900"),
-};
-export const isPhone = sample => FAMILIES.phone(name => holds(name, sample));
-export const isWidePhone = sample => FAMILIES.wide(name => holds(name, sample));
+/** Whether a view of `width` × `height` on a screen whose pointer is `coarse` is a phone. */
+export const isPhone = ({ width, height, coarse }) => width <= 460 || (!!coarse && height <= 500);
 
-/** The width the view's rules read. Waits on the owner's decision (#s431's #s461): what a host has
- *  beside the view. Until then it is the view's own width and the 300px the app's sidebar has by
- *  default, which is the window at the default sidebar on a desktop, and nowhere else. */
-export function effectiveWidth(element) {
-  return element.getBoundingClientRect().width + 300;
+/** The width the bands read for that view: its own on a phone, 300px more elsewhere. */
+export const bandWidth = view => (isPhone(view) ? view.width : view.width + 300);
+
+/** Whether that view is a wide phone held sideways (`WIDE_PHONE_QUERY` as the view reads it): a short
+ *  touch view 900px wide or more. */
+export const isWidePhone = view => isPhone(view) && !!view.coarse && view.height <= 500 && view.width >= 900;
+
+/** The classes a view of that size holds, `pl-phone` among them. */
+export function classesFor(view) {
+  const sample = { ...view, width: bandWidth(view) };
+  const on = new Set(LAYOUT_CLASSES.filter(name => holds(name, sample)));
+  if (isPhone(view)) on.add("pl-phone");
+  return on;
 }
 
-/** Decide now and again whenever the view's box or the screen changes: the classes on `element`,
- *  `pl-phone` with them, and `--pl-e`. `onChange` hears every decision that changed a class, after it
- *  is written. `query(family)` answers as a `MediaQueryList` does (`matches`, a `change` event), so a
- *  script that matched `PHONE_QUERY` asks the view's family instead by one name. Everything bound
- *  here ends with `signal`. */
+/** Decide now and again whenever the view's box, the screen's pointer or the window's size changes:
+ *  the classes on `element`, `pl-phone` with them, and the lengths its rules read (`--pl-b`, `--pl-w`,
+ *  `--pl-h`, `--pane-x`, `--pl-vh`, `--pl-dvh`). `onChange` hears every decision
+ *  that changed a class, after it is written. `query(family)` answers as a `MediaQueryList` does
+ *  (`matches`, a `change` event), so a script that matched `PHONE_QUERY` asks the view's family instead
+ *  by one name. Everything bound here ends with `signal`. */
 export function mountPaneLayout(element, { signal, onChange } = {}) {
-  const screens = new Map(LAYOUT_CLASSES.filter(name => !readsWidth(name)).map(name => [name, matchMedia(featureOf(name))]));
+  const coarse = matchMedia("(pointer:coarse)"), fine = matchMedia("(pointer:fine)");
   const events = new EventTarget();
-  const family = Object.fromEntries(Object.keys(FAMILIES).map(name => [name, false]));
+  const family = { phone: false, wide: false };
   let said = null;
   const decide = () => {
     if (signal?.aborted) return;
-    const width = effectiveWidth(element);
-    const on = new Set(LAYOUT_CLASSES.filter(name => (readsWidth(name) ? holds(name, { width }) : screens.get(name).matches)));
+    const box = element.getBoundingClientRect();
+    const view = { width: box.width, height: box.height, coarse: coarse.matches, fine: fine.matches };
+    const on = classesFor(view);
     const was = { ...family };
-    for (const [name, rule] of Object.entries(FAMILIES)) family[name] = rule(c => on.has(c));
-    if (family.phone) on.add("pl-phone");
+    family.phone = on.has("pl-phone");
+    family.wide = isWidePhone(view);
     for (const name of [...LAYOUT_CLASSES, "pl-phone"]) element.classList.toggle(name, on.has(name));
-    element.style.setProperty("--pl-e", `${width}px`);
+    element.style.setProperty("--pl-b", `${bandWidth(view)}px`);
+    element.style.setProperty("--pl-w", `${box.width}px`);
+    element.style.setProperty("--pl-h", `${box.height}px`);
+    element.style.setProperty("--pane-x", `${box.left}px`);
+    // A share of the height is the window's own unit while the view is as tall as the window (always
+    // in the app), so iPhone Safari's `dvh`, which follows its bars, still does; else the view's.
+    // The window is read here for that alone, never for a layout decision.
+    const tall = box.height >= Math.min(innerHeight, document.documentElement.clientHeight) - 2;
+    element.style.setProperty("--pl-vh", tall ? "1vh" : `${box.height / 100}px`);
+    element.style.setProperty("--pl-dvh", tall ? "1dvh" : `${box.height / 100}px`);
     const key = [...on].sort().join(" ");
     if (key === said) return;
     said = key;
     onChange?.();
-    for (const name of Object.keys(FAMILIES)) if (family[name] !== was[name]) events.dispatchEvent(new Event(name));
+    for (const name of Object.keys(family)) if (family[name] !== was[name]) events.dispatchEvent(new Event(name));
   };
   decide();
   const observer = new ResizeObserver(decide);
   observer.observe(element);
-  for (const query of screens.values()) query.addEventListener("change", decide, { signal });
+  for (const query of [coarse, fine]) query.addEventListener("change", decide, { signal });
+  addEventListener("resize", decide, { signal });
   signal?.addEventListener("abort", () => observer.disconnect(), { once: true });
   const query = name => {
-    if (!(name in FAMILIES)) throw new Error(`pane-layout: no family named ${name}`);
+    if (!(name in family)) throw new Error(`pane-layout: no family named ${name}`);
     return {
       get matches() { return family[name]; },
       addEventListener: (type, listener, options) => { if (type === "change") events.addEventListener(name, listener, options); },

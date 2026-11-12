@@ -130,15 +130,17 @@ let droppedAttention = "";
   assert.equal(read("session-view.css"), derived.view, "session-view.css is derived from reference.css and production.css (run scripts/extract-agent-monitor-demo.mjs)");
   assert.equal(read("app-shell.css"), derived.app, "app-shell.css is derived from reference.css and production.css (run scripts/extract-agent-monitor-demo.mjs)");
   assert.equal(read("session-list.css"), derived.list, "session-list.css is derived from reference.css and production.css (run scripts/extract-agent-monitor-demo.mjs)");
-  // #s431 stage 2: the view's rules under a width query read classes pane-layout.js sets instead. The
-  // module sets exactly the classes the rules read; and with the effective width standing for the
-  // window, every rewritten query matches exactly where its classes hold, at each threshold and either
-  // side of it, on a short and a tall screen, with a coarse and a fine pointer. The query is read here
-  // on its own, as a browser would read it, not through the derivation's table.
+  // #s431 stage 2: the view's rules under a size query read classes pane-layout.js sets instead, from
+  // the view's own box (the owner's ruling, #s461). The module sets exactly the classes the rules
+  // read. With `B` (the width the bands read) standing for the window's width and the view's height
+  // for the window's height, every rewritten query matches exactly where its classes hold, at each
+  // threshold and either side of it, with a coarse and a fine pointer; the query is read here on its
+  // own, as a browser would read it, not through the derivation's table. And the view's family is the
+  // old phone query read at `B`: a view of 460px or less, or a touch view of 500px tall or less.
   {
     const layout = await import("../../claude-monitor/src/codex-ui/pane-layout.js");
     assert.deepEqual([...layout.LAYOUT_CLASSES].sort(), derived.report.layoutClasses, "pane-layout.js sets exactly the classes the view's rules read");
-    assert.ok(!/@media[^{]*(?:width)/.test(derived.view), "no view rule is left under a width query");
+    assert.ok(!/@media[^{]*(?:width|height)/.test(derived.view), "no view rule is left under a size query");
     const matchesQuery = (prelude, s) => prelude.replace(/^@media\s*/, "").split(",").some(query => {
       const features = query.match(/\([^()]*\)/g) || [];
       assert.equal(query.replace(/\([^()]*\)/g, "").replace(/\band\b/g, "").trim(), "", `a plain query: ${query}`);
@@ -150,18 +152,30 @@ let droppedAttention = "";
         throw new Error(`a feature this check does not read: ${f}`);
       });
     });
-    const numbers = name => (/(\d+)$/.exec(name) || [])[1];
-    const widths = [...new Set(derived.report.layoutClasses.filter(layout.readsWidth).flatMap(n => [+numbers(n) - 1, +numbers(n), +numbers(n) + 1]))].concat([320, 1600]);
-    const samples = widths.flatMap(width => [499, 500, 501, 502, 900].flatMap(height => [true, false].map(coarse => ({ width, height, coarse, fine: !coarse }))));
-    assert.ok(derived.report.widthQueries.length >= 15, `the width queries the view's rules stood under: ${derived.report.widthQueries.length}`);
-    for (const { prelude, alternatives } of derived.report.widthQueries) for (const s of samples) {
+    const around = axis => [...new Set(derived.report.layoutClasses.filter(n => new RegExp(`-${axis}-\\d+$`).test(n)).flatMap(n => { const v = +/(\d+)$/.exec(n)[1]; return [v - 1, v, v + 1]; }))];
+    const widths = around("w").concat([320, 1600]), heights = around("h").concat([900]);
+    const samples = widths.flatMap(width => heights.flatMap(height => [true, false].map(coarse => ({ width, height, coarse, fine: !coarse }))));
+    assert.ok(derived.report.sizeQueries.length >= 15, `the size queries the view's rules stood under: ${derived.report.sizeQueries.length}`);
+    for (const { prelude, alternatives } of derived.report.sizeQueries) for (const s of samples) {
       const byClasses = alternatives.some(classes => classes.every(name => layout.holds(name, s)));
       assert.equal(byClasses, matchesQuery(prelude, s), `${prelude} at ${JSON.stringify(s)}: the classes ${JSON.stringify(alternatives)}`);
     }
     const phoneQuery = "@media(max-width:760px),(pointer:coarse) and (max-height:500px)";
-    for (const s of samples) assert.equal(layout.isPhone(s), matchesQuery(phoneQuery, s), `the phone family at ${JSON.stringify(s)}`);
     const capabilities = await import("../../claude-replay-html/src/html/shared/capabilities.js");
-    assert.equal(`@media${capabilities.PHONE_QUERY}`.replace(/\s+/g, ""), phoneQuery.replace(/\s+/g, ""), "isPhone reads the shared PHONE_QUERY");
+    assert.equal(`@media${capabilities.PHONE_QUERY}`.replace(/\s+/g, ""), phoneQuery.replace(/\s+/g, ""), "the old phone query is the shared PHONE_QUERY");
+    // Views: either side of the family's edge, of each band less 300, and of each band itself.
+    const viewWidths = [...new Set(widths.flatMap(w => [w, w - 300]).concat([459, 460, 461]).filter(w => w > 0))];
+    for (const width of viewWidths) for (const height of heights) for (const coarse of [true, false]) {
+      const view = { width, height, coarse, fine: !coarse };
+      const B = layout.bandWidth(view);
+      assert.equal(layout.isPhone(view), width <= 460 || (coarse && height <= 500), `the family at ${JSON.stringify(view)}`);
+      assert.equal(B, layout.isPhone(view) ? width : width + 300, `B at ${JSON.stringify(view)}`);
+      assert.equal(layout.isPhone(view), matchesQuery(phoneQuery, { ...view, width: B }), `the old phone query at B reads the family at ${JSON.stringify(view)}`);
+      const on = layout.classesFor(view);
+      assert.equal(on.has("pl-phone"), layout.isPhone(view), `pl-phone at ${JSON.stringify(view)}`);
+      for (const name of layout.LAYOUT_CLASSES) assert.equal(on.has(name), layout.holds(name, { ...view, width: B }), `${name} at ${JSON.stringify(view)}`);
+      assert.equal(layout.isWidePhone(view), matchesQuery("@media(pointer:coarse) and (max-height:500px) and (min-width:900px)", { ...view, width: B }), `the wide phone at ${JSON.stringify(view)}`);
+    }
   }
   // #s430 stage 3: the app's file takes one rewrite, the demo's two rules naming the tree as the
   // sidebar's child, which go on through the list's element at the same weight.
@@ -4673,10 +4687,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(calls.filter(call => !/\bsignal \}\)$/.test(call)), [], "every one carries the list's signal");
   assert.match(body, /^const life = new AbortController\(\), signal = life\.signal;$/m, "the list's lifetime is one signal");
   for (const name of ["setTimeout", "clearTimeout"]) assert.match(body, new RegExp(`^const ${name} = `, "m"), `the list keeps every timer it starts (${name})`);
-  assert.doesNotMatch(body, /\b(?:setInterval|requestAnimationFrame|ResizeObserver|MutationObserver)\(/, "and starts nothing else it would not keep");
+  assert.doesNotMatch(body, /\b(?:setInterval|requestAnimationFrame|MutationObserver)\(/, "and starts nothing else it would not keep");
+  assert.deepEqual(body.match(/\bResizeObserver\(/g), ["ResizeObserver("], "but the one observer of its own width (#s431 stage 2)");
+  assert.match(body, /^const widthWatch = new ResizeObserver\(fitWidth\);$/m, "which it keeps");
   const unmount = /^  unmount\(\) \{\n[\s\S]*?\n  \},\n/m.exec(body);
   assert.ok(unmount, "the handle has an unmount");
-  for (const step of ["if (unmounted) return;", "unmounted = true;", "sessionIndex.stop();", "life.abort();", "globalThis.clearTimeout(id)", "for (const node of [controls, filterSheet, filterMini, railMarks, railFlyout, sectionMenu, sectionScrim, insetProbe]) node?.remove();", "element.replaceChildren();", "element.removeAttribute(name)", "for (const [name, value] of elementBefore) element.setAttribute(name, value);"]) {
+  for (const step of ["if (unmounted) return;", "unmounted = true;", "sessionIndex.stop();", "life.abort();", "widthWatch.disconnect();", "globalThis.clearTimeout(id)", "for (const node of [controls, filterSheet, filterMini, railMarks, railFlyout, sectionMenu, sectionScrim, insetProbe]) node?.remove();", "element.replaceChildren();", "element.removeAttribute(name)", "for (const [name, value] of elementBefore) element.setAttribute(name, value);"]) {
     assert.ok(unmount[0].includes(step), `the unmount does ${step}`);
   }
   assert.match(body, /^const elementBefore = \[\.\.\.element\.attributes\]\.map\(attribute => \[attribute\.name, attribute\.value\]\);\n(?:\/\/[^\n]*\n)*element\.id = "sessionList";$/m, "the element's attributes are read before the list writes any");

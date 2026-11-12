@@ -25,17 +25,13 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 @media(max-width:1180px){
   #sessionView,#sessionView.preview-off{grid-template-columns:minmax(0,1fr)}
 }
-/* The app's grid holds the list and the view (#s431 stage 1), over reference.css's four tracks. The
-   rail's rule comes after reference.css's 1180px one, so on the rail the view keeps its three
-   tracks at every width: the session's floor, and an empty column under the open pane, which stage 2
-   takes away. A phone's `.app` is a block, where the view takes the whole height. */
+/* The app's grid holds the list and the view (#s431 stage 1), over reference.css's four tracks; the
+   view lays its own tracks out by its own width (stage 2), on the rail as beside the sidebar. A
+   phone's `.app` is a block, where the view takes the whole height. */
 #app{grid-template-columns:var(--sidebar) minmax(0,1fr)}
 #app.sidebar-off{grid-template-columns:64px minmax(0,1fr)}
-#app.sidebar-off>.session-view{grid-template-columns:minmax(480px,1fr) 1px var(--preview,420px)}
-#app.sidebar-off>.session-view.preview-off{grid-template-columns:minmax(480px,1fr) 0 0}
 @media(max-width:700px){
   #app.sidebar-off{grid-template-columns:0 minmax(0,1fr)}
-  #app.sidebar-off>.session-view,#app.sidebar-off>.session-view.preview-off{grid-template-columns:minmax(0,1fr)}
 }
 /* At 1180px and below the list and the rail swap at once, as they did when the list's grid there had
    two tracks and the rail's four, which no transition joins; above it they glide, as before. */
@@ -315,6 +311,13 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
 .tree-project{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #sessionList.sessions-flat .tree-row.session.is-member{padding-left:30px}
 #sessionList.sessions-flat .tree-row.session.is-side{padding-left:calc(16px + var(--side-depth,1) * 14px)}
+/* A list narrower than the app's minimum sidebar (#s431 stage 2, design/pane-layout.md; the list sets
+   `pl-max-w-231` from its own width, a host's narrow column, never the app's): the flat list keeps a
+   session's agent and drops its project, and the tree's indents are 12px narrower. */
+#sessionList.pl-max-w-231 .tree-context .tree-project{display:none}
+#sessionList.pl-max-w-231:not(.sessions-flat):not(.sessions-arranged) .tree-row.session:not(.flat){padding-left:32px}
+#sessionList.pl-max-w-231:not(.sessions-flat):not(.sessions-arranged) .tree-row.session.is-member{padding-left:50px}
+#sessionList.pl-max-w-231:not(.sessions-flat):not(.sessions-arranged) .tree-row.session.is-side{padding-left:calc(36px + var(--side-depth,1) * 14px)}
 /* Flat, Collapse and Expand every group go: the list marks the two (`data-flat`), wherever they are
    placed, since the sidebar's head is outside its element (#s430 stage 3). */
 :is(#collapseBtn,#expandBtn)[data-flat]{display:none}
@@ -1365,6 +1368,16 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      focused field (the search box zoomed the page and pushed the filter off the edge). */
 .drawer-handle,.drawer-scrim,.pane-scrim,.phone-only,.phone-pane-menu,.task-scrim,.phone-dock,.turn-subtitle{display:none}
 @media(max-width:760px) and (hover:hover){.drawer-handle:hover{background:var(--hover)}}
+/* The list's rows are touch targets on a touch screen, wherever the list is drawn (#s431 stage 2,
+   design/pane-layout.md): a finger needs 44px in an iPad's sidebar as in a phone's drawer, and a
+   mouse in a narrow desktop window keeps the desktop's rows. An arranged section's glyph and the
+   line's ✕ are 44px targets in the 44px head. */
+@media(pointer:coarse){
+  #sessionList .tree-row.session,#sessionList .tree-row.project,#sessionList .agent-label{min-height:44px}
+  #sessionList .arranged-view{width:44px;height:44px;margin-top:-10px;margin-bottom:-10px}
+  #sessionList .arranged-view .icon{width:18px;height:18px}
+  #sessionList .arrange-strip-close{width:44px;height:44px;margin:-10px -6px -10px 0}
+}
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){
   :root{--sidebar:min(86vw,360px)}
   #app>.sidebar{right:auto;width:min(86vw,360px);background:var(--side);box-shadow:1px 0 0 var(--line),14px 0 36px -20px rgba(20,26,40,.5)}
@@ -1376,16 +1389,17 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   .drawer-handle{display:grid;place-items:center;position:fixed;z-index:22;left:4px;top:calc(env(safe-area-inset-top,0px) + 2px);width:44px;height:44px;border-radius:10px;background:transparent;color:var(--ink);cursor:pointer}
   .drawer-handle:focus-visible{background:var(--hover)}
   .drawer-handle .icon{width:22px;height:22px}
+  /* The handle sits over the top bar's first 44px, whatever layout the view draws there (#s431 stage
+     2, design/pane-layout.md): the room is the app's, given while its handle shows, so a view in a
+     host keeps its whole bar and a desktop layout under the drawer clears the handle. */
+  #app #sessionView .workspace>.topbar{padding-left:calc(50px + env(safe-area-inset-left,0px))}
   #app .side-head{height:auto;min-height:52px;padding-left:52px}
   #app .side-head .iconbtn{width:40px;height:44px}
-  #sessionList .tree-row.session,#sessionList .tree-row.project,#sessionList .agent-label{min-height:44px}
   /* #s387: an arranged section's menu. Upright it is a sheet at the foot (`.sheet`, set by the
      page), over a dim that takes the closing tap; held sideways it is a popover at its control's
-     side over the same dim (#s41). Its glyph and the line's ✕ are 44px targets in the 44px head;
-     the rows are the shell's 44px menu rows; Arrange's two-line rows in the filter sheet grow. */
-  #sessionList .arranged-view{width:44px;height:44px;margin-top:-10px;margin-bottom:-10px}
-  #sessionList .arranged-view .icon{width:18px;height:18px}
-  #sessionList .arrange-strip-close{width:44px;height:44px;margin:-10px -6px -10px 0}
+     side over the same dim (#s41). The rows are the shell's 44px menu rows; Arrange's two-line rows
+     in the filter sheet grow. The section's glyph and the line's ✕ are the list's touch targets,
+     below. */
   #app .section-view-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:59;background:transparent}
   #app .section-view-scrim.dim:not([hidden]){background:rgba(14,19,31,.32)}
   #app .section-view-menu.sheet{left:calc(8px + env(safe-area-inset-left,0px))!important;right:calc(8px + env(safe-area-inset-right,0px));top:auto!important;bottom:calc(8px + env(safe-area-inset-bottom,0px));width:auto;max-height:calc(100dvh - 72px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));padding:12px 14px;border-radius:16px}
@@ -1396,7 +1410,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionView .workspace.info-open{grid-template-rows:auto minmax(210px,44vh) minmax(0,1fr)}
   #sessionView .workspace>.topbar{height:auto;min-height:0;flex-wrap:nowrap;align-items:center;justify-content:space-between;column-gap:2px;row-gap:0;padding:env(safe-area-inset-top,0px) 6px 2px;position:relative}
   #sessionView .workspace>.topbar>.top-spacer,#sessionView .workspace>.topbar>.header-divider,#sessionView #sessionFoldAll{display:none}
-  #sessionView .workspace>.topbar>.session-heading{order:1;flex:1 1 0;min-width:0;max-width:none;height:auto;min-height:48px;padding-left:44px;flex-wrap:wrap;align-content:center;column-gap:8px;row-gap:0}
+  #sessionView .workspace>.topbar>.session-heading{order:1;flex:1 1 0;min-width:0;max-width:none;height:auto;min-height:48px;padding-left:0;flex-wrap:wrap;align-content:center;column-gap:8px;row-gap:0}
   #sessionView .session-heading>:is(.header-divider,.crumb){display:none}
   #sessionView .session-heading>.status-chip{height:auto;min-height:0;padding:0;line-height:1.25;font-size:12.5px}
   #sessionView .session-heading>.turn-subtitle:not([hidden]){display:block;flex:0 0 100%;min-width:0;padding:1px 0 0;color:var(--faint);font:12.5px/1.25 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
@@ -1407,7 +1421,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      order 0 and sat under the handle. It takes the slot after the handle — the heading gives up the
      room it held there, keeping 6px so the title's box (drawn 5px outside its text) stays clear —
      as a 44px back arrow without its words, so the title keeps its room. */
-  #sessionView .workspace>.topbar>#sessionParent.is-live{order:0;margin-left:44px;width:44px;height:44px;padding:0;border:0;justify-content:center}
+  #sessionView .workspace>.topbar>#sessionParent.is-live{order:0;margin-left:0;width:44px;height:44px;padding:0;border:0;justify-content:center}
   #sessionView .workspace>.topbar>#sessionParent.is-live .session-parent-label{display:none}
   #sessionView .workspace>.topbar>#sessionParent.is-live .icon{width:20px;height:20px}
   #sessionView .workspace>.topbar:has(>#sessionParent.is-live)>.session-heading{padding-left:6px}
@@ -1561,7 +1575,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    transcript's height under a reader's finger, #372). While the search is open or holds a query, the
    find pill takes the dock and the toolbar pill steps aside (no script decides it: `:has`). */
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){
-  #app{--phone-dock-h:calc(64px + env(safe-area-inset-bottom,0px));--phone-glass:color-mix(in srgb,var(--bg) 78%,transparent)}
+  #sessionView{--phone-dock-h:calc(64px + env(safe-area-inset-bottom,0px));--phone-glass:color-mix(in srgb,var(--bg) 78%,transparent)}
   /* Over the keyboard (`--phone-kb`, app.js) the dock rests 8px above it; the home indicator is
      under the keyboard then, so its inset does not add. */
   .phone-dock{display:flex;align-items:center;gap:8px;position:fixed;z-index:14;left:calc(12px + env(safe-area-inset-left,0px));right:calc(12px + env(safe-area-inset-right,0px));bottom:max(calc(8px + env(safe-area-inset-bottom,0px)),calc(var(--phone-kb,0px) + 8px));height:56px;pointer-events:none}
@@ -1732,7 +1746,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   .column-switch-count:empty{display:none}
   #app:not(.phone-column-off) .drawer-handle{left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 4px)}
   /* The column covers the island's side, so the session beside it pads only the other. */
-  #app:not(.phone-column-off) .workspace>.topbar{padding-left:6px}
+  #app:not(.phone-column-off) #sessionView .workspace>.topbar{padding-left:50px}
   #app:not(.phone-column-off) .transcript{padding-left:0}
   #app.column-pane-on:not(.phone-column-off) .column-pane{display:block}
   #app.column-pane-on>.sidebar>.nav,#app.column-pane-on>.sidebar>:where(.session-list)>.tree,#app.column-pane-on>.sidebar>:where(.session-list)>.arrange-strip{display:none}
@@ -1788,19 +1802,19 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    the whole screen as before. */
 .preview-expand{display:none}
 @media(pointer:coarse) and (max-height:500px){
-  #app:not(.preview-off)>:where(.session-view)>.workspace{width:50%}
-  #app:not(.preview-off)>:where(.session-view)>.preview{left:50%;right:0;width:auto;padding-left:0;box-shadow:-1px 0 0 var(--line)}
-  #app:not(.preview-off) .transcript{padding-right:0}
-  #app:not(.preview-off) .workspace>.topbar{padding-right:6px}
-  #app:not(.preview-off) .phone-dock{right:calc(50% + 12px)}
-  #app:not(.preview-off) .workspace .composer.production-show{right:calc(50% + 12px)}
-  #app:not(.preview-off) .header-search-cluster>.navigator-options,#app:not(.preview-off) .header-search-cluster>.search-suggest{right:calc(50% + 12px);width:min(380px,calc(50% - 24px - env(safe-area-inset-left,0px)))}
-  #app:not(.preview-off) .info-popover{right:calc(50% + 8px);width:min(420px,calc(50% - 16px - env(safe-area-inset-left,0px)))}
-  #app:not(.preview-off) .reading-cluster>.reading-options,#app:not(.preview-off) .phone-pane-menu:not([hidden]){width:min(380px,calc(50% - 24px - env(safe-area-inset-left,0px)))}
+  #sessionView:not(.preview-off)>.workspace{width:50%}
+  #sessionView:not(.preview-off)>.preview{left:50%;right:0;width:auto;padding-left:0;box-shadow:-1px 0 0 var(--line)}
+  #sessionView:not(.preview-off) .transcript{padding-right:0}
+  #sessionView:not(.preview-off) .workspace>.topbar{padding-right:6px}
+  #sessionView:not(.preview-off) .phone-dock{right:calc(50% + 12px)}
+  #sessionView:not(.preview-off) .workspace .composer.production-show{right:calc(50% + 12px)}
+  #sessionView:not(.preview-off) .header-search-cluster>.navigator-options,#sessionView:not(.preview-off) .header-search-cluster>.search-suggest{right:calc(50% + 12px);width:min(380px,calc(50% - 24px - env(safe-area-inset-left,0px)))}
+  #sessionView:not(.preview-off) .info-popover{right:calc(50% + 8px);width:min(420px,calc(50% - 16px - env(safe-area-inset-left,0px)))}
+  #sessionView:not(.preview-off) .reading-cluster>.reading-options,#sessionView:not(.preview-off) .phone-pane-menu:not([hidden]){width:min(380px,calc(50% - 24px - env(safe-area-inset-left,0px)))}
   #sessionView .preview-head .preview-expand{display:grid;place-items:center;width:44px;height:44px}
 }
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
-  #app:not(.preview-off) .reading-cluster>.reading-options,#app:not(.preview-off) .phone-pane-menu:not([hidden]){right:calc(50% + 12px)}
+  #sessionView:not(.preview-off) .reading-cluster>.reading-options,#sessionView:not(.preview-off) .phone-pane-menu:not([hidden]){right:calc(50% + 12px)}
   #app:not(.phone-column-off):not(.preview-off)>:where(.session-view)>.workspace{width:auto}
   #app:not(.phone-column-off):not(.preview-off)>:where(.session-view)>.preview{left:calc(var(--sidebar) + env(safe-area-inset-left,0px))}
   #app:not(.phone-column-off):not(.preview-off) .phone-dock{display:none}
@@ -1827,10 +1841,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    could read: an outline column and a few characters of transcript beside a header cut off mid-word
    (the owner's screenshot, sidebar closed), or a single letter with the sidebar open. An open preview
    now covers the whole session area beside the sidebar. Not on a phone, whose preview is its own sheet:
-   the query is "tall enough, or a fine pointer", the complement of a landscape phone. */
+   the query is "tall enough, or a fine pointer", the complement of a landscape phone. The view's own
+   rule (#s431 stage 2): 10px inside its left edge, whatever is beside it, the rail included. */
 @media(min-width:761px) and (max-width:1180px) and (min-height:501px),(min-width:761px) and (max-width:1180px) and (pointer:fine){
-  .app:not(.preview-off)>:where(.session-view)>.preview{left:calc(var(--sidebar) + 10px);width:auto}
-  .app.sidebar-off:not(.preview-off)>:where(.session-view)>.preview{left:10px}
+  :where(#sessionView):not(.preview-off)>.preview{left:calc(var(--pane-x) + 10px);width:auto}
 }
 
 /* #313 — while a session loads: a veil over the session area (below the top bars, which already

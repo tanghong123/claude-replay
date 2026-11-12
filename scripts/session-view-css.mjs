@@ -514,6 +514,10 @@ export function classify(selector) {
 
 // ── the list's decision (#s430 stage 3) ───────────────────────────────────────────────────────────
 
+/** The view's own track widths, which the page's root declares beside the shared tokens (#s431 stage 2,
+ *  design/pane-layout.md): nothing the list draws reads them, and the list's copies stood under the
+ *  window's width queries, so its element takes none of them. */
+export const VIEW_TRACKS = Object.freeze(new Set(["--navigator"]));
 const LIST_ROOT = ":where(#sessionList)";
 const LIST_CLASS_WEIGHT = ".session-list";
 /** The classes the list's element carries: its class and its arrangement. A rule led by one may style
@@ -611,23 +615,24 @@ const RESET = [
 ];
 
 /** #s431 stage 2 (design/pane-layout.md, "The rewrite of the styles"). A view rule under a `@media`
- *  with a WIDTH feature is gated instead by classes the layout module (pane-layout.js) sets on the
- *  view's element: a width feature reads the view's effective width, and every other feature in the
- *  same query reads the screen, as it did, mirrored as a class. Each feature becomes one class. */
+ *  with a SIZE feature is gated instead by classes the layout module (pane-layout.js) sets on the
+ *  view's element, since the view is laid out by its own box (the owner's ruling, #s461): a width
+ *  feature reads the width the bands read, a height feature the view's height, and a pointer feature
+ *  in the same query the screen's, mirrored as a class. Each feature becomes one class. */
 const MEDIA_FEATURES = [
   [/^\(max-width:(\d+)px\)$/, n => `pl-max-w-${n}`, true],
   [/^\(min-width:(\d+)px\)$/, n => `pl-min-w-${n}`, true],
-  [/^\(max-height:(\d+)px\)$/, n => `pl-max-h-${n}`, false],
-  [/^\(min-height:(\d+)px\)$/, n => `pl-min-h-${n}`, false],
+  [/^\(max-height:(\d+)px\)$/, n => `pl-max-h-${n}`, true],
+  [/^\(min-height:(\d+)px\)$/, n => `pl-min-h-${n}`, true],
   [/^\(pointer:coarse\)$/, () => "pl-coarse", false],
   [/^\(pointer:fine\)$/, () => "pl-fine", false],
 ];
 
-/** A `@media` prelude with a width feature as its alternatives, each the classes that must all be
+/** A `@media` prelude with a size feature as its alternatives, each the classes that must all be
  *  set (`[["pl-max-w-760"], ["pl-coarse", "pl-max-h-500"]]`); `null` for any other prelude, which
- *  stays a `@media`. A width query with anything the table does not read (a media type, `not`, a
+ *  stays a `@media`. A size query with anything the table does not read (a media type, `not`, a
  *  feature of another kind) stops the derivation rather than guess what it meant. */
-export function widthGate(prelude) {
+export function sizeGate(prelude) {
   const m = /^@media\b\s*([\s\S]*)$/.exec(prelude.trim());
   if (!m) return null;
   const queries = splitTop(m[1]).map(query => {
@@ -635,21 +640,33 @@ export function widthGate(prelude) {
     const rest = query.replace(/\([^()]*\)/g, " ").replace(/\band\b/g, " ").trim();
     return { query: query.trim(), features, rest };
   });
-  const widthy = f => MEDIA_FEATURES.some(([re, , width]) => width && re.test(f));
-  if (!queries.some(q => q.features.some(widthy))) return null;
+  const sized = f => MEDIA_FEATURES.some(([re, , size]) => size && re.test(f));
+  if (!queries.some(q => q.features.some(sized))) return null;
   return queries.map(q => {
-    if (q.rest) throw new Error(`session-view.css: \`${prelude}\` has a width feature and \`${q.rest}\`, which the view's classes cannot say`);
+    if (q.rest) throw new Error(`session-view.css: \`${prelude}\` has a size feature and \`${q.rest}\`, which the view's classes cannot say`);
     if (!q.features.length) throw new Error(`session-view.css: \`${prelude}\` has an empty query`);
     return q.features.map(f => {
       const row = MEDIA_FEATURES.find(([re]) => re.test(f));
-      if (!row) throw new Error(`session-view.css: \`${prelude}\` has a width feature and \`${f}\`, which the view's classes cannot say; add it to MEDIA_FEATURES and to pane-layout.js`);
+      if (!row) throw new Error(`session-view.css: \`${prelude}\` has a size feature and \`${f}\`, which the view's classes cannot say; add it to MEDIA_FEATURES and to pane-layout.js`);
       return row[1](row[0].exec(f)[1]);
     });
   });
 }
 
-/** A view selector, which starts at the view's element, gated by a width query's alternatives: the
+/** A view selector, which starts at the view's element, gated by a size query's alternatives: the
  *  classes go on that element inside `:where()`, so the selector weighs what it did. */
+/** A selector led by `.app` with only the pane's states the view's element carries too (`preview-off`,
+ *  `preview-full`, `resizing`, each plain or under `:not()`), as the view's: `.session-view` in the
+ *  app's place, weighing what it did. Anything else is no such selector (null). */
+export function carriedState(sel) {
+  const parts = compounds(sel);
+  const m = /^\.app((?::not\(\.[\w-]+\)|\.[\w-]+)+)$/.exec(parts[0].text);
+  if (!m || parts.length < 2) return null;
+  const states = [...m[1].matchAll(/\.([\w-]+)/g)].map(x => `.${x[1]}`);
+  if (!states.every(name => [".preview-off", ".preview-full", ".resizing"].includes(name))) return null;
+  return `${VIEW_ROOT}.session-view${m[1]}${joinCompounds([{ comb: "", text: "" }, ...parts.slice(1)])}`;
+}
+
 export function gateSelector(sel, alternatives) {
   const sets = alternatives.map(classes => classes.map(c => `.${c}`).join(""));
   if (sel.startsWith(VIEW_ROOT)) {
@@ -658,7 +675,7 @@ export function gateSelector(sel, alternatives) {
   }
   const at = /^#sessionView(?![\w-])/.exec(sel);
   if (at) return `#sessionView:where(${sets.join(",")})${sel.slice(at[0].length)}`;
-  throw new Error(`session-view.css: \`${sel}\` does not start at the view's element, so its width query cannot be read from the view's classes`);
+  throw new Error(`session-view.css: \`${sel}\` does not start at the view's element, so its size query cannot be read from the view's classes`);
 }
 
 const HEADER = {
@@ -668,9 +685,9 @@ const HEADER = {
    :where(#sessionView) weighs nothing; where a source named the page's root, .session-view stands for
    :root and :is(*,div) for html or body, each weighing what it replaces, so every rule keeps its
    weight exactly. Its keyframes are named sv-<name>, so a host's of the same name cannot meet them.
-   A rule a source wrote under a width query reads the classes pane-layout.js sets on the view's
+   A rule a source wrote under a size query reads the classes pane-layout.js sets on the view's
    element instead (pl-max-w-1180 for (max-width:1180px), #s431 stage 2), so the view is laid out by
-   its pane, not the window; each class sits inside :where(), weighing nothing.
+   its own box, not the window; each class sits inside :where(), weighing nothing.
    The first two rules are the reset, for what a host's page leaves at the browser's defaults. The
    app shell loads app-shell.css first and this after it. */
 `,
@@ -749,11 +766,11 @@ export function deriveStylesheets({ reference, production }) {
 
   const rootProps = new Map(); // property → [{spec, element}] on the view's element
   const listRootProps = new Set(); // what the list's element takes from the page's root
-  // `gate`: the width query the rules stand under, as widthGate's alternatives. Their view copies are
+  // `gate`: the size query the rules stand under, as sizeGate's alternatives. Their view copies are
   // gated by the view's classes and stand in the group's place, in source order; the list's and the
   // app's keep the query.
   const layoutClasses = new Set();
-  const widthQueries = new Map(); // each width query the view's rules stood under → its alternatives
+  const sizeQueries = new Map(); // each size query the view's rules stood under → its alternatives
   const emit = (nodes, depth, gate) => {
     const out = { view: [], list: [], app: [] };
     for (const node of nodes) {
@@ -761,21 +778,21 @@ export function deriveStylesheets({ reference, production }) {
         // A query the classes cannot say matters only where the view has rules under it.
         let alternatives = null;
         let refused = null;
-        try { alternatives = widthGate(node.prelude); } catch (error) { refused = error; }
+        try { alternatives = sizeGate(node.prelude); } catch (error) { refused = error; }
         const inner = emit(node.children, depth + 1, gate || alternatives);
         for (const side of ["list", "app"]) if (inner[side].length) out[side].push(`${node.prelude}{`, ...inner[side], "}");
         if (!inner.view.length) continue;
         if (refused) throw refused;
-        if (gate) throw new Error(`session-view.css: \`${node.prelude}\` stands inside a width query; the view's classes cannot nest`);
-        if (alternatives && depth > 0) throw new Error(`session-view.css: the width query \`${node.prelude}\` stands inside another group`);
+        if (gate) throw new Error(`session-view.css: \`${node.prelude}\` stands inside a size query; the view's classes cannot nest`);
+        if (alternatives && depth > 0) throw new Error(`session-view.css: the size query \`${node.prelude}\` stands inside another group`);
         if (/^@supports\b/.test(node.prelude)) throw new Error(`session-view.css: \`${node.prelude}\` holds rules of the view's; say how the view reads it`);
         if (alternatives) {
           for (const classes of alternatives) for (const name of classes) layoutClasses.add(name);
-          widthQueries.set(node.prelude, alternatives);
+          sizeQueries.set(node.prelude, alternatives);
           out.view.push(...inner.view);
         } else out.view.push(`${node.prelude}{`, ...inner.view, "}");
       } else if (node.kind === "at") {
-        if (gate) throw new Error(`session-view.css: \`${node.prelude}\` stands inside a width query, which the view's classes cannot gate`);
+        if (gate) throw new Error(`session-view.css: \`${node.prelude}\` stands inside a size query, which the view's classes cannot gate`);
         out.app.push(node.body === null ? `${node.prelude};` : `${node.prelude}{${node.body}}`);
         out.view.push({ keyframes: node });
         out.list.push({ keyframes: node });
@@ -787,7 +804,15 @@ export function deriveStylesheets({ reference, production }) {
         const listSidebar = [];
         const app = [];
         for (const sel of splitTop(node.prelude)) {
-          const decision = classify(sel);
+          let decision = classify(sel);
+          // An app state on the view under a size query, where the state is one the view's element
+          // carries itself (the pane's): it moves into the view, gated by the view's classes, so the
+          // window and the view's own size never both decide it (#s431 stage 2). Only the demo's
+          // overlaid pane, `.app:not(.preview-off) .preview` at (max-width:1180px), is one.
+          if (decision.kind === "an app state on the view" && gate) {
+            const moved = carriedState(sel);
+            if (moved) decision = { kind: "a pane state the view carries, under a size query", app: null, view: [moved] };
+          }
           const listDecision = classifyList(sel);
           count(decision.kind);
           countList(listDecision.kind);
@@ -842,7 +867,7 @@ export function deriveStylesheets({ reference, production }) {
         // element, which would read another value there (a root token naming the sidebar's
         // `--state-*`, a sidebar token naming the grid's `--sidebar`).
         if (listRoot.length) {
-          const kept = declarations(node.body).filter(([prop]) => (prop.startsWith("--") ? !pageTokens.has(prop) : INHERITED.has(prop)));
+          const kept = declarations(node.body).filter(([prop]) => (prop.startsWith("--") ? !pageTokens.has(prop) && !VIEW_TRACKS.has(prop) : INHERITED.has(prop)));
           for (const [prop, text] of kept) {
             if (sidebarTokens.has(prop)) throw new Error(`session-list.css: \`${prop}\` is declared on the page's root and on the sidebar; the list's element would take both`);
             if (!prop.startsWith("--") && sidebarDeclared.has(prop)) throw new Error(`session-list.css: \`${prop}\` is set on the sidebar and on the page's root; the list's element would hide the sidebar's`);
@@ -878,7 +903,7 @@ export function deriveStylesheets({ reference, production }) {
   // The classes the view's rules read, which pane-layout.js must set: a contract case holds the two
   // to one list.
   report.layoutClasses = [...layoutClasses].sort();
-  report.widthQueries = [...widthQueries].map(([prelude, alternatives]) => ({ prelude, alternatives }));
+  report.sizeQueries = [...sizeQueries].map(([prelude, alternatives]) => ({ prelude, alternatives }));
   let view = halves.flatMap(h => h.view);
   let list = halves.flatMap(h => h.list);
   let app = halves.flatMap(h => h.app);
@@ -948,7 +973,7 @@ export function deriveStylesheets({ reference, production }) {
     });
     return kept.map(line => line.replace(ANIMATION, (all, property, value) => property + value.replace(/-?[A-Za-z_][\w-]*/g, word => (renamed.has(word) ? `${prefix}${word}` : word))));
   };
-  view = prefixed(view, viewNames, KEYFRAME_PREFIX, "session-view.css", report.keyframes.view);
+  view = prefixed(view, viewNames, KEYFRAME_PREFIX, "session-view.css", report.keyframes.view).map(viewLengths);
   list = prefixed(list, listNames, LIST_KEYFRAME_PREFIX, "session-list.css", report.keyframes.list);
   app = app.filter(line => {
     const m = KEYFRAMES.exec(line);
@@ -962,6 +987,29 @@ export function deriveStylesheets({ reference, production }) {
     app: `${HEADER.app}${app.join("\n")}\n`,
     report,
   };
+}
+
+/** #s431 stage 2 (design/pane-layout.md, "Units and lengths"): a view rule's lengths in the window's
+ *  units are the view's. The whole width (`100vw`, and `100vw - var(--sidebar)`, the room beside the
+ *  app's sidebar) is the view's own width, `--pl-w`, since such a length keeps something on the
+ *  view; any other share of the width is that share of `B`, the width the bands read, `--pl-b`, so a
+ *  control sized by it is as wide as it was in the app at the default sidebar; a left edge at the
+ *  sidebar (`var(--sidebar)`) is the view's own left edge, `--pane-x`; and a share of the height is
+ *  that share of the view's, `--pl-vh` and `--pl-dvh`, which are the window's own units while the
+ *  view is as tall as the window. pane-layout.js writes all five. Only a declaration's value changes,
+ *  never a selector or a keyframe's name. */
+export function viewLengths(line) {
+  const at = line.indexOf("{");
+  if (at < 0 || /^@(?:-webkit-)?keyframes\b/.test(line)) return line;
+  const body = line.slice(at)
+    .replace(/\b100vw\s*-\s*var\(--sidebar\)/g, "var(--pl-w)")
+    .replace(/var\(--sidebar\)/g, "var(--pane-x)")
+    .replace(/(^|[^\w.-])100vw\b/g, "$1var(--pl-w)")
+    .replace(/(^|[^\w.-])(\d*\.?\d+)vw\b/g, (all, before, n) => `${before}calc(${n} * var(--pl-b) / 100)`)
+    .replace(/(^|[^\w.-])(\d*\.?\d+)dvh\b/g, (all, before, n) => `${before}calc(${n} * var(--pl-dvh))`)
+    .replace(/(^|[^\w.-])(\d*\.?\d+)vh\b/g, (all, before, n) => `${before}calc(${n} * var(--pl-vh))`);
+  if (/\d(?:vw|vh|dvh|svh|lvh|vmin|vmax)\b|var\(--sidebar\)/.test(body)) throw new Error(`session-view.css: a length in the window's units is left in \`${line.slice(0, 120)}\`; say in viewLengths what it is of the view`);
+  return line.slice(0, at) + body;
 }
 
 // The longhands a shorthand sets that its name does not lead (`padding` leads `padding-left`).

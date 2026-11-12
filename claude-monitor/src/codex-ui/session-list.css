@@ -94,13 +94,6 @@
 :where(#sessionList) .mode-switch{background:#d9deea}
 :where(#sessionList) .mode-switch[aria-checked="true"]{background:var(--primary)}
 :where(#sessionList) .navigator-options{display:none;margin-top:5px;padding:8px;border:1px solid var(--line);border-radius:9px;background:var(--bg)}
-:where(#sessionList).session-list{--navigator:268px}
-@media(max-width:1180px){
-:where(#sessionList).session-list{--navigator:256px}
-}
-@media(max-width:900px){
-:where(#sessionList).session-list{--navigator:min(264px,82vw)}
-}
 :where(#sessionList).session-list{--outline-surface:#f2f6fa;--outline-selected-bg:#eef1f4;--user-surface:#edf6ff;--sidebar-surface:radial-gradient(110% 58% at -12% -4%,rgba(91,166,238,.18),transparent 66%),radial-gradient(78% 48% at 112% 72%,rgba(129,184,238,.11),transparent 72%),linear-gradient(145deg,rgba(229,241,252,.94) 0%,rgba(235,244,252,.92) 52%,rgba(230,240,250,.94) 100%)}
 :where(#sessionList).session-list[data-theme="dark"]{--outline-surface:#202b35;--outline-selected-bg:#181e26;--user-surface:#223344;--sidebar-surface:radial-gradient(105% 58% at -10% -5%,rgba(80,145,202,.16),transparent 67%),radial-gradient(74% 48% at 110% 76%,rgba(69,121,171,.10),transparent 72%),linear-gradient(145deg,rgba(36,55,72,.95) 0%,rgba(37,53,68,.94) 56%,rgba(34,49,63,.96) 100%)}
 :where(#sessionList).session-list{--outline-done:#668b80}
@@ -186,6 +179,10 @@
 :where(#sessionList) .tree-project{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #sessionList.sessions-flat .tree-row.session.is-member{padding-left:30px}
 #sessionList.sessions-flat .tree-row.session.is-side{padding-left:calc(16px + var(--side-depth,1) * 14px)}
+#sessionList.pl-max-w-231 .tree-context .tree-project{display:none}
+#sessionList.pl-max-w-231:not(.sessions-flat):not(.sessions-arranged) .tree-row.session:not(.flat){padding-left:32px}
+#sessionList.pl-max-w-231:not(.sessions-flat):not(.sessions-arranged) .tree-row.session.is-member{padding-left:50px}
+#sessionList.pl-max-w-231:not(.sessions-flat):not(.sessions-arranged) .tree-row.session.is-side{padding-left:calc(36px + var(--side-depth,1) * 14px)}
 :where(#sessionList) :is(#collapseBtn,#expandBtn)[data-flat]{display:none}
 :where(#sessionList) .arrange-strip-box{display:flex;align-items:flex-start;gap:6px;padding:7px 6px 7px 10px;border-radius:8px;background:color-mix(in srgb,var(--blue) 9%,transparent);color:var(--sub);font-size:12px;line-height:16px}
 :where(#sessionList) .arrange-strip.warn .arrange-strip-box{background:var(--amber-bg);color:var(--ink)}
@@ -244,11 +241,13 @@
 @media(prefers-reduced-motion:reduce){
 :where(#sessionList) .rail-flyout{animation:none}
 }
-@media(max-width:760px),(pointer:coarse) and (max-height:500px){
+@media(pointer:coarse){
 #sessionList .tree-row.session,#sessionList .tree-row.project,#sessionList .agent-label{min-height:44px}
 #sessionList .arranged-view{width:44px;height:44px;margin-top:-10px;margin-bottom:-10px}
 #sessionList .arranged-view .icon{width:18px;height:18px}
 #sessionList .arrange-strip-close{width:44px;height:44px;margin:-10px -6px -10px 0}
+}
+@media(max-width:760px),(pointer:coarse) and (max-height:500px){
 :where(#sessionList) .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 6px 6px}
 :where(#sessionList) input:not([type=checkbox]):not([type=radio]):not([type=range]),:where(#sessionList) textarea,:where(#sessionList) select{font-size:16px!important}
 }
