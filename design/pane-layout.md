@@ -409,8 +409,12 @@ What follows from it:
   over the open pane, which would move to the window's edge and reflow mdrev under the sheet. So the
   sheet reaches the window's sides from the view's edges (`--pane-x`, `--pane-r`) with the screen's
   whole insets, and while it is open the view's stacking rises to the sheet's level, 95: over a wide
-  phone's column and the handle, under the toasts. Its height is the view's, the app's whole height
-  in the app. It is the open session's document, so it closes with the session.
+  phone's column and the handle, under the toasts. Its height is the view's, the app's whole height.
+  At ⤢ the view no longer contains its layout, so the sheet is the window's from its own edges. This
+  is the app's choice (its rules are in the app's stylesheet): in a host the sheet is drawn inside the
+  pane like the rest of the view, the insets counted where they fall in it, and the view's stacking
+  left alone, since a sheet reaching out over a host's page is the host's to ask for (stage 4). It is
+  the open session's document, so it closes with the session.
 - **The shut pane hides once its glide out ends.** It parks past the view's right edge, which in a
   host's pane may be over the page beside it. A phone's pane never glides, so there it opens and
   hides at once.
@@ -515,12 +519,13 @@ At the default text size, the pane at the reader's width:
   with its column and its island (its listed changes, the same layers inside the view, the dock 12px
   in from the view's edge, ⤢ covering the column too), the same phone in Safari's 330px (Aa risen
   over the top bar, and a review sheet over the whole screen, column and handle included, its close
-  control inside the island's inset), and the list's rows on a touch screen. Each layer step first
+  control inside the island's inset, over the open pane and at ⤢), and the list's rows on a touch
+  screen. Each layer step first
   checks that its layer opened. The host's 380px phone reader keeps its shut pane out of the page
   beside it. A host's 450px pane on a phone held sideways, at the screen's left edge, its middle and
   its right edge, keeps its dock 12px from each side of its own and the island's inset only where the
-  island falls in the pane; and with a classic scrollbar the view's right gap stops at it. A Back to
-  another session closes the review sheet.
+  island falls in the pane, and so does a review sheet there; and with a classic scrollbar the view's
+  right gap stops at it. A Back to another session closes the review sheet.
 - **Mutations.** Point the layout module back at the window, drop a condition from the rewrite's
   table, give the family the window's height, or let the readable rule read what it drew: a width
   case goes red, or the derivation fails.
