@@ -1232,7 +1232,9 @@ fn a_phone_pane_leaves_mdrevs_toolbar_its_own_layout() {
 /// is a FULL-SCREEN SHEET over the app. The pane's Markdown shows a Review control there; the sheet
 /// mounts the document on the review prefix (#s10), its guest asking for and fetching the store, and
 /// its close control returns the reader to the pane and the transcript exactly as they were — no
-/// navigation, no reload, the transcript's offset unchanged.
+/// navigation, no reload, the transcript's offset unchanged. The sheet is the open session's document,
+/// so a Back to another session closes it with the session (#s431 stage 2; red on f17bb8c4, where it
+/// stayed over the next session).
 #[test]
 #[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn a_phone_reviews_in_a_full_screen_sheet_and_closes_back_to_where_it_was() {
@@ -1328,6 +1330,29 @@ fn a_phone_reviews_in_a_full_screen_sheet_and_closes_back_to_where_it_was() {
         offset(),
         before,
         "the transcript is where the reader left it"
+    );
+    // Open again, then the browser's Back to another session (the app reads the address on popstate).
+    eval(
+        &tab,
+        "document.querySelector('.preview-review').click(); 'ok'",
+    );
+    until(
+        &tab,
+        "!!document.querySelector('.review-sheet .mdrev-host h1')",
+        "the review sheet open again",
+        Duration::from_secs(30),
+        PANE,
+    );
+    eval(
+        &tab,
+        "history.pushState({}, '', '?session=dddddddd-0000-4000-8000-000000000431'); dispatchEvent(new PopStateEvent('popstate')); 'ok'",
+    );
+    until(
+        &tab,
+        "!document.querySelector('.review-sheet')",
+        "a Back to another session to close the review sheet with its session",
+        Duration::from_secs(10),
+        "(function(){ var s = document.querySelector('.review-sheet'); return s ? 'the sheet is still open: ' + s.innerText.slice(0, 80) : 'no sheet'; })()",
     );
 }
 

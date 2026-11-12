@@ -3934,6 +3934,105 @@ fn the_session_view_in_a_host_on_a_phone_reads_its_own_box_and_the_finger() {
     }
 }
 
+/// #s431 stage 2 (design/pane-layout.md, "Drawn inside the pane"): a phone reader in a host's pane
+/// counts the screen's insets only where they fall in its own box, on either side. Held sideways
+/// (932×430, the island's 62px at both sides) a 450px pane at the screen's left edge keeps its dock
+/// 12px plus the inset from its left and 12px from its right, which ends 482px short of the screen's;
+/// in the middle 12px from both; at the screen's right edge 12px from its left and 12px plus the inset
+/// from its right. The right side was red on 6b30c331, which took the screen's whole right inset in
+/// any box. And where the window has a classic scrollbar the box's right gap is measured to the
+/// scrollbar, not across it (`clientWidth`, not `innerWidth`; red on f17bb8c4). Each placement is a
+/// fresh mount: a move with no resize is #s467's.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_on_a_phone_counts_the_insets_only_inside_its_box() {
+    let _serial = serial();
+    let base = base("host-insets");
+    let monitor = Monitor::spawn(Kind::V1, 3115, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    // A desktop window whose page scrolls under a classic scrollbar: the view's right gap stops at it.
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::open_host_page(&tab, &monitor, "");
+    harness::eval(
+        &tab,
+        "(function(){ var st = document.createElement('style'); st.textContent = 'html{overflow-y:scroll}html::-webkit-scrollbar{width:15px}html::-webkit-scrollbar-thumb{background:#888}'; document.head.append(st); return true; })()",
+    );
+    place_host_pane(&tab, 600, 400);
+    let scrolled = harness::probe(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return { bar: innerWidth - document.documentElement.clientWidth, right: Math.round(document.documentElement.clientWidth - v.getBoundingClientRect().right), paneR: v.style.getPropertyValue('--pane-r') }; })()",
+    );
+    harness::phone(&tab, 932, 430);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    let gaps = "(function(){ var v = document.getElementById('sessionView').getBoundingClientRect(), d = document.getElementById('phoneDock'); var r = d.getBoundingClientRect(); return { view: Math.round(v.left) + '-' + Math.round(v.right), position: getComputedStyle(d).position, left: Math.round(r.left - v.left), right: Math.round(v.right - r.right) }; })()";
+    let mut seen = Vec::new();
+    for (left, want_left, want_right) in [(0, 74, 12), (241, 12, 12), (482, 12, 74)] {
+        harness::open_host_page(&tab, &monitor, "");
+        place_host_pane(&tab, left, 450);
+        harness::until(
+            &tab,
+            "(function(){ var d = document.getElementById('phoneDock'); return !!d && d.getBoundingClientRect().width > 0; })()",
+            "the phone reader's dock",
+            Duration::from_secs(10),
+            gaps,
+        );
+        seen.push((left, want_left, want_right, harness::probe(&tab, gaps)));
+    }
+    drop(monitor);
+    assert!(
+        scrolled["bar"].as_i64().unwrap_or(0) > 0,
+        "the window has a classic scrollbar to measure against: {scrolled}"
+    );
+    assert_eq!(
+        scrolled["paneR"],
+        format!("{}px", scrolled["right"]),
+        "the view's right gap is measured to the scrollbar: {scrolled}"
+    );
+    for (left, want_left, want_right, got) in seen {
+        assert_eq!(
+            got["position"], "fixed",
+            "a 450px pane at x={left}: the dock floats: {got}"
+        );
+        assert_eq!(
+            (got["left"].as_i64(), got["right"].as_i64()),
+            (Some(want_left), Some(want_right)),
+            "a 450px pane at x={left} on a phone held sideways keeps its dock {want_left}px from its \
+             left and {want_right}px from its right, the island's inset counted only inside it: {got}"
+        );
+    }
+}
+
+/// #s467 (a gap #s431 stage 2's inset case found): a host that moves the view's box without resizing
+/// it, here a 450px pane on a phone held sideways moved from the screen's left edge to its middle, is
+/// not heard: the layout keeps the old place (`--pane-x`), so the dock still counts the island's inset
+/// at its left. Fixed, the dock is 12px from both sides at the new place.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_hears_its_box_move_without_a_resize_known_red_s467() {
+    let _serial = serial();
+    let base = base("host-move");
+    let monitor = Monitor::spawn(Kind::V1, 3116, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::phone(&tab, 932, 430);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    harness::open_host_page(&tab, &monitor, "");
+    place_host_pane(&tab, 0, 450);
+    harness::eval(
+        &tab,
+        "(function(){ var p = document.getElementById('hostPane'); p.style.left = '241px'; return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'), d = document.getElementById('phoneDock'); var vr = v.getBoundingClientRect(), r = d.getBoundingClientRect(); return Math.round(vr.left) === 241 && Math.round(r.left - vr.left) === 12 && Math.round(vr.right - r.right) === 12; })()",
+        "the dock 12px from both sides once the pane moved to the screen's middle",
+        Duration::from_secs(5),
+        "(function(){ var v = document.getElementById('sessionView'), d = document.getElementById('phoneDock'); var vr = v.getBoundingClientRect(), r = d.getBoundingClientRect(); return JSON.stringify({ view: Math.round(vr.left), paneX: v.style.getPropertyValue('--pane-x'), left: Math.round(r.left - vr.left), right: Math.round(vr.right - r.right) }); })()",
+    );
+    drop(monitor);
+}
+
 /// #s431 stage 2: wherever design/pane-layout.md's table says "the same", the app's view reads exactly
 /// what the window read before: every layout class it sets agrees with the window's media query it
 /// stands for. Desktop windows of 1440, 1180, 1000 and 820px at the default sidebar; an iPad-sized
@@ -4076,25 +4175,100 @@ fn phone_layers_amiss(
 }
 
 /// A review sheet as the pane draws it on a phone (`openReviewSheet` in preview.js: appended to the
-/// view, its close control at its top left), put there by hand, since the case's session offers no
-/// Markdown file to review; then what [`LAYERS_AMISS`] finds with it open, and it is taken away.
+/// view, its close control at its top left), put there by hand over the open pane, since the case's
+/// session offers no Markdown file to review; then what [`LAYERS_AMISS`] finds with it open, where the
+/// sheet lies (`sheet`), its close control's left edge (`closeLeft`), and the pane's place before the
+/// sheet, under it and after it (`pane`), and the sheet and the pane are taken away.
 fn review_sheet_amiss(tab: &headless_chrome::Tab) -> serde_json::Value {
+    let settled = "document.getElementById('preview').getAnimations().length === 0";
+    harness::eval(tab, "document.getElementById('previewBtn').click()");
+    harness::until(
+        tab,
+        &format!("!document.getElementById('sessionView').classList.contains('preview-off') && {settled}"),
+        "the right pane to open",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    let pane = "(function(){ var r = document.getElementById('preview').getBoundingClientRect(); return Math.round(r.left) + '-' + Math.round(r.right) + ' ' + Math.round(r.top) + '-' + Math.round(r.bottom); })()";
+    let before = harness::eval(tab, pane);
     harness::eval(
         tab,
         "(function(){ var s = document.createElement('div'); s.className = 'review-sheet'; s.id = 'caseReviewSheet'; s.setAttribute('role', 'dialog'); s.innerHTML = '<div class=\"review-sheet-head\"><button type=\"button\" class=\"review-sheet-close\" id=\"caseReviewClose\" aria-label=\"Close the review\">x</button><strong>notes.md</strong></div><div class=\"review-sheet-body\"></div>'; document.getElementById('sessionView').append(s); return true; })()",
     );
-    harness::eval(tab, "new Promise(function(done){ requestAnimationFrame(function(){ setTimeout(done, 300); }); })");
-    let found = harness::probe(tab, &format!("{LAYERS_AMISS}('#caseReviewClose')"));
+    harness::until(
+        tab,
+        "(function(){ var s = document.getElementById('caseReviewSheet'), c = document.getElementById('caseReviewClose'); return !!s && s.getBoundingClientRect().width > 0 && c.getBoundingClientRect().width >= 44; })()",
+        "the review sheet to be drawn",
+        Duration::from_secs(5),
+        "(function(){ var s = document.getElementById('caseReviewSheet'); return s ? JSON.stringify(s.getBoundingClientRect()) : 'no sheet'; })()",
+    );
+    let mut found = harness::probe(
+        tab,
+        &format!("(function(){{ var f = {LAYERS_AMISS}('#caseReviewClose'); var r = document.getElementById('caseReviewSheet').getBoundingClientRect(); f.sheet = {{ left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom), width: innerWidth, height: innerHeight }}; f.closeLeft = Math.round(document.getElementById('caseReviewClose').getBoundingClientRect().left); return f; }})()"),
+    );
+    let under = harness::eval(tab, pane);
     harness::eval(
         tab,
         "document.getElementById('caseReviewSheet').remove(); true",
     );
+    let after = harness::eval(tab, pane);
+    found["pane"] = serde_json::json!([before, under, after]);
+    harness::eval(tab, "document.getElementById('closePreview').click()");
+    harness::until(
+        tab,
+        &format!(
+            "document.getElementById('sessionView').classList.contains('preview-off') && {settled}"
+        ),
+        "the right pane to shut",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
     found
 }
 
+/// Opens the right pane over a wide phone's session and, with a layer of the view's left open under
+/// it (Aa's menu, opened by hand; in use, a dialog's card in a reply box left open), returns whether
+/// the app's handle is drawn and takes a press at its middle; then the layer goes and the pane shuts.
+fn handle_over_the_pane(tab: &headless_chrome::Tab) -> serde_json::Value {
+    let settled = "document.getElementById('preview').getAnimations().length === 0";
+    harness::eval(tab, "document.getElementById('previewBtn').click()");
+    harness::until(
+        tab,
+        &format!("!document.getElementById('sessionView').classList.contains('preview-off') && {settled}"),
+        "the right pane to open",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    harness::eval(
+        tab,
+        "document.querySelector('#sessionView .reading-cluster>.reading-options').classList.add('open'); true",
+    );
+    let seen = harness::probe(
+        tab,
+        "(function(){ var h = document.getElementById('drawerHandle'), r = h.getBoundingClientRect(); var at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { visibility: getComputedStyle(h).visibility, takes: h.contains(at), at: at ? (at.id || at.className) : 'nothing' }; })()",
+    );
+    harness::eval(
+        tab,
+        "document.querySelector('#sessionView .reading-cluster>.reading-options').classList.remove('open'); true",
+    );
+    harness::eval(tab, "document.getElementById('closePreview').click()");
+    harness::until(
+        tab,
+        &format!(
+            "document.getElementById('sessionView').classList.contains('preview-off') && {settled}"
+        ),
+        "the right pane to shut",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    seen
+}
+
 /// Opens the right pane and takes it to the whole screen with its ⤢ (a phone held sideways), and
-/// returns where the pane lies and what a press at the window's left, over a wide phone's column,
-/// reaches; then the pane goes back and shuts.
+/// returns where the pane lies, what a press at the window's left, over a wide phone's column,
+/// reaches, and the session's flow under it before ⤢ and at it (`session`, `sessionBefore`: each
+/// element of the session's column that no fixed layer holds, its place, width and side padding);
+/// then the pane goes back and shuts.
 fn pane_full_screen(tab: &headless_chrome::Tab) -> serde_json::Value {
     let settled = "document.getElementById('preview').getAnimations().length === 0";
     harness::eval(tab, "document.getElementById('previewBtn').click()");
@@ -4105,6 +4279,8 @@ fn pane_full_screen(tab: &headless_chrome::Tab) -> serde_json::Value {
         Duration::from_secs(10),
         "document.getElementById('sessionView').className",
     );
+    let insets = "(function(){ var v = document.getElementById('sessionView'); var floats = function(e){ for (; e && e !== v; e = e.parentElement) if (getComputedStyle(e).position === 'fixed') return true; return false; }; return Array.prototype.filter.call(v.querySelectorAll('.workspace *'), function(e){ return !floats(e); }).map(function(e){ var r = e.getBoundingClientRect(), c = getComputedStyle(e); return Math.round(r.left) + ',' + Math.round(r.width) + ',' + c.paddingLeft + ',' + c.paddingRight; }).join(' '); })()";
+    let before = harness::eval(tab, insets);
     harness::eval(
         tab,
         "document.querySelector('#preview .preview-expand').click()",
@@ -4117,10 +4293,12 @@ fn pane_full_screen(tab: &headless_chrome::Tab) -> serde_json::Value {
         "document.getElementById('sessionView').className",
     );
     harness::eval(tab, "new Promise(function(done){ requestAnimationFrame(function(){ requestAnimationFrame(done); }); })");
-    let full = harness::probe(
+    let mut full = harness::probe(
         tab,
         "(function(){ var p = document.getElementById('preview'), r = p.getBoundingClientRect(); var h = document.elementFromPoint(80, innerHeight / 2); return { left: Math.round(r.left), right: Math.round(r.right), window: innerWidth, atLeft: p.contains(h) ? 'the pane' : (h ? (h.id ? '#' + h.id : h.tagName.toLowerCase() + '.' + h.className) : 'nothing') }; })()",
     );
+    full["session"] = harness::eval(tab, insets);
+    full["sessionBefore"] = before;
     harness::eval(
         tab,
         "document.querySelector('#preview .preview-expand').click()",
@@ -4165,7 +4343,12 @@ fn pane_full_screen(tab: &headless_chrome::Tab) -> serde_json::Value {
 /// - Beside the column in Safari's 330px, where Aa rises over the top bar by the handle (#s242), and
 ///   with a review sheet over the view, the handle is never drawn over the layer; and the pane's ⤢
 ///   still takes the whole screen, the column included (both red on 6b30c331, whose contained view
-///   painted under the app's handle and held the pane in its box).
+///   painted under the app's handle and held the pane in its box). So does the review sheet, its
+///   close control inside the island's inset (red on f17bb8c4, which held the sheet in the view's box),
+///   and the open pane under it keeps its place.
+///   Over the open pane the handle stays with a layer of the view left open under it (red on
+///   f17bb8c4, where it hid). At ⤢ nothing in the session's flow under the pane moves (a guard: on
+///   f17bb8c4 only the session's fixed layers under the pane took the screen's insets).
 /// - The list's rows are 44px touch targets on an iPad's sidebar, where they were 37px.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
@@ -4243,6 +4426,7 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
         "(function(){ var v = document.getElementById('sessionView').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(); return { viewLeft: Math.round(v.left), dockLeft: Math.round(d.left) }; })()",
     );
     let wide_layers = phone_layers_amiss(&tab, &["the Turns sheet"]);
+    let wide_handle = handle_over_the_pane(&tab);
     let wide_full = pane_full_screen(&tab);
     // The same phone in Safari, whose tab bar leaves 330px of it.
     harness::phone(&tab, 932, 330);
@@ -4354,14 +4538,40 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
     );
     assert_eq!(
         (review["opened"].clone(), review["missed"].clone()),
-        (serde_json::json!(true), serde_json::json!([])),
-        "a review sheet beside the column takes the press on its close control, not the handle: {review}"
+        (
+            serde_json::json!(true),
+            serde_json::json!(["a list row under div.review-sheet-body"])
+        ),
+        "a review sheet beside the column takes the press on its close control, and on the column's \
+         rows, which it covers; never the handle: {review}"
+    );
+    assert!(
+        review["pane"][0] == review["pane"][1] && review["pane"][1] == review["pane"][2],
+        "the open pane under the review sheet keeps its place, so mdrev does not reflow under it: {review}"
+    );
+    let sheet = &review["sheet"];
+    assert!(
+        sheet["left"] == 0
+            && sheet["top"] == 0
+            && sheet["right"] == sheet["width"]
+            && sheet["bottom"] == sheet["height"]
+            && review["closeLeft"].as_i64().unwrap_or(0) >= 62,
+        "the review sheet is the whole screen's, the column included, its close control inside the \
+         island's inset (the owner's full-screen sheet, #s12): {review}"
     );
     assert!(
         wide_full["left"] == 0
             && wide_full["right"] == wide_full["window"]
             && wide_full["atLeft"] == "the pane",
         "⤢ takes the pane to the whole screen beside the column, the column included: {wide_full}"
+    );
+    assert!(
+        wide_handle["visibility"] == "visible" && wide_handle["takes"] == true,
+        "over the open pane the handle stays, a layer left open under the pane or not: {wide_handle}"
+    );
+    assert_eq!(
+        wide_full["session"], wide_full["sessionBefore"],
+        "at ⤢ nothing in the session's flow under the pane moves, so nothing remeasures beneath it: {wide_full}"
     );
     assert!(
         wide_dock["dockLeft"].as_i64() == wide_dock["viewLeft"].as_i64().map(|x| x + 12),
@@ -15862,7 +16072,7 @@ fn a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver() {
     harness::until(
         &tab,
         &format!("document.getElementById('app').classList.contains('sidebar-off') && {VIEW_CAUGHT_UP} && (function(){{ var e = JSON.parse({beside}); return e.viewWidth === innerWidth - 64 && e.position !== 'fixed' && e.paneRight <= 12 && e.sessionRight <= e.paneLeft + 1 && e.sessionRight - e.sessionLeft >= 400; }})()"),
-        "on the rail the pane a column beside a session of 400px or more, at the window's edge",
+        "on the rail the pane a column beside a session of 400px or more, its card's margin from the window's edge",
         Duration::from_secs(15),
         beside,
     );
