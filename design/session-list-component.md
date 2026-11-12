@@ -166,6 +166,11 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      `.mode-switch`) would reach the app's own controls after `app-shell.css` and could win a tie
      it lost before; a host page would still need our sidebar's frame; and stage 4 would carve it
      anyway and move the styles twice.
+
+     Step 6 replaced the `display: contents` (#s431 stage 1, `design/pane-layout.md`, "A box for
+     each component"): the list's element is a flex column of its own, in the app the sidebar's
+     child that takes the height left below its head, so it lays out what it holds wherever a host
+     puts it.
    - **Four parts stay where the app shows them.** The list's head controls (Collapse all, Expand
      all, the filter) are children of the head's one row, which
      `the_app_shell_resizes_the_session_list` hit-tests child by child; the filter sheet hangs from

@@ -27,8 +27,10 @@ const app = page.byId("app");
 // its three parts from its own markup (the workspace, the pane's resizer and the artifact pane,
 // stage 4) and the state it keeps for itself (stage 2: composing, a phone sheet open, the keyboard up,
 // wrapped code, a wide transcript). The page's shell (`app-shell.html`) carries it empty. In the app
-// it is `display: contents`, so the three stay columns of `#app`'s grid; the pane's open, full and
-// resizing states are copied onto `#app` too, since the app's grid follows them (`paneLayout`).
+// it is the second column of `#app`'s grid, a box that lays its three parts out in a grid of its own
+// (#s431 stage 1, design/pane-layout.md); the pane's open, full and resizing states are copied onto
+// `#app` too (`paneLayout`), for the app's rules that still read them there (a drag's cursor, and a
+// phone's pane beside the session).
 const sessionView = page.byId("sessionView");
 let toastTimer = 0;
 
@@ -54,7 +56,7 @@ function toast(message) {
 }
 
 // The session list (session-list-view.js, #s430): its element is `#sessionList`, which the page's shell
-// carries empty in the sidebar where the tree stood (stage 3), `display: contents` there; the list
+// carries empty in the sidebar where the tree stood (stage 3), a flex column there (#s431 stage 1); the list
 // builds its markup in it and keeps its arrangement on it. Mounted here, before the drawer and the
 // view, where its code ran when it was app.js's, so what it puts on the page (the rail's flyout in the
 // body, its listeners, the parts it asks the app to place) comes in the order it did. What it needs of

@@ -153,8 +153,9 @@ const clearTimeout = id => { timers.delete(id); globalThis.clearTimeout(id); };
 const elementBefore = [...element.attributes].map(attribute => [attribute.name, attribute.value]);
 // The session list's own element (#s430, stage 1): where the list keeps the state it sets for
 // itself, its arrangement (`sessions-flat`, `sessions-arranged`), which it kept on `#app`. In the app
-// it is the sidebar's child where the tree stood (stage 3), `display: contents`, so what it holds stays
-// in the sidebar's column. An id, so the rules that read the state weigh what they did on `#app`.
+// it is the sidebar's child where the tree stood (stage 3), a flex column that takes the sidebar's
+// height left below its head (#s431 stage 1), in a host whatever box the host gives it. An id, so the
+// rules that read the state weigh what they did on `#app`.
 element.id = "sessionList";
 // Its class and its theme (stage 3): its stylesheet hangs every rule on #sessionList, the page's root
 // stood in for by `.session-list`, and reads the theme there, light or dark, as the host says, as the

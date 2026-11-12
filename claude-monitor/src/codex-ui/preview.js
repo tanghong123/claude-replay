@@ -135,8 +135,8 @@ export class Preview {
     this.renderGeneration++;
     if (this.objectUrl) { URL.revokeObjectURL(this.objectUrl); this.objectUrl = ""; }
   }
-  /** The pane's open, full and resizing states: the view's own, and its host's, whose layout follows
-   *  them (the app's grid, #s429). */
+  /** The pane's open, full and resizing states: the view's own, whose grid follows them (#s431
+   *  stage 1), and its host's (`paneLayout`), whose rules may read them too (the app's do). */
   paneState(name, on) { viewRoot.element()?.classList.toggle(name, on); this.actions.paneLayout?.(name, on); }
   setOpen(open) { this.uiState.preview = open; this.paneState("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (!open) this.setFull(false); if (open) this.render(); this.actions.layoutChanged?.(); }
   setFull(full) {
