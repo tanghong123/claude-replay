@@ -63,10 +63,11 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    With all three off the filter has nothing to offer, and neither its glyph nor its sheet is drawn.
  *  - `keyboard`: "engaged" (the default) or "page", as `KEYBOARD_MODES` says. Engaged, the list
  *    answers its keys (the next and the previous session, ↓ and ↑) only while a row of its own has the
- *    focus, and leaves every other key to the page. "page" is the app's mode: the list takes no key,
- *    and the host calls `keys[action]` from its own keymap (shared/keymap.js's "list" actions). In
- *    either mode the list hears the document's keys, taking none, to tell the keyboard's focus on a row
- *    from a press's: only the keyboard's is given back when the tree is rewritten.
+ *    focus, and leaves every other key to the page. "page" is the app's mode: the list binds no list
+ *    keys, and the host calls `keys[action]` from its own keymap (shared/keymap.js's "list" actions).
+ *    In either mode Enter and Space on a focused row activate it, as a click does, and the list hears
+ *    the document's keys, taking none, to tell the keyboard's focus on a row from a press's: only the
+ *    keyboard's is given back when the tree is rewritten.
  *  - `persist()`: remember the list's choices, at each moment the list changes one.
  *  - `onOpen({ id, push })`: the reader chose a session in the list (a row, the rail's flyout, the
  *    list keys), `push` whether it is a new place in the history. The list has not moved its
@@ -197,10 +198,14 @@ expandBtn.setAttribute("aria-label", "Expand every group");
 let treeWritten = null;
 // Where the focus in the tree came from (stage 4): the input just before it, a press in the tree (the
 // mouse's, which focuses a row as it goes down, or a finger's, whose focus comes as it lifts) or a key
-// anywhere (Tab, a step), a modifier alone not counting, so the window giving the focus back after
-// Cmd-Tab leaves it as it was. A press on the row that already has the focus makes that focus the
-// press's. Only the keyboard's is carried across a rewrite.
-let lastInput = "key", focusPressed = false;
+// anywhere (Tab, a step). A modifier alone does not count: it starts a chord (Cmd-Tab's Meta reaches
+// the page) and moves no focus. A press on the row that already has the focus makes that focus the
+// press's. The window giving the focus back is no new focus (#s460). Chrome 153 fires `focusout` on
+// the row as the window goes, leaving it the active element, and `focusin` on it as the window comes
+// back (measured for another app, a tab and a window; WebKit fires neither). So a `focusin` on the
+// row a `focusout` left focused (`keptFocus`) keeps whose the focus was: read again, a press's became
+// the keyboard's after any key. Only the keyboard's is carried across a rewrite.
+let lastInput = "key", focusPressed = false, keptFocus = null;
 const sessionIndex = new SessionIndexStore({
   update: () => {
     // The host's half first (`onIndex`): in the app, a selection whose row is gone, the view told and
@@ -971,7 +976,8 @@ tree.onclick = event => {
 };
 tree.onkeydown = event => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); event.target.click(); } };
 tree.onpointerdown = () => { lastInput = "press"; if (tree.contains(page.active())) focusPressed = true; };
-tree.addEventListener("focusin", () => { focusPressed = lastInput === "press"; });
+tree.addEventListener("focusout", event => { keptFocus = page.active() === event.target ? event.target : null; });
+tree.addEventListener("focusin", event => { if (event.target !== keptFocus) focusPressed = lastInput === "press"; keptFocus = null; });
 document.addEventListener("keydown", event => { if (!["Meta", "Control", "Alt", "Shift"].includes(event.key)) lastInput = "key"; }, { capture: true, signal });
 // A mark's click PINS its flyout (#300) — it used to jump to the agent's newest session, which the
 // flyout now lists first under its project. Enter and Space are the same click; ArrowRight too.

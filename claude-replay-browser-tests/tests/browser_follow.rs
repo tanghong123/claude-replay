@@ -2359,11 +2359,14 @@ fn the_session_list_in_a_host_switches_its_controls_off() {
 
 /// The session list's keys in a host (#s430 stage 4): engaged (the default) the list binds ↓ and ↑
 /// on its own element, so they step through its rows only while one of them has the focus, and leave
-/// every other key, and those keys elsewhere, to the page; with `keyboard: "page"` it takes none, and
-/// the host's keymap calls the handle's `keys`. A key that moves nothing (on a project's row, past the
-/// last session) is not taken, and chooses nothing. The row a step or Tab focused keeps the focus as
-/// the tree is rewritten; a row the mouse pressed and left does not, whether or not it had the focus. Before stage 4 the list bound no key at
-/// all (the app's keymap called its `step`), so a host's reader could not step through the list.
+/// every other key, and those keys elsewhere, to the page; with `keyboard: "page"` it binds none of
+/// them (Enter and Space on a focused row still activate it, as a click), and the host's keymap calls
+/// the handle's `keys`. A key that moves nothing (on a project's row, past the last session) is not
+/// taken, and chooses nothing. The row a step or Tab focused keeps the focus as the tree is rewritten;
+/// a row the mouse pressed and left does not, whether or not it had the focus. That press's focus
+/// stays the press's through a modifier alone and through the window's return (#s460), and becomes
+/// the keyboard's when a key comes and the focus moves. Before stage 4 the list bound no key at all
+/// (the app's keymap called its `step`), so a host's reader could not step through the list.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
@@ -2458,6 +2461,29 @@ fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
         &tab,
         "({ opened: window.__host.opened, keys: window.__host.keys.map(function (k) { return k.key + ':' + k.prevented; }) })",
     );
+    // #s460: after a press dragged off the first row, `then` runs, and the host selects `select`,
+    // which rewrites the tree (each step selects the other session, or nothing would be rewritten).
+    let after_press = |then: &str, select: &serde_json::Value| -> serde_json::Value {
+        harness::drag_select(&tab, xy(0), xy(1), xy(2), xy(3));
+        harness::probe(
+            &tab,
+            &format!(
+                "(function () {{ var row = document.querySelector('#tree .tree-row.session'); {then} var before = document.activeElement; window.__list.select({select}); return {{ replaced: !before.isConnected, focus: {focused} }}; }})()"
+            ),
+        )
+    };
+    let refocus = "document.getElementById('hostButton').focus(); row.focus();";
+    // A modifier alone (Cmd-Tab's own Meta reaches the page), then a script moves the focus off the
+    // row and back: Meta is not the last key, so the focus is still the press's.
+    let after_meta = after_press(&format!("{PRESS}('Meta'); {refocus}"), &rows[0]);
+    // A key, then the same move: that focus came after a key, so it is the keyboard's.
+    let after_key = after_press(&format!("{PRESS}('x'); {refocus}"), &rows[1]);
+    // A key, then the window goes and comes back as Chrome 153 does it (measured): a focusout on the
+    // row that leaves it the active element, then a focusin on it. That is no new focus.
+    let after_return = after_press(
+        &format!("{PRESS}('x'); row.dispatchEvent(new FocusEvent('focusout', {{ bubbles: true }})); row.dispatchEvent(new FocusEvent('focusin', {{ bubbles: true }}));"),
+        &rows[0],
+    );
     harness::open_list_host_page_with(&tab, &monitor, "keyboard=page");
     until_list_drawn(&tab);
     harness::eval(&tab, focus_row);
@@ -2529,9 +2555,24 @@ fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
         "the host's own listener, bound before the mount, heard every key after the list, taken or not"
     );
     assert_eq!(
+        after_meta,
+        serde_json::json!({ "replaced": true, "focus": "" }),
+        "a press dragged off a row, then a modifier alone and a focus moved off the row and back: still the press's focus, which a rewrite does not carry"
+    );
+    assert_eq!(
+        after_key,
+        serde_json::json!({ "replaced": true, "focus": first }),
+        "a press dragged off a row, then a key and the same move: the keyboard's focus, which a rewrite carries"
+    );
+    assert_eq!(
+        after_return,
+        serde_json::json!({ "replaced": true, "focus": "" }),
+        "a press dragged off a row, then a key and the window's return (focusout and focusin on the row that keeps the focus): still the press's, which a rewrite does not carry"
+    );
+    assert_eq!(
         page_press,
         serde_json::json!({ "taken": false, "opened": 0, "focus": first }),
-        "with keyboard: \"page\" the list takes no key, even on its own row"
+        "with keyboard: \"page\" the list binds no list keys: ↓ on its own row is the page's"
     );
     assert_eq!(
         routed,

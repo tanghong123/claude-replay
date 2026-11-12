@@ -325,9 +325,9 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      of its rows (`resolveKey` with the list's context), every other key and those keys elsewhere left
      to the page. The list holds the focus itself, so engagement is the focus, simpler than the view's
      last press: a row is focusable and nothing else in the list takes a key. The app passes
-     `keyboard: "page"` and spreads the handle's `keys` into its keymap; the list then binds no key of
-     its own, though in either mode it hears the document's keys, taking none, to know where a row's
-     focus came from (below). A step that moves nothing (from a project's row, past the last session)
+     `keyboard: "page"` and spreads the handle's `keys` into its keymap; the list then binds no list
+     keys. In either mode Enter and Space on a focused row activate it, as a click does, and the list
+     hears the document's keys, taking none, to know where a row's focus came from (below). A step that moves nothing (from a project's row, past the last session)
      answers `false`, so the key is not taken, engaged or in the app's keymap, and the last session is
      not chosen again.
    - **Where a row's focus came from.** A rewrite of the tree (the host's select, the index's next
@@ -347,7 +347,7 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      | Tab, after a press that focused nothing or none | no | yes |
      | A key's step, and the rewrite's own refocus | no | yes |
      | Enter on a row (a click with no pointer) | as it was | as it was |
-     | The window giving it back (after Cmd-Tab, say) | read again: yes if no key but a modifier reached the page since the press | as read |
+     | The window giving it back (another app, a tab, a window) | as it was | as it was |
 
      The direction that must never fail is a press's focus carried, which leaves the page's keys in
      the list. The other, the keyboard's focus dropped at a rewrite, is what main does after every
@@ -358,9 +358,19 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      focused row kept a clicked one; a carry that left the mouse's focus to the click kept a row
      pressed and dragged off it, a press straddling a rewrite (#s72) and, in Safari, a row whose button
      was clicked; and a mark the press set and the next focus cleared went stale after a press that
-     focused nothing, and missed a press on the focused row. Left, unmeasured: if the window's return
-     fires `focusin`, a press dragged off a row, then a key, then another app and
-     back reads as the keyboard's, until any click.
+     focused nothing, and missed a press on the focused row.
+
+     The window's return was measured in #s460, with a page holding this rule in two real browsers,
+     each switched to another app and back with `open -a` (the activation Cmd-Tab gives). Chrome 153
+     fires `focusout` on the row as the window goes, leaving the row the active element, and `focusin`
+     on it as the window comes back. It does so for another app, a tab and a second window. WebKit
+     (Playwright's macOS build 2359; safaridriver could not reach Safari 27) fires only the window's
+     own `blur` and `focus`, for another app and for a second window. Read again at Chrome's return, a
+     press dragged off a row and then any key made the press's focus the keyboard's, which the next
+     rewrite carried. So a `focusin` on the row a `focusout` left focused keeps whose the focus was. A
+     blur inside the page leaves the body the active element in both browsers, so it is read as before.
+     A modifier alone still does not count as the last key: it starts a chord (Cmd-Tab's Meta reaches
+     the page) and moves no focus.
    - **The strip.** `div.session-list-controls`, `display: contents`, so each control is still an item
      of the head's one row; the rule that hides the three while the column shows a pane now names the
      strip. The cases that read the head's children read through it. The rule is the list's and the
