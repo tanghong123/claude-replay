@@ -1400,7 +1400,9 @@ mod tests {
             );
         }
         assert!(
-            view.matches(":where(.pl-max-w-760,.pl-coarse.pl-max-h-500)").count() >= 100,
+            view.matches(":where(.pl-max-w-760,.pl-coarse.pl-max-h-500)")
+                .count()
+                >= 100,
             "session-view.css reads a phone as the layout module's classes"
         );
         assert!(

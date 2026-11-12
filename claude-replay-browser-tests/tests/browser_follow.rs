@@ -3715,6 +3715,12 @@ const VIEW_LAYOUT: &str = "(function(){ var v = document.getElementById('session
 /// reads exactly what the window read.
 const VIEW_AGAINST_WINDOW: &str = "(function(){ var v = document.getElementById('sessionView'); if (!v) return ['no view']; var names = ['pl-coarse','pl-fine','pl-max-h-500','pl-max-w-1180','pl-max-w-560','pl-max-w-620','pl-max-w-700','pl-max-w-760','pl-max-w-900','pl-min-h-501','pl-min-w-1181','pl-min-w-701','pl-min-w-761','pl-min-w-900','pl-min-w-901','pl-phone']; var query = function(n){ if (n === 'pl-phone') return '(max-width:760px), (pointer:coarse) and (max-height:500px)'; if (n === 'pl-coarse') return '(pointer:coarse)'; if (n === 'pl-fine') return '(pointer:fine)'; var m = /^pl-(max|min)-(w|h)-(\\d+)$/.exec(n); return '(' + m[1] + '-' + (m[2] === 'w' ? 'width' : 'height') + ':' + m[3] + 'px)'; }; return names.filter(function(n){ return v.classList.contains(n) !== matchMedia(query(n)).matches; }).map(function(n){ return n + (v.classList.contains(n) ? ' set' : ' not set') + ', window ' + query(n); }); })()";
 
+/// True once the layout module has read the view's box as it is now (its `--pl-w` and `--pl-h` are the
+/// element's size). It hears a resize through a ResizeObserver, which reports after the layout that moved
+/// the box: a wait on the width alone can probe in between and read the classes of the size before
+/// (since #s431 stage 1 swaps the list and its rail at once, the width is final at the first poll).
+const VIEW_CAUGHT_UP: &str = "(function(){ var v = document.getElementById('sessionView'); if (!v) return false; var r = v.getBoundingClientRect(); return Math.abs(parseFloat(v.style.getPropertyValue('--pl-w')) - r.width) < 0.5 && Math.abs(parseFloat(v.style.getPropertyValue('--pl-h')) - r.height) < 0.5; })()";
+
 /// Put the test host's pane at `left`, `width` wide, and wait for the view to have decided at that box.
 fn place_host_pane(tab: &headless_chrome::Tab, left: u32, width: u32) -> serde_json::Value {
     harness::eval(
@@ -3737,6 +3743,17 @@ fn place_host_pane(tab: &headless_chrome::Tab, left: u32, width: u32) -> serde_j
 /// its own 380px; a 700px pane is the desktop layout whose bands read 1000px, as a 1000px window at
 /// the default sidebar; 1000 and 1100px panes read 1300 and 1400. On the code before it the view set
 /// no class and read the window, 1400px, at every size.
+/// One placement of the host's pane: its left edge and width, whether the view is to read as a phone,
+/// the width its bands are to read, and the layout classes it must and must not wear.
+type HostPlacement = (
+    u32,
+    u32,
+    bool,
+    u32,
+    &'static [&'static str],
+    &'static [&'static str],
+);
+
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_view_in_a_host_lays_itself_out_by_its_own_box() {
@@ -3747,7 +3764,7 @@ fn the_session_view_in_a_host_lays_itself_out_by_its_own_box() {
     monitor.pair(&tab);
     harness::resize(&tab, 1400.0, 900.0);
     harness::open_host_page(&tab, &monitor, "");
-    let cases: [(u32, u32, bool, u32, &[&str], &[&str]); 4] = [
+    let cases: [HostPlacement; 4] = [
         (
             500,
             380,
@@ -3926,7 +3943,7 @@ fn the_app_shell_view_reads_what_the_window_read_where_nothing_changes() {
         harness::resize(&tab, width, 900.0);
         harness::until(
             &tab,
-            &format!("innerWidth === {width} && (function(){{ var v = document.getElementById('sessionView'); return !!v && Math.round(v.getBoundingClientRect().width) === innerWidth - 300; }})()"),
+            &format!("innerWidth === {width} && (function(){{ var v = document.getElementById('sessionView'); return !!v && Math.round(v.getBoundingClientRect().width) === innerWidth - 300; }})() && {VIEW_CAUGHT_UP}"),
             &format!("a {width}px window with the default sidebar"),
             Duration::from_secs(10),
             VIEW_LAYOUT,
@@ -3954,7 +3971,7 @@ fn the_app_shell_view_reads_what_the_window_read_where_nothing_changes() {
         monitor.open(&tab, &format!("?ui=app&session={sid}"));
         harness::until(
             &tab,
-            &format!("innerWidth === {w} && !!document.querySelector('.virtual-window') && !!document.getElementById('sessionView')"),
+            &format!("innerWidth === {w} && !!document.querySelector('.virtual-window') && !!document.getElementById('sessionView') && {VIEW_CAUGHT_UP}"),
             &format!("{name} to draw the session"),
             Duration::from_secs(20),
             VIEW_LAYOUT,
@@ -3996,7 +4013,7 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
         monitor.open(tab, &format!("?ui=app&session={sid}"));
         harness::until(
             tab,
-            &format!("innerWidth === {width} && !!document.querySelector('.virtual-window')"),
+            &format!("innerWidth === {width} && !!document.querySelector('.virtual-window') && {VIEW_CAUGHT_UP}"),
             what,
             Duration::from_secs(20),
             VIEW_LAYOUT,
@@ -4008,7 +4025,7 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
     open(&tab, 700.0, "a 700px window");
     let narrow = harness::probe(
         &tab,
-        &format!("(function(){{ var shown = {shown}; var h = document.getElementById('drawerHandle').getBoundingClientRect(), t = document.getElementById('sessionTitle').getBoundingClientRect(); return {{ layout: {VIEW_LAYOUT}, dock: shown('.phone-dock'), handle: shown('drawerHandle'), handleRight: Math.round(h.right), titleLeft: Math.round(t.left) }}; }})()"),
+        &format!("(function(){{ var shown = {shown}; var h = document.getElementById('drawerHandle').getBoundingClientRect(), t = document.getElementById('sessionTitle').getBoundingClientRect(); return {{ layout: {VIEW_LAYOUT}, dock: shown('.phone-dock'), handle: shown('drawerHandle'), handleRight: Math.round(h.right), titleTextLeft: Math.round(t.left + parseFloat(getComputedStyle(document.getElementById('sessionTitle')).paddingLeft)) }}; }})()"),
     );
     // A 900px window with a 520px sidebar.
     harness::eval(&tab, "localStorage.setItem('am-sidebar-width', '520')");
@@ -4016,7 +4033,7 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
     open(&tab, 900.0, "a 900px window with a 520px sidebar");
     harness::until(
         &tab,
-        "Math.round(document.getElementById('sessionView').getBoundingClientRect().width) === 380",
+        &format!("Math.round(document.getElementById('sessionView').getBoundingClientRect().width) === 380 && {VIEW_CAUGHT_UP}"),
         "the view to be 380px beside the 520px sidebar",
         Duration::from_secs(10),
         VIEW_LAYOUT,
@@ -4032,7 +4049,7 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
     harness::eval(&tab, "document.getElementById('sidebarCollapse').click()");
     harness::until(
         &tab,
-        "document.getElementById('app').classList.contains('sidebar-off') && Math.round(document.getElementById('sessionView').getBoundingClientRect().width) === innerWidth - 64",
+        &format!("document.getElementById('app').classList.contains('sidebar-off') && Math.round(document.getElementById('sessionView').getBoundingClientRect().width) === innerWidth - 64 && {VIEW_CAUGHT_UP}"),
         "the rail, the view 64px less than the window",
         Duration::from_secs(10),
         VIEW_LAYOUT,
@@ -4086,8 +4103,8 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
         "the drawer's handle is the app's, by the window: {narrow}"
     );
     assert!(
-        narrow["handleRight"].as_i64() <= narrow["titleLeft"].as_i64(),
-        "the handle is clear of the title: {narrow}"
+        narrow["handleRight"].as_i64() <= narrow["titleTextLeft"].as_i64(),
+        "the handle is clear of the title's words (its box starts 5px sooner: its hover pad): {narrow}"
     );
     assert_eq!(
         beside["layout"]["phone"], true,
