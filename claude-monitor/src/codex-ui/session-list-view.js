@@ -202,9 +202,11 @@ let treeWritten = null;
 // the page) and moves no focus. A press on the row that already has the focus makes that focus the
 // press's. The window giving the focus back is no new focus (#s460). Chrome 153 fires `focusout` on
 // the row as the window goes, leaving it the active element, and `focusin` on it as the window comes
-// back (measured for another app, a tab and a window; WebKit fires neither). So a `focusin` on the
-// row a `focusout` left focused (`keptFocus`) keeps whose the focus was: read again, a press's became
-// the keyboard's after any key. Only the keyboard's is carried across a rewrite.
+// back (measured for another app, a tab and a window; Playwright's macOS WebKit fires neither). So a
+// `focusin` on the row a `focusout` left focused (`keptFocus`) keeps whose the focus was: read again,
+// a press's became the keyboard's after any key. A press or a key is new input and forgets that row,
+// so a return that landed elsewhere leaves no mark to mistake a later press for. Only the keyboard's
+// is carried across a rewrite.
 let lastInput = "key", focusPressed = false, keptFocus = null;
 const sessionIndex = new SessionIndexStore({
   update: () => {
@@ -978,10 +980,10 @@ tree.onclick = event => {
   const toggle = event.target.closest("[data-toggle]"); if (toggle) { const key = toggle.dataset.toggle; indexState.collapsed.has(key) ? indexState.collapsed.delete(key) : indexState.collapsed.add(key); persist(); renderTree(); }
 };
 tree.onkeydown = event => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); event.target.click(); } };
-tree.onpointerdown = () => { lastInput = "press"; if (tree.contains(page.active())) focusPressed = true; };
+tree.onpointerdown = () => { lastInput = "press"; keptFocus = null; if (tree.contains(page.active())) focusPressed = true; };
 tree.addEventListener("focusout", event => { keptFocus = page.active() === event.target ? event.target : null; });
 tree.addEventListener("focusin", event => { if (event.target !== keptFocus) focusPressed = lastInput === "press"; keptFocus = null; });
-document.addEventListener("keydown", event => { if (!["Meta", "Control", "Alt", "Shift"].includes(event.key)) lastInput = "key"; }, { capture: true, signal });
+document.addEventListener("keydown", event => { if (!["Meta", "Control", "Alt", "Shift"].includes(event.key)) { lastInput = "key"; keptFocus = null; } }, { capture: true, signal });
 // A mark's click PINS its flyout (#300) — it used to jump to the agent's newest session, which the
 // flyout now lists first under its project. Enter and Space are the same click; ArrowRight too.
 railMarks.onclick = event => {

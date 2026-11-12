@@ -327,9 +327,9 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      last press: a row is focusable and nothing else in the list takes a key. The app passes
      `keyboard: "page"` and spreads the handle's `keys` into its keymap; the list then binds no list
      keys. In either mode Enter and Space on a focused row activate it, as a click does, and the list
-     hears the document's keys, taking none, to know where a row's focus came from (below). A step that moves nothing (from a project's row, past the last session)
-     answers `false`, so the key is not taken, engaged or in the app's keymap, and the last session is
-     not chosen again.
+     hears the document's keys, taking none, to know where a row's focus came from (below). A step
+     that moves nothing (from a project's row, past the last session) answers `false`, so the key is
+     not taken, engaged or in the app's keymap, and the last session is not chosen again.
    - **Where a row's focus came from.** A rewrite of the tree (the host's select, the index's next
      read, a fold) drops the focus to the page, where the next key is no longer the list's, so after a
      step the next arrow did nothing (in the app too, before stage 4). The rewrite gives a session row
@@ -369,10 +369,13 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      (Playwright's macOS build 2359; safaridriver could not reach Safari 27) fires only the window's
      own `blur` and `focus`, for another app and for a second window. Read again at Chrome's return, a
      press dragged off a row and then any key made the press's focus the keyboard's, which the next
-     rewrite carried. So a `focusin` on the row a `focusout` left focused keeps whose the focus was. A
-     blur inside the page leaves the body the active element in both browsers, so it is read as before.
-     A modifier alone still does not count as the last key: it starts a chord (Cmd-Tab's Meta reaches
-     the page) and moves no focus.
+     rewrite carried. So a `focusin` on the row a `focusout` left focused keeps whose the focus was.
+     Focus that leaves the row inside the page is read as before: Chromium's `focusout` then names the
+     body as the active element for a blur, a script's `focus()` elsewhere, a move into a frame and the
+     row's removal by a rewrite (the review's probe); WebKit's was measured for a blur only. A press or
+     a key forgets the kept row, so a return that landed elsewhere leaves no mark for a later press on
+     that row. A modifier alone still does not count as the last key: it starts a chord (Cmd-Tab's
+     Meta reaches the page) and moves no focus.
    - **The strip.** `div.session-list-controls`, `display: contents`, so each control is still an item
      of the head's one row; the rule that hides the three while the column shows a pane now names the
      strip. The cases that read the head's children read through it. The rule is the list's and the
