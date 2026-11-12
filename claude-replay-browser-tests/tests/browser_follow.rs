@@ -3941,8 +3941,10 @@ fn the_session_view_in_a_host_on_a_phone_reads_its_own_box_and_the_finger() {
 /// in the middle 12px from both; at the screen's right edge 12px from its left and 12px plus the inset
 /// from its right. The right side was red on 6b30c331, which took the screen's whole right inset in
 /// any box. And where the window has a classic scrollbar the box's right gap is measured to the
-/// scrollbar, not across it (`clientWidth`, not `innerWidth`; red on f17bb8c4). Each placement is a
-/// fresh mount: a move with no resize is #s467's.
+/// scrollbar, not across it (`clientWidth`, not `innerWidth`; red on f17bb8c4). A review sheet is drawn
+/// inside the pane too, its close control inside the inset where the island falls in the pane (red on
+/// 10d88b7d, which reached the sheet to the window's sides in a host as in the app). Each placement is
+/// a fresh mount: a move with no resize is #s467's.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_view_in_a_host_on_a_phone_counts_the_insets_only_inside_its_box() {
@@ -3977,7 +3979,9 @@ fn the_session_view_in_a_host_on_a_phone_counts_the_insets_only_inside_its_box()
             Duration::from_secs(10),
             gaps,
         );
-        seen.push((left, want_left, want_right, harness::probe(&tab, gaps)));
+        let mut got = harness::probe(&tab, gaps);
+        got["sheet"] = case_sheet(&tab);
+        seen.push((left, want_left, want_right, got));
     }
     drop(monitor);
     assert!(
@@ -3999,6 +4003,15 @@ fn the_session_view_in_a_host_on_a_phone_counts_the_insets_only_inside_its_box()
             (Some(want_left), Some(want_right)),
             "a 450px pane at x={left} on a phone held sideways keeps its dock {want_left}px from its \
              left and {want_right}px from its right, the island's inset counted only inside it: {got}"
+        );
+        let sheet = &got["sheet"];
+        let (left, want_left) = (i64::from(left), i64::from(want_left));
+        assert!(
+            sheet["left"].as_i64() == Some(left)
+                && sheet["right"].as_i64() == Some(left + 450)
+                && sheet["closeLeft"].as_i64().unwrap_or(-1) >= left + want_left - 12,
+            "a review sheet in a 450px pane at x={left} is drawn inside the pane, its close control \
+             inside the island's inset only where it falls in the pane: {got}"
         );
     }
 }
@@ -4174,11 +4187,35 @@ fn phone_layers_amiss(
     amiss
 }
 
-/// A review sheet as the pane draws it on a phone (`openReviewSheet` in preview.js: appended to the
-/// view, its close control at its top left), put there by hand over the open pane, since the case's
-/// session offers no Markdown file to review; then what [`LAYERS_AMISS`] finds with it open, where the
-/// sheet lies (`sheet`), its close control's left edge (`closeLeft`), and the pane's place before the
-/// sheet, under it and after it (`pane`), and the sheet and the pane are taken away.
+/// Appends a review sheet to the view as `openReviewSheet` (preview.js) does on a phone: the case's
+/// sessions offer no Markdown file to review, so it is put there by hand, its close control at its top
+/// left. [`CASE_SHEET_DRAWN`] waits for it, [`CASE_SHEET_READ`] reads where it lies.
+const CASE_SHEET: &str = "(function(){ var s = document.createElement('div'); s.className = 'review-sheet'; s.id = 'caseReviewSheet'; s.setAttribute('role', 'dialog'); s.innerHTML = '<div class=\"review-sheet-head\"><button type=\"button\" class=\"review-sheet-close\" id=\"caseReviewClose\" aria-label=\"Close the review\">x</button><strong>notes.md</strong></div><div class=\"review-sheet-body\"></div>'; document.getElementById('sessionView').append(s); return true; })()";
+const CASE_SHEET_DRAWN: &str = "(function(){ var s = document.getElementById('caseReviewSheet'), c = document.getElementById('caseReviewClose'); return !!s && s.getBoundingClientRect().width > 0 && c.getBoundingClientRect().width >= 44; })()";
+/// The sheet's edges, its close control's left edge, and the window's size.
+const CASE_SHEET_READ: &str = "(function(){ var r = document.getElementById('caseReviewSheet').getBoundingClientRect(); return { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom), width: innerWidth, height: innerHeight, closeLeft: Math.round(document.getElementById('caseReviewClose').getBoundingClientRect().left) }; })()";
+
+/// Puts [`CASE_SHEET`] in the view, reads it once drawn, and takes it away.
+fn case_sheet(tab: &headless_chrome::Tab) -> serde_json::Value {
+    harness::eval(tab, CASE_SHEET);
+    harness::until(
+        tab,
+        CASE_SHEET_DRAWN,
+        "the review sheet to be drawn",
+        Duration::from_secs(5),
+        "(function(){ var s = document.getElementById('caseReviewSheet'); return s ? JSON.stringify(s.getBoundingClientRect()) : 'no sheet'; })()",
+    );
+    let seen = harness::probe(tab, CASE_SHEET_READ);
+    harness::eval(
+        tab,
+        "document.getElementById('caseReviewSheet').remove(); true",
+    );
+    seen
+}
+
+/// A review sheet ([`CASE_SHEET`]) over the open pane; then what [`LAYERS_AMISS`] finds with it open,
+/// where the sheet lies (`sheet`), its close control's left edge (`closeLeft`), and the pane's place
+/// before the sheet, under it and after it (`pane`), and the sheet and the pane are taken away.
 fn review_sheet_amiss(tab: &headless_chrome::Tab) -> serde_json::Value {
     let settled = "document.getElementById('preview').getAnimations().length === 0";
     harness::eval(tab, "document.getElementById('previewBtn').click()");
@@ -4191,20 +4228,17 @@ fn review_sheet_amiss(tab: &headless_chrome::Tab) -> serde_json::Value {
     );
     let pane = "(function(){ var r = document.getElementById('preview').getBoundingClientRect(); return Math.round(r.left) + '-' + Math.round(r.right) + ' ' + Math.round(r.top) + '-' + Math.round(r.bottom); })()";
     let before = harness::eval(tab, pane);
-    harness::eval(
-        tab,
-        "(function(){ var s = document.createElement('div'); s.className = 'review-sheet'; s.id = 'caseReviewSheet'; s.setAttribute('role', 'dialog'); s.innerHTML = '<div class=\"review-sheet-head\"><button type=\"button\" class=\"review-sheet-close\" id=\"caseReviewClose\" aria-label=\"Close the review\">x</button><strong>notes.md</strong></div><div class=\"review-sheet-body\"></div>'; document.getElementById('sessionView').append(s); return true; })()",
-    );
+    harness::eval(tab, CASE_SHEET);
     harness::until(
         tab,
-        "(function(){ var s = document.getElementById('caseReviewSheet'), c = document.getElementById('caseReviewClose'); return !!s && s.getBoundingClientRect().width > 0 && c.getBoundingClientRect().width >= 44; })()",
+        CASE_SHEET_DRAWN,
         "the review sheet to be drawn",
         Duration::from_secs(5),
         "(function(){ var s = document.getElementById('caseReviewSheet'); return s ? JSON.stringify(s.getBoundingClientRect()) : 'no sheet'; })()",
     );
     let mut found = harness::probe(
         tab,
-        &format!("(function(){{ var f = {LAYERS_AMISS}('#caseReviewClose'); var r = document.getElementById('caseReviewSheet').getBoundingClientRect(); f.sheet = {{ left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom), width: innerWidth, height: innerHeight }}; f.closeLeft = Math.round(document.getElementById('caseReviewClose').getBoundingClientRect().left); return f; }})()"),
+        &format!("(function(){{ var f = {LAYERS_AMISS}('#caseReviewClose'); var r = {CASE_SHEET_READ}; f.sheet = r; f.closeLeft = r.closeLeft; return f; }})()"),
     );
     let under = harness::eval(tab, pane);
     harness::eval(
@@ -4267,8 +4301,9 @@ fn handle_over_the_pane(tab: &headless_chrome::Tab) -> serde_json::Value {
 /// Opens the right pane and takes it to the whole screen with its ⤢ (a phone held sideways), and
 /// returns where the pane lies, what a press at the window's left, over a wide phone's column,
 /// reaches, and the session's flow under it before ⤢ and at it (`session`, `sessionBefore`: each
-/// element of the session's column that no fixed layer holds, its place, width and side padding);
-/// then the pane goes back and shuts.
+/// element of the session's column that no fixed layer holds, its place, width and side padding) and
+/// where a review sheet opened at ⤢ lies (`sheet`, [`CASE_SHEET_READ`]); then the pane goes back and
+/// shuts.
 fn pane_full_screen(tab: &headless_chrome::Tab) -> serde_json::Value {
     let settled = "document.getElementById('preview').getAnimations().length === 0";
     harness::eval(tab, "document.getElementById('previewBtn').click()");
@@ -4299,6 +4334,7 @@ fn pane_full_screen(tab: &headless_chrome::Tab) -> serde_json::Value {
     );
     full["session"] = harness::eval(tab, insets);
     full["sessionBefore"] = before;
+    full["sheet"] = case_sheet(tab);
     harness::eval(
         tab,
         "document.querySelector('#preview .preview-expand').click()",
@@ -4345,7 +4381,8 @@ fn pane_full_screen(tab: &headless_chrome::Tab) -> serde_json::Value {
 ///   still takes the whole screen, the column included (both red on 6b30c331, whose contained view
 ///   painted under the app's handle and held the pane in its box). So does the review sheet, its
 ///   close control inside the island's inset (red on f17bb8c4, which held the sheet in the view's box),
-///   and the open pane under it keeps its place.
+///   and the open pane under it keeps its place; opened at ⤢ it covers the screen too (red on
+///   10d88b7d, which reached from the contained view's edges where ⤢ no longer contains it).
 ///   Over the open pane the handle stays with a layer of the view left open under it (red on
 ///   f17bb8c4, where it hid). At ⤢ nothing in the session's flow under the pane moves (a guard: on
 ///   f17bb8c4 only the session's fixed layers under the pane took the screen's insets).
@@ -4572,6 +4609,14 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
     assert_eq!(
         wide_full["session"], wide_full["sessionBefore"],
         "at ⤢ nothing in the session's flow under the pane moves, so nothing remeasures beneath it: {wide_full}"
+    );
+    let full_sheet = &wide_full["sheet"];
+    assert!(
+        full_sheet["left"] == 0
+            && full_sheet["right"] == full_sheet["width"]
+            && full_sheet["closeLeft"].as_i64().unwrap_or(0) >= 62,
+        "a review sheet opened at ⤢ covers the whole screen, its close control inside the island's \
+         inset: {wide_full}"
     );
     assert!(
         wide_dock["dockLeft"].as_i64() == wide_dock["viewLeft"].as_i64().map(|x| x + 12),
