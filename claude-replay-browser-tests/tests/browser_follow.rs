@@ -3753,7 +3753,8 @@ type HostPlacement = (
 /// has beside it. In a 1400px window, a 380px pane at x=500 is the phone reader, its bands reading
 /// its own 380px; a 700px pane is the desktop layout whose bands read 1000px, as a 1000px window at
 /// the default sidebar; 1000 and 1100px panes read 1300 and 1400. On the code before it the view set
-/// no class and read the window, 1400px, at every size.
+/// no class and read the window, 1400px, at every size. The 380px phone reader's shut pane stays out
+/// of the host's page beside it (red on 6b30c331, where it lay there over the page).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_view_in_a_host_lays_itself_out_by_its_own_box() {
@@ -3810,15 +3811,21 @@ fn the_session_view_in_a_host_lays_itself_out_by_its_own_box() {
     ];
     let mut seen = Vec::new();
     for (left, width, phone, band, on, off) in cases {
-        seen.push((
-            left,
-            width,
-            phone,
-            band,
-            on,
-            off,
-            place_host_pane(&tab, left, width),
-        ));
+        let layout = place_host_pane(&tab, left, width);
+        if phone {
+            // The phone reader holds its layers in its box, and its shut pane parks past the box's
+            // right edge, which here is not the window's: it must not lie over the host's page there
+            // (#s431 stage 2, the review of 6b30c331).
+            let x = left + width + 120;
+            harness::until(
+                &tab,
+                &format!("(function(){{ var f = {LAYERS_AMISS}(null); var h = document.elementFromPoint({x}, 450); return f.outside.length === 0 && !document.getElementById('sessionView').contains(h); }})()"),
+                "the shut pane to stay out of the host's page beside the view",
+                Duration::from_secs(5),
+                &format!("JSON.stringify({{ amiss: {LAYERS_AMISS}(null), at: (document.elementFromPoint({x}, 450) || {{}}).className }})"),
+            );
+        }
+        seen.push((left, width, phone, band, on, off, layout));
     }
     drop(monitor);
     for (left, width, phone, band, on, off, layout) in seen {
@@ -3993,27 +4000,48 @@ fn the_app_shell_view_reads_what_the_window_read_where_nothing_changes() {
 }
 
 /// #s431 stage 2 (the review of 86b7c06f): what is wrong with the view's layers while it is a phone
-/// reader that is not the whole window: the fixed layers drawn outside its box (the parked pane, off
-/// the screen, aside), and which of the title, the first list row in reach, the drawer's handle where
-/// it shows, and the layer `target` just opened do not take a press at their middle.
-const LAYERS_AMISS: &str = "(function(target){ var v = document.getElementById('sessionView'), vr = v.getBoundingClientRect(); var outside = []; [v].concat(Array.prototype.slice.call(v.querySelectorAll('*'))).forEach(function(e){ var cs = getComputedStyle(e); if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1 || r.left >= innerWidth || r.right <= 0) return; if (r.left < vr.left - 0.5 || r.right > vr.right + 0.5) outside.push((e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + Array.prototype.slice.call(e.classList).join('.')) + ' ' + Math.round(r.left) + '-' + Math.round(r.right)); }); var missed = []; var press = function(name, e){ if (!e) return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return; var h = document.elementFromPoint(r.left + Math.min(r.width / 2, 20), r.top + Math.min(r.height / 2, 20)); if (!e.contains(h)) missed.push(name + ' under ' + (h ? (h.id ? '#' + h.id : h.tagName.toLowerCase() + '.' + h.className) : 'nothing')); }; var row = Array.prototype.slice.call(document.querySelectorAll('#app>.sidebar .tree-row')).find(function(r){ var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 60 && b.bottom <= innerHeight - 60 && b.right <= vr.left; }); press('a list row', row); var handle = document.getElementById('drawerHandle'); if (handle && getComputedStyle(handle).display !== 'none') press('the handle', handle); if (target) press(target, document.querySelector(target)); else press('the title', document.getElementById('sessionTitle')); return { outside: outside, missed: missed, view: Math.round(vr.left) + '-' + Math.round(vr.right) }; })";
+/// reader that is not the whole window. `opened`: the layer `target` names is drawn (a step whose
+/// press opened nothing must not pass). `outside`: the fixed layers drawn outside the view's box (one
+/// wholly off the screen, as the shut pane beside a window's edge, aside). `missed`: which of the first
+/// list row in reach, the title (at rest) or the layer just opened, and the drawer's handle (at rest
+/// and over the right pane, which it stays above) do not take a press at their middle; and, where the
+/// handle shows and an open layer covers its place, whether the handle is drawn over the layer.
+const LAYERS_AMISS: &str = "(function(target){ var v = document.getElementById('sessionView'), vr = v.getBoundingClientRect(); var name = function(e){ return e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + Array.prototype.slice.call(e.classList).join('.'); }; var outside = []; [v].concat(Array.prototype.slice.call(v.querySelectorAll('*'))).forEach(function(e){ var cs = getComputedStyle(e); if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1 || r.left >= innerWidth || r.right <= 0) return; if (r.left < vr.left - 0.5 || r.right > vr.right + 0.5) outside.push(name(e) + ' ' + Math.round(r.left) + '-' + Math.round(r.right)); }); var missed = []; var at = function(e, x, y){ var h = document.elementFromPoint(x, y); return e.contains(h) ? null : (h ? name(h) : 'nothing'); }; var press = function(label, e){ if (!e) return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return; var under = at(e, r.left + Math.min(r.width / 2, 20), r.top + Math.min(r.height / 2, 20)); if (under) missed.push(label + ' under ' + under); }; var row = Array.prototype.slice.call(document.querySelectorAll('#app>.sidebar .tree-row')).find(function(r){ var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 60 && b.bottom <= innerHeight - 60 && b.right <= vr.left; }); press('a list row', row); var t = target ? document.querySelector(target) : null; var opened = !target || (!!t && t.getClientRects().length > 0 && t.getBoundingClientRect().width >= 1 && t.getBoundingClientRect().height >= 1 && getComputedStyle(t).visibility === 'visible'); var handle = document.getElementById('drawerHandle'); var hs = handle && getComputedStyle(handle); var handleShown = !!handle && hs.display !== 'none' && hs.visibility === 'visible'; if (handleShown && (!target || target === '#closePreview')) press('the handle', handle); if (handleShown && t && target !== '#closePreview') { var layer = t; while (layer && layer !== v && getComputedStyle(layer).position !== 'fixed') layer = layer.parentElement; if (!layer || layer === v) layer = t; var lr = layer.getBoundingClientRect(), hr = handle.getBoundingClientRect(); if (lr.left < hr.right && hr.left < lr.right && lr.top < hr.bottom && hr.top < lr.bottom) { var under = at(layer, (Math.max(lr.left, hr.left) + Math.min(lr.right, hr.right)) / 2, (Math.max(lr.top, hr.top) + Math.min(lr.bottom, hr.bottom)) / 2); if (under) missed.push(target + ' under ' + under + ' where the handle is'); } } if (target) press(target, t); else press('the title', document.getElementById('sessionTitle')); return { opened: opened, outside: outside, missed: missed, view: Math.round(vr.left) + '-' + Math.round(vr.right) }; })";
 
 /// Opens each of the phone reader's layers in turn (Info, Aa, the Turns sheet, the session's menu,
 /// the search's filter, the right pane, the reply box) and returns, for each that is amiss, what
-/// [`LAYERS_AMISS`] found. Write mode is switched on for the reply box and off again.
-fn phone_layers_amiss(tab: &headless_chrome::Tab) -> Vec<(String, serde_json::Value)> {
-    let steps: [(&str, &str, &str, &str); 8] = [
-        ("at rest", "", "", ""),
-        ("Info", "document.getElementById('phoneInfo').click()", "#infoPopover", "document.getElementById('phoneInfo').click()"),
-        ("Aa", "document.getElementById('readingBtn').click()", "#readingOptions", "document.getElementById('readingBtn').click()"),
-        ("the Turns sheet", "document.getElementById('phonePane-turns').click()", ".phone-pane-menu:not([hidden])", "document.getElementById('phonePane-turns').click()"),
-        ("the session's menu", "document.getElementById('sessionTitle').click()", "#sessionCopyMenu", "document.getElementById('sessionTitle').click()"),
-        ("the search's filter", "document.getElementById('transcriptSearchInput').focus(); document.getElementById('filterTranscriptBtn').click()", "#navigatorOptions", "document.getElementById('phoneSearchDone').click()"),
-        ("the right pane", "document.getElementById('previewBtn').click()", "#closePreview", "document.getElementById('closePreview').click()"),
-        ("the reply box", "document.getElementById('writeSwitch').click()", "#composeInput", "document.getElementById('closeComposer').click(); document.getElementById('writeSwitch').click()"),
+/// [`LAYERS_AMISS`] found. A step named in `not_offered` is one this layout does not offer (the Turns
+/// sheet beside a wide phone's column, whose switcher holds the panes): its opener must not show.
+/// Write mode is switched on for the reply box and off again.
+fn phone_layers_amiss(
+    tab: &headless_chrome::Tab,
+    not_offered: &[&str],
+) -> Vec<(String, serde_json::Value)> {
+    let steps: [(&str, &str, &str, &str, &str); 8] = [
+        ("at rest", "", "", "", ""),
+        ("Info", "phoneInfo", "document.getElementById('phoneInfo').click()", "#infoPopover", "document.getElementById('phoneInfo').click()"),
+        ("Aa", "readingBtn", "document.getElementById('readingBtn').click()", "#readingOptions", "document.getElementById('readingBtn').click()"),
+        ("the Turns sheet", "phonePane-turns", "document.getElementById('phonePane-turns').click()", ".phone-pane-menu:not([hidden])", "document.getElementById('phonePane-turns').click()"),
+        ("the session's menu", "sessionTitle", "document.getElementById('sessionTitle').click()", "#sessionCopyMenu", "document.getElementById('sessionTitle').click()"),
+        ("the search's filter", "transcriptSearchInput", "document.getElementById('transcriptSearchInput').focus(); document.getElementById('filterTranscriptBtn').click()", "#navigatorOptions", "document.getElementById('phoneSearchDone').click()"),
+        ("the right pane", "previewBtn", "document.getElementById('previewBtn').click()", "#closePreview", "document.getElementById('closePreview').click()"),
+        ("the reply box", "writeSwitch", "document.getElementById('writeSwitch').click()", "#composeInput", "document.getElementById('closeComposer').click(); document.getElementById('writeSwitch').click()"),
     ];
     let mut amiss = Vec::new();
-    for (name, open, target, close) in steps {
+    for (name, opener, open, target, close) in steps {
+        if not_offered.contains(&name) {
+            let shown = harness::probe(
+                tab,
+                &format!("(function(){{ var e = document.getElementById('{opener}'); return !!e && getComputedStyle(e).display !== 'none' && e.getClientRects().length > 0; }})()"),
+            );
+            if shown != serde_json::json!(false) {
+                amiss.push((
+                    name.to_string(),
+                    serde_json::json!({ "notOffered": "its opener shows" }),
+                ));
+            }
+            continue;
+        }
         if !open.is_empty() {
             harness::eval(tab, &format!("(function(){{ {open}; return true; }})()"));
         }
@@ -4034,7 +4062,10 @@ fn phone_layers_amiss(tab: &headless_chrome::Tab) -> Vec<(String, serde_json::Va
             format!("'{target}'")
         };
         let found = harness::probe(tab, &format!("{LAYERS_AMISS}({t})"));
-        if found["outside"] != serde_json::json!([]) || found["missed"] != serde_json::json!([]) {
+        if found["opened"] != serde_json::json!(true)
+            || found["outside"] != serde_json::json!([])
+            || found["missed"] != serde_json::json!([])
+        {
             amiss.push((name.to_string(), found));
         }
         if !close.is_empty() {
@@ -4042,6 +4073,76 @@ fn phone_layers_amiss(tab: &headless_chrome::Tab) -> Vec<(String, serde_json::Va
         }
     }
     amiss
+}
+
+/// A review sheet as the pane draws it on a phone (`openReviewSheet` in preview.js: appended to the
+/// view, its close control at its top left), put there by hand, since the case's session offers no
+/// Markdown file to review; then what [`LAYERS_AMISS`] finds with it open, and it is taken away.
+fn review_sheet_amiss(tab: &headless_chrome::Tab) -> serde_json::Value {
+    harness::eval(
+        tab,
+        "(function(){ var s = document.createElement('div'); s.className = 'review-sheet'; s.id = 'caseReviewSheet'; s.setAttribute('role', 'dialog'); s.innerHTML = '<div class=\"review-sheet-head\"><button type=\"button\" class=\"review-sheet-close\" id=\"caseReviewClose\" aria-label=\"Close the review\">x</button><strong>notes.md</strong></div><div class=\"review-sheet-body\"></div>'; document.getElementById('sessionView').append(s); return true; })()",
+    );
+    harness::eval(tab, "new Promise(function(done){ requestAnimationFrame(function(){ setTimeout(done, 300); }); })");
+    let found = harness::probe(tab, &format!("{LAYERS_AMISS}('#caseReviewClose')"));
+    harness::eval(
+        tab,
+        "document.getElementById('caseReviewSheet').remove(); true",
+    );
+    found
+}
+
+/// Opens the right pane and takes it to the whole screen with its ⤢ (a phone held sideways), and
+/// returns where the pane lies and what a press at the window's left, over a wide phone's column,
+/// reaches; then the pane goes back and shuts.
+fn pane_full_screen(tab: &headless_chrome::Tab) -> serde_json::Value {
+    let settled = "document.getElementById('preview').getAnimations().length === 0";
+    harness::eval(tab, "document.getElementById('previewBtn').click()");
+    harness::until(
+        tab,
+        &format!("!document.getElementById('sessionView').classList.contains('preview-off') && {settled}"),
+        "the right pane to open",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    harness::eval(
+        tab,
+        "document.querySelector('#preview .preview-expand').click()",
+    );
+    harness::until(
+        tab,
+        &format!("document.getElementById('sessionView').classList.contains('preview-full') && {settled}"),
+        "⤢ to take the pane to the whole screen",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    harness::eval(tab, "new Promise(function(done){ requestAnimationFrame(function(){ requestAnimationFrame(done); }); })");
+    let full = harness::probe(
+        tab,
+        "(function(){ var p = document.getElementById('preview'), r = p.getBoundingClientRect(); var h = document.elementFromPoint(80, innerHeight / 2); return { left: Math.round(r.left), right: Math.round(r.right), window: innerWidth, atLeft: p.contains(h) ? 'the pane' : (h ? (h.id ? '#' + h.id : h.tagName.toLowerCase() + '.' + h.className) : 'nothing') }; })()",
+    );
+    harness::eval(
+        tab,
+        "document.querySelector('#preview .preview-expand').click()",
+    );
+    harness::until(
+        tab,
+        &format!("!document.getElementById('sessionView').classList.contains('preview-full') && {settled}"),
+        "⤢ to bring the pane back",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    harness::eval(tab, "document.getElementById('closePreview').click()");
+    harness::until(
+        tab,
+        &format!(
+            "document.getElementById('sessionView').classList.contains('preview-off') && {settled}"
+        ),
+        "the right pane to shut",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    full
 }
 
 /// #s431 stage 2: the places design/pane-layout.md says change, each red on the code before it.
@@ -4056,9 +4157,15 @@ fn phone_layers_amiss(tab: &headless_chrome::Tab) -> Vec<(String, serde_json::Va
 ///   phone's layout (its bands read its own width), not the wide phone's.
 /// - Beside the 520px sidebar and beside the wide phone's column, the phone reader's fixed layers (its
 ///   dock, Info, Aa, the Turns sheet, the session's menu, the filter, the right pane and the reply
-///   box) stay in its own box and leave the list, the handle and the title reachable; the review of
-///   stage 2's first cut found them placed against the window, over the sidebar. Beside the column
-///   the island's inset is the column's, so the dock is 12px inside the view, not 12px plus the inset.
+///   box) open, stay in its own box and leave the list, the handle and the title reachable; the review
+///   of stage 2's first cut found them placed against the window, over the sidebar (red on 86b7c06f
+///   beside the sidebar; beside the column the app had kept each clear by a rule of its own). Beside
+///   the column the island's inset is the column's, so the dock is 12px inside the view, not 12px plus
+///   the inset.
+/// - Beside the column in Safari's 330px, where Aa rises over the top bar by the handle (#s242), and
+///   with a review sheet over the view, the handle is never drawn over the layer; and the pane's ⤢
+///   still takes the whole screen, the column included (both red on 6b30c331, whose contained view
+///   painted under the app's handle and held the pane in its box).
 /// - The list's rows are 44px touch targets on an iPad's sidebar, where they were 37px.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
@@ -4099,7 +4206,7 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
         &tab,
         &format!("(function(){{ var shown = {shown}; var v = document.getElementById('sessionView').getBoundingClientRect(), t = document.getElementById('sessionTitle').getBoundingClientRect(); return {{ layout: {VIEW_LAYOUT}, dock: shown('.phone-dock'), handle: shown('drawerHandle'), titleInset: Math.round(t.left - v.left) }}; }})()"),
     );
-    let beside_layers = phone_layers_amiss(&tab);
+    let beside_layers = phone_layers_amiss(&tab, &[]);
     harness::eval(&tab, "localStorage.removeItem('am-sidebar-width')");
     // A 1000px window on the rail, the right pane open.
     harness::resize(&tab, 1000.0, 900.0);
@@ -4135,7 +4242,14 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
         &tab,
         "(function(){ var v = document.getElementById('sessionView').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(); return { viewLeft: Math.round(v.left), dockLeft: Math.round(d.left) }; })()",
     );
-    let wide_layers = phone_layers_amiss(&tab);
+    let wide_layers = phone_layers_amiss(&tab, &["the Turns sheet"]);
+    let wide_full = pane_full_screen(&tab);
+    // The same phone in Safari, whose tab bar leaves 330px of it.
+    harness::phone(&tab, 932, 330);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    open(&tab, 932.0, "a wide phone held sideways in Safari");
+    let short_layers = phone_layers_amiss(&tab, &["the Turns sheet"]);
+    let review = review_sheet_amiss(&tab);
     harness::safe_area(&tab, (0, 0, 0, 0));
     harness::phone(&tab, 834, 1194);
     open(&tab, 834.0, "an iPad upright");
@@ -4231,6 +4345,23 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
         Vec::new(),
         "beside a wide phone's column the phone reader keeps every layer in its own box, and the list, \
          the handle, the title and each layer take a press"
+    );
+    assert_eq!(
+        short_layers,
+        Vec::new(),
+        "beside the column in Safari's 330px, each layer, Aa risen over the top bar among them, is drawn \
+         over the handle, never under it"
+    );
+    assert_eq!(
+        (review["opened"].clone(), review["missed"].clone()),
+        (serde_json::json!(true), serde_json::json!([])),
+        "a review sheet beside the column takes the press on its close control, not the handle: {review}"
+    );
+    assert!(
+        wide_full["left"] == 0
+            && wide_full["right"] == wide_full["window"]
+            && wide_full["atLeft"] == "the pane",
+        "⤢ takes the pane to the whole screen beside the column, the column included: {wide_full}"
     );
     assert!(
         wide_dock["dockLeft"].as_i64() == wide_dock["viewLeft"].as_i64().map(|x| x + 12),
