@@ -184,7 +184,8 @@ pub fn edits_applied_note(applied: Option<usize>, sent: usize) -> Option<String>
 /// #s456: a SendMessage that resumed a sub-agent and waited for its report has the receipt as its
 /// first line and the report after it ([`send_reply`]). The receipt is then only its first
 /// sentence ("Resumed agent."): the rest tells the agent where to find the report ("follows this
-/// JSON, framed by the harness"), and the card draws the report itself.
+/// JSON, framed by the harness"), and the card draws the report itself. Only a receipt that says
+/// so is read that way: any other receipt with lines after it is kept whole, as before.
 pub fn send_receipt(out: &str) -> String {
     if let Some(m) = reply_receipt(out) {
         return match m.split_once(". ") {
@@ -204,14 +205,16 @@ pub fn send_reply(out: &str) -> Option<&str> {
     Some(rest.trim_start_matches('\n'))
 }
 
-/// The receipt sentence of a result whose first line is the receipt's JSON and that goes on after
-/// it (#s456).
+/// The receipt sentence of a result whose first line is the receipt's JSON, saying the report
+/// follows it, and that goes on after it (#s456). A receipt read by its shape alone would cut any
+/// receipt with a hint line under it to its first sentence (the #s456 review).
 fn reply_receipt(out: &str) -> Option<String> {
+    const FOLLOWS: &str = "follows this JSON";
     let (first, rest) = out.trim_start().split_once('\n')?;
     if rest.trim().is_empty() {
         return None;
     }
-    receipt_message(first.trim())
+    receipt_message(first.trim()).filter(|m| m.contains(FOLLOWS))
 }
 
 /// The `message` of a receipt's JSON, when the text is that JSON and the message says something.
@@ -418,9 +421,11 @@ pub fn run_changes(tools: &[Block]) -> Option<(usize, usize)> {
 mod tests {
     use super::*;
 
-    /// #s83 and #s456: a receipt alone is its sentence and brings no reply; a receipt line with a
-    /// report after it (a resumed sub-agent's, framed hand-back unframed) is the receipt's first
-    /// sentence and the report; anything that is not a receipt's JSON is kept as it is.
+    /// #s83 and #s456: a receipt alone is its sentence and brings no reply; a receipt line saying
+    /// the report follows, with a report after it (a resumed sub-agent's, framed hand-back
+    /// unframed), is the receipt's first sentence and the report; a receipt that says nothing of
+    /// a report, with a line after it, is kept whole; anything that is not a receipt's JSON is
+    /// kept as it is.
     #[test]
     fn a_send_receipt_and_the_reply_it_brought_back() {
         let alone = r#"{"success":true,"message":"“x” → uds:/tmp/cc-socks/1.sock; in that session's inbox, not yet read","msg_id":"m"}"#;
@@ -439,9 +444,17 @@ mod tests {
         let plain = "Message sent.\nAnd a second line.";
         assert_eq!(send_receipt(plain), plain);
         assert_eq!(send_reply(plain), None);
-        let one_sentence = "{\"success\":true,\"message\":\"Resumed agent\"}\nthe report";
-        assert_eq!(send_receipt(one_sentence), "Resumed agent");
+        let one_sentence =
+            "{\"success\":true,\"message\":\"Resumed agent; its report follows this JSON\"}\nthe report";
+        assert_eq!(
+            send_receipt(one_sentence),
+            "Resumed agent; its report follows this JSON"
+        );
         assert_eq!(send_reply(one_sentence), Some("the report"));
+        let hinted = "{\"success\":false,\"message\":\"No agent named 'x' is reachable. Did you \
+                      mean 'y'?\"}\n(a hint line)";
+        assert_eq!(send_receipt(hinted), hinted, "not a hand-back: kept whole");
+        assert_eq!(send_reply(hinted), None);
     }
 
     /// #s355: who a message went to, as its head names it.

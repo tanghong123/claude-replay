@@ -19130,10 +19130,7 @@ fn scenario_a_message_sent_shows_the_report_it_brought_back(
         card["item"] == true && card["heading"] == 1,
         "{surface:?}: the report it brought back is drawn as Markdown (a heading, a list): {card}"
     );
-    let (reply, tail) = (
-        text.find("PROBE-S456-REPLY"),
-        text.find("PROBE-S456-TAIL"),
-    );
+    let (reply, tail) = (text.find("PROBE-S456-REPLY"), text.find("PROBE-S456-TAIL"));
     assert!(
         matches!((reply, tail), (Some(r), Some(t)) if t > r),
         "{surface:?}: the web tail is kept, after the report: {card}"

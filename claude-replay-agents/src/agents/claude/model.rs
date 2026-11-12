@@ -669,9 +669,11 @@ const HANDBACK_FOLLOWS: &str = "The report follows:\n";
 /// report in every result met — and only when a result carries no such copy (or one whose counts
 /// leave no block for the report) is it cut from the text: the indented lines after the frame, up
 /// to the first at column zero, which on an Agent result opens the client's own trailer for the
-/// model (`agentId: … (use SendMessage …)` and a `<usage>` element), whose id, tokens, tool uses
-/// and duration the card draws from the result's fields; what stood above the frame is the notes
-/// and tails, kept after the report as from `content`. A result without the frame (every client
+/// model (`agentId: … (use SendMessage …)` and a `<usage>` element): how to resume the agent,
+/// which a reader cannot, and its id, which the card draws from `agentId`, and the counts, which
+/// the result carries as fields known and not drawn (`totalTokens`, `totalToolUseCount`,
+/// `totalDurationMs`); what stood above the frame is the notes and tails, kept after the report
+/// as from `content`. A result without the frame (every client
 /// before 2.1.289) is untouched.
 ///
 /// #s456 (client 2.1.322, one record): a `SendMessage` to a sub-agent (`recipient_kind: agent`)
@@ -730,7 +732,8 @@ fn handback_frame_at(txt: &str) -> Option<usize> {
 /// The report, and the notes and tails a reader keeps, from a hand-back's `content` (`src` is the
 /// `toolUseResult`, or its `inlineHandback`): the notes are the first `harnessNoteCount` blocks,
 /// the tails the last `harnessTailCount`, the report what lies between. `None` when there is no
-/// copy, or when the counts leave no block for the report.
+/// copy, when the counts leave no block for the report (or overflow), or when a note or tail is
+/// not text, which the text the model was sent still carries in some form and a copy cannot.
 fn handback_from_content(src: &Value) -> Option<(String, Vec<String>)> {
     fn text(b: &Value) -> Option<&str> {
         if b.get("type").and_then(Value::as_str) != Some("text") {
@@ -741,9 +744,13 @@ fn handback_from_content(src: &Value) -> Option<(String, Vec<String>)> {
     match src.get("content")? {
         Value::String(s) if !s.trim().is_empty() => Some((s.clone(), Vec::new())),
         Value::Array(blocks) => {
-            let count = |k: &str| src.get(k).and_then(Value::as_u64).unwrap_or(0) as usize;
-            let (notes, tails) = (count("harnessNoteCount"), count("harnessTailCount"));
-            if notes + tails >= blocks.len() {
+            let count = |k: &str| {
+                src.get(k)
+                    .and_then(Value::as_u64)
+                    .map_or(Some(0), |n| usize::try_from(n).ok())
+            };
+            let (notes, tails) = (count("harnessNoteCount")?, count("harnessTailCount")?);
+            if notes.checked_add(tails)? >= blocks.len() {
                 return None;
             }
             let report = blocks[notes..blocks.len() - tails]
@@ -754,10 +761,18 @@ fn handback_from_content(src: &Value) -> Option<(String, Vec<String>)> {
             if report.trim().is_empty() {
                 return None;
             }
-            let extras = blocks[..notes]
+            let notes = blocks[..notes]
                 .iter()
-                .chain(&blocks[blocks.len() - tails..])
-                .filter_map(text)
+                .map(text)
+                .collect::<Option<Vec<_>>>()?;
+            let tails = blocks[blocks.len() - tails..]
+                .iter()
+                .map(text)
+                .collect::<Option<Vec<_>>>()?;
+            let extras = notes
+                .into_iter()
+                .filter(|n| !is_tools_used_note(n))
+                .chain(tails)
                 .map(str::to_string)
                 .collect();
             Some((report, extras))
@@ -769,7 +784,8 @@ fn handback_from_content(src: &Value) -> Option<(String, Vec<String>)> {
 /// The report cut from the text the model was sent, when no clean copy came with it: the indented
 /// lines after the frame, two spaces off each, up to the first line at column zero (the client's
 /// trailer); and what stood between `start` and the frame (the notes and tails, indented), as its
-/// paragraphs.
+/// paragraphs, less the tools-used notes that open it — the notes come first, so a paragraph of a
+/// tail that only looks like one is kept.
 fn handback_from_text(txt: &str, start: usize, frame: usize) -> Option<(String, Vec<String>)> {
     let follows = frame + txt[frame..].find(HANDBACK_FOLLOWS)?;
     let mut lines: Vec<&str> = Vec::new();
@@ -795,17 +811,19 @@ fn handback_from_text(txt: &str, start: usize, frame: usize) -> Option<(String, 
         .split("\n\n")
         .map(str::trim)
         .filter(|p| !p.is_empty())
+        .skip_while(|p| is_tools_used_note(p))
         .map(str::to_string)
         .collect();
     Some((report, extras))
 }
 
 /// The report, then what the client added beside it that a reader keeps — every note and tail but
-/// the tools-used element (#s456) — behind a rule.
+/// the tools-used element (#s456), which the callers have taken out, and a blank one — behind a
+/// rule.
 fn with_extras(report: String, extras: Vec<String>) -> String {
     let kept: Vec<String> = extras
         .into_iter()
-        .filter(|e| !is_tools_used_note(e))
+        .filter(|e| !e.trim().is_empty())
         .collect();
     if kept.is_empty() {
         report
@@ -8200,8 +8218,9 @@ mod tests {
     }
 
     /// #s456: with no clean copy, the report is cut from the text: the indented lines after the
-    /// frame, up to the client's trailer at column zero (its id, tokens, tool uses and duration
-    /// are the card's own fields); the tail standing above the frame is kept after it.
+    /// frame, up to the client's trailer at column zero (how to resume the agent, its id and its
+    /// counts, which the result carries as fields); the tail standing above the frame is kept
+    /// after it.
     #[test]
     fn a_framed_report_with_notes_and_no_clean_copy_is_cut_from_its_text() {
         let jsonl = s456_agent_session(
@@ -8212,6 +8231,62 @@ mod tests {
         assert_eq!(
             agent_result_of(&jsonl),
             format!("{S5_REPORT}\n\n---\n\n{S456_TAIL}")
+        );
+    }
+
+    /// #s456 review: counts no client writes — past the blocks, past `usize`, or summing past it —
+    /// leave the copy unused, never a panic, and the report is cut from the text.
+    #[test]
+    fn a_framed_report_whose_counts_overflow_is_cut_from_its_text() {
+        let want = format!("{S5_REPORT}\n\n---\n\n{S456_TAIL}");
+        for counts in [
+            serde_json::json!({"harnessNoteCount": u64::MAX}),
+            serde_json::json!({"harnessNoteCount": 1u64 << 63, "harnessTailCount": 1u64 << 63}),
+            serde_json::json!({"harnessTailCount": 9}),
+        ] {
+            let jsonl = s456_agent_session(&[S456_TOOLS_NOTE], &[S456_TAIL], counts.clone());
+            assert_eq!(agent_result_of(&jsonl), want, "{counts}");
+        }
+    }
+
+    /// #s456 review: a blank tail leaves no rule under the report; a note or tail that is not
+    /// text leaves the copy unused, and the text the model was sent says what stood there.
+    #[test]
+    fn a_framed_report_drops_a_blank_tail_and_reads_a_non_text_part_from_its_text() {
+        let blank = s456_agent_session(&[], &[""], serde_json::json!({}));
+        assert_eq!(agent_result_of(&blank), S5_REPORT);
+        let image = serde_json::json!({"type": "image", "source": {"type": "base64",
+            "media_type": "image/png", "data": "AAAA"}});
+        let jsonl = s456_agent_session(
+            &["[an image the client added]"],
+            &[],
+            serde_json::json!({"content": [image, {"type": "text", "text": S5_REPORT}]}),
+        );
+        assert_eq!(
+            agent_result_of(&jsonl),
+            format!("{S5_REPORT}\n\n---\n\n[an image the client added]")
+        );
+    }
+
+    /// #s456 review: only a NOTE that is the tools-used element goes. A tail that is one, or a
+    /// tail's paragraph that is one, stays: from the copy by its count, from the text because the
+    /// notes come first.
+    #[test]
+    fn a_tools_used_element_in_a_tail_is_kept() {
+        const TOOLS_BASH: &str = "<tools-used-before-summary>Bash</tools-used-before-summary>";
+        let tail = format!("[Harness note: first]\n\n{TOOLS_BASH}");
+        for tur in [serde_json::json!({}), serde_json::json!({"content": null})] {
+            let jsonl = s456_agent_session(&[S456_TOOLS_NOTE], &[&tail], tur.clone());
+            assert_eq!(
+                agent_result_of(&jsonl),
+                format!("{S5_REPORT}\n\n---\n\n{tail}"),
+                "{tur}"
+            );
+        }
+        let jsonl = s456_agent_session(&[], &[TOOLS_BASH], serde_json::json!({}));
+        assert_eq!(
+            agent_result_of(&jsonl),
+            format!("{S5_REPORT}\n\n---\n\n{TOOLS_BASH}")
         );
     }
 

@@ -1743,6 +1743,39 @@ mod tests {
         );
     }
 
+    /// #s456: a message that resumed a sub-agent shows the receipt's first sentence, then the
+    /// report it brought back; `body_len` counts both, so the folded count is honest.
+    #[test]
+    fn a_message_that_resumed_an_agent_shows_the_report_it_brought_back() {
+        let b = Block::ToolUse {
+            name: "SendMessage".into(),
+            target: "Ask the explorer".into(),
+            diffs: vec![],
+            output: Some(
+                "{\"success\":true,\"message\":\"Resumed agent. Its final report follows this \
+                 JSON, framed by the harness.\"}\n## Index\n\nRebuilt nightly."
+                    .into(),
+            ),
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+            sent: Some("When is the index rebuilt?".into()),
+            sent_to: None,
+            saved_output: None,
+        };
+        let t = texts(&render_one(&b, 120, Hl::Styled));
+        assert!(t[1].contains("When is the index rebuilt?"), "{t:?}");
+        assert_eq!(t[2].trim(), "Resumed agent.", "{t:?}");
+        assert_eq!(t[3].trim(), "## Index", "{t:?}");
+        assert_eq!(t[5].trim(), "Rebuilt nightly.", "{t:?}");
+        assert_eq!(t.len(), 6, "{t:?}");
+        assert_eq!(body_len(&b), 5, "the lines under the header");
+    }
+
     /// A multi-line shell command keeps its line breaks in the `⏺ Bash(...)`
     /// header instead of being reflowed into one line (the newline-flatten bug).
     #[test]
