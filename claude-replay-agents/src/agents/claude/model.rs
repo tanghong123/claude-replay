@@ -1071,6 +1071,12 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     "instructions",
     "invoked_skills",
     "mcp_instructions_delta",
+    // #s468 (the Qoder desktop app, client 1.1.86-hotfix.2, measured 2026-11-13 on hong-devserver,
+    // once in one session, at its start): `{type, content, isInitial: true, addedNames: [names],
+    // removedNames: []}`, the client telling the MODEL which MCP tools it can load on demand, the
+    // family's form of `deferred_tools_delta`, above. Addressed to the model, so nothing is drawn.
+    // REVISIT if one mid-session removes tools a reader would want named.
+    "mcp_lazy_tools_delta",
     "model",
     "nested_memory",
     "plan_file_reference",
@@ -2416,7 +2422,10 @@ const READ_NOTIFICATIONS_SHAPE: &[&str] = &["notifications", "read_at", "remaini
 /// a transcript carries it. An output too large for the transcript adds `persistedOutput` (#s114,
 /// 1.1.59, 1 measured 2026-10-15) after `noOutputExpected`: `{path, originalSizeBytes,
 /// savedSizeBytes, truncated, preview}`, the file the client saved the whole output to, while
-/// `stdout` keeps its first 30,000 bytes; read by `persisted_notice`.
+/// `stdout` keeps its first 30,000 bytes; read by `persisted_notice`. The Qoder desktop app on the
+/// same engine line (#s468, client 1.1.86-hotfix.2, measured 2026-11-13 on hong-devserver: 15
+/// results in one session of the Qoder store) adds `processStarted`, true on all 15, to the same
+/// keys, `isError` beside `exitCode` 1 on the one that failed.
 const QWENWORK_BASH_SHAPE: &[&str] = &[
     "exitCode",
     "interrupted",
@@ -2425,6 +2434,7 @@ const QWENWORK_BASH_SHAPE: &[&str] = &[
     "kind",
     "noOutputExpected",
     "persistedOutput",
+    "processStarted",
     "returnCodeInterpretation",
     "signal",
     "stderr",
@@ -2680,6 +2690,12 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // REVISIT for a saved file that is itself cut, which the notice does not say. `preview` is
     // the first 2,000 characters of `stdout`.
     ("persistedOutput", QWENWORK_BASH_SHAPE),
+    // #s468 (the Qoder desktop app, client 1.1.86-hotfix.2, 15 results measured 2026-11-13 on
+    // hong-devserver, true on all 15): a true `processStarted` says the command ran, which the card
+    // already shows by drawing its output and exit. A generic word, so known in this shape only;
+    // in the shape it also keeps `kind`, `signal` and `isError` known beside it. REVISIT on a
+    // false: a command that never started, which the card would draw as a call that ran.
+    ("processStarted", QWENWORK_BASH_SHAPE),
     // #s375 (Qwenwork 1.1.59): a command the client moved to the background, one shape. `kind`
     // ("backgrounded" in all 4) is the result's type tag. `backgroundReason` was "timeout" in all
     // 4, which the notice the card shows states, and the client's source also names "model". `pid`
@@ -3863,10 +3879,11 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
 
 /// [`decode_line`] for an adapter that writes record types — and top-level keys (#361) — of its
 /// OWN on top of Claude's format: the QoderWork family's head rows (#359) and its extra keys, so
-/// they are known for that adapter alone and a Claude record that ever takes the same name is
-/// still reported. `also_read_subtypes` names the `system` subtypes of its own this decoder folds
-/// for it (#s377: the family's `api_retry`), which through Claude's own decoder draw nothing and
-/// are reported as new.
+/// they are known for the adapters that pass them alone (the family's, and the Qoder store's,
+/// #s468) and a Claude record that ever takes the same name is still reported.
+/// `also_read_subtypes` names the `system` subtypes of its own this decoder folds for it (#s377:
+/// the family's `api_retry`), which through Claude's own decoder draw nothing and are reported as
+/// new.
 pub(crate) fn decode_line_known(
     line: &str,
     cwd: &mut String,
@@ -4152,7 +4169,8 @@ pub(crate) fn decode_line_known(
             }
         }
         // #s377: the QoderWork family's form of the same event, one record per retry, read for
-        // the family's adapters alone and drawn exactly as `api_error` is.
+        // the family's adapters and the Qoder store's (#s468) alone and drawn exactly as
+        // `api_error` is.
         Some("system")
             if v.get("subtype").and_then(|s| s.as_str()) == Some("api_retry")
                 && also_read_subtypes.contains(&"api_retry") =>
@@ -9681,8 +9699,8 @@ mod tests {
     /// #s375: the shapes the sub-agent sweep first showed on aries-black are known in the shape
     /// each was judged in, and only there — a Qwenwork Bash result whose command the client moved
     /// to the background, a Qwenwork tool's refusal class, Artifact's file listing — and the code
-    /// on a Qwenwork API-error record is known to the family's adapters alone. Removing any one
-    /// entry turns this red.
+    /// on a Qwenwork API-error record is known to the family's adapters (and the Qoder store's,
+    /// #s468) alone. Removing any one entry turns this red.
     #[test]
     fn the_shapes_the_sub_agent_sweep_showed_on_aries_black_are_known_in_their_shape() {
         let sorted = |mut v: Vec<&str>| {
@@ -9764,9 +9782,10 @@ mod tests {
         );
     }
 
-    /// #s377: the QoderWork family's `api_retry` folds, for the family's adapters alone, to the
-    /// one failure note Claude Code's `api_error` folds to, in the same words; through Claude's own
-    /// decoder it draws nothing and is still reported as a new subtype.
+    /// #s377: the QoderWork family's `api_retry` folds, for the family's adapters (and the Qoder
+    /// store's, #s468) alone, to the one failure note Claude Code's `api_error` folds to, in the
+    /// same words; through Claude's own decoder it draws nothing and is still reported as a new
+    /// subtype.
     #[test]
     fn the_family_s_api_retry_is_drawn_as_claude_code_s_api_error_is() {
         use crate::agents::qoderwork::discover::{
@@ -10724,7 +10743,8 @@ mod tests {
     }
 
     /// #361, as #359 did for record types: the QoderWork family's own keys are known to the
-    /// family's adapters alone, so a Claude record that grows one is still reported.
+    /// family's adapters (and the Qoder store's, #s468) alone, so a Claude record that grows one is
+    /// still reported.
     #[test]
     fn the_family_s_own_keys_are_known_to_its_adapters_alone() {
         let v: Value = serde_json::from_str(

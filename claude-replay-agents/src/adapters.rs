@@ -382,11 +382,14 @@ impl TranscriptAdapter for CodexAdapter {
     }
 }
 
-/// Qoder CLI adapter — a Claude-Code-format terminal agent with its own store
-/// (`~/.qoder/projects`). Everything format-level DELEGATES to the Claude
-/// implementations (tokenizer, shaping, metrics — whose shared usage fold also reads
-/// Qoder's `usage.credits` — enrichment, attachments, the `subagents/agent-<id>.jsonl`
-/// sub-agent layout); only the store roots differ.
+/// Qoder adapter — the store `~/.qoder/projects`, written by the Qoder CLI, a
+/// Claude-Code-format terminal agent, and now also by the Qoder desktop app (#s468: bundle
+/// `com.qoder.app` 0.5.9, measured 2026-11-13 on hong-devserver), whose sessions run on the
+/// QoderWork family's engine line (client 1.1.86) and carry the family's head rows, record
+/// keys and `api_retry`, so the decoder knows the family's lists as the family's adapters do.
+/// Everything format-level DELEGATES to the Claude implementations (tokenizer, shaping,
+/// metrics — whose shared usage fold also reads Qoder's `usage.credits` — enrichment,
+/// attachments, the `subagents/agent-<id>.jsonl` sub-agent layout); only the store roots differ.
 pub struct QoderAdapter;
 impl TranscriptAdapter for QoderAdapter {
     fn store_transcripts(&self) -> Vec<std::path::PathBuf> {
@@ -431,8 +434,20 @@ impl TranscriptAdapter for QoderAdapter {
     fn elision(&self) -> claude_replay_engine::seam::Elision {
         agents::claude::model::CLAUDE_ELISION
     }
+    // Claude's decoder with the QoderWork family's lists (#s468), as the family's own adapters
+    // decode: the desktop app writes the family's head rows and keys into this store. So its
+    // head rows and keys are known to the sweep, and a Qoder-store `api_retry` is drawn as an API
+    // error (#s377), as it is for the family. (A reply carrying `partialStreamIndex` is drawn cut
+    // off on every decoding path, #s397, so that needed nothing here.)
     fn decode_line(&self, line: &str, cwd: &mut String, out: &mut Vec<Message>) {
-        agents::claude::model::decode_line(line, cwd, out)
+        agents::claude::model::decode_line_known(
+            line,
+            cwd,
+            out,
+            agents::qoderwork::discover::FAMILY_RECORD_TYPES,
+            agents::qoderwork::discover::FAMILY_RECORD_KEYS,
+            agents::qoderwork::discover::FAMILY_SYSTEM_SUBTYPES,
+        )
     }
     // Claude Code's tool vocabulary, so Claude's interactive set (#21).
     fn tool_is_interactive(&self, name: &str) -> bool {

@@ -357,11 +357,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// unframed: the report, then the kept notes and tails behind a rule; the SendMessage's receipt line
 /// first. A v74 stream holds the framed text the model was sent.
 ///
+/// v76: #s468 — a session in the Qoder store is decoded with the QoderWork family's lists, as the
+/// Qoder desktop app writes the family's records there, so its `api_retry` is a failure note
+/// (#s377). A v75 stream of such a session holds none.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 75;
+pub const FOLD_VERSION: u16 = 76;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
