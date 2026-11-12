@@ -32,11 +32,13 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 @media(pointer:coarse) and (max-height:500px){#sessionView.pl-boxed.preview-full:not(.preview-off){contain:inline-size;--pl-cut-left:0px;--pl-cut-right:0px}}
 /* The shut pane parks past the view's right edge: off the screen where the view ends at the window's,
    but over a host's page where its box ends sooner. Once its glide out ends it is hidden, so it
-   neither shows nor takes a press there. */
+   neither shows nor takes a press there. A phone's pane never glides (the reference's `transition:none`),
+   so there it opens and hides at once. */
 @media(max-width:1180px){
   .session-view>.preview{transition:transform .22s,visibility 0s}
   .session-view.preview-off>.preview{visibility:hidden;transition:transform .22s,visibility 0s .22s}
 }
+@media(max-width:760px),(pointer:coarse) and (max-height:500px){.session-view>.preview,.session-view.preview-off>.preview{transition:none}}
 /* A drag of the resizer moves the pane's track with the pointer: the open and shut glide, never a
    drag, as `.app.resizing` kept it when the tracks were the app's. */
 #sessionView.resizing{transition:none}
