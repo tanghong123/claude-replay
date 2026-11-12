@@ -425,7 +425,19 @@ At the default text size, the pane at the reader's width:
   hidden sidebar's width (so today the turn menu opens 254px into the session), move to the rail's
   edge. The empty column under the open pane at `≤1180` goes.
 - **A wide phone held sideways with its list column shown**: the layout of a 676px phone held
-  sideways, where today the wide phone's; stage 2 lists each change.
+  sideways, where today the wide phone's. Measured on a 932×430 phone, every computed style under
+  the view before and after; 41 of its 604 elements change:
+  - the dock spans the session's column, Aa at its left and the search at its right, where the
+    wide phone kept both together at the right; the Aa menu opens from Aa's side;
+  - the session's menu is the narrow phone's popover under the top bar, not a menu hung from the
+    title;
+  - the status chip is capped at 105px (the `≤700` tier), and the title's row keeps its place;
+  - the shut right pane is the view's width, off the screen as before.
+
+  Three of those layers and the shut pane are fixed to the screen, and at first they landed over the
+  list column (the dock's Aa, the Aa menu and the session's menu; the shut pane kept about 250px on
+  the screen, over Info). The app's rules for its column now keep all four beside it, and
+  `a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_whole` checks each.
 - **The list's rows**: 44px on any touch screen, 32px with a mouse.
 - **The transcript panel** at a 761–815px window narrows to fit the view, where today it is 470px.
 - **The drag** of the right pane, which stops at the readable line (pane first).
