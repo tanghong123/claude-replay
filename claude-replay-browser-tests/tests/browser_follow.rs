@@ -3705,6 +3705,445 @@ fn the_session_view_in_a_host_mounts_with_its_pane_shut_and_nothing_gliding() {
     );
 }
 
+/// What the session view decided about its own layout (#s431 stage 2, design/pane-layout.md): whether
+/// it is a phone, the width its bands read (`--pl-b`), its own box and the classes it set.
+const VIEW_LAYOUT: &str = "(function(){ var v = document.getElementById('sessionView'); if (!v) return null; var r = v.getBoundingClientRect(); return { phone: v.classList.contains('pl-phone'), b: v.style.getPropertyValue('--pl-b'), x: v.style.getPropertyValue('--pane-x'), w: Math.round(r.width), h: Math.round(r.height), classes: Array.prototype.filter.call(v.classList, function(c){ return c.indexOf('pl-') === 0; }).sort() }; })()";
+
+/// Each of the view's layout classes that disagrees with the WINDOW's media query it stands for, as
+/// the stylesheets read the window before #s431 stage 2: `pl-max-w-1180` for `(max-width:1180px)`,
+/// `pl-coarse` for `(pointer:coarse)`, `pl-phone` for the phone query of #s32. Empty where the view
+/// reads exactly what the window read.
+const VIEW_AGAINST_WINDOW: &str = "(function(){ var v = document.getElementById('sessionView'); if (!v) return ['no view']; var names = ['pl-coarse','pl-fine','pl-max-h-500','pl-max-w-1180','pl-max-w-560','pl-max-w-620','pl-max-w-700','pl-max-w-760','pl-max-w-900','pl-min-h-501','pl-min-w-1181','pl-min-w-701','pl-min-w-761','pl-min-w-900','pl-min-w-901','pl-phone']; var query = function(n){ if (n === 'pl-phone') return '(max-width:760px), (pointer:coarse) and (max-height:500px)'; if (n === 'pl-coarse') return '(pointer:coarse)'; if (n === 'pl-fine') return '(pointer:fine)'; var m = /^pl-(max|min)-(w|h)-(\\d+)$/.exec(n); return '(' + m[1] + '-' + (m[2] === 'w' ? 'width' : 'height') + ':' + m[3] + 'px)'; }; return names.filter(function(n){ return v.classList.contains(n) !== matchMedia(query(n)).matches; }).map(function(n){ return n + (v.classList.contains(n) ? ' set' : ' not set') + ', window ' + query(n); }); })()";
+
+/// Put the test host's pane at `left`, `width` wide, and wait for the view to have decided at that box.
+fn place_host_pane(tab: &headless_chrome::Tab, left: u32, width: u32) -> serde_json::Value {
+    harness::eval(
+        tab,
+        &format!("(function(){{ var p = document.getElementById('hostPane'); p.style.left = '{left}px'; p.style.right = 'auto'; p.style.width = '{width}px'; return true; }})()"),
+    );
+    harness::until(
+        tab,
+        &format!("(function(){{ var v = document.getElementById('sessionView'); return !!v && Math.round(v.getBoundingClientRect().width) === {width} && v.style.getPropertyValue('--pane-x') === '{left}px'; }})()"),
+        &format!("the view to decide at a {width}px box at x={left}"),
+        Duration::from_secs(10),
+        VIEW_LAYOUT,
+    );
+    harness::probe(tab, VIEW_LAYOUT)
+}
+
+/// #s431 stage 2 (design/pane-layout.md, "Its own size, and touch"; the owner's ruling, #s461): the
+/// session view in a host's pane lays itself out by its own box, never the window or what the host
+/// has beside it. In a 1400px window, a 380px pane at x=500 is the phone reader, its bands reading
+/// its own 380px; a 700px pane is the desktop layout whose bands read 1000px, as a 1000px window at
+/// the default sidebar; 1000 and 1100px panes read 1300 and 1400. On the code before it the view set
+/// no class and read the window, 1400px, at every size.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_lays_itself_out_by_its_own_box() {
+    let _serial = serial();
+    let base = base("host-own-box");
+    let monitor = Monitor::spawn(Kind::V1, 3111, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::open_host_page(&tab, &monitor, "");
+    let cases: [(u32, u32, bool, u32, &[&str], &[&str]); 4] = [
+        (
+            500,
+            380,
+            true,
+            380,
+            &[
+                "pl-max-w-760",
+                "pl-max-w-700",
+                "pl-max-w-560",
+                "pl-min-h-501",
+            ],
+            &["pl-min-w-761", "pl-max-h-500", "pl-min-w-900"],
+        ),
+        (
+            300,
+            700,
+            false,
+            1000,
+            &[
+                "pl-max-w-1180",
+                "pl-min-w-761",
+                "pl-min-w-901",
+                "pl-min-h-501",
+            ],
+            &["pl-max-w-900", "pl-max-w-760", "pl-min-w-1181"],
+        ),
+        (
+            200,
+            1000,
+            false,
+            1300,
+            &["pl-min-w-1181", "pl-min-w-761"],
+            &["pl-max-w-1180", "pl-max-w-760"],
+        ),
+        (
+            200,
+            1100,
+            false,
+            1400,
+            &["pl-min-w-1181"],
+            &["pl-max-w-1180"],
+        ),
+    ];
+    let mut seen = Vec::new();
+    for (left, width, phone, band, on, off) in cases {
+        seen.push((
+            left,
+            width,
+            phone,
+            band,
+            on,
+            off,
+            place_host_pane(&tab, left, width),
+        ));
+    }
+    drop(monitor);
+    for (left, width, phone, band, on, off, layout) in seen {
+        assert_eq!(
+            layout["phone"], phone,
+            "a {width}px pane at x={left}: {layout}"
+        );
+        assert_eq!(
+            layout["b"],
+            format!("{band}px"),
+            "a {width}px pane's bands read {band}px: {layout}"
+        );
+        let classes: Vec<&str> = layout["classes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c.as_str())
+            .collect();
+        for name in on {
+            assert!(
+                classes.contains(name),
+                "a {width}px pane holds {name}: {layout}"
+            );
+        }
+        for name in off {
+            assert!(
+                !classes.contains(name),
+                "a {width}px pane does not hold {name}: {layout}"
+            );
+        }
+    }
+}
+
+/// #s431 stage 2: on a phone the view in a host's pane is still laid out by its own box and the
+/// screen's pointer. Upright (390×844) the pane the screen's width is the phone reader, its bands
+/// reading 390px; held sideways (932×430) a 450px pane is a phone by its height, its bands reading
+/// 450px and not the wide phone's; the same pane the screen's whole width is the wide phone's.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_on_a_phone_reads_its_own_box_and_the_finger() {
+    let _serial = serial();
+    let base = base("host-own-box-phone");
+    let monitor = Monitor::spawn(Kind::V1, 3112, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let mut seen = Vec::new();
+    for (screen, (left, width), band, on, off) in [
+        (
+            (390, 844),
+            (0, 390),
+            390,
+            &["pl-phone", "pl-coarse", "pl-max-w-760", "pl-min-h-501"][..],
+            &["pl-max-h-500", "pl-min-w-900"][..],
+        ),
+        (
+            (932, 430),
+            (0, 450),
+            450,
+            &["pl-phone", "pl-coarse", "pl-max-h-500", "pl-max-w-700"],
+            &["pl-min-w-900", "pl-min-h-501"],
+        ),
+        (
+            (932, 430),
+            (0, 932),
+            932,
+            &["pl-phone", "pl-coarse", "pl-max-h-500", "pl-min-w-900"],
+            &["pl-max-w-900", "pl-min-h-501"],
+        ),
+    ] {
+        harness::phone(&tab, screen.0, screen.1);
+        harness::open_host_page(&tab, &monitor, "");
+        seen.push((
+            screen,
+            width,
+            band,
+            on,
+            off,
+            place_host_pane(&tab, left, width),
+        ));
+    }
+    drop(monitor);
+    for (screen, width, band, on, off, layout) in seen {
+        assert_eq!(
+            layout["b"],
+            format!("{band}px"),
+            "a {width}px pane on a {screen:?} phone: {layout}"
+        );
+        let classes: Vec<&str> = layout["classes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c.as_str())
+            .collect();
+        for name in on {
+            assert!(
+                classes.contains(name),
+                "a {width}px pane on a {screen:?} phone holds {name}: {layout}"
+            );
+        }
+        for name in off {
+            assert!(
+                !classes.contains(name),
+                "a {width}px pane on a {screen:?} phone does not hold {name}: {layout}"
+            );
+        }
+    }
+}
+
+/// #s431 stage 2: wherever design/pane-layout.md's table says "the same", the app's view reads exactly
+/// what the window read before: every layout class it sets agrees with the window's media query it
+/// stands for. Desktop windows of 1440, 1180, 1000 and 820px at the default sidebar; an iPad-sized
+/// touch window (834×1194) with its sidebar; a phone upright and held sideways; a wide phone held
+/// sideways with its list column hidden.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_view_reads_what_the_window_read_where_nothing_changes() {
+    let _serial = serial();
+    let (monitor, _browser, tab) = shell_with_a_session("appshell-view-as-window", 3113);
+    let sid = "cccccccc-0000-4000-8000-000000000160";
+    let mut seen = Vec::new();
+    for width in [1440.0, 1180.0, 1000.0, 820.0] {
+        harness::resize(&tab, width, 900.0);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && (function(){{ var v = document.getElementById('sessionView'); return !!v && Math.round(v.getBoundingClientRect().width) === innerWidth - 300; }})()"),
+            &format!("a {width}px window with the default sidebar"),
+            Duration::from_secs(10),
+            VIEW_LAYOUT,
+        );
+        seen.push((
+            format!("a {width}px window"),
+            harness::probe(&tab, VIEW_AGAINST_WINDOW),
+            harness::probe(&tab, VIEW_LAYOUT),
+        ));
+    }
+    for (name, (w, h), column_off) in [
+        ("an iPad upright", (834, 1194), false),
+        ("a phone upright", (390, 844), false),
+        ("a phone held sideways", (844, 390), false),
+        (
+            "a wide phone held sideways, its column hidden",
+            (932, 430),
+            true,
+        ),
+    ] {
+        harness::phone(&tab, w, h);
+        if column_off {
+            harness::eval(&tab, "localStorage.setItem('am-phone-column', '0')");
+        }
+        monitor.open(&tab, &format!("?ui=app&session={sid}"));
+        harness::until(
+            &tab,
+            &format!("innerWidth === {w} && !!document.querySelector('.virtual-window') && !!document.getElementById('sessionView')"),
+            &format!("{name} to draw the session"),
+            Duration::from_secs(20),
+            VIEW_LAYOUT,
+        );
+        seen.push((
+            name.to_string(),
+            harness::probe(&tab, VIEW_AGAINST_WINDOW),
+            harness::probe(&tab, VIEW_LAYOUT),
+        ));
+    }
+    drop(monitor);
+    for (name, disagree, layout) in seen {
+        assert_eq!(
+            disagree,
+            serde_json::json!([]),
+            "in {name} the view reads what the window read: {layout}"
+        );
+    }
+}
+
+/// #s431 stage 2: the places design/pane-layout.md says change, each red on the code before it.
+/// - A 700px desktop window is the compact desktop layout under the drawer's handle, where it was
+///   the phone reader: no dock, and the handle clear of the title.
+/// - A 900px window with a 520px sidebar leaves the view 380px: the phone reader beside the sidebar,
+///   its dock shown and no 44px kept at its left for a handle that is not there, where it was the
+///   desktop layout squeezed into 380px.
+/// - A 1000px window on the rail leaves the view 936px: its right pane opens as a column beside the
+///   session, where it lay over it.
+/// - A wide phone held sideways with its list column shown leaves the view about 650px: a narrower
+///   phone's layout (its bands read its own width), not the wide phone's.
+/// - The list's rows are 44px touch targets on an iPad's sidebar, where they were 37px.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window() {
+    let _serial = serial();
+    let (monitor, _browser, tab) = shell_with_a_session("appshell-view-own-box", 3114);
+    let sid = "cccccccc-0000-4000-8000-000000000160";
+    let open = |tab: &headless_chrome::Tab, width: f64, what: &str| {
+        monitor.open(tab, &format!("?ui=app&session={sid}"));
+        harness::until(
+            tab,
+            &format!("innerWidth === {width} && !!document.querySelector('.virtual-window')"),
+            what,
+            Duration::from_secs(20),
+            VIEW_LAYOUT,
+        );
+    };
+    let shown = "function(id){ var e = document.getElementById(id) || document.querySelector(id); if (!e) return false; var r = e.getBoundingClientRect(); return getComputedStyle(e).display !== 'none' && r.width > 0 && r.height > 0; }";
+    // A 700px desktop window.
+    harness::resize(&tab, 700.0, 900.0);
+    open(&tab, 700.0, "a 700px window");
+    let narrow = harness::probe(
+        &tab,
+        &format!("(function(){{ var shown = {shown}; var h = document.getElementById('drawerHandle').getBoundingClientRect(), t = document.getElementById('sessionTitle').getBoundingClientRect(); return {{ layout: {VIEW_LAYOUT}, dock: shown('.phone-dock'), handle: shown('drawerHandle'), handleRight: Math.round(h.right), titleLeft: Math.round(t.left) }}; }})()"),
+    );
+    // A 900px window with a 520px sidebar.
+    harness::eval(&tab, "localStorage.setItem('am-sidebar-width', '520')");
+    harness::resize(&tab, 900.0, 900.0);
+    open(&tab, 900.0, "a 900px window with a 520px sidebar");
+    harness::until(
+        &tab,
+        "Math.round(document.getElementById('sessionView').getBoundingClientRect().width) === 380",
+        "the view to be 380px beside the 520px sidebar",
+        Duration::from_secs(10),
+        VIEW_LAYOUT,
+    );
+    let beside = harness::probe(
+        &tab,
+        &format!("(function(){{ var shown = {shown}; var v = document.getElementById('sessionView').getBoundingClientRect(), t = document.getElementById('sessionTitle').getBoundingClientRect(); return {{ layout: {VIEW_LAYOUT}, dock: shown('.phone-dock'), handle: shown('drawerHandle'), titleInset: Math.round(t.left - v.left) }}; }})()"),
+    );
+    harness::eval(&tab, "localStorage.removeItem('am-sidebar-width')");
+    // A 1000px window on the rail, the right pane open.
+    harness::resize(&tab, 1000.0, 900.0);
+    open(&tab, 1000.0, "a 1000px window");
+    harness::eval(&tab, "document.getElementById('sidebarCollapse').click()");
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('sidebar-off') && Math.round(document.getElementById('sessionView').getBoundingClientRect().width) === innerWidth - 64",
+        "the rail, the view 64px less than the window",
+        Duration::from_secs(10),
+        VIEW_LAYOUT,
+    );
+    harness::eval(&tab, "document.getElementById('previewBtn').click()");
+    harness::until(
+        &tab,
+        "!document.getElementById('sessionView').classList.contains('preview-off') && document.getElementById('app').getAnimations().length === 0 && document.getElementById('preview').getAnimations().length === 0",
+        "the right pane to open and settle",
+        Duration::from_secs(10),
+        VIEW_LAYOUT,
+    );
+    let rail = harness::probe(
+        &tab,
+        &format!("(function(){{ var p = document.getElementById('preview'), w = document.querySelector('#sessionView>.workspace'); var pr = p.getBoundingClientRect(), wr = w.getBoundingClientRect(); return {{ layout: {VIEW_LAYOUT}, position: getComputedStyle(p).position, paneLeft: Math.round(pr.left), paneRight: Math.round(pr.right), sessionRight: Math.round(wr.right) }}; }})()"),
+    );
+    harness::eval(&tab, "document.getElementById('sidebarMiniExpand').click()");
+    // A wide phone held sideways, its column shown; then the list's rows on an iPad.
+    harness::phone(&tab, 932, 430);
+    harness::eval(&tab, "localStorage.removeItem('am-phone-column')");
+    open(&tab, 932.0, "a wide phone held sideways");
+    let wide = harness::probe(&tab, VIEW_LAYOUT);
+    harness::phone(&tab, 834, 1194);
+    open(&tab, 834.0, "an iPad upright");
+    harness::until(
+        &tab,
+        "!!document.querySelector('#sessionList :is(.tree-row.session,.tree-row.project)')",
+        "the list to draw a session row",
+        Duration::from_secs(10),
+        "document.getElementById('sessionList') && document.getElementById('sessionList').innerHTML.slice(0, 200)",
+    );
+    let rows = harness::probe(
+        &tab,
+        "(function(){ var r = document.querySelector('#sessionList :is(.tree-row.session,.tree-row.project)'); return { minHeight: getComputedStyle(r).minHeight, height: Math.round(r.getBoundingClientRect().height) }; })()",
+    );
+    drop(monitor);
+    assert_eq!(
+        narrow["layout"]["phone"], false,
+        "a 700px window is not the phone reader: {narrow}"
+    );
+    assert_eq!(
+        narrow["layout"]["b"], "1000px",
+        "its bands read a 1000px window's: {narrow}"
+    );
+    assert_eq!(
+        narrow["dock"], false,
+        "no phone dock in a 700px window: {narrow}"
+    );
+    assert_eq!(
+        narrow["handle"], true,
+        "the drawer's handle is the app's, by the window: {narrow}"
+    );
+    assert!(
+        narrow["handleRight"].as_i64() <= narrow["titleLeft"].as_i64(),
+        "the handle is clear of the title: {narrow}"
+    );
+    assert_eq!(
+        beside["layout"]["phone"], true,
+        "a 380px view beside a 520px sidebar is the phone reader: {beside}"
+    );
+    assert_eq!(beside["dock"], true, "its dock is shown: {beside}");
+    assert_eq!(
+        beside["handle"], false,
+        "there is no drawer in a 900px window: {beside}"
+    );
+    assert!(
+        beside["titleInset"].as_i64().is_some_and(|x| x < 30),
+        "its title keeps no 44px for a handle: {beside}"
+    );
+    assert_eq!(
+        rail["layout"]["phone"], false,
+        "on the rail the view is the desktop's: {rail}"
+    );
+    assert_eq!(
+        rail["layout"]["b"], "1236px",
+        "its bands read its own 936px, plus the sidebar's 300: {rail}"
+    );
+    assert_ne!(
+        rail["position"], "fixed",
+        "the right pane is a column, not an overlay: {rail}"
+    );
+    assert!(
+        rail["paneLeft"].as_i64() >= rail["sessionRight"].as_i64().map(|x| x - 1),
+        "the right pane sits beside the session, not over it: {rail}"
+    );
+    assert!(
+        rail["paneRight"].as_i64().is_some_and(|x| x <= 1000),
+        "the right pane ends inside the window: {rail}"
+    );
+    assert_eq!(
+        wide["phone"], true,
+        "a wide phone's view beside its column is a phone: {wide}"
+    );
+    let classes: Vec<&str> = wide["classes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c.as_str())
+        .collect();
+    assert!(
+        !classes.contains(&"pl-min-w-900")
+            && classes.contains(&"pl-max-w-900")
+            && classes.contains(&"pl-max-w-700"),
+        "its bands read its own width, about 650px, not the wide phone's: {wide}"
+    );
+    assert_eq!(
+        rows["minHeight"], "44px",
+        "an iPad's session rows are touch targets: {rows}"
+    );
+}
+
 /// The session view's unmount (#s429 stage 7): mounted in the test host and taken away, it leaves
 /// the page's window and document with exactly the listeners they had before it (as the browser
 /// lists them), the host's element empty with its own attributes, nothing of its own in the page's
