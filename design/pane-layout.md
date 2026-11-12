@@ -376,11 +376,29 @@ layers written in the box's coordinates, and the box contained. But containment 
 in the app the view's layers interleave with the app's own today: the drawer and its handle, the
 toasts, the review sheet above the drawer. Stage 4 lists each one before choosing.
 
+**The phone reader takes it in stage 2.** Stage 2 is what makes a phone reader that is not the
+screen: beside a 520px sidebar, beside the rail, beside a wide phone's column, in a host's pane. Its
+first cut placed that reader's dock, sheets, Info, menus, dims, reply box and right pane against the
+window, over the sidebar (the shut pane even lay over its title), and kept them beside a wide phone's
+column with app rules, one per layer. So a phone reader narrower than the window contains its layout
+(`pl-boxed`, which `pane-layout.js` sets from the view's box and the window's width; it places the
+layers and picks no layout), and every one of its fixed layers lands in its box. Measured before
+choosing, in Chrome, at 900/520 and on a 932×430 phone with its column and a 59px island: every layer
+inside the view; the list, the handle, the title and each opened layer take a press at their middle;
+and nothing else under the view moves but the fixed layers (on the wide phone, those the app's rules
+had already set beside the column, now set by the view's own). In the app no drawer shows beside a
+boxed reader, so the stacking it traps is the view's own: a dim covers the view, not the list beside
+it. A phone reader as wide as the window is not contained, so a phone is unchanged. What the phone
+reader's rules write, that would be off by the box's offset, is the screen's left inset: inside the
+view it is only the part that falls in its box, `max(0px, inset - --pane-x)`, rewritten by the
+derivation. The desktop's layers, placed by scripts from the window, and the app's own box stay
+stage 4's.
+
 ### What stays the host's
 
 The host keeps the drawer and its handle, with the room the handle takes at the top bar's left; the
 rail; the sidebar's width and its `sidebar-tight`; the app's grid; and a wide phone's column beside
-the session, with the rules that keep the view's fixed layers clear of it until stage 4. It lays the
+the session, with the one rule that has the right pane cover the view there. It lays the
 two components out against each other, by the window: the app's chrome is the one part of the page
 that still reads it. Native mode is the standalone app's alone, but what it draws inside the view
 reads the view's family (above).
@@ -436,8 +454,11 @@ At the default text size, the pane at the reader's width:
 
   Three of those layers and the shut pane are fixed to the screen, and at first they landed over the
   list column (the dock's Aa, the Aa menu and the session's menu; the shut pane kept about 250px on
-  the screen, over Info). The app's rules for its column now keep all four beside it, and
-  `a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_whole` checks each.
+  the screen, over Info). The view now holds its own fixed layers there (below, "Drawn inside the
+  pane"), and the app's rules that set them beside the column went, all but the pane's, which says
+  the pane covers the view. `a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_whole`
+  checks each. The island's inset is the column's, so the view's controls keep only what of it falls
+  in the view's box: none, beside the column.
 - **The list's rows**: 44px on any touch screen, 32px with a mouse.
 - **The transcript panel** at a 761–815px window narrows to fit the view, where today it is 470px.
 - **The drag** of the right pane, which stops at the readable line (pane first).
@@ -462,8 +483,10 @@ At the default text size, the pane at the reader's width:
   view's classes match the window's media exactly as the old queries read it.
 - **The app where it changes**, each red on the old code: a 700px mouse window (the compact desktop,
   the drawer's handle clear of the title), a 900px window with a 520px sidebar (the phone reader
-  beside the sidebar, no empty 44px at its left), a 1000px window on the rail (the pane a column), a
-  wide phone with its column (its listed changes), and the list's rows on a touch screen.
+  beside the sidebar, no empty 44px at its left, and each of its layers opened in turn inside its box
+  with the list still taking a press), a 1000px window on the rail (the pane a column), a wide phone
+  with its column and its island (its listed changes, the same layers inside the view, the dock 12px
+  in from the view's edge), and the list's rows on a touch screen.
 - **Mutations.** Point the layout module back at the window, drop a condition from the rewrite's
   table, give the family the window's height, or let the readable rule read what it drew: a width
   case goes red, or the derivation fails.
@@ -492,6 +515,8 @@ Each stage is page code: the whole local browser suite and an iOS Simulator walk
 3. **A readable line** (after #s462). The fold, the narrowed pane and the drag, with the red case.
 4. **Drawn inside the pane.** Containment, the layers in the box's coordinates, the width cases'
    containment checks on a desktop and an emulated phone, and the Simulator walk of a narrow pane.
+   The phone reader narrower than the window is contained from stage 2 (above); this stage takes the
+   desktop's layers, a host's vertical offset and the app's own box.
    The lengths that fit a fixed layer to the window (`calc(100vw - 24px)` and its kin in the task
    card, the sheets and the menus) take a unit of their own there: `1vw` while the box is not
    contained, the pane's width over 100 once it is. Stage 2's shares of `B` would size them to `B`,
