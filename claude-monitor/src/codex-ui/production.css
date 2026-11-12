@@ -17,6 +17,9 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    absolutely keeps its containing block. */
 #sessionView{display:grid;min-width:0;min-height:0;contain:inline-size;grid-template-rows:minmax(0,1fr);grid-template-columns:minmax(480px,1fr) 1px var(--preview,420px);transition:grid-template-columns .22s ease}
 #sessionView.preview-off{grid-template-columns:minmax(480px,1fr) 0 0}
+/* A drag of the resizer moves the pane's track with the pointer: the open and shut glide, never a
+   drag, as `.app.resizing` kept it when the tracks were the app's. */
+#sessionView.resizing{transition:none}
 @media(max-width:1180px){
   #sessionView,#sessionView.preview-off{grid-template-columns:minmax(0,1fr)}
 }

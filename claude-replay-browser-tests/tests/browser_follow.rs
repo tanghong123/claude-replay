@@ -7432,6 +7432,87 @@ fn the_app_shell_resizes_the_session_list() {
     drop(monitor);
 }
 
+/// #s431 stage 1: the right pane's tracks are the session view's own, and a drag of its resizer
+/// moves them with the pointer. The view glides its tracks when the pane opens or shuts, and that
+/// glide must not run under a drag (as `.app.resizing` kept it off when the tracks were the app's),
+/// or every move lags the pointer by a fifth of a second. Measured with the button still held: a
+/// real pointer, since the resizer captures it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_resizes_the_pane_with_the_pointer() {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventTypeOption, MouseButton,
+    };
+    let _serial = serial();
+    let (monitor, _browser, tab) = shell_with_a_session("appshell-pane-resize", 2876);
+    harness::resize(&tab, 1440.0, 900.0);
+    harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
+    let settled = "(function(){ var v = document.getElementById('sessionView'); return !v.classList.contains('preview-off') && v.getAnimations().length === 0 && document.getElementById('resizer').getBoundingClientRect().width > 0; })()";
+    harness::until(
+        &tab,
+        settled,
+        "the pane to open and its glide to end",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    let x0 = harness::eval(&tab, "(function(){ var r = document.getElementById('resizer').getBoundingClientRect(); return r.left + r.width / 2; })()")
+        .as_f64()
+        .expect("the resizer's place");
+    let x1 = x0 - 200.0;
+    let mouse = |kind: DispatchMouseEventTypeOption, x: f64, buttons: u32| {
+        tab.call_method(DispatchMouseEvent {
+            Type: kind,
+            x,
+            y: 400.0,
+            modifiers: None,
+            timestamp: None,
+            button: Some(MouseButton::Left),
+            buttons: Some(buttons),
+            click_count: Some(1),
+            force: None,
+            tangential_pressure: None,
+            tilt_x: None,
+            tilt_y: None,
+            twist: None,
+            delta_x: None,
+            delta_y: None,
+            pointer_Type: None,
+        })
+        .unwrap();
+    };
+    mouse(DispatchMouseEventTypeOption::MouseMoved, x0, 0);
+    mouse(DispatchMouseEventTypeOption::MousePressed, x0, 1);
+    mouse(DispatchMouseEventTypeOption::MouseMoved, x1, 1);
+    // Read at once, the button held: no frame waited for, as a reader's next move would not wait.
+    let held = harness::probe(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'), r = document.getElementById('resizer').getBoundingClientRect(); return { resizing: v.classList.contains('resizing'), glides: v.getAnimations().filter(function(a){ return a instanceof CSSTransition; }).map(function(a){ return a.transitionProperty; }), resizer: r.left + r.width / 2 }; })()",
+    );
+    mouse(DispatchMouseEventTypeOption::MouseReleased, x1, 0);
+    assert_eq!(held["resizing"], true, "the drag is under way: {held}");
+    assert_eq!(
+        held["glides"],
+        serde_json::json!([]),
+        "no glide runs on the view's tracks under a drag: {held}"
+    );
+    let at = held["resizer"].as_f64().unwrap_or(f64::NAN);
+    assert!(
+        (at - x1).abs() <= 1.0,
+        "the resizer is under the pointer at {x1}, not on its way there: {held}"
+    );
+    let after = harness::probe(
+        &tab,
+        "({ resizing: document.getElementById('sessionView').classList.contains('resizing'), stored: Number(localStorage.getItem('am-demo-preview')) })",
+    );
+    assert_eq!(after["resizing"], false, "the drag ended: {after}");
+    let stored = after["stored"].as_f64().unwrap_or(f64::NAN);
+    assert!(
+        (stored - (1440.0 - x1)).abs() <= 1.0,
+        "the pane's new width is remembered: {after}"
+    );
+    drop(monitor);
+}
+
 /// #78 / #95: the roster of what the session published lives in the right pane — one row per
 /// URL, the republish counted, in a new-tab link — with the count on the pane's button while
 /// the pane is hidden, and a jump that lands the transcript on the publishing record.
