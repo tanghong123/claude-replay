@@ -1854,7 +1854,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    the query is "tall enough, or a fine pointer", the complement of a landscape phone. The view's own
    rule (#s431 stage 2): 10px inside its left edge, whatever is beside it, the rail included. */
 @media(min-width:761px) and (max-width:1180px) and (min-height:501px),(min-width:761px) and (max-width:1180px) and (pointer:fine){
-  :where(#sessionView):not(.preview-off)>.preview{left:calc(var(--pane-x) + 10px);width:auto}
+  .session-view:not(.preview-off)>.preview{left:calc(var(--pane-x) + 10px);width:auto}
 }
 
 /* #313 — while a session loads: a veil over the session area (below the top bars, which already

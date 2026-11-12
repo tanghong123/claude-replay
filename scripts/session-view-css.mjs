@@ -976,6 +976,8 @@ export function deriveStylesheets({ reference, production }) {
   };
   view = prefixed(view, viewNames, KEYFRAME_PREFIX, "session-view.css", report.keyframes.view).map(viewLengths);
   list = prefixed(list, listNames, LIST_KEYFRAME_PREFIX, "session-list.css", report.keyframes.list);
+  onceOnTheElement(view, "#sessionView", "session-view.css");
+  onceOnTheElement(list, "#sessionList", "session-list.css");
   app = app.filter(line => {
     const m = KEYFRAMES.exec(line);
     if (!m) return true;
@@ -988,6 +990,22 @@ export function deriveStylesheets({ reference, production }) {
     app: `${HEADER.app}${app.join("\n")}\n`,
     report,
   };
+}
+
+/** A derived selector that names the component's element twice, outside `:not()`, matches nothing:
+ *  the id is on one element, never inside itself (#s431 stage 2's review found a source led by
+ *  `:where(#sessionView)` hung under the prefix again). Lead such a source with the element's class
+ *  (`.session-view`) or `#sessionView` instead. */
+function onceOnTheElement(lines, id, file) {
+  for (const line of lines) {
+    for (const m of line.matchAll(/([^{}]+)\{/g)) {
+      if (m[1].trimStart().startsWith("@")) continue;
+      for (const sel of splitTop(m[1])) {
+        const named = sel.replace(/:not\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)/g, "").split(id).length - 1;
+        if (named > 1) throw new Error(`${file}: \`${sel.trim()}\` names ${id} twice, so it matches nothing; lead its source with the element's class or ${id}`);
+      }
+    }
+  }
 }
 
 /** #s431 stage 2 (design/pane-layout.md, "Units and lengths"): a view rule's lengths in the window's
