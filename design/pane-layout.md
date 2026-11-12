@@ -151,7 +151,9 @@ follow:
 - Everything that draws inside the view reads the view's family, never the window's phone query:
   the view's scripts (`layout.phone()`), the reach-in rules in `app-shell.css` that style the view's
   parts, and native mode, whose composer and runtime panel live in the view (`monitor.css` 11
-  blocks, `native-entry.css` 2, `monitor-controls.js` 4 reads). In the app the two disagree only in
+  blocks, `monitor-controls.js` 4 reads). `native-entry.css`'s two phone blocks draw nothing in the
+  view: one is the app's sidebar and menu, which keep the window, and the other the list's project
+  actions, which follow the list's touch rows. In the app the two disagree only in
   the rows above that change, but there they must agree. Native mode's pickers, placed from
   `innerWidth`, wait for stage 4 with the other fixed layers.
 
@@ -197,8 +199,9 @@ reads its answer.
   (`--preview`) and outline choice (`navigatorOpen`) from the view.
 - **It writes classes and sizes** on the component's element: the family (`pl-phone`), one class per
   condition the stylesheets use (below), the readable line's results (stage 3), and the lengths
-  the rules read: `--pl-b` (`B` over 100), `--pl-w` and `--pl-h` (the view's box), `--pl-vh` and
-  `--pl-dvh`, `--pane-x`, `--pane-y` and `--preview-fit`.
+  the rules read: `--pl-b` (`B`), `--pl-w` and `--pl-h` (the view's box), `--pl-vh` and `--pl-dvh`,
+  `--pane-x` and `--preview-fit`. It reads the window's height for one thing only, whether the view
+  is as tall as it, which keeps the window's own height units.
 - **Scripts ask it**: `layout.phone()`, `layout.query(…)` for the wide phone, and its change events.
   No script that draws inside the view reads `PHONE_QUERY` itself, native mode's included; the app's
   chrome keeps its own reads.
@@ -336,9 +339,11 @@ it does in a host, and `reference.css` still does not change. What moves:
   its containing block. Stage 4 changes that on purpose.
 - **The wide phone.** `#app:not(.phone-column-off)>…>.workspace{grid-column:2}` becomes the view
   in column 2 and the workspace in the view's column 1.
-- **The reach-in rules** keep reading `#app`'s copies of the pane's states in stage 1. They move
-  into the view, keyed by its own classes, in stage 2, and the copies go once
-  nothing reads them.
+- **The reach-in rules** keep reading `#app`'s copies of the pane's states in stage 1. In stage 2
+  the one under a size query, the demo's z-index for the overlaid pane at `≤1180`, moves into the
+  view, keyed by its own classes and the pane state its element carries; the rest read no size
+  (the rail, a drag) or are the app's (the handle's room, the wide phone's column). The copies go
+  once nothing reads them.
 - **The list's box** takes `flex:1; min-height:0; display:flex; flex-direction:column`, or the
   tree's scroll breaks, and the tree's `width: var(--sidebar)` is read against it.
 - **The host fixture** drops the three-track grid it gives the view's element: the view lays out
@@ -432,7 +437,7 @@ At the default text size, the pane at the reader's width:
   both, and 1440 is the control, unchanged.
 - **Widths in a host.** The view and the list each in a host fixture's pane that is smaller than
   the window and does not start at its edge: 380px at x=500 in a 1400px window, 700px, 1000px,
-  1100px, light and dark. In stage 2 each asserts its family, condition classes and `B` (380 the
+  1100px, light, and dark from stage 4, where containment is checked. In stage 2 each asserts its family, condition classes and `B` (380 the
   phone reader with `B` 380; 700 `B` 1000; 1100 `B` 1400). From stage 4 each also asserts that
   nothing overflows the pane, and that every control is inside it and is the element
   `elementFromPoint` finds there; a rect alone proves nothing.
