@@ -1,6 +1,6 @@
 # Each component lays itself out by its pane
 
-> **DRAFT 3** (#s431, 2026-11-12). Step 6 of `design/embedding.md` ("Layout decides itself", "The
+> **DRAFT 3.1** (#s431, 2026-11-12). Step 6 of `design/embedding.md` ("Layout decides itself", "The
 > order of the work"). Not built. The owner's ruling (#s459): start it now, and fix in it the
 > transcript column that the right pane squeezes to 126px just past 1180px. The owner's notes on the
 > width-study videos may still change it; every number they can touch is in one table.
@@ -103,8 +103,12 @@ every band reads the number it reads today, at every sidebar width, on the rail 
   outline gives way and the right pane lies over the session); a 1100px pane is a window of 1400; a
   450px pane on a phone held sideways is `E` 750, laid out by its pane rather than by the screen.
 
-This adds to what a host may rely on: one CSS property, optional, with a default. So it waits for
-the owner's yes (#s461). **The alternative with no contract change** (draft 2's): on a phone screen
+This adds to what a host may rely on: one CSS property, optional, with a default. The view
+registers it (`@property --pane-beside { syntax: '<length>'; inherits: false; initial-value: 300px
+}`) so that it computes to a length the module can read: the wide phone's
+`calc(var(--sidebar) + env(safe-area-inset-left,0px))` would otherwise come back as that text.
+A registration holds for the whole page, which is part of the contract too. So it waits for the
+owner's yes (#s461). **The alternative with no contract change** (draft 2's): on a phone screen
 `E` is the window; elsewhere a pane of 460px or less is the phone family with `E` the pane; else
 `E` is the pane plus 300. It differs in three ways:
 
@@ -149,8 +153,10 @@ So one module decides (`pane-layout.js`), and everything reads its answer.
   its width changed. A band moving, the outline folding and the pane narrowing all change it without
   a resize of the transcript's own making.
 - **The widths it computes with** (the outline's 290px and its 68px rail, the transcript's 64px of
-  margin, the session's 480px floor, the pane's 340px minimum) are read from the view's computed
-  styles where they are drawn, and a contract case holds the rest to the stylesheets.
+  margin, the session's 480px floor, the pane's 340px minimum) are tokens on the view's element
+  (`--pl-outline: 290px` and the like), which the grid and the module both read. They are never read
+  off what is drawn: a folded outline draws no 290px column. A contract case holds them to the
+  rules that use them.
 
 ### The rewrite of the styles
 
@@ -221,11 +227,17 @@ default 420px:
 | from 1395 | text 320 and up | the same | the same |
 
 In general the rule acts below a window of 655 + the pane's width + `READABLE` at the default
-sidebar: 1395 at the defaults, 1655 with a 680px pane, wider with a larger text size. Above the
-1180 line it needs no overlay: the steps apply only to a component over 880px wide, where the
-outline folded and the pane at 340px leave at least 408px of text. A text size whose `READABLE` is
-more than that runs the line short rather than laying the pane over the session. Below the line the
-pane lies over the session as today, its left edge at `--pane-x` plus 10px.
+sidebar: 1395 at the defaults, 1655 with a 680px pane, wider with a larger text size.
+
+**The pane is a column only while the component is at least 821px wide** (the session's 480px
+floor, the resizer, the pane's 340px minimum); below that, or at `E` 1180 and under, it lies over
+the session, as today below the 1180 line, its left edge at `--pane-x` plus 10px. At the default
+sidebar the two lines meet: `E` over 1180 is a component over 880px. A wider sidebar (or a host's
+`--pane-beside` over 300px) parts them. At a 1200px window with a 520px sidebar, `E` is 1200 but
+the component is 680px, so the pane lies over the session, where today the grid runs 221px past
+the window. Where the pane is a column, the outline folded and the pane at 340px leave at least
+348px of text; a text size whose `READABLE` is more than that runs the line short rather than
+laying the pane over the session.
 
 - **The fold** is the existing `navigator-off`, set when the reader does not want the outline OR
   the layout folds it, so every rule that reads it already does the right thing. The reader's choice
@@ -234,8 +246,9 @@ pane lies over the session as today, its left edge at `--pane-x` plus 10px.
   toggle key show it anyway, and the line runs short, since the reader asked. That lapses when the
   layout no longer folds it or the pane closes. The toggle key on a shown outline hides it, setting
   the reader's choice as today.
-- **The pane's width** is drawn at `--preview-fit`. The reader's chosen width stays as remembered
-  and comes back when there is room.
+- **The pane's width** is drawn at `--preview-fit`, written only while the rule narrows the pane and
+  removed otherwise, so a `--preview` set on `#app` or the root by a case or a host still reaches the
+  pane. The reader's chosen width stays as remembered and comes back when there is room.
 - **The drag.** With the pane first, its edge stops at the widest pane the rule allows beside what
   is shown: at 1400px with the outline, 425px, where today it goes to 680 and leaves 65px of text.
   With the outline first, a drag past that folds the outline and goes on to the session's floor.
@@ -321,7 +334,8 @@ ellipsis, a fork chip, and in the flat list the agent's mark and the project. On
 - **Compact rows** are a band of its own width: below 232px, the app's minimum sidebar, so the app
   never draws them. There the flat list's project name goes and the agent's mark stays, and a
   session's indent narrows from 32px to 20px. The same module measures the list's box and sets the
-  class (`pl-max-w-231`).
+  class (`pl-max-w-231`) while the tree is shown; on the app's 64px rail the tree is hidden and the
+  class is not set.
 - Its stylesheet's other size rules are the phone's and two stray copies of the view's
   `--navigator`, which go. `sidebar-tight` belongs to the app's head, not to the list.
 - In stage 4 its floating layers (the filter sheet, the section menu, the rail flyout) are drawn in
@@ -337,7 +351,11 @@ At the default text size, the pane at the reader's width:
   edge.
 - **The drag** of the right pane, which stops at the readable line (pane first).
 - **The empty column on the rail** at `≤1180`, under the open pane, which stage 2 removes.
-- Under the alternative width model: the sidebar's cap, and bands that move with the sidebar.
+- **A wide sidebar in a narrow window**: with the sidebar wider than the window less 821px (at
+  1181–1340px with a 520px sidebar), the open pane lies over the session, where today the grid runs
+  past the window.
+- Under the alternative width model: the sidebar's cap, and bands that move with the sidebar,
+  instead of the line above.
 
 ## Tests
 
@@ -378,3 +396,7 @@ Each stage is page code: the whole local browser suite and an iOS Simulator walk
 3. **A readable line** (after #s462). The fold, the narrowed pane and the drag, with the red case.
 4. **Drawn inside the pane.** Containment, the layers in the box's coordinates, the width cases'
    containment checks on a desktop and an emulated phone, and the Simulator walk of a narrow pane.
+   The lengths that fit a fixed layer to the window (`calc(100vw - 24px)` and its kin in the task
+   card, the sheets and the menus) take a unit of their own there: `1vw` while the box is not
+   contained, the pane's width over 100 once it is. Stage 2's `E` units would size them to `E`, which
+   in a host's 380px pane is 680px.
