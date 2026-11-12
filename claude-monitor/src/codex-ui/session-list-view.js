@@ -39,10 +39,10 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  adds; the rest of what it draws it builds and keeps a reference to, and hands the parts its host
  *  shows elsewhere to `place`. It looks up nothing outside its element.
  *
- *  The element is the list's box (#s431, the owner's choice on #s464 for the view, which the list
- *  shares): the host gives it a place and a size and styles nothing else of it. The list lays out what
- *  it holds inside it, as a column; its display is the list's, at the id's weight. To hide the list,
- *  set the element's `hidden` attribute, or hide what holds it.
+ *  The element is the list's box (#s431; the list keeps the terms #s464 set for the view): the host
+ *  gives it a place and a size and styles nothing else of it. The list lays out what it holds inside
+ *  it, as a column; its display is the list's, at the id's weight. To hide the list, set the
+ *  element's `hidden` attribute, or hide what holds it.
  *
  *  The selection, the folds, the filter, the arrangement and the read marks are `indexState`'s
  *  (state.js) for now; the host's `persist` writes them.
