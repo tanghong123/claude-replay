@@ -4023,10 +4023,20 @@ fn the_session_view_in_a_host_on_a_phone_counts_the_insets_only_inside_its_box()
         );
     }
     assert!(
-        host_full["sheet"]["left"] == 0
-            && host_full["sheet"]["right"] == host_full["sheet"]["width"]
-            && host_full["sheet"]["padLeft"] == 62
-            && host_full["sheet"]["padRight"] == 62,
+        host_full["left"] == 0
+            && host_full["right"] == host_full["sheet"]["width"]
+            && host_full["atLeft"] == "the pane",
+        "at ⤢ in a host the pane takes the whole screen, a press at its left edge reaching it: \
+         {host_full}"
+    );
+    let host_sheet = &host_full["sheet"];
+    assert!(
+        host_sheet["left"] == 0
+            && host_sheet["right"] == host_sheet["width"]
+            && host_sheet["top"] == 0
+            && host_sheet["bottom"] == host_sheet["height"]
+            && host_sheet["padLeft"] == 62
+            && host_sheet["padRight"] == 62,
         "at ⤢ in a host's pane the review sheet takes the whole screen with its whole insets, as the \
          pane does: {host_full}"
     );
@@ -4637,9 +4647,12 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
             && beside_sheet["right"] == 900
             && beside_sheet["top"] == 0
             && beside_sheet["bottom"] == beside_sheet["height"]
-            && beside_review["pane"][0] == beside_review["pane"][1],
+            && beside_review["pane"][0] == beside_review["pane"][1]
+            && beside_review["opened"] == true
+            && beside_review["missed"] == serde_json::json!(["a list row under div.review-sheet-body"]),
         "beside a 520px sidebar the phone reader's review sheet covers the window, the sidebar \
-         included, and the pane under it keeps its place: {beside_review}"
+         included, over the list's rows and taking the press on its close control, and the pane under \
+         it keeps its place: {beside_review}"
     );
     let full_sheet = &wide_full["sheet"];
     assert!(
