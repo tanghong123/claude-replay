@@ -703,7 +703,7 @@ fn unframe_agent_report(txt: String, tur: &Value) -> String {
             return txt;
         };
         let Some((report, extras)) = handback_from_content(hb)
-            .or_else(|| handback_from_text(&txt, receipt_end, frame, text_notes(hb)))
+            .or_else(|| handback_from_text(&txt, receipt_end, frame, text_counts(hb)))
         else {
             return txt;
         };
@@ -714,7 +714,8 @@ fn unframe_agent_report(txt: String, tur: &Value) -> String {
     if !framed_agent {
         return txt;
     }
-    match handback_from_content(tur).or_else(|| handback_from_text(&txt, 0, frame, text_notes(tur)))
+    match handback_from_content(tur)
+        .or_else(|| handback_from_text(&txt, 0, frame, text_counts(tur)))
     {
         Some((report, extras)) => with_extras(report, extras),
         None => txt,
@@ -739,10 +740,13 @@ fn harness_count(src: &Value, key: &str) -> Option<usize> {
     }
 }
 
-/// How many of the parts above the frame are notes, for the text path: the count when it reads,
-/// else none, so a part is shown rather than dropped.
-fn text_notes(src: &Value) -> usize {
-    harness_count(src, "harnessNoteCount").unwrap_or(0)
+/// The note and tail counts, for the text path: `None` when either does not read, so a part is
+/// shown rather than dropped.
+fn text_counts(src: &Value) -> Option<(usize, usize)> {
+    Some((
+        harness_count(src, "harnessNoteCount")?,
+        harness_count(src, "harnessTailCount")?,
+    ))
 }
 
 /// The report, and the notes and tails a reader keeps, from a hand-back's `content` (`src` is the
@@ -798,12 +802,14 @@ fn handback_from_content(src: &Value) -> Option<(String, Vec<String>)> {
 /// trailer); and what stood between `start` and the frame (the notes and tails, indented), as its
 /// paragraphs, less a tools-used element among the first `notes` of them. The notes come first,
 /// and the text marks no boundary between parts, so a tail, or a tail's paragraph, that is one
-/// is kept; a note of several paragraphs may leave a tools-used note after it shown.
+/// is kept; a note of several paragraphs may leave a tools-used note after it shown. The counts
+/// are believed only where they can describe the paragraphs, every part one at least: a blank
+/// part, a count past the text or one that does not read (`None`), and nothing is dropped.
 fn handback_from_text(
     txt: &str,
     start: usize,
     frame: usize,
-    notes: usize,
+    counts: Option<(usize, usize)>,
 ) -> Option<(String, Vec<String>)> {
     let follows = frame + txt[frame..].find(HANDBACK_FOLLOWS)?;
     let mut lines: Vec<&str> = Vec::new();
@@ -825,10 +831,19 @@ fn handback_from_text(
         .map(|line| line.strip_prefix("  ").unwrap_or(line))
         .collect::<Vec<_>>()
         .join("\n");
-    let extras = above
+    let paragraphs: Vec<&str> = above
         .split("\n\n")
         .map(str::trim)
         .filter(|p| !p.is_empty())
+        .collect();
+    let notes = counts
+        .filter(|&(n, t)| {
+            n.checked_add(t)
+                .is_some_and(|parts| parts <= paragraphs.len())
+        })
+        .map_or(0, |(n, _)| n);
+    let extras = paragraphs
+        .into_iter()
         .enumerate()
         .filter(|&(i, p)| !(i < notes && is_tools_used_note(p)))
         .map(|(_, p)| p.to_string())
@@ -8255,22 +8270,19 @@ mod tests {
 
     /// #s456 review: counts no client writes — past the blocks, past `usize`, summing past it, or
     /// not a whole number — leave the copy unused, never a panic, and the report is cut from the
-    /// text; a count that does not read drops no note there, so the tools-used one shows.
+    /// text; a count that does not read, or that cannot describe the text, drops no note there, so
+    /// the tools-used one shows.
     #[test]
     fn a_framed_report_whose_counts_overflow_is_cut_from_its_text() {
-        let want = format!("{S5_REPORT}\n\n---\n\n{S456_TAIL}");
+        let shown = format!("{S5_REPORT}\n\n---\n\n{S456_TOOLS_NOTE}\n\n{S456_TAIL}");
         for counts in [
             serde_json::json!({"harnessNoteCount": u64::MAX}),
             serde_json::json!({"harnessNoteCount": 1u64 << 63, "harnessTailCount": 1u64 << 63}),
             serde_json::json!({"harnessTailCount": 9}),
-        ] {
-            let jsonl = s456_agent_session(&[S456_TOOLS_NOTE], &[S456_TAIL], counts.clone());
-            assert_eq!(agent_result_of(&jsonl), want, "{counts}");
-        }
-        let shown = format!("{S5_REPORT}\n\n---\n\n{S456_TOOLS_NOTE}\n\n{S456_TAIL}");
-        for counts in [
             serde_json::json!({"harnessNoteCount": -1}),
             serde_json::json!({"harnessNoteCount": 1.0}),
+            serde_json::json!({"harnessTailCount": -1}),
+            serde_json::json!({"harnessTailCount": 1.0}),
         ] {
             let jsonl = s456_agent_session(&[S456_TOOLS_NOTE], &[S456_TAIL], counts.clone());
             assert_eq!(agent_result_of(&jsonl), shown, "{counts}");
@@ -8324,10 +8336,15 @@ mod tests {
                 "{tur}"
             );
         }
+        // The second review: a note count past the text, and a blank note (which leaves no
+        // paragraph), must not make the tail read as a note.
         for (notes, tur) in [
             (&[][..], serde_json::json!({})),
             (&[][..], serde_json::json!({"content": null})),
             (&[S456_TOOLS_NOTE][..], serde_json::json!({"content": null})),
+            (&[][..], serde_json::json!({"harnessNoteCount": 9})),
+            (&[][..], serde_json::json!({"harnessNoteCount": u64::MAX})),
+            (&[""][..], serde_json::json!({"content": null})),
         ] {
             let jsonl = s456_agent_session(notes, &[TOOLS_BASH], tur.clone());
             assert_eq!(
@@ -8355,11 +8372,23 @@ mod tests {
     /// it, hand-written in the measured shape: the receipt's JSON line, the tail indented, the
     /// frame and the indented report; `inlineHandback` holds `content` and the counts.
     fn s456_send_session(content: Value) -> String {
+        s456_send_session_with(&[], content, Value::Null)
+    }
+
+    /// `s456_send_session` with notes above the tail, and `counts` (when not null) in place of
+    /// `inlineHandback`'s own.
+    fn s456_send_session_with(notes: &[&str], content: Value, counts: Value) -> String {
         let receipt = r#"{"success":true,"message":"Resumed agent. Its final report follows this JSON, framed by the harness."}"#;
         let text = format!(
             "{receipt}\n{}",
-            s456_framed_text(&[], S5_REPORT, &[S456_TAIL], false)
+            s456_framed_text(notes, S5_REPORT, &[S456_TAIL], false)
         );
+        let mut handback = serde_json::json!({"displayName": "a-s456", "content": content,
+            "harnessNoteCount": notes.len(), "harnessTailCount": 1,
+            "harnessSectionHash": "0123456789abcdef"});
+        for (k, v) in counts.as_object().cloned().unwrap_or_default() {
+            handback[k] = v;
+        }
         let lines = [
             serde_json::json!({"type": "user", "version": "2.1.322", "sessionId": "s-s456-send",
                 "timestamp": "2026-11-11T01:00:00.000Z", "message": {"content": "ask it again"}}),
@@ -8372,9 +8401,7 @@ mod tests {
             serde_json::json!({"type": "user", "version": "2.1.322", "sessionId": "s-s456-send",
                 "timestamp": "2026-11-11T01:00:09.000Z", "toolUseResult": {"success": true,
                 "message": "Resumed agent. Its final report is not in this message.",
-                "inlineHandback": {"displayName": "a-s456", "content": content,
-                    "harnessNoteCount": 0, "harnessTailCount": 1,
-                    "harnessSectionHash": "0123456789abcdef"},
+                "inlineHandback": handback,
                 "pin": {"id": "p", "name": "n", "ref": "r"}},
                 "message": {"content": [{"type": "tool_result", "tool_use_id": "call_s456_send",
                 "content": [{"type": "text", "text": text}]}]}}),
@@ -8410,6 +8437,35 @@ mod tests {
             .filter(|s| s.example.as_deref() == Some("s-s456-send"))
             .collect();
         assert!(seen.is_empty(), "inlineHandback is known: {seen:?}");
+    }
+
+    /// #s456 second review: a SendMessage hand-back with a tools-used note above its tail, cut
+    /// from its text: the note goes while the counts describe the text, and shows once the note
+    /// count is past it; the tail stays either way.
+    #[test]
+    fn a_send_message_hand_back_cut_from_its_text_drops_only_a_counted_tools_used_note() {
+        let receipt = r#"{"success":true,"message":"Resumed agent. Its final report follows this JSON, framed by the harness."}"#;
+        for (counts, want) in [
+            (
+                Value::Null,
+                format!("{receipt}\n{S5_REPORT}\n\n---\n\n{S456_TAIL}"),
+            ),
+            (
+                serde_json::json!({"harnessNoteCount": 9}),
+                format!("{receipt}\n{S5_REPORT}\n\n---\n\n{S456_TOOLS_NOTE}\n\n{S456_TAIL}"),
+            ),
+        ] {
+            let jsonl = s456_send_session_with(&[S456_TOOLS_NOTE], Value::Null, counts.clone());
+            let output = parse(&jsonl)
+                .iter()
+                .find_map(|b| match b {
+                    Block::ToolUse { name, output, .. } if name == "SendMessage" => output.clone(),
+                    _ => None,
+                })
+                .expect("a SendMessage output");
+            assert_eq!(output, want, "{counts}");
+            assert_eq!(tool_result_via_messages(&jsonl), want, "{counts}");
+        }
     }
 
     /// #s5: what came before 2.1.289 is untouched — an unframed Agent result, and a non-Agent
