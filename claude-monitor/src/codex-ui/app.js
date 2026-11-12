@@ -29,8 +29,8 @@ const app = page.byId("app");
 // wrapped code, a wide transcript). The page's shell (`app-shell.html`) carries it empty. In the app
 // it is the second column of `#app`'s grid, a box that lays its three parts out in a grid of its own
 // (#s431 stage 1, design/pane-layout.md); the pane's open, full and resizing states are copied onto
-// `#app` too (`paneLayout`), for the app's rules that still read them there (a drag's cursor, and a
-// phone's pane beside the session).
+// `#app` too (`paneLayout`), for the app's rules that still read them there (a drag's cursor, a narrow
+// window's pane over the session, and a phone's pane beside it).
 const sessionView = page.byId("sessionView");
 let toastTimer = 0;
 

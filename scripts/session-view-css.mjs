@@ -344,11 +344,12 @@ export const COMMON = Object.freeze([
   ".production-open", ".sheet", ".warn",
 ]);
 
-/** The classes the view's own element carries: its class and its state (stages 2 and 5a). The pane's
- *  `preview-off`, `preview-full` and `resizing` are copied onto `#app` for its grid as well. A rule
- *  led by one may style the view's element itself. */
+/** The classes the view's own element carries: its class and its state (stages 2 and 5a), and
+ *  `sv-mounting` while it is being mounted (#s431 stage 1). The pane's `preview-off`, `preview-full`
+ *  and `resizing` are copied onto `#app` as well, for the app's rules that still read them there. A
+ *  rule led by one may style the view's element itself. */
 export const ROOT_CLASSES = Object.freeze([
-  ".session-view", ".composing", ".keyboard-up", ".pane-open", ".preview-full", ".preview-off", ".resizing", ".wide", ".wrap-code",
+  ".session-view", ".composing", ".keyboard-up", ".pane-open", ".preview-full", ".preview-off", ".resizing", ".sv-mounting", ".wide", ".wrap-code",
 ]);
 
 /** What the view draws that the page shows OUTSIDE `#sessionView`, so a rule for it is in both files
