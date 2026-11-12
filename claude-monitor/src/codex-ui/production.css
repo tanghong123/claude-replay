@@ -17,6 +17,13 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    absolutely keeps its containing block. */
 #sessionView{display:grid;min-width:0;min-height:0;contain:inline-size;grid-template-rows:minmax(0,1fr);grid-template-columns:minmax(480px,1fr) 1px var(--preview,420px);transition:grid-template-columns .22s ease}
 #sessionView.preview-off{grid-template-columns:minmax(480px,1fr) 0 0}
+/* #s431 stage 2 (the review of its first cut; design/pane-layout.md, "Drawn inside the pane"): a phone
+   reader narrower than the window (`pl-boxed`: beside a wide sidebar or the rail, beside a wide phone's
+   column, in a host's pane) contains its layout, so its fixed layers (the dock, the sheets, Info, the
+   menus, the right pane, the reply box, the dims) are placed in its own box, not across the window
+   over what is beside it, and paint in its own stacking. A phone reader as wide as the window is
+   left as it was. The desktop's layers, which their scripts place from the window, wait for stage 4. */
+@media(max-width:760px),(pointer:coarse) and (max-height:500px){#sessionView.pl-boxed{contain:inline-size layout}}
 /* A drag of the resizer moves the pane's track with the pointer: the open and shut glide, never a
    drag, as `.app.resizing` kept it when the tracks were the app's. */
 #sessionView.resizing{transition:none}
@@ -1689,16 +1696,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
   .phone-dock{left:auto}
   #app:not(.phone-column-off) .dock-pill .phone-pane{display:none}
-  /* With the column shown the view is a 652-676px phone held sideways (#s431 stage 2, by its own
-     width): its dock spans it, the find pill too, and its Aa and session menus open at its left edge.
-     They are fixed to the screen, so the app keeps each beside its column, until the view places its
-     own layers in its box (stage 4). */
-  #app:not(.phone-column-off) .phone-dock{left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 12px)}
-  #app:not(.phone-column-off) .reading-cluster>.reading-options,#app:not(.phone-column-off) .phone-pane-menu:not([hidden]){left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 12px)}
-  #app:not(.phone-column-off) .session-copy-menu{left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 10px)}
   #app.phone-column-off .phone-dock:has(.header-searchbox:is(.phone-open,.has-query)){left:calc(12px + env(safe-area-inset-left,0px))}
-  /* The reply box spans the transcript's column, as the find pill does (#s39). */
-  #app:not(.phone-column-off) .workspace .composer.production-show{left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 12px)}
 }
 
 /* #s37 (design/phone-landscape.md §3.1) — the safe area. The page asks for the whole screen
@@ -1822,11 +1820,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
   #sessionView:not(.preview-off) .reading-cluster>.reading-options,#sessionView:not(.preview-off) .phone-pane-menu:not([hidden]){right:calc(50% + 12px)}
   #app:not(.phone-column-off):not(.preview-off)>:where(.session-view)>.workspace{width:auto}
-  /* The pane covers the view, beside the column, shut as well as open: the view's own rule gives it the
-     view's width at the screen's left edge, so shut (moved its width to the right) it stayed partly on
-     the screen, over the top bar's Info and the session, where the column shows (#s431 stage 2). Each
-     state is its own selector, so the open one still outweighs the view's sideways `left:50%`. */
-  #app:not(.phone-column-off):not(.preview-off)>:where(.session-view)>.preview,#app:not(.phone-column-off).preview-off>:where(.session-view)>.preview{left:calc(var(--sidebar) + env(safe-area-inset-left,0px))}
+  /* The pane covers the view, beside the column, shut as well as open, from the view's left edge: the
+     view is a box of its own there and holds its fixed layers (#s431 stage 2, `pl-boxed`). Each state
+     is its own selector, so the open one still outweighs the view's sideways `left:50%`. */
+  #app:not(.phone-column-off):not(.preview-off)>:where(.session-view)>.preview,#app:not(.phone-column-off).preview-off>:where(.session-view)>.preview{left:0}
   #app:not(.phone-column-off):not(.preview-off) .phone-dock{display:none}
   /* The handle by the title stays reachable over the pane (it hides the list, which turns the pane
      into the second column), the pane's head making room for it; at the whole screen it waits. */

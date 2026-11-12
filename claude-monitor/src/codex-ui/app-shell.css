@@ -571,11 +571,7 @@ input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea,select{f
 }
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
 #app:not(.phone-column-off) .dock-pill .phone-pane{display:none}
-#app:not(.phone-column-off) .phone-dock{left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 12px)}
-#app:not(.phone-column-off) .reading-cluster>.reading-options,#app:not(.phone-column-off) .phone-pane-menu:not([hidden]){left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 12px)}
-#app:not(.phone-column-off) .session-copy-menu{left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 10px)}
 #app.phone-column-off .phone-dock:has(.header-searchbox:is(.phone-open,.has-query)){left:calc(12px + env(safe-area-inset-left,0px))}
-#app:not(.phone-column-off) .workspace .composer.production-show{left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 12px)}
 }
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){
 .drawer-handle{left:calc(4px + env(safe-area-inset-left,0px))}
@@ -609,7 +605,7 @@ input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea,select{f
 }
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
 #app:not(.phone-column-off):not(.preview-off)>:where(.session-view)>.workspace{width:auto}
-#app:not(.phone-column-off):not(.preview-off)>:where(.session-view)>.preview,#app:not(.phone-column-off).preview-off>:where(.session-view)>.preview{left:calc(var(--sidebar) + env(safe-area-inset-left,0px))}
+#app:not(.phone-column-off):not(.preview-off)>:where(.session-view)>.preview,#app:not(.phone-column-off).preview-off>:where(.session-view)>.preview{left:0}
 #app:not(.phone-column-off):not(.preview-off) .phone-dock{display:none}
 #app:not(.phone-column-off):not(.preview-off):not(.preview-full) .drawer-handle{z-index:56}
 #app:not(.phone-column-off):not(.preview-off):not(.preview-full)>:where(.session-view)>.preview .preview-head{padding-left:52px}

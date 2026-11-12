@@ -1015,8 +1015,10 @@ function onceOnTheElement(lines, id, file) {
  *  control sized by it is as wide as it was in the app at the default sidebar; a left edge at the
  *  sidebar (`var(--sidebar)`) is the view's own left edge, `--pane-x`; and a share of the height is
  *  that share of the view's, `--pl-vh` and `--pl-dvh`, which are the window's own units while the
- *  view is as tall as the window. pane-layout.js writes all five. Only a declaration's value changes,
- *  never a selector or a keyframe's name. */
+ *  view is as tall as the window. The screen's left inset (the island, a phone held sideways) is only
+ *  the part of it that falls in the view's box, `max(0px, inset - --pane-x)`: beside a wide phone's
+ *  column the inset is the column's. pane-layout.js writes all five lengths. Only a declaration's
+ *  value changes, never a selector or a keyframe's name. */
 export function viewLengths(line) {
   const at = line.indexOf("{");
   if (at < 0 || /^@(?:-webkit-)?keyframes\b/.test(line)) return line;
@@ -1026,7 +1028,8 @@ export function viewLengths(line) {
     .replace(/(^|[^\w.-])100vw\b/g, "$1var(--pl-w)")
     .replace(/(^|[^\w.-])(\d*\.?\d+)vw\b/g, (all, before, n) => `${before}calc(${n} * var(--pl-b) / 100)`)
     .replace(/(^|[^\w.-])(\d*\.?\d+)dvh\b/g, (all, before, n) => `${before}calc(${n} * var(--pl-dvh))`)
-    .replace(/(^|[^\w.-])(\d*\.?\d+)vh\b/g, (all, before, n) => `${before}calc(${n} * var(--pl-vh))`);
+    .replace(/(^|[^\w.-])(\d*\.?\d+)vh\b/g, (all, before, n) => `${before}calc(${n} * var(--pl-vh))`)
+    .replace(/env\(safe-area-inset-left(?:,\s*0px)?\)/g, "max(0px, env(safe-area-inset-left,0px) - var(--pane-x))");
   if (/\d(?:vw|vh|dvh|svh|lvh|vmin|vmax)\b|var\(--sidebar\)/.test(body)) throw new Error(`session-view.css: a length in the window's units is left in \`${line.slice(0, 120)}\`; say in viewLengths what it is of the view`);
   return line.slice(0, at) + body;
 }

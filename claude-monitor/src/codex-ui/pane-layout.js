@@ -75,6 +75,11 @@ export function mountPaneLayout(element, { signal, onChange } = {}) {
     element.style.setProperty("--pl-w", `${box.width}px`);
     element.style.setProperty("--pl-h", `${box.height}px`);
     element.style.setProperty("--pane-x", `${box.left}px`);
+    // Whether the view is narrower than the window: beside the app's list or its rail, beside a wide
+    // phone's column, in a host's pane. It picks no layout (#s461): a phone reader in such a box
+    // contains its layout, so its fixed layers are placed in its own box, not across the window
+    // (`pl-boxed`, design/pane-layout.md, "Drawn inside the pane").
+    element.classList.toggle("pl-boxed", box.left > 0.5 || box.right < innerWidth - 0.5);
     // A share of the height is the window's own unit while the view is as tall as the window (always
     // in the app, whose grid is 100dvh: iOS gives `innerHeight` that height too), so iPhone Safari's
     // `dvh`, which follows its bars, still does; else the view's. The window is read here for that
