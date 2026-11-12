@@ -962,7 +962,10 @@ tree.onclick = event => {
   const newSession = event.target.closest("[data-native-project]");
   if (newSession) { event.stopPropagation(); options.newSession?.({ id: newSession.dataset.nativeProject, cwd: newSession.dataset.nativeCwd }); return; }
   const action = event.target.closest("[data-ignore-op]"); if (action) { event.stopPropagation(); applyIgnore(action.dataset.ignoreOp, action.dataset.ignoreKey); return; }
-  const forks = event.target.closest("[data-family-toggle]"); if (forks) { event.stopPropagation(); const key = forks.dataset.familyToggle; indexState.openFamilies.has(key) ? indexState.openFamilies.delete(key) : indexState.openFamilies.add(key); renderTree(); return; }
+  // A family holding the open session is drawn open whatever its chip says, so a click there redraws
+  // nothing, and the row or the chip the press focused kept the page's keys: a click with the mouse
+  // hands them back, as a session's does (#s460); Enter's leaves the focus where the keyboard put it.
+  const forks = event.target.closest("[data-family-toggle]"); if (forks) { event.stopPropagation(); if (event.detail > 0 && tree.contains(page.active())) page.active().blur(); const key = forks.dataset.familyToggle; indexState.openFamilies.has(key) ? indexState.openFamilies.delete(key) : indexState.openFamilies.add(key); renderTree(); return; }
   const session = event.target.closest("[data-session]");
   if (session) {
     // A click with the mouse hands the page its keys (stage 4): the press focused the row, and a

@@ -2581,6 +2581,87 @@ fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
     );
 }
 
+/// A click on a fork family's ⑂ chip hands the page its keys (#s460), as a click choosing a session
+/// does. A family holding the open session is drawn open whatever its chip says, so that click
+/// redraws nothing, and the chip the press focused (Chrome focuses a button it presses; WebKit, the
+/// row) kept the page's keys until the reader clicked in the transcript. Enter on the chip is a click
+/// too and leaves the focus where the keyboard put it. The family is two Qwenwork sessions, the
+/// second forked from the first by its sidecar's `fork_from`.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_list_hands_the_page_its_keys_after_a_fork_chip_click() {
+    let _serial = serial();
+    let base = base("list-host-fork-chip");
+    let stores = Stores::new(&base);
+    let (origin, fork) = (
+        "aaaa1111-0000-4000-8000-0000000004c1",
+        "aaaa1111-0000-4000-8000-0000000004c2",
+    );
+    // The family's discovery passes over a transcript under 4 KB, so each is a long session.
+    for sid in [origin, fork] {
+        let path =
+            stores.qwenwork_session(sid, &harness::long_session(6, harness::Shape::default()));
+        if sid == fork {
+            std::fs::write(
+                path.with_file_name(format!("{fork}-session.json")),
+                format!("{{\"fork_from\":\"{origin}\"}}"),
+            )
+            .unwrap();
+        }
+    }
+    let monitor = Monitor::spawn(Kind::V1, 3271, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-filter', '[\"recent\",\"blocked\",\"idle\"]'); 'ok'",
+    );
+    harness::open_list_host_page_with(&tab, &monitor, "");
+    until_list_drawn(&tab);
+    // The host opens the fork, so the family holds the open session and is drawn open.
+    harness::eval(&tab, &format!("window.__list.select({fork:?}); 'ok'"));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('#tree [data-family-toggle]') && !!document.querySelector('#tree .tree-row.session[data-session={fork:?}]')"),
+        "the family's chip and its fork's row drawn",
+        Duration::from_secs(10),
+        "(document.getElementById('tree') || {}).innerHTML",
+    );
+    let chip = "document.querySelector('#tree [data-family-toggle]')";
+    let at = harness::probe(
+        &tab,
+        &format!("(function () {{ var r = {chip}.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"),
+    );
+    let (x, y) = (at[0].as_f64().unwrap_or(0.0), at[1].as_f64().unwrap_or(0.0));
+    let after = format!(
+        "(function () {{ var a = document.activeElement; return {{ same: window.__chip === {chip}, expanded: {chip}.getAttribute('aria-expanded'), inTree: document.getElementById('tree').contains(a) }}; }})()"
+    );
+    harness::eval(&tab, &format!("window.__chip = {chip}; 'ok'"));
+    harness::drag_select(&tab, x, y, x, y);
+    harness::pause("chip click", Duration::from_millis(300));
+    let clicked = harness::probe(&tab, &after);
+    harness::eval(
+        &tab,
+        &format!("window.__chip = {chip}; {chip}.focus(); 'ok'"),
+    );
+    let entered = harness::probe(
+        &tab,
+        &format!("(function () {{ {PRESS}('Enter'); return {after}; }})()"),
+    );
+    drop(monitor);
+    assert_eq!(
+        clicked,
+        serde_json::json!({ "same": true, "expanded": "true", "inTree": false }),
+        "a click on the chip of a family holding the open session redraws nothing and hands the page its keys"
+    );
+    assert_eq!(
+        entered,
+        serde_json::json!({ "same": true, "expanded": "true", "inTree": true }),
+        "Enter on the chip is a click that leaves the focus where the keyboard put it"
+    );
+}
+
 /// The session list unmounts (#s430 stage 4, as the view's stage 7): mounted in a host's element,
 /// arranged like the Claude app, with a section's menu and the filter's sheet opened and closed so
 /// every listener it binds on the page is bound, `unmount()` removes every one of them (as the

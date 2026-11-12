@@ -353,7 +353,9 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      the list. The other, the keyboard's focus dropped at a rewrite, is what main does after every
      step. A click with the mouse also hands the page its keys as it chooses the session (a click with
      a pointer blurs the row), since the open session clicked again redraws nothing, and its row kept
-     them, on main too; Enter's click leaves the focus where the keyboard put it. Four reviews shaped
+     them, on main too; Enter's click leaves the focus where the keyboard put it. A click on a fork
+     family's ⑂ chip hands them back too (#s460): a family holding the open session is drawn open
+     whatever its chip says, so that click redraws nothing either. Four reviews shaped
      this. A refocus in the step alone held only until the next read rewrote the tree; a carry of any
      focused row kept a clicked one; a carry that left the mouse's focus to the click kept a row
      pressed and dragged off it, a press straddling a rewrite (#s72) and, in Safari, a row whose button
