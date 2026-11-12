@@ -130,6 +130,39 @@ let droppedAttention = "";
   assert.equal(read("session-view.css"), derived.view, "session-view.css is derived from reference.css and production.css (run scripts/extract-agent-monitor-demo.mjs)");
   assert.equal(read("app-shell.css"), derived.app, "app-shell.css is derived from reference.css and production.css (run scripts/extract-agent-monitor-demo.mjs)");
   assert.equal(read("session-list.css"), derived.list, "session-list.css is derived from reference.css and production.css (run scripts/extract-agent-monitor-demo.mjs)");
+  // #s431 stage 2: the view's rules under a width query read classes pane-layout.js sets instead. The
+  // module sets exactly the classes the rules read; and with the effective width standing for the
+  // window, every rewritten query matches exactly where its classes hold, at each threshold and either
+  // side of it, on a short and a tall screen, with a coarse and a fine pointer. The query is read here
+  // on its own, as a browser would read it, not through the derivation's table.
+  {
+    const layout = await import("../../claude-monitor/src/codex-ui/pane-layout.js");
+    assert.deepEqual([...layout.LAYOUT_CLASSES].sort(), derived.report.layoutClasses, "pane-layout.js sets exactly the classes the view's rules read");
+    assert.ok(!/@media[^{]*(?:width)/.test(derived.view), "no view rule is left under a width query");
+    const matchesQuery = (prelude, s) => prelude.replace(/^@media\s*/, "").split(",").some(query => {
+      const features = query.match(/\([^()]*\)/g) || [];
+      assert.equal(query.replace(/\([^()]*\)/g, "").replace(/\band\b/g, "").trim(), "", `a plain query: ${query}`);
+      return features.every(f => {
+        const m = /^\((min|max)-(width|height):(\d+)px\)$/.exec(f.replace(/\s+/g, ""));
+        if (m) { const v = m[2] === "width" ? s.width : s.height; return m[1] === "min" ? v >= +m[3] : v <= +m[3]; }
+        if (/^\(pointer:coarse\)$/.test(f.replace(/\s+/g, ""))) return s.coarse;
+        if (/^\(pointer:fine\)$/.test(f.replace(/\s+/g, ""))) return s.fine;
+        throw new Error(`a feature this check does not read: ${f}`);
+      });
+    });
+    const numbers = name => (/(\d+)$/.exec(name) || [])[1];
+    const widths = [...new Set(derived.report.layoutClasses.filter(layout.readsWidth).flatMap(n => [+numbers(n) - 1, +numbers(n), +numbers(n) + 1]))].concat([320, 1600]);
+    const samples = widths.flatMap(width => [499, 500, 501, 502, 900].flatMap(height => [true, false].map(coarse => ({ width, height, coarse, fine: !coarse }))));
+    assert.ok(derived.report.widthQueries.length >= 15, `the width queries the view's rules stood under: ${derived.report.widthQueries.length}`);
+    for (const { prelude, alternatives } of derived.report.widthQueries) for (const s of samples) {
+      const byClasses = alternatives.some(classes => classes.every(name => layout.holds(name, s)));
+      assert.equal(byClasses, matchesQuery(prelude, s), `${prelude} at ${JSON.stringify(s)}: the classes ${JSON.stringify(alternatives)}`);
+    }
+    const phoneQuery = "@media(max-width:760px),(pointer:coarse) and (max-height:500px)";
+    for (const s of samples) assert.equal(layout.isPhone(s), matchesQuery(phoneQuery, s), `the phone family at ${JSON.stringify(s)}`);
+    const capabilities = await import("../../claude-replay-html/src/html/shared/capabilities.js");
+    assert.equal(`@media${capabilities.PHONE_QUERY}`.replace(/\s+/g, ""), phoneQuery.replace(/\s+/g, ""), "isPhone reads the shared PHONE_QUERY");
+  }
   // #s430 stage 3: the app's file takes one rewrite, the demo's two rules naming the tree as the
   // sidebar's child, which go on through the list's element at the same weight.
   assert.deepEqual(derived.report.listChild, [".app.sidebar-off .sidebar>:where(.session-list)>.tree", ".sidebar>:where(.session-list)>.tree"], "the demo's two sidebar>tree rules go on through #sessionList, and only they");

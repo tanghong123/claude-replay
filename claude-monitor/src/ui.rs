@@ -195,6 +195,10 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/view-state.js").as_slice(),
         ),
+        "monitor-ui/pane-layout.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/pane-layout.js").as_slice(),
+        ),
         "monitor-ui/view-root.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/view-root.js").as_slice(),
@@ -1204,6 +1208,7 @@ mod tests {
             ("view-model.js", include_str!("codex-ui/view-model.js")),
             ("view-root.js", include_str!("codex-ui/view-root.js")),
             ("view-state.js", include_str!("codex-ui/view-state.js")),
+            ("pane-layout.js", include_str!("codex-ui/pane-layout.js")),
             ("session-view.js", include_str!("codex-ui/session-view.js")),
             (
                 "session-view-markup.js",

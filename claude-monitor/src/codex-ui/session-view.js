@@ -16,6 +16,7 @@ import { backend, useBackend } from "./backend.js";
 import { AttachmentViewer } from "./attachment-viewer.js";
 import { bindComponentEvents, fleetHtml, pendingHeadText } from "./components.js";
 import { PHONE_QUERY, referenceAction, WIDE_PHONE_QUERY } from "./shared/capabilities.js";
+import { mountPaneLayout } from "./pane-layout.js";
 import { costDisplay, reportedCostDisplay } from "./shared/cost-display.js";
 import { chainWalk, toolTree } from "./shared/filter.js";
 import { taskCardHtml, taskRowMeta, TASK_NO_TITLE } from "./shared/task-card.js";
@@ -240,6 +241,13 @@ element.classList.add("session-view");
 // a view that had just appeared. `sv-mounting` holds the tracks' transition off until the mount's
 // last layout read, below.
 element.classList.add("sv-mounting");
+// #s431 stage 2 (design/pane-layout.md): the view is laid out by its own box, not the window. Its
+// layout is decided now, before the first render, and again whenever the box or the screen changes
+// (pane-layout.js); the classes that decision sets on the element are what its width rules read. A
+// decision that changes a class remeasures the transcript once the view can (`layoutHeard`, set below,
+// since the first decision comes before the code that remeasures exists).
+let layoutHeard = null;
+const layout = mountPaneLayout(element, { signal, onChange: () => layoutHeard?.() });
 const applyTheme = theme => { element.dataset.theme = theme === "dark" ? "dark" : "light"; };
 applyTheme(options.theme);
 const { selectSession } = options;
@@ -523,6 +531,7 @@ const paneLayoutChanged = () => {
   paneLaidOutWidth = width;
   viewport.remeasure();
 };
+layoutHeard = paneLayoutChanged;
 const preview = new Preview({ layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
 const attachmentViewer = new AttachmentViewer({ toast });
 // What the compose box asks of the app goes nowhere once the view is unmounted: a dialog's answer
