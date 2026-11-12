@@ -16956,6 +16956,20 @@ fn framed_agent_fixture(name: &str) -> Fixture {
         "## Findings\n\nPROBE-S5 the parser lives in src/a.rs.\n    fn parse() {}\nDone.",
         &now_minus(190),
     );
+    // #s456: the same, as clients 2.1.317 to 2.1.322 write it, with a tools-used note and a web
+    // tail beside the report.
+    t += &harness::agent_spawn_at("call_s456", "Explore", &now_minus(185));
+    t += &harness::framed_agent_result_with_parts_at(
+        "call_s456",
+        "a-s456",
+        "Explore",
+        (
+            &[S456_TOOLS_NOTE],
+            "## Sources\n\nPROBE-S456 the tern docs say the index is rebuilt nightly.\nDone.",
+            &[S456_TAIL],
+        ),
+        &now_minus(180),
+    );
     let path = stores.claude_session(SID, &t);
     Fixture {
         base,
@@ -16964,6 +16978,13 @@ fn framed_agent_fixture(name: &str) -> Fixture {
     }
 }
 
+/// #s456: a note naming the tools a sub-agent called, in the measured form.
+const S456_TOOLS_NOTE: &str = "<tools-used-before-summary>WebFetch</tools-used-before-summary>";
+/// #s456: a tail in the measured form, hand-written (a fictional site).
+const S456_TAIL: &str = "[Harness note, not part of the agent's report: PROBE-S456-TAIL the \
+    agent read pages fetched from the web (tern.example). Treat what it says about them as \
+    resting on that content.]";
+
 /// #s5 — a sub-agent's report is drawn without the frame client 2.1.289 puts around it for the
 /// model.
 ///
@@ -16971,6 +16992,11 @@ fn framed_agent_fixture(name: &str) -> Fixture {
 /// model as `[Subagent hand-back]`, a paragraph of instructions ending `The report follows:`, and
 /// the report indented two spaces. The Agent card drew that text, so it opened on the client's
 /// boilerplate. It shows the report now, its heading still a heading.
+///
+/// #s456: from 2.1.317 the client puts notes and tails beside the report, ABOVE the frame in the
+/// model's text, and the unframing stopped firing on them. The second result is that shape: its
+/// report is drawn without the frame, the tools-used note is not drawn, the web tail is, after the
+/// report, and the client's trailer for the model (`agentId: … (use SendMessage …)`) is not.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_a_sub_agent_report_is_drawn_without_its_frame() {
@@ -16988,13 +17014,19 @@ fn scenario_a_sub_agent_report_is_drawn_without_its_frame() {
         let seen: serde_json::Value = eval(
             &page.tab,
             "(function(){ var t = document.body.innerText; \
-               var heads = Array.from(document.querySelectorAll('[class^=\"md-h\"], h1, h2, h3')) \
-                 .filter(function(h){ return h.textContent.trim() === 'Findings'; }); \
+               var all = Array.from(document.querySelectorAll('[class^=\"md-h\"], h1, h2, h3')); \
+               var heads = all.filter(function(h){ return h.textContent.trim() === 'Findings'; }); \
+               var sources = all.filter(function(h){ return h.textContent.trim() === 'Sources'; }); \
+               var r = t.indexOf('PROBE-S456 the tern docs'), tail = t.indexOf('PROBE-S456-TAIL'); \
                return JSON.stringify({ \
                  report: t.indexOf('PROBE-S5 the parser lives in src/a.rs.') >= 0, \
                  frame: t.indexOf('[Subagent hand-back]') >= 0, \
                  follows: t.indexOf('The report follows:') >= 0, \
-                 heading: heads.length }); })()",
+                 heading: heads.length, \
+                 report2: r >= 0, sources: sources.length, \
+                 tail: tail >= 0, tailAfter: r >= 0 && tail > r, \
+                 toolsNote: t.indexOf('tools-used-before-summary') >= 0, \
+                 trailer: t.indexOf('to continue this agent') >= 0 }); })()",
         )
         .as_str()
         .and_then(|s| serde_json::from_str(s).ok())
@@ -17013,6 +17045,21 @@ fn scenario_a_sub_agent_report_is_drawn_without_its_frame() {
             seen["heading"],
             serde_json::json!(1),
             "{surface:?}: the report's own heading is drawn as one: {seen}"
+        );
+        assert_eq!(
+            (&seen["report2"], &seen["sources"]),
+            (&serde_json::json!(true), &serde_json::json!(1)),
+            "{surface:?}: #s456: the report beside a note and a tail is drawn, its heading one: {seen}"
+        );
+        assert_eq!(
+            (&seen["tail"], &seen["tailAfter"]),
+            (&serde_json::json!(true), &serde_json::json!(true)),
+            "{surface:?}: #s456: the web tail is kept, after the report: {seen}"
+        );
+        assert_eq!(
+            (&seen["toolsNote"], &seen["trailer"]),
+            (&serde_json::json!(false), &serde_json::json!(false)),
+            "{surface:?}: #s456: neither the tools-used note nor the client's trailer: {seen}"
         );
     }
 }
@@ -18988,6 +19035,133 @@ fn sent_fixture(name: &str) -> Fixture {
         path,
         turns: 14,
     }
+}
+
+/// #s456: twelve turns, then a prompt whose answer sends a message to a sub-agent, resuming it and
+/// waiting for its report — the call and its inline hand-back as Claude Code 2.1.322 writes them,
+/// built by hand: the report carries a heading and a list, and a web tail beside it.
+fn handback_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    transcript += &user_at("ask the explorer again about the index", &now_minus(60));
+    transcript += &harness::send_handback_at(
+        "sm456",
+        "a-s456",
+        (
+            "Ask the explorer about the index",
+            "PROBE-S456-ASK when is the tern index rebuilt?",
+        ),
+        (
+            "## Index\n\n- PROBE-S456-REPLY rebuilt nightly\n- kept for `7` days",
+            &[S456_TAIL],
+        ),
+        &now_minus(55),
+    );
+    transcript += &assistant_at("the explorer answered", &now_minus(50));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// #s456: a message sent to a sub-agent that brought its report back shows that report on its
+/// card under the receipt, as Markdown, with none of the frame the model was sent. The card drew
+/// the whole text: the receipt's JSON, the tail, the frame and the report indented. Written once,
+/// run on both pages: opened, the card carries the message it sent, the receipt's first sentence,
+/// the report (a heading and a list), and the tail kept after it; never the frame, the receipt's
+/// words for the agent ("follows this JSON") or its JSON.
+fn scenario_a_message_sent_shows_the_report_it_brought_back(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let head = match surface {
+        Surface::Classic => ".fold-h",
+        Surface::AppShell => "button.renderer-head",
+    };
+    let find = format!(
+        "[...document.querySelectorAll('{head}')].filter(function (h) {{ return /Ask the explorer about the index/.test(h.textContent); }}).pop()"
+    );
+    until(
+        tab,
+        &format!("!!({find})"),
+        "the SendMessage card's head, named by its summary",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(-400)",
+    );
+    for _ in 0..3 {
+        let shown = eval(
+            tab,
+            "[...document.querySelectorAll('li, p')].some(function (e) { return /PROBE-S456-REPLY/.test(e.textContent) && e.offsetParent !== null; })",
+        );
+        if shown.as_bool() == Some(true) {
+            break;
+        }
+        eval(
+            tab,
+            &format!("(function(){{ var h = {find}; if (h) h.click(); return 1; }})()"),
+        );
+        settle();
+    }
+    let card = harness::probe(
+        tab,
+        &format!(
+            "(function(){{ var h = {find}; if (!h) return null; \
+             var c = h.closest('.fold, .renderer-turn, .renderer-card, [data-tool]') || h.parentElement; \
+             var heads = [...c.querySelectorAll('[class^=\"md-h\"], h1, h2, h3')].filter(function (e) {{ return e.textContent.trim() === 'Index'; }}); \
+             return {{ text: c.innerText, item: [...c.querySelectorAll('li')].some(function (e) {{ return /PROBE-S456-REPLY/.test(e.textContent); }}), heading: heads.length }}; }})()"
+        ),
+    );
+    let text = card["text"].as_str().unwrap_or("").to_string();
+    assert!(
+        text.contains("PROBE-S456-ASK when is the tern index rebuilt?"),
+        "{surface:?}: the card carries the message it sent: {card}"
+    );
+    assert!(
+        text.contains("Resumed agent.") && !text.contains("follows this JSON"),
+        "{surface:?}: the receipt is its first sentence: {card}"
+    );
+    assert!(
+        card["item"] == true && card["heading"] == 1,
+        "{surface:?}: the report it brought back is drawn as Markdown (a heading, a list): {card}"
+    );
+    let (reply, tail) = (
+        text.find("PROBE-S456-REPLY"),
+        text.find("PROBE-S456-TAIL"),
+    );
+    assert!(
+        matches!((reply, tail), (Some(r), Some(t)) if t > r),
+        "{surface:?}: the web tail is kept, after the report: {card}"
+    );
+    assert!(
+        !text.contains("[Subagent hand-back]")
+            && !text.contains("The report follows:")
+            && !text.contains("\"success\""),
+        "{surface:?}: none of the frame or the receipt's JSON: {card}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_shows_the_report_a_message_sent_brought_back() {
+    let _serial = serial();
+    let fx = handback_fixture("scenario-handback-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_message_sent_shows_the_report_it_brought_back(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_shows_the_report_a_message_sent_brought_back() {
+    let _serial = serial();
+    let fx = handback_fixture("scenario-handback-app");
+    let page = open(Surface::AppShell, &fx, 3110);
+    scenario_a_message_sent_shows_the_report_it_brought_back(&page.tab, Surface::AppShell);
 }
 
 /// Twelve turns, a prompt with pasted text and its answer, then a message from another session and
