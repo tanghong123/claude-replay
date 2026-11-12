@@ -3729,7 +3729,7 @@ fn place_host_pane(tab: &headless_chrome::Tab, left: u32, width: u32) -> serde_j
     );
     harness::until(
         tab,
-        &format!("(function(){{ var v = document.getElementById('sessionView'); return !!v && Math.round(v.getBoundingClientRect().width) === {width} && v.style.getPropertyValue('--pane-x') === '{left}px'; }})()"),
+        &format!("(function(){{ var v = document.getElementById('sessionView'); return !!v && Math.round(v.getBoundingClientRect().width) === {width} && v.style.getPropertyValue('--pane-x') === '{left}px'; }})() && {VIEW_CAUGHT_UP}"),
         &format!("the view to decide at a {width}px box at x={left}"),
         Duration::from_secs(10),
         VIEW_LAYOUT,
@@ -3737,12 +3737,6 @@ fn place_host_pane(tab: &headless_chrome::Tab, left: u32, width: u32) -> serde_j
     harness::probe(tab, VIEW_LAYOUT)
 }
 
-/// #s431 stage 2 (design/pane-layout.md, "Its own size, and touch"; the owner's ruling, #s461): the
-/// session view in a host's pane lays itself out by its own box, never the window or what the host
-/// has beside it. In a 1400px window, a 380px pane at x=500 is the phone reader, its bands reading
-/// its own 380px; a 700px pane is the desktop layout whose bands read 1000px, as a 1000px window at
-/// the default sidebar; 1000 and 1100px panes read 1300 and 1400. On the code before it the view set
-/// no class and read the window, 1400px, at every size.
 /// One placement of the host's pane: its left edge and width, whether the view is to read as a phone,
 /// the width its bands are to read, and the layout classes it must and must not wear.
 type HostPlacement = (
@@ -3754,6 +3748,12 @@ type HostPlacement = (
     &'static [&'static str],
 );
 
+/// #s431 stage 2 (design/pane-layout.md, "Its own size, and touch"; the owner's ruling, #s461): the
+/// session view in a host's pane lays itself out by its own box, never the window or what the host
+/// has beside it. In a 1400px window, a 380px pane at x=500 is the phone reader, its bands reading
+/// its own 380px; a 700px pane is the desktop layout whose bands read 1000px, as a 1000px window at
+/// the default sidebar; 1000 and 1100px panes read 1300 and 1400. On the code before it the view set
+/// no class and read the window, 1400px, at every size.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_view_in_a_host_lays_itself_out_by_its_own_box() {
