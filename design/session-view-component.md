@@ -99,6 +99,11 @@ In the app, the view's root element is `display: contents`. Its three parts stay
 its own, and the view lays its parts out inside it. Step 6 makes that layout follow the pane's
 size rather than the window's.
 
+Step 6 replaced this (#s431 stage 1, `design/pane-layout.md`, "A box for each component"): the
+root is a box in the app too, laying out its three parts in a grid of its own, and `#app`'s grid
+holds the list and the view. `reference.css` still does not change: `production.css` overrides its
+tracks.
+
 ### The phone top bar
 
 On a phone, the top bar's title, turn and Info belong to the app (`design/embedding.md`, "The

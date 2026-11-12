@@ -59,9 +59,12 @@ phone's sheets are measured against and the keyboard ride moves. Two rules hold 
 layers, stylesheets, measured properties and theme through `viewRoot`, and the app's chrome through
 `page` (`view-root.js`), never `document` itself, so it assumes nothing of a host's page (there is no
 shadow root: the owner chose prefixed styles, #s438); and the
-view keeps its own state as classes on its element `#sessionView` (`display: contents` in the app, so
-its parts stay columns of `#app`'s grid), a rule's negated twin reading `#sessionView` too, with the
-pane's open, full and resizing states copied onto `#app` for the app's grid. Its server's facts
+view keeps its own state as classes on its element `#sessionView`, a rule's negated twin reading
+`#sessionView` too. The element is a box (#s431 stage 1, `design/pane-layout.md`): it lays out the
+session, the resizer and the right pane in a grid of its own, in the app as in a host, and its width
+is its track's, never its content's (`contain: inline-size`); `#app`'s grid holds the list and the
+view, and the pane's open, full and resizing states are still copied onto `#app` for the app's rules
+that reach in. Its server's facts
 (paired, version, the mdrev pin) come from the backend handle. **The view imports no store of the
 app's** (#s429 stage 7): `state.js` is the app's (the index, ⌘K's results, write mode), the view
 makes its own as it mounts (`view-state.js`, the compose box's `compose`), and write mode and the
