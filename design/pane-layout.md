@@ -394,15 +394,23 @@ What follows from it:
 - **The layers' origin is the view's edge.** The derivation writes the screen's insets as only the
   part of each that falls in the box, `max(0px, inset - cut)`, and an edge at the sidebar as the
   view's left edge less the cut, where the containment sets the cuts, `--pl-cut-left` and
-  `--pl-cut-right`, to how far the view's edges are from the window's (`--pane-x`, `--pane-r`).
+  `--pl-cut-right`, to how far the view's edges are from the window's (`--pane-x`, `--pane-r`; the
+  right edge's measured to the layout viewport, so a classic scrollbar is not counted as page).
   Uncontained, the cuts are 0 and every length is the window's, as before.
 - **Its stacking is its own.** In the app one thing of the app's is drawn over a boxed reader: a
   wide phone's handle, by the title. It stays above the view, the right pane included, as designed;
-  while a layer that rises over the top bar is open (the dock's sheets, the review sheet, a dialog's
-  card) the handle hides, since none of its z can go under a layer it no longer shares a stacking
-  with.
-- **The whole screen is the screen's.** At ⤢, held sideways, the view lets go of its layout and its
-  cuts, so the pane covers the window, a wide phone's column included, as it did.
+  while a layer that rises over the top bar is open (the dock's sheets, a dialog's card) with the
+  pane shut, the handle hides, since none of its z can go under a layer it no longer shares a
+  stacking with. Over an open pane it stays.
+- **The whole screen is the screen's.** At ⤢, held sideways, the view lets go of its layout, so the
+  pane covers the window, a wide phone's column included, as it did, and the pane alone takes the
+  screen's whole insets; the session's own fixed layers under it keep theirs. The review sheet (#s12,
+  the owner's full-screen sheet) is the screen's too, but the view keeps its layout for it: it opens
+  over the open pane, which would move to the window's edge and reflow mdrev under the sheet. So the
+  sheet reaches the window's sides from the view's edges (`--pane-x`, `--pane-r`) with the screen's
+  whole insets, and while it is open the view's stacking rises to the sheet's level, 95: over a wide
+  phone's column and the handle, under the toasts. Its height is the view's, the app's whole height
+  in the app. It is the open session's document, so it closes with the session.
 - **The shut pane hides once its glide out ends.** It parks past the view's right edge, which in a
   host's pane may be over the page beside it. A phone's pane never glides, so there it opens and
   hides at once.
@@ -495,7 +503,7 @@ At the default text size, the pane at the reader's width:
   `elementFromPoint` finds there; a rect alone proves nothing.
 - **On an emulated phone.** A 390×844 phone with the host's pane the whole screen (`B` 390), and a
   932×430 phone held sideways with a 450px pane (the phone family by its height, `B` 450). Each
-  asserts its family and classes, and from stage 4, the dock and sheets inside the pane.
+  asserts its family and classes.
 - **The app reads what the window read** wherever the table above says "the same": a 1440, 1180,
   1000 and 820px window at the default sidebar, an iPad-sized touch window of 834×1194 with its
   sidebar, a phone upright and held sideways, and a wide phone with its column hidden. In each the
@@ -506,9 +514,13 @@ At the default text size, the pane at the reader's width:
   with the list still taking a press), a 1000px window on the rail (the pane a column), a wide phone
   with its column and its island (its listed changes, the same layers inside the view, the dock 12px
   in from the view's edge, ⤢ covering the column too), the same phone in Safari's 330px (Aa risen
-  over the top bar and a review sheet, neither under the handle), and the list's rows on a touch
-  screen. Each layer step first checks that its layer opened. The host's 380px phone reader keeps its
-  shut pane out of the page beside it.
+  over the top bar, and a review sheet over the whole screen, column and handle included, its close
+  control inside the island's inset), and the list's rows on a touch screen. Each layer step first
+  checks that its layer opened. The host's 380px phone reader keeps its shut pane out of the page
+  beside it. A host's 450px pane on a phone held sideways, at the screen's left edge, its middle and
+  its right edge, keeps its dock 12px from each side of its own and the island's inset only where the
+  island falls in the pane; and with a classic scrollbar the view's right gap stops at it. A Back to
+  another session closes the review sheet.
 - **Mutations.** Point the layout module back at the window, drop a condition from the rewrite's
   table, give the family the window's height, or let the readable rule read what it drew: a width
   case goes red, or the derivation fails.
