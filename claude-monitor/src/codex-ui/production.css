@@ -22,6 +22,9 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 #sessionView.resizing{transition:none}
 /* Nor while the view is mounting (`sv-mounting`, session-view.js): it lays itself out as it is built. */
 #sessionView.sv-mounting{transition:none}
+/* The element is the view's box, a host's to place and size (#s464): its `hidden` attribute hides it,
+   which the display above, at the id's weight, would otherwise undo. */
+#sessionView[hidden]{display:none}
 @media(max-width:1180px){
   #sessionView,#sessionView.preview-off{grid-template-columns:minmax(0,1fr)}
 }
@@ -51,6 +54,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    from. Where the app hides the strip and the tree (the rail, a wide phone's column showing a pane),
    the box takes no room. */
 #sessionList{display:flex;flex-direction:column;min-height:0;min-width:0}
+#sessionList[hidden]{display:none}
 .sidebar>.session-list{flex:1}
 #app.sidebar-off .sidebar>.session-list,#app.column-pane-on>.sidebar>.session-list{flex:none}
 /* #s430 stage 4: the list's controls are one strip (`place("controls")`), an element a host can hold

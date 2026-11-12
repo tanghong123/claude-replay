@@ -1387,6 +1387,7 @@
 #sessionView.preview-off{grid-template-columns:minmax(480px,1fr) 0 0}
 #sessionView.resizing{transition:none}
 #sessionView.sv-mounting{transition:none}
+#sessionView[hidden]{display:none}
 @media(max-width:1180px){
 #sessionView,#sessionView.preview-off{grid-template-columns:minmax(0,1fr)}
 }

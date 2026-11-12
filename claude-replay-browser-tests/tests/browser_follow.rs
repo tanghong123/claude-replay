@@ -3827,6 +3827,51 @@ fn the_session_view_in_a_host_mounts_with_its_pane_shut_and_nothing_gliding() {
     );
 }
 
+/// #s464 (the owner's choice, option 1): the view's and the list's elements are their boxes, a host's
+/// to place and size, and the host hides either with the element's `hidden` attribute. The layout the
+/// view and the list give their elements sits at the id's weight, over the browser's own rule for
+/// `hidden`, so before this the attribute left both on the screen.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_host_hides_the_session_view_and_the_session_list_with_their_hidden_attribute() {
+    let _serial = serial();
+    let base = base("host-hidden");
+    let monitor = Monitor::spawn(Kind::V1, 3115, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1280.0, 800.0);
+    let toggle = |id: &str| {
+        format!("(function(){{ var e = document.getElementById('{id}'); var read = function(){{ var r = e.getBoundingClientRect(); return {{ display: getComputedStyle(e).display, w: Math.round(r.width), h: Math.round(r.height) }}; }}; var shown = read(); e.hidden = true; var hidden = read(); e.hidden = false; var again = read(); return {{ shown: shown, hidden: hidden, again: again }}; }})()")
+    };
+    harness::open_host_page(&tab, &monitor, "");
+    let view = harness::probe(&tab, &toggle("sessionView"));
+    harness::open_list_host_page(&tab, &monitor);
+    let list = harness::probe(&tab, &toggle("sessionList"));
+    drop(monitor);
+    for (name, seen) in [("the session view", &view), ("the session list", &list)] {
+        assert_ne!(
+            seen["shown"]["display"], "none",
+            "{name} is shown in its host: {seen}"
+        );
+        assert!(
+            seen["shown"]["w"].as_i64() > Some(0) && seen["shown"]["h"].as_i64() > Some(0),
+            "{name} has its box: {seen}"
+        );
+        assert_eq!(
+            seen["hidden"]["display"], "none",
+            "the hidden attribute hides {name}: {seen}"
+        );
+        assert_eq!(
+            seen["hidden"]["w"], 0,
+            "{name} takes no room while hidden: {seen}"
+        );
+        assert_eq!(
+            seen["again"], seen["shown"],
+            "{name} comes back as it was: {seen}"
+        );
+    }
+}
+
 /// The session view's unmount (#s429 stage 7): mounted in the test host and taken away, it leaves
 /// the page's window and document with exactly the listeners they had before it (as the browser
 /// lists them), the host's element empty with its own attributes, nothing of its own in the page's
