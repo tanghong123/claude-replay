@@ -18191,6 +18191,36 @@ fn a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_wh
         Duration::from_secs(5),
         "document.getElementById('navigatorOptions').className + ' ' + document.querySelector('.header-searchbox').className",
     );
+    // #s431 stage 2: beside the column the view is a 676px phone held sideways, by its own width, so
+    // its dock spans it and the session's menu opens at its left; both stay beside the column.
+    let dock_left = harness::eval(
+        &tab,
+        "Math.round(document.getElementById('phoneDock').getBoundingClientRect().left)",
+    )
+    .as_i64()
+    .unwrap_or(0);
+    assert!(
+        dock_left >= column_right,
+        "the dock sits beside the column: {dock_left} ≥ {column_right}"
+    );
+    phone_tap(&tab, "#sessionTitle");
+    harness::until(
+        &tab,
+        "document.getElementById('sessionCopyMenu').classList.contains('open')",
+        "the session's menu open",
+        Duration::from_secs(5),
+        "document.getElementById('sessionCopyMenu').className",
+    );
+    let menu_left = harness::eval(
+        &tab,
+        "Math.round(document.getElementById('sessionCopyMenu').getBoundingClientRect().left)",
+    )
+    .as_i64()
+    .unwrap_or(0);
+    assert!(
+        menu_left >= column_right,
+        "the session's menu opens beside the column: {menu_left} ≥ {column_right}"
+    );
 }
 
 /// #s37 (design/phone-landscape.md §3.5): the search docked at the keyboard, as Safari's Find on
