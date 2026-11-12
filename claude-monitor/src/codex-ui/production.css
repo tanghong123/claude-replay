@@ -21,9 +21,22 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    reader narrower than the window (`pl-boxed`: beside a wide sidebar or the rail, beside a wide phone's
    column, in a host's pane) contains its layout, so its fixed layers (the dock, the sheets, Info, the
    menus, the right pane, the reply box, the dims) are placed in its own box, not across the window
-   over what is beside it, and paint in its own stacking. A phone reader as wide as the window is
-   left as it was. The desktop's layers, which their scripts place from the window, wait for stage 4. */
-@media(max-width:760px),(pointer:coarse) and (max-height:500px){#sessionView.pl-boxed{contain:inline-size layout}}
+   over what is beside it, and paint in its own stacking. Their origin is then the view's edge, so the
+   screen's insets count only where they fall in the box: the derivation writes each as
+   `max(0px, inset - --pl-cut-left)` (and `-right`), and the sidebar's width as the view's edge less the
+   cut (scripts/session-view-css.mjs, `viewLengths`). At the whole screen (⤢, held sideways) the pane
+   is the screen's, as it was before, so there the view lets go of its layout. A phone reader as wide
+   as the window is left as it was. The desktop's layers, which their scripts place from the window,
+   wait for stage 4. */
+@media(max-width:760px),(pointer:coarse) and (max-height:500px){#sessionView.pl-boxed{contain:inline-size layout;--pl-cut-left:var(--pane-x);--pl-cut-right:var(--pane-r)}}
+@media(pointer:coarse) and (max-height:500px){#sessionView.pl-boxed.preview-full:not(.preview-off){contain:inline-size;--pl-cut-left:0px;--pl-cut-right:0px}}
+/* The shut pane parks past the view's right edge: off the screen where the view ends at the window's,
+   but over a host's page where its box ends sooner. Once its glide out ends it is hidden, so it
+   neither shows nor takes a press there. */
+@media(max-width:1180px){
+  .session-view>.preview{transition:transform .22s,visibility 0s}
+  .session-view.preview-off>.preview{visibility:hidden;transition:transform .22s,visibility 0s .22s}
+}
 /* A drag of the resizer moves the pane's track with the pointer: the open and shut glide, never a
    drag, as `.app.resizing` kept it when the tracks were the app's. */
 #sessionView.resizing{transition:none}
@@ -1841,6 +1854,12 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      (z 22) drawn over them — ☰ across Aa's heading on the iOS Simulator. While one is open the handle
      steps under the dock (13), as the rest of the session does; a tap there closes the sheet first. */
   #app:has(.reading-cluster>.reading-options.open,.header-search-cluster>.navigator-options.open,.header-search-cluster>.search-suggest:not([hidden]))>.drawer-handle{z-index:13}
+  /* #s431 stage 2: beside a wide phone's column the view holds its layers in its own box and its own
+     stacking, so no z of the handle's can go under one of them, and the handle sits over the view by
+     its title. While a layer that rises over the top bar is open (the dock's sheets, the review sheet,
+     a dialog's card in the reply box) the handle hides instead; a tap there reaches the layer, or the
+     dim that closes it. Over the right pane it stays, as above. */
+  #app:has(>#sessionView.pl-boxed :is(.reading-cluster>.reading-options.open,.header-search-cluster>.navigator-options.open,.header-search-cluster>.search-suggest:not([hidden]),.review-sheet,.composer.production-show .compose-dialog:not([hidden])))>.drawer-handle{visibility:hidden}
 }
 
 /* #s32 — between the phone and 1180px the preview is an overlay (reference.css), and at

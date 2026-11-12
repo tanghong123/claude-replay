@@ -53,7 +53,7 @@ export function classesFor(view) {
 
 /** Decide now and again whenever the view's box, the screen's pointer or the window's size changes:
  *  the classes on `element`, `pl-phone` with them, and the lengths its rules read (`--pl-b`, `--pl-w`,
- *  `--pl-h`, `--pane-x`, `--pl-vh`, `--pl-dvh`). `onChange` hears every decision
+ *  `--pl-h`, `--pane-x`, `--pane-r`, `--pl-vh`, `--pl-dvh`). `onChange` hears every decision
  *  that changed a class, after it is written. `query(family)` answers as a `MediaQueryList` does
  *  (`matches`, a `change` event), so a script that matched `PHONE_QUERY` asks the view's family instead
  *  by one name. Everything bound here ends with `signal`. */
@@ -75,11 +75,15 @@ export function mountPaneLayout(element, { signal, onChange } = {}) {
     element.style.setProperty("--pl-w", `${box.width}px`);
     element.style.setProperty("--pl-h", `${box.height}px`);
     element.style.setProperty("--pane-x", `${box.left}px`);
-    // Whether the view is narrower than the window: beside the app's list or its rail, beside a wide
-    // phone's column, in a host's pane. It picks no layout (#s461): a phone reader in such a box
-    // contains its layout, so its fixed layers are placed in its own box, not across the window
-    // (`pl-boxed`, design/pane-layout.md, "Drawn inside the pane").
-    element.classList.toggle("pl-boxed", box.left > 0.5 || box.right < innerWidth - 0.5);
+    // Where the view sits in the window, for placing alone (#s461 rules out reading the window for a
+    // layout): its gap to the window's right edge, and whether it is narrower than the window — beside
+    // the app's list or its rail, beside a wide phone's column, in a host's pane. A phone reader in
+    // such a box contains its layout, so its fixed layers are placed in its own box, not across the
+    // window, and the screen's insets count only where they fall in it (`pl-boxed`,
+    // design/pane-layout.md, "Drawn inside the pane").
+    const right = Math.max(0, innerWidth - box.right);
+    element.style.setProperty("--pane-r", `${right}px`);
+    element.classList.toggle("pl-boxed", box.left > 0.5 || right > 0.5);
     // A share of the height is the window's own unit while the view is as tall as the window (always
     // in the app, whose grid is 100dvh: iOS gives `innerHeight` that height too), so iPhone Safari's
     // `dvh`, which follows its bars, still does; else the view's. The window is read here for that

@@ -1013,23 +1013,27 @@ function onceOnTheElement(lines, id, file) {
  *  app's sidebar) is the view's own width, `--pl-w`, since such a length keeps something on the
  *  view; any other share of the width is that share of `B`, the width the bands read, `--pl-b`, so a
  *  control sized by it is as wide as it was in the app at the default sidebar; a left edge at the
- *  sidebar (`var(--sidebar)`) is the view's own left edge, `--pane-x`; and a share of the height is
- *  that share of the view's, `--pl-vh` and `--pl-dvh`, which are the window's own units while the
- *  view is as tall as the window. The screen's left inset (the island, a phone held sideways) is only
- *  the part of it that falls in the view's box, `max(0px, inset - --pane-x)`: beside a wide phone's
- *  column the inset is the column's. pane-layout.js writes all five lengths. Only a declaration's
+ *  sidebar (`var(--sidebar)`) is the view's own left edge, `--pane-x`, measured from where its fixed
+ *  layers are placed; and a share of the height is that share of the view's, `--pl-vh` and
+ *  `--pl-dvh`, which are the window's own units while the view is as tall as the window. A phone
+ *  reader narrower than the window places its fixed layers in its own box (production.css,
+ *  `pl-boxed`), which sets `--pl-cut-left` and `--pl-cut-right` to how far its edges are from the
+ *  window's: the left edge is then `--pane-x` less that cut, and the screen's insets (the island, a
+ *  phone held sideways) only the part of each that falls in the box, `max(0px, inset - cut)`, so
+ *  beside a wide phone's column the left inset is the column's. Elsewhere the cuts are unset, 0, and
+ *  every length is the window's as before. pane-layout.js writes the lengths. Only a declaration's
  *  value changes, never a selector or a keyframe's name. */
 export function viewLengths(line) {
   const at = line.indexOf("{");
   if (at < 0 || /^@(?:-webkit-)?keyframes\b/.test(line)) return line;
   const body = line.slice(at)
     .replace(/\b100vw\s*-\s*var\(--sidebar\)/g, "var(--pl-w)")
-    .replace(/var\(--sidebar\)/g, "var(--pane-x)")
+    .replace(/var\(--sidebar\)/g, "calc(var(--pane-x) - var(--pl-cut-left,0px))")
     .replace(/(^|[^\w.-])100vw\b/g, "$1var(--pl-w)")
     .replace(/(^|[^\w.-])(\d*\.?\d+)vw\b/g, (all, before, n) => `${before}calc(${n} * var(--pl-b) / 100)`)
     .replace(/(^|[^\w.-])(\d*\.?\d+)dvh\b/g, (all, before, n) => `${before}calc(${n} * var(--pl-dvh))`)
     .replace(/(^|[^\w.-])(\d*\.?\d+)vh\b/g, (all, before, n) => `${before}calc(${n} * var(--pl-vh))`)
-    .replace(/env\(safe-area-inset-left(?:,\s*0px)?\)/g, "max(0px, env(safe-area-inset-left,0px) - var(--pane-x))");
+    .replace(/env\(safe-area-inset-(left|right)(?:,\s*0px)?\)/g, (all, side) => `max(0px, env(safe-area-inset-${side},0px) - var(--pl-cut-${side},0px))`);
   if (/\d(?:vw|vh|dvh|svh|lvh|vmin|vmax)\b|var\(--sidebar\)/.test(body)) throw new Error(`session-view.css: a length in the window's units is left in \`${line.slice(0, 120)}\`; say in viewLengths what it is of the view`);
   return line.slice(0, at) + body;
 }
