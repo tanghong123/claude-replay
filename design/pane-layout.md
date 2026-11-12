@@ -198,23 +198,25 @@ transcript, the phone reader's dock and sheets, and every popover, which today a
 window and placed from `innerWidth`. In the app, in the phone family, the pane is the screen, so
 nothing moves.
 
-How it is done rests on a measurement: whether a box captures its fixed descendants. In Chrome
-153, the suite's engine:
+How it is done rests on a measurement: whether a box captures its fixed descendants. It was made
+in Chrome 153, the suite's engine, and in Safari 26.4 on the iOS 26.4 Simulator, and the two agree:
 
-- `container-type: inline-size` does not: a fixed child at `left:0; top:0` stays at the window's
-  corner.
-- `contain: layout` does: the same child sits at the box's corner.
-- `contain: layout` also traps the child's stacking. A `z-index: 100` child paints under a
-  `z-index: 50` element outside the box.
+- `container-type: inline-size` captures nothing: a fixed child at `left:0; top:0` stays at the
+  window's corner. In Safari it also forms no stacking context, since a `z-index: 100` child still
+  paints over a `z-index: 50` element outside the box.
+- `contain: layout` captures: the same child sits at the box's corner. It also traps the child's
+  stacking: the `z-index: 100` child paints under the `z-index: 50` element outside.
+- On a `display: contents` element, `container-type` computes but no box carries it.
 
-WebKit (iOS Safari) is being measured on the Simulator. If it agrees, the view's box can take
-`contain: layout` while it is not the screen, and every fixed layer then lands in the pane. What is
-placed from window coordinates moves to the box's coordinates: the task popover, the section menu,
-the filter sheet, the rail flyout, and the right pane's drag (`innerWidth - clientX`). If WebKit
-does not agree, each layer is placed absolute in the view's box instead.
+So the view's box can take `contain: layout` while it is not the screen, and every fixed layer then
+lands in the pane. What is placed from window coordinates moves to the box's coordinates: the task
+popover, the section menu, the filter sheet, the rail flyout, and the right pane's drag
+(`innerWidth - clientX`).
 
-In the app the box never takes it: in the phone family the pane is the screen, and on a desktop
-the window's coordinates are what those layers are written in.
+Whether the app's box takes it too is stage 4's question. One path for every host is simpler: the
+layers written in the box's coordinates, and the box contained. But containment traps stacking, and
+in the app the view's layers interleave with the app's own today: the drawer and its handle, the
+toasts, the review sheet above the drawer. Stage 4 lists each one before choosing.
 
 ### What stays the host's
 
