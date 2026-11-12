@@ -1,5 +1,8 @@
 /* mdrev guest stylesheet — every rule scoped under .mdrev-host; theme it with --mdrev-<token> */
 .mdrev-host *:where(:not(svg, svg *, canvas, .mdv-canvas, .mdv-canvas *)) { all: revert; }
+.mdrev-host [contenteditable]:not([contenteditable="false"]) { -webkit-user-modify: read-write; }
+.mdrev-host [contenteditable="plaintext-only"] { -webkit-user-modify: read-write-plaintext-only; }
+.mdrev-host [contenteditable="false"] { -webkit-user-modify: read-only; }
 .mdrev-host.is-contained { contain: layout; }
 .mdrev-host:not(.is-contained) { height: auto; overflow: visible; }
 .mdrev-host .doc {--read-body:1rem;--read-line:1.5;--read-measure:44rem;--read-rhythm:1.25em;--read-serif:ui-serif, "New York", "Iowan Old Style", "Palatino Linotype", Georgia, serif;--read-sans:-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;--read-face:var(--read-sans);--read-head:var(--read-serif);font-family:var(--read-face);font-size:var(--read-body);line-height:var(--read-line);color:var(--ink);font-kerning:normal;text-rendering:optimizelegibility;hanging-punctuation:first last;text-autospace:normal}
@@ -36,9 +39,12 @@
 .mdrev-host .doc h1+h2:before, .mdrev-host .doc h2:first-child:before {display:none}
 .mdrev-host .doc p, .mdrev-host .doc ul, .mdrev-host .doc ol, .mdrev-host .doc blockquote, .mdrev-host .doc pre, .mdrev-host .doc table, .mdrev-host .doc dl {margin:0 0 var(--read-rhythm)}
 .mdrev-host .doc p {text-wrap:pretty}
+.mdrev-host .doc .mdv-part {display:inline-block}
 .mdrev-host .doc ul, .mdrev-host .doc ol {padding-left:1.35em}
 .mdrev-host .doc li {margin:.3em 0}
 .mdrev-host .doc li::marker {color:var(--ink-faint)}
+.mdrev-host .doc li.task-list-item {list-style:none}
+.mdrev-host .doc li.task-list-item>input[type=checkbox]:first-child, .mdrev-host .doc li.task-list-item>p:first-child>input[type=checkbox]:first-child {vertical-align:-.1em;margin:0 .4em 0 -1.35em}
 .mdrev-host .doc li>ul, .mdrev-host .doc li>ol {margin:.3em 0 .35em}
 .mdrev-host .doc li>p {margin-bottom:.45em}
 .mdrev-host .doc blockquote {border-left:2px solid var(--rule);color:var(--ink-soft);margin-left:0;padding:.1em 0 .1em 1.15em;font-style:italic}
@@ -327,7 +333,7 @@
 .mdrev-host .doc img[data-mdv-refused] {border:1px dashed var(--rule);background:var(--bg-soft);border-radius:4px;min-width:120px;min-height:44px;display:inline-block}
 .mdrev-host .topbar {background:var(--bg-soft);border-bottom:1px solid var(--rule);flex-wrap:wrap;flex-shrink:0;align-items:center;gap:8px 12px;padding:8px 0 7px;display:flex;position:relative;container:topbar/inline-size}
 .mdrev-host .topbar-row {--tier:2;padding:0 14px}
-.mdrev-host .outline-wrap.for-merged, .mdrev-host .rail-opener.for-merged, .mdrev-host .display-menu .display-doc, .mdrev-host .display-menu .display-build, .mdrev-host .history-picks {display:none}
+.mdrev-host .outline-wrap.for-merged, .mdrev-host .rail-opener.for-merged, .mdrev-host .display-menu .display-doc, .mdrev-host .display-menu .display-build, .mdrev-host .display-menu .display-mode, .mdrev-host .history-picks {display:none}
 .mdrev-host .doc-tools {flex-wrap:wrap;align-items:center;gap:8px;display:flex}
 .mdrev-host .build-in-menu {color:var(--ink-faint);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px}
 .mdrev-host .history-picks {border-bottom:1px solid var(--rule-soft);flex-wrap:wrap;gap:10px;padding:8px 12px 2px}
@@ -354,9 +360,11 @@
 .mdrev-host .topbar.tier-4 .display-menu, .mdrev-host .topbar.tier-5 .display-menu, .mdrev-host .topbar.set-read.tier-2 .display-menu, .mdrev-host .topbar.set-annotate.tier-2 .display-menu, .mdrev-host .app.is-phone .topbar .display-menu {top:calc(100% - 6px);right:8px}
 .mdrev-host .topbar.tier-5 .controls {justify-content:flex-start;margin-left:0}
 .mdrev-host .topbar.tier-5 .controls>.acts {display:contents}
-.mdrev-host .topbar.title-1 .note-hint, .mdrev-host .topbar.title-2 .note-hint, .mdrev-host .topbar.title-2 .file-dir, .mdrev-host .topbar.title-2 .doc-time {display:none}
-.mdrev-host .topbar.title-2:has(.display-wrap:not([hidden])) .build {display:none}
-.mdrev-host .topbar.title-2 .display-build {display:flex}
+.mdrev-host .topbar.title-1 .note-hint, .mdrev-host .topbar.title-2 .note-hint, .mdrev-host .topbar.title-2 .file-dir, .mdrev-host .topbar.title-2 .doc-time, .mdrev-host .topbar.title-3 .note-hint, .mdrev-host .topbar.title-3 .file-dir, .mdrev-host .topbar.title-3 .doc-time, .mdrev-host :is(.topbar.title-2:has(.display-wrap:not([hidden])) .build, .mdrev-host .topbar.title-3:has(.display-wrap:not([hidden])) .build) {display:none}
+.mdrev-host .topbar.title-2 .display-build, .mdrev-host .topbar.title-3 .display-build {display:flex}
+.mdrev-host :is(.app:not(.is-phone) .topbar.title-3:has(.display-wrap:not([hidden])) .mdv-mode-switch.in-title, .mdrev-host .app:not(.is-phone) .topbar.title-3:has(.display-wrap:not([hidden])) .mdv-auto-commit.in-title) {display:none}
+.mdrev-host .app:not(.is-phone) .topbar.title-3:has(.display-wrap:not([hidden])) .display-mode {display:flex}
+.mdrev-host .app:not(.is-phone) .topbar.title-3 .mdv-edit-tab {width:26px}
 .mdrev-host .app.is-phone .topbar .build {display:none}
 .mdrev-host .app.is-phone .topbar .display-build {display:flex}
 .mdrev-host .app.is-phone .topbar-row>.toolbar-hide {margin-left:auto}
@@ -385,7 +393,9 @@
 .mdrev-host .topbar.tier-1 .bar-counter {order:1;margin-left:0}
 .mdrev-host .topbar.tier-1 .bar-counter:not(:has(~.bar-counter)) {margin-right:14px}
 .mdrev-host .topbar.tier-1 .bar-counter:not(:has(~.bar-counter))~.build {margin-left:0}
-.mdrev-host .topbar.counters-out .bar-counter, .mdrev-host .topbar.counters-squeezed .doc-time, .mdrev-host .topbar.counters-squeezed .build, .mdrev-host .topbar.counters-crowded .bar-counter, .mdrev-host .topbar.counters-one .blame-counter {display:none}
+.mdrev-host .topbar.counters-out .bar-counter, .mdrev-host .topbar.counters-squeezed .doc-time, .mdrev-host .topbar.counters-squeezed .build, .mdrev-host .topbar.counters-modeless .mdv-mode-switch.in-title, .mdrev-host .topbar.counters-modeless .mdv-auto-commit.in-title {display:none}
+.mdrev-host .topbar.counters-modeless .display-mode {display:flex}
+.mdrev-host .topbar.counters-crowded .bar-counter, .mdrev-host .topbar.counters-one .blame-counter {display:none}
 .mdrev-host .build {letter-spacing:.02em;color:var(--ink-faint);-webkit-user-select:all;user-select:all;margin-left:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px}
 .mdrev-host .seg {border:1px solid var(--rule);border-radius:7px;height:26px;display:inline-flex;overflow:hidden}
 .mdrev-host .seg button {color:var(--ink-soft);border:none;border-right:1px solid var(--rule);background:0 0;padding:0 11px;font-size:12.5px}
@@ -976,6 +986,8 @@
 .mdrev-host .ann-composer-row {gap:6px;display:flex}
 .mdrev-host .ann-composer-row .active {background:var(--bg-soft);color:var(--ink)}
 .mdrev-host .ann-composer-row .primary {color:var(--on-accent);background:var(--accent);border-color:var(--accent)}
+.mdrev-host .mdv-source-readonly {border:1px solid var(--rule);max-width:46rem;color:var(--ink-soft);border-radius:8px;flex-wrap:wrap;align-items:baseline;gap:12px;margin:12px auto;padding:8px 16px;font-size:.92em;display:flex}
+.mdrev-host .mdv-source-readonly button {font:inherit;border:1px solid var(--rule);color:var(--ink);cursor:pointer;background:0 0;border-radius:6px;padding:2px 10px}
 .mdrev-host .error {border:1px solid var(--del-fg);max-width:46rem;color:var(--del-fg);background:var(--del-bg);border-radius:8px;margin:12px auto;padding:9px 16px;font-size:13.5px}
 .mdrev-host .say {z-index:200;background:#1414146b;place-items:center;padding:24px;animation:.12s ease-out mdv-say-dim;display:grid;position:fixed;inset:0}
 .mdrev-host .say-box {border:1px solid var(--rule);background:var(--bg);border-radius:12px;width:min(30rem,100%);padding:22px 24px 18px;animation:.14s ease-out mdv-say-rise;box-shadow:0 1px 2px #0000001a,0 18px 50px #00000047}
@@ -1162,7 +1174,7 @@
 }
 .mdrev-host .build-toast {z-index:40;color:var(--ink);background:var(--bg-soft);border:1px solid var(--rule-soft);border-radius:8px;align-items:center;gap:10px;padding:8px 12px;font-size:13px;display:flex;position:fixed;bottom:16px;right:16px;box-shadow:0 4px 16px #0000001f}
 .mdrev-host .build-toast button {font:inherit;color:var(--accent);background:var(--bg);border:1px solid var(--rule-soft);cursor:pointer;border-radius:6px;padding:4px 10px}
-.mdrev-host .print-notice {max-width:min(26rem, calc(var(--mdv-app-w,100vw) - 32px));line-height:1.4}
+.mdrev-host .print-notice, .mdrev-host .signed-out {max-width:min(26rem, calc(var(--mdv-app-w,100vw) - 32px));line-height:1.4}
 .mdrev-host .print-spinner {border:2px solid var(--rule);border-top-color:var(--accent);border-radius:50%;flex:none;width:12px;height:12px;animation:.8s linear infinite mdv-spin}
 @media (prefers-reduced-motion:reduce) {
 .mdrev-host .print-spinner {animation-duration:2.4s}
@@ -1199,6 +1211,148 @@
 .mdrev-host .ann-elsewhere-row {text-align:left;width:100%;font:inherit;background:var(--bg);color:inherit;display:block}
 .mdrev-host .ann-elsewhere-row.is-here {cursor:default}
 .mdrev-host .ann-branch {color:var(--ink-faint);flex:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px}
+.mdrev-host article[data-mdv-editing] {caret-color:var(--accent);outline:none}
+.mdrev-host article[data-mdv-editing] [contenteditable=false] {cursor:default}
+.mdrev-host article[data-mdv-editing] p[data-mdv-ghost] {min-height:1.4em}
+.mdrev-host .mdv-edit-status {z-index:40;max-width:min(26rem, calc(var(--mdv-app-w,100vw) - 32px));pointer-events:none;flex-direction:column;align-items:flex-end;gap:8px;font-size:12px;display:flex;position:fixed;bottom:16px;right:16px}
+.mdrev-host .mdv-edit-status>* {pointer-events:auto}
+.mdrev-host .mdv-edit-line {border:1px solid var(--rule);background:var(--bg);color:var(--ink);border-radius:999px;align-items:center;gap:8px;padding:5px 10px;display:flex;box-shadow:0 1px 3px #00000014}
+.mdrev-host .mdv-edit-dot {background:var(--rule);border-radius:50%;flex:none;width:7px;height:7px}
+.mdrev-host .mdv-edit-dot.is-edited, .mdrev-host .mdv-edit-dot.is-held {background:var(--accent)}
+.mdrev-host .mdv-edit-dot.is-failed {background:var(--del-fg)}
+.mdrev-host .mdv-edit-dot.is-saving, .mdrev-host .mdv-edit-dot.is-committing {background:var(--ink-soft);animation:.9s ease-in-out infinite mdv-edit-saving}
+.mdrev-host .mdv-edit-dot.is-saved, .mdrev-host .mdv-edit-dot.is-committed {background:var(--ins-fg)}
+.mdrev-host .mdv-edit-dot.is-uncommitted {background:#d4900b}
+@keyframes mdv-edit-saving {50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce) {
+.mdrev-host .mdv-edit-dot.is-saving, .mdrev-host .mdv-edit-dot.is-committing {opacity:.5;animation:none}
+}
+.mdrev-host .mdv-edit-card-actions button {font:inherit;border:1px solid var(--rule);color:inherit;cursor:pointer;background:0 0;border-radius:6px;padding:2px 8px}
+.mdrev-host .mdv-edit-card {border:1px solid var(--rule);background:var(--bg);color:var(--ink);border-radius:8px;padding:8px 10px;box-shadow:0 2px 8px #0000001a}
+.mdrev-host .mdv-edit-card-why {opacity:.75;margin-bottom:4px}
+.mdrev-host .mdv-table-card {flex-wrap:wrap;align-items:center;gap:6px;display:flex}
+.mdrev-host .mdv-table-card-title {margin-right:2px;font-weight:600}
+.mdrev-host .mdv-table-card button {font:inherit;border:1px solid var(--rule);color:inherit;cursor:pointer;background:0 0;border-radius:6px;padding:2px 8px}
+.mdrev-host .mdv-table-card button:disabled {opacity:.4;cursor:default}
+.mdrev-host .mdv-edit-card-where {align-items:baseline;gap:8px;min-width:0;margin-bottom:6px;font-weight:600;display:flex}
+.mdrev-host .mdv-edit-card-where>span {text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}
+.mdrev-host .mdv-edit-card-show {font:inherit;color:var(--accent);cursor:pointer;background:0 0;border:0;flex:none;padding:0;font-weight:400}
+.mdrev-host .mdv-edit-card-diff del {opacity:.6}
+.mdrev-host .mdv-edit-card-diff ins {background:var(--accent-soft);text-decoration:none}
+.mdrev-host .mdv-edit-card-actions {gap:6px;margin-top:6px;display:flex}
+@media print {
+.mdrev-host .mdv-edit-status {display:none!important}
+}
+.mdrev-host ::highlight(mdv-conflict) {background-color:#d68c1e47}
+.mdrev-host .mdv-conflict-bar {pointer-events:none;z-index:5;background:#d68c1e;border-radius:2px;width:4px;position:absolute}
+.mdrev-host .mdv-conflict-stack {z-index:6;width:min(40rem, calc(var(--mdv-app-w,100vw) - 32px));pointer-events:auto;flex-direction:column;gap:8px;display:flex;position:absolute}
+.mdrev-host .mdv-conflict-panel {background:var(--bg);color:var(--ink);border:1px solid #d68c1e8c;border-left:4px solid #d68c1e;border-radius:8px;padding:10px 12px;font:13px/1.5 system-ui,-apple-system,PingFang SC,sans-serif;box-shadow:0 2px 10px #00000014}
+.mdrev-host .mdv-conflict-head {flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;display:flex}
+.mdrev-host .mdv-conflict-why {font-weight:600}
+.mdrev-host .mdv-conflict-body {flex-direction:column;gap:6px;display:flex}
+.mdrev-host .mdv-conflict-row {flex-direction:column;gap:2px;display:flex}
+.mdrev-host .mdv-conflict-label {text-transform:uppercase;letter-spacing:.03em;opacity:.65;font-size:11px}
+.mdrev-host .mdv-conflict-redline {white-space:pre-wrap;word-break:break-word;background:#7f7f7f12;border-radius:6px;padding:6px 8px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+.mdrev-host .mdv-conflict-redline del, .mdrev-host .mdv-conflict-redline ins {border-radius:3px;text-decoration:none}
+.mdrev-host .mdv-rl-yours {color:#067647;background:#0676471f}
+.mdrev-host .mdv-rl-theirs {color:#175cd3;background:#175cd31f}
+.mdrev-host .mdv-conflict-note {opacity:.65;font-size:12px}
+.mdrev-host .mdv-conflict-actions {flex-wrap:wrap;gap:6px;margin-top:10px;display:flex}
+.mdrev-host .mdv-conflict-actions button {font:inherit;border:1px solid var(--rule);color:inherit;cursor:pointer;background:0 0;border-radius:6px;padding:3px 10px;font-size:12px}
+.mdrev-host .mdv-conflict-actions .primary {background:var(--accent);color:#fff;border-color:var(--accent)}
+@media print {
+.mdrev-host .mdv-conflict-bar, .mdrev-host .mdv-conflict-stack {display:none!important}
+}
+.mdrev-host .mdv-slash, .mdrev-host .mdv-footnote-pop {--mdv-pop-w:min(420px, calc(var(--mdv-app-w,100vw) - 32px));z-index:1001;pointer-events:auto;width:var(--mdv-pop-w);box-sizing:border-box;border:1px solid var(--rule);background:var(--bg);color:var(--ink);border-radius:12px;font:13px/1.4 system-ui,-apple-system,PingFang SC,sans-serif;position:absolute;box-shadow:0 12px 32px #0000001f,0 2px 6px #0000000f}
+.mdrev-host .mdv-slash {flex-direction:column;max-height:380px;padding:0;display:flex;overflow:hidden}
+.mdrev-host .mdv-footnote-pop {--mdv-pop-w:min(340px, calc(var(--mdv-app-w,100vw) - 32px));flex-direction:column;padding:10px;display:flex;overflow:hidden}
+.mdrev-host .mdv-footnote-label {flex-direction:column;flex:auto;gap:6px;min-height:0;font-weight:600;display:flex}
+.mdrev-host .mdv-footnote-label textarea {flex:auto;min-height:2.6em}
+.mdrev-host .mdv-footnote-actions {flex:none}
+.mdrev-host .mdv-footnote-label input, .mdrev-host .mdv-footnote-label textarea {font:inherit;border:1px solid var(--rule);background:var(--bg);color:var(--ink);border-radius:8px;padding:6px 8px;font-weight:400}
+.mdrev-host .mdv-footnote-actions {justify-content:flex-end;gap:6px;margin-top:8px;display:flex}
+.mdrev-host .mdv-footnote-actions button {font:inherit;border:1px solid var(--rule);color:inherit;cursor:pointer;background:0 0;border-radius:6px;padding:3px 10px}
+.mdrev-host .mdv-footnote-actions .primary {background:var(--accent);color:#fff;border-color:var(--accent)}
+.mdrev-host .mdv-footnote-actions .primary:disabled {opacity:.45;cursor:default}
+.mdrev-host .mdv-slash-list {padding:6px;overflow:auto}
+.mdrev-host .mdv-slash-head {letter-spacing:.03em;text-transform:uppercase;opacity:.5;padding:8px 10px 4px;font-size:11px;font-weight:600}
+.mdrev-host .mdv-slash-item {text-align:left;width:100%;color:inherit;font:inherit;cursor:pointer;background:0 0;border:0;border-radius:8px;align-items:center;gap:10px;padding:6px 8px;display:flex}
+.mdrev-host .mdv-slash-item.on {background:var(--accent-soft)}
+.mdrev-host .mdv-slash-icon {border:1px solid var(--rule);background:var(--bg);width:30px;height:30px;color:var(--ink-soft);border-radius:7px;flex:none;justify-content:center;align-items:center;font:600 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace;display:inline-flex}
+.mdrev-host .mdv-slash-text {flex-direction:column;flex:1;min-width:0;display:flex}
+.mdrev-host .mdv-slash-label {font-weight:500}
+.mdrev-host .mdv-slash-desc {opacity:.6;white-space:nowrap;text-overflow:ellipsis;font-size:11.5px;overflow:hidden}
+.mdrev-host .mdv-slash-hint {opacity:.4;flex:none;font:11px ui-monospace,SFMono-Regular,Menlo,monospace}
+.mdrev-host .mdv-slash-foot {border-top:1px solid var(--rule);opacity:.5;padding:6px 12px;font-size:11px}
+.mdrev-host .mdv-edit-tab {box-shadow:none;color:var(--ink-soft);white-space:nowrap;background:0 0;border:0;flex:none;align-items:center;gap:6px;width:13rem;margin-left:8px;padding:0;font-size:12px;display:inline-flex;position:relative}
+.mdrev-host .app.is-phone .mdv-edit-tab {width:5rem}
+.mdrev-host .mdv-edit-tab-slot {width:100%;min-width:0;color:inherit;font:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:4px;align-items:center;gap:6px;margin:0;padding:2px 4px;display:inline-flex}
+.mdrev-host .mdv-edit-tab-slot:hover, .mdrev-host .mdv-edit-tab-slot[aria-expanded=true] {background:var(--bg-soft)}
+.mdrev-host .mdv-edit-tab-words {text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}
+.mdrev-host .mdv-edit-tab-card {z-index:60;width:max-content;max-width:min(24rem, calc(var(--mdv-app-w,100vw) - 32px));border:1px solid var(--rule);background:var(--bg);color:var(--ink);white-space:normal;border-radius:8px;align-items:baseline;gap:8px;padding:8px 12px;font-size:12px;line-height:1.45;display:flex;position:absolute;top:calc(100% + 6px);left:0;box-shadow:0 4px 16px #0000001f}
+.mdrev-host .mdv-edit-tab-card .mdv-edit-dot {transform:translateY(-1px)}
+.mdrev-host .app.is-phone .mdv-edit-tab-card {top:calc(var(--mdv-bar-h,46px) + 6px);width:auto;max-width:none;position:fixed;left:16px;right:16px}
+.mdrev-host .mdv-edit-tab-card-why {color:var(--ink-soft);overflow-wrap:anywhere;margin-top:4px;display:block}
+.mdrev-host .mdv-visually-hidden {clip:rect(0 0 0 0);white-space:nowrap;border:0;width:1px;height:1px;margin:-1px;padding:0;position:absolute;overflow:hidden}
+.mdrev-host .mdv-edit-toggle {font:inherit;border:1px solid var(--rule);color:var(--ink);cursor:pointer;white-space:nowrap;background:0 0;border-radius:6px;margin-left:8px;padding:1px 10px;font-size:12px}
+.mdrev-host .mdv-edit-toggle.is-on {background:var(--accent);border-color:var(--accent);color:var(--on-accent,#fff)}
+.mdrev-host .mdv-mode-switch {border:1px solid var(--rule);white-space:nowrap;border-radius:6px;flex:none;margin-left:8px;display:inline-flex;overflow:hidden}
+.mdrev-host .mdv-mode-option {font:inherit;color:var(--ink-soft);cursor:pointer;background:0 0;border:0;border-radius:0;padding:1px 10px;font-size:12px}
+.mdrev-host .mdv-mode-option+.mdv-mode-option {border-left:1px solid var(--rule)}
+.mdrev-host .mdv-mode-option:hover:not(.is-on) {color:var(--ink)}
+.mdrev-host .mdv-mode-option.is-on {background:var(--accent);color:var(--on-accent,#fff);cursor:default}
+.mdrev-host .mdv-mode-option:focus-visible {outline:2px solid var(--accent);outline-offset:-2px}
+.mdrev-host .mdv-auto-commit {font:inherit;border:1px solid var(--rule);color:var(--ink-soft);cursor:pointer;white-space:nowrap;background:0 0;border-radius:999px;flex:none;align-items:center;gap:5px;margin-left:8px;padding:1px 8px 1px 4px;font-size:12px;display:inline-flex}
+.mdrev-host .mdv-auto-commit:hover, .mdrev-host .mdv-auto-commit.is-on {color:var(--ink)}
+.mdrev-host .mdv-auto-commit:focus-visible {outline:2px solid var(--accent);outline-offset:1px}
+.mdrev-host .mdv-auto-commit-knob {background:var(--rule);border-radius:999px;flex:none;width:18px;height:10px;position:relative}
+.mdrev-host .mdv-auto-commit-knob:after {content:"";background:var(--bg);border-radius:50%;width:8px;height:8px;transition:left .12s ease-out;position:absolute;top:1px;left:1px}
+.mdrev-host .mdv-auto-commit.is-on .mdv-auto-commit-knob {background:var(--accent)}
+.mdrev-host .mdv-auto-commit.is-on .mdv-auto-commit-knob:after {left:9px}
+@media (prefers-reduced-motion:reduce) {
+.mdrev-host .mdv-auto-commit-knob:after {transition:none}
+}
+.mdrev-host .app.is-phone .mdv-mode-switch, .mdrev-host .app.is-phone .mdv-auto-commit, .mdrev-host .app.is-phone .mdv-edit-tab {margin-left:0}
+.mdrev-host .app.is-phone .mdv-mode-option {padding:1px 6px}
+.mdrev-host .app.is-phone .mdv-auto-commit {gap:0;padding:1px 4px}
+.mdrev-host .app.is-phone .mdv-auto-commit-words {display:none}
+.mdrev-host .mdv-edit-card-diff {gap:6px;display:grid}
+.mdrev-host .mdv-edit-card-side {background:var(--bg-inset,#00000008);border-radius:8px;gap:2px;padding:6px 8px;display:grid}
+.mdrev-host .mdv-edit-card-side.is-other {background:var(--accent-soft)}
+.mdrev-host .mdv-edit-card-label {opacity:.7;font-size:11px;font-weight:600}
+.mdrev-host .mdv-edit-card-text {white-space:pre-wrap;max-height:8em;overflow:auto}
+.mdrev-host .mdv-edit-card-actions .primary {background:var(--accent);color:#fff;border-color:var(--accent)}
+.mdrev-host article[data-mdv-editing] h1:empty:before, .mdrev-host article[data-mdv-editing] h2:empty:before, .mdrev-host article[data-mdv-editing] h3:empty:before, .mdrev-host article[data-mdv-editing] h4:empty:before, .mdrev-host article[data-mdv-editing] h5:empty:before, .mdrev-host article[data-mdv-editing] h6:empty:before, .mdrev-host article[data-mdv-editing] p:empty:before, .mdrev-host article[data-mdv-editing] li:empty:before {content:"​"}
+.mdrev-host article[data-mdv-editing] p[data-mdv-ghost]:before {content:attr(data-mdv-placeholder);opacity:.35;pointer-events:none}
+@media print {
+.mdrev-host .mdv-slash, .mdrev-host .mdv-footnote-pop {display:none!important}
+}
+.mdrev-host .mdv-edit-commit.on {background:var(--accent-soft)}
+.mdrev-host .doc .mdv-src {white-space:pre-wrap;overflow-wrap:anywhere}
+.mdrev-host .doc .mdv-src-list {margin:.6em 0;padding-left:1.35em}
+.mdrev-host .doc .mdv-src-table {font-family:var(--read-mono);font-size:.85em;line-height:1.7}
+.mdrev-host .doc pre.mdv-src, .mdrev-host .doc .mdv-src-code {white-space:pre-wrap}
+.mdrev-host .doc .mdv-blank {-webkit-user-select:none;user-select:none}
+.mdrev-host .doc .mdv-blank-line {height:1lh;margin:0 0 var(--read-rhythm);cursor:text}
+.mdrev-host .doc .mdv-src .mdv-mk {color:var(--ink-soft);opacity:.55;font-style:normal;font-weight:400}
+.mdrev-host .doc .mdv-src-heading {font-weight:650}
+.mdrev-host .doc .mdv-src .mdv-mk-inl:not(.is-open) {display:none}
+.mdrev-host .doc .mdv-src .mdv-mk-url:not(.is-open) {text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;max-width:9em;display:inline-block;overflow:hidden}
+.mdrev-host .doc .mdv-src .mdv-mk-hang {white-space:pre;pointer-events:none;position:absolute;transform:translate(-100%)}
+.mdrev-host .doc .mdv-src .mdv-mk-indent {letter-spacing:.55em}
+.mdrev-host .doc .mdv-src .mdv-soft {white-space:normal}
+.mdrev-host .doc .mdv-src .mdv-s-strong {font-weight:650}
+.mdrev-host .doc .mdv-src .mdv-s-em {font-style:italic}
+.mdrev-host .doc .mdv-src .mdv-s-del {text-decoration:line-through}
+.mdrev-host .doc .mdv-src .mdv-s-code {font-family:var(--read-mono);background:var(--bg-inset);border-radius:4px;font-size:.855em}
+.mdrev-host .doc .mdv-src .mdv-s-link {color:var(--accent)}
+.mdrev-host .doc .mdv-src .mdv-s-link.mdv-mk {color:var(--ink-soft)}
+@media (pointer:coarse),(width<=600px) {
+.mdrev-host .mdv-edit-card-actions button, .mdrev-host .mdv-edit-card-show, .mdrev-host .mdv-table-card button, .mdrev-host .mdv-source-readonly button {min-height:44px}
+}
+.mdrev-host .doc li.mdv-src-li {list-style:none}
+.mdrev-host .doc .mdv-src-cell, .mdrev-host .doc .mdv-src-line {overflow-wrap:normal}
+.mdrev-host .doc .mdv-src-item {white-space:pre-wrap;overflow-wrap:anywhere}
 @font-face {font-display:block;font-family:mdvKaTeX_AMS;font-style:normal;font-weight:400;src:url(./assets/KaTeX_AMS-Regular-BQhdFMY1.woff2)format("woff2"),url(./assets/KaTeX_AMS-Regular-DMm9YOAa.woff)format("woff"),url(./assets/KaTeX_AMS-Regular-DRggAlZN.ttf)format("truetype")}
 @font-face {font-display:block;font-family:mdvKaTeX_Caligraphic;font-style:normal;font-weight:700;src:url(./assets/KaTeX_Caligraphic-Bold-Dq_IR9rO.woff2)format("woff2"),url(./assets/KaTeX_Caligraphic-Bold-BEiXGLvX.woff)format("woff"),url(./assets/KaTeX_Caligraphic-Bold-ATXxdsX0.ttf)format("truetype")}
 @font-face {font-display:block;font-family:mdvKaTeX_Caligraphic;font-style:normal;font-weight:400;src:url(./assets/KaTeX_Caligraphic-Regular-Di6jR-x-.woff2)format("woff2"),url(./assets/KaTeX_Caligraphic-Regular-CTRA-rTL.woff)format("woff"),url(./assets/KaTeX_Caligraphic-Regular-wX97UBjC.ttf)format("truetype")}
