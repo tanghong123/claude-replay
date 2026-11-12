@@ -417,7 +417,9 @@ What follows from it:
   stylesheet): in a host the sheet is drawn inside the pane like the rest of the view, the insets
   counted where they fall in it, and the view's stacking left alone, since a sheet reaching out over
   a host's page is the host's to ask for (stage 4); at ⤢ it is the screen's there too, as the pane
-  is. It is the open session's document, so it closes with the session.
+  is. The app's rules read the pane as open, since the sheet opens only from the open pane's Review
+  control; an opener with the pane shut would need them changed. It is the open session's document,
+  so it closes with the session.
 - **The shut pane hides once its glide out ends.** It parks past the view's right edge, which in a
   host's pane may be over the page beside it. A phone's pane never glides, so there it opens and
   hides at once.

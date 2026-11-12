@@ -388,7 +388,10 @@ export class Preview {
   }
   /** #s12: the document, full-screen over the whole app, mounted on the review prefix — Share and
    *  Push where the machine is paired. Nothing navigates: closing unmounts it and removes the layer,
-   *  and the transcript, the pane and the session list are as they were. */
+   *  and the transcript, the pane and the session list are as they were. It opens only from the open
+   *  pane's Review control, and the app's rules that reach it over the whole app read the pane as
+   *  open (`#app:not(.preview-off)`, production.css): an opener with the pane shut would need them
+   *  changed, or the sheet stays in the view's box. */
   openReviewSheet(item) {
     if (!item || this.reviewSheet) return;
     const sheet = document.createElement("div");
