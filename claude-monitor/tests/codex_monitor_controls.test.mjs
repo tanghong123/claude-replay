@@ -10,8 +10,14 @@ import { RecordStore } from "../src/codex-ui/record-store.js";
 import { freshWorkspace } from "../src/codex-workspace/model.js";
 
 const nodes = new Map();
+// A class list that remembers: the controller reads the view's layout classes (`pl-phone`, `pl-coarse`,
+// `pl-max-h-500`, #s431 stage 2) where it once asked the window's media queries.
+function classes() {
+  const names = new Set();
+  return { add: (...n) => n.forEach(name => names.add(name)), remove: (...n) => n.forEach(name => names.delete(name)), toggle(name, on) { const set = on === undefined ? !names.has(name) : !!on; if (set) names.add(name); else names.delete(name); return set; }, contains: name => names.has(name) };
+}
 function node(id) {
-  if (!nodes.has(id)) nodes.set(id, { value: "", textContent: "", disabled: false, hidden: false, style: {}, scrollHeight: 28, classList: { add() {}, remove() {}, toggle() {} }, setAttribute() {}, querySelector: () => null });
+  if (!nodes.has(id)) nodes.set(id, { value: "", textContent: "", disabled: false, hidden: false, style: {}, scrollHeight: 28, classList: classes(), setAttribute() {}, querySelector: () => null });
   return nodes.get(id);
 }
 globalThis.localStorage = { getItem: () => null };
@@ -725,7 +731,7 @@ test("browser storage refusal prevents the first HTTP send", async () => {
 test("phone composer fitting uses the app box after Safari keyboard page scrolling", () => {
   const previous = { window: globalThis.window, innerHeight: globalThis.innerHeight, matchMedia: globalThis.matchMedia, getComputedStyle: globalThis.getComputedStyle, querySelector: document.querySelector };
   try {
-    nodes.clear(); globalThis.innerHeight = 706; globalThis.matchMedia = () => ({ matches: true });
+    nodes.clear(); globalThis.innerHeight = 706; node("sessionView").classList.add("pl-phone");
     globalThis.window = { visualViewport: { height: 377, offsetTop: 337, pageTop: 337 } };
     globalThis.getComputedStyle = () => ({ getPropertyValue: () => "0", minHeight: "44", paddingTop: "8", paddingBottom: "8" });
     const controller = Object.assign(Object.create(MonitorControls.prototype), { active: true });
@@ -750,11 +756,11 @@ test("phone composer fitting uses the app box after Safari keyboard page scrolli
 
 test("only sideways phone layout folds the resident composer", () => {
   const controller = Object.create(MonitorControls.prototype);
-  const previous = globalThis.matchMedia;
+  const view = node("sessionView");
   try {
-    for (const [coarseShort, expected] of [[true,true], [false,false]]) {
-      globalThis.matchMedia = query => ({ matches: query === "(pointer:coarse) and (max-height:500px)" && coarseShort });
-      assert.equal(controller.sidewaysComposer(), expected);
+    for (const [classes, expected] of [[["pl-coarse", "pl-max-h-500"], true], [["pl-coarse"], false], [["pl-max-h-500"], false], [[], false]]) {
+      view.classList.remove("pl-coarse", "pl-max-h-500"); view.classList.add(...classes);
+      assert.equal(controller.sidewaysComposer(), expected, `a view wearing ${classes.join(" ") || "neither"}`);
     }
     let fits = 0;
     controller.fitComposer = () => { fits++; };
@@ -765,7 +771,7 @@ test("only sideways phone layout folds the resident composer", () => {
     controller.active = false; controller.setComposerExpanded(true);
     assert.equal(controller.composerExpanded, false);
     assert.equal(fits, 2, "inactive controllers cannot change an ordinary editor");
-  } finally { globalThis.matchMedia = previous; }
+  } finally { view.classList.remove("pl-coarse", "pl-max-h-500"); }
 });
 
 test("orientation changes refold an unfocused draft and retain a focused editor", () => {
@@ -786,7 +792,7 @@ test("orientation changes refold an unfocused draft and retain a focused editor"
 test("a sixteen-pixel Safari viewport retains only the input at the visible bottom", () => {
   const previous = { window: globalThis.window, innerHeight: globalThis.innerHeight, matchMedia: globalThis.matchMedia, getComputedStyle: globalThis.getComputedStyle, querySelector: document.querySelector };
   try {
-    nodes.clear(); globalThis.innerHeight = 292; globalThis.matchMedia = () => ({ matches: true });
+    nodes.clear(); globalThis.innerHeight = 292; node("sessionView").classList.add("pl-phone");
     globalThis.window = { visualViewport: { height: 16, offsetTop: 337, pageTop: 337 } };
     globalThis.getComputedStyle = () => ({ getPropertyValue: () => "0", minHeight: "44", paddingTop: "8", paddingBottom: "8" });
     const attributes = {};
