@@ -1305,7 +1305,7 @@
 #sessionView.preview-off{grid-template-columns:minmax(480px,1fr) 0 0}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500).pl-boxed{contain:inline-size layout;--pl-cut-left:var(--pane-x);--pl-cut-right:var(--pane-r)}
 #sessionView:where(.pl-coarse.pl-max-h-500).pl-boxed.preview-full:not(.preview-off){contain:inline-size}
-#sessionView:where(.pl-coarse.pl-max-h-500).pl-boxed.preview-full:not(.preview-off)>.preview{--pl-cut-left:0px;--pl-cut-right:0px}
+#sessionView:where(.pl-coarse.pl-max-h-500).pl-boxed.preview-full:not(.preview-off)>:is(.preview,.review-sheet){--pl-cut-left:0px;--pl-cut-right:0px}
 :where(#sessionView.pl-max-w-1180).session-view>.preview,:where(#sessionView.pl-max-w-1180) .session-view>.preview{transition:transform .22s,visibility 0s}
 :where(#sessionView.pl-max-w-1180).session-view.preview-off>.preview,:where(#sessionView.pl-max-w-1180) .session-view.preview-off>.preview{visibility:hidden;transition:transform .22s,visibility 0s .22s}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)).session-view>.preview,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .session-view>.preview,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)).session-view.preview-off>.preview,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .session-view.preview-off>.preview{transition:none}

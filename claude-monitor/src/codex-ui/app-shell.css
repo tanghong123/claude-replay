@@ -342,13 +342,9 @@ body{padding:0;background:#eef1f4}
 html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 :root{color-scheme:light}
 :root[data-theme="dark"]{color-scheme:dark}
-@media(max-width:760px),(pointer:coarse) and (max-height:500px){
-#app>#sessionView.pl-boxed:has(>.review-sheet){z-index:95}
-#app>#sessionView.pl-boxed>.review-sheet{left:calc(0px - var(--pane-x));right:calc(0px - var(--pane-r));--pl-cut-left:0px;--pl-cut-right:0px}
-}
-@media(pointer:coarse) and (max-height:500px){
-#app>#sessionView.pl-boxed.preview-full:not(.preview-off)>.review-sheet{left:0;right:0}
-}
+#app:not(.preview-off)>#sessionView.pl-boxed.pl-phone:has(>.review-sheet){z-index:95}
+#app:not(.preview-off)>#sessionView.pl-boxed.pl-phone>.review-sheet{left:calc(0px - var(--pane-x));right:calc(0px - var(--pane-r));--pl-cut-left:0px;--pl-cut-right:0px}
+#app:not(.preview-off)>#sessionView.pl-boxed.pl-phone.pl-coarse.pl-max-h-500.preview-full>.review-sheet{left:0;right:0}
 #app{grid-template-columns:var(--sidebar) minmax(0,1fr)}
 #app.sidebar-off{grid-template-columns:64px minmax(0,1fr)}
 @media(max-width:700px){

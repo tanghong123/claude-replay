@@ -30,18 +30,23 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    as the window is left as it was. The desktop's layers, which their scripts place from the window,
    wait for stage 4. */
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){#sessionView.pl-boxed{contain:inline-size layout;--pl-cut-left:var(--pane-x);--pl-cut-right:var(--pane-r)}}
-@media(pointer:coarse) and (max-height:500px){#sessionView.pl-boxed.preview-full:not(.preview-off){contain:inline-size}#sessionView.pl-boxed.preview-full:not(.preview-off)>.preview{--pl-cut-left:0px;--pl-cut-right:0px}}
+@media(pointer:coarse) and (max-height:500px){#sessionView.pl-boxed.preview-full:not(.preview-off){contain:inline-size}#sessionView.pl-boxed.preview-full:not(.preview-off)>:is(.preview,.review-sheet){--pl-cut-left:0px;--pl-cut-right:0px}}
 /* The review sheet (#s12) is the screen's too: the owner chose a full-screen sheet. The view keeps its
    layout, so the open pane under the sheet and the session keep their places and nothing remeasures
    (letting go of it, as ⤢ does, moved the pane to the window's edge and mdrev reflowed under the
    sheet). Instead the sheet reaches the window's sides from the view's edges and keeps the screen's
    whole insets, and while it is open the view's stacking rises to the sheet's own level, 95: over a
-   wide phone's column and the drawer's handle, under the toasts. Its height is the view's, the app's
-   whole height. This is the app's alone: in a host the sheet is drawn inside the pane like the rest of
-   the view, the screen's insets counted where they fall in it, and the view's stacking left alone. At
-   ⤢ the view no longer contains its layout, so the sheet is already the window's, from its own edges. */
-@media(max-width:760px),(pointer:coarse) and (max-height:500px){#app>#sessionView.pl-boxed:has(>.review-sheet){z-index:95}#app>#sessionView.pl-boxed>.review-sheet{left:calc(0px - var(--pane-x));right:calc(0px - var(--pane-r));--pl-cut-left:0px;--pl-cut-right:0px}}
-@media(pointer:coarse) and (max-height:500px){#app>#sessionView.pl-boxed.preview-full:not(.preview-off)>.review-sheet{left:0;right:0}}
+   wide phone's column, the sidebar beside a narrow view and the drawer's handle, under the toasts. Its
+   height is the view's, the app's whole height. These rules read the view's own classes, so they hold
+   exactly where its layout is contained (a phone reader in a box: `pl-phone` and `pl-boxed`), and the
+   pane's state the app keeps (the sheet opens from the open pane's Review control). They are the
+   app's alone: in a host the sheet is drawn inside the pane like the rest of the view, the screen's
+   insets counted where they fall in it, and the view's stacking left alone. At ⤢ (held sideways) the
+   view no longer contains its layout, so the sheet is the window's from its own edges, with the
+   screen's whole insets, in the app and in a host alike, as the pane is. */
+#app:not(.preview-off)>#sessionView.pl-boxed.pl-phone:has(>.review-sheet){z-index:95}
+#app:not(.preview-off)>#sessionView.pl-boxed.pl-phone>.review-sheet{left:calc(0px - var(--pane-x));right:calc(0px - var(--pane-r));--pl-cut-left:0px;--pl-cut-right:0px}
+#app:not(.preview-off)>#sessionView.pl-boxed.pl-phone.pl-coarse.pl-max-h-500.preview-full>.review-sheet{left:0;right:0}
 /* The shut pane parks past the view's right edge: off the screen where the view ends at the window's,
    but over a host's page where its box ends sooner. Once its glide out ends it is hidden, so it
    neither shows nor takes a press there. A phone's pane never glides (the reference's `transition:none`),
