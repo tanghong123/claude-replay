@@ -404,7 +404,8 @@ What follows from it:
 - **The whole screen is the screen's.** At ⤢, held sideways, the view lets go of its layout and its
   cuts, so the pane covers the window, a wide phone's column included, as it did.
 - **The shut pane hides once its glide out ends.** It parks past the view's right edge, which in a
-  host's pane may be over the page beside it.
+  host's pane may be over the page beside it. A phone's pane never glides, so there it opens and
+  hides at once.
 - **Not every layer is inside the element.** The task card and its dim go in the page's layer
   (`viewRoot.layer()`), outside the view's element, and stay the window's until stage 4.
 
