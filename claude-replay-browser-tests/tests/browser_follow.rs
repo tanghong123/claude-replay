@@ -3656,6 +3656,55 @@ fn the_session_view_in_a_host_without_write_controls_mounts_and_offers_no_writes
     );
 }
 
+/// #s431 stage 1: the view lays itself out as it is built, and none of it glides. Its element in a
+/// host's page has the view's grid from the moment it takes its id, and a read early in the mount laid
+/// the pane's column out open before the pane shut itself, so the column closed over .22s under a view
+/// that had just appeared. A pane opened once the view is mounted still glides open.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_mounts_with_its_pane_shut_and_nothing_gliding() {
+    let _serial = serial();
+    let base = base("host-mount-still");
+    let monitor = Monitor::spawn(Kind::V1, 3110, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1440.0, 900.0);
+    harness::open_host_page(&tab, &monitor, "mount=0");
+    let glides = "(function(){ var v = document.getElementById('sessionView'); return { shut: !!v && v.classList.contains('preview-off'), mounting: !!v && v.classList.contains('sv-mounting'), glides: v ? v.getAnimations().filter(function(a){ return a instanceof CSSTransition; }).map(function(a){ return a.transitionProperty; }) : null }; })()";
+    let mounted = harness::probe(
+        &tab,
+        &format!("(function(){{ window.__host.mount(); return {glides}; }})()"),
+    );
+    let opened = harness::probe(
+        &tab,
+        &format!("(function(){{ var b = document.getElementById('previewBtn'); if (!b) return {{ button: false }}; b.click(); var seen = {glides}; seen.button = true; return seen; }})()"),
+    );
+    drop(monitor);
+    assert_eq!(
+        mounted["shut"], true,
+        "the view mounts with its pane shut: {mounted}"
+    );
+    assert_eq!(
+        mounted["mounting"], false,
+        "the mount's hold is gone once it returns: {mounted}"
+    );
+    assert_eq!(
+        mounted["glides"],
+        serde_json::json!([]),
+        "nothing glides as the view is mounted: {mounted}"
+    );
+    assert_eq!(
+        opened["button"], true,
+        "the view draws the pane's button: {opened}"
+    );
+    assert_eq!(opened["shut"], false, "the pane opened: {opened}");
+    assert_eq!(
+        opened["glides"],
+        serde_json::json!(["grid-template-columns"]),
+        "a pane opened once the view is mounted glides open, as in the app: {opened}"
+    );
+}
+
 /// The session view's unmount (#s429 stage 7): mounted in the test host and taken away, it leaves
 /// the page's window and document with exactly the listeners they had before it (as the browser
 /// lists them), the host's element empty with its own attributes, nothing of its own in the page's
@@ -7510,6 +7559,63 @@ fn the_app_shell_resizes_the_pane_with_the_pointer() {
         (stored - (1440.0 - x1)).abs() <= 1.0,
         "the pane's new width is remembered: {after}"
     );
+    drop(monitor);
+}
+
+/// #s431 stage 1: the session list and its rail swap at once where the window is 1180px or narrower,
+/// and glide above it, as they did before the app's grid held two tracks either way. Before, the
+/// list's grid there had two tracks and the rail's four, which no transition joins; with two tracks
+/// in both the swap glided over .22s at every width until the app said otherwise.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_swaps_the_list_and_its_rail_at_once_where_the_pane_overlays() {
+    let _serial = serial();
+    let (monitor, _browser, tab) = shell_with_a_session("appshell-rail-swap", 2876);
+    // Press the control in sight (collapse on the list, expand on the rail) and read at once: getAnimations
+    // flushes the style change, so a glide the press started is already there.
+    let press = "(function(){ var app = document.getElementById('app'); var on = !app.classList.contains('sidebar-off'); document.getElementById(on ? 'sidebarCollapse' : 'sidebarMiniExpand').click(); return { rail: app.classList.contains('sidebar-off'), glides: app.getAnimations().filter(function(a){ return a instanceof CSSTransition && a.transitionProperty === 'grid-template-columns'; }).length, first: getComputedStyle(app).gridTemplateColumns.split(' ')[0] }; })()";
+    for (width, glide) in [(1000.0, false), (1440.0, true)] {
+        harness::resize(&tab, width, 800.0);
+        let quiet = format!("innerWidth === {width} && !document.getElementById('app').classList.contains('sidebar-off') && document.getElementById('app').getAnimations().length === 0");
+        harness::until(
+            &tab,
+            &quiet,
+            "the window at its width with the list shown and nothing gliding",
+            Duration::from_secs(10),
+            "({ w: innerWidth, rail: document.getElementById('app').classList.contains('sidebar-off') })",
+        );
+        for rail in [true, false] {
+            let seen = harness::probe(&tab, press);
+            assert_eq!(
+                seen["rail"], rail,
+                "the press swapped them at {width}px: {seen}"
+            );
+            if glide {
+                assert!(
+                    seen["glides"].as_u64() == Some(1),
+                    "above 1180px the swap glides, as before (rail={rail}): {seen}"
+                );
+            } else {
+                assert_eq!(
+                    seen["glides"], 0,
+                    "at {width}px the swap is at once, as before (rail={rail}): {seen}"
+                );
+                if rail {
+                    assert_eq!(
+                        seen["first"], "64px",
+                        "the rail is in place at once: {seen}"
+                    );
+                }
+            }
+            harness::until(
+                &tab,
+                "document.getElementById('app').getAnimations().length === 0",
+                "the swap to end",
+                Duration::from_secs(10),
+                "document.getElementById('app').className",
+            );
+        }
+    }
     drop(monitor);
 }
 

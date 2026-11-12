@@ -20,6 +20,8 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 /* A drag of the resizer moves the pane's track with the pointer: the open and shut glide, never a
    drag, as `.app.resizing` kept it when the tracks were the app's. */
 #sessionView.resizing{transition:none}
+/* Nor while the view is mounting (`sv-mounting`, session-view.js): it lays itself out as it is built. */
+#sessionView.sv-mounting{transition:none}
 @media(max-width:1180px){
   #sessionView,#sessionView.preview-off{grid-template-columns:minmax(0,1fr)}
 }
@@ -34,6 +36,11 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 @media(max-width:700px){
   #app.sidebar-off{grid-template-columns:0 minmax(0,1fr)}
   #app.sidebar-off>.session-view,#app.sidebar-off>.session-view.preview-off{grid-template-columns:minmax(0,1fr)}
+}
+/* At 1180px and below the list and the rail swap at once, as they did when the list's grid there had
+   two tracks and the rail's four, which no transition joins; above it they glide, as before. */
+@media(max-width:1180px){
+  #app{transition:none}
 }
 .session-view{height:100%}
 /* #s430 stage 3: the session list's own element, `#sessionList`, the sidebar's child where the tree

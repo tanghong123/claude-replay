@@ -234,6 +234,12 @@ element.querySelectorAll("[data-icon]").forEach(glyph => { glyph.innerHTML = svg
 // `viewRoot.element()` finds it by that id. A host's element with an id of its own cannot be both.
 element.id = "sessionView";
 element.classList.add("session-view");
+// The view lays itself out as it is built (the pane shuts itself, the reading options apply), and none
+// of it glides (#s431 stage 1): the element has the view's grid from the moment it takes its id, so
+// without this the pane's column, laid out open by a read early in the mount, closed over .22s under
+// a view that had just appeared. `sv-mounting` holds the tracks' transition off until the mount's
+// last layout read, below.
+element.classList.add("sv-mounting");
 const applyTheme = theme => { element.dataset.theme = theme === "dark" ? "dark" : "light"; };
 applyTheme(options.theme);
 const { selectSession } = options;
@@ -4190,6 +4196,8 @@ renderHeader(); renderNavigator(); paintJump();
 // the mount left: the one read before the pane shut itself is not the transcript's any more.
 paneLaidOutWidth = transcript.clientWidth;
 viewMounted = true;
+// The mount's hold on the tracks' transition ends after that read, which laid the view out as built.
+element.classList.remove("sv-mounting");
 // #114: a reload, a close or the tab going to the background saves the reader's choices with
 // the position (the debounced save may not have run yet).
 addEventListener("pagehide", () => viewport.remember(), { signal });

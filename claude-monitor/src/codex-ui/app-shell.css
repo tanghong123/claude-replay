@@ -353,6 +353,9 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 #app.sidebar-off{grid-template-columns:0 minmax(0,1fr)}
 #app.sidebar-off>.session-view,#app.sidebar-off>.session-view.preview-off{grid-template-columns:minmax(0,1fr)}
 }
+@media(max-width:1180px){
+#app{transition:none}
+}
 .session-view{height:100%}
 .sidebar>.session-list{flex:1}
 #app.sidebar-off .sidebar>.session-list,#app.column-pane-on>.sidebar>.session-list{flex:none}
