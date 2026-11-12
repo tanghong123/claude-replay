@@ -3716,10 +3716,10 @@ const VIEW_LAYOUT: &str = "(function(){ var v = document.getElementById('session
 const VIEW_AGAINST_WINDOW: &str = "(function(){ var v = document.getElementById('sessionView'); if (!v) return ['no view']; var names = ['pl-coarse','pl-fine','pl-max-h-500','pl-max-w-1180','pl-max-w-560','pl-max-w-620','pl-max-w-700','pl-max-w-760','pl-max-w-900','pl-min-h-501','pl-min-w-1181','pl-min-w-701','pl-min-w-761','pl-min-w-900','pl-min-w-901','pl-phone']; var query = function(n){ if (n === 'pl-phone') return '(max-width:760px), (pointer:coarse) and (max-height:500px)'; if (n === 'pl-coarse') return '(pointer:coarse)'; if (n === 'pl-fine') return '(pointer:fine)'; var m = /^pl-(max|min)-(w|h)-(\\d+)$/.exec(n); return '(' + m[1] + '-' + (m[2] === 'w' ? 'width' : 'height') + ':' + m[3] + 'px)'; }; return names.filter(function(n){ return v.classList.contains(n) !== matchMedia(query(n)).matches; }).map(function(n){ return n + (v.classList.contains(n) ? ' set' : ' not set') + ', window ' + query(n); }); })()";
 
 /// True once the layout module has read the view's box as it is now (its `--pl-w` and `--pl-h` are the
-/// element's size). It hears a resize through a ResizeObserver, which reports after the layout that moved
+/// element's size, its `--pane-x` the element's left edge, which the phone's fixed layers hang on). It hears a resize through a ResizeObserver, which reports after the layout that moved
 /// the box: a wait on the width alone can probe in between and read the classes of the size before
 /// (since #s431 stage 1 swaps the list and its rail at once, the width is final at the first poll).
-const VIEW_CAUGHT_UP: &str = "(function(){ var v = document.getElementById('sessionView'); if (!v) return false; var r = v.getBoundingClientRect(); return Math.abs(parseFloat(v.style.getPropertyValue('--pl-w')) - r.width) < 0.5 && Math.abs(parseFloat(v.style.getPropertyValue('--pl-h')) - r.height) < 0.5; })()";
+const VIEW_CAUGHT_UP: &str = "(function(){ var v = document.getElementById('sessionView'); if (!v) return false; var r = v.getBoundingClientRect(); return Math.abs(parseFloat(v.style.getPropertyValue('--pl-w')) - r.width) < 0.5 && Math.abs(parseFloat(v.style.getPropertyValue('--pl-h')) - r.height) < 0.5 && Math.abs(parseFloat(v.style.getPropertyValue('--pane-x')) - r.left) < 0.5; })()";
 
 /// Put the test host's pane at `left`, `width` wide, and wait for the view to have decided at that box.
 fn place_host_pane(tab: &headless_chrome::Tab, left: u32, width: u32) -> serde_json::Value {
@@ -3992,6 +3992,58 @@ fn the_app_shell_view_reads_what_the_window_read_where_nothing_changes() {
     }
 }
 
+/// #s431 stage 2 (the review of 86b7c06f): what is wrong with the view's layers while it is a phone
+/// reader that is not the whole window: the fixed layers drawn outside its box (the parked pane, off
+/// the screen, aside), and which of the title, the first list row in reach, the drawer's handle where
+/// it shows, and the layer `target` just opened do not take a press at their middle.
+const LAYERS_AMISS: &str = "(function(target){ var v = document.getElementById('sessionView'), vr = v.getBoundingClientRect(); var outside = []; [v].concat(Array.prototype.slice.call(v.querySelectorAll('*'))).forEach(function(e){ var cs = getComputedStyle(e); if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1 || r.left >= innerWidth || r.right <= 0) return; if (r.left < vr.left - 0.5 || r.right > vr.right + 0.5) outside.push((e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + Array.prototype.slice.call(e.classList).join('.')) + ' ' + Math.round(r.left) + '-' + Math.round(r.right)); }); var missed = []; var press = function(name, e){ if (!e) return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return; var h = document.elementFromPoint(r.left + Math.min(r.width / 2, 20), r.top + Math.min(r.height / 2, 20)); if (!e.contains(h)) missed.push(name + ' under ' + (h ? (h.id ? '#' + h.id : h.tagName.toLowerCase() + '.' + h.className) : 'nothing')); }; var row = Array.prototype.slice.call(document.querySelectorAll('#app>.sidebar .tree-row')).find(function(r){ var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 60 && b.bottom <= innerHeight - 60 && b.right <= vr.left; }); press('a list row', row); var handle = document.getElementById('drawerHandle'); if (handle && getComputedStyle(handle).display !== 'none') press('the handle', handle); if (target) press(target, document.querySelector(target)); else press('the title', document.getElementById('sessionTitle')); return { outside: outside, missed: missed, view: Math.round(vr.left) + '-' + Math.round(vr.right) }; })";
+
+/// Opens each of the phone reader's layers in turn (Info, Aa, the Turns sheet, the session's menu,
+/// the search's filter, the right pane, the reply box) and returns, for each that is amiss, what
+/// [`LAYERS_AMISS`] found. Write mode is switched on for the reply box and off again.
+fn phone_layers_amiss(tab: &headless_chrome::Tab) -> Vec<(String, serde_json::Value)> {
+    let steps: [(&str, &str, &str, &str); 8] = [
+        ("at rest", "", "", ""),
+        ("Info", "document.getElementById('phoneInfo').click()", "#infoPopover", "document.getElementById('phoneInfo').click()"),
+        ("Aa", "document.getElementById('readingBtn').click()", "#readingOptions", "document.getElementById('readingBtn').click()"),
+        ("the Turns sheet", "document.getElementById('phonePane-turns').click()", ".phone-pane-menu:not([hidden])", "document.getElementById('phonePane-turns').click()"),
+        ("the session's menu", "document.getElementById('sessionTitle').click()", "#sessionCopyMenu", "document.getElementById('sessionTitle').click()"),
+        ("the search's filter", "document.getElementById('transcriptSearchInput').focus(); document.getElementById('filterTranscriptBtn').click()", "#navigatorOptions", "document.getElementById('phoneSearchDone').click()"),
+        ("the right pane", "document.getElementById('previewBtn').click()", "#closePreview", "document.getElementById('closePreview').click()"),
+        ("the reply box", "document.getElementById('writeSwitch').click()", "#composeInput", "document.getElementById('closeComposer').click(); document.getElementById('writeSwitch').click()"),
+    ];
+    let mut amiss = Vec::new();
+    for (name, open, target, close) in steps {
+        if !open.is_empty() {
+            harness::eval(tab, &format!("(function(){{ {open}; return true; }})()"));
+        }
+        if name == "the reply box" {
+            harness::until(
+                tab,
+                "(function(){ var b = document.getElementById('dockCompose'); return !!b && !b.hidden && b.getClientRects().length > 0; })()",
+                "write mode to put the reply box's circle in the dock",
+                Duration::from_secs(10),
+                "document.getElementById('dockCompose') && document.getElementById('dockCompose').outerHTML.slice(0, 200)",
+            );
+            harness::eval(tab, "document.getElementById('dockCompose').click()");
+        }
+        harness::eval(tab, "new Promise(function(done){ requestAnimationFrame(function(){ setTimeout(done, 400); }); })");
+        let t = if target.is_empty() {
+            "null".to_string()
+        } else {
+            format!("'{target}'")
+        };
+        let found = harness::probe(tab, &format!("{LAYERS_AMISS}({t})"));
+        if found["outside"] != serde_json::json!([]) || found["missed"] != serde_json::json!([]) {
+            amiss.push((name.to_string(), found));
+        }
+        if !close.is_empty() {
+            harness::eval(tab, &format!("(function(){{ {close}; return true; }})()"));
+        }
+    }
+    amiss
+}
+
 /// #s431 stage 2: the places design/pane-layout.md says change, each red on the code before it.
 /// - A 700px desktop window is the compact desktop layout under the drawer's handle, where it was
 ///   the phone reader: no dock, and the handle clear of the title.
@@ -4002,6 +4054,11 @@ fn the_app_shell_view_reads_what_the_window_read_where_nothing_changes() {
 ///   session, where it lay over it.
 /// - A wide phone held sideways with its list column shown leaves the view about 650px: a narrower
 ///   phone's layout (its bands read its own width), not the wide phone's.
+/// - Beside the 520px sidebar and beside the wide phone's column, the phone reader's fixed layers (its
+///   dock, Info, Aa, the Turns sheet, the session's menu, the filter, the right pane and the reply
+///   box) stay in its own box and leave the list, the handle and the title reachable; the review of
+///   stage 2's first cut found them placed against the window, over the sidebar. Beside the column
+///   the island's inset is the column's, so the dock is 12px inside the view, not 12px plus the inset.
 /// - The list's rows are 44px touch targets on an iPad's sidebar, where they were 37px.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
@@ -4042,6 +4099,7 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
         &tab,
         &format!("(function(){{ var shown = {shown}; var v = document.getElementById('sessionView').getBoundingClientRect(), t = document.getElementById('sessionTitle').getBoundingClientRect(); return {{ layout: {VIEW_LAYOUT}, dock: shown('.phone-dock'), handle: shown('drawerHandle'), titleInset: Math.round(t.left - v.left) }}; }})()"),
     );
+    let beside_layers = phone_layers_amiss(&tab);
     harness::eval(&tab, "localStorage.removeItem('am-sidebar-width')");
     // A 1000px window on the rail, the right pane open.
     harness::resize(&tab, 1000.0, 900.0);
@@ -4069,9 +4127,16 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
     harness::eval(&tab, "document.getElementById('sidebarMiniExpand').click()");
     // A wide phone held sideways, its column shown; then the list's rows on an iPad.
     harness::phone(&tab, 932, 430);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
     harness::eval(&tab, "localStorage.removeItem('am-phone-column')");
     open(&tab, 932.0, "a wide phone held sideways");
     let wide = harness::probe(&tab, VIEW_LAYOUT);
+    let wide_dock = harness::probe(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(); return { viewLeft: Math.round(v.left), dockLeft: Math.round(d.left) }; })()",
+    );
+    let wide_layers = phone_layers_amiss(&tab);
+    harness::safe_area(&tab, (0, 0, 0, 0));
     harness::phone(&tab, 834, 1194);
     open(&tab, 834.0, "an iPad upright");
     harness::until(
@@ -4154,6 +4219,23 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
             && classes.contains(&"pl-max-w-900")
             && classes.contains(&"pl-max-w-700"),
         "its bands read its own width, about 650px, not the wide phone's: {wide}"
+    );
+    assert_eq!(
+        beside_layers,
+        Vec::new(),
+        "beside a 520px sidebar the phone reader keeps every layer in its own box, and the list, the \
+         title and each layer take a press"
+    );
+    assert_eq!(
+        wide_layers,
+        Vec::new(),
+        "beside a wide phone's column the phone reader keeps every layer in its own box, and the list, \
+         the handle, the title and each layer take a press"
+    );
+    assert!(
+        wide_dock["dockLeft"].as_i64() == wide_dock["viewLeft"].as_i64().map(|x| x + 12),
+        "beside the column the dock keeps 12px inside the view, the island's inset being the column's: \
+         {wide_dock}"
     );
     assert_eq!(
         rows["minHeight"], "44px",
@@ -15612,7 +15694,11 @@ fn a_phone_held_sideways_gets_the_phone_layout_in_one_row() {
 
 /// #s32, part 2: between the phone and 1180px the preview is an overlay; it covered 72vw of a
 /// session still laid out at full width and left a sliver no one could read. An open preview now
-/// covers the whole session area beside the sidebar — and all of it with the sidebar closed.
+/// covers the whole session area beside the sidebar. Since #s431 stage 2 the band is the view's own
+/// width, so with the sidebar closed to its rail a 1000px window leaves the view 936px, where the pane
+/// is a column beside the session as on a wider window, and neither is a sliver; an 800px window on
+/// the rail leaves the view 736px, and the pane covers it from the rail's edge (its rule was dead in
+/// stage 2's first cut, which left the pane at its 72% width).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver() {
@@ -15638,14 +15724,24 @@ fn a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver() {
         Duration::from_secs(15),
         edges,
     );
-    // The sidebar closed: the preview takes the whole window.
-    harness::eval(&tab, "(function(){ document.getElementById('app').classList.add('sidebar-off'); return 'ok'; })()");
+    // The sidebar closed to its rail: the view is 936px, and its pane a column beside the session.
+    harness::eval(&tab, "document.getElementById('sidebarCollapse').click()");
+    let beside = "(function(){ var v = document.getElementById('sessionView').getBoundingClientRect(), p = document.getElementById('preview').getBoundingClientRect(), w = document.querySelector('#sessionView>.workspace').getBoundingClientRect(); return JSON.stringify({ viewLeft: Math.round(v.left), viewWidth: Math.round(v.width), paneLeft: Math.round(p.left), paneRight: Math.round(innerWidth - p.right), sessionLeft: Math.round(w.left), sessionRight: Math.round(w.right), position: getComputedStyle(document.getElementById('preview')).position }); })()";
     harness::until(
         &tab,
-        &format!("(function(){{ var e = JSON.parse({edges}); return e.left <= 12 && e.right <= 12; }})()"),
-        "the preview across the whole window with the sidebar closed",
+        &format!("document.getElementById('app').classList.contains('sidebar-off') && {VIEW_CAUGHT_UP} && (function(){{ var e = JSON.parse({beside}); return e.viewWidth === innerWidth - 64 && e.paneRight <= 1 && e.sessionRight <= e.paneLeft + 1 && e.sessionRight - e.sessionLeft >= 400; }})()"),
+        "on the rail the pane a column beside a session of 400px or more, at the window's edge",
         Duration::from_secs(15),
-        edges,
+        beside,
+    );
+    // An 800px window on the rail: the view is 736px, and the pane covers it from the rail's edge.
+    harness::resize(&tab, 800.0, 800.0);
+    harness::until(
+        &tab,
+        &format!("innerWidth === 800 && {VIEW_CAUGHT_UP} && (function(){{ var e = JSON.parse({beside}); return e.viewWidth === 736 && e.paneLeft >= e.viewLeft && e.paneLeft <= e.viewLeft + 12 && e.paneRight <= 12; }})()"),
+        "on the rail in an 800px window the pane from the rail's edge to the window's",
+        Duration::from_secs(15),
+        beside,
     );
 }
 
