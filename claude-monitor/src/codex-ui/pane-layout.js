@@ -76,9 +76,10 @@ export function mountPaneLayout(element, { signal, onChange } = {}) {
     element.style.setProperty("--pl-h", `${box.height}px`);
     element.style.setProperty("--pane-x", `${box.left}px`);
     // A share of the height is the window's own unit while the view is as tall as the window (always
-    // in the app), so iPhone Safari's `dvh`, which follows its bars, still does; else the view's.
-    // The window is read here for that alone, never for a layout decision.
-    const tall = box.height >= Math.min(innerHeight, document.documentElement.clientHeight) - 2;
+    // in the app, whose grid is 100dvh: iOS gives `innerHeight` that height too), so iPhone Safari's
+    // `dvh`, which follows its bars, still does; else the view's. The window is read here for that
+    // alone, never for a layout decision.
+    const tall = box.height >= innerHeight - 2;
     element.style.setProperty("--pl-vh", tall ? "1vh" : `${box.height / 100}px`);
     element.style.setProperty("--pl-dvh", tall ? "1dvh" : `${box.height / 100}px`);
     const key = [...on].sort().join(" ");

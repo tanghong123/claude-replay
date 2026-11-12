@@ -277,12 +277,13 @@ export const APP_CHROME = Object.freeze([
 /** The session list's own body, which hangs on its element `#sessionList` (#s430 stage 3): the tree,
  *  its rows and labels, the arrangement strip and the arranged sections, and the state chips; the
  *  element itself (`.session-list`), with the arrangement it carries (`sessions-flat`,
- *  `sessions-arranged`, on `#app` until stage 1); and the head it draws its controls and the filter
+ *  `sessions-arranged`, on `#app` until stage 1) and its compact rows below 232px of its own width
+ *  (`pl-max-w-231`, #s431 stage 2); and the head it draws its controls and the filter
  *  sheet in where its host places them nowhere (`.session-list-head`); and the empty line it draws in
  *  its tree (`.no-results`), which the app's session search (⌘K) draws too. Like the app's chrome, a
  *  rule naming one is not the view's. */
 export const LIST_CHROME = Object.freeze([
-  "#sessionList", ".session-list", ".session-list-head",
+  "#sessionList", ".session-list", ".session-list-head", ".pl-max-w-231",
   ".agent-label", ".agent-monogram",
   ".arrange-strip", ".arrange-strip-box", ".arrange-strip-close", ".arrange-strip-text",
   ".arranged-empty", ".arranged-group", ".arranged-head", ".arranged-label", ".arranged-rest", ".arranged-view",
@@ -522,7 +523,7 @@ const LIST_ROOT = ":where(#sessionList)";
 const LIST_CLASS_WEIGHT = ".session-list";
 /** The classes the list's element carries: its class and its arrangement. A rule led by one may style
  *  the list's element itself. */
-export const LIST_ROOT_CLASSES = Object.freeze([".session-list", ".sessions-flat", ".sessions-arranged"]);
+export const LIST_ROOT_CLASSES = Object.freeze([".session-list", ".sessions-flat", ".sessions-arranged", ".pl-max-w-231"]);
 const LIST_NAMES = new Set([...LIST_CHROME, ...LIST_OUTSIDE]);
 const LIST_PLACED = new Set(LIST_OUTSIDE);
 const LIST_INSIDE = new Set(LIST_CHROME.filter(n => !LIST_SHOWN_OUTSIDE.includes(n)));

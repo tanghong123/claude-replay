@@ -693,7 +693,9 @@ mod tests {
                 && count("shared") >= 20
                 && count("the app's chrome") >= 15
                 && count("the list's") >= 10
-                && count("an app state") >= 40
+                // #s431 stage 2 moved the pane's sideways rules from the app's copy of its state
+                // to the view's own: 37 remain.
+                && count("an app state") >= 30
                 && count("tokens on the app's grid") >= 3,
             "read {} selectors: {counts:?}",
             selectors.len()
@@ -863,11 +865,16 @@ mod tests {
         };
         let selectors = style_selectors(css);
         for (line, selector) in &selectors {
+            // A rule its sources wrote under a size query is gated by the classes the layout module
+            // sets on the view's element (#s431 stage 2): `:where(#sessionView.pl-max-w-1180)`,
+            // `:where(#sessionView:is(…))`, still the view's element.
             let rooted = [":where(#sessionView)", "#sessionView"].iter().any(|root| {
                 selector.strip_prefix(root).is_some_and(|rest| {
                     !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
                 })
-            });
+            }) || selector
+                .strip_prefix(":where(#sessionView")
+                .is_some_and(|rest| rest.starts_with(['.', ':']));
             // The view's element's siblings are no part of the view: nothing goes on from it with
             // `+` or `~` (`:where(#sessionView).pane-open+.x`).
             let (lead, _) = leading_compound(selector);

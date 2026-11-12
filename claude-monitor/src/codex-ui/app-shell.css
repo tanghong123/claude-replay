@@ -539,7 +539,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .drawer-handle{display:grid;place-items:center;position:fixed;z-index:22;left:4px;top:calc(env(safe-area-inset-top,0px) + 2px);width:44px;height:44px;border-radius:10px;background:transparent;color:var(--ink);cursor:pointer}
 .drawer-handle:focus-visible{background:var(--hover)}
 .drawer-handle .icon{width:22px;height:22px}
-#app #sessionView .workspace>.topbar{padding-left:calc(50px + env(safe-area-inset-left,0px))}
+#app:where(:has(>.drawer-handle)) #sessionView .workspace>.topbar{padding-left:calc(50px + env(safe-area-inset-left,0px))}
 #app .side-head{height:auto;min-height:52px;padding-left:52px}
 #app .side-head .iconbtn{width:40px;height:44px}
 #app .section-view-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:59;background:transparent}

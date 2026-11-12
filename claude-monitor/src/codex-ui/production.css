@@ -1392,7 +1392,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   /* The handle sits over the top bar's first 44px, whatever layout the view draws there (#s431 stage
      2, design/pane-layout.md): the room is the app's, given while its handle shows, so a view in a
      host keeps its whole bar and a desktop layout under the drawer clears the handle. */
-  #app #sessionView .workspace>.topbar{padding-left:calc(50px + env(safe-area-inset-left,0px))}
+  #app:where(:has(>.drawer-handle)) #sessionView .workspace>.topbar{padding-left:calc(50px + env(safe-area-inset-left,0px))}
   #app .side-head{height:auto;min-height:52px;padding-left:52px}
   #app .side-head .iconbtn{width:40px;height:44px}
   /* #s387: an arranged section's menu. Upright it is a sheet at the foot (`.sheet`, set by the
