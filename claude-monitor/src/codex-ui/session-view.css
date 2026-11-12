@@ -1383,6 +1383,11 @@
 :where(#sessionView).session-view{color-scheme:light}
 :where(#sessionView).session-view[data-theme="dark"]{color-scheme:dark}
 :where(#sessionView) .transcript{scroll-behavior:auto}
+#sessionView{display:grid;min-width:0;min-height:0;contain:inline-size;grid-template-rows:minmax(0,1fr);grid-template-columns:minmax(480px,1fr) 1px var(--preview,420px);transition:grid-template-columns .22s ease}
+#sessionView.preview-off{grid-template-columns:minmax(480px,1fr) 0 0}
+@media(max-width:1180px){
+#sessionView,#sessionView.preview-off{grid-template-columns:minmax(0,1fr)}
+}
 :where(#sessionView) .markdown-table-scroll{width:100%;max-width:100%;margin:14px 0 18px;overflow-x:auto;border-radius:10px}
 :where(#sessionView) .markdown-table-scroll>table{display:table!important;width:100%!important;min-width:100%;margin:0!important;overflow:visible!important}
 :where(#sessionView) .transcript{overflow-anchor:none}

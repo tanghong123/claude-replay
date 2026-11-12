@@ -20,7 +20,8 @@
 /* The host's own rules keep to its own elements, as the owner's terms say (#s438). */
 .host-bar { position: fixed; top: 0; left: 0; right: 0; height: 40px; display: flex; gap: 8px; align-items: center; padding: 0 12px; }
 .host-pane { position: fixed; top: 40px; left: 0; right: 0; bottom: 0; }
-.host-view { position: absolute; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) 6px minmax(0, 420px); overflow: hidden; }
+/* The view lays out its own parts (#s431 stage 1): the host gives it a box and nothing more. */
+.host-view { position: absolute; inset: 0; overflow: hidden; }
 </style>
 </head>
 <body>

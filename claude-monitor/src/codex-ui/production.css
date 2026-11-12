@@ -8,15 +8,41 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    dark-scheme selection (a slate band under dark text), scrollbars and form controls. */
 :root{color-scheme:light}:root[data-theme="dark"]{color-scheme:dark}
 .transcript{scroll-behavior:auto}
-/* #s429 stage 2: the session view's own element, which carries its state. In the app it draws no box,
-   so its workspace, resizer and pane stay columns of #app's grid. */
-.session-view{display:contents}
+/* #s429 stage 2, then #s431 stage 1 (design/pane-layout.md): the session view's own element, which
+   carries its state, is a box that lays out its three parts itself, in the app as in a host: the
+   session, the resizer and the right pane, the tracks #app's grid gave them. Its width is its track's,
+   never its content's (`contain:inline-size`): with the pane open the content's minimum is 901px,
+   which would hold a 1100px window's view at 901px. Where the tracks need more than the view has,
+   they run past its edge, as they ran past the window's. It is not positioned, so every part placed
+   absolutely keeps its containing block. */
+#sessionView{display:grid;min-width:0;min-height:0;contain:inline-size;grid-template-rows:minmax(0,1fr);grid-template-columns:minmax(480px,1fr) 1px var(--preview,420px);transition:grid-template-columns .22s ease}
+#sessionView.preview-off{grid-template-columns:minmax(480px,1fr) 0 0}
+@media(max-width:1180px){
+  #sessionView,#sessionView.preview-off{grid-template-columns:minmax(0,1fr)}
+}
+/* The app's grid holds the list and the view (#s431 stage 1), over reference.css's four tracks. The
+   rail's rule comes after reference.css's 1180px one, so on the rail the view keeps its three
+   tracks at every width: the session's floor, and an empty column under the open pane, which stage 2
+   takes away. A phone's `.app` is a block, where the view takes the whole height. */
+#app{grid-template-columns:var(--sidebar) minmax(0,1fr)}
+#app.sidebar-off{grid-template-columns:64px minmax(0,1fr)}
+#app.sidebar-off>.session-view{grid-template-columns:minmax(480px,1fr) 1px var(--preview,420px)}
+#app.sidebar-off>.session-view.preview-off{grid-template-columns:minmax(480px,1fr) 0 0}
+@media(max-width:700px){
+  #app.sidebar-off{grid-template-columns:0 minmax(0,1fr)}
+  #app.sidebar-off>.session-view,#app.sidebar-off>.session-view.preview-off{grid-template-columns:minmax(0,1fr)}
+}
+.session-view{height:100%}
 /* #s430 stage 3: the session list's own element, `#sessionList`, the sidebar's child where the tree
-   stood, holding the arrangement strip and the tree. The app placing the list: it draws no box, so
-   the strip and the tree stay items of the sidebar's column. Its controls and the filter sheet are
-   placed in the sidebar's head and its rail parts in the rail (`place`); a host that places nothing
-   gets them in a head of the list's own, which the sheet hangs from. */
-.session-list{display:contents}
+   stood, holding the arrangement strip and the tree. Since #s431 stage 1 it is a box, a column the
+   strip and the tree are items of, and the sidebar's column gives it the room below its head. Its
+   controls and the filter sheet are placed in the sidebar's head and its rail parts in the rail
+   (`place`); a host that places nothing gets them in a head of the list's own, which the sheet hangs
+   from. Where the app hides the strip and the tree (the rail, a wide phone's column showing a pane),
+   the box takes no room. */
+#sessionList{display:flex;flex-direction:column;min-height:0;min-width:0}
+.sidebar>.session-list{flex:1}
+#app.sidebar-off .sidebar>.session-list,#app.column-pane-on>.sidebar>.session-list{flex:none}
 /* #s430 stage 4: the list's controls are one strip (`place("controls")`), an element a host can hold
    and place again. It draws no box, so each control stays an item of the row it is placed in: the
    sidebar head's one row here, the list's own head in a host that places nothing. */
@@ -1679,7 +1705,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app{--sidebar:280px}
   #app:not(.phone-column-off){display:grid;grid-template-columns:calc(var(--sidebar) + env(safe-area-inset-left,0px)) minmax(0,1fr)}
   #app:not(.phone-column-off)>.sidebar{position:relative;inset:auto;transform:none;width:auto;height:100dvh;grid-column:1;grid-row:1;box-shadow:1px 0 0 var(--line);transition:none}
-  #app:not(.phone-column-off)>:where(.session-view)>.workspace{grid-column:2;grid-row:1;min-width:0}
+  #app:not(.phone-column-off)>:where(.session-view){grid-column:2;grid-row:1;min-width:0}
   #app.phone-column-off>.sidebar{display:none}
   #app>.drawer-scrim{display:none}
   /* `flex:none`: the column is a flex column, and a long pane squeezed its head to 11px, the glyphs cut

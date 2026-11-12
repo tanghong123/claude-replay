@@ -28,9 +28,9 @@
 /* The host's own rules keep to its own elements. */
 .host-bar { position: fixed; top: 0; left: 0; right: 0; height: 40px; display: flex; gap: 8px; align-items: center; padding: 0 12px; }
 .host-pane { position: fixed; top: 40px; left: 0; bottom: 0; width: 320px; overflow: auto; display: flex; }
-/* The element the host gives the list: a column filling the pane, which the list's stylesheet leaves to
-   its host (in the app it is `display: contents`, the app placing the list in its sidebar). */
-.host-pane > #sessionList { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+/* The element the host gives the list: the list's stylesheet makes it a column (#s431 stage 1), and the
+   host gives it the pane's room. */
+.host-pane > #sessionList { flex: 1 1 auto; }
 /* Where a placing host shows the list's parts: its bar, a positioned holder for the sheet, a rail. */
 #hostControls { display: flex; gap: 4px; }
 #hostSheet { position: relative; }
