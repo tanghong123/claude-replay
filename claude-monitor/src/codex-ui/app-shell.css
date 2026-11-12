@@ -615,7 +615,7 @@ input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea,select{f
 @media(pointer:coarse) and (max-height:500px){
 #app.preview-full:not(.preview-off) .drawer-handle{display:none}
 #app:has(.reading-cluster>.reading-options.open,.header-search-cluster>.navigator-options.open,.header-search-cluster>.search-suggest:not([hidden]))>.drawer-handle{z-index:13}
-#app:has(>#sessionView.pl-boxed :is(.reading-cluster>.reading-options.open,.header-search-cluster>.navigator-options.open,.header-search-cluster>.search-suggest:not([hidden]),.review-sheet,.composer.production-show .compose-dialog:not([hidden])))>.drawer-handle{visibility:hidden}
+#app:has(>#sessionView.pl-boxed.preview-off :is(.reading-cluster>.reading-options.open,.header-search-cluster>.navigator-options.open,.header-search-cluster>.search-suggest:not([hidden]),.composer.production-show .compose-dialog:not([hidden])))>.drawer-handle{visibility:hidden}
 }
 :root{--peer:#2b6f8e}
 :root[data-theme="dark"]{--peer:#7ab8d6}

@@ -161,6 +161,9 @@ export class Preview {
       while (this.sessionTabs.size > SESSION_CACHE_LIMIT || cacheBytes() > SESSION_CACHE_BYTES) this.sessionTabs.delete(this.sessionTabs.keys().next().value);
     }
     this.roster = []; this.rosterKey = "";
+    // The review sheet is the old session's document: it closes with it (#s431 stage 2, where a wide
+    // phone's column beside the sheet can choose another session).
+    this.reviewSheet?.close?.();
     this.teardownMarkdown();
     this.sessionId = sessionId || "";
     const saved = this.sessionTabs.get(this.sessionId);
