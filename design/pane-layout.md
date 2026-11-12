@@ -409,12 +409,15 @@ What follows from it:
   over the open pane, which would move to the window's edge and reflow mdrev under the sheet. So the
   sheet reaches the window's sides from the view's edges (`--pane-x`, `--pane-r`) with the screen's
   whole insets, and while it is open the view's stacking rises to the sheet's level, 95: over a wide
-  phone's column and the handle, under the toasts. Its height is the view's, the app's whole height.
-  At ⤢ the view no longer contains its layout, so the sheet is the window's from its own edges. This
-  is the app's choice (its rules are in the app's stylesheet): in a host the sheet is drawn inside the
-  pane like the rest of the view, the insets counted where they fall in it, and the view's stacking
-  left alone, since a sheet reaching out over a host's page is the host's to ask for (stage 4). It is
-  the open session's document, so it closes with the session.
+  phone's column, the sidebar beside a narrow view and the handle, under the toasts. Its height is
+  the view's, the app's whole height. The rules read the view's own classes, so they hold exactly
+  where its layout is contained (a phone reader in a box), whatever the window. At ⤢ the view no
+  longer contains its layout, so the sheet is the window's from its own edges, with the screen's
+  whole insets. Reaching out from the box is the app's choice (its rules are in the app's
+  stylesheet): in a host the sheet is drawn inside the pane like the rest of the view, the insets
+  counted where they fall in it, and the view's stacking left alone, since a sheet reaching out over
+  a host's page is the host's to ask for (stage 4); at ⤢ it is the screen's there too, as the pane
+  is. It is the open session's document, so it closes with the session.
 - **The shut pane hides once its glide out ends.** It parks past the view's right edge, which in a
   host's pane may be over the page beside it. A phone's pane never glides, so there it opens and
   hides at once.
@@ -515,7 +518,7 @@ At the default text size, the pane at the reader's width:
 - **The app where it changes**, each red on the old code: a 700px mouse window (the compact desktop,
   the drawer's handle clear of the title), a 900px window with a 520px sidebar (the phone reader
   beside the sidebar, no empty 44px at its left, and each of its layers opened in turn inside its box
-  with the list still taking a press), a 1000px window on the rail (the pane a column), a wide phone
+  with the list still taking a press, but a review sheet over the whole window), a 1000px window on the rail (the pane a column), a wide phone
   with its column and its island (its listed changes, the same layers inside the view, the dock 12px
   in from the view's edge, ⤢ covering the column too), the same phone in Safari's 330px (Aa risen
   over the top bar, and a review sheet over the whole screen, column and handle included, its close
@@ -524,8 +527,8 @@ At the default text size, the pane at the reader's width:
   checks that its layer opened. The host's 380px phone reader keeps its shut pane out of the page
   beside it. A host's 450px pane on a phone held sideways, at the screen's left edge, its middle and
   its right edge, keeps its dock 12px from each side of its own and the island's inset only where the
-  island falls in the pane, and so does a review sheet there; and with a classic scrollbar the view's
-  right gap stops at it. A Back to another session closes the review sheet.
+  island falls in the pane, and so does a review sheet there, which at ⤢ takes the whole screen with
+  the pane; and with a classic scrollbar the view's right gap stops at it. A Back to another session closes the review sheet.
 - **Mutations.** Point the layout module back at the window, drop a condition from the rewrite's
   table, give the family the window's height, or let the readable rule read what it drew: a width
   case goes red, or the derivation fails.
