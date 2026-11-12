@@ -15855,12 +15855,13 @@ fn a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver() {
         Duration::from_secs(15),
         edges,
     );
-    // The sidebar closed to its rail: the view is 936px, and its pane a column beside the session.
+    // The sidebar closed to its rail: the view is 936px, and its pane a column beside the session, a
+    // card 10px in from the window's edge as at any wide window (its margin).
     harness::eval(&tab, "document.getElementById('sidebarCollapse').click()");
     let beside = "(function(){ var v = document.getElementById('sessionView').getBoundingClientRect(), p = document.getElementById('preview').getBoundingClientRect(), w = document.querySelector('#sessionView>.workspace').getBoundingClientRect(); return JSON.stringify({ viewLeft: Math.round(v.left), viewWidth: Math.round(v.width), paneLeft: Math.round(p.left), paneRight: Math.round(innerWidth - p.right), sessionLeft: Math.round(w.left), sessionRight: Math.round(w.right), position: getComputedStyle(document.getElementById('preview')).position }); })()";
     harness::until(
         &tab,
-        &format!("document.getElementById('app').classList.contains('sidebar-off') && {VIEW_CAUGHT_UP} && (function(){{ var e = JSON.parse({beside}); return e.viewWidth === innerWidth - 64 && e.paneRight <= 1 && e.sessionRight <= e.paneLeft + 1 && e.sessionRight - e.sessionLeft >= 400; }})()"),
+        &format!("document.getElementById('app').classList.contains('sidebar-off') && {VIEW_CAUGHT_UP} && (function(){{ var e = JSON.parse({beside}); return e.viewWidth === innerWidth - 64 && e.position !== 'fixed' && e.paneRight <= 12 && e.sessionRight <= e.paneLeft + 1 && e.sessionRight - e.sessionLeft >= 400; }})()"),
         "on the rail the pane a column beside a session of 400px or more, at the window's edge",
         Duration::from_secs(15),
         beside,
