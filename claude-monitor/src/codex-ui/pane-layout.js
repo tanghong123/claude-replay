@@ -81,7 +81,8 @@ export function mountPaneLayout(element, { signal, onChange } = {}) {
     // such a box contains its layout, so its fixed layers are placed in its own box, not across the
     // window, and the screen's insets count only where they fall in it (`pl-boxed`,
     // design/pane-layout.md, "Drawn inside the pane").
-    const right = Math.max(0, innerWidth - box.right);
+    // The layout viewport's width, which a classic scrollbar does not count in (`innerWidth` does).
+    const right = Math.max(0, document.documentElement.clientWidth - box.right);
     element.style.setProperty("--pane-r", `${right}px`);
     element.classList.toggle("pl-boxed", box.left > 0.5 || right > 0.5);
     // A share of the height is the window's own unit while the view is as tall as the window (always
