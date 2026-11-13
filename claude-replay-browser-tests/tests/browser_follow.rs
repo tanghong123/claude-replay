@@ -5651,6 +5651,8 @@ fn late_move_leaves_the_end(port: u16, case: &str, past_the_window: bool) {
     } else {
         // In the same task: the code size a step up (a transaction that ends knowing the offset), the
         // move their wheel made, and the size back (another transaction, which meets the move unheard).
+        // The keys stamp no intent, so the wheel at the start is what makes the move the reader's:
+        // split across tasks, the second transaction could run past the intent window.
         let moved = harness::probe(
             &tab,
             &format!("(function(){{ {hold} press('+'); var between = h.length - start; var followingBetween = h[h.length - 1].following; var top = s.scrollTop; s.scrollTop = top - 600; press('-'); return {{ between: between, followingBetween: followingBetween, after: h.length - start, following: h[h.length - 1].following, top: Math.round(top), lastAt: Math.round(performance.now() - window.__t0) }}; }})()"),

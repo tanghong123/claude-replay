@@ -896,9 +896,9 @@ class VirtualWindow {
    *
    *  The test is the ENGINE'S BELIEF, not the gap — a gap alone would unfollow on every growth,
    *  which adds content below without moving the offset. An offset that is not where the engine
-   *  left it was moved by the reader, and that is the one move the engine does not make. It is
-   *  then classified exactly as the late event would have been, so nothing decides differently
-   *  here than there; only sooner.
+   *  left it was moved by someone else. It is then classified as the late event will be, only
+   *  sooner, on the handler's clock where the scroll handler reads the event's: inside the intent
+   *  window the two read the same.
    *
    *  But only while the reader is moving the view (`readerOwnsPosition`: input within the intent
    *  window, a held thumb, a touch glide; #s481). Otherwise the move may be the browser's: it clamps
@@ -995,7 +995,7 @@ class VirtualWindow {
     if (this.dragging) return; // `endDrag` re-arms
     if (this.readerOwnsPosition()) { this.armRest(); return; }
     // A move a transaction met unheard: its event decides first (`confirmFollow`), and the rest
-    // timer waits for it, bounded in case it never comes.
+    // timer waits for it, bounded in case it never comes. Estimates waiting on the timer wait too.
     if (this.unheard && this.following) {
       const wait = UNHEARD_MS - (performance.now() - this.unheard.at);
       if (wait > 0) { clearTimeout(this.restTimer); this.restTimer = setTimeout(() => this.rest(), wait + 1); return; }

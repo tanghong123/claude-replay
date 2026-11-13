@@ -200,7 +200,9 @@ started with the reader's input can land after transactions that ran since it. T
 its stamp is the move's (measured in Chrome, an event delivered 32ms late carried the time of the
 offset change). So the transaction leaves follow as it is and the tail waits for that event
 (`unheard`, at most two seconds), which the scroll handler classifies as it classifies any: the
-reader's move drops follow, the browser's is healed to the end. The test is the engine's BELIEF rather than the gap,
+reader's move drops follow, the browser's is healed to the end. While it waits the window stays
+mounted at the end, so a move farther than the overscan with no input behind it (the browser's
+find) shows blank until its event arrives. The test is the engine's BELIEF rather than the gap,
 because a gap alone would unfollow on every growth — growth adds content below without moving the
 offset. It runs BEFORE `following0` is read, since it is the deferred half of the scroll handler
 rather than a decision the transaction makes; with the call inside that window the check fired
