@@ -1310,9 +1310,10 @@ the card called a question the client had stopped waiting on "waiting"), so the 
 `<type>.<key>`): Claude Code's `promptId` sat on nearly every user record for weeks and no category
 could see it. The census is `RECORD_KEYS_COMMON`/`RECORD_KEYS_BY_TYPE` in the Claude adapter, scoped
 per record type (many keys are generic words), and the QoderWork family's own keys are known to its
-adapters alone (`FAMILY_RECORD_KEYS`). It walks every record's keys, so it runs only while the sweep
-asks (`unknown::watch_keys`): an ordinary parse pays nothing. (`promptId` itself was measured as a
-turn key and refused, #362: it groups the client's prompt cycles, not the reader's prompts.)
+adapters and the Qoder store's alone (`FAMILY_RECORD_KEYS`). It walks every record's keys, so it
+runs only while the sweep asks (`unknown::watch_keys`): an ordinary parse pays nothing. (`promptId`
+itself was measured as a turn key and refused, #362: it groups the client's prompt cycles, not the
+reader's prompts.)
 
 **Text the client wraps in tags is read from the record, not shown raw** (#s79, the owner: "claude
 now differentiates messages from another session, or including copy/pasted contents"). A message
@@ -1591,7 +1592,8 @@ presentation-agnostic".
   Qwenwork is Qwenwork only by provenance (a file under its store; one outside reads as
   QoderWork), and its own head rows (`runtime-config`, `workspace-directories`,
   `worktree-state`, `active-leaf`) are known to the family's adapters only (`decode_line_known`,
-  #359). A hermetic test points `QWENWORK_PROJECTS_DIR` (and `QWENWORK_DB`) at its scratch like
+  #359), and to the Qoder adapter's, since the Qoder desktop app writes the family's records into
+  the Qoder store (#s468). A hermetic test points `QWENWORK_PROJECTS_DIR` (and `QWENWORK_DB`) at its scratch like
   every other store, or it reads this machine's real sessions.
 
 Also in core (beside the vocabulary they index): `fold.rs` the `FoldPolicy` (clap-free

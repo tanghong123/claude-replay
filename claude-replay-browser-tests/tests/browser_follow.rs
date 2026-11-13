@@ -2360,11 +2360,14 @@ fn the_session_list_in_a_host_switches_its_controls_off() {
 
 /// The session list's keys in a host (#s430 stage 4): engaged (the default) the list binds ↓ and ↑
 /// on its own element, so they step through its rows only while one of them has the focus, and leave
-/// every other key, and those keys elsewhere, to the page; with `keyboard: "page"` it takes none, and
-/// the host's keymap calls the handle's `keys`. A key that moves nothing (on a project's row, past the
-/// last session) is not taken, and chooses nothing. The row a step or Tab focused keeps the focus as
-/// the tree is rewritten; a row the mouse pressed and left does not, whether or not it had the focus. Before stage 4 the list bound no key at
-/// all (the app's keymap called its `step`), so a host's reader could not step through the list.
+/// every other key, and those keys elsewhere, to the page; with `keyboard: "page"` it binds none of
+/// them (Enter and Space on a focused row still activate it, as a click), and the host's keymap calls
+/// the handle's `keys`. A key that moves nothing (on a project's row, past the last session) is not
+/// taken, and chooses nothing. The row a step or Tab focused keeps the focus as the tree is rewritten;
+/// a row the mouse pressed and left does not, whether or not it had the focus. That press's focus
+/// stays the press's through a modifier alone and through the window's return (#s460), and becomes
+/// the keyboard's when a key comes and the focus moves. Before stage 4 the list bound no key at all
+/// (the app's keymap called its `step`), so a host's reader could not step through the list.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
@@ -2459,6 +2462,29 @@ fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
         &tab,
         "({ opened: window.__host.opened, keys: window.__host.keys.map(function (k) { return k.key + ':' + k.prevented; }) })",
     );
+    // #s460: after a press dragged off the first row, `then` runs, and the host selects `select`,
+    // which rewrites the tree (each step selects the other session, or nothing would be rewritten).
+    let after_press = |then: &str, select: &serde_json::Value| -> serde_json::Value {
+        harness::drag_select(&tab, xy(0), xy(1), xy(2), xy(3));
+        harness::probe(
+            &tab,
+            &format!(
+                "(function () {{ var row = document.querySelector('#tree .tree-row.session'); {then} var before = document.activeElement; window.__list.select({select}); return {{ replaced: !before.isConnected, focus: {focused} }}; }})()"
+            ),
+        )
+    };
+    let refocus = "document.getElementById('hostButton').focus(); row.focus();";
+    // A modifier alone (Cmd-Tab's own Meta reaches the page), then a script moves the focus off the
+    // row and back: Meta is not the last key, so the focus is still the press's.
+    let after_meta = after_press(&format!("{PRESS}('Meta'); {refocus}"), &rows[0]);
+    // A key, then the same move: that focus came after a key, so it is the keyboard's.
+    let after_key = after_press(&format!("{PRESS}('x'); {refocus}"), &rows[1]);
+    // A key, then the window goes and comes back as Chrome 153 does it (measured): a focusout on the
+    // row that leaves it the active element, then a focusin on it. That is no new focus.
+    let after_return = after_press(
+        &format!("{PRESS}('x'); row.dispatchEvent(new FocusEvent('focusout', {{ bubbles: true }})); row.dispatchEvent(new FocusEvent('focusin', {{ bubbles: true }}));"),
+        &rows[0],
+    );
     harness::open_list_host_page_with(&tab, &monitor, "keyboard=page");
     until_list_drawn(&tab);
     harness::eval(&tab, focus_row);
@@ -2530,14 +2556,110 @@ fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
         "the host's own listener, bound before the mount, heard every key after the list, taken or not"
     );
     assert_eq!(
+        after_meta,
+        serde_json::json!({ "replaced": true, "focus": "" }),
+        "a press dragged off a row, then a modifier alone and a focus moved off the row and back: still the press's focus, which a rewrite does not carry"
+    );
+    assert_eq!(
+        after_key,
+        serde_json::json!({ "replaced": true, "focus": first }),
+        "a press dragged off a row, then a key and the same move: the keyboard's focus, which a rewrite carries"
+    );
+    assert_eq!(
+        after_return,
+        serde_json::json!({ "replaced": true, "focus": "" }),
+        "a press dragged off a row, then a key and the window's return (focusout and focusin on the row that keeps the focus): still the press's, which a rewrite does not carry"
+    );
+    assert_eq!(
         page_press,
         serde_json::json!({ "taken": false, "opened": 0, "focus": first }),
-        "with keyboard: \"page\" the list takes no key, even on its own row"
+        "with keyboard: \"page\" the list binds no list keys: ↓ on its own row is the page's"
     );
     assert_eq!(
         routed,
         serde_json::json!([{ "id": second, "push": true }]),
         "and the host's own routing to the handle's keys steps from the focused row"
+    );
+}
+
+/// A click on a fork family's ⑂ chip hands the page its keys (#s460), as a click choosing a session
+/// does. A family holding the open session is drawn open whatever its chip says, so that click
+/// redraws nothing, and the chip the press focused (Chrome focuses a button it presses; WebKit, the
+/// row) kept the page's keys until the reader clicked in the transcript. Enter on the chip is a click
+/// too and leaves the focus where the keyboard put it. The family is two Qwenwork sessions, the
+/// second forked from the first by its sidecar's `fork_from`.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_list_hands_the_page_its_keys_after_a_fork_chip_click() {
+    let _serial = serial();
+    let base = base("list-host-fork-chip");
+    let stores = Stores::new(&base);
+    let (origin, fork) = (
+        "aaaa1111-0000-4000-8000-0000000004c1",
+        "aaaa1111-0000-4000-8000-0000000004c2",
+    );
+    // The family's discovery passes over a transcript under 4 KB, so each is a long session.
+    for sid in [origin, fork] {
+        let path =
+            stores.qwenwork_session(sid, &harness::long_session(6, harness::Shape::default()));
+        if sid == fork {
+            std::fs::write(
+                path.with_file_name(format!("{fork}-session.json")),
+                format!("{{\"fork_from\":\"{origin}\"}}"),
+            )
+            .unwrap();
+        }
+    }
+    let monitor = Monitor::spawn(Kind::V1, 3271, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-filter', '[\"recent\",\"blocked\",\"idle\"]'); 'ok'",
+    );
+    harness::open_list_host_page_with(&tab, &monitor, "");
+    until_list_drawn(&tab);
+    // The host opens the fork, so the family holds the open session and is drawn open.
+    harness::eval(&tab, &format!("window.__list.select({fork:?}); 'ok'"));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('#tree [data-family-toggle]') && !!document.querySelector('#tree .tree-row.session[data-session={fork:?}]')"),
+        "the family's chip and its fork's row drawn",
+        Duration::from_secs(10),
+        "(document.getElementById('tree') || {}).innerHTML",
+    );
+    let chip = "document.querySelector('#tree [data-family-toggle]')";
+    let at = harness::probe(
+        &tab,
+        &format!("(function () {{ var r = {chip}.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"),
+    );
+    let (x, y) = (at[0].as_f64().unwrap_or(0.0), at[1].as_f64().unwrap_or(0.0));
+    let after = format!(
+        "(function () {{ var a = document.activeElement; return {{ same: window.__chip === {chip}, expanded: {chip}.getAttribute('aria-expanded'), inTree: document.getElementById('tree').contains(a) }}; }})()"
+    );
+    harness::eval(&tab, &format!("window.__chip = {chip}; 'ok'"));
+    harness::drag_select(&tab, x, y, x, y);
+    harness::pause("chip click", Duration::from_millis(300));
+    let clicked = harness::probe(&tab, &after);
+    harness::eval(
+        &tab,
+        &format!("window.__chip = {chip}; {chip}.focus(); 'ok'"),
+    );
+    let entered = harness::probe(
+        &tab,
+        &format!("(function () {{ {PRESS}('Enter'); return {after}; }})()"),
+    );
+    drop(monitor);
+    assert_eq!(
+        clicked,
+        serde_json::json!({ "same": true, "expanded": "true", "inTree": false }),
+        "a click on the chip of a family holding the open session redraws nothing and hands the page its keys"
+    );
+    assert_eq!(
+        entered,
+        serde_json::json!({ "same": true, "expanded": "true", "inTree": true }),
+        "Enter on the chip is a click that leaves the focus where the keyboard put it"
     );
 }
 
@@ -4770,6 +4892,51 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
         rows["minHeight"], "44px",
         "an iPad's session rows are touch targets: {rows}"
     );
+}
+
+/// #s464 (the owner's choice, option 1): the view's and the list's elements are their boxes, a host's
+/// to place and size, and the host hides either with the element's `hidden` attribute. The layout the
+/// view and the list give their elements sits at the id's weight, over the browser's own rule for
+/// `hidden`, so before this the attribute left both on the screen.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_host_hides_the_session_view_and_the_session_list_with_their_hidden_attribute() {
+    let _serial = serial();
+    let base = base("host-hidden");
+    let monitor = Monitor::spawn(Kind::V1, 3115, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1280.0, 800.0);
+    let toggle = |id: &str| {
+        format!("(function(){{ var e = document.getElementById('{id}'); var read = function(){{ var r = e.getBoundingClientRect(); return {{ display: getComputedStyle(e).display, w: Math.round(r.width), h: Math.round(r.height) }}; }}; var shown = read(); e.hidden = true; var hidden = read(); e.hidden = false; var again = read(); return {{ shown: shown, hidden: hidden, again: again }}; }})()")
+    };
+    harness::open_host_page(&tab, &monitor, "");
+    let view = harness::probe(&tab, &toggle("sessionView"));
+    harness::open_list_host_page(&tab, &monitor);
+    let list = harness::probe(&tab, &toggle("sessionList"));
+    drop(monitor);
+    for (name, seen) in [("the session view", &view), ("the session list", &list)] {
+        assert_ne!(
+            seen["shown"]["display"], "none",
+            "{name} is shown in its host: {seen}"
+        );
+        assert!(
+            seen["shown"]["w"].as_i64() > Some(0) && seen["shown"]["h"].as_i64() > Some(0),
+            "{name} has its box: {seen}"
+        );
+        assert_eq!(
+            seen["hidden"]["display"], "none",
+            "the hidden attribute hides {name}: {seen}"
+        );
+        assert_eq!(
+            seen["hidden"]["w"], 0,
+            "{name} takes no room while hidden: {seen}"
+        );
+        assert_eq!(
+            seen["again"], seen["shown"],
+            "{name} comes back as it was: {seen}"
+        );
+    }
 }
 
 /// The session view's unmount (#s429 stage 7): mounted in the test host and taken away, it leaves

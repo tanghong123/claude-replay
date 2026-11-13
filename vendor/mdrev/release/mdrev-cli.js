@@ -32106,6 +32106,8 @@ var DROPPED = [
   "plaintext",
   "xmp"
 ];
+var FILTER_KEPT_TAGS = new Set([...defaultSchema.tagNames ?? [], ...ALSO_RENDERED].map((t) => t.toLowerCase()));
+var FILTER_DROPPED_TAGS = new Set(DROPPED);
 var HREF_SCHEMES = ["http", "https", "mailto"];
 var SRC_SCHEMES = ["http", "https"];
 function schemaWith(slot) {
@@ -32914,6 +32916,10 @@ function decodeEntities(text9) {
 function plainTextOf(html7) {
   return decodeEntities(stripTags(html7));
 }
+
+// packages/engine/dist/merge.js
+var CJK = "\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}\\p{Script=Hangul}";
+var TOKEN = new RegExp(`[${CJK}]|\\s+|(?:(?![${CJK}])[\\p{L}\\p{N}_])+|[^]`, "gu");
 
 // packages/engine/dist/mentions.js
 var MENTION = /(?<![\w.%+@-])@([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})/g;

@@ -81,6 +81,9 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    is one track while the pane is open over it, and shut, three with the pane's at 0, as a column's
    shut grid is: the app may fold its list as the pane opens, which makes a view that covered with its
    pane shut wide enough for the pane as a column, and only grids of one length glide into each other. */
+/* The element is the view's box, a host's to place and size (#s464): its `hidden` attribute hides it,
+   which the display above, at the id's weight, would otherwise undo. */
+#sessionView[hidden]{display:none}
 @media(max-width:1180px){
   #sessionView{grid-template-columns:minmax(0,1fr)}
   #sessionView.preview-off{grid-template-columns:minmax(0,1fr) 0 0}
@@ -109,6 +112,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    from. Where the app hides the strip and the tree (the rail, a wide phone's column showing a pane),
    the box takes no room. */
 #sessionList{display:flex;flex-direction:column;min-height:0;min-width:0}
+#sessionList[hidden]{display:none}
 .sidebar>.session-list{flex:1}
 #app.sidebar-off .sidebar>.session-list,#app.column-pane-on>.sidebar>.session-list{flex:none}
 /* #s430 stage 4: the list's controls are one strip (`place("controls")`), an element a host can hold

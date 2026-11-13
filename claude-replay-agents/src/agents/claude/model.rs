@@ -1060,6 +1060,15 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     "hook_additional_context",
     "hook_cancelled",
     "hook_non_blocking_error",
+    // #s469 (the Qoder desktop app, client 1.1.86-hotfix.2, measured 2026-11-13 on hong-devserver:
+    // one record, in the one session of the Qoder store): `{type, hookEventName: "SessionStart",
+    // output: string}` at the session's head among the opening attachments, the output a Markdown
+    // document over 500 characters; no `hookName`, no `content`, no `rendered` key, no exit status.
+    // The QoderWork family's form of `hook_success`, drawn as a note (`hook_note`); listed so one
+    // with no output, drawn as nothing, is not reported as new. REVISIT on another
+    // `hookEventName`, a `hookName` or an exit status beside it, an `output` that is not a string,
+    // or a `rendered` key saying the text went somewhere other than the model.
+    "hook_output",
     // #371 (client 2.1.288): a hook that ran and succeeded. Drawn as a note when it injected
     // context (`hook_note`); listed so one that printed nothing — drawn as nothing — is not
     // reported as new.
@@ -1071,6 +1080,12 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     "instructions",
     "invoked_skills",
     "mcp_instructions_delta",
+    // #s468 (the Qoder desktop app, client 1.1.86-hotfix.2, measured 2026-11-13 on hong-devserver,
+    // once in one session, at its start): `{type, content, isInitial: true, addedNames: [names],
+    // removedNames: []}`, the client telling the MODEL which MCP tools it can load on demand, the
+    // family's form of `deferred_tools_delta`, above. Addressed to the model, so nothing is drawn.
+    // REVISIT if one mid-session removes tools a reader would want named.
+    "mcp_lazy_tools_delta",
     "model",
     "nested_memory",
     "plan_file_reference",
@@ -2416,7 +2431,10 @@ const READ_NOTIFICATIONS_SHAPE: &[&str] = &["notifications", "read_at", "remaini
 /// a transcript carries it. An output too large for the transcript adds `persistedOutput` (#s114,
 /// 1.1.59, 1 measured 2026-10-15) after `noOutputExpected`: `{path, originalSizeBytes,
 /// savedSizeBytes, truncated, preview}`, the file the client saved the whole output to, while
-/// `stdout` keeps its first 30,000 bytes; read by `persisted_notice`.
+/// `stdout` keeps its first 30,000 bytes; read by `persisted_notice`. The Qoder desktop app on the
+/// same engine line (#s468, client 1.1.86-hotfix.2, measured 2026-11-13 on hong-devserver: 15
+/// results in one session of the Qoder store) adds `processStarted`, true on all 15, to the same
+/// keys, `isError` beside `exitCode` 1 on the one that failed.
 const QWENWORK_BASH_SHAPE: &[&str] = &[
     "exitCode",
     "interrupted",
@@ -2425,6 +2443,7 @@ const QWENWORK_BASH_SHAPE: &[&str] = &[
     "kind",
     "noOutputExpected",
     "persistedOutput",
+    "processStarted",
     "returnCodeInterpretation",
     "signal",
     "stderr",
@@ -2680,6 +2699,12 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // REVISIT for a saved file that is itself cut, which the notice does not say. `preview` is
     // the first 2,000 characters of `stdout`.
     ("persistedOutput", QWENWORK_BASH_SHAPE),
+    // #s468 (the Qoder desktop app, client 1.1.86-hotfix.2, 15 results measured 2026-11-13 on
+    // hong-devserver, true on all 15): a true `processStarted` says the command ran, which the card
+    // already shows by drawing its output and exit. A generic word, so known in this shape only;
+    // in the shape it also keeps `kind`, `signal` and `isError` known beside it. REVISIT on a
+    // false: a command that never started, which the card would draw as a call that ran.
+    ("processStarted", QWENWORK_BASH_SHAPE),
     // #s375 (Qwenwork 1.1.59): a command the client moved to the background, one shape. `kind`
     // ("backgrounded" in all 4) is the result's type tag. `backgroundReason` was "timeout" in all
     // 4, which the notice the card shows states, and the client's source also names "model". `pid`
@@ -3863,10 +3888,11 @@ pub(crate) fn decode_line(line: &str, cwd: &mut String, msgs: &mut Vec<Message>)
 
 /// [`decode_line`] for an adapter that writes record types — and top-level keys (#361) — of its
 /// OWN on top of Claude's format: the QoderWork family's head rows (#359) and its extra keys, so
-/// they are known for that adapter alone and a Claude record that ever takes the same name is
-/// still reported. `also_read_subtypes` names the `system` subtypes of its own this decoder folds
-/// for it (#s377: the family's `api_retry`), which through Claude's own decoder draw nothing and
-/// are reported as new.
+/// they are known for the adapters that pass them alone (the family's, and the Qoder store's,
+/// #s468) and a Claude record that ever takes the same name is still reported.
+/// `also_read_subtypes` names the `system` subtypes of its own this decoder folds for it (#s377:
+/// the family's `api_retry`), which through Claude's own decoder draw nothing and are reported as
+/// new.
 pub(crate) fn decode_line_known(
     line: &str,
     cwd: &mut String,
@@ -4152,7 +4178,8 @@ pub(crate) fn decode_line_known(
             }
         }
         // #s377: the QoderWork family's form of the same event, one record per retry, read for
-        // the family's adapters alone and drawn exactly as `api_error` is.
+        // the family's adapters and the Qoder store's (#s468) alone and drawn exactly as
+        // `api_error` is.
         Some("system")
             if v.get("subtype").and_then(|s| s.as_str()) == Some("api_retry")
                 && also_read_subtypes.contains(&"api_retry") =>
@@ -6022,6 +6049,23 @@ fn diagnostics_note(a: &Value) -> Option<String> {
     Some(note)
 }
 
+/// The note for a hook that put text in the model's context (#371, #s92, #s469): `<hook> added
+/// context: <first non-empty line>`, then how many lines follow it; nothing when the text holds
+/// no line but blanks, so a hook that printed nothing does not flood the page.
+fn added_context_note(hook: &str, text: &str) -> Option<String> {
+    let mut lines = text.lines().skip_while(|l| l.trim().is_empty());
+    let first = lines.next()?.trim();
+    let more = lines.count();
+    let mut out = format!("{hook} added context: {first}");
+    if more > 0 {
+        out.push_str(&format!(
+            " (+{more} more line{})",
+            if more == 1 { "" } else { "s" }
+        ));
+    }
+    Some(out)
+}
+
 fn hook_note(a: &Value) -> Option<String> {
     let s = |k: &str| a.get(k).and_then(Value::as_str).unwrap_or("").trim();
     let name = |n: &str| {
@@ -6054,19 +6098,14 @@ fn hook_note(a: &Value) -> Option<String> {
         // file, hook output exists nowhere a reader could open. Its first line, and how many more
         // there are; a hook that printed nothing draws nothing, which is what keeps a hook on every
         // prompt from flooding the page. `toolUseID` names no tool call, so it is not attached.
-        "hook_success" => {
-            let content = s("content");
-            let first = content.lines().next()?.trim();
-            let more = content.lines().count().saturating_sub(1);
-            let mut out = format!("{} added context: {first}", name(s("hookName")));
-            if more > 0 {
-                out.push_str(&format!(
-                    " (+{more} more line{})",
-                    if more == 1 { "" } else { "s" }
-                ));
-            }
-            Some(out)
-        }
+        "hook_success" => added_context_note(&name(s("hookName")), s("content")),
+        // #s469 (the Qoder desktop app, client 1.1.86-hotfix.2, measured 2026-11-13 on
+        // hong-devserver, one record): the QoderWork family's form of `hook_success`, `{type,
+        // hookEventName, output}`, a SessionStart hook's output among the opening attachments. The
+        // app's bundled plugins install SessionStart hooks whose output is context for the agent.
+        // Drawn as #371's: named by its event, since it carries no `hookName`; nothing for an empty
+        // or absent `output`.
+        "hook_output" => added_context_note(&name(s("hookEventName")), s("output")),
         // #s92 (client 2.1.296): a hook that put text in the model's context after a tool call, the
         // same gap #371 closed for `hook_success`: the next reply may act on it and nothing else on
         // the page says so. Its `content` is an ARRAY of strings, joined; its first non-empty line,
@@ -6084,17 +6123,7 @@ fn hook_note(a: &Value) -> Option<String> {
                         .join("\n")
                 })
                 .unwrap_or_default();
-            let mut lines = joined.lines().skip_while(|l| l.trim().is_empty());
-            let first = lines.next()?.trim();
-            let more = lines.count();
-            let mut out = format!("{} added context: {first}", name(s("hookName")));
-            if more > 0 {
-                out.push_str(&format!(
-                    " (+{more} more line{})",
-                    if more == 1 { "" } else { "s" }
-                ));
-            }
-            Some(out)
+            added_context_note(&name(s("hookName")), &joined)
         }
         "hook_cancelled" if a.get("timedOut").and_then(Value::as_bool).unwrap_or(false) => {
             let mut out = format!("{} timed out", name(s("hookName")));
@@ -9681,8 +9710,8 @@ mod tests {
     /// #s375: the shapes the sub-agent sweep first showed on aries-black are known in the shape
     /// each was judged in, and only there — a Qwenwork Bash result whose command the client moved
     /// to the background, a Qwenwork tool's refusal class, Artifact's file listing — and the code
-    /// on a Qwenwork API-error record is known to the family's adapters alone. Removing any one
-    /// entry turns this red.
+    /// on a Qwenwork API-error record is known to the family's adapters (and the Qoder store's,
+    /// #s468) alone. Removing any one entry turns this red.
     #[test]
     fn the_shapes_the_sub_agent_sweep_showed_on_aries_black_are_known_in_their_shape() {
         let sorted = |mut v: Vec<&str>| {
@@ -9764,9 +9793,10 @@ mod tests {
         );
     }
 
-    /// #s377: the QoderWork family's `api_retry` folds, for the family's adapters alone, to the
-    /// one failure note Claude Code's `api_error` folds to, in the same words; through Claude's own
-    /// decoder it draws nothing and is still reported as a new subtype.
+    /// #s377: the QoderWork family's `api_retry` folds, for the family's adapters (and the Qoder
+    /// store's, #s468) alone, to the one failure note Claude Code's `api_error` folds to, in the
+    /// same words; through Claude's own decoder it draws nothing and is still reported as a new
+    /// subtype.
     #[test]
     fn the_family_s_api_retry_is_drawn_as_claude_code_s_api_error_is() {
         use crate::agents::qoderwork::discover::{
@@ -10283,6 +10313,48 @@ mod tests {
         assert!(seen.is_empty(), "known, empty or not: {seen:?}");
     }
 
+    /// #s469: the QoderWork family's form of a hook that put text in the model's context (the
+    /// Qoder desktop app, client 1.1.86, a SessionStart hook from its bundled plugins) is a note,
+    /// as #371's `hook_success` is: named by its event (it carries no `hookName`), its first line
+    /// and how many more follow. One that printed nothing, or carries no output, draws nothing.
+    /// None is reported as new, and the note opens no turn of its own.
+    #[test]
+    fn a_family_hook_output_is_drawn_as_a_hook_note() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"attachment","version":"1.1.86","sessionId":"s-s469","uuid":"h1","timestamp":"2026-11-12T08:00:00.000Z","attachment":{"type":"hook_output","hookEventName":"SessionStart","output":"\n# Skua colony context\n\nThe east ridge holds 14 nests.\nCount them on the second visit.\n"}}
+{"type":"attachment","version":"1.1.86","sessionId":"s-s469","uuid":"h2","timestamp":"2026-11-12T08:00:00.200Z","attachment":{"type":"hook_output","hookEventName":"SessionStart","output":"  \n"}}
+{"type":"attachment","version":"1.1.86","sessionId":"s-s469","uuid":"h3","timestamp":"2026-11-12T08:00:00.300Z","attachment":{"type":"hook_output","hookEventName":"SessionStart"}}
+{"type":"user","version":"1.1.86","sessionId":"s-s469","uuid":"u1","timestamp":"2026-11-12T08:00:01.000Z","message":{"role":"user","content":"count the nests"}}
+"##;
+        let blocks = parse(jsonl);
+        let notes: Vec<&String> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::ToolResult(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            ["SessionStart added context: # Skua colony context (+3 more lines)"],
+            "{blocks:?}"
+        );
+        assert!(
+            matches!(blocks.last(), Some(Block::UserText(_)))
+                && blocks.iter().filter(|b| b.opens_turn()).count() == 1,
+            "the note sits ahead of the one prompt, which alone opens a turn: {blocks:?}"
+        );
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s469"))
+            .collect();
+        assert!(
+            seen.is_empty(),
+            "hook_output is known, empty or not: {seen:?}"
+        );
+    }
+
     /// #s93: the cron jobs a session carries across a compaction (client 2.1.296) draw nothing and
     /// are not reported: each was made by a CronCreate card earlier in the same transcript.
     #[test]
@@ -10724,7 +10796,8 @@ mod tests {
     }
 
     /// #361, as #359 did for record types: the QoderWork family's own keys are known to the
-    /// family's adapters alone, so a Claude record that grows one is still reported.
+    /// family's adapters (and the Qoder store's, #s468) alone, so a Claude record that grows one is
+    /// still reported.
     #[test]
     fn the_family_s_own_keys_are_known_to_its_adapters_alone() {
         let v: Value = serde_json::from_str(

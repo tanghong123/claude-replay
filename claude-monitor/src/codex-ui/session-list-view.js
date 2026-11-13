@@ -39,6 +39,11 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  adds; the rest of what it draws it builds and keeps a reference to, and hands the parts its host
  *  shows elsewhere to `place`. It looks up nothing outside its element.
  *
+ *  The element is the list's box (#s431; the list keeps the terms #s464 set for the view): the host
+ *  gives it a place and a size and styles nothing else of it. The list lays out what it holds inside
+ *  it, as a column; its display is the list's, at the id's weight. To hide the list, set the
+ *  element's `hidden` attribute, or hide what holds it.
+ *
  *  The selection, the folds, the filter, the arrangement and the read marks are `indexState`'s
  *  (state.js) for now; the host's `persist` writes them.
  *
@@ -63,10 +68,11 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    With all three off the filter has nothing to offer, and neither its glyph nor its sheet is drawn.
  *  - `keyboard`: "engaged" (the default) or "page", as `KEYBOARD_MODES` says. Engaged, the list
  *    answers its keys (the next and the previous session, ↓ and ↑) only while a row of its own has the
- *    focus, and leaves every other key to the page. "page" is the app's mode: the list takes no key,
- *    and the host calls `keys[action]` from its own keymap (shared/keymap.js's "list" actions). In
- *    either mode the list hears the document's keys, taking none, to tell the keyboard's focus on a row
- *    from a press's: only the keyboard's is given back when the tree is rewritten.
+ *    focus, and leaves every other key to the page. "page" is the app's mode: the list binds no list
+ *    keys, and the host calls `keys[action]` from its own keymap (shared/keymap.js's "list" actions).
+ *    In either mode Enter and Space on a focused row activate it, as a click does, and the list hears
+ *    the document's keys, taking none, to tell the keyboard's focus on a row from a press's: only the
+ *    keyboard's is given back when the tree is rewritten.
  *  - `persist()`: remember the list's choices, at each moment the list changes one.
  *  - `onOpen({ id, push })`: the reader chose a session in the list (a row, the rail's flyout, the
  *    list keys), `push` whether it is a new place in the history. The list has not moved its
@@ -204,10 +210,16 @@ expandBtn.setAttribute("aria-label", "Expand every group");
 let treeWritten = null;
 // Where the focus in the tree came from (stage 4): the input just before it, a press in the tree (the
 // mouse's, which focuses a row as it goes down, or a finger's, whose focus comes as it lifts) or a key
-// anywhere (Tab, a step), a modifier alone not counting, so the window giving the focus back after
-// Cmd-Tab leaves it as it was. A press on the row that already has the focus makes that focus the
-// press's. Only the keyboard's is carried across a rewrite.
-let lastInput = "key", focusPressed = false;
+// anywhere (Tab, a step). A modifier alone does not count: it starts a chord (Cmd-Tab's Meta reaches
+// the page) and moves no focus. A press on the row that already has the focus makes that focus the
+// press's. The window giving the focus back is no new focus (#s460). Chrome 153 fires `focusout` on
+// the row as the window goes, leaving it the active element, and `focusin` on it as the window comes
+// back (measured for another app, a tab and a window; Playwright's macOS WebKit fires neither). So a
+// `focusin` on the row a `focusout` left focused (`keptFocus`) keeps whose the focus was: read again,
+// a press's became the keyboard's after any key. A press or a key is new input and forgets that row,
+// so a return that landed elsewhere leaves no mark to mistake a later press for. Only the keyboard's
+// is carried across a rewrite.
+let lastInput = "key", focusPressed = false, keptFocus = null;
 const sessionIndex = new SessionIndexStore({
   update: () => {
     // The host's half first (`onIndex`): in the app, a selection whose row is gone, the view told and
@@ -966,7 +978,10 @@ tree.onclick = event => {
   const newSession = event.target.closest("[data-native-project]");
   if (newSession) { event.stopPropagation(); options.newSession?.({ id: newSession.dataset.nativeProject, cwd: newSession.dataset.nativeCwd }); return; }
   const action = event.target.closest("[data-ignore-op]"); if (action) { event.stopPropagation(); applyIgnore(action.dataset.ignoreOp, action.dataset.ignoreKey); return; }
-  const forks = event.target.closest("[data-family-toggle]"); if (forks) { event.stopPropagation(); const key = forks.dataset.familyToggle; indexState.openFamilies.has(key) ? indexState.openFamilies.delete(key) : indexState.openFamilies.add(key); renderTree(); return; }
+  // A family holding the open session is drawn open whatever its chip says, so a click there redraws
+  // nothing, and the row or the chip the press focused kept the page's keys: a click with the mouse
+  // hands them back, as a session's does (#s460); Enter's leaves the focus where the keyboard put it.
+  const forks = event.target.closest("[data-family-toggle]"); if (forks) { event.stopPropagation(); if (event.detail > 0 && tree.contains(page.active())) page.active().blur(); const key = forks.dataset.familyToggle; indexState.openFamilies.has(key) ? indexState.openFamilies.delete(key) : indexState.openFamilies.add(key); renderTree(); return; }
   const session = event.target.closest("[data-session]");
   if (session) {
     // A click with the mouse hands the page its keys (stage 4): the press focused the row, and a
@@ -979,9 +994,10 @@ tree.onclick = event => {
   const toggle = event.target.closest("[data-toggle]"); if (toggle) { const key = toggle.dataset.toggle; indexState.collapsed.has(key) ? indexState.collapsed.delete(key) : indexState.collapsed.add(key); persist(); renderTree(); }
 };
 tree.onkeydown = event => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); event.target.click(); } };
-tree.onpointerdown = () => { lastInput = "press"; if (tree.contains(page.active())) focusPressed = true; };
-tree.addEventListener("focusin", () => { focusPressed = lastInput === "press"; });
-document.addEventListener("keydown", event => { if (!["Meta", "Control", "Alt", "Shift"].includes(event.key)) lastInput = "key"; }, { capture: true, signal });
+tree.onpointerdown = () => { lastInput = "press"; keptFocus = null; if (tree.contains(page.active())) focusPressed = true; };
+tree.addEventListener("focusout", event => { keptFocus = page.active() === event.target ? event.target : null; });
+tree.addEventListener("focusin", event => { if (event.target !== keptFocus) focusPressed = lastInput === "press"; keptFocus = null; });
+document.addEventListener("keydown", event => { if (!["Meta", "Control", "Alt", "Shift"].includes(event.key)) { lastInput = "key"; keptFocus = null; } }, { capture: true, signal });
 // A mark's click PINS its flyout (#300) — it used to jump to the agent's newest session, which the
 // flyout now lists first under its project. Enter and Space are the same click; ArrowRight too.
 railMarks.onclick = event => {

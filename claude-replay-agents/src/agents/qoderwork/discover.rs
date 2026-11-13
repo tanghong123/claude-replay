@@ -26,9 +26,10 @@ pub(crate) struct Home {
     db_env: &'static str,
 }
 
-/// The family's own top-level record types, known to its adapters alone (#359; looked at on the
-/// real stores — keys and value types, no content): `runtime-config` {model, reasoningEffort,
-/// contextWindow, generation, timestamp} — the family's metrics already record context and effort;
+/// The family's own top-level record types, known to its adapters alone (#359), and to the Qoder
+/// store's, whose desktop app runs the family's engine (#s468). Looked at on the real stores (keys
+/// and value types, no content): `runtime-config` {model, reasoningEffort, contextWindow,
+/// generation, timestamp} — the family's metrics already record context and effort;
 /// `workspace-directories` {directories: list} and `worktree-state` {worktreeSession: null so far} —
 /// bookkeeping; `active-leaf` {leafUuid, explicit, timestamp, compactBoundaryUuid?} — names the live
 /// branch of a rewound conversation, which the page does not draw as branches (revisit if it ever
@@ -41,17 +42,17 @@ pub(crate) const FAMILY_RECORD_TYPES: &[&str] = &[
 ];
 
 /// The `system` subtypes the family writes that Claude Code does not, which Claude's decoder folds
-/// for the family's adapters alone (#s377), so a Claude Code record that ever takes the name is
-/// still reported. `api_retry` is one record per retry of a failed API request, the family's form
-/// of Claude Code's `api_error`, and is drawn as that is: `{level: "error", content, error,
-/// error_status, attempt, max_retries, retry_delay_ms}`. Measured 2026-11-06 on aries-black: 18
-/// Qwenwork records (1.1.59, 1.1.71) and 15 QoderWork records, all in sub-agent transcripts, the
-/// assistant's reply right after it in 17 of the 18.
+/// for the family's adapters and the Qoder store's alone (#s377, #s468), so a Claude Code record
+/// that ever takes the name is still reported. `api_retry` is one record per retry of a failed API
+/// request, the family's form of Claude Code's `api_error`, and is drawn as that is: `{level:
+/// "error", content, error, error_status, attempt, max_retries, retry_delay_ms}`. Measured
+/// 2026-11-06 on aries-black: 18 Qwenwork records (1.1.59, 1.1.71) and 15 QoderWork records, all in
+/// sub-agent transcripts, the assistant's reply right after it in 17 of the 18.
 pub(crate) const FAMILY_SYSTEM_SUBTYPES: &[&str] = &["api_retry"];
 
 /// The top-level keys the family writes on Claude's record types beyond Claude's own (#361), from
 /// the 2026-10-02 census of the QoderWork and Qwenwork stores (keys only): known to the family's
-/// adapters alone, as its head rows are (#359).
+/// adapters, and the Qoder store's (#s468), alone, as its head rows are (#359).
 pub(crate) const FAMILY_RECORD_KEYS: &[&str] = &[
     // On the family's SYSTEM records too (Claude writes it on user records only); the first
     // sweep's report on a QoderWork compaction (2026-10-02).
@@ -113,6 +114,19 @@ pub(crate) const FAMILY_RECORD_KEYS: &[&str] = &[
     // `message.model` already say. Revisit if it ever differs from the model (then it may be worth
     // drawing, the owner's call) or turns up on a tool result, an `isMeta` or a non-user record.
     "businessModelKey",
+    // #s468 (the Qoder desktop app, client 1.1.86-hotfix.2, measured 2026-11-13 on hong-devserver,
+    // one session in the Qoder store, keys and value types only): an object `{product: "app",
+    // type: "agent", id, model_key: "auto"}` on the 2 user records that open a turn, beside
+    // `businessModelKey` "auto", its `id` the record's `requestSetId`. The sibling of
+    // `businessModelKey`: the product surface and the model key the turn was sent with, where the
+    // reply's `message.model` names the model that answered. REVISIT if `model_key` names a
+    // concrete model that differs from the reply's, or the key turns up on another record type.
+    "businessIdentity",
+    // #s468 (same session): a uuid string on every assistant record (28), constant over the
+    // records of one API answer and paired one to one with `requestId`, which already groups an
+    // answer. REVISIT if one `responseGroupId` spans several `requestId`s: a retried or continued
+    // answer the page might want to join.
+    "responseGroupId",
 ];
 
 /// QoderWork itself.

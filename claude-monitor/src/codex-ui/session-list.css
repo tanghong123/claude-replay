@@ -144,6 +144,7 @@
 :where(#sessionList).session-list{color-scheme:light}
 :where(#sessionList).session-list[data-theme="dark"]{color-scheme:dark}
 #sessionList{display:flex;flex-direction:column;min-height:0;min-width:0}
+#sessionList[hidden]{display:none}
 :where(#sessionList) .session-list-controls{display:contents}
 #sessionList>.session-list-head{position:relative;display:flex;justify-content:flex-end;gap:2px;padding:4px 8px;flex:none}
 :where(#sessionList) .session-state.inferred{box-shadow:0 0 0 1px currentColor;background:transparent}
