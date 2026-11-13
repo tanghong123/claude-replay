@@ -1390,14 +1390,14 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // sentence per cause family ("The response stopped arriving", "may be incomplete" or
             // "no response was produced"), which the page already draws as a Failure note (#236),
             // so nothing a reader needs; the key is finer only where two causes share a sentence.
-            // Expected beside it and NOT yet met in any transcript, so not in this census, each to
-            // be judged as its own row when one first carries it: `streamWatchdogGaveUp` (the
-            // watchdog fired before any output) and `resendCannotCure` (an error a resend cannot
-            // fix, a billing error among them). REVISIT: (1) the key on an assistant record NOT
-            // flagged `isApiErrorMessage`, a cut the page would then draw as prose; (2) a value
-            // outside the eight; (3) many cuts in one session, where a count or a filter by cause,
-            // finer than the text, is a RENDER question for the owner, queued with the record
-            // count and client version, never decided here.
+            // Expected beside it and NOT yet met in any transcript, so not in this census, to be
+            // judged as its own row when one first carries it: `streamWatchdogGaveUp` (the
+            // watchdog fired before any output). `resendCannotCure`, expected here too, was met
+            // first on another kind of API error (#s477, below). REVISIT: (1) the key on an
+            // assistant record NOT flagged `isApiErrorMessage`, a cut the page would then draw as
+            // prose; (2) a value outside the eight; (3) many cuts in one session, where a count or
+            // a filter by cause, finer than the text, is a RENDER question for the owner, queued
+            // with the record count and client version, never decided here.
             "streamCutCause",
             // #s328 (client 2.1.314): a string on the same synthetic API-error record
             // (`isApiErrorMessage`, model "<synthetic>", zero usage, `error` beside it), the
@@ -1427,10 +1427,9 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // 2.1.318 client stamps it when the failed response held no `tool_use` block and reads
             // it where it classifies a failed turn: it serves the client's follow-up, not a reader.
             // Unread: the record is already read by its flag and folds to ONE Failure note, and the
-            // transcript shows the missing call by having no card there. Expected beside it and NOT
-            // yet met in any transcript searched, so not in this census, to be judged as its own
-            // row when one first carries it: `apiErrorCode`, written on such a record by the same
-            // code. REVISIT: (1) the key on an assistant record NOT flagged `isApiErrorMessage`,
+            // transcript shows the missing call by having no card there. `apiErrorCode`, expected
+            // beside it, was met first on a 403 record that carries this key too (#s477, below).
+            // REVISIT: (1) the key on an assistant record NOT flagged `isApiErrorMessage`,
             // which the page would draw as prose; (2) a value other than `true`; (3) many in one
             // session, where a count of failed turns is a RENDER question for the owner, queued
             // with the record count and client version, never decided here.
@@ -1451,6 +1450,39 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // a flagged record NOT followed by an interrupt marker; (3) a value other than `true`.
             "isAbortedMidStream",
             "apiErrorStatus",
+            // #s477 (client 2.1.322): a string on the synthetic API-error record
+            // (`isApiErrorMessage`, model "<synthetic>", zero usage, `error`, `apiErrorStatus` and
+            // `failedResponseHadNoToolCall` beside it), the error code the API's error body names,
+            // copied by the client whenever the body names one in the expected form. Met on 373
+            // records in 22 transcripts, measured 2026-11-13 (175 on aries-black, 198 on
+            // hong-devserver), all written on 2026-11-12 between about 19:54 UTC and midnight:
+            // every one "verification_required", equal to `error`, with `apiErrorStatus` 403 and
+            // no `apiError`. Its text is the client's sentence naming the account verification step
+            // and where to take it, which the page already draws as ONE Failure note (#236), so
+            // nothing a reader needs. REVISIT: (1) the key on an assistant record NOT flagged
+            // `isApiErrorMessage`, which the page would draw as prose; (2) a value differing from
+            // `error` on the same record, where the code says what `error` and the text do not.
+            // The mark the owner chose on #s483 for a failure a retry cannot fix (#s484) follows
+            // the client's flag, `resendCannotCure` below, and keeps no list of codes, so it does
+            // not read this key.
+            "apiErrorCode",
+            // #s477 (client 2.1.322): the boolean `true` on the same records as `apiErrorCode`
+            // above, all 373 of them. The client stamps it when sending the same request again
+            // cannot succeed, and reads it to stop retrying. In 2.1.322 that is a billing error, a
+            // 403 whose error body carries a message (this case), and a list of 19 checks: credit
+            // balance too low, organization disabled, a data-loss or organization policy block,
+            // output blocked by the content filter, and request problems such as a prompt too
+            // long, context overflow or a model, effort, fast mode or beta setting the API refuses
+            // (three of the 19 are stubbed false in that build). A usage limit, which the client
+            // waits out, does not carry it. Unread for now: the record folds to ONE Failure note by
+            // its flag, and the client's words name the cause. The owner chose on #s483 to mark a
+            // failure a retry cannot fix ahead of the client's words, with this key as the signal;
+            // #s484 does that and makes this entry read. Expected beside it and NOT yet met in any
+            // transcript, so not in this census, to be judged as its own row when one first
+            // carries it: `apiErrorIsTransient`, written by the same code. REVISIT: (1) the key on
+            // an assistant record NOT flagged `isApiErrorMessage`, which the page would draw as
+            // prose; (2) a value other than `true`.
+            "resendCannotCure",
             "supersedesUuids",
             "errorDetails",
             // #s60 (client 2.1.295): a string beside `message` naming the model the client asked
@@ -9978,6 +10010,40 @@ mod tests {
             .filter(|m| {
                 matches!(m, Message::SystemNote { text, kind: NoteKind::Failure }
                     if text.contains("Connection dropped"))
+            })
+            .count();
+        assert_eq!(failures, 1, "one Failure note: {messages:?}");
+        let blocks = replay(&messages, &mut Vec::new(), &CLAUDE_SHAPING);
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, Block::AssistantText(_) | Block::AssistantMessage { .. })),
+            "the error is not the assistant speaking: {blocks:?}"
+        );
+    }
+
+    /// #s477: 2.1.322's error code and its flag for a failure a resend cannot fix, on an API error
+    /// record, are known, not reported while the sweep asks, and the record still folds to ONE
+    /// Failure note, never the assistant's prose. The record is invented (its text is made up and
+    /// carries no link). Removing either key from the assistant arm of the census turns this red.
+    #[test]
+    fn an_api_error_a_resend_cannot_cure_is_one_failure_note() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.322","sessionId":"s-s477","uuid":"u1","message":{"role":"user","content":"go on"}}
+{"type":"assistant","version":"2.1.322","sessionId":"s-s477","uuid":"a1","isApiErrorMessage":true,"error":"verification_required","apiErrorStatus":403,"apiErrorCode":"verification_required","failedResponseHadNoToolCall":true,"resendCannotCure":true,"message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: This account needs a verification step before it can send requests. Complete it in the account settings, then try again."}]}}
+"##;
+        let messages = tokenize(jsonl.lines());
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s477"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+        let failures = messages
+            .iter()
+            .filter(|m| {
+                matches!(m, Message::SystemNote { text, kind: NoteKind::Failure }
+                    if text.contains("verification step"))
             })
             .count();
         assert_eq!(failures, 1, "one Failure note: {messages:?}");
