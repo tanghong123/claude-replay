@@ -190,12 +190,17 @@ can deliver that event most of a second after the wheel (measured at the wheel's
 lights, and the reader's scroll is then never classified at all — by the time the event arrives the
 gap is 0 and `classifyScroll` reads "already following". `confirmFollow` closes it: at the start of
 a transaction, if the offset is not where the engine last left it, the reader moved it, and the
-same `classifyScroll` runs on what is true now. That holds only when the reader touched the scroller
-since the engine last knew the offset (a transaction's end, or a scroll event it read; #s481): with no
-input since, the browser moved it. A clamp lands at the bottom of the layout it happened in, which need
-not be the layout the transaction reads. On an iPad the list's fold took the phone reader's foot pad
-a layout before the transcript's box shrank, the offset clamped 150px above the end that followed, and
-a follower was left 191px above it. Such a move is displacement, and follow stands. The test is the engine's BELIEF rather than the gap,
+same `classifyScroll` runs on what is true now. That holds only while the reader is moving the view
+(input within the intent window, a held thumb, a touch glide; #s481). Otherwise the move may be the
+browser's: a clamp lands at the bottom of the layout it happened in, which need not be the layout the
+transaction reads. On an iPad the list's fold took the phone reader's foot pad a layout before the
+transcript's box shrank, the offset clamped 150px above the end that followed, and a follower was left
+191px above it. Nor does the order of input and transactions tell the two apart, since a move that
+started with the reader's input can land after transactions that ran since it. The late event does:
+its stamp is the move's (measured in Chrome, an event delivered 32ms late carried the time of the
+offset change). So the transaction leaves follow as it is and the tail waits for that event
+(`unheard`, at most two seconds), which the scroll handler classifies as it classifies any: the
+reader's move drops follow, the browser's is healed to the end. The test is the engine's BELIEF rather than the gap,
 because a gap alone would unfollow on every growth — growth adds content below without moving the
 offset. It runs BEFORE `following0` is read, since it is the deferred half of the scroll handler
 rather than a decision the transaction makes; with the call inside that window the check fired
@@ -252,7 +257,7 @@ What a page implements (the contract), and what the engine owns outright.
 | `afterMount(fresh)` | the elements just mounted, attached, before measurement (the classic page clamps long turns here; a no-op elsewhere) |
 | `afterRender()` / `afterScroll()` / `afterTransaction()` / `followChanged()` / `remember()` | the page's hooks. **A spy that reads the DOM belongs in `afterTransaction`** (#209), not in the other two: a transaction mounts, measures, then PLACES, and both of those fire before the placement, so a spy that ran there can hold a reading from a window the place has since moved. Measured on the walk fixture — the sums swung ±15k px as estimates landed, the offset was corrected by ±5k to hold the reader's record still, and the app shell's turn bar sat three turns behind the engine's own belief until a one-pixel nudge repainted it. `afterTransaction` fires once, after the last of a queued run, and never while a smooth write travels — the arrival calls it instead. **What runs there must not read layout**: the app shell repaints its bar from the engine's own belief (the position's key), because forcing a rect read at the boundary moved the reader by 190px in the smooth-step case, and the classic page — whose spy has only rects to measure — keeps its spy on the scroll frame. |
 | `following` | a get/set pair over the page's own flag |
-| `frame` | `{scrollTop, scrollTo, clientHeight, scrollHeight, viewportTop, on, isScrollbarTarget, laidOut}` — the element scroller or the document. `laidOut()` says whether the scroller has a box (#s464: a host can hide the view, and a hidden scroller reads every item as its margins and its offset as 0); while it has none the engine measures nothing, reads no `P` and writes none, a transaction changes the model alone (a prepend's translation of `P` is kept as the new `P`, and an anchor on the item after the prepended run takes its top from the sums), a jump drops the pin (the end is `follow`, which reads no gap), a move from the raw offset (a page key) moves nothing, and what was mounted waits for the page's pass and its placeholder fit; the first transaction with the box back runs those, drops a smooth write the hide stopped, mounts the window for `P` at the viewport it came back with and places `P` with no drift. The document is always laid out; a frame without `laidOut` is read as laid out |
+| `frame` | `{scrollTop, scrollTo, clientHeight, scrollHeight, viewportTop, on, isScrollbarTarget, laidOut}` — the element scroller or the document. `laidOut()` says whether the scroller has a box (#s464: a host can hide the view, and a hidden scroller reads every item as its margins and its offset as 0); while it has none the engine measures nothing, reads no `P` and writes none, a transaction changes the model alone (a prepend's translation of `P` is kept as the new `P`, and an anchor on the item after the prepended run takes its top from the sums), a jump drops the pin (the end is `follow`, which reads no gap), a move from the raw offset (a page key) moves nothing, and what was mounted waits for the page's pass and its placeholder fit; the first transaction with the box back runs those, drops a smooth write the hide stopped and a wait for a late event, mounts the window for `P` at the viewport it came back with and places `P` with no drift. The document is always laid out; a frame without `laidOut` is read as laid out |
 | `mount` | `{top, window, bottom, content}` — the pads, the run, and what to watch for chrome growth |
 | parameters | `overscan`, `slacks {acquire, hold, heal}`, `userIntentMs`, `rememberMs`, `clampIndex`, `landing` |
 

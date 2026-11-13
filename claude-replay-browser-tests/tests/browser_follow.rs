@@ -5469,9 +5469,11 @@ fn an_ipad_reader_at_the_end_stays_there_as_the_list_folds_and_opens() {
 /// #s481, the mechanism under the iPad's lost end, made exact: the browser clamps the offset in a
 /// layout where the content is shorter for a moment (the phone reader's foot pad gone before the box
 /// shrank), the content grows back, and the engine transacts before the clamp's scroll event reaches it.
-/// The move is not the reader's (they touched nothing in the transcript since the engine last knew the
-/// offset), so a follower keeps following, and once the event arrives it is put back at the end. Read
-/// as the reader leaving the end, it was left there, the clamp's distance above it.
+/// The reader is not moving the view, so the transaction leaves follow as it is and the tail waits for
+/// the event, whose stamp is the clamp's: with no input behind it, the follower is put back at the end.
+/// Read as the reader leaving the end, it was left there, the clamp's distance above it. The held event
+/// is dispatched again as itself, so it keeps its stamp, as a late one does; where the browser has not
+/// sent it yet (a headless tab draws lazily), one is sent in its place.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_follower_the_browser_moves_with_no_input_keeps_following() {
@@ -5484,7 +5486,7 @@ fn a_follower_the_browser_moves_with_no_input_keeps_following() {
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     harness::resize(&tab, 1280.0, 800.0);
-    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    monitor.open(&tab, &format!("?ui=app&session={sid}&trace=viewport"));
     harness::until(
         &tab,
         &format!("!!document.querySelector('.virtual-window .turn.user') && {VIEW_CAUGHT_UP}"),
@@ -5499,7 +5501,7 @@ fn a_follower_the_browser_moves_with_no_input_keeps_following() {
     };
     harness::jump_to_end(&tab, surface);
     rest();
-    let read = "(function(){ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; return { gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), following: h.length ? h[h.length - 1].following : null, held: window.__held || 0, causes: h.filter(function (e) { return e.t >= (window.__t0 || 0); }).map(function (e) { return e.cause + (e.following ? '' : '!'); }) }; })()";
+    let read = "(function(){ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; var t = (window.__viewportTrace || []).filter(function (e) { return e.t >= (window.__t0 || 0); }); return { gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), following: h.length ? h[h.length - 1].following : null, held: window.__held || 0, causes: h.filter(function (e) { return e.t >= (window.__t0 || 0); }).map(function (e) { return e.cause + (e.following ? '' : '!'); }), verdicts: t.filter(function (e) { return e.event === 'follow:unheard'; }).map(function (e) { return e.verdict; }), lapsed: t.filter(function (e) { return e.event === 'unheard:lapsed'; }).length }; })()";
     let before = harness::probe(&tab, read);
     // In one task: the transcript's scroll events held from the engine (delivered late, as WebKit's
     // was); the last three units gone and the layout read, so the browser clamps the offset to the
@@ -5507,13 +5509,21 @@ fn a_follower_the_browser_moves_with_no_input_keeps_following() {
     // in the next frame, before the held event.
     let moved = harness::probe(
         &tab,
-        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__held++; } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = '7px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
+        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__held++; window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = '7px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
     );
-    rest();
+    // Read once the engine has transacted, well inside the two seconds the tail waits for the event.
+    harness::until(
+        &tab,
+        "window.__viewportHistory.states.some(function (e) { return e.t >= window.__t0; })",
+        "a transaction after the clamp",
+        Duration::from_secs(10),
+        read,
+    );
+    std::thread::sleep(Duration::from_millis(400));
     let measured = harness::probe(&tab, read);
     harness::eval(
         &tab,
-        "(function(){ var s = document.querySelector('.transcript'); window.removeEventListener('scroll', window.__hold, true); s.dispatchEvent(new Event('scroll')); return 'ok'; })()",
+        "(function(){ var s = document.querySelector('.transcript'); window.removeEventListener('scroll', window.__hold, true); window.__heldEvents.forEach(function (e) { s.dispatchEvent(e); }); if (!window.__heldEvents.length) s.dispatchEvent(new Event('scroll')); return 'ok'; })()",
     );
     rest();
     let after = harness::probe(&tab, read);
@@ -5542,8 +5552,182 @@ fn a_follower_the_browser_moves_with_no_input_keeps_following() {
         "a move the reader did not make leaves them following: moved {moved}, measured {measured}"
     );
     assert!(
-        after["gap"].as_i64().unwrap_or(9999).abs() <= 2 && after["following"] == serde_json::json!(true),
-        "once the event arrives the follower is at the end again: moved {moved}, measured {measured}, after {after}"
+        measured["gap"].as_i64().unwrap_or(0) > 100
+            && measured["verdicts"].as_array().is_some_and(|v| !v.is_empty() && v.iter().all(|x| x == "wait")),
+        "until the clamp's event arrives the tail waits for it, the follower where the clamp left them: moved {moved}, measured {measured}"
+    );
+    assert!(
+        after["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && after["following"] == serde_json::json!(true)
+            && after["lapsed"] == serde_json::json!(0),
+        "once the event arrives the follower is at the end again, by the event and not by the wait's lapse: moved {moved}, measured {measured}, after {after}"
+    );
+    assert_eq!(
+        violations,
+        serde_json::json!("[]"),
+        "the engine broke none of its invariants"
+    );
+}
+
+/// #s481, the other half of the rule: a follower's own move that a transaction meets before its scroll
+/// event lets go of the end. Their wheel, then a transaction that knows the offset again, then the move
+/// it made (a scroll the browser animates lands after transactions that ran since its input), then
+/// another transaction, all inside the intent window: the reader is moving the view, so that
+/// transaction reads the move as theirs at once. Read as the browser's because a transaction had run
+/// since their input, follow stood, and the tail placement that waits for them to rest put them back
+/// at the end before their event came. The transactions are the code size stepped up and back, which
+/// the keymap runs in the key's own handler, so nothing here waits on a frame (a headless tab draws
+/// lazily, two frames measured at 1 to 2 seconds) and all of it is one task.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_reader_s_move_a_transaction_meets_unheard_lets_go_of_the_end() {
+    late_move_leaves_the_end(3128, "late-move-in-window", false);
+}
+
+/// The same past the intent window: the move comes within it, its event after a transaction that runs
+/// once the window has passed (#213 measured an event up to a second late). That transaction cannot
+/// tell the reader's move from the browser's, so the tail waits for the event, whose stamp is the
+/// move's, and the event lets go of the end. Read as the browser's, the reader was put back at the end
+/// before their event came.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_reader_s_move_whose_event_comes_late_lets_go_of_the_end() {
+    late_move_leaves_the_end(3130, "late-move-late-event", true);
+}
+
+fn late_move_leaves_the_end(port: u16, case: &str, past_the_window: bool) {
+    let _serial = serial();
+    let base = base(case);
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000003a6".to_string();
+    stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1280.0, 800.0);
+    monitor.open(&tab, &format!("?ui=app&session={sid}&trace=viewport"));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.virtual-window .turn.user') && {VIEW_CAUGHT_UP}"),
+        "the session drawn",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let surface = harness::Surface::AppShell;
+    let rest = || {
+        harness::eval(&tab, TWO_FRAMES);
+        std::thread::sleep(Duration::from_millis(900));
+    };
+    harness::jump_to_end(&tab, surface);
+    rest();
+    let read = "(function(){ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; var t = (window.__viewportTrace || []).filter(function (e) { return e.t >= (window.__t0 || 0); }); return { gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), following: h.length ? h[h.length - 1].following : null, held: (window.__heldEvents || []).length, stamps: (window.__heldEvents || []).map(function (e) { return Math.round(e.timeStamp - window.__t0); }), causes: h.filter(function (e) { return e.t >= (window.__t0 || 0); }).map(function (e) { return e.cause + '@' + Math.round(e.t - window.__t0) + (e.following ? '' : '!'); }), verdicts: t.filter(function (e) { return e.event === 'follow:unheard'; }).map(function (e) { return e.verdict; }), lapsed: t.filter(function (e) { return e.event === 'unheard:lapsed'; }).length }; })()";
+    let before = harness::probe(&tab, read);
+    // The transcript's scroll events held from the engine, kept to be dispatched again as themselves
+    // (each keeps its stamp, as a late event does), then their wheel. A key on the document is no input
+    // the engine hears: its input listeners are on the transcript.
+    let hold = "var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; window.__t0 = performance.now(); window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var press = function (k) { document.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); }; var start = h.length; s.dispatchEvent(new WheelEvent('wheel', { deltaY: -600, bubbles: true }));";
+    let moved = if past_the_window {
+        // The move their wheel made at once; past the window, a mounted unit a few pixels taller, so a
+        // transaction runs in a frame and meets the move unheard.
+        let moved: serde_json::Value = serde_json::from_str(
+            harness::eval(
+                &tab,
+                &format!("(async function(){{ {hold} var top = s.scrollTop; s.scrollTop = top - 600; var movedAt = performance.now() - window.__t0; window.__start = h.length; await new Promise(function (done) {{ setTimeout(done, 450); }}); s.querySelector('.virtual-window > [data-unit-index]').style.paddingBottom = '7px'; return JSON.stringify({{ top: Math.round(top), movedAt: Math.round(movedAt), waited: Math.round(performance.now() - window.__t0) }}); }})()"),
+            )
+            .as_str()
+            .unwrap_or("null"),
+        )
+        .unwrap_or(serde_json::Value::Null);
+        harness::until(
+            &tab,
+            "window.__viewportHistory.states.length > window.__start",
+            "a transaction after the move",
+            Duration::from_secs(10),
+            read,
+        );
+        // Read well inside the two seconds the tail waits for the event.
+        std::thread::sleep(Duration::from_millis(400));
+        moved
+    } else {
+        // In the same task: the code size a step up (a transaction that ends knowing the offset), the
+        // move their wheel made, and the size back (another transaction, which meets the move unheard).
+        let moved = harness::probe(
+            &tab,
+            &format!("(function(){{ {hold} press('+'); var between = h.length - start; var followingBetween = h[h.length - 1].following; var top = s.scrollTop; s.scrollTop = top - 600; press('-'); return {{ between: between, followingBetween: followingBetween, after: h.length - start, following: h[h.length - 1].following, top: Math.round(top), lastAt: Math.round(performance.now() - window.__t0) }}; }})()"),
+        );
+        rest();
+        moved
+    };
+    let rested = harness::probe(&tab, read);
+    harness::eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); window.removeEventListener('scroll', window.__hold, true); window.__heldEvents.forEach(function (e) { s.dispatchEvent(e); }); return 'ok'; })()",
+    );
+    rest();
+    let after = harness::probe(&tab, read);
+    let violations = harness::probe(
+        &tab,
+        "JSON.stringify((window.__viewportViolations || []).slice(0, 4))",
+    );
+    drop(monitor);
+    assert!(
+        before["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && before["following"] == serde_json::json!(true),
+        "the reader follows the session at its end: {before}"
+    );
+    let verdicts = |v: &serde_json::Value| {
+        v["verdicts"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    if past_the_window {
+        let first_at = rested["causes"]
+            .as_array()
+            .and_then(|c| c.first())
+            .and_then(|c| c.as_str())
+            .and_then(|c| c.split('@').nth(1))
+            .and_then(|c| c.trim_end_matches('!').parse::<i64>().ok())
+            .unwrap_or(-1);
+        assert!(
+            moved["movedAt"].as_i64().unwrap_or(9999) < 100 && first_at > 400,
+            "the move inside the intent window, the first transaction after it past the window: moved {moved}, rested {rested}"
+        );
+        assert!(
+            rested["held"].as_i64().unwrap_or(0) > 0
+                && rested["following"] == serde_json::json!(true)
+                && rested["gap"].as_i64().unwrap_or(0) > 400
+                && verdicts(&rested).iter().all(|v| v == "wait")
+                && !verdicts(&rested).is_empty(),
+            "the tail waits for the move's event, the reader where they moved: moved {moved}, rested {rested}"
+        );
+    } else {
+        assert!(
+            moved["between"].as_i64().unwrap_or(0) > 0
+                && moved["after"].as_i64().unwrap_or(0) > moved["between"].as_i64().unwrap_or(0)
+                && moved["followingBetween"] == serde_json::json!(true)
+                && (0..300).contains(&moved["lastAt"].as_i64().unwrap_or(-1)),
+            "a transaction after the wheel that leaves the reader following, then the move, then another transaction, inside the intent window: {moved}"
+        );
+        assert!(
+            moved["following"] == serde_json::json!(false)
+                && verdicts(&rested) == vec!["unfollow".to_string()],
+            "the transaction that meets the move reads it as the reader's and lets go of the end: moved {moved}, rested {rested}"
+        );
+        assert!(
+            rested["following"] == serde_json::json!(false) && rested["gap"].as_i64().unwrap_or(0) > 400,
+            "the reader stays where they moved before its event arrives: moved {moved}, rested {rested}"
+        );
+    }
+    assert!(
+        after["following"] == serde_json::json!(false)
+            && after["gap"].as_i64().unwrap_or(0) > 400
+            && after["lapsed"] == serde_json::json!(0),
+        "once the event arrives the reader has let go of the end, where they moved: moved {moved}, rested {rested}, after {after}"
     );
     assert_eq!(
         violations,
