@@ -58,20 +58,32 @@ export function classesFor(view) {
  *  `--pl-h`, `--pane-x`, `--pane-r`, `--pl-vh`, `--pl-dvh`). `onChange` hears every decision
  *  that changed a class, after it is written. `query(family)` answers as a `MediaQueryList` does
  *  (`matches`, a `change` event), so a script that matched `PHONE_QUERY` asks the view's family instead
- *  by one name. Everything bound here ends with `signal`. */
+ *  by one name. Everything bound here ends with `signal`.
+ *
+ *  A decision lays the element out; it never glides. While it writes, the element wears `pl-holding`,
+ *  under which its stylesheet holds every transition inside it, and one read styles every part at what
+ *  was written before the hold lets go, so letting go starts none (#s431 stage 2: the outline's track
+ *  glided 36px into place while the first prompts measured, and a prompt counted its lines at the
+ *  narrower column). The reader's own toggles, which no decision writes, still glide. */
 export function mountPaneLayout(element, { signal, onChange } = {}) {
   const coarse = matchMedia("(pointer:coarse)"), fine = matchMedia("(pointer:fine)");
   const events = new EventTarget();
   const family = { phone: false, wide: false };
-  let said = null;
+  let said = null, wrote = null;
   const decide = () => {
     if (signal?.aborted) return;
     const box = element.getBoundingClientRect();
     const view = { width: box.width, height: box.height, coarse: coarse.matches, fine: fine.matches };
     const on = classesFor(view);
+    const right = Math.max(0, viewRoot.viewportWidth() - box.right);
+    const tall = box.height >= innerHeight - 2;
+    const writing = JSON.stringify([[...on].sort(), box.width, box.height, box.left, right, tall]);
+    if (writing === wrote) return;
+    wrote = writing;
     const was = { ...family };
     family.phone = on.has("pl-phone");
     family.wide = isWidePhone(view);
+    element.classList.add("pl-holding");
     for (const name of [...LAYOUT_CLASSES, "pl-phone"]) element.classList.toggle(name, on.has(name));
     element.style.setProperty("--pl-b", `${bandWidth(view)}px`);
     element.style.setProperty("--pl-w", `${box.width}px`);
@@ -84,16 +96,16 @@ export function mountPaneLayout(element, { signal, onChange } = {}) {
     // window, and the screen's insets count only where they fall in it (`pl-boxed`,
     // design/pane-layout.md, "Drawn inside the pane").
     // Measured to the layout viewport, which a classic scrollbar does not count in.
-    const right = Math.max(0, viewRoot.viewportWidth() - box.right);
     element.style.setProperty("--pane-r", `${right}px`);
     element.classList.toggle("pl-boxed", box.left > 0.5 || right > 0.5);
     // A share of the height is the window's own unit while the view is as tall as the window (always
     // in the app, whose grid is 100dvh: iOS gives `innerHeight` that height too), so iPhone Safari's
     // `dvh`, which follows its bars, still does; else the view's. The window is read here for that
     // alone, never for a layout decision.
-    const tall = box.height >= innerHeight - 2;
     element.style.setProperty("--pl-vh", tall ? "1vh" : `${box.height / 100}px`);
     element.style.setProperty("--pl-dvh", tall ? "1dvh" : `${box.height / 100}px`);
+    element.getBoundingClientRect();
+    element.classList.remove("pl-holding");
     const key = [...on].sort().join(" ");
     if (key === said) return;
     said = key;

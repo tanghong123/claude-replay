@@ -3856,6 +3856,99 @@ fn the_session_view_in_a_host_lays_itself_out_by_its_own_box() {
     }
 }
 
+/// Two animation frames, which a style change needs before what it started is heard (#321).
+const TWO_FRAMES: &str = "new Promise(function (done) { requestAnimationFrame(function () { requestAnimationFrame(function () { done(true); }); }); })";
+
+/// Every transition that starts inside the session view from now on, as `<class> <property>`: a
+/// `transitionrun` bubbles from the part that glides to the view's element.
+const RECORD_GLIDES: &str = "(function(){ window.__glides = []; document.getElementById('sessionView').addEventListener('transitionrun', function(e){ window.__glides.push(String(e.target.className || e.target.id).split(' ').slice(0, 2).join('.') + ' ' + e.propertyName); }); return true; })()";
+
+/// #s431 stage 2: a layout decision lays the view out and never glides, at the mount or later. A
+/// decision adds the classes the view's width rules read after a read that styled its parts without
+/// them, so a part whose rule changes with them glided into place: at the mount the outline's track was
+/// still 36px off when the first prompts measured, and a long prompt named 30 hidden lines for 24
+/// (`the_app_shell_collapses_a_prompt_only_when_that_hides_several_lines`). The same happened at every
+/// decision after it: a host's pane crossing a band, and the app's window crossing one, where the
+/// outline's track and the shut pane glided (red on 9819e94b, whose hold covered the mount alone). The
+/// reader's own toggle still glides: the pane opened from its button.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_glides_at_no_layout_decision() {
+    let _serial = serial();
+    let base = base("view-decides-still");
+    let monitor = Monitor::spawn(Kind::V1, 3117, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::open_host_page(&tab, &monitor, "");
+    let mut host = Vec::new();
+    for (left, width) in [(300, 700), (200, 1100), (500, 380), (200, 1000)] {
+        harness::eval(&tab, RECORD_GLIDES);
+        place_host_pane(&tab, left, width);
+        harness::eval(&tab, TWO_FRAMES);
+        host.push((
+            width,
+            harness::eval(&tab, "JSON.stringify(window.__glides)"),
+        ));
+    }
+    tab.navigate_to(&monitor.url("?ui=app")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        &format!("!!document.getElementById('sessionView') && {VIEW_CAUGHT_UP}"),
+        "the app shell's view to decide its layout",
+        Duration::from_secs(20),
+        "document.body.className",
+    );
+    let mut app = Vec::new();
+    for width in [1100.0_f64, 820.0, 1440.0] {
+        harness::eval(&tab, RECORD_GLIDES);
+        harness::resize(&tab, width, 900.0);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {} && {VIEW_CAUGHT_UP}", width as i64),
+            &format!("the view to decide at a {width}px window"),
+            Duration::from_secs(10),
+            VIEW_LAYOUT,
+        );
+        harness::eval(&tab, TWO_FRAMES);
+        app.push((
+            width,
+            harness::eval(&tab, "JSON.stringify(window.__glides)"),
+        ));
+    }
+    harness::eval(&tab, RECORD_GLIDES);
+    let opened = harness::eval(
+        &tab,
+        "(function(){ var b = document.getElementById('previewBtn'); if (!b) return 'no button'; b.click(); return 'clicked'; })()",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let toggled = harness::eval(&tab, "JSON.stringify(window.__glides)");
+    drop(monitor);
+    for (width, glides) in host {
+        assert_eq!(
+            glides,
+            serde_json::json!("[]"),
+            "nothing glides as a host's pane of {width}px is laid out"
+        );
+    }
+    for (width, glides) in app {
+        assert_eq!(
+            glides,
+            serde_json::json!("[]"),
+            "nothing glides as the app's view is laid out at a {width}px window"
+        );
+    }
+    assert_eq!(opened, serde_json::json!("clicked"), "the pane's button");
+    assert!(
+        toggled
+            .as_str()
+            .unwrap_or("")
+            .contains("grid-template-columns"),
+        "the pane the reader opens still glides open: {toggled}"
+    );
+}
+
 /// #s431 stage 2: on a phone the view in a host's pane is still laid out by its own box and the
 /// screen's pointer. Upright (390×844) the pane the screen's width is the phone reader, its bands
 /// reading 390px; held sideways (932×430) a 450px pane is a phone by its height, its bands reading

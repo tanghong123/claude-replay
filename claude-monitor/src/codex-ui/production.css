@@ -59,12 +59,13 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 /* A drag of the resizer moves the pane's track with the pointer: the open and shut glide, never a
    drag, as `.app.resizing` kept it when the tracks were the app's. */
 #sessionView.resizing{transition:none}
-/* Nor while the view is mounting (`sv-mounting`, session-view.js): it lays itself out as it is built,
-   and nothing inside it glides either. The first layout decision adds the classes the view's width
-   rules read after a read that styled its parts without them, so a part whose rule changes with them
-   glided into place: the outline's track was still 36px off its 290px when the first prompts were
-   measured, and a prompt counted its lines at the narrower column (#s431 stage 2). */
-#sessionView.sv-mounting,#sessionView.sv-mounting *{transition:none!important}
+/* Nor while the view is mounting (`sv-mounting`, session-view.js), nor while its layout decides
+   (`pl-holding`, pane-layout.js): it lays itself out, and nothing inside it glides. A decision adds the
+   classes the view's width rules read after a read that styled its parts without them, so a part whose
+   rule changes with them glided into place: at the mount the outline's track was still 36px off its
+   290px when the first prompts were measured, and a prompt counted its lines at the narrower column
+   (#s431 stage 2). */
+#sessionView.sv-mounting,#sessionView.sv-mounting *,#sessionView.pl-holding,#sessionView.pl-holding *{transition:none!important}
 @media(max-width:1180px){
   #sessionView,#sessionView.preview-off{grid-template-columns:minmax(0,1fr)}
 }
