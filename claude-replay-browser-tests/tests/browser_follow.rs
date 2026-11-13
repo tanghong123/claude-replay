@@ -4175,7 +4175,10 @@ fn the_app_shell_view_reads_what_the_window_read_where_nothing_changes() {
     let (monitor, _browser, tab) = shell_with_a_session("appshell-view-as-window", 3113);
     let sid = "cccccccc-0000-4000-8000-000000000160";
     let mut seen = Vec::new();
-    for width in [1440.0, 1180.0, 1000.0, 820.0] {
+    // #s431 stage 3: below 858px the owner's order narrows the list (and on a touch window of 834px the
+    // view beside the list is the phone reader, #s475), so those are no longer windows where nothing
+    // changes: `the_app_shell_lays_out_its_list_by_the_owners_order` holds them.
+    for width in [1440.0, 1180.0, 1000.0] {
         harness::resize(&tab, width, 900.0);
         harness::until(
             &tab,
@@ -4191,7 +4194,6 @@ fn the_app_shell_view_reads_what_the_window_read_where_nothing_changes() {
         ));
     }
     for (name, (w, h), column_off) in [
-        ("an iPad upright", (834, 1194), false),
         ("a phone upright", (390, 844), false),
         ("a phone held sideways", (844, 390), false),
         (
@@ -8754,6 +8756,80 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
     drop(monitor);
     assert_eq!(mounted, serde_json::json!([true]), "the host hears the remembered choice once as the mount returns");
     assert_eq!(said, serde_json::json!([true, false, true]), "then each press that changed it, and nothing for a fold the width forced");
+}
+
+/// #s431 stage 3 (design/pane-layout.md, "The owner's order"): the app lays out its list from the
+/// window by the owner's order, beside what the view needs. With a mouse and the pane shut: the list
+/// at the reader's 300px down to 858px, narrowing toward 232 below it, the rail from 789px (its expand
+/// disabled, since the list cannot open there), the drawer below 554px, shut as the window narrows into
+/// it, opened by its handle and closed by Esc, and the phone reader under 490px. A fold the width
+/// forced comes back with the room; the reader's collapse is remembered across a wider window. The
+/// pane opening at 1200px folds the list to its rail without cutting the pane's glide, and shutting it
+/// brings the list back. On an 834px touch window (an iPad upright) the list keeps 276px beside the
+/// phone reader (#s475, #s478).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_lays_out_its_list_by_the_owners_order() {
+    let _serial = serial();
+    let (monitor, _browser, tab) = shell_with_a_session("appshell-owners-order", 3121);
+    let probe = "(function(){ var app = document.getElementById('app'), v = document.getElementById('sessionView'), side = document.querySelector('.sidebar'), handle = document.getElementById('drawerHandle'), expand = document.getElementById('sidebarMiniExpand'); var shown = function (e) { if (!e) return false; var r = e.getBoundingClientRect(); return r.width > 0 && r.right > 0 && r.left < innerWidth && getComputedStyle(e).visibility !== 'hidden'; }; var outline = ['open', 'glyphs', 'bar', 'dock'].find(function (k) { return v.classList.contains('pl-outline-' + k); }) || ''; return { drawer: app.classList.contains('app-drawer'), rail: app.classList.contains('sidebar-off'), shut: app.classList.contains('mobile-detail'), list: shown(side) ? Math.round(side.getBoundingClientRect().width) : 0, view: Math.round(v.getBoundingClientRect().width), outline: outline, phone: v.classList.contains('pl-phone'), handle: shown(handle), expandDisabled: expand.getAttribute('aria-disabled') }; })()";
+    let quiet = "document.getElementById('app').getAnimations().length === 0 && document.getElementById('sessionView').getAnimations({ subtree: true }).filter(function (a) { return a instanceof CSSTransition; }).length === 0";
+    let at = |width: f64| -> serde_json::Value {
+        harness::resize(&tab, width, 900.0);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && {VIEW_CAUGHT_UP} && {quiet}"),
+            &format!("a {width}px window at rest"),
+            Duration::from_secs(10),
+            probe,
+        );
+        harness::probe(&tab, probe)
+    };
+    let want = |seen: &serde_json::Value, expected: serde_json::Value, what: &str| {
+        for (key, value) in expected.as_object().unwrap() {
+            assert_eq!(&seen[key], value, "{what}: {key} in {seen}");
+        }
+    };
+    want(&at(1400.0), serde_json::json!({ "drawer": false, "rail": false, "list": 300, "view": 1100, "outline": "open" }), "1400px: the list and the outline");
+    want(&at(1000.0), serde_json::json!({ "rail": false, "list": 300, "view": 700, "outline": "glyphs" }), "1000px: the outline gives way to its glyphs, the list keeps 300");
+    want(&at(820.0), serde_json::json!({ "rail": false, "list": 262, "view": 558, "outline": "glyphs" }), "820px: the list narrows for the glyphs' column");
+    want(&at(700.0), serde_json::json!({ "rail": true, "view": 636, "outline": "glyphs", "expandDisabled": "true" }), "700px: the rail, its expand disabled");
+    harness::eval(&tab, "document.getElementById('sidebarMiniExpand').click(); 'ok'");
+    want(&harness::probe(&tab, probe), serde_json::json!({ "rail": true }), "a disabled expand opens nothing");
+    want(&at(600.0), serde_json::json!({ "drawer": false, "rail": true, "view": 536, "outline": "bar", "phone": false }), "600px: the rail and the glyphs in the top bar, a desktop's view");
+    want(&at(520.0), serde_json::json!({ "drawer": true, "shut": true, "handle": true, "view": 520, "phone": false }), "520px: the drawer, shut, under its handle");
+    harness::eval(&tab, "document.getElementById('drawerHandle').click(); 'ok'");
+    harness::until(&tab, &format!("!document.getElementById('app').classList.contains('mobile-detail') && {quiet}"), "the drawer to open", Duration::from_secs(5), probe);
+    want(&harness::probe(&tab, probe), serde_json::json!({ "shut": false, "list": 360 }), "the handle opens the drawer");
+    harness::eval(&tab, "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); 'ok'");
+    want(&harness::probe(&tab, probe), serde_json::json!({ "shut": true }), "Esc closes it");
+    want(&at(480.0), serde_json::json!({ "drawer": true, "phone": true, "outline": "dock" }), "480px: the phone reader");
+    want(&at(1400.0), serde_json::json!({ "drawer": false, "rail": false, "list": 300, "outline": "open" }), "the folds the width forced come back with the room");
+    // The reader's collapse is remembered, and a wider window never undoes it.
+    harness::eval(&tab, "document.getElementById('sidebarCollapse').click(); 'ok'");
+    want(&at(1600.0), serde_json::json!({ "rail": true, "expandDisabled": "false" }), "the reader's collapse holds at 1600px");
+    harness::eval(&tab, "document.getElementById('sidebarMiniExpand').click(); 'ok'");
+    want(&at(1400.0), serde_json::json!({ "rail": false, "list": 300 }), "and the expand opens it");
+    // The pane at 1200px: the session and the pane at M each and the glyphs' column leave no room for
+    // the list, so it folds to the rail, at once, while the pane glides open whole; shut, it comes back.
+    harness::eval(&tab, "window.__cancelled = 0; window.__ran = 0; var sv = document.getElementById('sessionView'); sv.addEventListener('transitioncancel', function () { window.__cancelled++; }, true); sv.addEventListener('transitionrun', function (e) { if (e.target === sv && e.propertyName === 'grid-template-columns') window.__ran++; }); 'ok'");
+    at(1200.0);
+    harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
+    harness::until(&tab, &format!("!document.getElementById('sessionView').classList.contains('preview-off') && {quiet}"), "the pane to open", Duration::from_secs(10), probe);
+    let opened = harness::probe(&tab, probe);
+    let glide = harness::probe(&tab, "({ ran: window.__ran, cancelled: window.__cancelled })");
+    want(&opened, serde_json::json!({ "rail": true, "view": 1136, "outline": "glyphs" }), "1200px with the pane open: the list folds to its rail");
+    assert_eq!(glide, serde_json::json!({ "ran": 1, "cancelled": 0 }), "and the pane glided open, whole: {opened}");
+    harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
+    harness::until(&tab, &format!("document.getElementById('sessionView').classList.contains('preview-off') && {quiet}"), "the pane to shut", Duration::from_secs(10), probe);
+    want(&harness::probe(&tab, probe), serde_json::json!({ "rail": false, "list": 300 }), "the pane shut, the list comes back");
+    // An iPad upright: a touch window of 834px keeps the list at 276px beside the phone reader.
+    harness::phone(&tab, 834, 1194);
+    monitor.open(&tab, "?ui=app&session=cccccccc-0000-4000-8000-000000000160");
+    harness::until(&tab, &format!("innerWidth === 834 && !!document.querySelector('.virtual-window') && {VIEW_CAUGHT_UP}"), "the iPad to draw the session", Duration::from_secs(20), probe);
+    let ipad = harness::probe(&tab, probe);
+    drop(monitor);
+    want(&ipad, serde_json::json!({ "drawer": false, "rail": false, "list": 276, "view": 558, "phone": true, "outline": "dock" }), "an 834px iPad upright");
 }
 
 /// #s431 stage 1: the session list and its rail swap at once where the window is 1180px or narrower,

@@ -2592,8 +2592,9 @@ pub const VIEW_CAUGHT_UP: &str = "(function(){ var v = document.getElementById('
 /// painted over by the panel. A fixed sleep is the wrong instrument for an animation whose START
 /// is what moves; wait for the panel to arrive instead.
 ///
-/// Vacuously true above 1180px (there the panel is a grid column, not an overlay) and when the
-/// preview is open, where the panel is MEANT to be on screen. Wait for the window to reach the new
+/// Vacuously true where the view lays the pane out as a column (since #s431 stage 3 the owner's order
+/// decides it, `pl-pane-over` on the view where it cannot be one, which a 1250px window beside the
+/// list is too) and when the preview is open, where the panel is MEANT to be on screen. Wait for the window to reach the new
 /// width before calling it, or it answers about the old layout. It also waits for the view's layout
 /// to have read its new box (`VIEW_CAUGHT_UP`): since #s431 stage 2 the pane's rules read classes a
 /// ResizeObserver sets after the resize, so the panel could pass for parked in the old layout and
@@ -2601,7 +2602,7 @@ pub const VIEW_CAUGHT_UP: &str = "(function(){ var v = document.getElementById('
 pub fn until_preview_parked(tab: &headless_chrome::Tab) {
     until(
         tab,
-        &format!("(!document.getElementById('sessionView') || {VIEW_CAUGHT_UP}) && (function(){{ var pv = document.querySelector('.preview'); var app = document.getElementById('app'); if (!pv || !app) return true; if (innerWidth > 1180) return true; if (!app.classList.contains('preview-off')) return true; var r = pv.getBoundingClientRect(); return r.left >= innerWidth - 1; }})()"),
+        &format!("(!document.getElementById('sessionView') || {VIEW_CAUGHT_UP}) && (function(){{ var pv = document.querySelector('.preview'); var app = document.getElementById('app'); if (!pv || !app) return true; var sv = document.getElementById('sessionView'); if (!sv || !sv.classList.contains('pl-pane-over')) return true; if (!app.classList.contains('preview-off')) return true; var r = pv.getBoundingClientRect(); return r.left >= innerWidth - 1; }})()"),
         "the preview panel to park itself off-screen",
         Duration::from_secs(10),
         "(function(){ var pv = document.querySelector('.preview'); var r = pv && pv.getBoundingClientRect(); return JSON.stringify({ app: document.getElementById('app').className, width: innerWidth, rect: r && [Math.round(r.left), Math.round(r.width)], tf: pv && getComputedStyle(pv).transform }); })()",
