@@ -3715,11 +3715,8 @@ const VIEW_LAYOUT: &str = "(function(){ var v = document.getElementById('session
 /// reads exactly what the window read.
 const VIEW_AGAINST_WINDOW: &str = "(function(){ var v = document.getElementById('sessionView'); if (!v) return ['no view']; var names = ['pl-coarse','pl-fine','pl-max-h-500','pl-max-w-1180','pl-max-w-560','pl-max-w-620','pl-max-w-700','pl-max-w-760','pl-max-w-900','pl-min-h-501','pl-min-w-1181','pl-min-w-701','pl-min-w-761','pl-min-w-900','pl-min-w-901','pl-phone']; var query = function(n){ if (n === 'pl-phone') return '(max-width:760px), (pointer:coarse) and (max-height:500px)'; if (n === 'pl-coarse') return '(pointer:coarse)'; if (n === 'pl-fine') return '(pointer:fine)'; var m = /^pl-(max|min)-(w|h)-(\\d+)$/.exec(n); return '(' + m[1] + '-' + (m[2] === 'w' ? 'width' : 'height') + ':' + m[3] + 'px)'; }; return names.filter(function(n){ return v.classList.contains(n) !== matchMedia(query(n)).matches; }).map(function(n){ return n + (v.classList.contains(n) ? ' set' : ' not set') + ', window ' + query(n); }); })()";
 
-/// True once the layout module has read the view's box as it is now (its `--pl-w` and `--pl-h` are the
-/// element's size, its `--pane-x` the element's left edge, which the phone's fixed layers hang on). It hears a resize through a ResizeObserver, which reports after the layout that moved
-/// the box: a wait on the width alone can probe in between and read the classes of the size before
-/// (since #s431 stage 1 swaps the list and its rail at once, the width is final at the first poll).
-const VIEW_CAUGHT_UP: &str = "(function(){ var v = document.getElementById('sessionView'); if (!v) return false; var r = v.getBoundingClientRect(); return Math.abs(parseFloat(v.style.getPropertyValue('--pl-w')) - r.width) < 0.5 && Math.abs(parseFloat(v.style.getPropertyValue('--pl-h')) - r.height) < 0.5 && Math.abs(parseFloat(v.style.getPropertyValue('--pane-x')) - r.left) < 0.5; })()";
+/// The layout module's read of the view's box (`harness::VIEW_CAUGHT_UP`).
+const VIEW_CAUGHT_UP: &str = harness::VIEW_CAUGHT_UP;
 
 /// Put the test host's pane at `left`, `width` wide, and wait for the view to have decided at that box.
 fn place_host_pane(tab: &headless_chrome::Tab, left: u32, width: u32) -> serde_json::Value {

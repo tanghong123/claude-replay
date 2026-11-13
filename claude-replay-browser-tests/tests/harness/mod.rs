@@ -2576,6 +2576,12 @@ pub fn until_navigator_reflow(tab: &headless_chrome::Tab, was_nav_width: f64) {
     );
 }
 
+/// True once the layout module has read the view's box as it is now (its `--pl-w` and `--pl-h` are the
+/// element's size, its `--pane-x` the element's left edge, which the phone's fixed layers hang on). It hears a resize through a ResizeObserver, which reports after the layout that moved
+/// the box: a wait on the width alone can probe in between and read the classes of the size before
+/// (since #s431 stage 1 swaps the list and its rail at once, the width is final at the first poll).
+pub const VIEW_CAUGHT_UP: &str = "(function(){ var v = document.getElementById('sessionView'); if (!v) return false; var r = v.getBoundingClientRect(); return Math.abs(parseFloat(v.style.getPropertyValue('--pl-w')) - r.width) < 0.5 && Math.abs(parseFloat(v.style.getPropertyValue('--pl-h')) - r.height) < 0.5 && Math.abs(parseFloat(v.style.getPropertyValue('--pane-x')) - r.left) < 0.5; })()";
+
 /// Wait for the preview panel to finish PARKING itself off-screen after a resize.
 ///
 /// Below 1180px the panel stops being a grid column and becomes a fixed overlay at z-index 50,
@@ -2588,11 +2594,14 @@ pub fn until_navigator_reflow(tab: &headless_chrome::Tab, was_nav_width: f64) {
 ///
 /// Vacuously true above 1180px (there the panel is a grid column, not an overlay) and when the
 /// preview is open, where the panel is MEANT to be on screen. Wait for the window to reach the new
-/// width before calling it, or it answers about the old layout.
+/// width before calling it, or it answers about the old layout. It also waits for the view's layout
+/// to have read its new box (`VIEW_CAUGHT_UP`): since #s431 stage 2 the pane's rules read classes a
+/// ResizeObserver sets after the resize, so the panel could pass for parked in the old layout and
+/// then glide out over the window once the classes came (2 of 3 runs of the options popover case).
 pub fn until_preview_parked(tab: &headless_chrome::Tab) {
     until(
         tab,
-        "(function(){ var pv = document.querySelector('.preview'); var app = document.getElementById('app'); if (!pv || !app) return true; if (innerWidth > 1180) return true; if (!app.classList.contains('preview-off')) return true; var r = pv.getBoundingClientRect(); return r.left >= innerWidth - 1; })()",
+        &format!("(!document.getElementById('sessionView') || {VIEW_CAUGHT_UP}) && (function(){{ var pv = document.querySelector('.preview'); var app = document.getElementById('app'); if (!pv || !app) return true; if (innerWidth > 1180) return true; if (!app.classList.contains('preview-off')) return true; var r = pv.getBoundingClientRect(); return r.left >= innerWidth - 1; }})()"),
         "the preview panel to park itself off-screen",
         Duration::from_secs(10),
         "(function(){ var pv = document.querySelector('.preview'); var r = pv && pv.getBoundingClientRect(); return JSON.stringify({ app: document.getElementById('app').className, width: innerWidth, rect: r && [Math.round(r.left), Math.round(r.width)], tf: pv && getComputedStyle(pv).transform }); })()",
