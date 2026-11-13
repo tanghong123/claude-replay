@@ -197,14 +197,25 @@ let droppedAttention = "";
     const expected = ({ width, m, paneOpen, outlineWanted, list, collapsed, coarse, short }) => {
       const need = parts => viewNeeds({ m, ...parts });
       if ((coarse && (width <= 760 || short)) || width < RAIL + need({})) return { drawer: true };
+      // The list, were it open, beside the view with the pane as given: it opens only where everything
+      // above it fits beside it at its least, keeps the reader's width while the view has all it
+      // wants, and on a touch screen narrows before it makes the view 760px or less.
+      const listed = pane => {
+        if (!(width >= LIST_MIN + need({ pane, outline: "glyphs" }))) return { fits: false, width: null, keep: false };
+        const outline = outlineWanted && width >= LIST_MIN + need({ pane, outline: "open" });
+        const full = Math.min(list, width - need({ pane, outline: outline ? "open" : "glyphs" }));
+        const keep = coarse && width - full <= 760 && width - LIST_MIN > 760;
+        return { fits: true, width: keep ? width - 761 : full, keep };
+      };
+      // A pane opened over a touch screen's phone reader covers the reader alone: the list stays.
+      const shut = listed(false);
+      const overReader = coarse && paneOpen && width - (shut.fits ? shut.width : RAIL) <= 760;
+      const l = paneOpen && !overReader ? listed(true) : shut;
+      const listShown = l.fits && !collapsed;
       const column = !paneOpen || width >= RAIL + need({ pane: true });
       const glyphs = column && width >= RAIL + need({ pane: paneOpen, outline: "glyphs" });
-      const listFits = glyphs && width >= LIST_MIN + need({ pane: paneOpen, outline: "glyphs" });
-      const listShown = listFits && !collapsed;
       const outline = glyphs && outlineWanted && width >= (listShown ? LIST_MIN : RAIL) + need({ pane: paneOpen, outline: "open" });
-      const full = listShown ? Math.min(list, width - need({ pane: paneOpen, outline: outline ? "open" : "glyphs" })) : null;
-      const keep = listShown && coarse && width - full <= 760 && width - LIST_MIN > 760;
-      return { drawer: false, pane: !paneOpen ? "shut" : column ? "column" : "over", glyphs, listFits, listShown, outline, listWidth: keep ? width - 761 : full, keep };
+      return { drawer: false, pane: !paneOpen ? "shut" : column ? "column" : "over", glyphs, listFits: l.fits, listShown, outline, listWidth: l.width, keep: listShown && l.keep };
     };
     // The view at its own width with the pane shut, restated: what a covering pane leaves under it.
     const shutView = (vw, m, outlineWanted) => (vw >= viewNeeds({ m, outline: "open" }) && outlineWanted ? "open" : vw >= viewNeeds({ m, outline: "glyphs" }) ? "glyphs" : "bar");
@@ -283,6 +294,37 @@ let droppedAttention = "";
     assert.deepEqual(steps({ paneOpen: true }), [[320, "drawer phone"], [490, "drawer desktop"], [554, "rail over"], [1035, "rail column bar"], [1103, "rail column glyphs"], [1271, "list narrowing column glyphs"], [1339, "list column glyphs"], [1493, "list narrowing column open"], [1561, "list column open"]], "his sequence with the right pane, a) to e), at its windows");
     assert.deepEqual(steps({ coarse: true }), [[320, "drawer phone"], [761, "rail phone"], [790, "list narrowing phone"], [858, "list phone"], [993, "list narrowing shut glyphs"], [1012, "list narrowing shut open"], [1080, "list shut open"]], "a touch screen: the phone reader up to 760px, beside its list too");
     assert.deepEqual(steps({ coarse: true, outlineWanted: false, list: 520 }), [[320, "drawer phone"], [761, "rail phone"], [790, "list narrowing phone"], [993, "list narrowing shut glyphs"], [1281, "list shut glyphs"]], "a touch reader who folded the outline keeps the desktop's layout wherever the list at 232 allows it (#s478)");
+    assert.deepEqual(steps({ coarse: true, paneOpen: true }), [[320, "drawer phone"], [761, "rail phone"], [790, "list narrowing phone"], [858, "list phone"], [993, "rail over"], [1035, "rail column bar"], [1103, "rail column glyphs"], [1271, "list narrowing column glyphs"], [1339, "list column glyphs"], [1493, "list narrowing column open"], [1561, "list column open"]], "a touch screen with the pane open: over the phone reader the pane covers the reader alone and the list stays, and from 993px his sequence");
+    // Every reader action at every state: the control that undoes it is there and enabled afterwards,
+    // and the view changes between the phone reader and the desktop's layout only where #s475 says it
+    // must, the list folded or opened on a touch screen.
+    {
+      const at = s => {
+        const app = layout.arrangeApp({ width: s.width, coarse: s.coarse, short: s.short, list: s.list, collapsed: s.collapsed, view: { outlineWanted: s.wanted, paneOpen: s.pane } });
+        const vw = app.list === "drawer" ? s.width : s.width - (app.list === "rail" ? RAIL : app.list);
+        const view = layout.arrangeView({ width: vw, height: s.short ? 400 : 900, coarse: s.coarse, outlineWanted: s.wanted, paneOpen: s.pane, room: typeof app.list === "number" ? app.list - LIST_MIN : 0 });
+        return { app, view };
+      };
+      const switched = new Set();
+      for (const [coarse, short] of [[false, false], [true, false], [true, true]]) for (const list of [LIST_MIN, 300, 520]) for (const collapsed of [false, true]) for (const wanted of [true, false]) for (const pane of [false, true]) for (let width = 320; width <= 2400; width++) {
+        const s = { width, coarse, short, list, collapsed, wanted, pane }, here = JSON.stringify(s);
+        const a = at(s), toggle = !a.view.phone && a.view.pane !== "over";
+        const acts = [[pane ? "close the pane" : "open the pane", { ...s, pane: !pane }, () => true]];
+        if (toggle && a.view.outline === "open") acts.push(["fold the outline", { ...s, wanted: false }, b => !b.view.phone && b.view.pane !== "over" && b.view.outlineCanOpen]);
+        if (toggle && a.view.outline !== "open" && a.view.outlineCanOpen) acts.push(["open the outline", { ...s, wanted: true }, b => b.view.outline === "open"]);
+        if (typeof a.app.list === "number") acts.push(["fold the list", { ...s, collapsed: true }, b => b.app.list === "rail" && b.app.canOpen]);
+        if (a.app.list === "rail" && a.app.canOpen) acts.push(["open the list", { ...s, collapsed: false }, b => typeof b.app.list === "number"]);
+        for (const [act, then, undone] of acts) {
+          const b = at(then);
+          assert.ok(undone(b), `after "${act}" at ${here} the reader can undo it: ${JSON.stringify(b)}`);
+          if (a.view.phone !== b.view.phone) {
+            assert.ok(coarse && /the list/.test(act), `"${act}" changes the view between the phone reader and the desktop only as the list folds or opens on a touch screen, at ${here}`);
+            switched.add(width);
+          }
+        }
+      }
+      assert.deepEqual([Math.min(...switched), Math.max(...switched), switched.size], [825, 992, 168], "the list's fold changes a touch view's family in 825-992px windows only: the rail and 761px or more against the list and 760 or less");
+    }
     // The edges the sweep's two heights do not reach, and the inputs it never passes out of range.
     for (const coarse of [false, true]) for (const [height, short] of [[499, true], [500, true], [501, false]]) {
       assert.equal(layout.phoneView({ width: 900, height, coarse }), coarse && short, `a 900px view ${height}px tall is the phone reader only on a short touch screen, coarse ${coarse}`);

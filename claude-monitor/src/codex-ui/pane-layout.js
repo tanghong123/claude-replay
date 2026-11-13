@@ -224,17 +224,26 @@ export const narrowest = (m = M) => RAIL + viewNeeds({ m });
  *  on a touch screen, where the view beside the list is the phone reader wherever it is `TOUCH_PHONE`
  *  or less, with one more: the list narrows, down to its least and never folding, before it makes the
  *  view the phone reader, so a reader who folds the outline on a tablet keeps the desktop's layout and
- *  the way back to it (built as #s478's default, until the owner answers). `canOpen` is whether the
- *  reader may open the list from the rail. */
+ *  the way back to it (built as #s478's default, until the owner answers); and a pane opened over the
+ *  phone reader leaves the list as it was. `canOpen` is whether the reader may open the list from the
+ *  rail. */
 export function arrangeApp({ width, coarse = false, short = false, list = 300, collapsed = false, view = {} }) {
   const m = view.m ?? M;
   if ((coarse && (width <= TOUCH_PHONE || short)) || width < narrowest(m)) return { list: "drawer", canOpen: true };
-  const pane = !!view.paneOpen;
-  const levels = view.outlineWanted === false ? ["glyphs"] : ["open", "glyphs"];
-  const open = levels.map(outline => viewNeeds({ m, pane, outline })).find(need => width - LIST_MIN >= need);
-  const canOpen = open !== undefined;
-  if (collapsed || !canOpen) return { list: "rail", canOpen };
-  const given = Math.max(LIST_MIN, Math.min(list, width - open));
-  const keepsDesktop = coarse && width - given <= TOUCH_PHONE && width - LIST_MIN > TOUCH_PHONE;
-  return { list: keepsDesktop ? width - TOUCH_PHONE - 1 : given, canOpen };
+  // The list's width were it open beside the view, with the pane as given; "rail" where it does not fit.
+  const beside = pane => {
+    const levels = view.outlineWanted === false ? ["glyphs"] : ["open", "glyphs"];
+    const open = levels.map(outline => viewNeeds({ m, pane, outline })).find(need => width - LIST_MIN >= need);
+    if (open === undefined) return "rail";
+    const given = Math.max(LIST_MIN, Math.min(list, width - open));
+    const keepsDesktop = coarse && width - given <= TOUCH_PHONE && width - LIST_MIN > TOUCH_PHONE;
+    return keepsDesktop ? width - TOUCH_PHONE - 1 : given;
+  };
+  const shut = beside(false);
+  // On a touch screen a pane opened over the phone reader covers the reader's area alone, beside the
+  // list or the rail as they were, as a wide phone held sideways covers the session beside its list
+  // (#s49): the session keeps its width beneath, so nothing is remeasured under the pane (#s25).
+  const overReader = coarse && width - (shut === "rail" ? RAIL : shut) <= TOUCH_PHONE;
+  const listed = !view.paneOpen || overReader ? shut : beside(true);
+  return { list: collapsed ? "rail" : listed, canOpen: listed !== "rail" };
 }
