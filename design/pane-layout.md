@@ -531,6 +531,11 @@ At the default text size, the pane at the reader's width:
   the pane at `M` each folds the outline, the list and the glyphs first, then lays the pane over the
   session. At the default list, the outline folds to its glyphs below a 1539px window with the pane
   open.
+- **The outline's and the glyphs' widths are fixed**: the outline 268px and its glyphs' column 68px
+  at every width. Today the outline narrows to 256px at a view of `B` ≤1180 and to `min(264px, 82%)`
+  at ≤900, and the glyphs' column to 62 and 56px: each was a way to squeeze the outline into less
+  room, which the order now does by folding it. One width each keeps the functions and the page in
+  step, which the contract checks.
 - **A desktop window of 461–760px**, and a touch window that size that is not short (an iPad mini
   upright, an iPad in split view, a foldable open): the compact desktop layout under the drawer's
   handle, where today the phone reader. Below 461px the phone reader, as today.
