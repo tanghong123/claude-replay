@@ -176,6 +176,43 @@ let droppedAttention = "";
       for (const name of layout.LAYOUT_CLASSES) assert.equal(on.has(name), layout.holds(name, { ...view, width: B }), `${name} at ${JSON.stringify(view)}`);
       assert.equal(layout.isWidePhone(view), matchesQuery("@media(pointer:coarse) and (max-height:500px) and (min-width:900px)", { ...view, width: B }), `the wide phone at ${JSON.stringify(view)}`);
     }
+    // #s431 stage 3 (design/pane-layout.md, "The owner's order"; #s462): at every window, for every
+    // reader's inputs, the view at the width the app leaves it lays out what the app counted on, and a
+    // wider window never shows less of what ranks higher.
+    const rank = { pane: { shut: 0, over: 0, column: 1 }, outline: { bar: 0, glyphs: 1, open: 2 } };
+    for (const m of [layout.M, 560]) for (const paneOpen of [false, true]) for (const outlineWanted of [true, false]) for (const list of [layout.LIST_MIN, 300, 520]) for (const collapsed of [false, true]) {
+      const inputs = { m, paneOpen, outlineWanted, list, collapsed };
+      let before = null;
+      for (let width = 320; width <= 2400; width++) {
+        const at = `${width}px ${JSON.stringify(inputs)}`;
+        const app = layout.arrangeApp({ width, list, collapsed, view: { m, paneOpen, outlineWanted } });
+        assert.equal(app.list === "drawer", width < layout.narrowest(m), `the drawer exactly under the rail and the session at m, at ${at}`);
+        if (app.list === "drawer") { before = null; continue; }
+        assert.ok(app.list === "rail" || (typeof app.list === "number" && app.list >= layout.LIST_MIN && app.list <= Math.max(list, layout.LIST_MIN)), `the list is its rail or between its least and the reader's at ${at}: ${JSON.stringify(app)}`);
+        if (collapsed) assert.equal(app.list, "rail", `a list the reader folded stays folded at ${at}`);
+        const given = typeof app.list === "number" ? app.list : layout.RAIL;
+        const view = layout.arrangeView({ width: width - given, m, paneOpen, outlineWanted, room: typeof app.list === "number" ? app.list - layout.LIST_MIN : 0 });
+        const used = layout.viewNeeds({ m, pane: view.pane === "column", outline: view.outline });
+        assert.ok(width - given >= used && view.session >= m && (view.paneWidth === null || view.paneWidth >= m), `the view holds the session and the pane at m at ${at}: ${JSON.stringify(view)}`);
+        assert.equal(view.session + (view.paneWidth ?? 0) + used - m - (view.pane === "column" ? m : 0), width - given, `the slack goes to the session and the pane, all of it, at ${at}`);
+        if (typeof app.list === "number" && app.list < list) assert.equal(view.session + (view.paneWidth ?? 0), m + (view.pane === "column" ? m : 0), `the list narrows only once the session and the pane are at m, at ${at}`);
+        // The list folds to its rail exactly where open at its least it would push out what ranks above
+        // it (the session at m, the pane as a column, the glyphs' column), and open it pushes out none.
+        const above = w => { const v = layout.arrangeView({ width: w, m, paneOpen, outlineWanted }); return [w >= layout.viewNeeds({ m }) ? 1 : 0, rank.pane[v.pane], v.outline === "bar" ? 0 : 1]; };
+        const onRail = above(width - layout.RAIL), atLeast = above(width - layout.LIST_MIN);
+        if (!collapsed) assert.equal(app.list === "rail", JSON.stringify(atLeast) !== JSON.stringify(onRail), `the list folds exactly where it would push out what ranks above it, at ${at}: ${JSON.stringify({ onRail, atLeast, list: app.list })}`);
+        if (typeof app.list === "number") assert.deepEqual(above(width - app.list), onRail, `the list open pushes out nothing that ranks above it, at ${at}`);
+        assert.equal(app.canOpen, JSON.stringify(atLeast) === JSON.stringify(onRail), `the rail's open control is enabled exactly where the list fits, at ${at}`);
+        if (view.outline === "open") assert.ok(outlineWanted && view.outlineCanOpen, `the outline is open only when wanted, at ${at}`);
+        if (!outlineWanted && view.outline !== "bar") assert.equal(view.outline, "glyphs", `an outline not wanted is its glyphs, at ${at}`);
+        const shown = [rank.pane[view.pane], view.outline === "bar" ? 0 : 1, app.list === "rail" ? 0 : 1, view.outline === "open" ? 1 : 0];
+        if (before) {
+          const cmp = shown.findIndex((v, i) => v !== before[i]);
+          assert.ok(cmp < 0 || shown[cmp] > before[cmp], `a wider window shows no less of what ranks higher at ${at}: ${JSON.stringify(before)} then ${JSON.stringify(shown)}`);
+        }
+        before = shown;
+      }
+    }
   }
   // #s430 stage 3: the app's file takes one rewrite, the demo's two rules naming the tree as the
   // sidebar's child, which go on through the list's element at the same weight.
