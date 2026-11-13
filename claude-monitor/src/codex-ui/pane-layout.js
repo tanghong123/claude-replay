@@ -174,10 +174,12 @@ export const phoneView = ({ width, height = Infinity, coarse = false, m = M }) =
  *  until the reader drags its edge, #s473), and `room` how much wider the host could make the view by
  *  narrowing what it lays beside it toward its least (the app's list, from its width to 232), which
  *  the host says through the optional `room` mount option (the owner, #s476), 0 without it: only
- *  whether the reader may open the outline reads it. The phone reader has a
- *  layout of its own. Otherwise the pane is a column while the session and it each keep `m`, and covers
- *  the whole view where they cannot; the session under it keeps the layout it has with the pane shut,
- *  so closing the pane moves nothing. The glyphs keep their column while that fits beside them, and
+ *  whether the reader may open the outline reads it, and anything but a finite positive number reads as
+ *  0. The phone reader has a layout of its own. Otherwise the pane is a column while the session and it
+ *  each keep `m`, and covers the whole view where they cannot; the session under it keeps the layout it
+ *  has with the pane shut, so in a box that keeps its width (a host with no list) closing the pane
+ *  moves nothing, while in the app the list may come back beside it. The glyphs keep their column while
+ *  that fits beside them, and
  *  the outline opens while it fits too. What is left over goes to the session and the pane by
  *  `share`, or to the session alone. */
 export function arrangeView({ width, height, coarse, m = M, paneOpen = false, outlineWanted = true, share = 0.5, room = 0 }) {
@@ -199,7 +201,7 @@ export function arrangeView({ width, height, coarse, m = M, paneOpen = false, ou
     pane,
     outline,
     // Whether the reader may open the outline here: it fits, or would once the host gave its room.
-    outlineCanOpen: width + Math.max(0, room) >= viewNeeds({ m, pane: column, outline: "open" }),
+    outlineCanOpen: width + (Number.isFinite(room) && room > 0 ? room : 0) >= viewNeeds({ m, pane: column, outline: "open" }),
     session: m + slack - toPane,
     paneWidth: column ? m + toPane : null,
   };
@@ -219,9 +221,11 @@ export const narrowest = (m = M) => RAIL + viewNeeds({ m });
  *  at its least: the session, the pane as a column while it is open, and the glyphs' column. Open, it
  *  keeps the reader's width while the view beside it has all it wants, narrows to its least before the
  *  outline folds, and is back at the reader's width once the outline has folded. The rules are the same
- *  on a touch screen; there the view beside the list is the phone reader wherever it is
- *  `TOUCH_PHONE` or less, and takes what the list leaves it. `canOpen` is whether the reader may open
- *  the list from the rail. */
+ *  on a touch screen, where the view beside the list is the phone reader wherever it is `TOUCH_PHONE`
+ *  or less, with one more: the list narrows, down to its least and never folding, before it makes the
+ *  view the phone reader, so a reader who folds the outline on a tablet keeps the desktop's layout and
+ *  the way back to it (built as #s478's default, until the owner answers). `canOpen` is whether the
+ *  reader may open the list from the rail. */
 export function arrangeApp({ width, coarse = false, short = false, list = 300, collapsed = false, view = {} }) {
   const m = view.m ?? M;
   if ((coarse && (width <= TOUCH_PHONE || short)) || width < narrowest(m)) return { list: "drawer", canOpen: true };
@@ -230,5 +234,7 @@ export function arrangeApp({ width, coarse = false, short = false, list = 300, c
   const open = levels.map(outline => viewNeeds({ m, pane, outline })).find(need => width - LIST_MIN >= need);
   const canOpen = open !== undefined;
   if (collapsed || !canOpen) return { list: "rail", canOpen };
-  return { list: Math.max(LIST_MIN, Math.min(list, width - open)), canOpen };
+  const given = Math.max(LIST_MIN, Math.min(list, width - open));
+  const keepsDesktop = coarse && width - given <= TOUCH_PHONE && width - LIST_MIN > TOUCH_PHONE;
+  return { list: keepsDesktop ? width - TOUCH_PHONE - 1 : given, canOpen };
 }

@@ -191,9 +191,10 @@ let droppedAttention = "";
     // list, the outline), a part shows where it fits beside the parts above it at their least, and a
     // pane that cannot be a column covers the view, leaving nothing below it room; what is left goes to
     // the list up to the reader's width, then to the session and the pane by the pane's share. On a
-    // touch screen the view is the phone reader wherever it is 760px wide or less (#s475).
+    // touch screen the view is the phone reader wherever it is 760px wide or less (#s475), and the list
+    // narrows, down to its least, before it makes the view that narrow (#s478's default).
     const { RAIL, LIST_MIN, viewNeeds } = layout;
-    const expected = ({ width, m, paneOpen, outlineWanted, collapsed, coarse, short }) => {
+    const expected = ({ width, m, paneOpen, outlineWanted, list, collapsed, coarse, short }) => {
       const need = parts => viewNeeds({ m, ...parts });
       if ((coarse && (width <= 760 || short)) || width < RAIL + need({})) return { drawer: true };
       const column = !paneOpen || width >= RAIL + need({ pane: true });
@@ -201,7 +202,9 @@ let droppedAttention = "";
       const listFits = glyphs && width >= LIST_MIN + need({ pane: paneOpen, outline: "glyphs" });
       const listShown = listFits && !collapsed;
       const outline = glyphs && outlineWanted && width >= (listShown ? LIST_MIN : RAIL) + need({ pane: paneOpen, outline: "open" });
-      return { drawer: false, pane: !paneOpen ? "shut" : column ? "column" : "over", glyphs, listFits, listShown, outline };
+      const full = listShown ? Math.min(list, width - need({ pane: paneOpen, outline: outline ? "open" : "glyphs" })) : null;
+      const keep = listShown && coarse && width - full <= 760 && width - LIST_MIN > 760;
+      return { drawer: false, pane: !paneOpen ? "shut" : column ? "column" : "over", glyphs, listFits, listShown, outline, listWidth: keep ? width - 761 : full, keep };
     };
     // The view at its own width with the pane shut, restated: what a covering pane leaves under it.
     const shutView = (vw, m, outlineWanted) => (vw >= viewNeeds({ m, outline: "open" }) && outlineWanted ? "open" : vw >= viewNeeds({ m, outline: "glyphs" }) ? "glyphs" : "bar");
@@ -230,7 +233,7 @@ let droppedAttention = "";
           before = null;
         } else {
           assert.equal(app.canOpen, want.listFits, `the rail's open control is enabled exactly where the list fits, at ${at}: ${JSON.stringify(app)}`);
-          assert.equal(app.list, want.listShown ? Math.min(list, width - viewNeeds({ m, pane: paneOpen, outline: want.outline ? "open" : "glyphs" })) : "rail", `the list at ${at}`);
+          assert.equal(app.list, want.listShown ? want.listWidth : "rail", `the list at ${at}`);
           if (want.listShown) assert.ok(app.list >= LIST_MIN, `the list never under its least, at ${at}`);
           const given = want.listShown ? app.list : RAIL, vw = width - given;
           for (const room of want.listShown ? [0, app.list - LIST_MIN] : [0]) for (const share of [0.5, 0, 0.3, 1]) {
@@ -250,7 +253,8 @@ let droppedAttention = "";
             assert.equal(view.outlineCanOpen, vw + room >= viewNeeds({ m, pane: column, outline: "open" }), `the outline's control is enabled exactly where it fits, with the room the host gave, at ${here}`);
             const slack = vw - used;
             assert.ok(slack >= 0, `the view holds its parts at their least, at ${here}`);
-            if (want.listShown && app.list < list) assert.equal(slack, 0, `the list narrows only once the session and the pane are at m, at ${here}`);
+            if (want.listShown && app.list < list && !want.keep) assert.equal(slack, 0, `the list narrows only once the session and the pane are at m, at ${here}`);
+            if (want.keep) assert.equal(vw, 761, `on a touch screen the list narrows just enough to keep the view the desktop's, at ${here}`);
             assert.equal(view.paneWidth, column ? m + Math.round(slack * share) : null, `the pane takes its share of the slack, at ${here}`);
             assert.equal(view.session, m + slack - (column ? Math.round(slack * share) : 0), `the session takes the rest, at ${here}`);
             if (column && share === 0.5) assert.ok(Math.abs(view.session - view.paneWidth) <= 1, `equal until the reader drags, at ${here}`);
@@ -277,7 +281,23 @@ let droppedAttention = "";
     const steps = inputs => sequences.get(JSON.stringify({ m: layout.M, paneOpen: false, outlineWanted: true, list: 300, collapsed: false, coarse: false, short: false, ...inputs }));
     assert.deepEqual(steps({}), [[320, "drawer phone"], [490, "drawer desktop"], [554, "rail shut bar"], [622, "rail shut glyphs"], [790, "list narrowing shut glyphs"], [858, "list shut glyphs"], [1012, "list narrowing shut open"], [1080, "list shut open"]], "his sequence with no right pane, a) to d), at its windows");
     assert.deepEqual(steps({ paneOpen: true }), [[320, "drawer phone"], [490, "drawer desktop"], [554, "rail over"], [1035, "rail column bar"], [1103, "rail column glyphs"], [1271, "list narrowing column glyphs"], [1339, "list column glyphs"], [1493, "list narrowing column open"], [1561, "list column open"]], "his sequence with the right pane, a) to e), at its windows");
-    assert.deepEqual(steps({ coarse: true }), [[320, "drawer phone"], [761, "rail phone"], [790, "list narrowing phone"], [858, "list phone"], [1012, "list narrowing shut open"], [1080, "list shut open"]], "a touch screen: the phone reader up to 760px, beside its list too");
+    assert.deepEqual(steps({ coarse: true }), [[320, "drawer phone"], [761, "rail phone"], [790, "list narrowing phone"], [858, "list phone"], [993, "list narrowing shut glyphs"], [1012, "list narrowing shut open"], [1080, "list shut open"]], "a touch screen: the phone reader up to 760px, beside its list too");
+    assert.deepEqual(steps({ coarse: true, outlineWanted: false, list: 520 }), [[320, "drawer phone"], [761, "rail phone"], [790, "list narrowing phone"], [993, "list narrowing shut glyphs"], [1281, "list shut glyphs"]], "a touch reader who folded the outline keeps the desktop's layout wherever the list at 232 allows it (#s478)");
+    // The edges the sweep's two heights do not reach, and the inputs it never passes out of range.
+    for (const coarse of [false, true]) for (const [height, short] of [[499, true], [500, true], [501, false]]) {
+      assert.equal(layout.phoneView({ width: 900, height, coarse }), coarse && short, `a 900px view ${height}px tall is the phone reader only on a short touch screen, coarse ${coarse}`);
+    }
+    for (const room of [NaN, Infinity, -Infinity, -50, "300", null, undefined]) {
+      assert.equal(layout.arrangeView({ width: 700, height: 900, room }).outlineCanOpen, false, `a room of ${String(room)} reads as none: a 700px view's outline needs 80 more`);
+    }
+    assert.equal(layout.arrangeView({ width: 700, height: 900, room: 80 }).outlineCanOpen, true, "a finite room counts");
+    assert.equal(layout.arrangeView({ width: 700, height: 900, room: 79 }).outlineCanOpen, false, "a room one short does not");
+    for (const [share, toPane] of [[-0.2, 0], [1.5, 49]]) {
+      const v = layout.arrangeView({ width: 1020, height: 900, paneOpen: true, outlineWanted: false, share });
+      assert.equal(v.paneWidth, 480 + toPane, `a share of ${share} is held to [0, 1]`);
+    }
+    assert.deepEqual(layout.arrangeApp({ width: 1100 }), { list: 300, canOpen: true }, "the list's default width is 300 and the outline is wanted unless the view says not");
+    assert.deepEqual(layout.arrangeView({ width: 800, height: 900 }), layout.arrangeView({ width: 800, height: 900, outlineWanted: true, share: 0.5, room: 0 }), "the view's defaults: the outline wanted, an equal share, no room");
   }
   // #s430 stage 3: the app's file takes one rewrite, the demo's two rules naming the tree as the
   // sidebar's child, which go on through the list's element at the same weight.
