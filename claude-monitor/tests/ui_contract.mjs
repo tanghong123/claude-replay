@@ -192,7 +192,7 @@ let droppedAttention = "";
     // pane that cannot be a column covers the view, leaving nothing below it room; what is left goes to
     // the list up to the reader's width, then to the session and the pane by the pane's share. On a
     // touch screen the view is the phone reader wherever it is 760px wide or less (#s475), and the list
-    // narrows, down to its least, before it makes the view that narrow (#s478's default).
+    // narrows, down to its least, before it makes the view that narrow (#s478).
     const { RAIL, LIST_MIN, viewNeeds } = layout;
     const expected = ({ width, m, paneOpen, outlineWanted, list, collapsed, coarse, short }) => {
       const need = parts => viewNeeds({ m, ...parts });

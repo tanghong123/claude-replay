@@ -6,11 +6,8 @@
 > stage 4, are not. The owner's ruling (#s459): start it now, and fix in it the
 > transcript column that the right pane squeezes to 126px just past 1180px. The owner ruled how a
 > component counts its room (#s461): by its own width, height and touch, with nothing from the host;
-> and he set the order of what gives way (#s462, #s472 to #s476). Three questions are still his,
-> each built as its default meanwhile: on a touch screen, whether the list narrows to keep the view
-> out of the phone reader (#s478) and whether a pane over the phone reader leaves the list beside it
-> (#s480); and how a host that passes `room` hears that the reader wants the outline (#s479; until
-> he answers only the app passes it).
+> and he set the order of what gives way (#s462, #s472 to #s476), its touch screen's rules (#s478,
+> #s480) and how a host hears the reader's outline choice (#s479). No question is open.
 
 ## What it is for
 
@@ -377,7 +374,7 @@ rely on it are listed with the stage, each with what it asserted before.
 - **The list's drag** takes its width from the session and the pane equally, down to `M` each, and
   folds nothing: its edge stops at 232 and 520 (today's limits), and wherever the session and the
   pane reach `M`. On a touch screen it also stops where the view would become the phone reader,
-  wherever the list at 232 leaves the view over 760px, which follows from #s478's default.
+  wherever the list at 232 leaves the view over 760px, which follows from the owner's #s478.
 - **The pane's drag** sets how the slack splits between the session and the pane (the owner, #s473):
   remembered, equal until the reader first drags, and each side kept at least at `M`. The layout
   writes the pane's width as `--preview-fit` on the view, from `arrangeView`: the pane's own box,
@@ -410,7 +407,8 @@ screen up to 760px):
   reader beside it, and the 834px iPad Pro the list at 276px; the 13-inch iPad Pro (1032px) has the
   list at 252px and the desktop layout with the outline. Held sideways, every iPad has the list at
   300px and the desktop layout. A touch window of 761–789px has the rail and the phone reader.
-- **A tablet reader's fold** (the owner's question on #s478; built as its default meanwhile): on a
+- **A tablet reader's fold** (the owner, #s478: "on touch the list narrows (to 232px at least)
+  before the view becomes the phone reader"): on a
   touch screen the list narrows, down to 232 and never folding, before it would make the view 760px
   or less. Without it a reader who folds the outline on a 1032px iPad Pro gives the list its 300px
   back, the view drops to 732px and becomes the phone reader, which has no control that opens the
@@ -421,7 +419,8 @@ screen up to 760px):
   and open do change the view: folded to its rail the view is 761px or more and the desktop's, and
   opened again it is the phone reader beside the list, as #s475 has it. That is the one place a
   reader's action changes the view between the two, and the contract walks every action to hold it.
-- **A pane over the phone reader** (the owner's question on #s480; built as its default meanwhile)
+- **A pane over the phone reader** (the owner, #s480: "Leave the list beside the pane over the phone
+  reader")
   on a touch screen covers the reader's area alone, beside the list or the rail as they were, as a
   wide phone held sideways covers the session beside its list (#s49). So the session keeps its width
   beneath, and opening or closing the pane remeasures nothing under it (#s25). Folding the list for
@@ -446,10 +445,10 @@ screen up to 760px):
 reader, the pane, the glyphs, the outline, and how the slack splits between the session and the pane
 (`arrangeView`). The app decides the list from the window (`arrangeApp`), by what the view needs
 beside it, which it works out with the same functions from what the view says of itself on its
-element: whether the pane is open (`preview-off`, as today) and whether the reader wants the outline
-(a class the view writes; a fold the width forced does not change it). That is state on the view's
-element, as its other classes are. A host with no list runs `arrangeView` alone: no drawer, no room,
-and the phone reader below 490px.
+element and through its handlers: whether the pane is open (`preview-off`, as today) and whether
+the reader wants the outline, which the view says through `onOutline` (below; a fold the width
+forced does not change it). A host with no list runs `arrangeView` alone: no drawer, no room, and the
+phone reader below 490px.
 
 The two never disagree about the outline. Folding the list to its rail frees at most 168px (232 less
 64), less than the 222px the outline needs over its glyphs (290 less 68), so a view the list's fold
@@ -481,12 +480,19 @@ list). So the view takes one new optional mount option, `room`, and the app pass
   Not pressed, it is enabled where the outline fits, with the room the host could give
   (`outlineCanOpen`): the disabled state is for opening only.
 - **A host that passes none** gets the toggle disabled where the view alone cannot fit the outline.
-  How a host other than the app hears the reader's tap is the owner's question on #s479 (recommended:
-  an `onOutline({ wanted })` handler beside the other six); until he answers, the doc comment says
-  only the app passes `room`, and the app reads the reader's choice off the view's element.
+- **How a host hears the tap** (the owner, #s479: "Add an onOutline({ wanted }) handler"): a seventh
+  optional handler, `onOutline({ wanted })`, beside `onTitle`, `onTurn`, `onInfo`, `onFile`,
+  `onLinkCopied` and `onToast`, through the same emitter (a handler's throw is reported, never
+  raised, and what is said during the mount is held until it returns). The view says it once as the
+  mount returns, with the reader's remembered choice, and then whenever the reader opens or folds
+  the outline; a fold or a return the width forces says nothing, since the choice has not changed.
+  `wanted` is a boolean. The app passes it and keeps the choice for `arrangeApp`, reading no class
+  off the view's element; any host may pass `room` with it.
 
-`room` joins `MOUNT_OPTIONS` and the doc comment over `mountSessionView`, and the contract's mount
-interface cases hold it: the refusal at mount, the answers that read as none, and a throw.
+`room` and `onOutline` join `MOUNT_OPTIONS` and the doc comment over `mountSessionView`, and the
+contract's mount interface cases hold them: `room`'s refusal at mount, the answers that read as none
+and a throw; `onOutline` said once at the mount with the remembered choice, again on each tap and not
+on a fold the width forces.
 
 **Transitions.** A layout decision never glides (stage 2's `pl-holding`), and a reader's own toggle
 glides whole. Opening the pane can make the list give way in the same moment, and a decision taken

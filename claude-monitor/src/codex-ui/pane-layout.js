@@ -173,7 +173,8 @@ export const phoneView = ({ width, height = Infinity, coarse = false, m = M }) =
  *  `outlineWanted` the reader's choice for the outline, `share` the pane's share of the slack (a half
  *  until the reader drags its edge, #s473), and `room` how much wider the host could make the view by
  *  narrowing what it lays beside it toward its least (the app's list, from its width to 232), which
- *  the host says through the optional `room` mount option (the owner, #s476), 0 without it: only
+ *  the host says through the optional `room` mount option (the owner, #s476), 0 without it, and
+ *  hears the reader's choice through `onOutline` (#s479): only
  *  whether the reader may open the outline reads it, and anything but a finite positive number reads as
  *  0. The phone reader has a layout of its own. Otherwise the pane is a column while the session and it
  *  each keep `m`, and covers the whole view where they cannot; the session under it keeps the layout it
@@ -224,7 +225,7 @@ export const narrowest = (m = M) => RAIL + viewNeeds({ m });
  *  on a touch screen, where the view beside the list is the phone reader wherever it is `TOUCH_PHONE`
  *  or less, with one more: the list narrows, down to its least and never folding, before it makes the
  *  view the phone reader, so a reader who folds the outline on a tablet keeps the desktop's layout and
- *  the way back to it (built as #s478's default, until the owner answers); and a pane opened over the
+ *  the way back to it (the owner, #s478); and a pane opened over the
  *  phone reader leaves the list as it was. `canOpen` is whether the reader may open the list from the
  *  rail. */
 export function arrangeApp({ width, coarse = false, short = false, list = 300, collapsed = false, view = {} }) {
@@ -243,7 +244,7 @@ export function arrangeApp({ width, coarse = false, short = false, list = 300, c
   // On a touch screen a pane opened over the phone reader covers the reader's area alone, beside the
   // list or the rail as they were, as a wide phone held sideways covers the session beside its list
   // (#s49): the session keeps its width beneath, so opening or closing the pane remeasures nothing
-  // under it (#s25). #s480's default, until the owner answers. The rail's expand stays enabled there,
+  // under it (#s25). The owner's ruling, #s480. The rail's expand stays enabled there,
   // so a list folded under that pane opens again beside it.
   const overReader = coarse && width - (shut === "rail" ? RAIL : shut) <= TOUCH_PHONE;
   const listed = !view.paneOpen || overReader ? shut : beside(true);
