@@ -4942,7 +4942,11 @@ fn a_host_hides_the_session_view_and_the_session_list_with_their_hidden_attribut
 /// #s464 with #s431: a host that hides the view and shows it again gives a reader who had scrolled up
 /// their place back (the review of ddcac874). Hidden, every unit the view has drawn reports no height,
 /// which the transcript could take for a measure, and the reader's place could be read off a column
-/// with nothing in it: shown again, the reader would be at the top of the session.
+/// with nothing in it: shown again, the reader would be at the top of the session. The same holds when
+/// the window changes width while the view is hidden, and when records arrive while it is: a reader
+/// scrolled up keeps their turn, and one following the session is at its end with the new turn on
+/// screen (a window mounted while hidden is sized for no viewport, so the first transaction with the
+/// box back mounts it again).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_view_its_host_hides_keeps_the_reader_s_place() {
@@ -4950,7 +4954,8 @@ fn a_view_its_host_hides_keeps_the_reader_s_place() {
     let base = base("host-hidden-place");
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-0000000003a2".to_string();
-    stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let transcript =
+        stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 3122, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
@@ -4973,44 +4978,160 @@ fn a_view_its_host_hides_keeps_the_reader_s_place() {
         std::thread::sleep(Duration::from_millis(700));
     };
     rest();
-    let place = "(function(){ var s = document.querySelector('.transcript'); return { top: Math.round(s.scrollTop), height: Math.round(s.scrollHeight), measures: window.__viewportHistory.states.filter(function (e) { return e.cause === 'measure'; }).length }; })()";
+    let place = "(function(){ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; return { top: Math.round(s.scrollTop), height: Math.round(s.scrollHeight), states: h.length, count: h.length ? h[h.length - 1].count : null, violations: (window.__viewportViolations || []).length }; })()";
+    // Hides the view, does what happens meanwhile, and shows it again: what the engine did while it
+    // was hidden (each transaction's cause), and the place before and after.
+    let cycle = |meanwhile: &dyn Fn()| {
+        let before = harness::probe(&tab, place);
+        harness::eval(
+            &tab,
+            "document.getElementById('sessionView').hidden = true; 'ok'",
+        );
+        harness::until(
+            &tab,
+            "document.getElementById('sessionView').getBoundingClientRect().width === 0",
+            "the view hidden by its host",
+            Duration::from_secs(5),
+            place,
+        );
+        rest();
+        meanwhile();
+        rest();
+        let causes = harness::probe(
+            &tab,
+            &format!(
+                "window.__viewportHistory.states.slice({}).map(function (e) {{ return e.cause; }})",
+                before["states"]
+            ),
+        );
+        harness::eval(
+            &tab,
+            "document.getElementById('sessionView').hidden = false; 'ok'",
+        );
+        harness::until(
+            &tab,
+            "document.getElementById('sessionView').getBoundingClientRect().width > 0",
+            "the view shown again",
+            Duration::from_secs(5),
+            place,
+        );
+        rest();
+        let after = harness::probe(&tab, place);
+        (before, causes, after)
+    };
+    let no_reading = |causes: &serde_json::Value| {
+        causes
+            .as_array()
+            .map(|all| {
+                all.iter().all(|cause| {
+                    !["measure", "update", "displaced", "grown"]
+                        .contains(&cause.as_str().unwrap_or(""))
+                })
+            })
+            .unwrap_or(false)
+    };
+    let mut seen = Vec::new();
+    // The same width.
     let turn = harness::turn_at_top(&tab, surface);
-    let before = harness::probe(&tab, place);
     assert!(
         turn > 1 && !harness::at_tail(&tab, surface),
-        "the reader is inside the session: turn {turn}, {before}"
+        "the reader is inside the session: turn {turn}"
     );
-    harness::eval(
-        &tab,
-        "document.getElementById('sessionView').hidden = true; 'ok'",
-    );
-    harness::until(
-        &tab,
-        "document.getElementById('sessionView').getBoundingClientRect().width === 0",
-        "the view hidden by its host",
-        Duration::from_secs(5),
-        place,
-    );
+    let (before, causes, after) = cycle(&|| {});
+    seen.push((
+        "the same width",
+        turn,
+        harness::turn_at_top(&tab, surface),
+        before,
+        causes,
+        after,
+    ));
+    // The window narrower while the view is hidden.
+    let turn = harness::turn_at_top(&tab, surface);
+    let (before, causes, after) = cycle(&|| {
+        harness::resize(&tab, 1100.0, 800.0);
+        harness::until(
+            &tab,
+            "window.innerWidth === 1100",
+            "the window at its new width",
+            Duration::from_secs(5),
+            "window.innerWidth",
+        );
+    });
+    seen.push((
+        "a new width",
+        turn,
+        harness::turn_at_top(&tab, surface),
+        before,
+        causes,
+        after,
+    ));
+    // A turn arriving while the view is hidden, the reader scrolled up.
+    let arrive = |text: &str, count: i64| {
+        harness::append(
+            &transcript,
+            &(harness::user_at(text, &harness::now_minus(20))
+                + &harness::assistant_at(
+                    &format!("the answer to {text}"),
+                    &harness::now_minus(19),
+                )),
+        );
+        harness::until(
+            &tab,
+            &format!("(function(){{ var h = window.__viewportHistory.states; return h.length && h[h.length - 1].count > {count}; }})()"),
+            "the turn in the hidden view's records",
+            Duration::from_secs(20),
+            place,
+        );
+    };
+    let turn = harness::turn_at_top(&tab, surface);
+    let count = harness::probe(&tab, place)["count"].as_i64().unwrap_or(0);
+    let (before, causes, after) =
+        cycle(&|| arrive("a question asked while the view was hidden", count));
+    seen.push((
+        "a turn arriving",
+        turn,
+        harness::turn_at_top(&tab, surface),
+        before,
+        causes,
+        after,
+    ));
+    // A reader following the session, a turn arriving while the view is hidden.
+    harness::jump_to_end(&tab, surface);
     rest();
-    let hidden = harness::probe(&tab, place);
-    harness::eval(
+    let following = harness::at_tail(&tab, surface);
+    let count = harness::probe(&tab, place)["count"].as_i64().unwrap_or(0);
+    let (fbefore, fcauses, fafter) = cycle(&|| arrive("a second question while hidden", count));
+    let tail = harness::at_tail(&tab, surface);
+    let answer = harness::probe(&tab, "(function(){ var s = document.querySelector('.transcript').getBoundingClientRect(); var hit = [...document.querySelectorAll('.virtual-window .turn')].find(function (e) { return e.textContent.indexOf('the answer to a second question while hidden') >= 0; }); if (!hit) return 'not mounted'; var r = hit.getBoundingClientRect(); return r.bottom > s.top && r.top < s.bottom ? 'on screen' : 'off screen ' + Math.round(r.top) + '..' + Math.round(r.bottom) + ' of ' + Math.round(s.top) + '..' + Math.round(s.bottom); })()");
+    let violations = harness::probe(
         &tab,
-        "document.getElementById('sessionView').hidden = false; 'ok'",
+        "JSON.stringify((window.__viewportViolations || []).slice(0, 4))",
     );
-    harness::until(
-        &tab,
-        "document.getElementById('sessionView').getBoundingClientRect().width > 0",
-        "the view shown again",
-        Duration::from_secs(5),
-        place,
-    );
-    rest();
-    let after = harness::probe(&tab, place);
-    let turn_after = harness::turn_at_top(&tab, surface);
     drop(monitor);
+    for (name, turn, turn_after, before, causes, after) in &seen {
+        assert!(
+            no_reading(causes),
+            "{name}: hidden, the transcript measures and reads nothing: {causes}"
+        );
+        assert_eq!(
+            turn_after, turn,
+            "{name}: shown again, the reader is at the turn they left: before {before}, while hidden {causes}, after {after}"
+        );
+    }
+    assert!(following, "the reader follows the session: {fbefore}");
+    assert!(
+        no_reading(&fcauses),
+        "following, hidden, the transcript measures and reads nothing: {fcauses}"
+    );
+    assert!(
+        tail && answer == "on screen",
+        "following, shown again, the reader is at the end with the new turn on screen: at the end {tail}, the answer {answer}, before {fbefore}, while hidden {fcauses}, after {fafter}"
+    );
     assert_eq!(
-        turn_after, turn,
-        "shown again, the reader is at the turn they left: before {before}, hidden {hidden}, after {after}"
+        violations,
+        serde_json::json!("[]"),
+        "the engine broke none of its invariants"
     );
 }
 

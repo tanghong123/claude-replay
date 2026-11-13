@@ -456,6 +456,8 @@ class VirtualWindow {
     // exists to make). The guard is what makes it safe: only a change in where the content
     // BEGINS counts, and a pad write never moves that.
     this.lastContentTop = null;
+    // Set while the scroller has had no box since the last transaction that had one (`laidOut`).
+    this.wasHidden = false;
     this.outerObserver = new ResizeObserver(() => this.displaced());
     // BORDER-box, not the default content-box: what moves the run is often the chrome's own
     // padding — a header gaining a line of chips, a pane's inset — and a padding change leaves
@@ -771,6 +773,8 @@ class VirtualWindow {
     if (!this.count || this.dragging) return null;
     if (options.position) return options.position;
     if (options.spontaneous) return this.position;
+    // Hidden, or just shown again: the offset is not the reader's, and `P` stands (`laidOut`).
+    if (!this.laidOut() || this.wasHidden) return this.position;
     // While a smooth write is travelling the offset is moving because of the engine, not the
     // reader: `P` is the destination and is kept (§4.10).
     if (!this.position || (this.position.at !== this.frame.scrollTop() && !this.inFlight())) this.position = this.captureDomAnchor() || this.modelAnchor();
@@ -792,6 +796,8 @@ class VirtualWindow {
    *  run of fills, each moving the estimates above them by under a pixel, walked 1.3px over ten
    *  (I1: the engine's own noise never redefines `P`). */
   syncPosition(placed = null) {
+    // Hidden, there is nowhere to read `P` from, and it stands (`laidOut`).
+    if (!this.laidOut()) return;
     if (this.following || this.dragging || !this.count) { this.position = null; return; }
     const held = this.position && this.position.commanded ? this.position : null;
     if (held && this.anchorResolves(held)) { held.at = this.inFlight() ? this.wrote.to : this.frame.scrollTop(); return; }
@@ -927,6 +933,8 @@ class VirtualWindow {
    *  away and is converged back on. Reading: what they are looking at moved down by the growth
    *  above it, and the anchor puts it back. */
   displaced() {
+    // Hidden, the content's top reads 0; the last one seen stands until the box comes back (`laidOut`).
+    if (!this.laidOut()) return;
     const top = this.contentTop();
     if (this.lastContentTop !== null && Math.abs(top - this.lastContentTop) < 0.5) return;
     const first = this.lastContentTop === null;
@@ -1011,6 +1019,8 @@ class VirtualWindow {
    *  sums and the pads, and the transaction places `P` after it. The sums do not have to be exact
    *  for that: the placement reads the item's own rect. */
   measureMounted() {
+    // Hidden, an item reads as its margins alone (`laidOut`).
+    if (!this.laidOut()) return false;
     let changed = false;
     // What changed, for the trace (#192): the first eight [index, from, to] — which record moved
     // the sums is the whole question when a reader is displaced under growth.
@@ -1180,7 +1190,21 @@ class VirtualWindow {
    *  transaction on a change that has ALREADY moved the DOM — `P` is not re-read (see
    *  `positionFor`), and the placement lands whatever the reader is doing (framework I7). */
   measureNow() {
+    // Hidden, every mounted item reports no height (`laidOut`): nothing is heard until the box comes
+    // back, when every item grows back and this measure places `P` where the reader left it.
+    if (!this.laidOut()) { this.wasHidden = true; return; }
     this.transact("measure", { spontaneous: true, measure: true });
+  }
+
+  /** Whether the scroller has a box (#s464). A host can hide the view, and a hidden scroller lays
+   *  nothing out: each item reads as its margins alone and the offset as 0. Measured, the sums would
+   *  learn margins for heights and `P` would be read at the top, so the reader shown the view again
+   *  lands turns from where they left it. While it has none the engine measures nothing, reads no
+   *  position and writes none; a transaction changes the model alone (records still arrive). The
+   *  first transaction with the box back (`wasHidden`) reads no move of the reader's either, since the
+   *  offset is whatever the browser gave the box it made again: it places `P` as it stood. */
+  laidOut() {
+    return !this.frame.laidOut || this.frame.laidOut();
   }
 
   /** Where item `index` starts, in the scroller's own coordinate, from the MODEL: the content's
@@ -1432,15 +1456,23 @@ class VirtualWindow {
     // transaction began. I13 ("follow is dropped only by the reader") is exactly what this upholds:
     // the drop is theirs, and the engine is only hearing about it late.
     const startTop = this.frame.scrollTop();
-    this.confirmFollow(startTop);
+    // Hidden, the transaction changes the model alone; the first with the box back reads no move of
+    // the reader's in the offset the browser gave it (`laidOut`).
+    const shown = this.laidOut(), returning = shown && this.wasHidden;
+    if (!shown) this.wasHidden = true;
+    if (shown && !returning) this.confirmFollow(startTop);
+    // Shown again, the window is mounted for `P` at the viewport the box came back with, whatever the
+    // transaction: one mounted while hidden (records arriving) was sized for no viewport at all.
+    if (returning && !options.range) options = { ...options, range: p => this.rangeFor(p) };
     const following0 = this.following;
     try {
       let p0 = this.positionFor(options);
       // The reader's scroll since `P` was read — everything the offset moved between the last
       // transaction and this one's start (see `place`). Zero after a re-read, and for a page's own
       // capture; the reader's motion for a spontaneous change; zero while a smooth write is in
-      // flight, where the offset is moving because of the engine (§4.10).
-      const drift = p0 && p0.at != null && !this.inFlight() ? startTop - p0.at : 0;
+      // flight, where the offset is moving because of the engine (§4.10); zero as the view is shown
+      // again, where the browser moved it.
+      const drift = p0 && p0.at != null && !this.inFlight() && !returning ? startTop - p0.at : 0;
       // A placement while a smooth write travels is issued smooth again, toward the recomputed
       // destination: growth above a target mid-flight re-targets the animation rather than
       // cancelling it with an instant write.
@@ -1471,7 +1503,9 @@ class VirtualWindow {
         // when it ran on `changed` alone.
         quiet = !this.measureMounted();
       }
-      let placed = quiet && p0 && p0.source === "tail" ? "quiet" : this.placeAfter(p0, options, drift, smooth);
+      // Hidden, nothing is placed. Shown again, the tail is placed even where nothing was measured: the
+      // browser may have moved the offset off it.
+      let placed = !shown ? "hidden" : quiet && p0 && p0.source === "tail" && !returning ? "quiet" : this.placeAfter(p0, options, drift, smooth);
       if (options.range && p0 && p0.source !== "tail" && placed === "placed" && !this.viewportMounted()) {
         // The window was chosen from the sums before the mutation; the placement moved the offset
         // by their shift, and the viewport now shows territory the window does not cover (#191).
@@ -1503,7 +1537,8 @@ class VirtualWindow {
       // A position the reader asked for (§4.10) is `P` from here on; `syncPosition` keeps it.
       if (p0 && p0.commanded) this.position = p0;
       this.syncPosition(placed === "placed" && !drift && !smooth ? p0 : null);
-      this.check(cause, p0, placed, mounted, drift, following0);
+      if (shown) this.check(cause, p0, placed, mounted, drift, following0);
+      if (returning) this.wasHidden = false;
       summary = Object.assign({ p0: p0 ? p0.source : null, anchor: p0 && p0.key ? p0.key : null, placed }, mounted ? { range: [mounted.lo, mounted.hi], fresh: mounted.fresh } : {}, options.fields || {});
       // Trace only: is the viewport inside the window it left, and how the window was chosen.
       if (this.tracing) { summary.covered = this.viewportMounted(); summary.choice = this.lastRangeChoice || null; this.lastRangeChoice = null; }
@@ -1848,6 +1883,8 @@ class VirtualWindow {
    *  created before the gesture that followed it. `dragging` still answers for a held thumb,
    *  which produces no input event of its own. */
   onScroll(event) {
+    // Hidden, an offset the box lost is no move of the reader's (`laidOut`).
+    if (!this.laidOut()) return;
     // One read, for the classification, kept as the engine's belief of the offset for the history
     // (`topBelief`): the reader's own scroll is the one move the engine does not make.
     const top = this.frame.scrollTop();
@@ -2047,6 +2084,9 @@ class VirtualWindow {
    *  exactly by the observer a frame later; only the invisible groups keep the guess. A change
    *  that is not a width change (a font) has no ratio to apply, and there the old rule stands. */
   remeasure() {
+    // Hidden, there is no width to scale to (`laidOut`): the heights stay as measured, for the width
+    // the view comes back at.
+    if (!this.laidOut()) return;
     const width = this.mount.getBoundingClientRect().width;
     const ratio = this.lastWidth && width ? this.lastWidth / width : 0;
     this.lastWidth = width || this.lastWidth;
@@ -2083,6 +2123,8 @@ function documentFrame() {
     clientHeight: () => el().clientHeight,
     scrollHeight: () => el().scrollHeight,
     viewportTop: () => 0,
+    // The document is always laid out.
+    laidOut: () => true,
     on: (type, fn, options) => window.addEventListener(type, fn, options),
     // A pointer on the DOCUMENT's scrollbar lands on the scrolling element itself. It must NOT
     // also accept `body`: the classic page centres `.layout` at max-width 1160px (export.css:338),
@@ -2103,6 +2145,9 @@ function elementFrame(scroller) {
     clientHeight: () => scroller.clientHeight,
     scrollHeight: () => scroller.scrollHeight,
     viewportTop: () => scroller.getBoundingClientRect().top,
+    // A box inside a page can be hidden (its host's `hidden`, #s464, or a hidden ancestor): it then
+    // has no box at all, and every size in it reads 0.
+    laidOut: () => scroller.clientWidth > 0 || scroller.clientHeight > 0,
     on: (type, fn, options) => scroller.addEventListener(type, fn, options),
     // A pointer that lands on the scroller ITSELF is on its scrollbar OR in a GUTTER: content
     // lands on a descendant, but a centred child leaves the scroller's own background exposed on
