@@ -1442,10 +1442,6 @@ function holdColumnToTheChain() {
   if (nav.scrollTop > limit) nav.scrollTop = limit;
 }
 byId("sessionNavigator").addEventListener("scroll", holdColumnToTheChain);
-// Whether the heads fit is decided against the column's height (`holdTheHeadsInTheColumn`), which a
-// window or a host can change with the transcript's width, and so nothing rendered, unchanged: the
-// column's own box stacks them again. Its border box, which the class's padding does not move.
-new ResizeObserver(() => stackOutlineHeads()).observe(byId("sessionNavigator"), { box: "border-box" });
 /** A wheel delta in PIXELS, whatever units the device reports it in. */
 function wheelPixels(event) {
   const nav = byId("sessionNavigator");
