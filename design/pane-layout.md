@@ -1,12 +1,14 @@
 # Each component lays itself out by its pane
 
-> **DRAFT 4** (#s431, 2026-11-12). Step 6 of `design/embedding.md` ("Layout decides itself", "The
-> order of the work"). Stage 1 is built; stages 2 to 4 are not. The owner's ruling (#s459): start it
-> now, and fix in it the transcript column that the right pane squeezes to 126px just past 1180px.
-> The owner ruled how a component counts its room (#s461): by its own width, height and touch, with
-> nothing from the host. One decision is still the owner's: which gives way first when the right
-> pane leaves a short line, the pane or the outline (#s462). Only stage 3 waits on it, and stage 2
-> lands with stage 3.
+> **DRAFT 5** (#s431, 2026-11-13). Step 6 of `design/embedding.md` ("Layout decides itself", "The
+> order of the work"). Stage 1 is built. Stage 2 is built on its branch and lands with stage 3;
+> stages 3 and 4 are not built. The owner's ruling (#s459): start it now, and fix in it the
+> transcript column that the right pane squeezes to 126px just past 1180px. The owner ruled how a
+> component counts its room (#s461): by its own width, height and touch, with nothing from the host;
+> and he set the order of what gives way (#s462, #s472 to #s476). Two questions are still his: on a
+> touch screen, whether the list narrows to keep the view out of the phone reader (#s478, built as
+> its default meanwhile), and how a host that passes `room` hears that the reader wants the outline
+> (#s479; until he answers only the app passes it).
 
 ## What it is for
 
@@ -350,7 +352,8 @@ rely on it are listed with the stage, each with what it asserted before.
   (the list at 232 must fit beside everything above it) and the outline's toggle. Its tooltip says
   why. The drawer's handle always opens the drawer, which lies over the session. While the pane
   covers the session (554–1034px at the defaults) the rail's expand is disabled too, as his sequence
-  has it: the list opens once the pane closes or the window widens.
+  has it: the list opens once the window is wide enough for it, from 790px with the pane shut and
+  1271px with it open at the defaults.
 - A collapse the reader makes is remembered (`am-…sidebar`, `am-demo-navigator`, as today), and a
   wider window never undoes it. A fold the width forced is not remembered: it comes back when the
   window has room. Today a list or an outline the reader opened stays open at any width and squeezes
@@ -385,11 +388,19 @@ screen up to 760px):
   window with the drawer, or beside the rail or the list. So a finger never meets the desktop's
   controls in a box that narrow. The list follows the same rules as with a mouse, and a touch window
   of 760px or less has the drawer, as today. A short touch screen (a phone held sideways) keeps the
-  phone's own list, as today: the drawer, or a wide phone's column. Upright, the iPad mini (744px)
+  phone's own list, as today: the drawer, or a wide phone's column. At the default list and with the
+  outline open: upright, the iPad mini (744px)
   is the phone layout, as today; an 810 or 820px iPad has the list at 252 or 262px with the phone
   reader beside it, and the 834px iPad Pro the list at 276px; the 13-inch iPad Pro (1032px) has the
   list at 252px and the desktop layout with the outline. Held sideways, every iPad has the list at
   300px and the desktop layout. A touch window of 761–789px has the rail and the phone reader.
+- **A tablet reader's fold** (the owner's question on #s478; built as its default meanwhile): on a
+  touch screen the list narrows, down to 232 and never folding, before it would make the view 760px
+  or less. Without it a reader who folds the outline on a 1032px iPad Pro gives the list its 300px
+  back, the view drops to 732px and becomes the phone reader, which has no control that opens the
+  outline column again. With it the list stops at 271px and the view keeps the desktop's layout, its
+  glyphs and the way back. At the defaults with the outline open no iPad changes. The rule bends the
+  order on touch only: there the desktop's layout ranks above the list's width beyond 232.
 - **The glyphs in the top bar.** On a phone they float in the dock. On a desktop they join the
   session's top bar, after the title and before Info and the pane's control, the title giving way
   first. Each opens its list as a panel over the transcript's right edge, 290px wide, one at a time,
@@ -415,16 +426,30 @@ view it makes 760px or less is the phone reader, which has no columns to disagre
 **The view asks its host for room** (the owner, #s476: "Add the optional room() mount option"). The
 one thing the view cannot see is room the app could make: the outline's toggle could open where
 narrowing the list toward 232 would fit it, a band 68px wide at the default list (288px at a 520px
-list). So the view takes one new optional mount option, `room`: a function the view calls, with no
-arguments, as it decides whether the outline's toggle is enabled, and which answers how many more
-pixels the host could give the view on its own (a number; anything else, a throw or no option reads
-as 0). The app answers its list's width less 232 while the list is shown, and 0 on the rail or in
-the drawer: the list ranks above the outline, so it narrows for it but never folds for it. The
-reader's tap then says the outline is wanted, the app narrows the list, the view widens, and the
-outline opens by the view's own width; the room is never read to lay anything out. A host that passes
-no `room` gets the toggle disabled where the view alone cannot fit the outline. `room` joins
-`MOUNT_OPTIONS` and the doc comment over `mountSessionView`, and the contract's mount interface cases
-hold it.
+list). So the view takes one new optional mount option, `room`, and the app passes it:
+
+- **What it is.** A function, called with no arguments, that answers how many more pixels the host
+  could give the view on its own, by narrowing what it lays beside it. A `room` that is not a function
+  is refused at mount, as a `show` that is not a boolean is.
+- **What its answer means.** A finite number above 0 is the room; anything else (0, a negative
+  number, `NaN`, `Infinity`, a string, nothing) is none, and `arrangeView` itself reads it so. A
+  throw is reported as a handler's throw is (`reportError`), never raised, and is none.
+- **When it is asked.** At each layout decision: the view's box, the pane, the reader's choice. A
+  room that changes while none of those does is seen at the next decision. It decides only whether
+  the outline's toggle is enabled; nothing is laid out by it.
+- **The app's answer.** Its list's width less 232 while the list is shown, and 0 on the rail or in the
+  drawer: the list ranks above the outline, so it narrows for it but never folds for it.
+- **The reader's tap.** The toggle says the outline is wanted at once (its pressed state); the app
+  hears it, narrows the list, the view widens, and the outline opens by the view's own width. A host
+  that answers room and then gives none leaves the toggle pressed and the glyphs shown, as a window
+  too narrow for the outline does today.
+- **A host that passes none** gets the toggle disabled where the view alone cannot fit the outline.
+  How a host other than the app hears the reader's tap is the owner's question on #s479 (recommended:
+  an `onOutline({ wanted })` handler beside the other six); until he answers, the doc comment says
+  only the app passes `room`, and the app reads the reader's choice off the view's element.
+
+`room` joins `MOUNT_OPTIONS` and the doc comment over `mountSessionView`, and the contract's mount
+interface cases hold it: the refusal at mount, the answers that read as none, and a throw.
 
 **Transitions.** A layout decision never glides (stage 2's `pl-holding`), and a reader's own toggle
 glides whole. Opening the pane can make the list give way in the same moment, and a decision taken
@@ -444,14 +469,17 @@ decision writes without the hold, and the case asserts no `transitioncancel` on 
 - under a covering pane, the session's layout with the pane shut, and no width for the pane;
 - the numbers it is built from, written out (`M` 480, the outline 290, the glyphs 68, the margin 10,
   the resizer 1, the rail 64, the list's least 232, the touch screen's 760, the narrowest window
-  554), and both of his sequences and the touch screen's, step by step at their windows: the tables
-  above, written out.
+  554), and both of his sequences, the touch screen's and a tablet reader's fold, step by step at
+  their windows: the tables above, written out;
+- the edges the sweep's heights and inputs do not reach: a view 499, 500 and 501px tall, rooms and
+  shares out of range, and the functions' defaults.
 
-Each of seventeen mutations of the functions fails it, among them each number above changed, the
-touch clause and a short mouse window taken as touch, the pane taking none of the slack or the share
-ignored, the outline's control always enabled or the room ignored, the list open under a covering
-pane, the phone family at 460, the reader's outline choice ignored, and the touch floor of an earlier
-draft. The page's widths are held to the functions' numbers (the outline 290, the glyphs 68, the
+Each of twenty-six mutations of the functions fails it, among them each number above changed, the
+touch clause and a short mouse window taken as touch, the height's edge moved either way, the pane
+taking none of the slack or the share ignored or unclamped, the outline's control always enabled or
+the room ignored or unchecked, the list open under a covering pane, the phone family at 460, the
+reader's outline choice ignored, the defaults changed, the tablet's fold rule left out, off by one or
+applied to a mouse, and the touch floor of an earlier draft. The page's widths are held to the functions' numbers (the outline 290, the glyphs 68, the
 margin). In the
 browser: each step of both sequences at its window in the app, the drag limits, a collapse remembered
 across a widening, an expand disabled where it cannot fit, and the pane's glide whole when the list
@@ -714,8 +742,8 @@ Each stage is page code: the whole local browser suite and an iOS Simulator walk
    the folds, the drags, the disabled expands, the narrowest steps, the touch family (#s475) and the
    `room` mount option (#s476), with the red case. `phoneView` replaces stage 2's `isPhone` wherever
    the family is read (`classesFor`'s `pl-phone`, `bandWidth`), and inside the family `B` is still the
-   view's width: a 461–489px view with a mouse, and a touch view of 501–760px, read their bands as a
-   phone of that width does.
+   view's width: the views new to the family (461–489px on any screen, and 490–760px touch views
+   taller than 500px) read their bands as a phone of that width does.
 4. **Drawn inside the pane.** Containment, the layers in the box's coordinates, the width cases'
    containment checks on a desktop and an emulated phone, and the Simulator walk of a narrow pane.
    The phone reader narrower than the window is contained from stage 2 (above); this stage takes the
