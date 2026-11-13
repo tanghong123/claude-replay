@@ -147,8 +147,10 @@ export class Preview {
   // transitions in the mode the view is about to leave.
   paneState(name, on) {
     this.actions.paneLayout?.(name, on);
-    const change = () => viewRoot.element()?.classList.toggle(name, on);
-    if (name === "preview-off" && this.actions.paneToggled) this.actions.paneToggled(change);
+    const view = viewRoot.element();
+    const change = () => view?.classList.toggle(name, on);
+    // Only a real change glides: the pane shutting itself as it is built does not open a glide's time.
+    if (name === "preview-off" && view && view.classList.contains(name) !== on && this.actions.paneToggled) this.actions.paneToggled(change);
     else change();
   }
   setOpen(open) { this.uiState.preview = open; this.paneState("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (!open) this.setFull(false); if (open) this.render(); this.actions.layoutChanged?.(); }

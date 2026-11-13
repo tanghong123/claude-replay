@@ -8867,6 +8867,7 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_lays_out_its_list_by_the_owners_order() {
+    const REMEASURES: &str = "(function(){ var w = document.querySelector('.virtual-window').getBoundingClientRect().width; var rs = window.__viewportHistory.states.filter(function (s) { return s.cause === 'remeasure' && s.t >= window.__t0; }).map(function (s) { return s.ratio; }); return { count: rs.length, ratio: rs[0], expected: Math.round(window.__w0 / w * 1000) / 1000, from: Math.round(window.__w0), to: Math.round(w) }; })()";
     let _serial = serial();
     let (monitor, _browser, tab) = shell_with_a_session("appshell-owners-order", 3121);
     let probe = "(function(){ var app = document.getElementById('app'), v = document.getElementById('sessionView'), side = document.querySelector('.sidebar'), handle = document.getElementById('drawerHandle'), expand = document.getElementById('sidebarMiniExpand'); var shown = function (e) { if (!e) return false; var r = e.getBoundingClientRect(); return r.width > 0 && r.right > 0 && r.left < innerWidth && getComputedStyle(e).visibility !== 'hidden'; }; var outline = ['open', 'glyphs', 'bar', 'dock'].find(function (k) { return v.classList.contains('pl-outline-' + k); }) || ''; return { drawer: app.classList.contains('app-drawer'), rail: app.classList.contains('sidebar-off'), shut: app.classList.contains('mobile-detail'), list: shown(side) ? Math.round(side.getBoundingClientRect().width) : 0, view: Math.round(v.getBoundingClientRect().width), outline: outline, phone: v.classList.contains('pl-phone'), handle: shown(handle), expandDisabled: expand.getAttribute('aria-disabled') }; })()";
@@ -9056,9 +9057,12 @@ fn the_app_shell_lays_out_its_list_by_the_owners_order() {
     );
     // The pane at 1200px: the session and the pane at M each and the glyphs' column leave no room for
     // the list, so it folds to the rail, at once, while the pane glides open whole; shut, it comes back.
-    harness::eval(&tab, "window.__cancelled = 0; window.__ran = 0; window.__tlog = []; var sv = document.getElementById('sessionView'); var nameOf = function (e) { var t = e.target; return (t.id ? '#' + t.id : t.tagName.toLowerCase() + '.' + String(t.className).split(' ')[0]) + ' ' + e.propertyName + ' ' + Math.round(performance.now()); }; sv.addEventListener('transitioncancel', function (e) { window.__cancelled++; window.__tlog.push('cancel ' + nameOf(e)); }, true); sv.addEventListener('transitionrun', function (e) { window.__tlog.push('run ' + nameOf(e)); if (e.target === sv && e.propertyName === 'grid-template-columns') window.__ran++; }, true); 'ok'");
+    harness::eval(&tab, "window.__mark = function () { window.__t0 = performance.now(); window.__w0 = document.querySelector('.virtual-window').getBoundingClientRect().width; return true; }; window.__cancelled = 0; window.__ran = 0; window.__tlog = []; var sv = document.getElementById('sessionView'); var nameOf = function (e) { var t = e.target; return (t.id ? '#' + t.id : t.tagName.toLowerCase() + '.' + String(t.className).split(' ')[0]) + ' ' + e.propertyName + ' ' + Math.round(performance.now()); }; sv.addEventListener('transitioncancel', function (e) { window.__cancelled++; window.__tlog.push('cancel ' + nameOf(e)); }, true); sv.addEventListener('transitionrun', function (e) { window.__tlog.push('run ' + nameOf(e)); if (e.target === sv && e.propertyName === 'grid-template-columns') window.__ran++; }, true); 'ok'");
     at(1200.0);
-    harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
+    harness::eval(
+        &tab,
+        "window.__mark(); document.getElementById('previewBtn').click(); 'ok'",
+    );
     harness::until(
         &tab,
         &format!(
@@ -9084,7 +9088,31 @@ fn the_app_shell_lays_out_its_list_by_the_owners_order() {
         serde_json::json!({ "ran": 1, "cancelled": 0 }),
         "and the pane glided open, whole: {opened}; the transitions: {tlog}"
     );
-    harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
+    // The transcript is remeasured once, at the width it settles at, scaling the heights it keeps from
+    // the width before; never at a width read mid-glide, nor twice.
+    let settled = |what: &str| {
+        harness::until(
+            &tab,
+            &format!("{REMEASURES}.count > 0"),
+            what,
+            Duration::from_secs(5),
+            REMEASURES,
+        );
+        let seen = harness::probe(&tab, REMEASURES);
+        let (ratio, expected) = (
+            seen["ratio"].as_f64().unwrap_or(f64::NAN),
+            seen["expected"].as_f64().unwrap_or(f64::NAN),
+        );
+        assert!(
+            seen["count"] == 1 && (ratio - expected).abs() <= 0.01,
+            "{what}: one remeasure, from the width before to the width settled: {seen}"
+        );
+    };
+    settled("the transcript remeasured as the pane opened");
+    harness::eval(
+        &tab,
+        "window.__mark(); document.getElementById('previewBtn').click(); 'ok'",
+    );
     harness::until(
         &tab,
         &format!(
@@ -9094,6 +9122,7 @@ fn the_app_shell_lays_out_its_list_by_the_owners_order() {
         Duration::from_secs(10),
         probe,
     );
+    settled("the transcript remeasured as the pane shut");
     want(
         &harness::probe(&tab, probe),
         serde_json::json!({ "rail": false, "list": 300 }),

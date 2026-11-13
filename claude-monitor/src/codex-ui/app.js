@@ -287,7 +287,10 @@ const listInputs = () => ({
   collapsed: !indexState.sidebarOpen,
   view: { paneOpen: !app.classList.contains("preview-off"), outlineWanted: viewOutlineWanted },
 });
-function arrangeList() {
+/** Lays the list out by the order, and tells the view its box changed (`resized`, which remeasures the
+ *  transcript once its width settles), except for the view's own pane: the view remeasures for that
+ *  itself, from the arrangement it is about to make. */
+function arrangeList({ remeasure = true } = {}) {
   const decided = arrangeApp(listInputs());
   if (listArranged && JSON.stringify(decided) === JSON.stringify(listArranged)) return;
   // A window narrowed into the drawer finds it shut, over nothing: it opens from its handle.
@@ -303,7 +306,7 @@ function arrangeList() {
   paintRailExpand();
   app.getBoundingClientRect();
   if (hold) app.classList.remove("app-holding");
-  viewHandle?.resized();
+  if (remeasure) viewHandle?.resized();
 }
 // The rail's expand is disabled where the list cannot open beside what the view needs (its title says
 // why; `aria-disabled`, so the title still shows); the drawer's handle always opens the drawer.
@@ -318,7 +321,6 @@ function toggleSidebar(open) {
   listGlideUntil = performance.now() + GLIDE_MS;
   arrangeList();
   persist();
-  viewHandle.resized();
 }
 page.byId("sidebarCollapse").onclick = () => toggleSidebar(false); page.byId("sidebarMiniExpand").onclick = () => toggleSidebar(true);
 page.byId("sidebarCollapse").title = `Collapse the sidebar into its icon rail  ( ${hintFor("sidebar-toggle")} )`;
@@ -386,7 +388,6 @@ function setSidebarWidth(value, remember) {
   sidebarResizer.title = `Drag to resize the session list · double-click for ${SIDEBAR_DEFAULT}px`;
   if (remember) localStorage.setItem(SIDEBAR_WIDTH_KEY, String(readerWidth));
   arrangeList();
-  viewHandle.resized();
   return readerWidth;
 }
 sidebarResizer.addEventListener("pointerdown", event => {
@@ -410,7 +411,6 @@ sidebarResizer.ondblclick = () => {
   readerWidth = SIDEBAR_DEFAULT;
   localStorage.setItem(SIDEBAR_WIDTH_KEY, String(readerWidth));
   arrangeList();
-  viewHandle.resized();
 };
 sidebarResizer.onkeydown = event => {
   const step = event.shiftKey ? 32 : 8;
@@ -622,7 +622,7 @@ viewHandle = mountSessionView(viewRoot.element(), {
   openSidebar: () => toggleSidebar(true),
   // The pane opening or shutting can change the list (the owner's order): the app arranges it at once,
   // before the view decides in the same task, so the view decides at its new width.
-  paneLayout: (name, on) => { app.classList.toggle(name, on); if (name === "preview-off") arrangeList(); },
+  paneLayout: (name, on) => { app.classList.toggle(name, on); if (name === "preview-off") arrangeList({ remeasure: false }); },
   paneCount: (key, text) => mobileShell?.paneCount(key, text),
   // What the view tells its host (stage 6). The view still draws its own top bar, title, turn and
   // Info included (the app's phone bar takes them at embedding's step 6), and the app has no use yet

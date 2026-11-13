@@ -146,7 +146,9 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  - `parentShown(id)`: the top bar offers a way back to this parent (the app writes the browser's
  *    Back to it for a deep-linked child).
  *  - `openList()`, `openSidebar()`: the top bar's back-to-the-list and reopen controls, the app's.
- *  - `paneLayout(name, on)`: the artifact pane opened, went full or is being resized.
+ *  - `paneLayout(name, on)`: the artifact pane opens or shuts, goes full or is being resized; said
+ *    before the view wears the state `on` names (#s431 stage 3), so the app lays out its list for the
+ *    pane first and the view decides its arrangement at the box that leaves it.
  *  - `paneCount(key, text)`: a phone pane's count changed (a wide phone's column shows it too).
  *
  *  The handle: `select(id)` and `open(id)` (a session chosen: the view takes it, then reads it),
@@ -573,9 +575,24 @@ if (keyboardMode === "engaged") {
 // remeasure then reached the record store before it existed. The reading options' first application,
 // later in the mount, measures everything, and the mount's end takes the width it left as the one
 // the next change is measured from.
-let paneLaidOutWidth = transcript.clientWidth, viewMounted = false;
+// It remeasures once, from the width it was last laid out at to the width it settles at, and only when
+// that width changed (#s431 stage 3): a remeasure at the same width throws every measured height away,
+// and one read while a track glides (the pane's, the outline's, or a host's list around the view)
+// scales every height to a column the reader never sees settled, from which the next change scales
+// again. So a glide of a track inside the view or around it is waited out first.
+let paneLaidOutWidth = transcript.clientWidth, viewMounted = false, settling = null;
+const tracksGliding = () => {
+  const glides = [...(element.getAnimations?.({ subtree: true }) ?? [])];
+  for (let node = element.parentElement; node; node = node.parentElement) glides.push(...(node.getAnimations?.() ?? []));
+  return glides.filter(glide => typeof CSSTransition !== "undefined" && glide instanceof CSSTransition && glide.transitionProperty === "grid-template-columns");
+};
 const paneLayoutChanged = () => {
-  if (!viewMounted) return;
+  if (!viewMounted || unmounted) return;
+  const glides = tracksGliding();
+  if (glides.length) {
+    settling ??= Promise.allSettled(glides.map(glide => glide.finished)).then(() => { settling = null; paneLayoutChanged(); });
+    return;
+  }
   const width = transcript.clientWidth;
   if (width === paneLaidOutWidth) return;
   paneLaidOutWidth = width;
@@ -4434,7 +4451,7 @@ return fenced({
     for (const [name, value] of elementBefore) element.setAttribute(name, value);
   },
   /** The view's width changed under it (the sidebar moved). */
-  resized: () => viewport.remeasure(),
+  resized: () => paneLayoutChanged(),
   /** Draw in "light" or "dark" (#s436); mdrev's pane and the diagrams follow the view's element. */
   setTheme: applyTheme,
   /** The view's key actions, by the keymap's names. */
