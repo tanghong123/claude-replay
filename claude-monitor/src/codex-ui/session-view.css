@@ -1310,7 +1310,7 @@
 :where(#sessionView.pl-max-w-1180).session-view.preview-off>.preview,:where(#sessionView.pl-max-w-1180) .session-view.preview-off>.preview{visibility:hidden;transition:transform .22s,visibility 0s .22s}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)).session-view>.preview,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .session-view>.preview,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)).session-view.preview-off>.preview,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .session-view.preview-off>.preview{transition:none}
 #sessionView.resizing{transition:none}
-#sessionView.sv-mounting{transition:none}
+#sessionView.sv-mounting,#sessionView.sv-mounting *{transition:none!important}
 #sessionView:where(.pl-max-w-1180),#sessionView:where(.pl-max-w-1180).preview-off{grid-template-columns:minmax(0,1fr)}
 :where(#sessionView) .markdown-table-scroll{width:100%;max-width:100%;margin:14px 0 18px;overflow-x:auto;border-radius:10px}
 :where(#sessionView) .markdown-table-scroll>table{display:table!important;width:100%!important;min-width:100%;margin:0!important;overflow:visible!important}
