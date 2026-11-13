@@ -9132,7 +9132,7 @@ fn the_app_shell_lays_out_its_list_by_the_owners_order() {
     );
     // The transcript is remeasured once, at the width it settles at, scaling the heights it keeps from
     // the width before; never at a width read mid-glide, nor twice.
-    let settled = |what: &str| {
+    let settled = |what: &str, within: f64| {
         harness::until(
             &tab,
             &format!("{REMEASURES}.count > 0"),
@@ -9146,11 +9146,11 @@ fn the_app_shell_lays_out_its_list_by_the_owners_order() {
             seen["expected"].as_f64().unwrap_or(f64::NAN),
         );
         assert!(
-            seen["count"] == 1 && (ratio - expected).abs() <= 0.01,
+            seen["count"] == 1 && (ratio - expected).abs() <= within,
             "{what}: one remeasure, from the width before to the width settled: {seen}"
         );
     };
-    settled("the transcript remeasured as the pane opened");
+    settled("the transcript remeasured as the pane opened", 0.01);
     harness::eval(
         &tab,
         "window.__mark(); document.getElementById('previewBtn').click(); 'ok'",
@@ -9164,11 +9164,75 @@ fn the_app_shell_lays_out_its_list_by_the_owners_order() {
         Duration::from_secs(10),
         probe,
     );
-    settled("the transcript remeasured as the pane shut");
+    settled("the transcript remeasured as the pane shut", 0.01);
     want(
         &harness::probe(&tab, probe),
         serde_json::json!({ "rail": false, "list": 300 }),
         "the pane shut, the list comes back",
+    );
+    // Every other change of the transcript's width remeasures once too, at the width it settles at, the
+    // view's own decision taken first (the review of 740a4cfa): the list's key beside the open pane
+    // (which read the width before the view rewrote the pane's), the outline folded and opened (which
+    // remeasured at the glide's start, at the same width, throwing every height away), and a resize
+    // that leaves the width alone remeasures nothing.
+    at(1600.0);
+    harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
+    harness::until(
+        &tab,
+        &format!(
+            "!document.getElementById('sessionView').classList.contains('preview-off') && {quiet}"
+        ),
+        "the pane to open at 1600px",
+        Duration::from_secs(10),
+        probe,
+    );
+    want(
+        &harness::probe(&tab, probe),
+        serde_json::json!({ "rail": false, "list": 300, "outline": "open" }),
+        "1600px with the pane open: the list and the outline beside the session and the pane",
+    );
+    harness::eval(&tab, "window.__mark(); document.getElementById('sidebarResizer').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', shiftKey: true, bubbles: true, cancelable: true })); 'ok'");
+    harness::until(
+        &tab,
+        &format!("Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) === 268 && {quiet}"),
+        "the list to narrow to 268px",
+        Duration::from_secs(5),
+        probe,
+    );
+    settled(
+        "the transcript remeasured as the list narrowed beside the open pane",
+        0.003,
+    );
+    let outline_key = "document.body.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'o', bubbles: true, cancelable: true })); 'ok'";
+    for (state, what) in [("glyphs", "folded"), ("open", "opened")] {
+        harness::eval(&tab, "window.__mark(); 'ok'");
+        harness::eval(&tab, outline_key);
+        harness::until(
+            &tab,
+            &format!("{probe}.outline === '{state}' && {quiet}"),
+            &format!("the outline {what}"),
+            Duration::from_secs(5),
+            probe,
+        );
+        settled(
+            &format!("the transcript remeasured as the outline {what}"),
+            0.003,
+        );
+    }
+    harness::eval(&tab, "window.__mark(); 'ok'");
+    harness::resize(&tab, 1600.0, 800.0);
+    harness::until(
+        &tab,
+        &format!("innerHeight < 900 && {quiet}"),
+        "a shorter window",
+        Duration::from_secs(5),
+        "innerHeight",
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let none = harness::probe(&tab, REMEASURES);
+    assert_eq!(
+        none["count"], 0,
+        "a resize that leaves the transcript's width alone remeasures nothing: {none}"
     );
     // A fresh reader at a 770px window: the view is laid out beside the list as the order puts it before
     // it decides, so its outline's default is a desktop's (wanted), which a wider window then opens.

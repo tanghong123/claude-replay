@@ -399,7 +399,7 @@ let droppedAttention = "";
     assert.equal(styles.appGate(".toast", "phone").written, ":where(:root:has(#sessionView.pl-phone)) .toast", "and the phone reader's");
     assert.match(appSource, /^addEventListener\("resize", \(\) => arrangeList\(\)\);$/m, "the app arranges its list as the window changes");
     assert.match(appSource, /paneLayout: \(name, on\) => \{ app\.classList\.toggle\(name, on\); if \(name === "preview-off"\) arrangeList\(\{ remeasure: false \}\); \},/, "as the pane opens or shuts, before the view decides");
-    assert.match(appSource, /onOutline: \(\{ wanted \}\) => \{ viewOutlineWanted = wanted; arrangeList\(\); \},/, "and as the reader's outline choice changes");
+    assert.match(appSource, /onOutline: \(\{ wanted \}\) => \{ viewOutlineWanted = wanted; arrangeList\(\{ remeasure: false \}\); \},/, "and as the reader's outline choice changes");
     assert.match(appSource, /room: \(\) => \(typeof listArranged\?\.list === "number" \? listArranged\.list - LIST_MIN : 0\),/, "the room the app could give is the list's give over 232");
     assert.match(appSource, /if \(open && listArranged && !listArranged\.canOpen\) return;/, "the rail's expand opens nothing where the list cannot fit");
     assert.match(appSource, /const hold = performance\.now\(\) >= listGlideUntil;\n  if \(hold\) app\.classList\.add\("app-holding"\);/, "a decision of the order's never glides, a reader's toggle does");
@@ -2104,7 +2104,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /"navigator-toggle": \(\) => toggleNavigator\(!uiState\.navigatorOpen\)/, "the key walks the two states it can reach");
   // #s431 stage 3: the reader's choice is what is remembered; the order then arranges the view again
   // (gliding, as a reader's own toggle does), and the outline is drawn as arranged.
-  assert.match(viewSource, /^function toggleNavigator\(open\) \{\n(?:  \/\/.*\n)*  if \(open && !uiState\.navigatorOpen && !layout\.phone\(\) && !layout\.arrangement\(\)\?\.outlineCanOpen\) return;\n  const changed = uiState\.navigatorOpen !== open;\n  uiState\.navigatorOpen = open; persist\(\);\n(?:  \/\/.*\n)*  if \(changed\) say\(options\.onOutline, \{ wanted: open \}\);\n  layout\.glide\(\); layout\.decide\(\); renderNavigator\(\); viewport\.remeasure\(\);\n\}$/m, "one path, remembered, said to the host before the view decides (so the room it makes is there), arranged, re-measured; opening refused only where the outline cannot open");
+  assert.match(viewSource, /^function toggleNavigator\(open\) \{\n(?:  \/\/.*\n)*  if \(open && !uiState\.navigatorOpen && !layout\.phone\(\) && !layout\.arrangement\(\)\?\.outlineCanOpen\) return;\n  const changed = uiState\.navigatorOpen !== open;\n  uiState\.navigatorOpen = open; persist\(\);\n(?:  \/\/.*\n)*  if \(changed\) say\(options\.onOutline, \{ wanted: open \}\);\n  layout\.glide\(\); layout\.decide\(\); renderNavigator\(\); paneLayoutChanged\(\{ decided: true \}\);\n\}$/m, "one path, remembered, said to the host before the view decides (so the room it makes is there), arranged, re-measured once its glide is done; opening refused only where the outline cannot open");
   assert.match(viewSource, /byId\("navigatorRailExpand"\)\.onclick = \(\) => toggleNavigator\(!uiState\.navigatorOpen\);/, "the glyphs' expand folds the outline for good while it is pressed, and opens it otherwise");
   assert.doesNotMatch(shellSource, /setNavigatorHidden/, "#148: the third state has no setter left");
   // #88: the column is an accordion — the transform that moved a head alone (and left its body
@@ -5025,11 +5025,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /engaged: \(\) => engaged, keysFirst: keyboardMode === "engaged", toast,/, "the pane's image viewer reads the engagement too, and hears its keys first in a host");
   // Mounted alone, the pane shutting itself as it is built changed the width, and the remeasure
   // reached the record store before it existed: the pane's layout waits for the mount's end.
-  assert.match(viewSource, /const paneLayoutChanged = \(\) => \{\n  if \(!viewMounted \|\| unmounted\) return;/, "the pane remeasures nothing while the view mounts, nor once it is gone");
+  assert.match(viewSource, /const paneLayoutChanged = \(\{ decided = false \} = \{\}\) => \{\n  if \(!viewMounted \|\| unmounted\) return;\n  if \(!decided\) layout\.decide\(\);/, "the pane remeasures nothing while the view mounts, nor once it is gone");
   // #s431 stage 3: the transcript remeasures once its width settles, a glide of a track in or around
   // the view waited out, and the host's `resized()` goes the same way.
   assert.match(viewSource, /if \(glides\.length\) \{\n    settling \?\?= Promise\.allSettled\(glides\.map\(glide => glide\.finished\)\)/, "a glide is waited out before the remeasure");
   assert.match(viewSource, /resized: \(\) => paneLayoutChanged\(\),/, "the host's resize remeasures as the pane's layout does");
+  // …and so does the window's resize (the outline's toggle is held above): the view remeasures for its width one way.
+  assert.match(viewSource, /addEventListener\("resize", \(\) => \{ paneLayoutChanged\(\); updateStickyHeaders\(\); \}/, "the window's resize remeasures only a width that changed");
   assert.match(viewSource, /^renderHeader\(\); renderNavigator\(\); paintJump\(\);\n(?:\/\/[^\n]*\n)+paneLaidOutWidth = transcript\.clientWidth;\nviewMounted = true;$/m, "and does from the first render on, measured from the width the mount left");
   // The engaged binding, run: the engagement and the keymap as the view writes them, over a fake
   // document, the view's element, a host's node, a guest and the task card the view floats.

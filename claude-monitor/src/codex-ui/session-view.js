@@ -292,7 +292,6 @@ function dragPane(at) {
     const asked = element.getBoundingClientRect().right - 10 - at - 1;
     uiState.paneShare = slack > 0 ? Math.min(1, Math.max(0, (asked - M) / slack)) : 0.5;
   }
-  layout.decide();
   paneLayoutChanged();
   if (at === "equal") persist();
 }
@@ -579,15 +578,22 @@ if (keyboardMode === "engaged") {
 // that width changed (#s431 stage 3): a remeasure at the same width throws every measured height away,
 // and one read while a track glides (the pane's, the outline's, or a host's list around the view)
 // scales every height to a column the reader never sees settled, from which the next change scales
-// again. So a glide of a track inside the view or around it is waited out first.
+// again. So it is the ONE way the view remeasures for its width: the pane, the outline, the window's
+// resize and a host's `resized()` all come here. It takes the view's own decision first, since the
+// pane's width is the layout's (`--preview-fit`) and a host's change to the view's box reaches the
+// layout only at its observer's next delivery; and it waits out any glide that moves the transcript's
+// edges: a transition of a width or a grid's tracks on a box that holds the transcript, or on one beside
+// such a box (a host's list beside the view).
 let paneLaidOutWidth = transcript.clientWidth, viewMounted = false, settling = null;
-const tracksGliding = () => {
-  const glides = [...(element.getAnimations?.({ subtree: true }) ?? [])];
-  for (let node = element.parentElement; node; node = node.parentElement) glides.push(...(node.getAnimations?.() ?? []));
-  return glides.filter(glide => typeof CSSTransition !== "undefined" && glide instanceof CSSTransition && glide.transitionProperty === "grid-template-columns");
-};
-const paneLayoutChanged = () => {
+const WIDTH_PROPERTIES = new Set(["grid-template-columns", "width", "min-width", "max-width", "flex-basis", "flex-grow", "flex-shrink",
+  "padding-left", "padding-right", "padding-inline-start", "padding-inline-end", "margin-left", "margin-right",
+  "margin-inline-start", "margin-inline-end", "border-left-width", "border-right-width", "left", "right"]);
+const movesTheTranscript = target => !!target?.contains && (target.contains(transcript) || !!target.parentElement?.contains(transcript));
+const tracksGliding = () => viewRoot.animations().filter(glide => typeof CSSTransition !== "undefined" && glide instanceof CSSTransition
+  && WIDTH_PROPERTIES.has(glide.transitionProperty) && movesTheTranscript(glide.effect?.target));
+const paneLayoutChanged = ({ decided = false } = {}) => {
   if (!viewMounted || unmounted) return;
+  if (!decided) layout.decide();
   const glides = tracksGliding();
   if (glides.length) {
     settling ??= Promise.allSettled(glides.map(glide => glide.finished)).then(() => { settling = null; paneLayoutChanged(); });
@@ -598,11 +604,12 @@ const paneLayoutChanged = () => {
   paneLaidOutWidth = width;
   viewport.remeasure();
 };
-layoutHeard = paneLayoutChanged;
+layoutHeard = () => paneLayoutChanged({ decided: true });
 // The reader opened or shut the pane: the order arranges the view again, and the pane glides whole
 // (`glide`), even where the host's list gives way in the same moment.
-const paneToggled = () => { layout.glide(); layout.decide(); paneLayoutChanged(); };
-const preview = new Preview({ phone: () => layout.phone(), layoutChanged: paneToggled, paneToggled: change => layout.toggled(change), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
+// The pane's layout changed: a real open or shut has already decided and glided (`toggled`), so this
+// only remeasures once that glide is done.
+const preview = new Preview({ phone: () => layout.phone(), layoutChanged: () => paneLayoutChanged(), paneToggled: change => layout.toggled(change), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
 const attachmentViewer = new AttachmentViewer({ toast });
 // What the compose box asks of the app goes nowhere once the view is unmounted: a dialog's answer
 // still settling, a send still out.
@@ -3205,7 +3212,7 @@ function toggleNavigator(open) {
   // The host hears it first, so a host that makes room for the outline (the app's list narrowing) has
   // done so when the view decides, and the outline opens in this one decision.
   if (changed) say(options.onOutline, { wanted: open });
-  layout.glide(); layout.decide(); renderNavigator(); viewport.remeasure();
+  layout.glide(); layout.decide(); renderNavigator(); paneLayoutChanged({ decided: true });
 }
 /** The outline as the order arranged it (#s431 stage 3): open at its track only where the arrangement
  *  says so, its glyphs otherwise (`navigator-off`, in their column or in the top bar), whatever the
@@ -3576,7 +3583,7 @@ byId("sessionFoldAll").onclick = () => { const close = recordState.units.some(un
 byId("mobileBack").onclick = () => options.openList?.();
 byId("sidebarReopen").onclick = () => options.openSidebar?.();
 addEventListener("hashchange", () => { landedHash = ""; landOnHash(); }, { signal });
-addEventListener("resize", () => { viewport.remeasure(); updateStickyHeaders(); }, { passive: true, signal });
+addEventListener("resize", () => { paneLayoutChanged(); updateStickyHeaders(); }, { passive: true, signal });
 // The keymap (parity #11): the classic view's keys, resolved by keymap.js, acted on here.
 const userUnits = () => recordState.units.filter(unit => unit.type === "user");
 // The unit the reader is "at": the first mounted unit that starts at (or within a line above)

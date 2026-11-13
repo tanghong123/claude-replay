@@ -40,6 +40,9 @@ export const viewRoot = Object.freeze({
   sheets: () => doc().head,
   /** Where the view sets the custom properties it measures (`--preview`, `--phone-top`, …). */
   styleRoot: () => rootElement(),
+  /** The page's running animations and transitions, which the view reads to wait out a glide of a
+   *  box around it before it remeasures (#s431 stage 3). */
+  animations: () => doc()?.getAnimations?.() ?? [],
   /** The layout viewport's width: the window's, less a classic scrollbar (`innerWidth` counts one). */
   viewportWidth: () => rootElement()?.clientWidth ?? (typeof innerWidth === "number" ? innerWidth : 0),
   /** "dark" or "light": the theme the view draws in, carried by the view's own element, whose

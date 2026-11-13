@@ -280,7 +280,7 @@ let listArranged = null, listGlideUntil = 0;
 /** What the order reads for the list: the window, the screen, the reader's width and collapse, and what
  *  the view has said of itself (its pane, and whether the reader wants its outline). */
 const listInputs = () => ({
-  width: document.documentElement.clientWidth || innerWidth,
+  width: page.html()?.clientWidth || innerWidth,
   coarse: coarseScreen.matches,
   short: innerHeight <= 500,
   list: readerListWidth(),
@@ -288,8 +288,8 @@ const listInputs = () => ({
   view: { paneOpen: !app.classList.contains("preview-off"), outlineWanted: viewOutlineWanted },
 });
 /** Lays the list out by the order, and tells the view its box changed (`resized`, which remeasures the
- *  transcript once its width settles), except for the view's own pane: the view remeasures for that
- *  itself, from the arrangement it is about to make. */
+ *  transcript once its width settles), except for the view's own pane and outline: the view remeasures
+ *  for those itself, from the arrangement it is about to make. */
 function arrangeList({ remeasure = true } = {}) {
   const decided = arrangeApp(listInputs());
   if (listArranged && JSON.stringify(decided) === JSON.stringify(listArranged)) return;
@@ -634,7 +634,7 @@ viewHandle = mountSessionView(viewRoot.element(), {
   onLinkCopied: () => {},
   onToast: toast,
   // The reader's choice of the outline (#s431 stage 3), which the app keeps to arrange its list by.
-  onOutline: ({ wanted }) => { viewOutlineWanted = wanted; arrangeList(); },
+  onOutline: ({ wanted }) => { viewOutlineWanted = wanted; arrangeList({ remeasure: false }); },
   // The room the app could give the view: its list's width less 232 while the list is shown (it
   // narrows for the outline but never folds for it), and none on the rail or in the drawer.
   room: () => (typeof listArranged?.list === "number" ? listArranged.list - LIST_MIN : 0),
