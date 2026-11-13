@@ -322,7 +322,7 @@ export const LIST_OUTSIDE = Object.freeze([
  *  column and its pane. A rule that reads one is the app placing or styling the
  *  view from outside, and stays the app's (stage 6 lays the view out by its own pane's size). */
 export const APP_STATES = Object.freeze([
-  ".column-pane-on", ".mobile-detail", ".phone-column-off", ".sidebar-off", ".sidebar-tight",
+  ".column-pane-on", ".mobile-detail", ".phone-column-off", ".sidebar-off", ".sidebar-tight", ".app-drawer", ".app-holding",
 ]);
 
 /** Names the app's chrome and the view both draw: the glyph button, generic states and labels, and
@@ -692,6 +692,59 @@ export function arrangedGate(sel, alternatives, body = "") {
   return null;
 }
 
+/** #s431 stage 3 (design/pane-layout.md, "The owner's order"). The app lays out its list by the order
+ *  (`arrangeApp`, set on `#app` by app.js), so the app's rules under the phone's window query read
+ *  what the order decided instead of the window:
+ *
+ *  - **The drawer.** A rule for the list's parts, its handle and scrim, or the app's grid stands where
+ *    the list is the drawer, `#app.app-drawer`: below 554px with a mouse, a touch window too narrow to
+ *    keep the view wider than 760px beside the rail, and a phone held sideways.
+ *  - **The phone reader.** A rule for the view's parts the app's file styles (the outline's sheets,
+ *    the task card, the toast above the dock, the inputs a phone's keyboard would zoom into) stands
+ *    where the view is the phone reader, `#sessionView.pl-phone`.
+ *  - The desktop's complement, `(min-width:761px) and …`, stands where the list is not the drawer, and
+ *    the demo's rail-off rules at `(max-width:700px)`, which hid the rail, go: the order keeps the
+ *    rail wherever it puts it.
+ *
+ *  Every gate is a `:where()`, so a selector weighs what it did. Any other query of the app's keeps it
+ *  (`APP_KEPT_QUERIES`, which the contract holds the file to). */
+const squeeze = prelude => prelude.replace(/\s+/g, "");
+const APP_QUERIES = new Map([
+  ["@media(max-width:760px),(pointer:coarse)and(max-height:500px)", { mode: "phone" }],
+  ["@media(max-width:760px)and(hover:hover)", { mode: "phone", residual: "@media(hover:hover)" }],
+  ["@media(min-width:761px)and(min-height:501px),(min-width:761px)and(pointer:fine)", { mode: "listed" }],
+  ["@media(max-width:700px)", { mode: "dropped" }],
+]);
+/** The width queries the app's file keeps, each for a reason the order does not decide: the pane's
+ *  overlay band, whose list swaps without a glide (`#app{transition:none}`) and whose grid keeps two
+ *  tracks; the outline's token on the page's root, which the view's element redeclares; and a wide
+ *  phone held sideways, whose column is the phone's own. */
+export const APP_KEPT_QUERIES = Object.freeze(["@media(max-width:1180px)", "@media(max-width:900px)", "@media(pointer:coarse)and(max-height:500px)and(min-width:900px)"]);
+const DRAWER_PART = /(?:\.sidebar|\.side-head|\.tree-row|\.tree|\.drawer-scrim|\.drawer-handle|\.sidebar-mini|\.sidebar-resizer|#sidebarCollapse|\.section-view-scrim|\.section-view-menu|\.session-filter-options)(?![\w-])/;
+const APP_GRID = /^(?:\.app|#app)(?:\.preview-off)?$/;
+const PHONE_VIEW_PART = /(?:\.phone-pane-body|\.phone-pane-jump|\.task-scrim|#taskPopover|\.navigator-options|\.toast|\.activity-empty)(?![\w-])|^(?:input|textarea|select)(?![\w-])|\s(?:button)$/;
+export const APP_ARRANGED = Object.freeze({ drawer: "#app.app-drawer", listed: "#app:not(.app-drawer)", phone: "#sessionView.pl-phone" });
+export function appGate(sel, mode, body = "") {
+  if (mode === "dropped") return { kind: "dropped" };
+  const parts = compounds(sel);
+  const first = parts[0].text;
+  const subject = withoutNot(parts[parts.length - 1].text);
+  const declares = declarations(body).map(([prop]) => prop);
+  let kind;
+  if (mode === "listed") kind = "listed";
+  else if (DRAWER_PART.test(sel) || APP_GRID.test(subject) || (/^:root$/.test(first) && parts.length === 1 && declares.every(prop => prop === "--sidebar"))) kind = "drawer";
+  else if (PHONE_VIEW_PART.test(sel)) kind = "phone";
+  else throw new Error(`app-shell.css: \`${sel}\` stands under the phone's window query; say in DRAWER_PART or PHONE_VIEW_PART whether the drawer or the phone reader decides it`);
+  const cond = APP_ARRANGED[kind];
+  const onApp = kind === "drawer" ? ".app-drawer" : kind === "listed" ? ":not(.app-drawer)" : ":has(#sessionView.pl-phone)";
+  let written;
+  if (/^(?::root|html)(?![\w-])/.test(first)) written = joinCompounds([{ ...parts[0], text: `${first}:where(:has(${cond}))` }, ...parts.slice(1)]);
+  else if (/^(?:#app|\.app)(?![\w-])/.test(first)) written = joinCompounds([{ ...parts[0], text: `${first}:where(${onApp})` }, ...parts.slice(1)]);
+  else written = `:where(${kind === "phone" ? `:root:has(${cond})` : cond}) ${sel}`;
+  if (compare(specificity(sel), specificity(written))) throw new Error(`app-shell.css: \`${written}\` weighs ${specificity(written)} where \`${sel}\` weighed ${specificity(sel)}`);
+  return { kind, written };
+}
+
 /** A view selector, which starts at the view's element, gated by a size query's alternatives: the
  *  classes go on that element inside `:where()`, so the selector weighs what it did. */
 /** A selector led by `.app` with only the pane's states the view's element carries too (`preview-off`,
@@ -758,7 +811,7 @@ export function deriveStylesheets({ reference, production }) {
   // `listChild`: the app's selectors that go on through the list's element (below), as written.
   // `list`: the list's decisions, kept apart so the view's report reads as it did.
   const report = {
-    kinds: {}, keyframes: { view: [], list: [], app: [] }, reachIn: [], rootDeclarations: [], ties: [], listChild: [], arranged: [],
+    kinds: {}, keyframes: { view: [], list: [], app: [] }, reachIn: [], rootDeclarations: [], ties: [], listChild: [], arranged: [], appArranged: [],
     list: { kinds: {}, rootDeclarations: [], ties: [], left: [] },
   };
   // The one rewrite the app's file takes (#s430 stage 3): the tree is a child of the list's element,
@@ -810,16 +863,27 @@ export function deriveStylesheets({ reference, production }) {
   // app's keep the query.
   const layoutClasses = new Set();
   const sizeQueries = new Map(); // each size query the view's rules stood under → its alternatives
-  const emit = (nodes, depth, gate) => {
-    const out = { view: [], list: [], app: [] };
+  const emit = (nodes, depth, gate, appQuery = null) => {
+    const out = { view: [], list: [], app: [], appFree: [] };
     for (const node of nodes) {
       if (node.kind === "group") {
         // A query the classes cannot say matters only where the view has rules under it.
         let alternatives = null;
         let refused = null;
         try { alternatives = sizeGate(node.prelude); } catch (error) { refused = error; }
-        const inner = emit(node.children, depth + 1, gate || alternatives);
-        for (const side of ["list", "app"]) if (inner[side].length) out[side].push(`${node.prelude}{`, ...inner[side], "}");
+        const ordered = APP_QUERIES.get(squeeze(node.prelude)) || null;
+        if (ordered && appQuery) throw new Error(`app-shell.css: \`${node.prelude}\` stands inside another group`);
+        const inner = emit(node.children, depth + 1, gate || alternatives, appQuery || ordered);
+        if (inner.list.length) out.list.push(`${node.prelude}{`, ...inner.list, "}");
+        if (ordered) {
+          // The app's rules under a query of the order are written free of it, gated by what the order
+          // decided (`appGate`), in their place.
+          if (inner.app.length) throw new Error(`app-shell.css: \`${node.prelude}\` kept rules the order should gate`);
+          if (inner.appFree.length) out.app.push(...(ordered.residual ? [`${ordered.residual}{`, ...inner.appFree, "}"] : inner.appFree));
+        } else {
+          if (inner.app.length) out.app.push(`${node.prelude}{`, ...inner.app, "}");
+          if (inner.appFree.length) throw new Error(`app-shell.css: \`${node.prelude}\` holds a query of the order`);
+        }
         if (!inner.view.length) continue;
         if (refused) throw refused;
         if (gate) throw new Error(`session-view.css: \`${node.prelude}\` stands inside a size query; the view's classes cannot nest`);
@@ -842,6 +906,7 @@ export function deriveStylesheets({ reference, production }) {
         const listRoot = [];
         const listSidebar = [];
         const app = [];
+        const appGated = new Map(); // what the order gates each by → the selectors, in order
         for (const sel of splitTop(node.prelude)) {
           let decision = classify(sel);
           // An app state on the view under a size query, where the state is one the view's element
@@ -863,7 +928,11 @@ export function deriveStylesheets({ reference, production }) {
             list: listDecision.list.length > 0, appOnly: !!decision.app && !listDecision.list.length,
           });
           if (decision.kind === "an app state on the view") report.reachIn.push(sel);
-          if (decision.app && listDecision.keepApp) app.push(appSelector(decision.app));
+          if (decision.app && listDecision.keepApp && appQuery) {
+            const gated = appGate(appSelector(decision.app), appQuery.mode, node.body);
+            report.appArranged.push({ kind: gated.kind, sel: gated.written || sel });
+            if (gated.written) appGated.set(gated.kind, [...(appGated.get(gated.kind) || []), gated.written]);
+          } else if (decision.app && listDecision.keepApp) app.push(appSelector(decision.app));
           else if (decision.app) report.list.left.push(sel);
           for (const moved of decision.view) {
             const arranged = gate ? arrangedGate(moved, gate, node.body) : null;
@@ -889,6 +958,7 @@ export function deriveStylesheets({ reference, production }) {
           }
         }
         if (app.length) out.app.push(`${app.join(",")}{${node.body}}`);
+        for (const sels of appGated.values()) out.appFree.push(`${sels.join(",")}{${node.body}}`);
         if (viewPlain.length) out.view.push(`${viewPlain.join(",")}{${node.body}}`);
         if (viewRoot.length) {
           const kept = declarations(node.body).filter(([prop, text]) => {

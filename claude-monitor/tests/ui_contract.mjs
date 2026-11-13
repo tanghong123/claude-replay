@@ -377,6 +377,35 @@ let droppedAttention = "";
       assert.deepEqual([...on].filter(name => name.startsWith("pl-outline-")), [`pl-outline-${arrangement.outline}`], `one outline class at ${where}`);
     }
   }
+  // #s431 stage 3: the app's list by the order (`arrangeApp`, app.js `arrangeList`). The app's rules
+  // under the phone's window query read what the order decided: the drawer for the list's parts and
+  // the app's grid, the phone reader for the view's parts the app's file styles; the desktop's
+  // complement stands where the list is not the drawer, and the demo's rail-off rules at 700px go.
+  {
+    const kinds = derived.report.appArranged.reduce((n, { kind }) => ({ ...n, [kind]: (n[kind] || 0) + 1 }), {});
+    assert.ok(kinds.drawer >= 20 && kinds.phone >= 15 && kinds.listed >= 3 && kinds.dropped >= 4, `the app's rules the order decides: ${JSON.stringify(kinds)}`);
+    for (const { kind, sel } of derived.report.appArranged) {
+      if (kind === "dropped") continue;
+      assert.ok(sel.includes(kind === "drawer" ? ".app-drawer" : kind === "listed" ? ":not(.app-drawer)" : "#sessionView.pl-phone"), `${kind}: ${sel}`);
+      if (/\.(?:drawer-handle|drawer-scrim|sidebar-mini|side-head|tree-row)(?![\w-])/.test(sel)) assert.equal(kind, "drawer", `the list's parts are the drawer's: ${sel}`);
+      if (/\.(?:phone-pane-body|toast)(?![\w-])|#taskPopover/.test(sel)) assert.equal(kind, "phone", `the view's parts are the phone reader's: ${sel}`);
+    }
+    const widthQueries = [...new Set((derived.app.match(/@media[^{]*/g) || []).filter(q => /width/.test(q)).map(q => q.replace(/\s+/g, "")))];
+    assert.deepEqual(widthQueries.filter(q => !styles.APP_KEPT_QUERIES.includes(q)), [], "the app's file keeps a window's width only where the order does not decide (APP_KEPT_QUERIES)");
+    assert.doesNotMatch(derived.app, /sidebar-reopen\{display:grid!important|\.sidebar-off \.sidebar-mini\{display:none/, "no window hides the rail");
+    assert.throws(() => styles.appGate(".mystery-part", "phone"), /DRAWER_PART or PHONE_VIEW_PART/, "a rule under the phone's query that neither table names stops the build");
+    assert.equal(styles.appGate(".drawer-handle", "phone").written, ":where(#app.app-drawer) .drawer-handle", "the drawer's gate weighs nothing");
+    assert.equal(styles.appGate("#app>.sidebar", "phone").written, "#app:where(.app-drawer)>.sidebar", "…on the app's element too");
+    assert.equal(styles.appGate(".toast", "phone").written, ":where(:root:has(#sessionView.pl-phone)) .toast", "and the phone reader's");
+    assert.match(appSource, /^addEventListener\("resize", \(\) => arrangeList\(\)\);$/m, "the app arranges its list as the window changes");
+    assert.match(appSource, /paneLayout: \(name, on\) => \{ app\.classList\.toggle\(name, on\); if \(name === "preview-off"\) arrangeList\(\); \},/, "as the pane opens or shuts, before the view decides");
+    assert.match(appSource, /onOutline: \(\{ wanted \}\) => \{ viewOutlineWanted = wanted; arrangeList\(\); \},/, "and as the reader's outline choice changes");
+    assert.match(appSource, /room: \(\) => \(typeof listArranged\?\.list === "number" \? listArranged\.list - LIST_MIN : 0\),/, "the room the app could give is the list's give over 232");
+    assert.match(appSource, /if \(open && listArranged && !listArranged\.canOpen\) return;/, "the rail's expand opens nothing where the list cannot fit");
+    assert.match(appSource, /const hold = performance\.now\(\) >= listGlideUntil;\n  if \(hold\) app\.classList\.add\("app-holding"\);/, "a decision of the order's never glides, a reader's toggle does");
+    assert.match(productionCss, /#app\.app-holding,#app\.app-holding>\.sidebar\{transition:none!important\}/, "…and holds the app's grid and the drawer alone, never the view's own glide");
+    assert.doesNotMatch(appSource, /(?<!WIDE_)PHONE_QUERY/, "the app reads no phone query: the order decides the drawer (a wide phone's column keeps its own)");
+  }
   // #s430 stage 3: the app's file takes one rewrite, the demo's two rules naming the tree as the
   // sidebar's child, which go on through the list's element at the same weight.
   assert.deepEqual(derived.report.listChild, [".app.sidebar-off .sidebar>:where(.session-list)>.tree", ".sidebar>:where(.session-list)>.tree"], "the demo's two sidebar>tree rules go on through #sessionList, and only they");
@@ -3432,8 +3461,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(productionCss, /\.app\.sidebar-off \.sidebar-resizer\{display:none\}/, "…and the rail has nothing to drag");
   assert.match(appSource, /const SIDEBAR_MIN = 232, SIDEBAR_MAX = 520, SIDEBAR_DEFAULT = 300;/, "the width is clamped at both ends");
   assert.match(appSource, /Math\.max\(SIDEBAR_MIN, Math\.min\(SIDEBAR_MAX, Math\.round\(Number\.isFinite\(asked\) \? asked : SIDEBAR_DEFAULT\)\)\)/, "…on every path that sets it, and a drag to x=0 clamps to the minimum rather than falling back to the default");
-  assert.match(appSource, /localStorage\.setItem\(SIDEBAR_WIDTH_KEY, String\(width\)\)/, "…and remembered for the viewer");
-  assert.match(appSource, /setSidebarWidth\(localStorage\.getItem\(SIDEBAR_WIDTH_KEY\) \|\| SIDEBAR_DEFAULT, false\);/, "…and restored on load");
+  assert.match(appSource, /localStorage\.setItem\(SIDEBAR_WIDTH_KEY, String\(readerWidth\)\)/, "…and remembered for the viewer");
+  assert.match(appSource, /readerWidth = clampWidth\(localStorage\.getItem\(SIDEBAR_WIDTH_KEY\) \|\| SIDEBAR_DEFAULT\);/, "…and restored on load");
   assert.match(appSource, /try \{ sidebarResizer\.setPointerCapture\(event\.pointerId\); \} catch \(_\) \{\}/, "a refused pointer capture does not end the drag");
   console.log("#96 sidebar head and resize cases passed");
 }

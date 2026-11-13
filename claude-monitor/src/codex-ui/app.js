@@ -5,7 +5,7 @@
 // (session-list-view.js) and the session view (session-view.js) in it, mounting each as a host would.
 import { svg } from "./icons.js";
 import { backend } from "./backend.js";
-import { PHONE_QUERY, WIDE_PHONE_QUERY } from "./shared/capabilities.js";
+import { WIDE_PHONE_QUERY } from "./shared/capabilities.js";
 import { controlState, indexState, persist as persistIndex, searchState, selectedRow } from "./state.js";
 import { sessionFilterBuckets, FILTER_BUCKETS, FILTER_LABELS } from "./shared/state-labels.js";
 import { bindKeymap, hintFor } from "./shared/keymap.js";
@@ -14,6 +14,7 @@ import { escapeText } from "./view-model.js";
 import { mountSessionList } from "./session-list-view.js";
 import { mountSessionView, PHONE_PANES } from "./session-view.js";
 import { page, viewRoot } from "./view-root.js";
+import { arrangeApp, arrangeView, GLIDE_MS, LIST_MIN, M } from "./pane-layout.js";
 
 // The session view's handle, once it is mounted (below). Declared first: the drawer's set-up runs
 // before the mount and asks the view to close a sheet that cannot be open yet; the list's options
@@ -266,14 +267,60 @@ if (localStorage.getItem("am-demo-theme") === "dark") page.html().dataset.theme 
 // window grown past the phone wears it again.
 // The rail is the list drawn small (stage 4): the app decides when, and tells the list, which opens its
 // flyouts only then and closes one open when the sidebar comes back.
-function applySidebar() {
-  app.classList.toggle("sidebar-off", !indexState.sidebarOpen && !matchMedia(PHONE_QUERY).matches);
+//
+// #s431 stage 3 (design/pane-layout.md, "The owner's order"): the app lays out its list from the window,
+// beside what the view needs (`arrangeApp`): the drawer (`app-drawer`, the phone's own list, or a wide
+// phone's column held sideways), the rail (`sidebar-off`), or the list at a width, which narrows toward
+// 232px before the view's outline folds and gives way to the rail before the session or the pane does.
+// The reader's collapse is remembered (`indexState.sidebarOpen`) and a wider window never undoes it; a
+// fold the width forced comes back once there is room. A decision of the app's never glides
+// (`app-holding`); the reader's own collapse and expand do.
+const coarseScreen = matchMedia("(pointer:coarse)");
+let listArranged = null, listGlideUntil = 0;
+function arrangeList() {
+  const decided = arrangeApp({
+    width: document.documentElement.clientWidth || innerWidth,
+    coarse: coarseScreen.matches,
+    short: innerHeight <= 500,
+    list: readerListWidth(),
+    collapsed: !indexState.sidebarOpen,
+    view: { paneOpen: !app.classList.contains("preview-off"), outlineWanted: viewOutlineWanted },
+  });
+  if (listArranged && JSON.stringify(decided) === JSON.stringify(listArranged)) return;
+  // A window narrowed into the drawer finds it shut, over nothing: it opens from its handle.
+  const intoDrawer = !!listArranged && listArranged.list !== "drawer" && decided.list === "drawer";
+  listArranged = decided;
+  if (intoDrawer) mobileShell?.setDrawer(false);
+  const hold = performance.now() >= listGlideUntil;
+  if (hold) app.classList.add("app-holding");
+  app.classList.toggle("app-drawer", decided.list === "drawer");
+  if (typeof decided.list === "number") drawListWidth(decided.list);
+  app.classList.toggle("sidebar-off", decided.list === "rail");
   listHandle.compact(app.classList.contains("sidebar-off"));
+  paintRailExpand();
+  app.getBoundingClientRect();
+  if (hold) app.classList.remove("app-holding");
+  viewHandle?.resized();
 }
-function toggleSidebar(open) { indexState.sidebarOpen = open; applySidebar(); persist(); viewHandle.resized(); }
+// The rail's expand is disabled where the list cannot open beside what the view needs (its title says
+// why; `aria-disabled`, so the title still shows); the drawer's handle always opens the drawer.
+function paintRailExpand() {
+  const expand = page.byId("sidebarMiniExpand"), blocked = !!listArranged && !listArranged.canOpen;
+  expand.setAttribute("aria-disabled", String(blocked));
+  expand.title = blocked ? "Too narrow to open the sidebar beside the session: widen the window" : `Expand the sidebar  ( ${hintFor("sidebar-toggle")} )`;
+}
+function toggleSidebar(open) {
+  if (open && listArranged && !listArranged.canOpen) return;
+  indexState.sidebarOpen = open;
+  listGlideUntil = performance.now() + GLIDE_MS;
+  arrangeList();
+  persist();
+  viewHandle.resized();
+}
 page.byId("sidebarCollapse").onclick = () => toggleSidebar(false); page.byId("sidebarMiniExpand").onclick = () => toggleSidebar(true);
 page.byId("sidebarCollapse").title = `Collapse the sidebar into its icon rail  ( ${hintFor("sidebar-toggle")} )`;
-page.byId("sidebarMiniExpand").title = `Expand the sidebar  ( ${hintFor("sidebar-toggle")} )`;
+addEventListener("resize", () => arrangeList());
+coarseScreen.addEventListener("change", () => arrangeList());
 // #96: the session list is resizable, the way the preview pane is — a handle on the sidebar's
 // own right edge. The width is the viewer's: it is written to `--sidebar-user` (production.css
 // feeds it to the grid only above the mobile breakpoint, so a phone keeps its full-width
@@ -293,14 +340,19 @@ sidebarResizer.setAttribute("aria-valuemin", String(SIDEBAR_MIN));
 sidebarResizer.setAttribute("aria-valuemax", String(SIDEBAR_MAX));
 sidebarResizer.tabIndex = 0;
 page.$(".sidebar").append(sidebarResizer);
-function sidebarWidth() {
-  return Math.round(page.$(".sidebar").getBoundingClientRect().width) || SIDEBAR_DEFAULT;
-}
-function setSidebarWidth(value, remember) {
+// Two widths, kept apart (#s431 stage 3): the READER's, which the drag, the arrow keys and storage
+// keep, and the one the list is GIVEN, which the owner's order narrows toward 232px for the view
+// (`arrangeList`), and which the head's tightness and the room the app could give the view read.
+let readerWidth = SIDEBAR_DEFAULT;
+const clampWidth = value => {
   // A drag that reaches x=0 is a drag to the minimum, not a request for the default: 0 is a
   // width, so only a value that is not a number at all falls back.
   const asked = Number(value);
-  const width = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.round(Number.isFinite(asked) ? asked : SIDEBAR_DEFAULT)));
+  return Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.round(Number.isFinite(asked) ? asked : SIDEBAR_DEFAULT)));
+};
+function readerListWidth() { return readerWidth; }
+/** The list drawn at the width it is given. */
+function drawListWidth(width) {
   page.html().style.setProperty("--sidebar-user", `${width}px`);
   // Below `SIDEBAR_TIGHT` the head's own row — the shell switch and five glyphs — is wider than
   // the sidebar, and the last of them (the sidebar collapse) would sit outside it. The CSS class
@@ -309,10 +361,24 @@ function setSidebarWidth(value, remember) {
   // 237px wide and needs 275 with the head's padding, against a 232px minimum).
   app.classList.toggle("sidebar-tight", width < SIDEBAR_TIGHT);
   sidebarResizer.setAttribute("aria-valuenow", String(width));
+}
+/** The widest the list may be dragged now: its width as given and what the view has beyond its least,
+ *  so the drag takes from the session and the pane down to M each and folds nothing. */
+function widestList() {
+  if (typeof listArranged?.list !== "number") return SIDEBAR_MAX;
+  const box = viewRoot.element()?.getBoundingClientRect();
+  if (!box) return SIDEBAR_MAX;
+  const view = arrangeView({ width: box.width, height: box.height, coarse: coarseScreen.matches, paneOpen: !app.classList.contains("preview-off"), outlineWanted: viewOutlineWanted });
+  return listArranged.list + Math.max(0, view.session - M) + (view.paneWidth ? Math.max(0, view.paneWidth - M) : 0);
+}
+function sidebarWidth() { return readerWidth; }
+function setSidebarWidth(value, remember) {
+  readerWidth = Math.min(clampWidth(value), Math.max(SIDEBAR_MIN, Math.floor(widestList())));
   sidebarResizer.title = `Drag to resize the session list · double-click for ${SIDEBAR_DEFAULT}px`;
-  if (remember) localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width));
+  if (remember) localStorage.setItem(SIDEBAR_WIDTH_KEY, String(readerWidth));
+  arrangeList();
   viewHandle.resized();
-  return width;
+  return readerWidth;
 }
 sidebarResizer.addEventListener("pointerdown", event => {
   if (!indexState.sidebarOpen) return;
@@ -349,7 +415,6 @@ addEventListener("popstate", () => { const id = new URLSearchParams(location.sea
 // The dock, its sheets and the keyboard ride are the session view's (session-view.js).
 var mobileShell;
 {
-  const PHONE = matchMedia(PHONE_QUERY);
   const WIDE = matchMedia(WIDE_PHONE_QUERY);
   const handle = document.createElement("button");
   handle.type = "button";
@@ -395,6 +460,11 @@ var mobileShell;
   };
   handle.onclick = () => (WIDE.matches ? setColumn(columnOff) : setDrawer(app.classList.contains("mobile-detail")));
   scrim.addEventListener("click", () => setDrawer(false));
+  // Esc closes an open drawer (#s431 stage 3: a mouse reader's drawer too), unless a layer took it.
+  addEventListener("keydown", event => {
+    if (event.key !== "Escape" || event.defaultPrevented || !app.classList.contains("app-drawer") || app.classList.contains("mobile-detail") || WIDE.matches) return;
+    setDrawer(false);
+  });
   setDrawer(!app.classList.contains("mobile-detail"));
 
   // The column's switcher: Sessions, or one of the outline's panes, holding the SAME live list the
@@ -449,8 +519,6 @@ var mobileShell;
   };
   columnSwitch.addEventListener("click", event => { const tab = event.target.closest("[data-column-tab]"); if (tab) showColumnTab(tab.dataset.columnTab); });
   columnPane.addEventListener("click", event => viewHandle.outlineClick(event));
-  // Across the breakpoint the desktop's rail comes off or goes back on (#s33, `applySidebar`).
-  PHONE.addEventListener("change", () => applySidebar());
   // Out of the wide layout the column's borrowed list goes home and the handle speaks of the drawer
   // again (the view closes its drop-down going in).
   WIDE.addEventListener("change", () => { if (!WIDE.matches) showColumnTab("sessions"); labelHandle(); });
@@ -532,7 +600,9 @@ viewHandle = mountSessionView(viewRoot.element(), {
   parentShown,
   openList: () => app.classList.remove("mobile-detail"),
   openSidebar: () => toggleSidebar(true),
-  paneLayout: (name, on) => app.classList.toggle(name, on),
+  // The pane opening or shutting can change the list (the owner's order): the app arranges it at once,
+  // before the view decides in the same task, so the view decides at its new width.
+  paneLayout: (name, on) => { app.classList.toggle(name, on); if (name === "preview-off") arrangeList(); },
   paneCount: (key, text) => mobileShell?.paneCount(key, text),
   // What the view tells its host (stage 6). The view still draws its own top bar, title, turn and
   // Info included (the app's phone bar takes them at embedding's step 6), and the app has no use yet
@@ -546,14 +616,17 @@ viewHandle = mountSessionView(viewRoot.element(), {
   // The reader's choice of the outline (#s431 stage 3), which the app keeps to arrange its list by,
   // and the room it could give the view for the outline: none yet, since the app does not yet narrow
   // its list for it.
-  onOutline: ({ wanted }) => { viewOutlineWanted = wanted; },
-  room: () => 0,
+  onOutline: ({ wanted }) => { viewOutlineWanted = wanted; arrangeList(); },
+  // The room the app could give the view: its list's width less 232 while the list is shown (it
+  // narrows for the outline but never folds for it), and none on the rail or in the drawer.
+  room: () => (typeof listArranged?.list === "number" ? listArranged.list - LIST_MIN : 0),
 });
 // The rail's write button reaches the write switch itself (#54): the demo clicks the write
 // BUTTON, whose handler ignores a click that lands on a button — a programmatic click does.
 // Shared Controls already binds this rail action to native session creation.
 if (!viewHandle.controls.nativeActive) page.byId("sidebarMiniWrite").onclick = () => page.byId("writeSwitch").click();
-setSidebarWidth(localStorage.getItem(SIDEBAR_WIDTH_KEY) || SIDEBAR_DEFAULT, false);
+readerWidth = clampWidth(localStorage.getItem(SIDEBAR_WIDTH_KEY) || SIDEBAR_DEFAULT);
+sidebarResizer.title = `Drag to resize the session list · double-click for ${SIDEBAR_DEFAULT}px`;
 // The keymap (parity #11): the classic view's keys, resolved by keymap.js — the view's actions from
 // its handle, the list's and the sidebar's here.
 const keyActions = {
@@ -567,7 +640,7 @@ const keyActions = {
 bindKeymap(document, target => (target?.closest?.(".tree-row") ? "list" : "view"), action => (keyActions[action] ? keyActions[action]() : false));
 addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openGlobalSearch(); } else if (event.key === "Escape") page.byId("searchLayer").classList.remove("production-open"); });
 
-applySidebar();
+arrangeList();
 listHandle.start();
 
 /** Install native routing only after an explicit server activation succeeds. Native mode is the

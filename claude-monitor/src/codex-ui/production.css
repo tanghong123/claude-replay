@@ -85,9 +85,11 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    phone's `.app` is a block, where the view takes the whole height. */
 #app{grid-template-columns:var(--sidebar) minmax(0,1fr)}
 #app.sidebar-off{grid-template-columns:64px minmax(0,1fr)}
-@media(max-width:700px){
-  #app.sidebar-off{grid-template-columns:0 minmax(0,1fr)}
-}
+/* #s431 stage 3 (design/pane-layout.md, "The owner's order"): the app lays out its list by the order
+   (`arrangeList`, app.js), which keeps the rail wherever it puts it, so no window hides the rail (the
+   demo's rail-off rules at 700px go in the derivation), and a decision of the order's never glides
+   (`app-holding`) while the reader's own collapse and expand do. */
+#app.app-holding,#app.app-holding>.sidebar{transition:none!important}
 /* At 1180px and below the list and the rail swap at once, as they did when the list's grid there had
    two tracks and the rail's four, which no transition joins; above it they glide, as before. */
 @media(max-width:1180px){
