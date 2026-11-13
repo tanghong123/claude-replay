@@ -5114,8 +5114,7 @@ fn a_view_its_host_hides_keeps_the_reader_s_place() {
     ));
     // The host opens the session again while the view is hidden: the view empties, and restores the
     // reader's remembered place with a jump once the records are back.
-    let turn = harness::turn_at_top(&tab, surface);
-    let (before, causes, after) = cycle(&|| {
+    let reopen = || {
         let states = harness::probe(&tab, place)["states"].as_i64().unwrap_or(0);
         harness::eval(&tab, &format!("window.__view.open('{sid}'); 'ok'"));
         harness::until(
@@ -5125,7 +5124,9 @@ fn a_view_its_host_hides_keeps_the_reader_s_place() {
             Duration::from_secs(20),
             place,
         );
-    });
+    };
+    let turn = harness::turn_at_top(&tab, surface);
+    let (before, causes, after) = cycle(&reopen);
     seen.push((
         "the session opened again",
         turn,
@@ -5159,11 +5160,23 @@ fn a_view_its_host_hides_keeps_the_reader_s_place() {
     let tail = harness::at_tail(&tab, surface);
     let answer = harness::probe(&tab, "(function(){ var s = document.querySelector('.transcript').getBoundingClientRect(); var hit = [...document.querySelectorAll('.virtual-window .turn')].find(function (e) { return e.textContent.indexOf('the answer to a second question while hidden') >= 0; }); if (!hit) return 'not mounted'; var r = hit.getBoundingClientRect(); return r.bottom > s.top && r.top < s.bottom ? 'on screen' : 'off screen ' + Math.round(r.top) + '..' + Math.round(r.bottom) + ' of ' + Math.round(s.top) + '..' + Math.round(s.bottom); })()");
     let clamp = harness::probe(&tab, "(function(){ var prompt = [...document.querySelectorAll('.virtual-window .turn.user')].find(function (e) { return e.textContent.indexOf('a second question while hidden') >= 0; }); if (!prompt) return 'not mounted'; return { collapsible: prompt.classList.contains('prompt-collapsible') || !!prompt.querySelector('.prompt-collapsible'), collapsed: !!prompt.querySelector('.prompt-copy-shell.collapsed'), expanders: prompt.querySelectorAll('.prompt-expand').length }; })()");
+    // A follower's session opened again while the view is hidden: the remembered pin is restored with
+    // no jump (the end is `follow`, which reads no gap), and shown again the reader is at the end.
+    let (obefore, ocauses, oafter) = cycle(&reopen);
+    let otail = harness::at_tail(&tab, surface);
     let violations = harness::probe(
         &tab,
         "JSON.stringify((window.__viewportViolations || []).slice(0, 4))",
     );
     drop(monitor);
+    assert!(
+        obefore["following"] == serde_json::json!(true) && no_reading(&ocauses),
+        "a follower's session opened again while hidden reads nothing: before {obefore}, while hidden {ocauses}"
+    );
+    assert!(
+        otail && oafter["following"] == serde_json::json!(true) && oafter["covered"] == serde_json::json!(true),
+        "…and shown again the reader follows it at the end, the viewport covered: at the end {otail}, before {obefore}, while hidden {ocauses}, after {oafter}"
+    );
     assert_eq!(
         clamp,
         serde_json::json!({ "collapsible": true, "collapsed": true, "expanders": 1 }),
@@ -5536,6 +5549,123 @@ fn a_follower_the_browser_moves_with_no_input_keeps_following() {
         violations,
         serde_json::json!("[]"),
         "the engine broke none of its invariants"
+    );
+}
+
+/// #s464 with #s431 (the review of 28f51ad9): a smooth move the host's hide stopped never arrives. The
+/// engine knows a smooth write is travelling until the scroll event that reaches its end (`inFlight`),
+/// and while one travels every placement is issued smooth again. Hidden mid-travel, that event never
+/// comes: back from hidden the first transaction drops the write and places the reader outright, and
+/// a move of the reader's that a transaction meets before its event is theirs again (a travelling
+/// write reads no drift).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_smooth_move_the_hide_stopped_is_over_once_the_view_is_shown() {
+    let _serial = serial();
+    let base = base("host-hidden-smooth");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000003a7".to_string();
+    stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3129, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1280.0, 800.0);
+    monitor.open(&tab, &format!("?ui=app&session={sid}&trace=viewport"));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.virtual-window .turn.user') && {VIEW_CAUGHT_UP}"),
+        "the session drawn",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let rest = |ms: u64| {
+        harness::eval(&tab, TWO_FRAMES);
+        std::thread::sleep(Duration::from_millis(ms));
+    };
+    // Up in the session, not following, nothing focused.
+    harness::eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel', { deltaY: -1 })); s.scrollTop = Math.round(s.scrollHeight / 2); return 'ok'; })()",
+    );
+    harness::until_reader_owns_the_view(&tab);
+    rest(900);
+    // What the trace says since a mark: each placement's smoothness, and whether a smooth write arrived.
+    let traced = |mark: &str| {
+        harness::probe(
+            &tab,
+            &format!("(function(){{ var t = (window.__viewportTrace || []).filter(function (e) {{ return e.t >= (window.{mark} || 0); }}); return {{ smooth: t.filter(function (e) {{ return e.event === 'place'; }}).map(function (e) {{ return !!e.smooth; }}), arrived: t.filter(function (e) {{ return e.event === 'arrived'; }}).length }}; }})()"),
+        )
+    };
+    // A head step that has to move (`stepHead`: the first head, above the view, brought to 160px,
+    // smoothly), and the view hidden while it travels.
+    harness::eval(&tab, "window.__t0 = performance.now(); 'ok'");
+    harness::key(&tab, "j", false);
+    harness::eval(
+        &tab,
+        "(function(){ var a = document.activeElement, u = a && a.closest ? a.closest('[data-unit-key]') : null; window.__headKey = u ? u.dataset.unitKey : null; window.__headIdx = u ? [...u.querySelectorAll('button.renderer-head')].indexOf(a) : -1; document.getElementById('sessionView').hidden = true; return 'ok'; })()",
+    );
+    let stepped = traced("__t0");
+    harness::until(
+        &tab,
+        "document.getElementById('sessionView').getBoundingClientRect().width === 0",
+        "the view hidden by its host",
+        Duration::from_secs(5),
+        "document.getElementById('sessionView').hidden",
+    );
+    rest(900);
+    harness::eval(
+        &tab,
+        "window.__t2 = performance.now(); document.getElementById('sessionView').hidden = false; 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('sessionView').getBoundingClientRect().width > 0",
+        "the view shown again",
+        Duration::from_secs(5),
+        "document.getElementById('sessionView').hidden",
+    );
+    rest(900);
+    let back = traced("__t2");
+    let head = harness::probe(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); var u = [...s.querySelectorAll('[data-unit-key]')].find(function (e) { return e.dataset.unitKey === window.__headKey; }); if (!u) return 'not mounted'; var h = u.querySelectorAll('button.renderer-head')[window.__headIdx]; return h ? Math.round(h.getBoundingClientRect().top - s.getBoundingClientRect().top) : 'no head'; })()",
+    );
+    // The reader's own move, which a transaction meets before its event: their wheel and the move in
+    // one task, the event held, a mounted unit a few pixels taller so the engine transacts next frame.
+    let moved: serde_json::Value = serde_json::from_str(
+        harness::eval(
+            &tab,
+            "(async function(){ var s = document.querySelector('.transcript'); var frames = function () { return new Promise(function (done) { requestAnimationFrame(function () { requestAnimationFrame(function () { done(); }); }); }); }; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var top = s.scrollTop; s.dispatchEvent(new WheelEvent('wheel', { deltaY: -600, bubbles: true })); s.scrollTop = top - 600; units[0].style.paddingBottom = '7px'; await frames(); var now = s.scrollTop; window.removeEventListener('scroll', window.__hold, true); window.__heldEvents.forEach(function (e) { s.dispatchEvent(e); }); return JSON.stringify({ top: Math.round(top), moved: Math.round(now) }); })()",
+        )
+        .as_str()
+        .unwrap_or("null"),
+    )
+    .unwrap_or(serde_json::Value::Null);
+    rest(900);
+    let after = harness::probe(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); return { top: Math.round(s.scrollTop), violations: (window.__viewportViolations || []).length }; })()",
+    );
+    drop(monitor);
+    assert!(
+        stepped["smooth"]
+            .as_array()
+            .is_some_and(|all| all.iter().any(|s| s == &serde_json::json!(true)))
+            && stepped["arrived"] == serde_json::json!(0),
+        "the head step travels smoothly and the hide stops it before it arrives: {stepped}"
+    );
+    assert!(
+        back["smooth"]
+            .as_array()
+            .is_some_and(|all| all.iter().all(|s| s == &serde_json::json!(false)))
+            && (head.as_i64().unwrap_or(9999) - 160).abs() <= 3,
+        "shown again, the reader is placed outright, never smoothly, the stepped head at 160px: head {head}, {back}"
+    );
+    let want = moved["top"].as_i64().unwrap_or(0) - 600;
+    assert!(
+        (after["top"].as_i64().unwrap_or(0) - want).abs() <= 20
+            && after["violations"] == serde_json::json!(0),
+        "the reader's move after it stays theirs: moved {moved}, after {after}"
     );
 }
 

@@ -1340,12 +1340,16 @@ class VirtualWindow {
     if (!next) return null;
     // Hidden, no top can be read (`laidOut`): the item is where the sums put it below `P`'s item. A
     // top is the border box's and a slot starts at the margin (`itemHeight`), so the two items' top
-    // margins are the difference between them; a computed margin reads with no box.
+    // margins are the difference between them; a computed margin reads with no box. `P`'s slot
+    // starts at its anchor's top less its margin, or, in the model form, `offset` above the
+    // viewport's top (`modelAt`).
     const marginTop = element => (element ? parseFloat(getComputedStyle(element).marginTop) || 0 : 0);
-    const top = this.laidOut() || !p || p.top == null || p.index == null
+    const slot = !p || p.index == null ? null
+      : p.top != null ? p.top - marginTop([...this.mount.children].find(child => Number(child.dataset.unitIndex) === p.index))
+      : p.offset != null ? -p.offset : null;
+    const top = this.laidOut() || slot == null
       ? next.getBoundingClientRect().top - this.frame.viewportTop()
-      : p.top + (this.prefix[from + 1] || 0) - (this.prefix[p.index] || 0) + marginTop(next)
-        - marginTop([...this.mount.children].find(child => Number(child.dataset.unitIndex) === p.index));
+      : slot + (this.prefix[from + 1] || 0) - (this.prefix[p.index] || 0) + marginTop(next);
     return { source: "anchor", key: next.dataset.unitKey, index: from + 1 + shift, top, block: null, blockTop: 0, at: this.frame.scrollTop(), fallback: null };
   }
 
@@ -1434,7 +1438,7 @@ class VirtualWindow {
     // Hidden, the page's pass would read boxes with no size (a long prompt's lines counted as none,
     // so none clamped): it runs for these once the box is back (`cameBack`).
     if (this.laidOut()) this.afterMount(fresh);
-    else this.mountedHidden.push(...fresh);
+    else this.mountedHidden = [...this.mountedHidden.filter(element => element.isConnected), ...fresh];
     this.measureMounted();
     this.updatePads();
     for (const child of this.mount.children) this.observer.observe(child, { box: "border-box" });
@@ -2006,12 +2010,10 @@ class VirtualWindow {
         // A landing a further command refines in the same task (the search walk's, §4.11) does
         // not decide: the pin is what it was, and the refining command decides once.
         if (options.decide === false) { if (this.following !== wasFollowing) this.following = wasFollowing; this.scheduleRemember(); return; }
-        // Hidden, there is no gap to read (`laidOut`, every size 0): a jump to the end follows, any
-        // other is the reader choosing a place, and the pin stays dropped.
+        // Hidden, there is no gap to read (`laidOut`, every size 0): the jump is the reader choosing
+        // a place, and the pin stays dropped. The end is `follow`, which reads no gap.
         if (!this.laidOut()) {
-          const following = position.source === "tail";
-          if (following !== this.following) this.following = following;
-          if (following !== wasFollowing) this.followChanged();
+          if (wasFollowing) this.followChanged();
           this.scheduleRemember();
           return;
         }
@@ -2081,6 +2083,8 @@ class VirtualWindow {
   }
 
   scrollBy(dy, options = {}) {
+    // Hidden, the offset and the viewport's height read 0 (`laidOut`): there is nothing to move from.
+    if (!this.laidOut()) return false;
     return this.scrollTo(this.frame.scrollTop() + dy, options);
   }
 
