@@ -5335,6 +5335,210 @@ fn head_lands_while_the_view_is_hidden(port: u16, case: &str, at_card: bool) {
     );
 }
 
+/// #s431 stage 3, from the Simulator walk of 19702961 (#s481): on an iPad a reader at the end of the
+/// transcript stays there when the list folds and opens. The list's fold changes the view's width, and
+/// on an iPad upright (834px) it switches the view between the phone reader and the desktop layout, which
+/// 1.517.0 never did at that width; held sideways (1376px) with the pane open, the fold gives the outline
+/// the room to open. The walk found the reader left 102 to 191px above the end in both, where 1.517.0
+/// kept it. Each press is a finger's tap, as on the iPad.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn an_ipad_reader_at_the_end_stays_there_as_the_list_folds_and_opens() {
+    let _serial = serial();
+    let base = base("ipad-end-fold");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000003a4".to_string();
+    stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3126, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let surface = harness::Surface::AppShell;
+    let rest = || {
+        harness::eval(&tab, TWO_FRAMES);
+        std::thread::sleep(Duration::from_millis(1200));
+    };
+    let quiet = "document.getElementById('app').getAnimations().length === 0 && document.getElementById('sessionView').getAnimations({ subtree: true }).filter(function (a) { return a instanceof CSSTransition; }).length === 0";
+    let read = "(function(){ var s = document.querySelector('.transcript'), v = document.getElementById('sessionView'), app = document.getElementById('app'); var h = window.__viewportHistory.states; var outline = ['open', 'glyphs', 'bar', 'dock'].find(function (k) { return v.classList.contains('pl-outline-' + k); }) || ''; return { gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), following: h.length ? h[h.length - 1].following : null, phone: v.classList.contains('pl-phone'), rail: app.classList.contains('sidebar-off'), view: Math.round(v.getBoundingClientRect().width), outline: outline, causes: h.filter(function (e) { return e.t >= (window.__t0 || 0); }).map(function (e) { return e.cause + (e.following ? '' : '!'); }) }; })()";
+    // A scene: the window, the session opened at its end, then the list folded and opened again, each
+    // by a finger on the control in sight. What each press left: (scene, press, before, after).
+    let mut seen = Vec::new();
+    for (scene, width, height, pane) in [
+        ("an iPad upright", 834u32, 1194u32, false),
+        ("an iPad held sideways, the pane open", 1376, 1032, true),
+    ] {
+        harness::phone(&tab, width, height);
+        monitor.open(&tab, &format!("?ui=app&session={sid}"));
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && !!document.querySelector('.virtual-window .turn.user') && {VIEW_CAUGHT_UP} && {quiet}"),
+            &format!("{scene}: the session drawn"),
+            Duration::from_secs(20),
+            read,
+        );
+        if pane {
+            harness::eval(
+                &tab,
+                "document.getElementById('outlineRailInfo').click(); 'ok'",
+            );
+            harness::until(
+                &tab,
+                &format!("document.getElementById('app').classList.contains('sidebar-off') === false && {VIEW_CAUGHT_UP} && {quiet}"),
+                &format!("{scene}: the pane open"),
+                Duration::from_secs(10),
+                read,
+            );
+        }
+        rest();
+        harness::jump_to_end(&tab, surface);
+        rest();
+        for (press, control) in [("fold", "sidebarCollapse"), ("open", "sidebarMiniExpand")] {
+            let before = harness::probe(&tab, read);
+            let at = harness::probe(
+                &tab,
+                &format!("(function(){{ window.__t0 = performance.now(); var r = document.getElementById('{control}').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, r.width]; }})()"),
+            );
+            assert!(
+                at[2].as_f64().unwrap_or(0.0) > 0.0,
+                "{scene}: the {press} control is in sight: {at} {before}"
+            );
+            harness::finger_tap(
+                &tab,
+                at[0].as_f64().unwrap_or(0.0),
+                at[1].as_f64().unwrap_or(0.0),
+            );
+            let rail = press == "fold";
+            harness::until(
+                &tab,
+                &format!("document.getElementById('app').classList.contains('sidebar-off') === {rail} && {VIEW_CAUGHT_UP} && {quiet}"),
+                &format!("{scene}: the list to {press}"),
+                Duration::from_secs(10),
+                read,
+            );
+            rest();
+            seen.push((scene, press, before, harness::probe(&tab, read)));
+        }
+    }
+    drop(monitor);
+    let report = seen
+        .iter()
+        .map(|(scene, press, before, after)| {
+            format!("{scene}, {press}: before {before}, after {after}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let upright: Vec<_> = seen
+        .iter()
+        .filter(|(scene, ..)| *scene == "an iPad upright")
+        .map(|(_, _, before, after)| (before["phone"].clone(), after["phone"].clone()))
+        .collect();
+    assert_eq!(
+        upright,
+        vec![
+            (serde_json::json!(true), serde_json::json!(false)),
+            (serde_json::json!(false), serde_json::json!(true))
+        ],
+        "upright, the fold switches the view to the desktop layout and the open back to the phone reader:\n{report}"
+    );
+    for (scene, press, before, after) in &seen {
+        assert!(
+            before["gap"].as_i64().unwrap_or(9999).abs() <= 2
+                && before["following"] == serde_json::json!(true),
+            "{scene}, {press}: the reader is at the end, following: {before}"
+        );
+        assert!(
+            after["gap"].as_i64().unwrap_or(9999).abs() <= 2
+                && after["following"] == serde_json::json!(true),
+            "{scene}, {press}: the reader is still at the end, following:\n{report}"
+        );
+    }
+}
+
+/// #s481, the mechanism under the iPad's lost end, made exact: the browser clamps the offset in a
+/// layout where the content is shorter for a moment (the phone reader's foot pad gone before the box
+/// shrank), the content grows back, and the engine transacts before the clamp's scroll event reaches it.
+/// The move is not the reader's (they touched nothing in the transcript since the engine last knew the
+/// offset), so a follower keeps following, and once the event arrives it is put back at the end. Read
+/// as the reader leaving the end, it was left there, the clamp's distance above it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_follower_the_browser_moves_with_no_input_keeps_following() {
+    let _serial = serial();
+    let base = base("clamp-keeps-follow");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000003a5".to_string();
+    stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3127, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1280.0, 800.0);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.virtual-window .turn.user') && {VIEW_CAUGHT_UP}"),
+        "the session drawn",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let surface = harness::Surface::AppShell;
+    let rest = || {
+        harness::eval(&tab, TWO_FRAMES);
+        std::thread::sleep(Duration::from_millis(900));
+    };
+    harness::jump_to_end(&tab, surface);
+    rest();
+    let read = "(function(){ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; return { gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), following: h.length ? h[h.length - 1].following : null, held: window.__held || 0, causes: h.filter(function (e) { return e.t >= (window.__t0 || 0); }).map(function (e) { return e.cause + (e.following ? '' : '!'); }) }; })()";
+    let before = harness::probe(&tab, read);
+    // In one task: the transcript's scroll events held from the engine (delivered late, as WebKit's
+    // was); the last three units gone and the layout read, so the browser clamps the offset to the
+    // shorter content; the units back; and a mounted unit a few pixels taller, so the engine measures
+    // in the next frame, before the held event.
+    let moved = harness::probe(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__held++; } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = '7px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
+    );
+    rest();
+    let measured = harness::probe(&tab, read);
+    harness::eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); window.removeEventListener('scroll', window.__hold, true); s.dispatchEvent(new Event('scroll')); return 'ok'; })()",
+    );
+    rest();
+    let after = harness::probe(&tab, read);
+    let violations = harness::probe(
+        &tab,
+        "JSON.stringify((window.__viewportViolations || []).slice(0, 4))",
+    );
+    drop(monitor);
+    assert!(
+        before["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && before["following"] == serde_json::json!(true),
+        "the reader follows the session at its end: {before}"
+    );
+    assert!(
+        moved["clamped"].as_i64().unwrap_or(0) < moved["top"].as_i64().unwrap_or(0) - 100
+            && moved["gap"].as_i64().unwrap_or(0) > 100,
+        "the browser clamped the offset well above the end the content came back to: {moved}"
+    );
+    assert!(
+        measured["causes"].as_array().is_some_and(|c| !c.is_empty()),
+        "the engine transacted before the clamp's scroll event reached it: {measured}"
+    );
+    assert_eq!(
+        measured["following"],
+        serde_json::json!(true),
+        "a move the reader did not make leaves them following: moved {moved}, measured {measured}"
+    );
+    assert!(
+        after["gap"].as_i64().unwrap_or(9999).abs() <= 2 && after["following"] == serde_json::json!(true),
+        "once the event arrives the follower is at the end again: moved {moved}, measured {measured}, after {after}"
+    );
+    assert_eq!(
+        violations,
+        serde_json::json!("[]"),
+        "the engine broke none of its invariants"
+    );
+}
+
 /// #s464 with #s431: a view its host mounts while hidden has no box, and its layout's first decision,
 /// at 0×0, says nothing of what the view is (the review of ddcac874). The outline's default (open,
 /// except on the phone reader) waits for the first decision that sees the box: on a desktop the

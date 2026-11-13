@@ -385,6 +385,9 @@ class VirtualWindow {
     // reader moving, and unpin a fresh page (#89).
     this.lastUserInput = -1e9;
     this.lastInputStamp = -1e9;
+    // When the engine last knew the offset: a transaction's end, or a scroll event it read. A move it
+    // did not hear is the reader's only with input after this (`confirmFollow`, #s481).
+    this.knownAt = -1e9;
     // `P`, the reader's position (framework §1.7), stored: an anchor — a mounted record, the row
     // in it, where on screen that row sat — or the model form when nothing mounted is on screen,
     // each carrying the scroll offset it was read at (`at`). Between transactions the only thing
@@ -890,14 +893,23 @@ class VirtualWindow {
    *  which adds content below without moving the offset. An offset that is not where the engine
    *  left it was moved by the reader, and that is the one move the engine does not make. It is
    *  then classified exactly as the late event would have been, so nothing decides differently
-   *  here than there; only sooner. The browser clamping the offset when content shrinks lands at
-   *  the bottom, where the verdict is "none" and follow stands. */
+   *  here than there; only sooner.
+   *
+   *  But only when the reader touched the scroller since the engine last knew the offset (#s481):
+   *  their move comes with their input, and the late event is late, never early. With no input
+   *  since, the browser moved it. The browser clamps the offset when the content shrinks, and the
+   *  clamp lands at the bottom of the layout it happened in, which need not be the layout the
+   *  transaction reads: on an iPad the list's fold took the phone reader's foot pad a layout before
+   *  the transcript's box shrank, the offset clamped 150px above the end that followed, and a
+   *  follower read as the reader leaving the end was left 191px above it. Such a move is
+   *  displacement, as the scroll handler reads one with no input behind it, and follow stands. */
   confirmFollow(top) {
     if (!this.following || this.dragging || this.inFlight()) return;
     const belief = this.topBelief();
     if (belief == null || Math.abs(top - belief) <= 1) return;
     const gap = this.gapToBottom();
-    const verdict = classifyScroll(true, true, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal);
+    const theirs = this.lastUserInput > this.knownAt;
+    const verdict = theirs ? classifyScroll(true, true, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal) : "displaced";
     this.trace("follow:unheard", { verdict, belief, top: Math.round(top), gap: Math.round(gap) });
     if (verdict !== "unfollow") return;
     this.following = false;
@@ -1570,7 +1582,7 @@ class VirtualWindow {
       // A position the reader asked for (§4.10) is `P` from here on; `syncPosition` keeps it.
       if (p0 && p0.commanded) this.position = p0;
       this.syncPosition(placed === "placed" && !drift && !smooth ? p0 : null);
-      if (shown) this.check(cause, p0, placed, mounted, drift, following0);
+      if (shown) { this.check(cause, p0, placed, mounted, drift, following0); this.knownAt = performance.now(); }
       if (returning) this.wasHidden = false;
       summary = Object.assign({ p0: p0 ? p0.source : null, anchor: p0 && p0.key ? p0.key : null, placed }, mounted ? { range: [mounted.lo, mounted.hi], fresh: mounted.fresh } : {}, options.fields || {});
       // Trace only: is the viewport inside the window it left, and how the window was chosen.
@@ -1922,6 +1934,7 @@ class VirtualWindow {
     // (`topBelief`): the reader's own scroll is the one move the engine does not make.
     const top = this.frame.scrollTop();
     this.topSeen = top;
+    this.knownAt = performance.now();
     // The engine's own write (framework §4.1): `place` recorded what it wrote, and an event at that
     // offset is neither the reader's nor displacement — nothing to classify, nothing to re-read,
     // no window to update (the transaction that placed already mounted around `P`).

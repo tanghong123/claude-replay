@@ -2591,7 +2591,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // is then never seen at all because the gap it measures is 0.
   assert.match(src, /confirmFollow\(top\) \{/, "a transaction checks the flag against the offset (#213)");
   assert.match(src, /const belief = this\.topBelief\(\);\n\s*if \(belief == null \|\| Math\.abs\(top - belief\) <= 1\) return;/, "…against the engine's BELIEF, not the gap — a gap alone would unfollow on every growth, which adds content below without moving the offset");
-  assert.match(src, /const verdict = classifyScroll\(true, true, gap, this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal\);/, "…classified exactly as the late event would have classified it, so nothing decides differently here than there");
+  assert.match(src, /const theirs = this\.lastUserInput > this\.knownAt;\n\s*const verdict = theirs \? classifyScroll\(true, true, gap, this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal\) : "displaced";/, "…classified exactly as the late event would have classified it, so nothing decides differently here than there — when the reader touched the scroller since the engine last knew the offset; with no input since, the browser moved it (a clamp in a layout between, #s481) and follow stands");
   assert.match(src, /if \(!this\.following \|\| this\.dragging \|\| this\.inFlight\(\)\) return;/, "…and never while a smooth write travels, where the offset is the engine's own");
   // …and it runs BEFORE `following0`, which is I13's reading of what the engine believed when the
   // transaction began. I13 is "follow is dropped only by the reader", and this drop IS theirs — the
@@ -3992,7 +3992,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // thrown and never corrected (framework §4.12).
 {
   const engine = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
-  assert.match(engine, /this\.syncPosition\([^\n]*\);\n\s*if \(shown\) this\.check\(cause, p0, placed, mounted, drift, following0\);/, "the checks run at the end of every transaction with a box (#s464), after P is re-read");
+  assert.match(engine, /this\.syncPosition\([^\n]*\);\n\s*if \(shown\) \{ this\.check\(cause, p0, placed, mounted, drift, following0\); this\.knownAt = performance\.now\(\); \}/, "the checks run at the end of every transaction with a box (#s464), after P is re-read, and the engine knows the offset from there (#s481)");
   assert.match(engine, /const following0 = this\.following;/, "…against the follow state the transaction started with (I13)");
   for (const rule of ["I1", "I3", "I4", "I5", "I7", "I10", "I11", "I13", "I14", "shape"]) assert.match(engine, new RegExp(`v\\("${rule}"|this\\.violation\\("${rule}"`), `rule ${rule} is checked`);
   assert.match(engine, /if \(this\.dragging\) this\.violation\("I14"/, "a write under a drag is reported where it would happen");
@@ -4034,7 +4034,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(engine, /if \(last && last\.until != null && last\.kind === kind && \(last\.key == null \? null : last\.key\) === key && t - last\.until <= HISTORY_COALESCE_MS\) \{/, "…coalesced per gesture");
   assert.match(engine, /const key = kind === "key" \? \(event\.key === " " \? "Space" : String\(event\.key\)\.length > 1 \? String\(event\.key\) : "char"\) : null;/, "a key is named only when it is not a character — the history carries no content");
   assert.match(engine, /if \(event\.type === "keydown" && event\.target && \(\/\^\(INPUT\|TEXTAREA\)\$\/\.test\(event\.target\.tagName\) \|\| event\.target\.isContentEditable\)\) return;/, "…and a key in a field or an editable element is not the reader's input at all");
-  assert.match(engine, /const top = this\.frame\.scrollTop\(\);\n\s*this\.topSeen = top;\n(?:\s*\/\/.*\n)*\s*if \(this\.ownScroll\(top\)\) \{/, "the scroll handler's one read is kept as the engine's belief of the offset");
+  assert.match(engine, /const top = this\.frame\.scrollTop\(\);\n\s*this\.topSeen = top;\n\s*this\.knownAt = performance\.now\(\);\n(?:\s*\/\/.*\n)*\s*if \(this\.ownScroll\(top\)\) \{/, "the scroll handler's one read is kept as the engine's belief of the offset, known from then (#s481)");
   assert.match(engine, /if \(p && p\.at != null\) return Math\.round\(p\.at\);\n\s*if \(typeof this\.wrote === "number"\) return Math\.round\(this\.wrote\);/, "…after P's own offset and what the engine last wrote");
   assert.match(engine, /if \(options\.intent\) this\.markIntent\(\);\n(?:\s*\/\/.*\n)*\s*this\.record\("actions", \{ kind: cause, index:/, "a commanded move is an action with its target");
   assert.match(engine, /this\.record\("actions", \{ kind: "follow", intent: !!options\.intent \}\);/, "…and so is the end");

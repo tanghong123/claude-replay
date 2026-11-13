@@ -190,7 +190,12 @@ can deliver that event most of a second after the wheel (measured at the wheel's
 lights, and the reader's scroll is then never classified at all — by the time the event arrives the
 gap is 0 and `classifyScroll` reads "already following". `confirmFollow` closes it: at the start of
 a transaction, if the offset is not where the engine last left it, the reader moved it, and the
-same `classifyScroll` runs on what is true now. The test is the engine's BELIEF rather than the gap,
+same `classifyScroll` runs on what is true now. That holds only when the reader touched the scroller
+since the engine last knew the offset (a transaction's end, or a scroll event it read; #s481): with no
+input since, the browser moved it. A clamp lands at the bottom of the layout it happened in, which need
+not be the layout the transaction reads. On an iPad the list's fold took the phone reader's foot pad
+a layout before the transcript's box shrank, the offset clamped 150px above the end that followed, and
+a follower was left 191px above it. Such a move is displacement, and follow stands. The test is the engine's BELIEF rather than the gap,
 because a gap alone would unfollow on every growth — growth adds content below without moving the
 offset. It runs BEFORE `following0` is read, since it is the deferred half of the scroll handler
 rather than a decision the transaction makes; with the call inside that window the check fired
