@@ -242,7 +242,9 @@ export function arrangeApp({ width, coarse = false, short = false, list = 300, c
   const shut = beside(false);
   // On a touch screen a pane opened over the phone reader covers the reader's area alone, beside the
   // list or the rail as they were, as a wide phone held sideways covers the session beside its list
-  // (#s49): the session keeps its width beneath, so nothing is remeasured under the pane (#s25).
+  // (#s49): the session keeps its width beneath, so opening or closing the pane remeasures nothing
+  // under it (#s25). #s480's default, until the owner answers. The rail's expand stays enabled there,
+  // so a list folded under that pane opens again beside it.
   const overReader = coarse && width - (shut === "rail" ? RAIL : shut) <= TOUCH_PHONE;
   const listed = !view.paneOpen || overReader ? shut : beside(true);
   return { list: collapsed ? "rail" : listed, canOpen: listed !== "rail" };

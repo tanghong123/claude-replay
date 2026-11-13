@@ -1,14 +1,16 @@
 # Each component lays itself out by its pane
 
 > **DRAFT 5** (#s431, 2026-11-13). Step 6 of `design/embedding.md` ("Layout decides itself", "The
-> order of the work"). Stage 1 is built. Stage 2 is built on its branch and lands with stage 3;
-> stages 3 and 4 are not built. The owner's ruling (#s459): start it now, and fix in it the
+> order of the work"). Stage 1 is built. Stage 2 is built on its branch and lands with stage 3.
+> Stage 3's functions and their contract are built on the branch; the page's wiring for it, and
+> stage 4, are not. The owner's ruling (#s459): start it now, and fix in it the
 > transcript column that the right pane squeezes to 126px just past 1180px. The owner ruled how a
 > component counts its room (#s461): by its own width, height and touch, with nothing from the host;
-> and he set the order of what gives way (#s462, #s472 to #s476). Two questions are still his: on a
-> touch screen, whether the list narrows to keep the view out of the phone reader (#s478, built as
-> its default meanwhile), and how a host that passes `room` hears that the reader wants the outline
-> (#s479; until he answers only the app passes it).
+> and he set the order of what gives way (#s462, #s472 to #s476). Three questions are still his,
+> each built as its default meanwhile: on a touch screen, whether the list narrows to keep the view
+> out of the phone reader (#s478) and whether a pane over the phone reader leaves the list beside it
+> (#s480); and how a host that passes `room` hears that the reader wants the outline (#s479; until
+> he answers only the app passes it).
 
 ## What it is for
 
@@ -350,8 +352,8 @@ On a touch screen (below, "The narrowest steps"), at the same defaults:
 | 761–789 | the rail, the phone reader | the rail, the pane over the phone reader |
 | 790–857 | the list narrowing, the phone reader | the list narrowing, the pane over the reader beside it |
 | 858–992 | the list, the phone reader | the list, the pane over the reader beside it |
-| 993–1011 | the list narrowing, the glyphs' column | the rail, the pane covering the session |
-| from 1012 | as with a mouse | from 1035, as with a mouse |
+| 993–1011 | the list narrowing, the glyphs' column | as with a mouse: the rail, the pane covering the session |
+| from 1012 | as with a mouse | as with a mouse |
 
 So at the browser suite's own 1400px window, a case that opens the pane sees the outline as its
 glyphs and the list at 300, where today the outline stays open beside a short line. The cases that
@@ -364,7 +366,9 @@ rely on it are listed with the stage, each with what it asserted before.
   why. The drawer's handle always opens the drawer, which lies over the session. While the pane
   covers the session (554–1034px at the defaults) the rail's expand is disabled too, as his sequence
   has it: the list opens once the window is wide enough for it, from 790px with the pane shut and
-  1271px with it open at the defaults.
+  1271px with it open at the defaults. On a touch screen the one exception is a pane over the phone
+  reader (825–992px windows, below): there the rail's expand stays enabled wherever expanding would
+  open the list beside the pane, so a reader who folded the list for a wider pane can bring it back.
 - A collapse the reader makes is remembered (`am-…sidebar`, `am-demo-navigator`, as today), and a
   wider window never undoes it. A fold the width forced is not remembered: it comes back when the
   window has room. Today a list or an outline the reader opened stays open at any width and squeezes
@@ -373,7 +377,7 @@ rely on it are listed with the stage, each with what it asserted before.
 - **The list's drag** takes its width from the session and the pane equally, down to `M` each, and
   folds nothing: its edge stops at 232 and 520 (today's limits), and wherever the session and the
   pane reach `M`. On a touch screen it also stops where the view would become the phone reader,
-  wherever the list at 232 leaves the view over 760px (#s478's default).
+  wherever the list at 232 leaves the view over 760px, which follows from #s478's default.
 - **The pane's drag** sets how the slack splits between the session and the pane (the owner, #s473):
   remembered, equal until the reader first drags, and each side kept at least at `M`. The layout
   writes the pane's width as `--preview-fit` on the view, from `arrangeView`: the pane's own box,
@@ -417,11 +421,14 @@ screen up to 760px):
   and open do change the view: folded to its rail the view is 761px or more and the desktop's, and
   opened again it is the phone reader beside the list, as #s475 has it. That is the one place a
   reader's action changes the view between the two, and the contract walks every action to hold it.
-- **A pane over the phone reader** on a touch screen covers the reader's area alone, beside the list
-  or the rail as they were, as a wide phone held sideways covers the session beside its list (#s49),
-  so the session keeps its width beneath and nothing is remeasured under the pane (#s25). Folding the
-  list for it, as his sequence does with a mouse, would widen the hidden session into the desktop's
-  layout and narrow it back into the phone reader when the pane closes. From 993px, where the view
+- **A pane over the phone reader** (the owner's question on #s480; built as its default meanwhile)
+  on a touch screen covers the reader's area alone, beside the list or the rail as they were, as a
+  wide phone held sideways covers the session beside its list (#s49). So the session keeps its width
+  beneath, and opening or closing the pane remeasures nothing under it (#s25). Folding the list for
+  it, as his sequence does with a mouse, would widen the hidden session into the desktop's layout and
+  narrow it back into the phone reader when the pane closes. The list's own fold and open under that
+  pane do change the session beneath, as they do with the pane shut (above): a reader who folds the
+  list there gets the pane over the whole view, and the rail's expand brings the list back. From 993px, where the view
   beside the list is the desktop's, his sequence applies: the rail, the pane covering the session.
   So a touch window widened past 992px with the pane open folds the list: the phone layout gives way
   to his order there.
@@ -467,6 +474,10 @@ list). So the view takes one new optional mount option, `room`, and the app pass
   hears it, narrows the list, the view widens, and the outline opens by the view's own width. A host
   that answers room and then gives none leaves the toggle pressed and the glyphs shown, as a window
   too narrow for the outline does today.
+- **The toggle pressed** (the outline wanted, open or held to its glyphs by the width) is always
+  enabled, and a tap un-wants the outline, so a reader can stop it coming back as the window widens.
+  Not pressed, it is enabled where the outline fits, with the room the host could give
+  (`outlineCanOpen`): the disabled state is for opening only.
 - **A host that passes none** gets the toggle disabled where the view alone cannot fit the outline.
   How a host other than the app hears the reader's tap is the owner's question on #s479 (recommended:
   an `onOutline({ wanted })` handler beside the other six); until he answers, the doc comment says
@@ -511,9 +522,10 @@ reader's outline choice ignored by the view or the app, the defaults changed, th
 rule left out, off by one or applied to a mouse, the list folded for a pane over the phone reader or
 kept beside it on a mouse, the rail's expand read with the pane, and the touch floor of an earlier
 draft. The page's widths are held to the functions' numbers (the outline 290, the glyphs 68, the
-margin). In the browser: each step of both sequences at its window in the app, the drag limits, a collapse remembered
-across a widening, an expand disabled where it cannot fit, and the pane's glide whole when the list
-gives way.
+margin). In the browser: each step of both sequences at its window in the app, the drag limits, a
+collapse remembered across a widening, an expand disabled where it cannot fit, the pane's glide
+whole when the list gives way, and on a touch screen a pane opened and closed over the phone reader
+beside the list with the transcript's turn and its measured heights unchanged.
 
 ### A box for each component
 
