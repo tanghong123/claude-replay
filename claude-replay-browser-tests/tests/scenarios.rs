@@ -6687,7 +6687,18 @@ fn scenario_a_pasted_image_opens(tab: &headless_chrome::Tab, surface: Surface, _
         // looking the record up again by id is a second, weaker path to the same bytes, and when
         // it misses — a tail rewrite replacing records, a stale id in a DOM that has not
         // re-rendered — an embedded image has no path or stamp to fall back on. Simulate the miss
-        // exactly: point the card at a record id that is not in the stream, and click it.
+        // exactly: point the card at a record id that is not in the stream, and click it. First the
+        // view finishes laying itself out for the open pane: it remeasures once the pane's glide
+        // has ended (#s431), which `settle()` cannot see, and the render after it would replace the
+        // card the miss is written on.
+        until(
+            tab,
+            "document.getAnimations().every(function (a) { return a.playState !== 'running'; })",
+            "the pane's glide to end",
+            Duration::from_secs(10),
+            "document.getAnimations().length",
+        );
+        settle();
         eval(
             tab,
             "document.querySelector('.prompt-image').dataset.attachment = 'no-such-record'; 'ok'",
