@@ -16767,31 +16767,108 @@ fn hook_context_fixture(name: &str) -> Fixture {
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_a_hook_that_added_context_is_named_and_turns_keep_their_numbers() {
+    hook_note_keeps_the_turns(
+        hook_context_fixture,
+        ["hook-context-classic", "hook-context-app"],
+        3064,
+        "claude",
+        "SessionStart:startup added context: PROBE-371 main is 3 commits ahead",
+        "(+1 more line)",
+    );
+}
+
+/// The Qoder desktop app's SessionStart hook output (#s469, client 1.1.86): the QoderWork family's
+/// `hook_output` attachment, `{hookEventName, output}`, ahead of the first prompt in a Qoder-store
+/// session. Written by hand.
+fn hook_output_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = format!(
+        "{{\"type\":\"attachment\",\"version\":\"1.1.86\",\"timestamp\":\"{}\",\"attachment\":{{\"type\":\"hook_output\",\
+\"hookEventName\":\"SessionStart\",\"output\":\"# PROBE-S469 skua context\\n\\nThe east ridge holds 14 nests.\\n\"}}}}\n",
+        now_minus(300)
+    );
+    let answer = (0..60)
+        .map(|i| format!("Paragraph {i} of the answer."))
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    for (i, q) in ["first prompt", "second prompt", "third prompt"]
+        .iter()
+        .enumerate()
+    {
+        let at = 290 - i as u64 * 20;
+        t += &user_at(q, &now_minus(at));
+        t += &assistant_at(&answer, &now_minus(at - 5));
+    }
+    let path = stores.qoder_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 3,
+    }
+}
+
+/// #s469 — the Qoder desktop app's hook output is named as #371's is, on both pages, read through
+/// the Qoder adapter, and the turns keep their numbers.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn scenario_a_hook_that_added_context_in_a_qoder_app_session_is_named() {
+    hook_note_keeps_the_turns(
+        hook_output_fixture,
+        ["hook-output-classic", "hook-output-app"],
+        3061,
+        "qoder",
+        "SessionStart added context: # PROBE-S469 skua context",
+        "(+2 more lines)",
+    );
+}
+
+/// A session whose SessionStart hook added context, ahead of three prompts: on both pages the
+/// note says `named` (a note is a fold whose head is its first 70 characters, so `named` is kept
+/// under that) and `more` (the count of further lines, in its body), the first prompt is still
+/// turn 1 of three, and the turn list numbers from it. On the app shell the monitor's row names
+/// `agent`, the adapter that read the session: every adapter here draws the note through Claude's
+/// decoder, so only the row says which store's reading the page shows.
+fn hook_note_keeps_the_turns(
+    fixture: fn(&str) -> Fixture,
+    names: [&str; 2],
+    app_port: u16,
+    agent: &str,
+    named: &str,
+    more: &str,
+) {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
-        let fx = hook_context_fixture(match surface {
-            Surface::Classic => "hook-context-classic",
-            Surface::AppShell => "hook-context-app",
+        let fx = fixture(match surface {
+            Surface::Classic => names[0],
+            Surface::AppShell => names[1],
         });
-        let port = if surface == Surface::Classic { 0 } else { 3064 };
-        // The reader stays at the top, where the note and the first prompt are. A note is a fold
-        // whose head is its first 70 characters; the count of further lines is in its body.
+        let port = if surface == Surface::Classic {
+            0
+        } else {
+            app_port
+        };
+        // The reader stays at the top, where the note and the first prompt are.
         let page = open_with(surface, &fx, port, "mountall=1");
         settle();
         open_everything(&page.tab, surface);
         settle();
         let seen: serde_json::Value = eval(
             &page.tab,
-            "(function(){ var t = document.body.innerText; \
+            &format!(
+                "(function(){{ var t = document.body.innerText; \
                var turns = Array.from(document.querySelectorAll('.uturn[data-turn], .turn.user[data-turn]')) \
-                 .map(function(e){ return [Number(e.dataset.turn), e.innerText.indexOf('first prompt') >= 0]; }); \
+                 .map(function(e){{ return [Number(e.dataset.turn), e.innerText.indexOf('first prompt') >= 0]; }}); \
                var side = Array.from(document.querySelectorAll('#turnlist .side-item, .outline-turn-row')) \
-                 .map(function(e){ return e.innerText.replace(/\\s+/g, ' ').trim(); }); \
+                 .map(function(e){{ return e.innerText.replace(/\\s+/g, ' ').trim(); }}); \
                var n = document.getElementById('navigatorTurnCount'); \
-               return JSON.stringify({ \
-                 named: t.indexOf('SessionStart:startup added context: PROBE-371 main is 3 commits ahead') >= 0, \
-                 more: t.indexOf('(+1 more line)') >= 0, \
-                 turns: turns, side: side, count: n ? n.textContent.trim() : null }); })()",
+               return JSON.stringify({{ \
+                 named: t.indexOf({named}) >= 0, \
+                 more: t.indexOf({more}) >= 0, \
+                 turns: turns, side: side, count: n ? n.textContent.trim() : null }}); }})()",
+                named = serde_json::to_string(named).unwrap(),
+                more = serde_json::to_string(more).unwrap(),
+            ),
         )
         .as_str()
         .and_then(|s| serde_json::from_str(s).ok())
@@ -16831,6 +16908,20 @@ fn scenario_a_hook_that_added_context_is_named_and_turns_keep_their_numbers() {
                 seen["count"],
                 serde_json::json!("3"),
                 "the Turns count: {seen}"
+            );
+            let read_by = eval(
+                &page.tab,
+                &format!(
+                    "fetch('/api/sessions', {{cache: 'no-store'}}).then(function (r) {{ return r.json(); }}) \
+                     .then(function (j) {{ var row = (j.groups || []).flatMap(function (g) {{ return g.rows || []; }}) \
+                       .find(function (r) {{ return r.id === {sid}; }}); return row ? String(row.agent) : 'no row'; }})",
+                    sid = serde_json::to_string(SID).unwrap(),
+                ),
+            );
+            assert_eq!(
+                read_by,
+                serde_json::json!(agent),
+                "the session is read by the {agent} adapter"
             );
         }
     }

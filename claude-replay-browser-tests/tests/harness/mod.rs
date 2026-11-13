@@ -1392,6 +1392,20 @@ impl Stores {
         path
     }
 
+    /// A Qoder session under `qoder/-r/<sid>.jsonl` (the store `QODER_PROJECTS_DIR` points at),
+    /// opened with the `runtime-config` head the Qoder desktop app writes, the QoderWork family's
+    /// (#s468), so the page reads it through the Qoder adapter as it does the real store.
+    pub fn qoder_session(&self, sid: &str, jsonl: &str) -> PathBuf {
+        let proj = self.root.join("qoder").join("-r");
+        std::fs::create_dir_all(&proj).unwrap();
+        let path = proj.join(format!("{sid}.jsonl"));
+        let head = format!(
+            "{{\"type\":\"runtime-config\",\"sessionId\":\"{sid}\",\"model\":\"auto\",\"reasoningEffort\":null,\"contextWindow\":null,\"generation\":1,\"timestamp\":1794470400000}}\n"
+        );
+        std::fs::write(&path, head + jsonl).unwrap();
+        path
+    }
+
     /// A Qwenwork session (#358) under `qwenwork/<workspace slug>/<sid>.jsonl` (the store
     /// `QWENWORK_PROJECTS_DIR` points at), opened with the family's `runtime-config` head. A
     /// workspace slug, because the family's store walk skips sessions filed under `$HOME`'s slug;

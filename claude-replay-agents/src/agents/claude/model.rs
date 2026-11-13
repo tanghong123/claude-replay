@@ -1060,6 +1060,15 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     "hook_additional_context",
     "hook_cancelled",
     "hook_non_blocking_error",
+    // #s469 (the Qoder desktop app, client 1.1.86-hotfix.2, measured 2026-11-13 on hong-devserver:
+    // one record, in the one session of the Qoder store): `{type, hookEventName: "SessionStart",
+    // output: string}` at the session's head among the opening attachments, the output a Markdown
+    // document over 500 characters; no `hookName`, no `content`, no `rendered` key, no exit status.
+    // The QoderWork family's form of `hook_success`, drawn as a note (`hook_note`); listed so one
+    // with no output, drawn as nothing, is not reported as new. REVISIT on another
+    // `hookEventName`, a `hookName` or an exit status beside it, an `output` that is not a string,
+    // or a `rendered` key saying the text went somewhere other than the model.
+    "hook_output",
     // #371 (client 2.1.288): a hook that ran and succeeded. Drawn as a note when it injected
     // context (`hook_note`); listed so one that printed nothing — drawn as nothing — is not
     // reported as new.
@@ -6040,6 +6049,23 @@ fn diagnostics_note(a: &Value) -> Option<String> {
     Some(note)
 }
 
+/// The note for a hook that put text in the model's context (#371, #s92, #s469): `<hook> added
+/// context: <first non-empty line>`, then how many lines follow it; nothing when the text holds
+/// no line but blanks, so a hook that printed nothing does not flood the page.
+fn added_context_note(hook: &str, text: &str) -> Option<String> {
+    let mut lines = text.lines().skip_while(|l| l.trim().is_empty());
+    let first = lines.next()?.trim();
+    let more = lines.count();
+    let mut out = format!("{hook} added context: {first}");
+    if more > 0 {
+        out.push_str(&format!(
+            " (+{more} more line{})",
+            if more == 1 { "" } else { "s" }
+        ));
+    }
+    Some(out)
+}
+
 fn hook_note(a: &Value) -> Option<String> {
     let s = |k: &str| a.get(k).and_then(Value::as_str).unwrap_or("").trim();
     let name = |n: &str| {
@@ -6072,19 +6098,14 @@ fn hook_note(a: &Value) -> Option<String> {
         // file, hook output exists nowhere a reader could open. Its first line, and how many more
         // there are; a hook that printed nothing draws nothing, which is what keeps a hook on every
         // prompt from flooding the page. `toolUseID` names no tool call, so it is not attached.
-        "hook_success" => {
-            let content = s("content");
-            let first = content.lines().next()?.trim();
-            let more = content.lines().count().saturating_sub(1);
-            let mut out = format!("{} added context: {first}", name(s("hookName")));
-            if more > 0 {
-                out.push_str(&format!(
-                    " (+{more} more line{})",
-                    if more == 1 { "" } else { "s" }
-                ));
-            }
-            Some(out)
-        }
+        "hook_success" => added_context_note(&name(s("hookName")), s("content")),
+        // #s469 (the Qoder desktop app, client 1.1.86-hotfix.2, measured 2026-11-13 on
+        // hong-devserver, one record): the QoderWork family's form of `hook_success`, `{type,
+        // hookEventName, output}`, a SessionStart hook's output among the opening attachments. The
+        // app's bundled plugins install SessionStart hooks whose output is context for the agent.
+        // Drawn as #371's: named by its event, since it carries no `hookName`; nothing for an empty
+        // or absent `output`.
+        "hook_output" => added_context_note(&name(s("hookEventName")), s("output")),
         // #s92 (client 2.1.296): a hook that put text in the model's context after a tool call, the
         // same gap #371 closed for `hook_success`: the next reply may act on it and nothing else on
         // the page says so. Its `content` is an ARRAY of strings, joined; its first non-empty line,
@@ -6102,17 +6123,7 @@ fn hook_note(a: &Value) -> Option<String> {
                         .join("\n")
                 })
                 .unwrap_or_default();
-            let mut lines = joined.lines().skip_while(|l| l.trim().is_empty());
-            let first = lines.next()?.trim();
-            let more = lines.count();
-            let mut out = format!("{} added context: {first}", name(s("hookName")));
-            if more > 0 {
-                out.push_str(&format!(
-                    " (+{more} more line{})",
-                    if more == 1 { "" } else { "s" }
-                ));
-            }
-            Some(out)
+            added_context_note(&name(s("hookName")), &joined)
         }
         "hook_cancelled" if a.get("timedOut").and_then(Value::as_bool).unwrap_or(false) => {
             let mut out = format!("{} timed out", name(s("hookName")));
@@ -10300,6 +10311,48 @@ mod tests {
             .filter(|s| s.example.as_deref() == Some("s-s92"))
             .collect();
         assert!(seen.is_empty(), "known, empty or not: {seen:?}");
+    }
+
+    /// #s469: the QoderWork family's form of a hook that put text in the model's context (the
+    /// Qoder desktop app, client 1.1.86, a SessionStart hook from its bundled plugins) is a note,
+    /// as #371's `hook_success` is: named by its event (it carries no `hookName`), its first line
+    /// and how many more follow. One that printed nothing, or carries no output, draws nothing.
+    /// None is reported as new, and the note opens no turn of its own.
+    #[test]
+    fn a_family_hook_output_is_drawn_as_a_hook_note() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"attachment","version":"1.1.86","sessionId":"s-s469","uuid":"h1","timestamp":"2026-11-12T08:00:00.000Z","attachment":{"type":"hook_output","hookEventName":"SessionStart","output":"\n# Skua colony context\n\nThe east ridge holds 14 nests.\nCount them on the second visit.\n"}}
+{"type":"attachment","version":"1.1.86","sessionId":"s-s469","uuid":"h2","timestamp":"2026-11-12T08:00:00.200Z","attachment":{"type":"hook_output","hookEventName":"SessionStart","output":"  \n"}}
+{"type":"attachment","version":"1.1.86","sessionId":"s-s469","uuid":"h3","timestamp":"2026-11-12T08:00:00.300Z","attachment":{"type":"hook_output","hookEventName":"SessionStart"}}
+{"type":"user","version":"1.1.86","sessionId":"s-s469","uuid":"u1","timestamp":"2026-11-12T08:00:01.000Z","message":{"role":"user","content":"count the nests"}}
+"##;
+        let blocks = parse(jsonl);
+        let notes: Vec<&String> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::ToolResult(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            ["SessionStart added context: # Skua colony context (+3 more lines)"],
+            "{blocks:?}"
+        );
+        assert!(
+            matches!(blocks.last(), Some(Block::UserText(_)))
+                && blocks.iter().filter(|b| b.opens_turn()).count() == 1,
+            "the note sits ahead of the one prompt, which alone opens a turn: {blocks:?}"
+        );
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s469"))
+            .collect();
+        assert!(
+            seen.is_empty(),
+            "hook_output is known, empty or not: {seen:?}"
+        );
     }
 
     /// #s93: the cron jobs a session carries across a compaction (client 2.1.296) draw nothing and
