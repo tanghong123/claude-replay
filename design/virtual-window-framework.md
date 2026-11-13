@@ -430,8 +430,11 @@ cover (I11, I10) and placed again: the owner's export shows the turn under the r
 444 and 405, 25 violations in 46 seconds (`tests/fixtures/history/phone-jitter-app.json`). So a page
 that knows a touch glide is under way says so (`absorbCorrections`; the app shell from the finger's
 first `touchmove` until `whenStill` confirms a still view — never from `touchstart`, #s25: a TAP is
-not a glide, and a pane a tap had opened re-anchored the reader inside that window), and while it
-lasts:
+not a glide, and a pane a tap had opened re-anchored the reader inside that window; a finger is
+counted down until its touch ends, heard on the element it began on as well as on the scroller,
+since a touch's events go to that element wherever it is by then: the live turn redrawn under the
+finger took its touchend out of the scroller, the glide never ended and the tail waited for good,
+#s431), and while it lasts:
 - **a correction is absorbed, not written**: the top pad gives up (or takes) exactly the shift, and the
   model's origin moves with it (`padDebt`, carried by `contentTop`, so every offset ↔ record conversion
   stays exact); the reader's content stays where the screen shows it;

@@ -5873,6 +5873,142 @@ fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
     );
 }
 
+/// #s431, from the iOS Simulator walk: a touch's events go to the element it began on, wherever that
+/// element is by then. The live turn is redrawn as it grows, so a reader's drag that began on it ended
+/// on an element no longer in the transcript, whose touchend the view never heard: it still counted a
+/// finger down, the glide never ended, and the tail waited for good, the view going blank as the
+/// session grew. Here the element is taken out under a finger that has moved, the finger lifts, and
+/// the session grows: the follower is carried to the new end. On an iPad's width, where the session
+/// is laid out as on a desktop (no dock over the foot).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn an_ipad_follower_s_touch_on_an_element_taken_out_under_the_finger_still_ends() {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchTouchEvent, DispatchTouchEventTypeOption as Touch, TouchPoint,
+    };
+    let _serial = serial();
+    let base = base("touch-target-taken-out");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000003a8".to_string();
+    let src = stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3132, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::phone(&tab, 834, 1194);
+    monitor.open(&tab, &format!("?ui=app&session={sid}&trace=viewport"));
+    harness::until(
+        &tab,
+        &format!("innerWidth === 834 && !!document.querySelector('.virtual-window .turn.user') && {VIEW_CAUGHT_UP}"),
+        "the session drawn",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let surface = harness::Surface::AppShell;
+    let rest = || {
+        harness::eval(&tab, TWO_FRAMES);
+        std::thread::sleep(Duration::from_millis(900));
+    };
+    harness::jump_to_end(&tab, surface);
+    rest();
+    let read = "(function(){ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; return { gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), height: Math.round(s.scrollHeight), following: h.length ? h[h.length - 1].following : null, began: window.__touchBegan || null, ended: window.__touchEnded || null }; })()";
+    let before = harness::probe(&tab, read);
+    // An element inside the transcript the finger lands on, drawn over the text so the session's layout
+    // does not change; each of its touches' events is noted where it arrives.
+    let at = harness::probe(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'), box = s.getBoundingClientRect(); var e = document.createElement('span'); e.id = 'underFinger'; e.style.cssText = 'position:fixed;width:120px;height:60px;z-index:2147483647;left:' + Math.round(box.left + box.width / 2 - 60) + 'px;top:' + Math.round(box.top + box.height / 2 - 30) + 'px'; s.querySelector('.virtual-window > [data-unit-index]:last-child').appendChild(e); window.addEventListener('touchstart', function (t) { window.__touchBegan = t.target === e ? 'on it' : 'elsewhere'; }, true); e.addEventListener('touchend', function (t) { window.__touchEnded = (e.isConnected ? 'in the page' : 'taken out') + ', ' + t.touches.length + ' down'; }); var r = e.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2; return { x: x, y: y, hit: document.elementFromPoint(x, y) === e, inside: s.contains(e) }; })()",
+    );
+    let (x, y) = (at["x"].as_f64().unwrap(), at["y"].as_f64().unwrap());
+    let point = |x: f64| TouchPoint {
+        x,
+        y,
+        radius_x: None,
+        radius_y: None,
+        rotation_angle: None,
+        force: None,
+        tangential_pressure: None,
+        tilt_x: None,
+        tilt_y: None,
+        twist: None,
+        id: Some(0.0),
+    };
+    let send = |kind: Touch, points: Vec<TouchPoint>| {
+        tab.call_method(DispatchTouchEvent {
+            Type: kind,
+            touch_points: points,
+            modifiers: None,
+            timestamp: None,
+        })
+        .expect("touch event");
+    };
+    // Down, then across (the transcript does not scroll sideways, so the follower stays at the end),
+    // then the element taken out, as the page's redraw takes it, then the lift.
+    send(Touch::TouchStart, vec![point(x)]);
+    for step in 1..=4 {
+        std::thread::sleep(Duration::from_millis(16));
+        send(Touch::TouchMove, vec![point(x + 15.0 * f64::from(step))]);
+    }
+    harness::eval(
+        &tab,
+        "document.getElementById('underFinger').remove(); 'ok'",
+    );
+    send(Touch::TouchEnd, Vec::new());
+    rest();
+    let lifted = harness::probe(&tab, read);
+    append(&src, &user("asked after the lift", 50));
+    append(
+        &src,
+        &assistant(
+            &"the answer grows the session past the screen. ".repeat(60),
+            50,
+        ),
+    );
+    let grew = format!(
+        "(function(){{ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; return s.scrollHeight > {} + 400 && h.length && h[h.length - 1].following && Math.abs(s.scrollHeight - s.clientHeight - s.scrollTop) <= 2; }})()",
+        lifted["height"].as_i64().unwrap_or(0)
+    );
+    let carried = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness::until(
+            &tab,
+            &grew,
+            "the follower carried to the session's new end",
+            Duration::from_secs(10),
+            read,
+        )
+    }));
+    rest();
+    let after = harness::probe(&tab, read);
+    let violations = harness::probe(
+        &tab,
+        "JSON.stringify((window.__viewportViolations || []).slice(0, 4))",
+    );
+    drop(monitor);
+    assert!(
+        before["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && before["following"] == serde_json::json!(true),
+        "the reader follows the session at its end: {before}"
+    );
+    assert!(
+        at["hit"] == serde_json::json!(true) && at["inside"] == serde_json::json!(true),
+        "the finger lands on an element inside the transcript: {at}"
+    );
+    assert!(
+        lifted["began"] == serde_json::json!("on it")
+            && lifted["ended"] == serde_json::json!("taken out, 0 down")
+            && lifted["following"] == serde_json::json!(true),
+        "the touch began on the element and ended on it, out of the page, the follower still following: {lifted}"
+    );
+    assert!(
+        carried.is_ok(),
+        "the session grew and the follower was carried to its new end: lifted {lifted}, after {after}"
+    );
+    assert_eq!(
+        violations,
+        serde_json::json!("[]"),
+        "the engine broke none of its invariants"
+    );
+}
+
 /// #s464 with #s431 (the review of 28f51ad9): a smooth move the host's hide stopped never arrives. The
 /// engine knows a smooth write is travelling until the scroll event that reaches its end (`inFlight`),
 /// and while one travels every placement is issued smooth again. Hidden mid-travel, that event never

@@ -139,9 +139,22 @@ export class Viewport extends VirtualWindow {
     this.touching = 0;
     this.stillWaiters = [];
     this.stillTimer = 0;
-    for (const type of ["touchstart", "touchend", "touchcancel"]) {
-      scroller.addEventListener(type, event => { this.touching = event.touches.length; this.lastScrollAt = performance.now(); }, { passive: true, capture: true });
-    }
+    // A touch's events go to the element it began on, wherever that element is now. One the page
+    // redraws under the finger (the live turn, growing) is no longer inside the scroller, so its
+    // touchend never reaches it, and `touching` stayed 1: the tail waited for good and the view went
+    // blank (#s431, the iOS Simulator walk). So each touch's end is heard on its own element too.
+    // An element still inside hears it twice, which sets the same count. The same listener is
+    // never added to an element twice, so each keeps two at most, and they go with it: no signal,
+    // which would hold every element touched until the view is unmounted.
+    const touchEnded = event => { this.touching = event.touches.length; this.lastScrollAt = performance.now(); };
+    scroller.addEventListener("touchstart", event => {
+      touchEnded(event);
+      const target = event.target;
+      if (target && target !== scroller && target.addEventListener) {
+        for (const type of ["touchend", "touchcancel"]) target.addEventListener(type, touchEnded, { passive: true });
+      }
+    }, { passive: true, capture: true });
+    for (const type of ["touchend", "touchcancel"]) scroller.addEventListener(type, touchEnded, { passive: true, capture: true });
     // #372: a TOUCH glide — from the finger moving until the view is still again. While it lasts
     // the engine absorbs its corrections into the top pad instead of writing the offset (a write
     // into an iOS glide does not stick); once still, the debt is settled with one write. A wheel or
