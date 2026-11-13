@@ -342,6 +342,17 @@ the first column.
 The narrowest window that keeps the rail is 554px: the rail, the session at `M` and the 10px margin.
 #s472 and #s474 said 544, leaving out the margin.
 
+On a touch screen (below, "The narrowest steps"), at the same defaults:
+
+| Window | The pane shut | The pane open |
+|---|---|---|
+| up to 760 | the drawer, the phone reader | the drawer, the pane over the phone reader |
+| 761–789 | the rail, the phone reader | the rail, the pane over the phone reader |
+| 790–857 | the list narrowing, the phone reader | the list narrowing, the pane over the reader beside it |
+| 858–992 | the list, the phone reader | the list, the pane over the reader beside it |
+| 993–1011 | the list narrowing, the glyphs' column | the rail, the pane covering the session |
+| from 1012 | as with a mouse | from 1035, as with a mouse |
+
 So at the browser suite's own 1400px window, a case that opens the pane sees the outline as its
 glyphs and the list at 300, where today the outline stays open beside a short line. The cases that
 rely on it are listed with the stage, each with what it asserted before.
@@ -361,7 +372,8 @@ rely on it are listed with the stage, each with what it asserted before.
   order it folds.
 - **The list's drag** takes its width from the session and the pane equally, down to `M` each, and
   folds nothing: its edge stops at 232 and 520 (today's limits), and wherever the session and the
-  pane reach `M`.
+  pane reach `M`. On a touch screen it also stops where the view would become the phone reader,
+  wherever the list at 232 leaves the view over 760px (#s478's default).
 - **The pane's drag** sets how the slack splits between the session and the pane (the owner, #s473):
   remembered, equal until the reader first drags, and each side kept at least at `M`. The layout
   writes the pane's width as `--preview-fit` on the view, from `arrangeView`: the pane's own box,
@@ -386,8 +398,8 @@ screen up to 760px):
 - **On a touch screen** (the owner, #s475: "touch views of 760px or less are the phone reader, the
   iPad beside its list too"), a view of 760px or less is the phone reader wherever it sits: across a
   window with the drawer, or beside the rail or the list. So a finger never meets the desktop's
-  controls in a box that narrow. The list follows the same rules as with a mouse, and a touch window
-  of 760px or less has the drawer, as today. A short touch screen (a phone held sideways) keeps the
+  controls in a box that narrow. The list follows the mouse's rules, with the two below, and a touch
+  window of 760px or less has the drawer, as today. A short touch screen (a phone held sideways) keeps the
   phone's own list, as today: the drawer, or a wide phone's column. At the default list and with the
   outline open: upright, the iPad mini (744px)
   is the phone layout, as today; an 810 or 820px iPad has the list at 252 or 262px with the phone
@@ -400,7 +412,19 @@ screen up to 760px):
   back, the view drops to 732px and becomes the phone reader, which has no control that opens the
   outline column again. With it the list stops at 271px and the view keeps the desktop's layout, its
   glyphs and the way back. At the defaults with the outline open no iPad changes. The rule bends the
-  order on touch only: there the desktop's layout ranks above the list's width beyond 232.
+  order on touch only: there the desktop's layout ranks above the list's width beyond 232. Where even
+  the list at 232 leaves 760px or less (825–992px windows with the list open), the list's own fold
+  and open do change the view: folded to its rail the view is 761px or more and the desktop's, and
+  opened again it is the phone reader beside the list, as #s475 has it. That is the one place a
+  reader's action changes the view between the two, and the contract walks every action to hold it.
+- **A pane over the phone reader** on a touch screen covers the reader's area alone, beside the list
+  or the rail as they were, as a wide phone held sideways covers the session beside its list (#s49),
+  so the session keeps its width beneath and nothing is remeasured under the pane (#s25). Folding the
+  list for it, as his sequence does with a mouse, would widen the hidden session into the desktop's
+  layout and narrow it back into the phone reader when the pane closes. From 993px, where the view
+  beside the list is the desktop's, his sequence applies: the rail, the pane covering the session.
+  So a touch window widened past 992px with the pane open folds the list: the phone layout gives way
+  to his order there.
 - **The glyphs in the top bar.** On a phone they float in the dock. On a desktop they join the
   session's top bar, after the title and before Info and the pane's control, the title giving way
   first. Each opens its list as a panel over the transcript's right edge, 290px wide, one at a time,
@@ -465,23 +489,29 @@ decision writes without the hold, and the case asserts no `transitioncancel` on 
   above it and nowhere else; the list's width; the drawer and the phone reader exactly where they
   belong; all the slack given, the pane's by its share and equal at a half; and each expand control
   enabled exactly where it fits;
-- a wider window never shows less of what ranks higher in his order, whatever the reader chose;
+- a wider window never shows less of what ranks higher in his order, whatever the reader chose,
+  among the desktop's layouts (the phone reader has no columns to rank);
+- every reader action at every state (the outline folded or opened, the list folded or opened, the
+  pane opened or closed): the control that undoes it is there and enabled afterwards, and the view
+  changes between the phone reader and the desktop's layout only as the list folds or opens on a
+  touch screen, in 825–992px windows;
 - under a covering pane, the session's layout with the pane shut, and no width for the pane;
 - the numbers it is built from, written out (`M` 480, the outline 290, the glyphs 68, the margin 10,
   the resizer 1, the rail 64, the list's least 232, the touch screen's 760, the narrowest window
-  554), and both of his sequences, the touch screen's and a tablet reader's fold, step by step at
-  their windows: the tables above, written out;
+  554), and both of his sequences, the touch screen's with the pane shut and open, and a tablet
+  reader's fold, step by step at their windows: the tables above, written out;
 - the edges the sweep's heights and inputs do not reach: a view 499, 500 and 501px tall, rooms and
   shares out of range, and the functions' defaults.
 
-Each of twenty-six mutations of the functions fails it, among them each number above changed, the
+Each of thirty mutations of the functions fails it, among them each number above changed, the
 touch clause and a short mouse window taken as touch, the height's edge moved either way, the pane
 taking none of the slack or the share ignored or unclamped, the outline's control always enabled or
 the room ignored or unchecked, the list open under a covering pane, the phone family at 460, the
-reader's outline choice ignored, the defaults changed, the tablet's fold rule left out, off by one or
-applied to a mouse, and the touch floor of an earlier draft. The page's widths are held to the functions' numbers (the outline 290, the glyphs 68, the
-margin). In the
-browser: each step of both sequences at its window in the app, the drag limits, a collapse remembered
+reader's outline choice ignored by the view or the app, the defaults changed, the tablet's fold
+rule left out, off by one or applied to a mouse, the list folded for a pane over the phone reader or
+kept beside it on a mouse, the rail's expand read with the pane, and the touch floor of an earlier
+draft. The page's widths are held to the functions' numbers (the outline 290, the glyphs 68, the
+margin). In the browser: each step of both sequences at its window in the app, the drag limits, a collapse remembered
 across a widening, an expand disabled where it cannot fit, and the pane's glide whole when the list
 gives way.
 
