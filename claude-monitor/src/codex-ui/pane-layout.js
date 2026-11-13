@@ -5,8 +5,9 @@
 // (the derivation rewrites `(max-width:1180px)` as `pl-max-w-1180`, scripts/session-view-css.mjs), and
 // the view's scripts ask `phone()` here rather than matching `PHONE_QUERY` themselves.
 //
-// The view is a phone (`pl-phone`) when it is 460px wide or less, or a touch screen's view 500px tall or
-// less. A width class reads `B`, the width the bands read: the view's own inside that family, where a
+// The view is a phone (`pl-phone`) where `phoneView` says (#s431 stage 3): too narrow for the session at
+// `M` beside its margin, under 490px, or a touch screen's view 760px wide or less or 500px tall or less.
+// A width class reads `B`, the width the bands read: the view's own inside that family, where a
 // phone's view is its screen, and 300px more outside it, since the stylesheets' numbers were windows
 // with the default 300px sidebar beside the view. A height class reads the view's height; a pointer
 // class mirrors the screen's, through `matchMedia`.
@@ -35,21 +36,19 @@ export function holds(name, { width, height, coarse, fine }) {
   return m[1] === "max" ? value <= Number(m[3]) : value >= Number(m[3]);
 }
 
-/** Whether a view of `width` × `height` on a screen whose pointer is `coarse` is a phone. */
-export const isPhone = ({ width, height, coarse }) => width <= 460 || (!!coarse && height <= 500);
-
-/** The width the bands read for that view: its own on a phone, 300px more elsewhere. */
-export const bandWidth = view => (isPhone(view) ? view.width : view.width + 300);
+/** The width the bands read for a view: its own in the phone family (`phoneView`, below), 300px more
+ *  elsewhere. */
+export const bandWidth = view => (phoneView(view) ? view.width : view.width + 300);
 
 /** Whether that view is a wide phone held sideways (`WIDE_PHONE_QUERY` as the view reads it): a short
  *  touch view 900px wide or more. */
-export const isWidePhone = view => isPhone(view) && !!view.coarse && view.height <= 500 && view.width >= 900;
+export const isWidePhone = view => phoneView(view) && !!view.coarse && view.height <= 500 && view.width >= 900;
 
 /** The classes a view of that size holds, `pl-phone` among them. */
 export function classesFor(view) {
   const sample = { ...view, width: bandWidth(view) };
   const on = new Set(LAYOUT_CLASSES.filter(name => holds(name, sample)));
-  if (isPhone(view)) on.add("pl-phone");
+  if (phoneView(view)) on.add("pl-phone");
   return on;
 }
 

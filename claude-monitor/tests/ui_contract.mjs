@@ -135,8 +135,9 @@ let droppedAttention = "";
   // read. With `B` (the width the bands read) standing for the window's width and the view's height
   // for the window's height, every rewritten query matches exactly where its classes hold, at each
   // threshold and either side of it, with a coarse and a fine pointer; the query is read here on its
-  // own, as a browser would read it, not through the derivation's table. And the view's family is the
-  // old phone query read at `B`: a view of 460px or less, or a touch view of 500px tall or less.
+  // own, as a browser would read it, not through the derivation's table. And the view's family is
+  // stage 3's `phoneView` (a view under 490px, or a touch view 760px wide or less or 500px tall or
+  // less), which is also the old phone query read at `B`.
   {
     const layout = await import("../../claude-monitor/src/codex-ui/pane-layout.js");
     assert.deepEqual([...layout.LAYOUT_CLASSES].sort(), derived.report.layoutClasses, "pane-layout.js sets exactly the classes the view's rules read");
@@ -164,15 +165,16 @@ let droppedAttention = "";
     const capabilities = await import("../../claude-replay-html/src/html/shared/capabilities.js");
     assert.equal(`@media${capabilities.PHONE_QUERY}`.replace(/\s+/g, ""), phoneQuery.replace(/\s+/g, ""), "the old phone query is the shared PHONE_QUERY");
     // Views: either side of the family's edge, of each band less 300, and of each band itself.
-    const viewWidths = [...new Set(widths.flatMap(w => [w, w - 300]).concat([459, 460, 461]).filter(w => w > 0))];
+    const viewWidths = [...new Set(widths.flatMap(w => [w, w - 300]).concat([459, 460, 461, 489, 490, 491, 759, 760, 761]).filter(w => w > 0))];
     for (const width of viewWidths) for (const height of heights) for (const coarse of [true, false]) {
       const view = { width, height, coarse, fine: !coarse };
       const B = layout.bandWidth(view);
-      assert.equal(layout.isPhone(view), width <= 460 || (coarse && height <= 500), `the family at ${JSON.stringify(view)}`);
-      assert.equal(B, layout.isPhone(view) ? width : width + 300, `B at ${JSON.stringify(view)}`);
-      assert.equal(layout.isPhone(view), matchesQuery(phoneQuery, { ...view, width: B }), `the old phone query at B reads the family at ${JSON.stringify(view)}`);
+      const phone = layout.phoneView(view);
+      assert.equal(phone, width < 490 || (coarse && (width <= 760 || height <= 500)), `the family at ${JSON.stringify(view)}`);
+      assert.equal(B, phone ? width : width + 300, `B at ${JSON.stringify(view)}`);
+      assert.equal(phone, matchesQuery(phoneQuery, { ...view, width: B }), `the old phone query at B reads the family at ${JSON.stringify(view)}`);
       const on = layout.classesFor(view);
-      assert.equal(on.has("pl-phone"), layout.isPhone(view), `pl-phone at ${JSON.stringify(view)}`);
+      assert.equal(on.has("pl-phone"), phone, `pl-phone at ${JSON.stringify(view)}`);
       for (const name of layout.LAYOUT_CLASSES) assert.equal(on.has(name), layout.holds(name, { ...view, width: B }), `${name} at ${JSON.stringify(view)}`);
       assert.equal(layout.isWidePhone(view), matchesQuery("@media(pointer:coarse) and (max-height:500px) and (min-width:900px)", { ...view, width: B }), `the wide phone at ${JSON.stringify(view)}`);
     }
