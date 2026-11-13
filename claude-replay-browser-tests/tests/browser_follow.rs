@@ -5738,6 +5738,141 @@ fn late_move_leaves_the_end(port: u16, case: &str, past_the_window: bool) {
     );
 }
 
+/// #s431, from the iOS Simulator walk: a click on the transcript's text leaves the focus on the page's
+/// body, and the browser still scrolls the transcript with a Page Up from there, but the key never
+/// passes through the transcript, where the engine heard keys. The move read as the browser's, and
+/// the follower was put back at the end. The click is the mouse's own; the key is sent where the
+/// browser sends it, to the body, and the transcript moved as the browser moves it for that key (a
+/// key Chrome's DevTools protocol sends here repeats until the page stops it, #270). First the other
+/// half of the rule: any other key on the body is still no move of the reader's. The code size a step
+/// up runs a transaction in the key's own handler, and here it meets a move the browser made (the
+/// clamp of `a_follower_the_browser_moves_with_no_input_keeps_following`) before its event: the tail
+/// waits for that event, and the event puts the follower back at the end.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventTypeOption as Mouse, MouseButton,
+    };
+    let _serial = serial();
+    let base = base("page-up-on-body");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000003a7".to_string();
+    stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3131, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1280.0, 800.0);
+    monitor.open(&tab, &format!("?ui=app&session={sid}&trace=viewport"));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.virtual-window .turn.user') && {VIEW_CAUGHT_UP}"),
+        "the session drawn",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let surface = harness::Surface::AppShell;
+    let rest = || {
+        harness::eval(&tab, TWO_FRAMES);
+        std::thread::sleep(Duration::from_millis(900));
+    };
+    harness::jump_to_end(&tab, surface);
+    rest();
+    let read = "(function(){ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; var a = document.activeElement; return { gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), top: Math.round(s.scrollTop), following: h.length ? h[h.length - 1].following : null, focus: a === document.body ? 'body' : a ? a.tagName.toLowerCase() + (a.id ? '#' + a.id : '') : null }; })()";
+    // A key the page acts on, on the body, runs the transaction that meets the browser's move unheard:
+    // the transcript's scroll events held, the last three units gone and the layout read (the browser
+    // clamps the offset), the units back, then `+`.
+    let sized = harness::probe(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'), h = window.__viewportHistory.states; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); var start = h.length; document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '+', bubbles: true, cancelable: true })); return { top: Math.round(top), clamped: Math.round(clamped), ran: h.length - start, following: h[h.length - 1].following, gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); window.removeEventListener('scroll', window.__hold, true); window.__heldEvents.forEach(function (e) { s.dispatchEvent(e); }); if (!window.__heldEvents.length) s.dispatchEvent(new Event('scroll')); return 'ok'; })()",
+    );
+    rest();
+    let healed = harness::probe(&tab, read);
+    // The text of the last prompt in sight, at a point where nothing else is drawn over it.
+    let at = harness::probe(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'), box = s.getBoundingClientRect(); var prompts = [...s.querySelectorAll('.virtual-window .turn.user')].reverse(); for (var u of prompts) { var walker = document.createTreeWalker(u, NodeFilter.SHOW_TEXT); for (var n = walker.nextNode(); n; n = walker.nextNode()) { if (n.textContent.trim().length < 8) continue; var range = document.createRange(); range.setStart(n, 2); range.setEnd(n, 6); var r = range.getBoundingClientRect(); var x = r.left + r.width / 2, y = r.top + r.height / 2; if (y < box.top + 60 || y > box.bottom - 60) continue; var hit = document.elementFromPoint(x, y); if (hit && hit.contains(n)) return { x: x, y: y }; } } return null; })()",
+    );
+    let (x, y) = (
+        at["x"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("a prompt's text in sight: {at}")),
+        at["y"].as_f64().unwrap(),
+    );
+    for kind in [Mouse::MousePressed, Mouse::MouseReleased] {
+        tab.call_method(DispatchMouseEvent {
+            Type: kind,
+            x,
+            y,
+            modifiers: None,
+            timestamp: None,
+            button: Some(MouseButton::Left),
+            buttons: None,
+            click_count: Some(1),
+            force: None,
+            tangential_pressure: None,
+            tilt_x: None,
+            tilt_y: None,
+            twist: None,
+            delta_x: None,
+            delta_y: None,
+            pointer_Type: None,
+        })
+        .expect("the reader's click on the prompt's text");
+    }
+    // Past the click's intent window: the key is the only input behind the move.
+    std::thread::sleep(Duration::from_millis(700));
+    let clicked = harness::probe(&tab, read);
+    // The key where the browser sends it with nothing focused, and the move it makes for it.
+    harness::eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', code: 'PageUp', bubbles: true, cancelable: true })); s.scrollTop = s.scrollTop - Math.round(s.clientHeight * 0.85); return 'ok'; })()",
+    );
+    rest();
+    let pressed = harness::probe(&tab, read);
+    rest();
+    let rested = harness::probe(&tab, read);
+    let violations = harness::probe(
+        &tab,
+        "JSON.stringify((window.__viewportViolations || []).slice(0, 4))",
+    );
+    drop(monitor);
+    assert!(
+        sized["clamped"].as_i64().unwrap_or(0) < sized["top"].as_i64().unwrap_or(0) - 100
+            && sized["ran"].as_i64().unwrap_or(0) > 0
+            && sized["following"] == serde_json::json!(true),
+        "the browser clamped the offset, and the transaction `+` on the body ran left the follower following: {sized}"
+    );
+    assert!(
+        healed["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && healed["following"] == serde_json::json!(true),
+        "the clamp's event put the follower back at the end: sized {sized}, healed {healed}"
+    );
+    assert!(
+        clicked["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && clicked["following"] == serde_json::json!(true)
+            && clicked["focus"] == serde_json::json!("body"),
+        "the reader clicked the prompt's text and follows the session at its end, the focus on the body: {clicked}"
+    );
+    assert!(
+        pressed["following"] == serde_json::json!(false) && pressed["gap"].as_i64().unwrap_or(0) > 400,
+        "the Page Up is the reader's: they let go of the end where it took them: clicked {clicked}, pressed {pressed}"
+    );
+    assert!(
+        rested["following"] == serde_json::json!(false) && rested["top"] == pressed["top"],
+        "and stay there: pressed {pressed}, rested {rested}"
+    );
+    assert_eq!(
+        violations,
+        serde_json::json!("[]"),
+        "the engine broke none of its invariants"
+    );
+}
+
 /// #s464 with #s431 (the review of 28f51ad9): a smooth move the host's hide stopped never arrives. The
 /// engine knows a smooth write is travelling until the scroll event that reaches its end (`inFlight`),
 /// and while one travels every placement is issued smooth again. Hidden mid-travel, that event never

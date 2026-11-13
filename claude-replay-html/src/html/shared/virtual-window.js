@@ -480,7 +480,8 @@ class VirtualWindow {
       this.noteInput(event);
     };
     for (const type of ["pointerdown", "pointermove", "wheel", "touchstart", "touchmove", "keydown"]) {
-      frame.on(type, noteIntent, { passive: true, capture: true });
+      if (type === "keydown" && frame.onKey) frame.onKey(noteIntent, { passive: true, capture: true });
+      else frame.on(type, noteIntent, { passive: true, capture: true });
     }
     frame.on("scroll", event => this.onScroll(event), { passive: true });
     // The scrollbar thumb owns the position while the pointer holds it (#98).
@@ -2226,6 +2227,9 @@ function documentFrame() {
   };
 }
 
+/** The keys a browser scrolls a box with, natively, when no control has the focus. */
+const NATIVE_SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
+
 function elementFrame(scroller) {
   return {
     scrollTop: () => scroller.scrollTop,
@@ -2237,6 +2241,22 @@ function elementFrame(scroller) {
     // has no box at all, and every size in it reads 0.
     laidOut: () => scroller.clientWidth > 0 || scroller.clientHeight > 0,
     on: (type, fn, options) => scroller.addEventListener(type, fn, options),
+    // A key is the reader's input where the browser sends it. With the focus inside the box it
+    // passes through the box. A click on the transcript's text leaves the focus on the page's body,
+    // and the browser still scrolls the box from there (WebKit and Chrome scroll what the click
+    // landed in), but that key never passes through the box: a follower's Page Up was read as the
+    // browser's move and undone (#s431, the iOS Simulator walk). So keys are heard at the window:
+    // any key from inside the box, and from the body only a key the browser scrolls with. Any other
+    // key there (the page's `+`) is still no move of the reader's.
+    onKey: (fn, options) => {
+      const doc = scroller.ownerDocument, win = doc?.defaultView;
+      if (!win) return scroller.addEventListener("keydown", fn, options);
+      win.addEventListener("keydown", event => {
+        const target = event.target;
+        if (target?.nodeType && scroller.contains(target)) fn(event);
+        else if ((target === doc.body || target === doc.documentElement) && NATIVE_SCROLL_KEYS.has(event.key)) fn(event);
+      }, options);
+    },
     // A pointer that lands on the scroller ITSELF is on its scrollbar OR in a GUTTER: content
     // lands on a descendant, but a centred child leaves the scroller's own background exposed on
     // both sides, and `.transcript-inner` is `margin: 0 auto` inside `min(880px, 100% - 76px)`.
