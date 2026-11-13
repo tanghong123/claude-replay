@@ -14220,7 +14220,12 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
          return JSON.stringify({scroll:Math.round(n.scrollTop), gaps:gaps, \
            minGap:gaps.length?Math.min.apply(null,gaps):999, cards:cards.length, \
            open:n.querySelectorAll('.outline-card.open').length, \
-           headsReachable:heads.every(Boolean), tight:n.classList.contains('heads-tight')});})()";
+           headsReachable:heads.every(Boolean), tight:n.classList.contains('heads-tight'), \
+           box:[Math.round(v.width),Math.round(v.height),n.clientHeight], \
+           chain:Math.round(cards.reduce(function(t,c){var b=c.querySelector(':scope > .outline-card-body'); \
+             return t+c.getBoundingClientRect().height-(b?b.getBoundingClientRect().height:0)+(parseFloat(getComputedStyle(c).marginBottom)||0);}, \
+             (n.querySelector(':scope > .outline-caption')||{getBoundingClientRect:function(){return {height:0};}}).getBoundingClientRect().height)), \
+           arranged:(document.getElementById('sessionView').className.match(/pl-outline-[a-z]+|pl-pane-[a-z]+/g)||[]).join(' ')});})()";
     let read = |tab: &headless_chrome::Tab| -> serde_json::Value {
         eval(tab, COLUMN)
             .as_str()
@@ -14263,8 +14268,9 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
         settle();
     };
     // Ordinary windows and one no reader would choose. 1366x768 is SHORTER than 1280x800, so the
-    // sweep is by height as much as by width; 950x520 is the corner where the breathing room has
-    // to go for the shut chain to fit at all.
+    // sweep is by height as much as by width; 1100x520 is the corner where the breathing room has
+    // to go for the shut chain to fit at all. (It was 950x520 until the owner's order, #s431 stage
+    // 3: with a mouse the outline is a column only from 1002px, and at 950 it is its glyphs.)
     for (w, h, corner) in [
         (1680.0, 1050.0, false),
         (1440.0, 900.0, false),
@@ -14272,7 +14278,7 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
         (1280.0, 800.0, false),
         (1152.0, 720.0, false),
         (1024.0, 640.0, false),
-        (950.0, 520.0, true),
+        (1100.0, 520.0, true),
     ] {
         harness::resize(&page.tab, w, h);
         harness::until_preview_parked(&page.tab);
@@ -14348,6 +14354,25 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
              corner case and stays one: {seen}"
         );
     }
+    // A resize that leaves the transcript's width alone renders nothing (#s431): the column's own
+    // box stacks the heads again, so the breathing room follows the height alone, both ways.
+    let tight = "document.getElementById('sessionNavigator').classList.contains('heads-tight')";
+    harness::resize(&page.tab, 1100.0, 900.0);
+    until(
+        &page.tab,
+        &format!("innerHeight === 900 && !{tight}"),
+        "the breathing room back at 1100x900, the width unchanged",
+        Duration::from_secs(5),
+        COLUMN,
+    );
+    harness::resize(&page.tab, 1100.0, 520.0);
+    until(
+        &page.tab,
+        &format!("innerHeight === 520 && {tight}"),
+        "the breathing room gone again at 1100x520, the width unchanged",
+        Duration::from_secs(5),
+        COLUMN,
+    );
 }
 
 /// A compaction that put five files BACK INTO CONTEXT, each with its bytes and its line count.
