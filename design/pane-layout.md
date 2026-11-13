@@ -486,13 +486,16 @@ list). So the view takes one new optional mount option, `room`, and the app pass
   raised, and what is said during the mount is held until it returns). The view says it once as the
   mount returns, with the reader's remembered choice, and then whenever the reader opens or folds
   the outline; a fold or a return the width forces says nothing, since the choice has not changed.
+  A view its host mounts hidden (#s464) has no box, so its first decision says nothing of its family:
+  with no choice remembered, its default (open, except on the phone reader) waits for the first
+  decision that sees the box, and is said then; a default is never remembered as the reader's choice.
   `wanted` is a boolean. The app passes it and keeps the choice for `arrangeApp`, reading no class
   off the view's element; any host may pass `room` with it.
 
 `room` and `onOutline` join `MOUNT_OPTIONS` and the doc comment over `mountSessionView`, and the
 contract's mount interface cases hold them: `room`'s refusal at mount, the answers that read as none
-and a throw; `onOutline` said once at the mount with the remembered choice, again on each tap and not
-on a fold the width forces.
+and a throw; `onOutline` said once at the mount with the remembered choice (or, mounted hidden with none, once
+the view has a box), again on each tap and not on a fold the width forces.
 
 **Transitions.** A layout decision never glides (stage 2's `pl-holding`), and a reader's own toggle
 glides whole. Opening the pane can make the list give way in the same moment, and a decision taken

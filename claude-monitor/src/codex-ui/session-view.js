@@ -142,7 +142,8 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    view says this way, a send the compose box held or the server refused among it.
  *  - `onOutline({ wanted })`: whether the reader wants the outline open (#s431 stage 3,
  *    design/pane-layout.md, "The view asks its host for room"), said once as the mount returns, with
- *    the reader's remembered choice, and again whenever the reader opens or folds it; never for a fold
+ *    the reader's remembered choice (a view mounted hidden with none remembered says its default once
+ *    it first has a box), and again whenever the reader opens or folds it; never for a fold
  *    or a return the view's width forces, which leaves the choice as it was. `wanted` is a boolean.
  *  - `room()`: how many more pixels the host could give the view on its own, by narrowing what it lays
  *    beside it; asked at each layout decision, and only to decide whether the outline's control may
@@ -273,9 +274,11 @@ let arrangeInputs = () => ({}), outlineWanted = () => true;
 let placeOutlineGlyphs = () => {}, openOutlinePanel = () => false;
 const layout = mountPaneLayout(element, { signal, onChange: () => layoutHeard?.(), inputs: () => arrangeInputs(), onArrange: arrangement => drawOutline(arrangement) });
 // How the view is laid out and read, made once the layout has decided (the outline's default is the
-// view's phone family's).
-const uiState = createViewState({ phone: layout.phone() });
-outlineWanted = () => uiState.navigatorOpen;
+// view's phone family's). A view mounted hidden (its host's `hidden`, #s464, or a hidden ancestor) was
+// decided at 0×0, which says nothing of its family: its outline's default waits for the first
+// decision that sees its box (`settleOutline`).
+const uiState = createViewState({ phone: layout.sized() ? layout.phone() : null });
+outlineWanted = () => !!uiState.navigatorOpen;
 /** The room the host could give, as `room()` answers it: none without one, and none for a throw, which
  *  is reported as a handler's throw is. `arrangeView` reads any answer that is not a finite number
  *  above 0 as none. */
@@ -328,8 +331,9 @@ function say(handler, data) {
   try { handler(data); } catch (error) { (globalThis.reportError || console.error)(error); }
 }
 const toast = message => say(options.onToast, String(message));
-// The reader's remembered choice of the outline, which the host hears as the mount returns.
-say(options.onOutline, { wanted: !!uiState.navigatorOpen });
+// The reader's remembered choice of the outline, which the host hears as the mount returns; a view
+// mounted hidden, with no choice remembered, says its default once it has a box (`settleOutline`).
+if (uiState.navigatorOpen !== null) say(options.onOutline, { wanted: uiState.navigatorOpen });
 let saidTitle = null, saidTurn = null;
 function sayTitle(title) {
   const session = selectedId() || "", said = `${session}\u0000${title}`;
@@ -615,7 +619,7 @@ const paneLayoutChanged = ({ decided = false } = {}) => {
   paneLaidOutWidth = width;
   viewport.remeasure();
 };
-layoutHeard = () => paneLayoutChanged({ decided: true });
+layoutHeard = () => { if (!settleOutline()) paneLayoutChanged({ decided: true }); };
 // The reader opened or shut the pane: the order arranges the view again, and the pane glides whole
 // (`toggled`), even where the host's list gives way in the same moment; the pane shutting itself as
 // the view is built glides nothing, but the view is arranged again for it, since what the mount draws
@@ -3231,6 +3235,17 @@ function toggleNavigator(open) {
   // done so when the view decides, and the outline opens in this one decision.
   if (changed) say(options.onOutline, { wanted: open });
   layout.glide(); layout.decide(); renderNavigator(); paneLayoutChanged({ decided: true });
+}
+/** A view mounted hidden takes its outline's default (`createViewState`) from the first decision that
+ *  sees its box, which calls this as it is heard: open, except on the phone reader. The host hears it
+ *  as it would have as the mount returned, and the view decides again with it, as a tap does but
+ *  without a glide, and without remembering it, since a default is no choice. True when it did. */
+function settleOutline() {
+  if (uiState.navigatorOpen !== null || !layout.sized()) return false;
+  uiState.navigatorOpen = !layout.phone();
+  say(options.onOutline, { wanted: uiState.navigatorOpen });
+  layout.decide(); renderNavigator(); paneLayoutChanged({ decided: true });
+  return true;
 }
 /** The outline as the order arranged it (#s431 stage 3): open at its track only where the arrangement
  *  says so, its glyphs otherwise (`navigator-off`, in their column or in the top bar), whatever the

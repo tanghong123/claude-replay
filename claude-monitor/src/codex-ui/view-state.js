@@ -58,8 +58,10 @@ export const createViewState = ({ phone = false } = {}) => ({
   preview: false, previewTabs: [], previewId: null,
   // Until the reader chooses, the outline starts open — except on a phone (#310), where it is an
   // overlay over most of the transcript rather than a column beside it. `phone` is the view's own
-  // family as its layout decided it at mount (pane-layout.js, #s431), not the window's.
-  navigatorOpen: (stored => stored === null ? !phone : stored !== "0")(localStorage.getItem("am-demo-navigator")),
+  // family as its layout decided it at mount (pane-layout.js, #s431), not the window's; `null` where
+  // the layout has seen no box (a view mounted hidden, #s464), and the default is then `null` too,
+  // until the view's first decision with a box gives it (session-view.js `settleOutline`).
+  navigatorOpen: (stored => stored !== null ? stored !== "0" : phone === null ? null : !phone)(localStorage.getItem("am-demo-navigator")),
   // How the slack splits between the session and the right pane while the pane is a column (#s431
   // stage 3, the owner's #s473): the pane's part, from 0 to 1, set by dragging its edge and equal until
   // the reader first does. The width remembered before (`am-demo-preview`) is not read.
@@ -104,7 +106,8 @@ export const createViewState = ({ phone = false } = {}) => ({
  *  remembering wrote both halves' before stage 7 split the two: the outline's first state reaches
  *  storage at the same moments). */
 export function persistView(uiState) {
-  localStorage.setItem("am-demo-navigator", uiState.navigatorOpen ? "1" : "0");
+  // An outline default not yet known (`createViewState`) is no choice to remember.
+  if (uiState.navigatorOpen !== null) localStorage.setItem("am-demo-navigator", uiState.navigatorOpen ? "1" : "0");
   localStorage.setItem(PANE_SHARE_KEY, String(uiState.paneShare));
   localStorage.setItem("am-prod-nav-cards", JSON.stringify([...uiState.navCards]));
   localStorage.setItem("am-prod-nav-panes", JSON.stringify([...uiState.navPanes]));

@@ -4643,8 +4643,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // #s431 stage 3: the reader's choice of the outline is said once as the mount returns (the emitter
   // holds it), and on each tap that changes it (the toggle's own case, above), never for a fold the
   // width forces: `drawOutline`, which the layout calls, says nothing.
-  assert.match(viewSource, /^const toast = message => say\(options\.onToast, String\(message\)\);\n(?:\/\/.*\n)*say\(options\.onOutline, \{ wanted: !!uiState\.navigatorOpen \}\);$/m, "onOutline is said during the mount, so it reaches the host as the mount returns");
-  assert.equal((viewSource.match(/say\(options\.onOutline, /g) || []).length, 2, "and only there and on a tap");
+  assert.match(viewSource, /^const toast = message => say\(options\.onToast, String\(message\)\);\n(?:\/\/.*\n)*if \(uiState\.navigatorOpen !== null\) say\(options\.onOutline, \{ wanted: uiState\.navigatorOpen \}\);$/m, "onOutline is said during the mount, so it reaches the host as the mount returns");
+  assert.equal((viewSource.match(/say\(options\.onOutline, /g) || []).length, 3, "and only there, on a tap, and as a view mounted hidden settles its default");
+  // A view mounted hidden decides at 0×0, which says nothing of its family (#s464): its outline's
+  // default is not known until a decision sees its box, and is neither said nor remembered before.
+  assert.match(viewSource, /^const uiState = createViewState\(\{ phone: layout\.sized\(\) \? layout\.phone\(\) : null \}\);$/m, "the default waits for a box");
+  assert.match(viewSource, /^function settleOutline\(\) \{\n  if \(uiState\.navigatorOpen !== null \|\| !layout\.sized\(\)\) return false;\n  uiState\.navigatorOpen = !layout\.phone\(\);\n  say\(options\.onOutline, \{ wanted: uiState\.navigatorOpen \}\);\n/m, "the first decision with a box gives it, and the host hears it");
+  assert.match(viewSource, /^layoutHeard = \(\) => \{ if \(!settleOutline\(\)\) paneLayoutChanged\(\{ decided: true \}\); \};$/m, "as that decision is heard");
+  assert.doesNotMatch(/^function settleOutline\(\) \{[\s\S]*?\n\}/m.exec(viewSource)[0], /persist\(/, "a default is no choice to remember");
   assert.doesNotMatch(/^function drawOutline\(arrangement\) \{[\s\S]*?\n\}/m.exec(viewSource)[0], /onOutline|persist\(/, "a fold the width forces is neither said nor remembered");
   // `room`: refused at mount unless a function; its answer asked at each decision, a throw reported
   // and none; and whatever it answers read by arrangeView, which takes only a finite number above 0.

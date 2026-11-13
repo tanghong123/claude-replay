@@ -5135,6 +5135,69 @@ fn a_view_its_host_hides_keeps_the_reader_s_place() {
     );
 }
 
+/// #s464 with #s431: a view its host mounts while hidden has no box, and its layout's first decision,
+/// at 0×0, says nothing of what the view is (the review of ddcac874). The outline's default (open,
+/// except on the phone reader) waits for the first decision that sees the box: on a desktop the
+/// outline opens as the view is shown, the host hears it, and nothing is remembered as the reader's
+/// choice. Decided at 0×0, the view took the phone's default, and the outline stayed folded.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_view_its_host_mounts_hidden_takes_its_outline_default_once_shown() {
+    let _serial = serial();
+    let base = base("host-hidden-mount");
+    let monitor = Monitor::spawn(Kind::V1, 3123, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::open_host_page(&tab, &monitor, "mount=0");
+    let state = "(function(){ var v = document.getElementById('sessionView'); var outline = window.__host.events.filter(function (e) { return e.name === 'onOutline'; }).map(function (e) { return e.args[0].wanted; }); return { width: v ? Math.round(v.getBoundingClientRect().width) : null, folded: v ? v.classList.contains('pl-outline-glyphs') || !!v.querySelector('.workspace.navigator-off') : null, phone: v ? v.classList.contains('pl-phone') : null, said: outline, stored: localStorage.getItem('am-demo-navigator') }; })()";
+    let hidden = harness::probe(
+        &tab,
+        &format!("localStorage.removeItem('am-demo-navigator'); document.getElementById('hostPane').hidden = true; window.__host.mount(); {state}"),
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    std::thread::sleep(Duration::from_millis(300));
+    let still = harness::probe(&tab, state);
+    harness::eval(
+        &tab,
+        "document.getElementById('hostPane').hidden = false; 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('sessionView').getBoundingClientRect().width > 0",
+        "the view shown",
+        Duration::from_secs(5),
+        state,
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    std::thread::sleep(Duration::from_millis(300));
+    let shown = harness::probe(&tab, state);
+    drop(monitor);
+    assert_eq!(
+        hidden["width"], 0,
+        "the view is mounted with no box: {hidden}"
+    );
+    assert_eq!(
+        still["said"],
+        serde_json::json!([]),
+        "hidden, the view says no outline default it cannot know: {still}"
+    );
+    assert_eq!(
+        (shown["phone"].clone(), shown["folded"].clone()),
+        (serde_json::json!(false), serde_json::json!(false)),
+        "shown on a desktop, the view is the desktop layout with its outline open: hidden {hidden}, shown {shown}"
+    );
+    assert_eq!(
+        shown["said"],
+        serde_json::json!([true]),
+        "the host hears the default once, as the view has a box: {shown}"
+    );
+    assert!(
+        shown["stored"].is_null(),
+        "a default is not remembered as the reader's choice: {shown}"
+    );
+}
+
 /// The session view's unmount (#s429 stage 7): mounted in the test host and taken away, it leaves
 /// the page's window and document with exactly the listeners they had before it (as the browser
 /// lists them), the host's element empty with its own attributes, nothing of its own in the page's

@@ -78,7 +78,9 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange }
   const coarse = matchMedia("(pointer:coarse)"), fine = matchMedia("(pointer:fine)");
   const events = new EventTarget();
   const family = { phone: false, wide: false };
-  let said = null, wrote = null, arranged = null, glideUntil = 0;
+  // `sized`: whether a decision has seen the view's box. A view mounted hidden decides once at 0×0,
+  // which says nothing of its family, and `phone()` then answers for no box.
+  let said = null, wrote = null, arranged = null, glideUntil = 0, sized = false;
   // Everything a decision reads of the page, read at once: the view's box, the window's width and
   // height, and the screen's pointer.
   const measure = () => ({ box: element.getBoundingClientRect(), viewport: viewRoot.viewportWidth(), height: innerHeight, coarse: coarse.matches, fine: fine.matches });
@@ -99,6 +101,7 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange }
     if (writing === wrote) return;
     wrote = writing;
     arranged = arrangement;
+    sized = !!(box.width || box.height);
     const was = { ...family };
     family.phone = on.has("pl-phone");
     family.wide = isWidePhone(view);
@@ -163,7 +166,7 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange }
    *  just gave way for the pane as a column), and start that state's transitions, which the decision
    *  then cancels (#s431 stage 3). */
   const toggled = change => { const read = measure(); change(); glide(); decideAt(read); };
-  return { decide, glide, toggled, arrangement: () => arranged, phone: () => family.phone, wide: () => family.wide, query };
+  return { decide, glide, toggled, arrangement: () => arranged, phone: () => family.phone, wide: () => family.wide, sized: () => sized, query };
 }
 
 // #s431 stage 3 (design/pane-layout.md, "The owner's order"): what keeps its width and what gives way
