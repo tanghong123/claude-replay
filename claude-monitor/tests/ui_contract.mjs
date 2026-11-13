@@ -5034,7 +5034,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // decision that moves the view's box or the pane's width is heard; the pane shut as it is built glides nothing.
   assert.match(viewSource, /const laidOutWidth = \(\) => viewport\.mount\.getBoundingClientRect\(\)\.width;/, "the width laid out is the engine's mount's");
   assert.match(readFileSync(new URL("../src/codex-ui/pane-layout.js", import.meta.url), "utf8"), /const key = JSON\.stringify\(\[\[\.\.\.on\]\.sort\(\), Math\.round\(box\.width\), arrangement\.paneWidth\]\);\n    if \(key === said\) return;/, "a decision that moves the view's width or the pane's is heard");
-  assert.match(viewSource, /paneToggled: change => \(viewMounted \? layout\.toggled\(change\) : change\(\)\),/, "the pane shut as the view is built opens no glide's time");
+  assert.match(viewSource, /paneToggled: change => \(viewMounted \? layout\.toggled\(change\) : \(change\(\), layout\.decide\(\)\)\),/, "the pane shut as the view is built opens no glide's time, and the view is arranged for it");
   // …and so does the window's resize (the outline's toggle is held above): the view remeasures for its width one way.
   assert.match(viewSource, /addEventListener\("resize", \(\) => \{ paneLayoutChanged\(\); updateStickyHeaders\(\); \}/, "the window's resize remeasures only a width that changed");
   assert.match(viewSource, /^renderHeader\(\); renderNavigator\(\); paintJump\(\);\n(?:\/\/[^\n]*\n)+paneLaidOutWidth = laidOutWidth\(\);\nviewMounted = true;$/m, "and does from the first render on, measured from the width the mount left");

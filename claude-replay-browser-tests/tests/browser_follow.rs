@@ -8695,6 +8695,27 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
     let monitor = Monitor::spawn(Kind::V1, 3120, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
+    // A host's element does not start with the pane shut: the pane shuts itself as the view is built,
+    // and the view is arranged for that before the mount returns (the review of 33ba93fb: the shut
+    // took no decision, so at 1100px the mount drew the outline folded to glyphs, arranged for an
+    // open pane, and a host's toggle of the outline right after the mount was refused).
+    harness::resize(&tab, 1100.0, 900.0);
+    harness::open_host_page(&tab, &monitor, &format!("mount=0&session={sid}"));
+    harness::until(
+        &tab,
+        "!!(window.__host && window.__host.mounted && window.__host.mount)",
+        "the host page, ready to mount",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let built = harness::probe(
+        &tab,
+        "(function(){ window.__host.mount(); var v = document.getElementById('sessionView'); return { width: Math.round(v.getBoundingClientRect().width), shut: v.classList.contains('preview-off'), open: v.classList.contains('pl-outline-open'), glyphs: v.classList.contains('pl-outline-glyphs') }; })()",
+    );
+    assert!(
+        built["width"] == 1100 && built["shut"] == true && built["open"] == true && built["glyphs"] == false,
+        "the view as its mount returns, at 1100px, is arranged for its shut pane, its outline open: {built}"
+    );
     harness::resize(&tab, 1400.0, 900.0);
     harness::open_host_page(&tab, &monitor, &format!("session={sid}"));
     harness::until(

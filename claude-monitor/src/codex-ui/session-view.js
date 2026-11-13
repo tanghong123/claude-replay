@@ -610,9 +610,9 @@ const paneLayoutChanged = ({ decided = false } = {}) => {
 layoutHeard = () => paneLayoutChanged({ decided: true });
 // The reader opened or shut the pane: the order arranges the view again, and the pane glides whole
 // (`toggled`), even where the host's list gives way in the same moment; the pane shutting itself as
-// the view is built is only its state, and glides nothing. Then `layoutChanged` remeasures once that
-// glide is done.
-const preview = new Preview({ phone: () => layout.phone(), layoutChanged: () => paneLayoutChanged(), paneToggled: change => (viewMounted ? layout.toggled(change) : change()), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
+// the view is built glides nothing, but the view is arranged again for it, since what the mount draws
+// reads the arrangement. Then `layoutChanged` remeasures once that glide is done.
+const preview = new Preview({ phone: () => layout.phone(), layoutChanged: () => paneLayoutChanged(), paneToggled: change => (viewMounted ? layout.toggled(change) : (change(), layout.decide())), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
 const attachmentViewer = new AttachmentViewer({ toast });
 // What the compose box asks of the app goes nowhere once the view is unmounted: a dialog's answer
 // still settling, a send still out.
