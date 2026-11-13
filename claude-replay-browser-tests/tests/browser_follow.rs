@@ -8909,6 +8909,7 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_lays_out_its_list_by_the_owners_order() {
+    const MARK: &str = "window.__mark = function () { window.__t0 = performance.now(); window.__w0 = document.querySelector('.virtual-window').getBoundingClientRect().width; return true; };";
     const REMEASURES: &str = "(function(){ var w = document.querySelector('.virtual-window').getBoundingClientRect().width; var rs = window.__viewportHistory.states.filter(function (s) { return s.cause === 'remeasure' && s.t >= window.__t0; }).map(function (s) { return s.ratio; }); return { count: rs.length, ratio: rs[0], expected: Math.round(window.__w0 / w * 1000) / 1000, from: Math.round(window.__w0), to: Math.round(w) }; })()";
     let _serial = serial();
     let (monitor, _browser, tab) = shell_with_a_session("appshell-owners-order", 3121);
@@ -9233,6 +9234,67 @@ fn the_app_shell_lays_out_its_list_by_the_owners_order() {
     assert_eq!(
         none["count"], 0,
         "a resize that leaves the transcript's width alone remeasures nothing: {none}"
+    );
+    // With the pane shut the text column is at its measure's cap (820px): the list's key moves the
+    // session's column and leaves the transcript's own width alone, which remeasures nothing (the
+    // review of 60313ca5: it read the column, and cleared every height at the same width).
+    harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
+    harness::until(
+        &tab,
+        &format!(
+            "document.getElementById('sessionView').classList.contains('preview-off') && {quiet}"
+        ),
+        "the pane to shut at 1600px",
+        Duration::from_secs(10),
+        probe,
+    );
+    harness::eval(&tab, "window.__mark(); document.getElementById('sidebarResizer').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', shiftKey: true, bubbles: true, cancelable: true })); 'ok'");
+    harness::until(
+        &tab,
+        &format!("Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) === 300 && {quiet}"),
+        "the list to widen to 300px",
+        Duration::from_secs(5),
+        probe,
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let capped = harness::probe(&tab, REMEASURES);
+    assert!(
+        capped["count"] == 0 && capped["from"] == capped["to"],
+        "the list's key beside a text column at its cap leaves its width and remeasures nothing: {capped}"
+    );
+    // A reader who folded the outline, back at a 1050px window: the app lays its list out for the
+    // outline wanted (270px) before the view mounts, and at 300px once the view says it is folded. The
+    // view hears that change of its box, so the next change scales the heights from the width the
+    // reader saw, not the one before the list moved (60313ca5 heard nothing of it).
+    harness::eval(&tab, outline_key);
+    harness::until(
+        &tab,
+        &format!("{probe}.outline === 'glyphs' && {quiet}"),
+        "the outline folded at 1600px",
+        Duration::from_secs(5),
+        probe,
+    );
+    at(1050.0);
+    monitor.open(&tab, "?ui=app&session=cccccccc-0000-4000-8000-000000000160");
+    harness::until(
+        &tab,
+        &format!("innerWidth === 1050 && !!document.querySelector('.virtual-window') && {VIEW_CAUGHT_UP} && {quiet} && {probe}.list === 300"),
+        "the reloaded 1050px window with the outline folded and the list at 300px",
+        Duration::from_secs(20),
+        probe,
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    harness::eval(&tab, &format!("{MARK} window.__mark(); document.getElementById('sidebarResizer').dispatchEvent(new KeyboardEvent('keydown', {{ key: 'ArrowLeft', shiftKey: true, bubbles: true, cancelable: true }})); 'ok'"));
+    harness::until(
+        &tab,
+        &format!("Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) === 268 && {quiet}"),
+        "the list to narrow to 268px after the reload",
+        Duration::from_secs(5),
+        probe,
+    );
+    settled(
+        "the transcript remeasured from the width the reader saw after the reload",
+        0.003,
     );
     // A fresh reader at a 770px window: the view is laid out beside the list as the order puts it before
     // it decides, so its outline's default is a desktop's (wanted), which a wider window then opens.

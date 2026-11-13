@@ -256,8 +256,8 @@ element.classList.add("sv-mounting");
 // #s431 stage 2 (design/pane-layout.md): the view is laid out by its own box, not the window. Its
 // layout is decided now, before the first render, and again whenever the box or the screen changes
 // (pane-layout.js); the classes that decision sets on the element are what its width rules read. A
-// decision that changes a class remeasures the transcript once the view can (`layoutHeard`, set below,
-// since the first decision comes before the code that remeasures exists).
+// decision that changes a class or a width remeasures the transcript once the view can (`layoutHeard`,
+// set below, since the first decision comes before the code that remeasures exists).
 let layoutHeard = null;
 // #s431 stage 3: each decision also arranges the view's parts by the owner's order, from what the view
 // says of itself (`arrangeInputs`, which answers the defaults until the view's state exists, just
@@ -584,8 +584,11 @@ if (keyboardMode === "engaged") {
 // layout only at its observer's next delivery; and it waits out any glide that moves the transcript's
 // edges: a transition of a width or a grid's tracks on a box that holds the transcript, or on one beside
 // such a box (a host's list beside the view).
-let paneLaidOutWidth = transcript.clientWidth, viewMounted = false, settling = null;
-const WIDTH_PROPERTIES = new Set(["grid-template-columns", "width", "min-width", "max-width", "flex-basis", "flex-grow", "flex-shrink",
+// The width is the engine's own: its mount's, which its `remeasure` scales by, and which the reading
+// measure caps (820px, a wide transcript's 1240), so a column that grows past the cap changes nothing.
+const laidOutWidth = () => viewport.mount.getBoundingClientRect().width;
+let paneLaidOutWidth = laidOutWidth(), viewMounted = false, settling = null;
+const WIDTH_PROPERTIES = new Set(["grid-template-columns", "column-gap", "width", "min-width", "max-width", "flex-basis", "flex-grow", "flex-shrink", "inset-inline-start", "inset-inline-end",
   "padding-left", "padding-right", "padding-inline-start", "padding-inline-end", "margin-left", "margin-right",
   "margin-inline-start", "margin-inline-end", "border-left-width", "border-right-width", "left", "right"]);
 const movesTheTranscript = target => !!target?.contains && (target.contains(transcript) || !!target.parentElement?.contains(transcript));
@@ -599,17 +602,17 @@ const paneLayoutChanged = ({ decided = false } = {}) => {
     settling ??= Promise.allSettled(glides.map(glide => glide.finished)).then(() => { settling = null; paneLayoutChanged(); });
     return;
   }
-  const width = transcript.clientWidth;
-  if (width === paneLaidOutWidth) return;
+  const width = laidOutWidth();
+  if (Math.abs(width - paneLaidOutWidth) < 0.5) return;
   paneLaidOutWidth = width;
   viewport.remeasure();
 };
 layoutHeard = () => paneLayoutChanged({ decided: true });
 // The reader opened or shut the pane: the order arranges the view again, and the pane glides whole
-// (`glide`), even where the host's list gives way in the same moment.
-// The pane's layout changed: a real open or shut has already decided and glided (`toggled`), so this
-// only remeasures once that glide is done.
-const preview = new Preview({ phone: () => layout.phone(), layoutChanged: () => paneLayoutChanged(), paneToggled: change => layout.toggled(change), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
+// (`toggled`), even where the host's list gives way in the same moment; the pane shutting itself as
+// the view is built is only its state, and glides nothing. Then `layoutChanged` remeasures once that
+// glide is done.
+const preview = new Preview({ phone: () => layout.phone(), layoutChanged: () => paneLayoutChanged(), paneToggled: change => (viewMounted ? layout.toggled(change) : change()), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
 const attachmentViewer = new AttachmentViewer({ toast });
 // What the compose box asks of the app goes nowhere once the view is unmounted: a dialog's answer
 // still settling, a send still out.
@@ -3044,7 +3047,8 @@ function applyReading() {
   // The per-pane bars (#115) mirror the baseline in place — no re-render for a label — but only
   // for the blocks that have no override of their own (#173).
   paintCodeBars();
-  if (layoutChanged) viewport.remeasure();
+  // The reading measure moves the engine's width too, so the width laid out is this one from here.
+  if (layoutChanged) { viewport.remeasure(); paneLaidOutWidth = laidOutWidth(); }
 }
 function setReading(patch) { uiState.reading = { ...uiState.reading, ...patch, size: clampSize(patch.size ?? uiState.reading.size) }; uiState.readingChosen = true; persist(); applyReading(); }
 readingSection.onclick = event => {
@@ -4364,7 +4368,7 @@ var phoneDock;
 renderHeader(); renderNavigator(); paintJump();
 // From here the pane's layout changes remeasure the transcript (`paneLayoutChanged`), from the width
 // the mount left: the one read before the pane shut itself is not the transcript's any more.
-paneLaidOutWidth = transcript.clientWidth;
+paneLaidOutWidth = laidOutWidth();
 viewMounted = true;
 // The mount's hold on its transitions ends after that read, which laid the view out as built.
 element.classList.remove("sv-mounting");

@@ -5030,9 +5030,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // the view waited out, and the host's `resized()` goes the same way.
   assert.match(viewSource, /if \(glides\.length\) \{\n    settling \?\?= Promise\.allSettled\(glides\.map\(glide => glide\.finished\)\)/, "a glide is waited out before the remeasure");
   assert.match(viewSource, /resized: \(\) => paneLayoutChanged\(\),/, "the host's resize remeasures as the pane's layout does");
+  // The width compared is the engine's own (its mount's, capped by the reading measure), and every
+  // decision that moves the view's box or the pane's width is heard; the pane shut as it is built glides nothing.
+  assert.match(viewSource, /const laidOutWidth = \(\) => viewport\.mount\.getBoundingClientRect\(\)\.width;/, "the width laid out is the engine's mount's");
+  assert.match(readFileSync(new URL("../src/codex-ui/pane-layout.js", import.meta.url), "utf8"), /const key = JSON\.stringify\(\[\[\.\.\.on\]\.sort\(\), Math\.round\(box\.width\), arrangement\.paneWidth\]\);\n    if \(key === said\) return;/, "a decision that moves the view's width or the pane's is heard");
+  assert.match(viewSource, /paneToggled: change => \(viewMounted \? layout\.toggled\(change\) : change\(\)\),/, "the pane shut as the view is built opens no glide's time");
   // …and so does the window's resize (the outline's toggle is held above): the view remeasures for its width one way.
   assert.match(viewSource, /addEventListener\("resize", \(\) => \{ paneLayoutChanged\(\); updateStickyHeaders\(\); \}/, "the window's resize remeasures only a width that changed");
-  assert.match(viewSource, /^renderHeader\(\); renderNavigator\(\); paintJump\(\);\n(?:\/\/[^\n]*\n)+paneLaidOutWidth = transcript\.clientWidth;\nviewMounted = true;$/m, "and does from the first render on, measured from the width the mount left");
+  assert.match(viewSource, /^renderHeader\(\); renderNavigator\(\); paintJump\(\);\n(?:\/\/[^\n]*\n)+paneLaidOutWidth = laidOutWidth\(\);\nviewMounted = true;$/m, "and does from the first render on, measured from the width the mount left");
   // The engaged binding, run: the engagement and the keymap as the view writes them, over a fake
   // document, the view's element, a host's node, a guest and the task card the view floats.
   const engagement = /^const floating = new Set\(\);\nlet engaged = keyboardMode === "page";\nif \(keyboardMode === "engaged"\) \{\n[\s\S]*?\n\}\n/m.exec(viewSource);

@@ -55,7 +55,8 @@ export function classesFor(view) {
 /** Decide now and again whenever the view's box, the screen's pointer, the window's size or what the
  *  view says of itself changes: the classes on `element`, `pl-phone` with them, and the lengths its
  *  rules read (`--pl-b`, `--pl-w`, `--pl-h`, `--pane-x`, `--pane-r`, `--pl-vh`, `--pl-dvh`). `onChange`
- *  hears every decision that changed a class, after it is written. `query(family)` answers as a
+ *  hears every decision that changed a class, the view's width or the open pane's, after it is
+ *  written: whatever changed the view's box (a host's list, a window), the view hears it here. `query(family)` answers as a
  *  `MediaQueryList` does (`matches`, a `change` event), so a script that matched `PHONE_QUERY` asks the
  *  view's family instead by one name. Everything bound here ends with `signal`.
  *
@@ -127,7 +128,7 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange }
     onArrange?.(arrangement);
     element.getBoundingClientRect();
     if (hold) element.classList.remove("pl-holding");
-    const key = [...on].sort().join(" ");
+    const key = JSON.stringify([[...on].sort(), Math.round(box.width), arrangement.paneWidth]);
     if (key === said) return;
     said = key;
     onChange?.();
