@@ -14356,19 +14356,27 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
     }
     // A resize that leaves the transcript's width alone renders nothing (#s431): the column's own
     // box stacks the heads again, so the breathing room follows the height alone, both ways.
+    // The window's height is read off the column itself: the resize sets the window's outer size.
     let tight = "document.getElementById('sessionNavigator').classList.contains('heads-tight')";
+    let column = "document.getElementById('sessionNavigator').clientHeight";
+    let short = eval(&page.tab, column).as_f64().unwrap_or(0.0);
+    assert!(
+        eval(&page.tab, tight) == serde_json::json!(true),
+        "the sweep ends at the corner, the breathing room gone: {}",
+        read(&page.tab)
+    );
     harness::resize(&page.tab, 1100.0, 900.0);
     until(
         &page.tab,
-        &format!("innerHeight === 900 && !{tight}"),
-        "the breathing room back at 1100x900, the width unchanged",
+        &format!("{column} > {short} + 100 && !{tight}"),
+        "the breathing room back in a taller column at 1100px, the width unchanged",
         Duration::from_secs(5),
         COLUMN,
     );
     harness::resize(&page.tab, 1100.0, 520.0);
     until(
         &page.tab,
-        &format!("innerHeight === 520 && {tight}"),
+        &format!("{column} === {short} && {tight}"),
         "the breathing room gone again at 1100x520, the width unchanged",
         Duration::from_secs(5),
         COLUMN,
