@@ -84,6 +84,10 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange }
   const measure = () => ({ box: element.getBoundingClientRect(), viewport: viewRoot.viewportWidth(), height: innerHeight, coarse: coarse.matches, fine: fine.matches });
   const decideAt = ({ box, viewport, height, coarse: isCoarse, fine: isFine }) => {
     if (signal?.aborted) return;
+    // A box with no size is not laid out: the host hid the view (its `hidden` attribute, #s464, or what
+    // holds it). Nothing about it is the view's to decide, so the last decision stands until the box
+    // comes back; decided at 0×0, the view would wear the phone's layout while hidden and again as shown.
+    if (wrote !== null && !box.width && !box.height) return;
     const view = { width: box.width, height: box.height, coarse: isCoarse, fine: isFine };
     const asked = inputs?.() || {};
     const arrangement = arrangeView({ ...asked, width: box.width, height: box.height, coarse: isCoarse });

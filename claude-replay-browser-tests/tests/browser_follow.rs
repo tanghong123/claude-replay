@@ -9065,6 +9065,62 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
         serde_json::json!({ "open": true, "inCard": true, "width": 290, "visible": "visible" }),
         "Info opens its card under the bar"
     );
+    // Hidden by its host (#s464) the view's box is 0×0, and the window may change meanwhile: the view
+    // keeps the layout it had and remeasures nothing, and shown again at the width it had, it is as it
+    // was, its measured heights kept.
+    at(1400.0, false);
+    let classes = "(function(){ return (document.getElementById('sessionView').className.match(/pl-[a-z0-9-]+/g) || []).sort().join(' '); })()";
+    let remeasured = "window.__viewportHistory.states.filter(function (s) { return s.cause === 'remeasure' && s.t >= window.__t0; }).length";
+    let before = harness::probe(&tab, classes);
+    harness::eval(&tab, "window.__t0 = performance.now(); document.getElementById('sessionView').hidden = true; 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('sessionView').getBoundingClientRect().width === 0",
+        "the view hidden by its host",
+        Duration::from_secs(5),
+        classes,
+    );
+    harness::resize(&tab, 1300.0, 900.0);
+    harness::until(
+        &tab,
+        "innerWidth === 1300",
+        "the window narrowed while the view is hidden",
+        Duration::from_secs(5),
+        classes,
+    );
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::until(
+        &tab,
+        "innerWidth === 1400",
+        "the window back to 1400px",
+        Duration::from_secs(5),
+        classes,
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let hidden = harness::probe(&tab, classes);
+    harness::eval(
+        &tab,
+        "document.getElementById('sessionView').hidden = false; 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('sessionView').getBoundingClientRect().width > 0",
+        "the view shown again",
+        Duration::from_secs(5),
+        classes,
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let shown = harness::probe(&tab, classes);
+    let count = harness::probe(&tab, remeasured);
+    assert_eq!(hidden, before, "hidden, the view keeps the layout it had");
+    assert_eq!(
+        shown, before,
+        "shown again at its width, the view is laid out as it was"
+    );
+    assert_eq!(
+        count, 0,
+        "nor did hiding it, a resize meanwhile, or showing it remeasure the transcript"
+    );
     // 480px: the phone reader.
     let phone = at(480.0, false);
     assert!(

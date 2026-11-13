@@ -609,7 +609,9 @@ const paneLayoutChanged = ({ decided = false } = {}) => {
     return;
   }
   const width = laidOutWidth();
-  if (Math.abs(width - paneLaidOutWidth) < 0.5) return;
+  // A hidden view lays nothing out (#s464): its heights stay as they were measured, for the width it
+  // comes back at.
+  if (!width || Math.abs(width - paneLaidOutWidth) < 0.5) return;
   paneLaidOutWidth = width;
   viewport.remeasure();
 };
