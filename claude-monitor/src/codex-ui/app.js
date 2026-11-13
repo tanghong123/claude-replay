@@ -14,7 +14,7 @@ import { escapeText } from "./view-model.js";
 import { mountSessionList } from "./session-list-view.js";
 import { mountSessionView, PHONE_PANES } from "./session-view.js";
 import { page, viewRoot } from "./view-root.js";
-import { arrangeApp, arrangeView, GLIDE_MS, LIST_MIN, M } from "./pane-layout.js";
+import { arrangeApp, GLIDE_MS, LIST_MIN } from "./pane-layout.js";
 
 // The session view's handle, once it is mounted (below). Declared first: the drawer's set-up runs
 // before the mount and asks the view to close a sheet that cannot be open yet; the list's options
@@ -277,15 +277,18 @@ if (localStorage.getItem("am-demo-theme") === "dark") page.html().dataset.theme 
 // (`app-holding`); the reader's own collapse and expand do.
 const coarseScreen = matchMedia("(pointer:coarse)");
 let listArranged = null, listGlideUntil = 0;
+/** What the order reads for the list: the window, the screen, the reader's width and collapse, and what
+ *  the view has said of itself (its pane, and whether the reader wants its outline). */
+const listInputs = () => ({
+  width: document.documentElement.clientWidth || innerWidth,
+  coarse: coarseScreen.matches,
+  short: innerHeight <= 500,
+  list: readerListWidth(),
+  collapsed: !indexState.sidebarOpen,
+  view: { paneOpen: !app.classList.contains("preview-off"), outlineWanted: viewOutlineWanted },
+});
 function arrangeList() {
-  const decided = arrangeApp({
-    width: document.documentElement.clientWidth || innerWidth,
-    coarse: coarseScreen.matches,
-    short: innerHeight <= 500,
-    list: readerListWidth(),
-    collapsed: !indexState.sidebarOpen,
-    view: { paneOpen: !app.classList.contains("preview-off"), outlineWanted: viewOutlineWanted },
-  });
+  const decided = arrangeApp(listInputs());
   if (listArranged && JSON.stringify(decided) === JSON.stringify(listArranged)) return;
   // A window narrowed into the drawer finds it shut, over nothing: it opens from its handle.
   const intoDrawer = !!listArranged && listArranged.list !== "drawer" && decided.list === "drawer";
@@ -350,6 +353,8 @@ const clampWidth = value => {
   const asked = Number(value);
   return Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.round(Number.isFinite(asked) ? asked : SIDEBAR_DEFAULT)));
 };
+readerWidth = clampWidth(localStorage.getItem(SIDEBAR_WIDTH_KEY) || SIDEBAR_DEFAULT);
+sidebarResizer.title = `Drag to resize the session list · double-click for ${SIDEBAR_DEFAULT}px`;
 function readerListWidth() { return readerWidth; }
 /** The list drawn at the width it is given. */
 function drawListWidth(width) {
@@ -362,18 +367,22 @@ function drawListWidth(width) {
   app.classList.toggle("sidebar-tight", width < SIDEBAR_TIGHT);
   sidebarResizer.setAttribute("aria-valuenow", String(width));
 }
-/** The widest the list may be dragged now: its width as given and what the view has beyond its least,
- *  so the drag takes from the session and the pane down to M each and folds nothing. */
+/** The widest the list may be drawn at now: the widest reader's width the owner's order draws as asked,
+ *  so the list's edge takes room from the session and the pane down to M each and stops before a part
+ *  would fold, or, on a touch screen, before the view would become the phone reader (#s478). */
 function widestList() {
   if (typeof listArranged?.list !== "number") return SIDEBAR_MAX;
-  const box = viewRoot.element()?.getBoundingClientRect();
-  if (!box) return SIDEBAR_MAX;
-  const view = arrangeView({ width: box.width, height: box.height, coarse: coarseScreen.matches, paneOpen: !app.classList.contains("preview-off"), outlineWanted: viewOutlineWanted });
-  return listArranged.list + Math.max(0, view.session - M) + (view.paneWidth ? Math.max(0, view.paneWidth - M) : 0);
+  const inputs = listInputs();
+  for (let width = SIDEBAR_MAX; width > SIDEBAR_MIN; width--) if (arrangeApp({ ...inputs, list: width }).list === width) return width;
+  return SIDEBAR_MIN;
 }
-function sidebarWidth() { return readerWidth; }
+/** The list's width as drawn, which a drag and the arrow keys move from. */
+function sidebarWidth() { return typeof listArranged?.list === "number" ? listArranged.list : readerWidth; }
 function setSidebarWidth(value, remember) {
-  readerWidth = Math.min(clampWidth(value), Math.max(SIDEBAR_MIN, Math.floor(widestList())));
+  // The edge stops at the widest the order draws. A press or a drag past it asks for nothing the order
+  // would draw, so it keeps a reader's width the window narrows, and never lowers it to what is drawn.
+  const asked = clampWidth(value), limit = widestList();
+  readerWidth = asked <= limit ? asked : Math.max(limit, readerWidth);
   sidebarResizer.title = `Drag to resize the session list · double-click for ${SIDEBAR_DEFAULT}px`;
   if (remember) localStorage.setItem(SIDEBAR_WIDTH_KEY, String(readerWidth));
   arrangeList();
@@ -387,7 +396,7 @@ sidebarResizer.addEventListener("pointerdown", event => {
   // from the window either way, so a refused capture must not end it.
   try { sidebarResizer.setPointerCapture(event.pointerId); } catch (_) {}
   sidebarResizer.classList.add("dragging"); app.classList.add("resizing");
-  let width = sidebarWidth();
+  let width = readerWidth;
   const move = moved => { width = setSidebarWidth(moved.clientX, false); };
   const up = () => {
     removeEventListener("pointermove", move); removeEventListener("pointerup", up);
@@ -396,7 +405,13 @@ sidebarResizer.addEventListener("pointerdown", event => {
   };
   addEventListener("pointermove", move); addEventListener("pointerup", up);
 });
-sidebarResizer.ondblclick = () => setSidebarWidth(SIDEBAR_DEFAULT, true);
+// The double-click names the default: it is the reader's width from then on, drawn as the window allows.
+sidebarResizer.ondblclick = () => {
+  readerWidth = SIDEBAR_DEFAULT;
+  localStorage.setItem(SIDEBAR_WIDTH_KEY, String(readerWidth));
+  arrangeList();
+  viewHandle.resized();
+};
 sidebarResizer.onkeydown = event => {
   const step = event.shiftKey ? 32 : 8;
   if (event.key === "ArrowLeft") setSidebarWidth(sidebarWidth() - step, true);
@@ -525,6 +540,8 @@ var mobileShell;
 
   mobileShell = {
     setDrawer,
+    /** What the handle does: the drawer opens or shuts, or a wide phone's column shows or hides. */
+    toggle: () => handle.onclick(),
     /** A pane's count on the column switch's tab, as the dock's badge reads it. */
     paneCount(key, text) {
       const tab = columnSwitch.querySelector(`[data-column-tab="${key}"] .column-switch-count`);
@@ -583,6 +600,9 @@ paintWrite();
 // the page, as it does in every host (design/session-view-component.md, #s438). What it needs from
 // the app is passed in here; what the app asks of it is the handle. Every optional control stays on,
 // and the app keeps the page's keyboard (`keyboard: "page"`, the keymap below).
+// The list is laid out before the view mounts, so the view's first decision (and the outline's default
+// for a reader with none remembered) reads the box it will have beside the list.
+arrangeList();
 viewHandle = mountSessionView(viewRoot.element(), {
   theme: page.html().dataset.theme === "dark" ? "dark" : "light",
   backend: backend(),
@@ -613,9 +633,7 @@ viewHandle = mountSessionView(viewRoot.element(), {
   onFile: () => {},
   onLinkCopied: () => {},
   onToast: toast,
-  // The reader's choice of the outline (#s431 stage 3), which the app keeps to arrange its list by,
-  // and the room it could give the view for the outline: none yet, since the app does not yet narrow
-  // its list for it.
+  // The reader's choice of the outline (#s431 stage 3), which the app keeps to arrange its list by.
   onOutline: ({ wanted }) => { viewOutlineWanted = wanted; arrangeList(); },
   // The room the app could give the view: its list's width less 232 while the list is shown (it
   // narrows for the outline but never folds for it), and none on the rail or in the drawer.
@@ -625,15 +643,15 @@ viewHandle = mountSessionView(viewRoot.element(), {
 // BUTTON, whose handler ignores a click that lands on a button — a programmatic click does.
 // Shared Controls already binds this rail action to native session creation.
 if (!viewHandle.controls.nativeActive) page.byId("sidebarMiniWrite").onclick = () => page.byId("writeSwitch").click();
-readerWidth = clampWidth(localStorage.getItem(SIDEBAR_WIDTH_KEY) || SIDEBAR_DEFAULT);
-sidebarResizer.title = `Drag to resize the session list · double-click for ${SIDEBAR_DEFAULT}px`;
 // The keymap (parity #11): the classic view's keys, resolved by keymap.js — the view's actions from
 // its handle, the list's and the sidebar's here.
 const keyActions = {
   ...viewHandle.keys,
   "search": () => { if (indexState.selected) viewHandle.keys.search(); else openGlobalSearch(); },
   ...listHandle.keys,
-  "sidebar-toggle": () => toggleSidebar(!indexState.sidebarOpen),
+  // The key toggles what is shown (#s431 stage 3): the list folds to its rail, the rail opens where the
+  // list fits beside the view, and the drawer opens and shuts; a rail the width holds stays as it is.
+  "sidebar-toggle": () => (listArranged?.list === "drawer" ? mobileShell?.toggle() : toggleSidebar(listArranged?.list === "rail")),
 };
 // A key with no action here (a control a host switched off) is left to the page, as the view's own
 // binding leaves it; every action the keymap names has one in the app, so nothing changes for it.

@@ -140,7 +140,17 @@ export class Preview {
   }
   /** The pane's open, full and resizing states: the view's own, whose grid follows them (#s431
    *  stage 1), and its host's (`paneLayout`), whose rules may read them too (the app's do). */
-  paneState(name, on) { viewRoot.element()?.classList.toggle(name, on); this.actions.paneLayout?.(name, on); }
+  // The host hears first (#s431 stage 3): the app may lay its list out again for the pane, and it lays
+  // the page out as it does, so the view must still wear its old state then. The pane's own state is
+  // changed inside the view's decision (`paneToggled`), after the page is read, so no layout styles
+  // the view between the change and the arrangement it brings: either would start the pane's
+  // transitions in the mode the view is about to leave.
+  paneState(name, on) {
+    this.actions.paneLayout?.(name, on);
+    const change = () => viewRoot.element()?.classList.toggle(name, on);
+    if (name === "preview-off" && this.actions.paneToggled) this.actions.paneToggled(change);
+    else change();
+  }
   setOpen(open) { this.uiState.preview = open; this.paneState("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (!open) this.setFull(false); if (open) this.render(); this.actions.layoutChanged?.(); }
   setFull(full) {
     this.paneState("preview-full", full);

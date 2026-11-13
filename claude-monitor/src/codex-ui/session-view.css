@@ -1315,7 +1315,8 @@
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)).session-view>.preview,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .session-view>.preview,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)).session-view.preview-off>.preview,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .session-view.preview-off>.preview{transition:none}
 #sessionView.resizing{transition:none}
 #sessionView.sv-mounting,#sessionView.sv-mounting *,#sessionView.pl-holding,#sessionView.pl-holding *{transition:none!important}
-#sessionView:where(.pl-pane-over),#sessionView:where(.pl-pane-over).preview-off{grid-template-columns:minmax(0,1fr)}
+#sessionView:where(.pl-pane-over){grid-template-columns:minmax(0,1fr)}
+#sessionView:where(.pl-pane-over).preview-off{grid-template-columns:minmax(0,1fr) 0 0}
 :where(#sessionView) .markdown-table-scroll{width:100%;max-width:100%;margin:14px 0 18px;overflow-x:auto;border-radius:10px}
 :where(#sessionView) .markdown-table-scroll>table{display:table!important;width:100%!important;min-width:100%;margin:0!important;overflow:visible!important}
 :where(#sessionView) .transcript{overflow-anchor:none}
@@ -1980,6 +1981,7 @@
 :where(#sessionView) .pane-scrim,:where(#sessionView) .phone-only,:where(#sessionView) .phone-pane-menu,:where(#sessionView) .task-scrim,:where(#sessionView) .phone-dock,:where(#sessionView) .turn-subtitle{display:none}
 #sessionView.outline-in-bar .workspace>.topbar>.phone-pane{display:grid;position:relative;flex:none}
 #sessionView.outline-in-bar .workspace>.topbar>:is(.phone-info,#navigatorRailExpand){display:grid;place-items:center;flex:none}
+#sessionView.outline-in-bar .workspace>.topbar>#navigatorRailExpand{order:0}
 #sessionView.outline-in-bar .workspace>.info-popover{position:absolute;z-index:30;top:65px;right:8px;left:auto;bottom:auto;width:290px;max-height:calc(100% - 73px);overflow:auto}
 #sessionView.outline-in-bar .workspace>.info-popover:before{display:none}
 #sessionView #navigatorRailExpand[aria-disabled="true"]{opacity:.38;cursor:default;background:transparent}

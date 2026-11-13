@@ -77,8 +77,13 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    290px when the first prompts were measured, and a prompt counted its lines at the narrower column
    (#s431 stage 2). */
 #sessionView.sv-mounting,#sessionView.sv-mounting *,#sessionView.pl-holding,#sessionView.pl-holding *{transition:none!important}
+/* Where the pane covers the view (the band's place is `pl-pane-over` since #s431 stage 3) the view
+   is one track while the pane is open over it, and shut, three with the pane's at 0, as a column's
+   shut grid is: the app may fold its list as the pane opens, which makes a view that covered with its
+   pane shut wide enough for the pane as a column, and only grids of one length glide into each other. */
 @media(max-width:1180px){
-  #sessionView,#sessionView.preview-off{grid-template-columns:minmax(0,1fr)}
+  #sessionView{grid-template-columns:minmax(0,1fr)}
+  #sessionView.preview-off{grid-template-columns:minmax(0,1fr) 0 0}
 }
 /* The app's grid holds the list and the view (#s431 stage 1), over reference.css's four tracks; the
    view lays its own tracks out by its own width (stage 2), on the rail as beside the sidebar. A
@@ -1431,6 +1436,9 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    The panel is the phone's sheet, moved into the session's card. */
 #sessionView.outline-in-bar .workspace>.topbar>.phone-pane{display:grid;position:relative;flex:none}
 #sessionView.outline-in-bar .workspace>.topbar>:is(.phone-info,#navigatorRailExpand){display:grid;place-items:center;flex:none}
+/* In the bar the expand control stands where it was put, after the title and before Info: its rail
+   order (first in the column) would put it before the title. */
+#sessionView.outline-in-bar .workspace>.topbar>#navigatorRailExpand{order:0}
 #sessionView.outline-in-bar .workspace>.info-popover{position:absolute;z-index:30;top:65px;right:8px;left:auto;bottom:auto;width:290px;max-height:calc(100% - 73px);overflow:auto}
 #sessionView.outline-in-bar .workspace>.info-popover:before{display:none}
 /* The glyphs' expand control (design/pane-layout.md, "The reader's choices"): disabled where the outline

@@ -2064,7 +2064,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(resolveKey(ev("\\"), "view").action, "sidebar-toggle");
   assert.equal(resolveKey(ev("\\"), "list").action, "sidebar-toggle", "from the list too");
   assert.equal(resolveKey(ev("\\"), "view", { tagName: "INPUT" }), null, "never while typing");
-  assert.match(appSource, /"sidebar-toggle": \(\) => toggleSidebar\(!indexState\.sidebarOpen\)/, "the shell acts on it");
+  // It toggles what is shown (#s431 stage 3): the drawer through its handle, else the list and its rail,
+  // so a rail the width holds is not saved as the reader's collapse.
+  assert.match(appSource, /"sidebar-toggle": \(\) => \(listArranged\?\.list === "drawer" \? mobileShell\?\.toggle\(\) : toggleSidebar\(listArranged\?\.list === "rail"\)\)/, "the shell acts on it");
   assert.match(appSource, /page\.byId\("sidebarMiniWrite"\)\.onclick = \(\) => page\.byId\("writeSwitch"\)\.click\(\);/, "the rail's write button reaches the switch");
   assert.match(appSource, /page\.byId\("sidebarMiniSearch"\)\.onclick = openGlobalSearch;/, "…its search button the global search");
   assert.match(listSource, /filterMini\.onclick = \(\) => \{ [^\n]*openRailFlyout\("filter", filterMini, true\)/, "…its filter glyph the session filter, in the rail's flyout (#202 replaced the attention button; #300 the flyout)");

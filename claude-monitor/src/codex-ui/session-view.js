@@ -585,7 +585,7 @@ layoutHeard = paneLayoutChanged;
 // The reader opened or shut the pane: the order arranges the view again, and the pane glides whole
 // (`glide`), even where the host's list gives way in the same moment.
 const paneToggled = () => { layout.glide(); layout.decide(); paneLayoutChanged(); };
-const preview = new Preview({ phone: () => layout.phone(), layoutChanged: paneToggled, dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
+const preview = new Preview({ phone: () => layout.phone(), layoutChanged: paneToggled, paneToggled: change => layout.toggled(change), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
 const attachmentViewer = new AttachmentViewer({ toast });
 // What the compose box asks of the app goes nowhere once the view is unmounted: a dialog's answer
 // still settling, a send still out.

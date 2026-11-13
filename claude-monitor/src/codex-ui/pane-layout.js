@@ -78,16 +78,18 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange }
   const events = new EventTarget();
   const family = { phone: false, wide: false };
   let said = null, wrote = null, arranged = null, glideUntil = 0;
-  const decide = () => {
+  // Everything a decision reads of the page, read at once: the view's box, the window's width and
+  // height, and the screen's pointer.
+  const measure = () => ({ box: element.getBoundingClientRect(), viewport: viewRoot.viewportWidth(), height: innerHeight, coarse: coarse.matches, fine: fine.matches });
+  const decideAt = ({ box, viewport, height, coarse: isCoarse, fine: isFine }) => {
     if (signal?.aborted) return;
-    const box = element.getBoundingClientRect();
-    const view = { width: box.width, height: box.height, coarse: coarse.matches, fine: fine.matches };
+    const view = { width: box.width, height: box.height, coarse: isCoarse, fine: isFine };
     const asked = inputs?.() || {};
-    const arrangement = arrangeView({ ...asked, width: box.width, height: box.height, coarse: coarse.matches });
+    const arrangement = arrangeView({ ...asked, width: box.width, height: box.height, coarse: isCoarse });
     const on = classesFor(view);
     for (const name of arrangeClasses(view, arrangement)) on.add(name);
-    const right = Math.max(0, viewRoot.viewportWidth() - box.right);
-    const tall = box.height >= innerHeight - 2;
+    const right = Math.max(0, viewport - box.right);
+    const tall = box.height >= height - 2;
     const writing = JSON.stringify([[...on].sort(), box.width, box.height, box.left, right, tall, arrangement]);
     if (writing === wrote) return;
     wrote = writing;
@@ -131,6 +133,7 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange }
     onChange?.();
     for (const name of Object.keys(family)) if (family[name] !== was[name]) events.dispatchEvent(new Event(name));
   };
+  const decide = () => decideAt(measure());
   decide();
   const observer = new ResizeObserver(decide);
   observer.observe(element);
@@ -148,7 +151,14 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange }
   /** The reader's own toggle is starting: the decisions of its transition's time write without the
    *  hold, so the toggle glides whole. */
   const glide = () => { glideUntil = performance.now() + GLIDE_MS; };
-  return { decide, glide, arrangement: () => arranged, phone: () => family.phone, wide: () => family.wide, query };
+  /** The reader's own toggle of a state the view wears (the pane's `preview-off`): `change` makes it,
+   *  after the page is read and before the decision writes, so no layout runs between the change and
+   *  what the decision writes, and the decision glides. A layout there would style the view in its old
+   *  arrangement with the new state (a pane that covered the view, open over it, where its host's list
+   *  just gave way for the pane as a column), and start that state's transitions, which the decision
+   *  then cancels (#s431 stage 3). */
+  const toggled = change => { const read = measure(); change(); glide(); decideAt(read); };
+  return { decide, glide, toggled, arrangement: () => arranged, phone: () => family.phone, wide: () => family.wide, query };
 }
 
 // #s431 stage 3 (design/pane-layout.md, "The owner's order"): what keeps its width and what gives way

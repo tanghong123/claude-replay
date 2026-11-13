@@ -332,7 +332,9 @@ function placeSectionMenu() {
  *  desktop, a popover at the control's side (#s41: a band across a sideways screen hides what it
  *  covers), whose scrim stays clear — it still takes the tap that closes the menu. */
 function placeSheet() {
-  const sheet = matchMedia(PHONE_QUERY).matches && innerHeight > innerWidth;
+  // Never from the rail (#s431 stage 3: a mouse window up to 760px may keep the list as its rail,
+  // where the sheet's rules do not stand).
+  const sheet = !compactOn && matchMedia(PHONE_QUERY).matches && innerHeight > innerWidth;
   sectionMenu.classList.toggle("sheet", sheet); sectionScrim.classList.toggle("dim", sheet);
 }
 function openSectionMenu(key, label, anchor) {
