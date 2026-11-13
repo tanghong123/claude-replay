@@ -19,6 +19,8 @@ import { page, viewRoot } from "./view-root.js";
 // before the mount and asks the view to close a sheet that cannot be open yet; the list's options
 // read it as the list draws.
 let viewHandle = null;
+// Whether the reader wants the outline, as the view says it (`onOutline`).
+let viewOutlineWanted = true;
 /** Remember the app's choices, and the view's with them (#s429 stage 7): the one `persist` wrote both
  *  halves' until the view kept its own, so the view's are written at the same moments as before. */
 function persist() { persistIndex(); viewHandle?.persist(); }
@@ -541,6 +543,11 @@ viewHandle = mountSessionView(viewRoot.element(), {
   onFile: () => {},
   onLinkCopied: () => {},
   onToast: toast,
+  // The reader's choice of the outline (#s431 stage 3), which the app keeps to arrange its list by,
+  // and the room it could give the view for the outline: none yet, since the app does not yet narrow
+  // its list for it.
+  onOutline: ({ wanted }) => { viewOutlineWanted = wanted; },
+  room: () => 0,
 });
 // The rail's write button reaches the write switch itself (#54): the demo clicks the write
 // BUTTON, whose handler ignores a click that lands on a button — a programmatic click does.

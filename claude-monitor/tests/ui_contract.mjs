@@ -2064,7 +2064,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /"navigator-toggle": \(\) => toggleNavigator\(!uiState\.navigatorOpen\)/, "the key walks the two states it can reach");
   // #s431 stage 3: the reader's choice is what is remembered; the order then arranges the view again
   // (gliding, as a reader's own toggle does), and the outline is drawn as arranged.
-  assert.match(viewSource, /function toggleNavigator\(open\) \{ uiState\.navigatorOpen = open; persist\(\); layout\.glide\(\); layout\.decide\(\); renderNavigator\(\); viewport\.remeasure\(\); \}/, "one path, remembered, arranged, re-measured");
+  assert.match(viewSource, /^function toggleNavigator\(open\) \{\n(?:  \/\/.*\n)*  if \(open && !uiState\.navigatorOpen && !layout\.phone\(\) && !layout\.arrangement\(\)\?\.outlineCanOpen\) return;\n  const changed = uiState\.navigatorOpen !== open;\n  uiState\.navigatorOpen = open; persist\(\); layout\.glide\(\); layout\.decide\(\); renderNavigator\(\); viewport\.remeasure\(\);\n  if \(changed\) say\(options\.onOutline, \{ wanted: open \}\);\n\}$/m, "one path, remembered, arranged, re-measured, and said to the host; opening refused only where the outline cannot open");
+  assert.match(viewSource, /byId\("navigatorRailExpand"\)\.onclick = \(\) => toggleNavigator\(!uiState\.navigatorOpen\);/, "the glyphs' expand folds the outline for good while it is pressed, and opens it otherwise");
   assert.doesNotMatch(shellSource, /setNavigatorHidden/, "#148: the third state has no setter left");
   // #88: the column is an accordion — the transform that moved a head alone (and left its body
   // in flow above it) is gone; each card sticks at its own slot with a rising z-index.
@@ -2101,7 +2102,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(shellSource, /uiState\.navigatorHidden/, "#148: no hidden flag is read anywhere");
   // The two affordances that remain have to BE there, since nothing else can reach the states.
   assert.match(viewSource, /byId\("navigatorClose"\)\.onclick = \(\) => toggleNavigator\(false\)/, "the caption collapses to the rail");
-  assert.match(viewSource, /byId\("navigatorRailExpand"\)\.onclick = \(\) => toggleNavigator\(true\)/, "…and the rail expands back");
+  assert.match(viewSource, /byId\("navigatorRailExpand"\)\.onclick = \(\) => toggleNavigator\(!uiState\.navigatorOpen\)/, "…and the rail expands back (#s431 stage 3: or, pressed while the width holds the outline, folds it for good)");
   assert.match(viewSource, /byId\("navigatorToggle"\)\?\.remove\(\)/, "#148: the top-bar toggle is removed at runtime — the demo shell it lives in is generated and never hand-edited");
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.doesNotMatch(css, /navigator-hidden/, "#148: no CSS describes a state that cannot be reached");
@@ -4584,9 +4585,33 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.ok(!read.has("isolate") && !passed.has("isolate"), "isolate is gone (#s438): the view always draws into the page");
   assert.doesNotMatch(viewSource, /\bisolate\b/, "and the view says nothing of it");
   // What the view tells its host: each handler a host may pass is called, by its literal name.
-  const EVENTS = ["onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast"];
+  const EVENTS = ["onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast", "onOutline"];
   const handlers = [...read].filter(name => /^on[A-Z]/.test(name)).sort();
-  assert.deepEqual(handlers, [...EVENTS].sort(), "the view's events are the six the design names");
+  assert.deepEqual(handlers, [...EVENTS].sort(), "the view's events are the seven the design names (onOutline: #s479)");
+  // #s431 stage 3: the reader's choice of the outline is said once as the mount returns (the emitter
+  // holds it), and on each tap that changes it (the toggle's own case, above), never for a fold the
+  // width forces: `drawOutline`, which the layout calls, says nothing.
+  assert.match(viewSource, /^const toast = message => say\(options\.onToast, String\(message\)\);\n(?:\/\/.*\n)*say\(options\.onOutline, \{ wanted: !!uiState\.navigatorOpen \}\);$/m, "onOutline is said during the mount, so it reaches the host as the mount returns");
+  assert.equal((viewSource.match(/say\(options\.onOutline, /g) || []).length, 2, "and only there and on a tap");
+  assert.doesNotMatch(/^function drawOutline\(arrangement\) \{[\s\S]*?\n\}/m.exec(viewSource)[0], /onOutline|persist\(/, "a fold the width forces is neither said nor remembered");
+  // `room`: refused at mount unless a function; its answer asked at each decision, a throw reported
+  // and none; and whatever it answers read by arrangeView, which takes only a finite number above 0.
+  {
+    const guard = /^if \(options\.room !== undefined && typeof options\.room !== "function"\) throw new Error\("[^"]*"\);$/m.exec(viewSource);
+    assert.ok(guard, "a room that is not a function is refused at mount");
+    const check = new Function("options", guard[0]);
+    for (const room of [0, "300", {}, null, true]) assert.throws(() => check({ room }), /room/, `a room of ${JSON.stringify(room)} is refused`);
+    for (const room of [undefined, () => 0]) assert.doesNotThrow(() => check({ room }), "none, or a function");
+    const asker = /^const askRoom = \(\) => \{\n[\s\S]*?\n\};$/m.exec(viewSource);
+    assert.ok(asker, "the view asks its room in one place");
+    const reported = [];
+    const ask = options => new Function("options", "globalThis", `${asker[0]}\nreturn askRoom();`)(options, { reportError: error => reported.push(error.message) });
+    assert.equal(ask({}), 0, "no room without one");
+    assert.equal(ask({ room: () => 120 }), 120, "the host's answer, as it gave it");
+    assert.equal(ask({ room: () => { throw new Error("the host's room"); } }), 0, "a throw is none");
+    assert.deepEqual(reported, ["the host's room"], "and reported, not raised");
+    assert.match(viewSource, /arrangeInputs = \(\) => \(\{ paneOpen: [^\n]*, room: askRoom\(\) \}\);/, "asked at each layout decision");
+  }
   for (const name of handlers) {
     assert.match(viewSource, new RegExp(`\\bsay\\(options\\.${name}, `), `the view raises options.${name} through its one emitter, where it does that thing`);
     assert.ok(passed.has(name), `the app passes ${name}, so its tests see each event reach it`);

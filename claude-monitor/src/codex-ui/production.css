@@ -1422,6 +1422,26 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    - Targets are at least 44px tall; inputs are 16px, the size under which iOS zooms the page into a
      focused field (the search box zoomed the page and pushed the filter off the edge). */
 .drawer-handle,.drawer-scrim,.pane-scrim,.phone-only,.phone-pane-menu,.task-scrim,.phone-dock,.turn-subtitle{display:none}
+/* #s431 stage 3 (design/pane-layout.md, "The glyphs in the top bar"): off the phone reader, where the
+   owner's order leaves the outline's glyphs no column, they join the session's top bar before the
+   pane's control (`outline-in-bar`), and each opens its list as a panel 290px wide over the
+   transcript's right edge, under the bar; so does a glyph in the column where the outline cannot open.
+   The panel is the phone's sheet, moved into the session's card. */
+#sessionView.outline-in-bar .workspace>.topbar>.phone-pane{display:grid;position:relative;flex:none}
+/* The glyphs' expand control (design/pane-layout.md, "The reader's choices"): disabled where the outline
+   cannot open (its title says why), and pressed, in the selected tint, while the reader wants the
+   outline and the width holds it to its glyphs. */
+#sessionView #navigatorRailExpand[aria-disabled="true"]{opacity:.38;cursor:default;background:transparent}
+#sessionView #navigatorRailExpand[aria-pressed="true"]{background:var(--selected);color:var(--blue)}
+#sessionView.outline-in-bar .workspace>.topbar>.phone-pane .phone-pane-count{position:absolute;right:0;top:1px;min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:var(--hover);color:var(--sub);font:600 9px/15px var(--mono);text-align:center}
+#sessionView:not(.pl-phone) .workspace>.phone-pane-menu:not([hidden]){display:flex;flex-direction:column;position:absolute;z-index:30;top:65px;right:8px;width:290px;max-height:calc(100% - 73px);border:1px solid var(--line);border-radius:14px;background:var(--bg);box-shadow:0 18px 44px -12px rgba(20,26,40,.35);overflow:hidden}
+#sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-head{display:flex;align-items:center;justify-content:space-between;flex:none;padding:0 4px 0 14px;height:40px;border-bottom:1px solid var(--line)}
+#sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-head strong{font-size:13px;color:var(--ink)}
+#sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-close{width:32px;height:32px;border-radius:8px;background:transparent;color:var(--sub);font-size:15px;cursor:pointer}
+#sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-close:hover{background:var(--hover)}
+#sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-jumps{display:none}
+#sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 6px 6px}
+#sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-body .navigator-list{overflow:visible}
 @media(max-width:760px) and (hover:hover){.drawer-handle:hover{background:var(--hover)}}
 /* The list's rows are touch targets on a touch screen, wherever the list is drawn (#s431 stage 2,
    design/pane-layout.md): a finger needs 44px in an iPad's sidebar as in a phone's drawer, and a

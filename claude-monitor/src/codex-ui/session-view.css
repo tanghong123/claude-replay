@@ -1978,6 +1978,18 @@
 :where(#sessionView) .search-suggest-row.on .scope-check:after{opacity:1}
 :where(#sessionView) .search-suggest-empty{padding:8px;color:var(--faint);font-size:11px}
 :where(#sessionView) .pane-scrim,:where(#sessionView) .phone-only,:where(#sessionView) .phone-pane-menu,:where(#sessionView) .task-scrim,:where(#sessionView) .phone-dock,:where(#sessionView) .turn-subtitle{display:none}
+#sessionView.outline-in-bar .workspace>.topbar>.phone-pane{display:grid;position:relative;flex:none}
+#sessionView #navigatorRailExpand[aria-disabled="true"]{opacity:.38;cursor:default;background:transparent}
+#sessionView #navigatorRailExpand[aria-pressed="true"]{background:var(--selected);color:var(--blue)}
+#sessionView.outline-in-bar .workspace>.topbar>.phone-pane .phone-pane-count{position:absolute;right:0;top:1px;min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:var(--hover);color:var(--sub);font:600 9px/15px var(--mono);text-align:center}
+#sessionView:not(.pl-phone) .workspace>.phone-pane-menu:not([hidden]){display:flex;flex-direction:column;position:absolute;z-index:30;top:65px;right:8px;width:290px;max-height:calc(100% - 73px);border:1px solid var(--line);border-radius:14px;background:var(--bg);box-shadow:0 18px 44px -12px rgba(20,26,40,.35);overflow:hidden}
+#sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-head{display:flex;align-items:center;justify-content:space-between;flex:none;padding:0 4px 0 14px;height:40px;border-bottom:1px solid var(--line)}
+#sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-head strong{font-size:13px;color:var(--ink)}
+#sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-close{width:32px;height:32px;border-radius:8px;background:transparent;color:var(--sub);font-size:15px;cursor:pointer}
+#sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-close:hover{background:var(--hover)}
+#sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-jumps{display:none}
+#sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 6px 6px}
+#sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-body .navigator-list{overflow:visible}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) #mobileBack,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) #sidebarReopen{display:none!important}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500)>.workspace{isolation:isolate}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .workspace{grid-template-rows:auto minmax(0,1fr)}

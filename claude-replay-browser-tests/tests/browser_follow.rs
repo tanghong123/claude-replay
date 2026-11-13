@@ -1499,6 +1499,7 @@ fn the_app_shell_hears_what_its_session_view_tells_its_host() {
             "onFile",
             "onInfo",
             "onLinkCopied",
+            "onOutline",
             "onTitle",
             "onToast",
             "onTurn"

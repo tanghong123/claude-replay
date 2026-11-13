@@ -350,7 +350,7 @@ export const COMMON = Object.freeze([
  *  and `resizing` are copied onto `#app` as well, for the app's rules that still read them there. A
  *  rule led by one may style the view's element itself. */
 export const ROOT_CLASSES = Object.freeze([
-  ".session-view", ".composing", ".keyboard-up", ".pane-open", ".preview-full", ".preview-off", ".resizing", ".sv-mounting", ".wide", ".wrap-code",
+  ".session-view", ".composing", ".keyboard-up", ".outline-in-bar", ".pane-open", ".preview-full", ".preview-off", ".resizing", ".sv-mounting", ".wide", ".wrap-code",
 ]);
 
 /** What the view draws that the page shows OUTSIDE `#sessionView`, so a rule for it is in both files

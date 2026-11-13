@@ -51,8 +51,8 @@ export const KEYBOARD_MODES = Object.freeze(["engaged", "page"]);
 export const MOUNT_OPTIONS = Object.freeze([
   "theme", "grid", "backend", "show", "keyboard", "write", "frame",
   "selectedId", "sessionRow", "sessionWorkers", "selectSession", "renderList", "refreshIndex", "pauseIndex", "resumeIndex",
-  "onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast",
-  "parentShown", "openList", "openSidebar", "paneLayout", "paneCount",
+  "onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast", "onOutline",
+  "room", "parentShown", "openList", "openSidebar", "paneLayout", "paneCount",
 ]);
 
 /** Draw the session view in `element` and return its handle. The element becomes `#sessionView`, the
@@ -134,6 +134,15 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  - `onLinkCopied({ url, record })`: the reader copied a link to a record.
  *  - `onToast(message)`: say something briefly. A host that leaves it out hears nothing of what the
  *    view says this way, a send the compose box held or the server refused among it.
+ *  - `onOutline({ wanted })`: whether the reader wants the outline open (#s431 stage 3,
+ *    design/pane-layout.md, "The view asks its host for room"), said once as the mount returns, with
+ *    the reader's remembered choice, and again whenever the reader opens or folds it; never for a fold
+ *    or a return the view's width forces, which leaves the choice as it was. `wanted` is a boolean.
+ *  - `room()`: how many more pixels the host could give the view on its own, by narrowing what it lays
+ *    beside it; asked at each layout decision, and only to decide whether the outline's control may
+ *    open the outline, which the host then makes room for when it hears `onOutline`. A finite number
+ *    above 0 is the room, and anything else (or a throw, which is reported) is none. One that is not a
+ *    function is refused.
  *  - `parentShown(id)`: the top bar offers a way back to this parent (the app writes the browser's
  *    Back to it for a deep-linked child).
  *  - `openList()`, `openSidebar()`: the top bar's back-to-the-list and reopen controls, the app's.
@@ -167,6 +176,7 @@ for (const [name, shown] of Object.entries(options.show || {})) {
 const keyboardMode = options.keyboard ?? "engaged";
 if (!KEYBOARD_MODES.includes(keyboardMode)) throw new Error(`mountSessionView takes its keyboard "engaged" or "page", not ${JSON.stringify(keyboardMode)}`);
 if (options.write !== undefined && !(typeof options.write?.on === "function" && typeof options.write?.confirm === "function")) throw new Error("mountSessionView takes its write as { on, confirm }, two functions, or none for a host that offers no writes");
+if (options.room !== undefined && typeof options.room !== "function") throw new Error("mountSessionView takes its room as a function answering how many pixels its host could give, or none");
 if (options.frame !== undefined && typeof options.frame !== "function") throw new Error("mountSessionView takes its frame as a function from a page's HTML to the address its frame loads");
 /** Whether an optional control is drawn: each is, unless the host switched it off. */
 const shows = name => options.show?.[name] !== false;
@@ -250,12 +260,22 @@ let layoutHeard = null;
 // #s431 stage 3: each decision also arranges the view's parts by the owner's order, from what the view
 // says of itself (`arrangeInputs`, which answers the defaults until the view's state exists, just
 // below), and draws the outline as arranged (`drawOutline`) in the same decision.
-let arrangeInputs = () => ({});
+let arrangeInputs = () => ({}), outlineWanted = () => true;
+// Set by the phone shell below, which holds the glyphs and their panel: none until it has run.
+let placeOutlineGlyphs = () => {}, openOutlinePanel = () => false;
 const layout = mountPaneLayout(element, { signal, onChange: () => layoutHeard?.(), inputs: () => arrangeInputs(), onArrange: arrangement => drawOutline(arrangement) });
 // How the view is laid out and read, made once the layout has decided (the outline's default is the
 // view's phone family's).
 const uiState = createViewState({ phone: layout.phone() });
-arrangeInputs = () => ({ paneOpen: !element.classList.contains("preview-off"), outlineWanted: uiState.navigatorOpen, share: 0.5 });
+outlineWanted = () => uiState.navigatorOpen;
+/** The room the host could give, as `room()` answers it: none without one, and none for a throw, which
+ *  is reported as a handler's throw is. `arrangeView` reads any answer that is not a finite number
+ *  above 0 as none. */
+const askRoom = () => {
+  if (typeof options.room !== "function") return 0;
+  try { return options.room(); } catch (error) { (globalThis.reportError || console.error)(error); return 0; }
+};
+arrangeInputs = () => ({ paneOpen: !element.classList.contains("preview-off"), outlineWanted: outlineWanted(), share: 0.5, room: askRoom() });
 layout.decide();
 const persist = () => persistView(uiState);
 const applyTheme = theme => { element.dataset.theme = theme === "dark" ? "dark" : "light"; };
@@ -283,6 +303,8 @@ function say(handler, data) {
   try { handler(data); } catch (error) { (globalThis.reportError || console.error)(error); }
 }
 const toast = message => say(options.onToast, String(message));
+// The reader's remembered choice of the outline, which the host hears as the mount returns.
+say(options.onOutline, { wanted: !!uiState.navigatorOpen });
 let saidTitle = null, saidTurn = null;
 function sayTitle(title) {
   const session = selectedId() || "", said = `${session}\u0000${title}`;
@@ -1829,7 +1851,14 @@ const navigatorClick = event => {
     toggleDrawer(card.dataset.navCardToggle);
     return;
   }
-  const rail = event.target.closest("[data-nav-card-open]"); if (rail) { uiState.navigatorOpen = true; persist(); renderNavigator(); setDrawerOpen(rail.dataset.navCardOpen, 1); }
+  // A glyph in the column opens the outline at its pane where the outline fits (#s431 stage 3: with
+  // the room its host could give), and its list as the top bar's panel where it does not.
+  const rail = event.target.closest("[data-nav-card-open]");
+  if (rail) {
+    if (!layout.arrangement()?.outlineCanOpen && openOutlinePanel(rail.dataset.navCardOpen)) return;
+    toggleNavigator(true);
+    setDrawerOpen(rail.dataset.navCardOpen, 1);
+  }
 };
 byId("sessionNavigator").onclick = navigatorClick;
 outlineFooter.addEventListener("click", navigatorClick);
@@ -3131,7 +3160,15 @@ function updateStickyHeaders() { const top = transcript.getBoundingClientRect().
 // so the reader's place does not move with the reflow.
 //
 // Retiring a shipped feature, not fixing a bug: the history should not read as a regression.
-function toggleNavigator(open) { uiState.navigatorOpen = open; persist(); layout.glide(); layout.decide(); renderNavigator(); viewport.remeasure(); }
+function toggleNavigator(open) {
+  // Opening is refused where the outline cannot open, even with the room the host could give
+  // (`outlineCanOpen`): its control is disabled there. Folding never is, and on the phone reader,
+  // whose outline is the dock's sheets, the choice is only remembered.
+  if (open && !uiState.navigatorOpen && !layout.phone() && !layout.arrangement()?.outlineCanOpen) return;
+  const changed = uiState.navigatorOpen !== open;
+  uiState.navigatorOpen = open; persist(); layout.glide(); layout.decide(); renderNavigator(); viewport.remeasure();
+  if (changed) say(options.onOutline, { wanted: open });
+}
 /** The outline as the order arranged it (#s431 stage 3): open at its track only where the arrangement
  *  says so, its glyphs otherwise (`navigator-off`, in their column or in the top bar), whatever the
  *  reader wants; the phone reader keeps the reader's choice, as before, since its outline is the dock's
@@ -3141,8 +3178,21 @@ function drawOutline(arrangement) {
   if (!workspace || !arrangement) return;
   // The reader's choice as the layout was told it: the defaults while the view's state is still being
   // made (the first decision comes before it).
-  const wanted = arrangeInputs().outlineWanted ?? true;
+  const wanted = outlineWanted();
   workspace.classList.toggle("navigator-off", arrangement.phone ? !wanted : arrangement.outline !== "open");
+  // The glyphs' expand control (design/pane-layout.md, "The reader's choices"): pressed while the
+  // reader wants the outline and the width holds it to its glyphs, and then a press folds it for good;
+  // not pressed, it opens the outline, and is disabled where it cannot open. Disabled by
+  // `aria-disabled`, so its title, which says why, still shows; its press then does nothing.
+  const expand = viewRoot.byId("navigatorRailExpand");
+  if (expand && !arrangement.phone) {
+    const pressed = wanted && arrangement.outline !== "open", blocked = !wanted && !arrangement.outlineCanOpen;
+    expand.setAttribute("aria-pressed", String(pressed));
+    expand.setAttribute("aria-disabled", String(blocked));
+    expand.title = pressed ? "The outline opens when the window has room. Press to keep it folded"
+      : blocked ? "Too narrow to open the outline: widen the window" : "Expand the outline";
+  }
+  placeOutlineGlyphs(arrangement);
 }
 // #159. The pane selector. No glyph of its own (owner, #159 follow-up): the word "Outline" IS
 // the trigger, hovered, exactly as the session title opens the copy menu — same surface, same
@@ -3345,7 +3395,7 @@ panesMenu.onclick = event => {
 }
 applyPanes(); // the stored choice, before anything measures the column
 byId("navigatorClose").onclick = () => toggleNavigator(false);
-byId("navigatorRailExpand").onclick = () => toggleNavigator(true);
+byId("navigatorRailExpand").onclick = () => toggleNavigator(!uiState.navigatorOpen);
 // #148, at the owner's request: the top-bar toggle goes with the X. Its remaining job was
 // bringing a HIDDEN pane back, and there is no hidden state now — the caption's collapse
 // button and the rail's expand button already say everything two states can say, and the rail
@@ -4100,7 +4150,7 @@ var phoneDock;
       catchingPointer = event.pointerId;
       stopCatching(4000);
     }
-    if (openPane && taskPopover.hidden && !menu.contains(event.target) && !event.target.closest?.("[data-phone-pane]")) closePane();
+    if (openPane && taskPopover.hidden && !menu.contains(event.target) && !event.target.closest?.("[data-phone-pane], [data-nav-card-open]")) closePane();
   }, { capture: true, signal });
   const lifted = event => {
     if (event.pointerId !== catchingPointer) return;
@@ -4115,6 +4165,31 @@ var phoneDock;
     paneScrim.classList.remove("catching");
   });
   addEventListener("keydown", event => { if (event.key === "Escape") closePane(); }, { signal });
+  // #s431 stage 3 (design/pane-layout.md, "The glyphs in the top bar"): off the phone reader, where the
+  // owner's order leaves the outline's glyphs no column of their own, the same three glyphs join the
+  // session's top bar, after the title and its tools and before Info and the pane's control; each
+  // opens its list as a panel over the transcript's right edge, 290px wide, one at a time (this sheet,
+  // drawn as a panel there), and a click elsewhere or Esc closes it. A glyph in the column opens the
+  // same panel where the outline cannot open. The panel borrows the outline's own list, so it closes
+  // before the outline opens again.
+  placeOutlineGlyphs = arrangement => {
+    // The panel lives in the session's card off the phone reader, under its top bar; the phone's
+    // sheet in the view, as before. A move between them closes what was open.
+    const panelHome = arrangement && !arrangement.phone ? viewRoot.$(".workspace") : sessionView;
+    if (panelHome && menu.parentElement !== panelHome) { closePane(); panelHome.append(menu); }
+    const inBar = !!arrangement && !arrangement.phone && arrangement.outline === "bar";
+    if (inBar && panes[0].button.parentElement !== topbar) for (const pane of panes) info.before(pane.button);
+    if (!inBar && panes[0].button.parentElement !== dockPill) dockPill.prepend(...panes.map(pane => pane.button));
+    sessionView.classList.toggle("outline-in-bar", inBar);
+    if (arrangement?.outline === "open") closePane();
+  };
+  openOutlinePanel = key => {
+    const pane = panes.find(p => p.key === key);
+    if (!pane) return false;
+    if (openPane === pane) closePane(); else showPane(pane);
+    return true;
+  };
+  placeOutlineGlyphs(layout.arrangement());
   // The card's own jump to the turn leaves for the transcript: the list goes with the card.
   taskPopover.addEventListener("click", event => { if (event.target.closest("[data-task-record], [data-task-find]")) closePane(); });
 
