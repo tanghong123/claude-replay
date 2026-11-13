@@ -152,8 +152,9 @@ export const OUTLINE = 290, GLYPHS = 68;
 export const RESIZER = 1, EDGE = 10;
 /** The app's list: its rail, and its least width open. */
 export const RAIL = 64, LIST_MIN = 232;
-/** A touch screen's view this wide or less is the phone reader (#s474; whether that holds for every
- *  touch view, a tablet's beside its list included, is the owner's question on #s475). */
+/** A touch screen's view this wide or less is the phone reader, wherever it sits: the owner's #s474
+ *  (a touch screen keeps the phone layout up to 760px) and #s475 ("touch views of 760px or less are
+ *  the phone reader, the iPad beside its list too"). */
 export const TOUCH_PHONE = 760;
 
 /** How much the outline takes beside the session, as it is shown. */
@@ -171,17 +172,23 @@ export const phoneView = ({ width, height = Infinity, coarse = false, m = M }) =
 /** How the view lays out its parts at its own box. `paneOpen` is whether the right pane is open,
  *  `outlineWanted` the reader's choice for the outline, `share` the pane's share of the slack (a half
  *  until the reader drags its edge, #s473), and `room` how much wider the host could make the view by
- *  giving up what ranks below the outline (the app's list, from its width to its least; 0 unless the
- *  host says, #s476): only whether the reader may open the outline reads it. The phone reader has a
+ *  narrowing what it lays beside it toward its least (the app's list, from its width to 232), which
+ *  the host says through the optional `room` mount option (the owner, #s476), 0 without it: only
+ *  whether the reader may open the outline reads it. The phone reader has a
  *  layout of its own. Otherwise the pane is a column while the session and it each keep `m`, and covers
- *  the whole view where they cannot (what lies under it is not drawn, so the outline there is only what
- *  fits); the glyphs keep their column while that fits beside them; the outline opens while it fits too.
- *  What is left over goes to the session and the pane by `share`, or to the session alone. */
+ *  the whole view where they cannot; the session under it keeps the layout it has with the pane shut,
+ *  so closing the pane moves nothing. The glyphs keep their column while that fits beside them, and
+ *  the outline opens while it fits too. What is left over goes to the session and the pane by
+ *  `share`, or to the session alone. */
 export function arrangeView({ width, height, coarse, m = M, paneOpen = false, outlineWanted = true, share = 0.5, room = 0 }) {
   if (phoneView({ width, height, coarse, m })) {
     return { phone: true, pane: paneOpen ? "over" : "shut", outline: "dock", outlineCanOpen: false, session: width, paneWidth: null };
   }
   const pane = !paneOpen ? "shut" : width >= viewNeeds({ m, pane: true }) ? "column" : "over";
+  if (pane === "over") {
+    const under = arrangeView({ width, height, coarse, m, outlineWanted });
+    return { ...under, pane, outlineCanOpen: false };
+  }
   const column = pane === "column";
   const fits = outline => width >= viewNeeds({ m, pane: column, outline });
   const outline = outlineWanted && fits("open") ? "open" : fits("glyphs") ? "glyphs" : "bar";
@@ -192,8 +199,7 @@ export function arrangeView({ width, height, coarse, m = M, paneOpen = false, ou
     pane,
     outline,
     // Whether the reader may open the outline here: it fits, or would once the host gave its room.
-    // Under a pane that covers the view its control is not drawn.
-    outlineCanOpen: pane !== "over" && width + Math.max(0, room) >= viewNeeds({ m, pane: column, outline: "open" }),
+    outlineCanOpen: width + Math.max(0, room) >= viewNeeds({ m, pane: column, outline: "open" }),
     session: m + slack - toPane,
     paneWidth: column ? m + toPane : null,
   };
@@ -208,22 +214,20 @@ export const narrowest = (m = M) => RAIL + viewNeeds({ m });
  *  is open and whether the reader wants its outline). `list` is the reader's width for it and
  *  `collapsed` whether the reader folded it to its rail (remembered; a wider window never undoes it).
  *  `"drawer"` is the phone's own list: the drawer, or a wide phone's column held sideways, as today. A
- *  short touch screen has it (#s474), and so does a window narrower than `narrowest`. On a touch screen
- *  the view beside the rail or the list must also stay wider than `TOUCH_PHONE`, or it would be the
- *  phone reader inside the desktop's chrome; so a touch window of `RAIL + TOUCH_PHONE` or less has the
- *  drawer too (an iPad 820px upright), and the list gives way before the view would. Otherwise the
- *  list opens only where everything above it fits beside it at its least: the session, the pane as a
- *  column while it is open, and the glyphs' column. Open, it keeps the reader's width while the view
- *  beside it has all it wants, narrows to its least before the outline folds, and is back at the
- *  reader's width once the outline has folded. `canOpen` is whether the reader may open it from the
- *  rail. */
+ *  touch screen `TOUCH_PHONE` wide or less or a short one has it (#s474), and so does a window
+ *  narrower than `narrowest`. Otherwise the list opens only where everything above it fits beside it
+ *  at its least: the session, the pane as a column while it is open, and the glyphs' column. Open, it
+ *  keeps the reader's width while the view beside it has all it wants, narrows to its least before the
+ *  outline folds, and is back at the reader's width once the outline has folded. The rules are the same
+ *  on a touch screen; there the view beside the list is the phone reader wherever it is
+ *  `TOUCH_PHONE` or less, and takes what the list leaves it. `canOpen` is whether the reader may open
+ *  the list from the rail. */
 export function arrangeApp({ width, coarse = false, short = false, list = 300, collapsed = false, view = {} }) {
   const m = view.m ?? M;
-  const least = need => (coarse ? Math.max(need, TOUCH_PHONE + 1) : need);
-  if ((coarse && short) || width < RAIL + least(viewNeeds({ m }))) return { list: "drawer", canOpen: true };
+  if ((coarse && (width <= TOUCH_PHONE || short)) || width < narrowest(m)) return { list: "drawer", canOpen: true };
   const pane = !!view.paneOpen;
   const levels = view.outlineWanted === false ? ["glyphs"] : ["open", "glyphs"];
-  const open = levels.map(outline => least(viewNeeds({ m, pane, outline }))).find(need => width - LIST_MIN >= need);
+  const open = levels.map(outline => viewNeeds({ m, pane, outline })).find(need => width - LIST_MIN >= need);
   const canOpen = open !== undefined;
   if (collapsed || !canOpen) return { list: "rail", canOpen };
   return { list: Math.max(LIST_MIN, Math.min(list, width - open)), canOpen };
