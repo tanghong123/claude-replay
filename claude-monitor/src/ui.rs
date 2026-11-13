@@ -578,6 +578,8 @@ mod tests {
             ".column-pane-on",
             ".preview-off",
             ".preview-full",
+            // #s431 stage 3: a decision of the owner's order, which lays the list out at once.
+            ".app-holding",
         ];
         // What `:is(#sessionView,#app)` may reach: elements the app's chrome shares with the view
         // (the glyph button, the session filter's and section menu's popover rows) and the lists
@@ -1405,8 +1407,19 @@ mod tests {
                 >= 100,
             "session-view.css reads a phone as the layout module's classes"
         );
+        // #s431 stage 3: the app lays its list out by the owner's order (`arrangeList`, app.js), and its
+        // sheet reads the drawer as the order's class, so the app's phone and wide-window queries went
+        // to the derivation (`appGate`, scripts/session-view-css.mjs). What asks a query still says what
+        // a phone is, and a wide window's rule written in production.css is still held to the rule above.
         assert!(
-            phones >= 10 && wides >= 2 && wide_phones >= 1,
+            body("monitor-ui/app-shell.css")
+                .matches(".app-drawer")
+                .count()
+                >= 20,
+            "app-shell.css reads the drawer as the order's class"
+        );
+        assert!(
+            phones >= 4 && wide_phones >= 1,
             "read the stylesheets: {phones} phone rules, {wides} wide ones, {wide_phones} for a wide phone"
         );
     }
