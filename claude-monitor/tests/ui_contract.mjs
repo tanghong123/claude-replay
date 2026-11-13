@@ -353,6 +353,15 @@ let droppedAttention = "";
       assert.ok(kind === "pane" ? /pl-pane-over/.test(sel) && !/pl-max-w-1180/.test(sel) : /pl-phone/.test(sel), `${kind}: ${sel}`);
     }
     assert.ok(!/pl-max-w-1180\)? \.(?:preview|resizer)\b/.test(derived.view), "no rule for the pane reads the 1180px band");
+    // The outline's width token keeps its desktop value (268px cards, the 290px track the order
+    // reckons with) at every width; its narrower values are the phone reader's.
+    const tokens = [...derived.view.matchAll(/([^{}]*)\{--navigator:[^}]*\}/g)].map(m => m[1].trim());
+    assert.ok(tokens.length >= 3 && tokens.every(sel => !/pl-max-w-/.test(sel) || /pl-phone/.test(sel)), `--navigator narrows on the phone reader alone: ${tokens.join(" | ")}`);
+    assert.ok(tokens.includes(":where(#sessionView).session-view"), "and is 268px elsewhere");
+    // The pane's drag sets the share of the slack, remembered; the width remembered before is unread.
+    assert.match(previewSource, /resizer\.onpointermove = move => this\.actions\.dragPane\?\.\(move\.clientX\);/, "the drag sets the share");
+    assert.doesNotMatch(previewSource, /getItem\("am-demo-preview"\)/, "and am-demo-preview stays in storage unread");
+    assert.match(viewSource, /share: uiState\.paneShare, room: askRoom\(\)/, "the layout reads the share");
     const readByRules = new Set((derived.view.match(/\bpl-(?:pane|outline)-[\w-]+/g) || []));
     for (const name of readByRules) assert.ok(layout.ARRANGE_CLASSES.includes(name), `the view's rules read ${name}, which the module sets`);
     for (const width of [320, 459, 489, 490, 557, 558, 760, 761, 779, 780, 880, 881, 970, 971, 1100, 1600]) for (const height of [900, 430]) for (const coarse of [false, true]) for (const paneOpen of [false, true]) for (const outlineWanted of [false, true]) {
@@ -2064,7 +2073,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /"navigator-toggle": \(\) => toggleNavigator\(!uiState\.navigatorOpen\)/, "the key walks the two states it can reach");
   // #s431 stage 3: the reader's choice is what is remembered; the order then arranges the view again
   // (gliding, as a reader's own toggle does), and the outline is drawn as arranged.
-  assert.match(viewSource, /^function toggleNavigator\(open\) \{\n(?:  \/\/.*\n)*  if \(open && !uiState\.navigatorOpen && !layout\.phone\(\) && !layout\.arrangement\(\)\?\.outlineCanOpen\) return;\n  const changed = uiState\.navigatorOpen !== open;\n  uiState\.navigatorOpen = open; persist\(\); layout\.glide\(\); layout\.decide\(\); renderNavigator\(\); viewport\.remeasure\(\);\n  if \(changed\) say\(options\.onOutline, \{ wanted: open \}\);\n\}$/m, "one path, remembered, arranged, re-measured, and said to the host; opening refused only where the outline cannot open");
+  assert.match(viewSource, /^function toggleNavigator\(open\) \{\n(?:  \/\/.*\n)*  if \(open && !uiState\.navigatorOpen && !layout\.phone\(\) && !layout\.arrangement\(\)\?\.outlineCanOpen\) return;\n  const changed = uiState\.navigatorOpen !== open;\n  uiState\.navigatorOpen = open; persist\(\);\n(?:  \/\/.*\n)*  if \(changed\) say\(options\.onOutline, \{ wanted: open \}\);\n  layout\.glide\(\); layout\.decide\(\); renderNavigator\(\); viewport\.remeasure\(\);\n\}$/m, "one path, remembered, said to the host before the view decides (so the room it makes is there), arranged, re-measured; opening refused only where the outline cannot open");
   assert.match(viewSource, /byId\("navigatorRailExpand"\)\.onclick = \(\) => toggleNavigator\(!uiState\.navigatorOpen\);/, "the glyphs' expand folds the outline for good while it is pressed, and opens it otherwise");
   assert.doesNotMatch(shellSource, /setNavigatorHidden/, "#148: the third state has no setter left");
   // #88: the column is an accordion — the transform that moved a head alone (and left its body

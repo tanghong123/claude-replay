@@ -16,7 +16,7 @@ import { backend, useBackend } from "./backend.js";
 import { AttachmentViewer } from "./attachment-viewer.js";
 import { bindComponentEvents, fleetHtml, pendingHeadText } from "./components.js";
 import { referenceAction } from "./shared/capabilities.js";
-import { mountPaneLayout } from "./pane-layout.js";
+import { M, mountPaneLayout } from "./pane-layout.js";
 import { costDisplay, reportedCostDisplay } from "./shared/cost-display.js";
 import { chainWalk, toolTree } from "./shared/filter.js";
 import { taskCardHtml, taskRowMeta, TASK_NO_TITLE } from "./shared/task-card.js";
@@ -275,7 +275,25 @@ const askRoom = () => {
   if (typeof options.room !== "function") return 0;
   try { return options.room(); } catch (error) { (globalThis.reportError || console.error)(error); return 0; }
 };
-arrangeInputs = () => ({ paneOpen: !element.classList.contains("preview-off"), outlineWanted: outlineWanted(), share: 0.5, room: askRoom() });
+arrangeInputs = () => ({ paneOpen: !element.classList.contains("preview-off"), outlineWanted: outlineWanted(), share: uiState.paneShare, room: askRoom() });
+/** The reader drags the pane's edge to `at` (a pointer's x), splits the slack equally again
+ *  (`"equal"`, a double-click), or lets go (`null`, which remembers the share): the pane's part of the
+ *  slack is what its box from the pointer to the view's 10px margin takes beyond M, each side kept at
+ *  M by the share's own bounds. Only a pane that is a column has an edge to drag. */
+function dragPane(at) {
+  if (at === null) { persist(); return; }
+  if (at === "equal") uiState.paneShare = 0.5;
+  else {
+    const arrangement = layout.arrangement();
+    if (arrangement?.pane !== "column") return;
+    const slack = arrangement.session + arrangement.paneWidth - 2 * M;
+    const asked = element.getBoundingClientRect().right - 10 - at - 1;
+    uiState.paneShare = slack > 0 ? Math.min(1, Math.max(0, (asked - M) / slack)) : 0.5;
+  }
+  layout.decide();
+  paneLayoutChanged();
+  if (at === "equal") persist();
+}
 layout.decide();
 const persist = () => persistView(uiState);
 const applyTheme = theme => { element.dataset.theme = theme === "dark" ? "dark" : "light"; };
@@ -567,7 +585,7 @@ layoutHeard = paneLayoutChanged;
 // The reader opened or shut the pane: the order arranges the view again, and the pane glides whole
 // (`glide`), even where the host's list gives way in the same moment.
 const paneToggled = () => { layout.glide(); layout.decide(); paneLayoutChanged(); };
-const preview = new Preview({ phone: () => layout.phone(), layoutChanged: paneToggled, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
+const preview = new Preview({ phone: () => layout.phone(), layoutChanged: paneToggled, dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
 const attachmentViewer = new AttachmentViewer({ toast });
 // What the compose box asks of the app goes nowhere once the view is unmounted: a dialog's answer
 // still settling, a send still out.
@@ -3166,8 +3184,11 @@ function toggleNavigator(open) {
   // whose outline is the dock's sheets, the choice is only remembered.
   if (open && !uiState.navigatorOpen && !layout.phone() && !layout.arrangement()?.outlineCanOpen) return;
   const changed = uiState.navigatorOpen !== open;
-  uiState.navigatorOpen = open; persist(); layout.glide(); layout.decide(); renderNavigator(); viewport.remeasure();
+  uiState.navigatorOpen = open; persist();
+  // The host hears it first, so a host that makes room for the outline (the app's list narrowing) has
+  // done so when the view decides, and the outline opens in this one decision.
   if (changed) say(options.onOutline, { wanted: open });
+  layout.glide(); layout.decide(); renderNavigator(); viewport.remeasure();
 }
 /** The outline as the order arranged it (#s431 stage 3): open at its track only where the arrangement
  *  says so, its glyphs otherwise (`navigator-off`, in their column or in the top bar), whatever the
@@ -4172,6 +4193,7 @@ var phoneDock;
   // drawn as a panel there), and a click elsewhere or Esc closes it. A glyph in the column opens the
   // same panel where the outline cannot open. The panel borrows the outline's own list, so it closes
   // before the outline opens again.
+  const columnHomes = new Map();
   placeOutlineGlyphs = arrangement => {
     // The panel lives in the session's card off the phone reader, under its top bar; the phone's
     // sheet in the view, as before. A move between them closes what was open.
@@ -4180,6 +4202,21 @@ var phoneDock;
     const inBar = !!arrangement && !arrangement.phone && arrangement.outline === "bar";
     if (inBar && panes[0].button.parentElement !== topbar) for (const pane of panes) info.before(pane.button);
     if (!inBar && panes[0].button.parentElement !== dockPill) dockPill.prepend(...panes.map(pane => pane.button));
+    // What the column held besides the glyphs comes with them: the outline's expand control (pressed
+    // while the reader wants the outline the width holds back, so they can fold it for good), and the
+    // session's Info, from the top bar's own Info control, its card hanging under the bar.
+    const expand = byId("navigatorRailExpand"), card = viewRoot.$("#infoPopover");
+    for (const [node, into, before] of [[expand, topbar, info], [card, viewRoot.$(".workspace"), null]]) {
+      if (!node) continue;
+      if (inBar && node.parentElement !== into) {
+        if (!columnHomes.has(node)) columnHomes.set(node, { parent: node.parentNode, next: node.nextSibling });
+        if (before) before.before(node); else into.append(node);
+      } else if (!inBar && columnHomes.has(node)) {
+        const home = columnHomes.get(node);
+        columnHomes.delete(node);
+        home.parent.insertBefore(node, home.next && home.next.parentNode === home.parent ? home.next : null);
+      }
+    }
     sessionView.classList.toggle("outline-in-bar", inBar);
     if (arrangement?.outline === "open") closePane();
   };

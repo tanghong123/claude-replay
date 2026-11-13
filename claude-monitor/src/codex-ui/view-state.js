@@ -52,12 +52,18 @@ export const createRecordState = () => ({
 /** How the view is laid out and read: the artifact pane, the outline and its panes, the in-session
  *  search, the reading options. The reader's choices among them are read from this origin's storage
  *  as the view mounts, and `persistView` writes them back. */
+/** Where the pane's share of the slack is remembered. */
+export const PANE_SHARE_KEY = "am-demo-pane-share";
 export const createViewState = ({ phone = false } = {}) => ({
   preview: false, previewTabs: [], previewId: null,
   // Until the reader chooses, the outline starts open — except on a phone (#310), where it is an
   // overlay over most of the transcript rather than a column beside it. `phone` is the view's own
   // family as its layout decided it at mount (pane-layout.js, #s431), not the window's.
   navigatorOpen: (stored => stored === null ? !phone : stored !== "0")(localStorage.getItem("am-demo-navigator")),
+  // How the slack splits between the session and the right pane while the pane is a column (#s431
+  // stage 3, the owner's #s473): the pane's part, from 0 to 1, set by dragging its edge and equal until
+  // the reader first does. The width remembered before (`am-demo-preview`) is not read.
+  paneShare: (stored => { const share = stored === null ? NaN : Number(stored); return Number.isFinite(share) && share >= 0 && share <= 1 ? share : 0.5; })(localStorage.getItem(PANE_SHARE_KEY)),
   navCards: new Set(json("am-prod-nav-cards", ["turns"])),
   // Which panes EXIST in the outline at all (#159). Distinct from `navCards`, which is whether a
   // pane that exists is open: a pane turned off here costs nothing — no body, no head, no slot,
@@ -99,6 +105,7 @@ export const createViewState = ({ phone = false } = {}) => ({
  *  storage at the same moments). */
 export function persistView(uiState) {
   localStorage.setItem("am-demo-navigator", uiState.navigatorOpen ? "1" : "0");
+  localStorage.setItem(PANE_SHARE_KEY, String(uiState.paneShare));
   localStorage.setItem("am-prod-nav-cards", JSON.stringify([...uiState.navCards]));
   localStorage.setItem("am-prod-nav-panes", JSON.stringify([...uiState.navPanes]));
   localStorage.setItem("am-prod-info-folds", JSON.stringify([...uiState.infoFolds]));

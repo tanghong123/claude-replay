@@ -699,9 +699,9 @@
 :where(#sessionView) .outline-block>span{max-width:54px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 :where(#sessionView) .outline-block>b{display:block;flex:1}
 :where(#sessionView) .sidebar-reopen{display:none}
-:where(#sessionView.pl-max-w-1180).session-view{--navigator:256px}
+:where(#sessionView.pl-max-w-1180.pl-phone).session-view{--navigator:256px}
 :where(#sessionView.pl-max-w-1180.pl-phone) .sv-session-main{grid-template-columns:var(--navigator) minmax(0,1fr)}
-:where(#sessionView.pl-max-w-900).session-view{--navigator:min(264px,calc(82 * var(--pl-b) / 100))}
+:where(#sessionView.pl-max-w-900.pl-phone).session-view{--navigator:min(264px,calc(82 * var(--pl-b) / 100))}
 :where(#sessionView.pl-max-w-900.pl-phone) .sv-session-main{grid-template-columns:0 minmax(0,1fr)}
 :where(#sessionView.pl-max-w-900.pl-phone) .session-navigator{width:var(--navigator)}
 :where(#sessionView) .preview-mode-tabs{height:32px;padding:2px;display:flex;align-items:center;gap:2px;border:1px solid var(--line);border-radius:9px;background:var(--panel)}
@@ -1979,6 +1979,9 @@
 :where(#sessionView) .search-suggest-empty{padding:8px;color:var(--faint);font-size:11px}
 :where(#sessionView) .pane-scrim,:where(#sessionView) .phone-only,:where(#sessionView) .phone-pane-menu,:where(#sessionView) .task-scrim,:where(#sessionView) .phone-dock,:where(#sessionView) .turn-subtitle{display:none}
 #sessionView.outline-in-bar .workspace>.topbar>.phone-pane{display:grid;position:relative;flex:none}
+#sessionView.outline-in-bar .workspace>.topbar>:is(.phone-info,#navigatorRailExpand){display:grid;place-items:center;flex:none}
+#sessionView.outline-in-bar .workspace>.info-popover{position:absolute;z-index:30;top:65px;right:8px;left:auto;bottom:auto;width:290px;max-height:calc(100% - 73px);overflow:auto}
+#sessionView.outline-in-bar .workspace>.info-popover:before{display:none}
 #sessionView #navigatorRailExpand[aria-disabled="true"]{opacity:.38;cursor:default;background:transparent}
 #sessionView #navigatorRailExpand[aria-pressed="true"]{background:var(--selected);color:var(--blue)}
 #sessionView.outline-in-bar .workspace>.topbar>.phone-pane .phone-pane-count{position:absolute;right:0;top:1px;min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:var(--hover);color:var(--sub);font:600 9px/15px var(--mono);text-align:center}

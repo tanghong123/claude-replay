@@ -672,14 +672,17 @@ export function sizeGate(prelude) {
 const PANE_PARTS = /^(?:\.preview|\.resizer)$/;
 const OUTLINE_PARTS = /^(?:\.sv-session-main|\.session-navigator|\.outline-rail|\.navigator-toggle)$/;
 export const ARRANGED = Object.freeze({ pane: "pl-pane-over", outline: "pl-phone" });
-export function arrangedGate(sel, alternatives) {
+export function arrangedGate(sel, alternatives, body = "") {
   const parts = compounds(sel);
   const subject = parts[parts.length - 1].text;
   const classes = (subject.match(/\.[\w-]+/g) || []);
   const bare = withoutNot(subject).replace(/^:where\(#sessionView\)/, "");
   const parent = parts.length > 1 ? withoutNot(parts[parts.length - 2].text) : "";
   const pane = classes.some(name => PANE_PARTS.test(name)) || bare === ".workspace" || /^#sessionView(?:\.preview-off)?$/.test(subject);
-  const outline = classes.some(name => OUTLINE_PARTS.test(name)) || (bare === ".transcript" && parts[parts.length - 1].comb.trim() === ">" && /\.sv-session-main$/.test(parent));
+  // The outline's width, a token on the view's element: its narrower values are the phone reader's, so
+  // the desktop's outline is the 290px `arrangeView` reckons with at every width.
+  const token = /^:where\(#sessionView\)\.session-view$/.test(sel) && /^\s*--navigator\s*:[^;]*;?\s*$/.test(body);
+  const outline = token || classes.some(name => OUTLINE_PARTS.test(name)) || (bare === ".transcript" && parts[parts.length - 1].comb.trim() === ">" && /\.sv-session-main$/.test(parent));
   if (pane && alternatives.some(set => set.includes("pl-max-w-1180"))) {
     return { kind: "pane", alternatives: alternatives.map(set => set.map(name => (name === "pl-max-w-1180" ? ARRANGED.pane : name))) };
   }
@@ -863,7 +866,7 @@ export function deriveStylesheets({ reference, production }) {
           if (decision.app && listDecision.keepApp) app.push(appSelector(decision.app));
           else if (decision.app) report.list.left.push(sel);
           for (const moved of decision.view) {
-            const arranged = gate ? arrangedGate(moved, gate) : null;
+            const arranged = gate ? arrangedGate(moved, gate, node.body) : null;
             const written = gate ? gateSelector(moved, arranged ? arranged.alternatives : gate) : moved;
             if (arranged) report.arranged.push({ kind: arranged.kind, sel: written });
             const before = specificity(sel);

@@ -1428,6 +1428,9 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    transcript's right edge, under the bar; so does a glyph in the column where the outline cannot open.
    The panel is the phone's sheet, moved into the session's card. */
 #sessionView.outline-in-bar .workspace>.topbar>.phone-pane{display:grid;position:relative;flex:none}
+#sessionView.outline-in-bar .workspace>.topbar>:is(.phone-info,#navigatorRailExpand){display:grid;place-items:center;flex:none}
+#sessionView.outline-in-bar .workspace>.info-popover{position:absolute;z-index:30;top:65px;right:8px;left:auto;bottom:auto;width:290px;max-height:calc(100% - 73px);overflow:auto}
+#sessionView.outline-in-bar .workspace>.info-popover:before{display:none}
 /* The glyphs' expand control (design/pane-layout.md, "The reader's choices"): disabled where the outline
    cannot open (its title says why), and pressed, in the selected tint, while the reader wants the
    outline and the width holds it to its glyphs. */

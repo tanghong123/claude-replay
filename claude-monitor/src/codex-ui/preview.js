@@ -118,10 +118,13 @@ export class Preview {
     resizer.setAttribute("role", "separator"); resizer.setAttribute("aria-orientation", "vertical"); resizer.tabIndex = 0;
     resizer.onpointerdown = event => {
       resizer.setPointerCapture(event.pointerId); resizer.classList.add("dragging"); this.paneState("resizing", true);
-      resizer.onpointermove = move => this.setWidth(innerWidth - move.clientX, false);
-      resizer.onpointerup = () => { resizer.classList.remove("dragging"); this.paneState("resizing", false); resizer.onpointermove = null; localStorage.setItem("am-demo-preview", parseFloat(getComputedStyle(viewRoot.styleRoot()).getPropertyValue("--preview")) || 420); };
+      // #s431 stage 3: the drag sets how the slack splits between the session and the pane, each kept
+      // at least at M (the view's `dragPane`, which remembers it when the drag ends); a double-click
+      // splits it equally again.
+      resizer.onpointermove = move => this.actions.dragPane?.(move.clientX);
+      resizer.onpointerup = () => { resizer.classList.remove("dragging"); this.paneState("resizing", false); resizer.onpointermove = null; this.actions.dragPane?.(null); };
     };
-    resizer.ondblclick = () => this.setWidth(420, true);
+    resizer.ondblclick = () => this.actions.dragPane?.("equal");
   }
   /** The view is unmounted (#s429 stage 7): the review sheet closes (its key listener on the window
    *  goes with it), mdrev's viewer unmounts, the image viewer lets go of its keys, the observers stop,
@@ -149,8 +152,11 @@ export class Preview {
     this.expandBtn.setAttribute("aria-label", words);
     this.expandBtn.setAttribute("aria-pressed", String(full));
   }
-  setWidth(value, persist) { const width = Math.max(340, Math.min(680, Number(value) || 420)); (this.actions.rootProperty || ((name, value) => viewRoot.styleRoot().style.setProperty(name, value)))("--preview", `${width}px`); if (persist) localStorage.setItem("am-demo-preview", width); this.actions.layoutChanged?.(); }
-  restoreWidth() { this.setWidth(localStorage.getItem("am-demo-preview") || 420, false); }
+  setWidth(value) { const width = Math.max(340, Math.min(680, Number(value) || 420)); (this.actions.rootProperty || ((name, value) => viewRoot.styleRoot().style.setProperty(name, value)))("--preview", `${width}px`); }
+  /** The pane's width where the view's layout writes none (#s431 stage 3: a column's comes from the
+   *  owner's order, `--preview-fit`): the default, since the width remembered before stage 3
+   *  (`am-demo-preview`) stays in storage unread. */
+  restoreWidth() { this.setWidth(420); }
   setSession(sessionId) {
     if (sessionId === this.sessionId) return;
     if (this.sessionId) {
