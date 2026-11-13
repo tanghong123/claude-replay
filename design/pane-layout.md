@@ -199,7 +199,7 @@ reads its answer.
   through a `matchMedia` listener, and the reader's text size (`--code-size`), chosen pane width
   (`--preview`) and outline choice (`navigatorOpen`) from the view.
 - **It writes classes and sizes** on the component's element: the family (`pl-phone`), one class per
-  condition the stylesheets use (below), the readable line's results (stage 3), and the lengths
+  condition the stylesheets use (below), the order's results (stage 3), and the lengths
   the rules read: `--pl-b` (`B`), `--pl-w` and `--pl-h` (the view's box), `--pl-vh` and `--pl-dvh`,
   `--pane-x` and `--preview-fit`. It reads the window's height for one thing only, whether the view
   is as tall as it, which keeps the window's own height units.
@@ -261,60 +261,123 @@ feature into the same rule gated by classes, feature by feature:
   reader's width on the root and a case writes one on `#app`, and a declaration on the view would
   shadow both. Rules read `var(--preview-fit, var(--preview, 420px))`.
 
-### The right pane needs a readable line
+### The owner's order: what keeps its width, and what gives way
 
-The right pane is a column only while the transcript beside it keeps a readable line: `READABLE`,
-320px of text at the default text size, scaled with `--code-size`. That is about 45 characters,
-the low end of a readable line. It is decided from the reader's inputs, never from what was drawn,
-so it cannot feed back on itself: the component's width, the chosen pane width, whether the reader
-wants the outline, and the text size.
+This decides how the session, the right pane, the outline and the session list share a window. The
+owner set it on #s462 (2026-11-12, his words logged there), replacing the readable-line rule this
+section used to propose. The session comes first: it always keeps a least width. What the right pane
+shows comes second, with the same least width. Then the outline's glyphs in a column of their own,
+then the session list at its width, and last the outline at its width.
 
-**Recommended: the pane gives way first** (the owner's decision, #s462). Above `B` 1180, a desktop
-view over 880px:
+`M` is that least width, the session's text and the pane's content alike. It is 480px at the default
+text size (the owner, #s472), the session's least today (`minmax(480px,1fr)`), about 58 characters of
+prose, and it scales with the text size.
 
-1. The pane narrows from the reader's width toward its 340px minimum, until the text beside the
-   outline has `READABLE` and the session its 480px floor.
-2. If 340px is not enough, the outline folds to its rail, and the pane takes back as much of the
-   reader's width as the line and the floor allow.
+**The parts, in his order.** Each has a least width, and a way to give way when that does not fit:
 
-The alternative folds the outline first, then narrows the pane. Pane first keeps everything the
-reader opened on screen 80px further down (to 1315px at the defaults) and gives the drag a clear
-limit; outline first keeps the pane at the reader's width. At the default sidebar, the pane at its
-default 420px:
-
-| Window | Today | Pane first | Outline first |
+| Order | Part | Least width | Where it does not fit |
 |---|---|---|---|
-| 1181–1200 | text 126, the pane cut off by up to 20px | outline folded, pane 400–419: text 348 | the same |
-| 1201–1314 | text 126–239 | outline folded, pane 420: text 348–461 | the same |
-| 1315–1394 | text 240–319 | outline shown, pane 340–419: text 320 | outline folded, pane 420: text 462–541 |
-| from 1395 | text 320 and up | the same | the same |
+| 1 | The session | `M`, and its card's 10px margin at the view's edge | the list goes to the phone's drawer |
+| 2 | The right pane, while open | `M` beside the session, and the 1px resizer | it lies over the session |
+| 3 | The outline's glyphs | 68px | they leave their column for the session's top bar |
+| 4 | The session list | 232px, today's least | its rail, 64px |
+| 5 | The outline | 268px | its glyphs' column |
 
-In general the rule acts below a window of 655 + the pane's width + `READABLE` at the default
-sidebar: 1395 at the defaults, 1655 with a 680px pane, wider with a larger text size.
+**Narrowing the window** (his second follow-up): first the session and the pane give up their slack,
+equally, down to `M` each; then the list narrows from the reader's width to 232; then the parts fold
+in the reverse of his order: the outline to its glyphs' column (5), the list to its rail (4), the
+glyphs out of their column (3), and last the pane over the session (2). Below the rail and the session
+at `M` (554px) the list is the phone's drawer. **Widening** undoes each step at the same width, so
+there is one layout per width whichever way the window moved. Once everything is shown at its wanted
+width, the slack goes to the session and the pane equally, or to the session alone with the pane
+shut.
 
-**The pane is a column only while the view is over 880px and not a phone** (`B` over 1180). At 880px
-and under it lies over the session, as it does today below the 1180 line, its left edge 10px inside
-the view. A column needs 821px (the session's 480px floor, the resizer, the pane's 340px minimum),
-less than 880, so the band decides. At a 1200px window with a 520px sidebar the view is 680px, so
-the pane lies over the session, where today the grid runs 221px past the window. Where the pane is
-a column, the outline folded and the pane at 340px leave at least 348px of text; a text size whose
-`READABLE` is more than that runs the line short rather than laying the pane over the session.
+One step looks odd and is his order: a fold frees room that something above it takes back. When the
+outline folds, the list returns from 232 to the reader's width; when the pane becomes a column, the
+list folds to its rail, since the pane ranks above the list.
 
-- **The fold** is the existing `navigator-off`, set when the reader does not want the outline OR
-  the layout folds it, so every rule that reads it already does the right thing. The reader's choice
-  (`navigatorOpen`, remembered) is untouched.
-- **Shown anyway.** While the layout holds the outline folded, the rail's reopen and the outline's
-  toggle key show it anyway, and the line runs short, since the reader asked. That lapses when the
-  layout no longer folds it or the pane closes. The toggle key on a shown outline hides it, setting
-  the reader's choice as today.
-- **The pane's width** is drawn at `--preview-fit`, written only while the rule narrows the pane and
-  removed otherwise, so a `--preview` set on `#app` or the root by a case or a host still reaches the
-  pane. The reader's chosen width stays as remembered and comes back when there is room.
-- **The drag.** With the pane first, its edge stops at the widest pane the rule allows beside what
-  is shown: at 1400px with the outline, 425px, where today it goes to 680 and leaves 65px of text.
-  With the outline first, a drag past that folds the outline and goes on to the session's floor.
-- **The suite's own window** is 1400px wide, 5px above the line at the defaults (text 325): stage 3
-  measures the harness's real `innerWidth` before relying on that.
+At `M` 480 with the list at its default 300 and the outline wanted (generated from `pane-layout.js`'s
+functions, which the page runs):
+
+| Window | The pane shut |
+|---|---|
+| under 554 | the drawer: the phone reader under 480px, the compact desktop from 480 |
+| 554–621 | the rail, the glyphs in the top bar |
+| 622–789 | the rail, the glyphs' column |
+| 790–857 | the list narrowing, the glyphs' column |
+| 858–989 | the list, the glyphs' column |
+| 990–1057 | the list narrowing, the outline |
+| from 1058 | the list, the outline |
+
+| Window | The pane open |
+|---|---|
+| under 554 | the drawer: the phone reader under 480px, the compact desktop from 480 |
+| 554–621 | the rail, the glyphs in the top bar, the pane over the session |
+| 622–789 | the rail, the glyphs' column, the pane over the session |
+| 790–857 | the list narrowing, the glyphs' column, the pane over the session |
+| 858–989 | the list, the glyphs' column, the pane over the session |
+| 990–1034 | the list narrowing, the outline, the pane over the session |
+| 1035–1102 | the rail, the glyphs in the top bar, the pane beside the session |
+| 1103–1270 | the rail, the glyphs' column, the pane beside the session |
+| 1271–1338 | the list narrowing, the glyphs' column, the pane beside the session |
+| 1339–1470 | the list, the glyphs' column, the pane beside the session |
+| 1471–1538 | the list narrowing, the outline, the pane beside the session |
+| from 1539 | the list, the outline, the pane beside the session |
+
+So at the browser suite's own 1400px window, a case that opens the pane now sees the outline as its
+glyphs, where today the outline stays open beside a 325px line. The cases that rely on it are listed
+with the stage, each with what it asserted before.
+
+**The reader's choices** (his first follow-up):
+
+- An expand control is disabled where the width cannot hold what it would open: the rail's expand and
+  the outline's toggle. Its tooltip says why. The drawer's handle always opens the drawer, which lies
+  over the session.
+- A collapse the reader makes is remembered (`am-…sidebar`, `am-demo-navigator`, as today), and a
+  wider window never undoes it. A fold the width forced is not remembered: it comes back when the
+  window has room. So the old "shown anyway" goes.
+- **The list's drag** takes its width from the session and the pane equally, down to `M` each, and
+  folds nothing: its edge stops there.
+- **The pane's drag** sets how the slack splits between the session and the pane (the owner, #s473):
+  remembered, equal until the reader first drags, and each side kept at least at `M`. The layout
+  writes the pane's width as `--preview-fit` on the view, from `arrangeView`; a `--preview` a host or
+  a case sets on the page's root or `#app` still reaches the pane where the layout writes none. The
+  drag keeps a share, not a width, so a width remembered from before stage 3 is not read: the split
+  is equal until the reader drags again.
+
+**The narrowest steps** (the owner, #s474: his order with a mouse, the phone's layout kept for a touch
+screen up to 760px). With a mouse, the rail and the session last down to 554px. Below it the list is
+the phone's drawer and the view takes the whole window, where it decides by its own width as stage 2
+has it: under 480px (`M`) the phone reader, from 480 the compact desktop under the drawer's handle. A
+touch screen of 760px or less, or a short one, keeps the drawer. Whether the view on any touch screen
+is then the phone reader up to 760px of its own width is the owner's question on #s475 (recommended:
+yes); stage 2 makes it the phone reader only when 500px tall or less. On a desktop the glyphs in the
+top bar each open their list as a panel over the transcript's right edge, closed by a click elsewhere
+or Esc, as an 820px window opens the outline today (hd-replay's research on #s462: Windows
+NavigationView's minimal mode, JetBrains' undocked tool windows, VS Code's title-bar toggles).
+
+**Who decides what.** The view decides its own parts from its own width (#s461): the pane, the glyphs,
+the outline, and how the slack splits between the session and the pane (`arrangeView`). The app
+decides the list from the window (`arrangeApp`), by what the view needs beside it, which it works out
+with the same functions from what the view says of itself on its element: whether the pane is open
+(`preview-off`, as today), whether the reader wants the outline, and `M` at the reader's text size. A
+fold the width forces does not change "wanted". Those are state on the view's element, as its other
+classes are, so the mount interface does not change.
+
+The one thing the view cannot see is room the app could make: the outline's toggle may open where
+narrowing the list toward 232 would fit it, a band 68px wide at the default list (288px at a 520px
+list). Whether the view may ask its host for that room, through a new optional mount option, is the
+owner's question on #s476 (recommended: yes). Until he answers, the toggle reads the view's own width
+and is disabled in that band; `arrangeView` already takes the room as an input, 0 without it.
+
+**Tests.** The contract sweeps `pane-layout.js`'s functions over every window from 320 to 2400px, the
+pane shut and open, the outline wanted or not, the list at 232, 300 and 520, folded or not, and two
+text sizes: the view holds what the app counted on; the slack all goes to the session and the pane;
+the list narrows only once they are at `M`, and folds to its rail exactly where at 232 it would push
+out what ranks above it; and a wider window never shows less of what ranks higher. The page's own
+widths are held to the functions' constants (the outline 268, the glyphs 68, the card's margin), each
+step of both sequences at its window in the app, the drag limits, a collapse remembered across a
+widening, and an expand disabled where it cannot fit.
 
 ### A box for each component
 
@@ -464,7 +527,10 @@ ellipsis, a fork chip, and in the flat list the agent's mark and the project. On
 
 At the default text size, the pane at the reader's width:
 
-- **The 126px column**, by the readable line, at windows below 655 + the pane's width + 320px.
+- **The 126px column** goes: by the owner's order (above), a window too narrow for the session and
+  the pane at `M` each folds the outline, the list and the glyphs first, then lays the pane over the
+  session. At the default list, the outline folds to its glyphs below a 1539px window with the pane
+  open.
 - **A desktop window of 461–760px**, and a touch window that size that is not short (an iPad mini
   upright, an iPad in split view, a foldable open): the compact desktop layout under the drawer's
   handle, where today the phone reader. Below 461px the phone reader, as today.
@@ -473,8 +539,8 @@ At the default text size, the pane at the reader's width:
   into it; at 1181–1340px the open pane lies over the session, where today the grid runs past the
   window.
 - **The rail**: the view reads its own width, 64px less than the window, so at 981–1180px the right
-  pane is a column beside the session, where today it lies over it; stage 3's readable line decides
-  how much room it takes. The overlaid pane starts 10px inside the view, not over the rail. The
+  pane is a column beside the session, where today it lies over it; stage 3's order decides how much
+  room it takes, and below a 1035px window lays it over the session again. The overlaid pane starts 10px inside the view, not over the rail. The
   turn menu and the two other lengths measured from `--sidebar`, which on the rail still holds the
   hidden sidebar's width (so today the turn menu opens 254px into the session), move to the rail's
   edge. The empty column under the open pane at `≤1180` goes.
@@ -497,13 +563,14 @@ At the default text size, the pane at the reader's width:
   in the view's box: none, beside the column.
 - **The list's rows**: 44px on any touch screen, 32px with a mouse.
 - **The transcript panel** at a 761–815px window narrows to fit the view, where today it is 470px.
-- **The drag** of the right pane, which stops at the readable line (pane first).
+- **The drags**: the list's stops where the session and the pane reach `M`; the pane's sets its
+  share of the slack, each side kept at `M`.
 
 ## Tests
 
-- **The column, red first.** The app with the right pane open at 1181 and 1280px: the transcript's
-  text is at least `READABLE`, and the pane ends inside the window. This is red on 34c7eb50 at
-  both, and 1440 is the control, unchanged.
+- **The column, red first.** The app with the right pane open at 1181 and 1280px: the session's
+  text is at least `M`, and the pane ends inside the window. This is red on 34c7eb50 at both, and
+  1600 is the control, unchanged.
 - **Widths in a host.** The view and the list each in a host fixture's pane that is smaller than
   the window and does not start at its edge: 380px at x=500 in a 1400px window, 700px, 1000px,
   1100px, light, and dark from stage 4, where containment is checked. In stage 2 each asserts its family, condition classes and `B` (380 the
@@ -532,7 +599,7 @@ At the default text size, the pane at the reader's width:
   island falls in the pane, and so does a review sheet there, which at ⤢ takes the whole screen with
   the pane; and with a classic scrollbar the view's right gap stops at it. A Back to another session closes the review sheet.
 - **Mutations.** Point the layout module back at the window, drop a condition from the rewrite's
-  table, give the family the window's height, or let the readable rule read what it drew: a width
+  table, give the family the window's height, or let the order read what it drew: a width
   case goes red, or the derivation fails.
 - **The contract.** The component stylesheets carry no `@media` with a width or height feature.
   Every class the derivation writes is one the module sets. No component script, and none of native
@@ -541,7 +608,7 @@ At the default text size, the pane at the reader's width:
   popover case at a 680px window (`browser_follow.rs`, the phone reader today), the wide phone's
   column cases, the cases that open the right pane at a 1181–1394px window, the case that draws a
   760px pane at 1440 (`files.rs`, which today runs the grid 101px past the window), the rail's turn
-  menu, and a drag past the readable line. Each is listed with what it asserted before.
+  menu, and the drags at their limits. Each is listed with what it asserted before.
 - **The Simulator walk.** The app on a phone upright and sideways, a wide phone with its column
   shown and hidden, and the host fixture with a narrow pane on a phone, light and dark.
 
@@ -555,8 +622,11 @@ Each stage is page code: the whole local browser suite and an iOS Simulator walk
    asking the module, native mode's rules inside the view, the reach-in rules moved into the view or
    kept as the app's (the handle's room, the wide phone's column), the list's rows, and the width
    cases in the host fixture and the app. It lands with stage 3: on its own it would give the rail at
-   981–1180px windows the short line that 1181–1394px windows have today.
-3. **A readable line** (after #s462). The fold, the narrowed pane and the drag, with the red case.
+   981–1180px windows the short line that 1181–1394px windows have today. A layout decision never
+   glides, at the mount or later (`pl-holding`, `sv-mounting`).
+3. **The owner's order** (#s462, #s472–#s474). `arrangeView` and `arrangeApp`, the classes they set,
+   the folds, the drags, the disabled expands, the narrowest steps, with the red case. The phone
+   family on a touch screen waits on #s475, and the outline toggle's room on #s476.
 4. **Drawn inside the pane.** Containment, the layers in the box's coordinates, the width cases'
    containment checks on a desktop and an emulated phone, and the Simulator walk of a narrow pane.
    The phone reader narrower than the window is contained from stage 2 (above); this stage takes the
