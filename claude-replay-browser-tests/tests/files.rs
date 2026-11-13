@@ -614,11 +614,10 @@ fn the_app_shell_preview_fits_a_large_image_to_the_pane() {
         serde_json::from_str(eval(&tab, measure).as_str().unwrap_or("{}")).unwrap()
     };
     let first = fits("the image to fill the pane on one axis");
-    // The pane widens: the image follows it.
-    eval(
-        &tab,
-        "document.getElementById('app').style.setProperty('--preview', '760px'); 'ok'",
-    );
+    // The pane widens: the image follows it. Since #s431 stage 3 the layout writes the pane's width,
+    // so a narrower window widens it: at 1000px the pane cannot sit beside the session at `M` and
+    // covers the whole view.
+    harness::resize(&tab, 1000.0, 900.0);
     until(
         &tab,
         &format!(

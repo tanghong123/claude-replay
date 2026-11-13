@@ -4479,17 +4479,19 @@ fn pane_full_screen(tab: &headless_chrome::Tab) -> serde_json::Value {
     full
 }
 
-/// #s431 stage 2: the places design/pane-layout.md says change, each red on the code before it.
-/// - A 700px desktop window is the compact desktop layout under the drawer's handle, where it was
+/// #s431 stage 2: the places design/pane-layout.md says change, each red on the code before it. Stage
+/// 3's order moved the widths where each shows (a mouse window keeps the rail to 554px, and only a
+/// touch view of 760px or less is the phone reader beside its list), so the steps are taken there.
+/// - A 520px desktop window is the compact desktop layout under the drawer's handle, where it was
 ///   the phone reader: no dock, and the handle clear of the title.
-/// - A 900px window with a 520px sidebar leaves the view 380px: the phone reader beside the sidebar,
-///   its dock shown and no 44px kept at its left for a handle that is not there, where it was the
-///   desktop layout squeezed into 380px.
-/// - A 1000px window on the rail leaves the view 936px: its right pane opens as a column beside the
+/// - A 900px touch window with a 520px sidebar narrows the list to 342px and leaves the view 558px:
+///   the phone reader beside the list, its dock shown and no 44px kept at its left for a handle that
+///   is not there, where it was the desktop layout squeezed into the view.
+/// - An 1100px window on the rail leaves the view 1036px: its right pane opens as a column beside the
 ///   session, where it lay over it.
 /// - A wide phone held sideways with its list column shown leaves the view about 650px: a narrower
 ///   phone's layout (its bands read its own width), not the wide phone's.
-/// - Beside the 520px sidebar and beside the wide phone's column, the phone reader's fixed layers (its
+/// - Beside the list and beside the wide phone's column, the phone reader's fixed layers (its
 ///   dock, Info, Aa, the Turns sheet, the session's menu, the filter, the right pane and the reply
 ///   box) open, stay in its own box and leave the list, the handle and the title reachable; the review
 ///   of stage 2's first cut found them placed against the window, over the sidebar (red on 86b7c06f
@@ -4503,7 +4505,7 @@ fn pane_full_screen(tab: &headless_chrome::Tab) -> serde_json::Value {
 ///   close control inside the island's inset (red on f17bb8c4, which held the sheet in the view's box),
 ///   and the open pane under it keeps its place; opened at ⤢ it covers the screen too, top to bottom
 ///   with the screen's whole insets (red on 10d88b7d, which reached from the contained view's edges
-///   where ⤢ no longer contains it). Beside the 520px sidebar the phone reader's sheet covers the
+///   where ⤢ no longer contains it). Beside the list the phone reader's sheet covers the
 ///   window too (red on cf156c65, whose rule read the window's size where the containment it undoes
 ///   reads the view's).
 ///   Over the open pane the handle stays with a layer of the view left open under it (red on
@@ -4527,21 +4529,21 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
         );
     };
     let shown = "function(id){ var e = document.getElementById(id) || document.querySelector(id); if (!e) return false; var r = e.getBoundingClientRect(); return getComputedStyle(e).display !== 'none' && r.width > 0 && r.height > 0; }";
-    // A 700px desktop window.
-    harness::resize(&tab, 700.0, 900.0);
-    open(&tab, 700.0, "a 700px window");
+    // A 520px desktop window.
+    harness::resize(&tab, 520.0, 900.0);
+    open(&tab, 520.0, "a 520px window");
     let narrow = harness::probe(
         &tab,
         &format!("(function(){{ var shown = {shown}; var h = document.getElementById('drawerHandle').getBoundingClientRect(), t = document.getElementById('sessionTitle').getBoundingClientRect(); return {{ layout: {VIEW_LAYOUT}, dock: shown('.phone-dock'), handle: shown('drawerHandle'), handleRight: Math.round(h.right), titleTextLeft: Math.round(t.left + parseFloat(getComputedStyle(document.getElementById('sessionTitle')).paddingLeft)) }}; }})()"),
     );
-    // A 900px window with a 520px sidebar.
+    // A 900px touch window with a 520px sidebar: a tablet's, as tall as it is wide.
     harness::eval(&tab, "localStorage.setItem('am-sidebar-width', '520')");
-    harness::resize(&tab, 900.0, 900.0);
-    open(&tab, 900.0, "a 900px window with a 520px sidebar");
+    harness::phone(&tab, 900, 900);
+    open(&tab, 900.0, "a 900px touch window with a 520px sidebar");
     harness::until(
         &tab,
-        &format!("Math.round(document.getElementById('sessionView').getBoundingClientRect().width) === 380 && {VIEW_CAUGHT_UP}"),
-        "the view to be 380px beside the 520px sidebar",
+        &format!("Math.round(document.getElementById('sessionView').getBoundingClientRect().width) === 558 && {VIEW_CAUGHT_UP}"),
+        "the view to be 558px beside the list, narrowed from 520px to 342px",
         Duration::from_secs(10),
         VIEW_LAYOUT,
     );
@@ -4552,9 +4554,9 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
     let beside_layers = phone_layers_amiss(&tab, &[]);
     let beside_review = review_sheet_amiss(&tab);
     harness::eval(&tab, "localStorage.removeItem('am-sidebar-width')");
-    // A 1000px window on the rail, the right pane open.
-    harness::resize(&tab, 1000.0, 900.0);
-    open(&tab, 1000.0, "a 1000px window");
+    // An 1100px window on the rail, the right pane open.
+    harness::mouse_window(&tab, 1100, 900);
+    open(&tab, 1100.0, "an 1100px window");
     harness::eval(&tab, "document.getElementById('sidebarCollapse').click()");
     harness::until(
         &tab,
@@ -4612,15 +4614,15 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
     drop(monitor);
     assert_eq!(
         narrow["layout"]["phone"], false,
-        "a 700px window is not the phone reader: {narrow}"
+        "a 520px window is not the phone reader: {narrow}"
     );
     assert_eq!(
-        narrow["layout"]["b"], "1000px",
-        "its bands read a 1000px window's: {narrow}"
+        narrow["layout"]["b"], "820px",
+        "its bands read an 820px window's, its own 520 and the sidebar's 300: {narrow}"
     );
     assert_eq!(
         narrow["dock"], false,
-        "no phone dock in a 700px window: {narrow}"
+        "no phone dock in a 520px window: {narrow}"
     );
     assert_eq!(
         narrow["handle"], true,
@@ -4632,7 +4634,7 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
     );
     assert_eq!(
         beside["layout"]["phone"], true,
-        "a 380px view beside a 520px sidebar is the phone reader: {beside}"
+        "a 558px touch view beside the list is the phone reader: {beside}"
     );
     assert_eq!(beside["dock"], true, "its dock is shown: {beside}");
     assert_eq!(
@@ -4648,8 +4650,8 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
         "on the rail the view is the desktop's: {rail}"
     );
     assert_eq!(
-        rail["layout"]["b"], "1236px",
-        "its bands read its own 936px, plus the sidebar's 300: {rail}"
+        rail["layout"]["b"], "1336px",
+        "its bands read its own 1036px, plus the sidebar's 300: {rail}"
     );
     assert_ne!(
         rail["position"], "fixed",
@@ -4660,7 +4662,7 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
         "the right pane sits beside the session, not over it: {rail}"
     );
     assert!(
-        rail["paneRight"].as_i64().is_some_and(|x| x <= 1000),
+        rail["paneRight"].as_i64().is_some_and(|x| x <= 1100),
         "the right pane ends inside the window: {rail}"
     );
     assert_eq!(
@@ -4682,8 +4684,8 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
     assert_eq!(
         beside_layers,
         Vec::new(),
-        "beside a 520px sidebar the phone reader keeps every layer in its own box, and the list, the \
-         title and each layer take a press"
+        "beside the list the phone reader keeps every layer in its own box, and the list, the title \
+         and each layer take a press"
     );
     assert_eq!(
         wide_layers,
@@ -6293,7 +6295,9 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
     // retire the third state rested on. Hit-tested: a control that cannot be reached still
     // reports a perfect rectangle.
     let hittable = r#"function (el) { if (!el) return false; var r = el.getBoundingClientRect(); if (r.width < 4 || r.height < 4) return false; var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!(hit && (hit === el || el.contains(hit) || hit.contains(el))); }"#;
-    for (label, w) in [("wide", 1500.0), ("narrow", 820.0)] {
+    // #s431 stage 3: the narrow window is 1040px, where the owner's order narrows the list to make
+    // room for the outline (1012–1079px at the defaults); below 1012 the outline cannot open.
+    for (label, w) in [("wide", 1500.0), ("narrow", 1040.0)] {
         harness::resize(&tab, w, 900.0);
         harness::until(
             &tab,
@@ -6359,6 +6363,44 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
         // The next leg resizes, so leave the pane settled rather than mid-collapse.
         harness::until_navigator_reflow(&tab, opened_w);
     }
+    // An 820px window has no room for the outline beside the session and the list at its least: the
+    // rail's expand is still there and says why it does nothing, and a press leaves the outline shut.
+    harness::resize(&tab, 820.0, 900.0);
+    harness::until(
+        &tab,
+        "innerWidth === 820",
+        "an 820px window",
+        std::time::Duration::from_secs(5),
+        "innerWidth",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('navigatorRailExpand').getAttribute('aria-disabled') === 'true'",
+        "the window's decision to hold the outline shut",
+        std::time::Duration::from_secs(5),
+        "document.getElementById('navigatorRailExpand').outerHTML.slice(0, 300)",
+    );
+    let expand = format!("(function(){{ var hittable = {hittable}; var e = document.getElementById('navigatorRailExpand'); return {{ off: {off}, reachable: hittable(e), disabled: e.getAttribute('aria-disabled'), title: e.title }}; }})()");
+    let blocked = harness::probe(&tab, &expand);
+    assert!(
+        blocked["off"] == true
+            && blocked["reachable"] == true
+            && blocked["disabled"] == "true"
+            && blocked["title"]
+                .as_str()
+                .is_some_and(|t| t.contains("Too narrow")),
+        "at an 820px window the rail's expand is there, disabled, and says why: {blocked}"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('navigatorRailExpand').click(); 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert_eq!(
+        harness::eval(&tab, off),
+        true,
+        "…and a press there leaves the outline shut"
+    );
     drop(monitor);
 }
 
@@ -16759,11 +16801,12 @@ fn a_phone_held_sideways_gets_the_phone_layout_in_one_row() {
 
 /// #s32, part 2: between the phone and 1180px the preview is an overlay; it covered 72vw of a
 /// session still laid out at full width and left a sliver no one could read. An open preview now
-/// covers the whole session area beside the sidebar. Since #s431 stage 2 the band is the view's own
-/// width, so with the sidebar closed to its rail a 1000px window leaves the view 936px, where the pane
-/// is a column beside the session as on a wider window, and neither is a sliver; an 800px window on
-/// the rail leaves the view 736px, and the pane covers it from the rail's edge (its rule was dead in
-/// stage 2's first cut, which left the pane at its 72% width).
+/// covers the whole session area beside the sidebar. Since #s431 stage 3 the owner's order decides
+/// where: a pane that cannot sit beside the session at `M` covers the whole view, and the list keeps
+/// its rail (554–1034px windows at the defaults). So a 1000px window and an 800px one each fold the
+/// list to its rail as the pane opens, and the pane covers the view from the rail's edge to the
+/// window's (its rule was dead in stage 2's first cut, which left the pane at its 72% width); an
+/// 1100px window has room for both at `M`, and the pane is a column beside the session.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver() {
@@ -16781,22 +16824,11 @@ fn a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver() {
         "''",
     );
     harness::eval(&tab, &format!("{link}.click(); 'ok'"));
-    let edges = "(function(){ var p = document.getElementById('preview').getBoundingClientRect(); var s = document.querySelector('.sidebar').getBoundingClientRect(); var off = document.getElementById('app').classList.contains('sidebar-off'); return JSON.stringify({ left: Math.round(p.left), right: Math.round(innerWidth - p.right), sidebar: off ? 0 : Math.round(s.right) }); })()";
-    harness::until(
-        &tab,
-        &format!("(function(){{ var e = JSON.parse({edges}); return e.left <= e.sidebar + 12 && e.right <= 12; }})()"),
-        "the preview from the sidebar's edge to the window's",
-        Duration::from_secs(15),
-        edges,
-    );
-    // The sidebar closed to its rail: the view is 936px, and its pane a column beside the session, a
-    // card 10px in from the window's edge as at any wide window (its margin).
-    harness::eval(&tab, "document.getElementById('sidebarCollapse').click()");
     let beside = "(function(){ var v = document.getElementById('sessionView').getBoundingClientRect(), p = document.getElementById('preview').getBoundingClientRect(), w = document.querySelector('#sessionView>.workspace').getBoundingClientRect(); return JSON.stringify({ viewLeft: Math.round(v.left), viewWidth: Math.round(v.width), paneLeft: Math.round(p.left), paneRight: Math.round(innerWidth - p.right), sessionLeft: Math.round(w.left), sessionRight: Math.round(w.right), position: getComputedStyle(document.getElementById('preview')).position }); })()";
     harness::until(
         &tab,
-        &format!("document.getElementById('app').classList.contains('sidebar-off') && {VIEW_CAUGHT_UP} && (function(){{ var e = JSON.parse({beside}); return e.viewWidth === innerWidth - 64 && e.position !== 'fixed' && e.paneRight <= 12 && e.sessionRight <= e.paneLeft + 1 && e.sessionRight - e.sessionLeft >= 400; }})()"),
-        "on the rail the pane a column beside a session of 400px or more, its card's margin from the window's edge",
+        &format!("document.getElementById('app').classList.contains('sidebar-off') && {VIEW_CAUGHT_UP} && (function(){{ var e = JSON.parse({beside}); return e.viewWidth === innerWidth - 64 && e.paneLeft >= e.viewLeft && e.paneLeft <= e.viewLeft + 12 && e.paneRight <= 12; }})()"),
+        "in a 1000px window the list on its rail and the pane from the rail's edge to the window's",
         Duration::from_secs(15),
         beside,
     );
@@ -16806,6 +16838,16 @@ fn a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver() {
         &tab,
         &format!("innerWidth === 800 && {VIEW_CAUGHT_UP} && (function(){{ var e = JSON.parse({beside}); return e.viewWidth === 736 && e.paneLeft >= e.viewLeft && e.paneLeft <= e.viewLeft + 12 && e.paneRight <= 12; }})()"),
         "on the rail in an 800px window the pane from the rail's edge to the window's",
+        Duration::from_secs(15),
+        beside,
+    );
+    // An 1100px window: the session and the pane at `M` each fit beside the rail, so the pane is a
+    // column, a card 10px in from the window's edge as at any wide window (its margin).
+    harness::resize(&tab, 1100.0, 800.0);
+    harness::until(
+        &tab,
+        &format!("innerWidth === 1100 && {VIEW_CAUGHT_UP} && (function(){{ var e = JSON.parse({beside}); return e.viewWidth === 1036 && e.position !== 'fixed' && e.paneRight <= 12 && e.sessionRight <= e.paneLeft + 1 && e.sessionRight - e.sessionLeft >= 480; }})()"),
+        "in an 1100px window the pane a column beside a session of M, its card's margin from the window's edge",
         Duration::from_secs(15),
         beside,
     );
