@@ -247,10 +247,16 @@ element.classList.add("sv-mounting");
 // decision that changes a class remeasures the transcript once the view can (`layoutHeard`, set below,
 // since the first decision comes before the code that remeasures exists).
 let layoutHeard = null;
-const layout = mountPaneLayout(element, { signal, onChange: () => layoutHeard?.() });
+// #s431 stage 3: each decision also arranges the view's parts by the owner's order, from what the view
+// says of itself (`arrangeInputs`, which answers the defaults until the view's state exists, just
+// below), and draws the outline as arranged (`drawOutline`) in the same decision.
+let arrangeInputs = () => ({});
+const layout = mountPaneLayout(element, { signal, onChange: () => layoutHeard?.(), inputs: () => arrangeInputs(), onArrange: arrangement => drawOutline(arrangement) });
 // How the view is laid out and read, made once the layout has decided (the outline's default is the
 // view's phone family's).
 const uiState = createViewState({ phone: layout.phone() });
+arrangeInputs = () => ({ paneOpen: !element.classList.contains("preview-off"), outlineWanted: uiState.navigatorOpen, share: 0.5 });
+layout.decide();
 const persist = () => persistView(uiState);
 const applyTheme = theme => { element.dataset.theme = theme === "dark" ? "dark" : "light"; };
 applyTheme(options.theme);
@@ -536,7 +542,10 @@ const paneLayoutChanged = () => {
   viewport.remeasure();
 };
 layoutHeard = paneLayoutChanged;
-const preview = new Preview({ phone: () => layout.phone(), layoutChanged: paneLayoutChanged, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
+// The reader opened or shut the pane: the order arranges the view again, and the pane glides whole
+// (`glide`), even where the host's list gives way in the same moment.
+const paneToggled = () => { layout.glide(); layout.decide(); paneLayoutChanged(); };
+const preview = new Preview({ phone: () => layout.phone(), layoutChanged: paneToggled, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
 const attachmentViewer = new AttachmentViewer({ toast });
 // What the compose box asks of the app goes nowhere once the view is unmounted: a dialog's answer
 // still settling, a send still out.
@@ -1645,7 +1654,7 @@ function renderNavigator() {
   renderSessionInfo(turnCount, allAgents);
   viewRoot.$$("[data-nav-card]").forEach(card => card.classList.toggle("open", uiState.navCards.has(card.dataset.navCard)));
   stackOutlineHeads();
-  viewRoot.$(".workspace").classList.toggle("navigator-off", !uiState.navigatorOpen);
+  drawOutline(layout.arrangement());
   mobileShell?.counts(turnCount, counted.length, allAgents);
 }
 /** The control an emptied pane carries (#s356): it clears the same remembered filter the Outline
@@ -3122,7 +3131,19 @@ function updateStickyHeaders() { const top = transcript.getBoundingClientRect().
 // so the reader's place does not move with the reflow.
 //
 // Retiring a shipped feature, not fixing a bug: the history should not read as a regression.
-function toggleNavigator(open) { uiState.navigatorOpen = open; persist(); renderNavigator(); viewport.remeasure(); }
+function toggleNavigator(open) { uiState.navigatorOpen = open; persist(); layout.glide(); layout.decide(); renderNavigator(); viewport.remeasure(); }
+/** The outline as the order arranged it (#s431 stage 3): open at its track only where the arrangement
+ *  says so, its glyphs otherwise (`navigator-off`, in their column or in the top bar), whatever the
+ *  reader wants; the phone reader keeps the reader's choice, as before, since its outline is the dock's
+ *  sheets. Called while the layout decides, so it is drawn in the same decision. */
+function drawOutline(arrangement) {
+  const workspace = viewRoot.$(".workspace");
+  if (!workspace || !arrangement) return;
+  // The reader's choice as the layout was told it: the defaults while the view's state is still being
+  // made (the first decision comes before it).
+  const wanted = arrangeInputs().outlineWanted ?? true;
+  workspace.classList.toggle("navigator-off", arrangement.phone ? !wanted : arrangement.outline !== "open");
+}
 // #159. The pane selector. No glyph of its own (owner, #159 follow-up): the word "Outline" IS
 // the trigger, hovered, exactly as the session title opens the copy menu — same surface, same
 // pointer bridge across the gap, same 120ms grace so the pointer can travel into it. Production

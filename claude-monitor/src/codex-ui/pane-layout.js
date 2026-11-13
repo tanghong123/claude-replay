@@ -52,42 +52,61 @@ export function classesFor(view) {
   return on;
 }
 
-/** Decide now and again whenever the view's box, the screen's pointer or the window's size changes:
- *  the classes on `element`, `pl-phone` with them, and the lengths its rules read (`--pl-b`, `--pl-w`,
- *  `--pl-h`, `--pane-x`, `--pane-r`, `--pl-vh`, `--pl-dvh`). `onChange` hears every decision
- *  that changed a class, after it is written. `query(family)` answers as a `MediaQueryList` does
- *  (`matches`, a `change` event), so a script that matched `PHONE_QUERY` asks the view's family instead
- *  by one name. Everything bound here ends with `signal`.
+/** Decide now and again whenever the view's box, the screen's pointer, the window's size or what the
+ *  view says of itself changes: the classes on `element`, `pl-phone` with them, and the lengths its
+ *  rules read (`--pl-b`, `--pl-w`, `--pl-h`, `--pane-x`, `--pane-r`, `--pl-vh`, `--pl-dvh`). `onChange`
+ *  hears every decision that changed a class, after it is written. `query(family)` answers as a
+ *  `MediaQueryList` does (`matches`, a `change` event), so a script that matched `PHONE_QUERY` asks the
+ *  view's family instead by one name. Everything bound here ends with `signal`.
+ *
+ *  #s431 stage 3: each decision also arranges the view's parts by the owner's order (`arrangeView`,
+ *  below), from what `inputs()` answers at that moment (whether the pane is open, whether the reader
+ *  wants the outline, the pane's share of the slack, and the room its host could give). It sets the
+ *  arrangement's classes (`ARRANGE_CLASSES`) and the open column's width (`--preview-fit`), and hands
+ *  the arrangement to `onArrange` while it writes, so what the view draws from it is laid out in the
+ *  same decision. The view calls `decide()` again whenever one of those inputs changes.
  *
  *  A decision lays the element out; it never glides. While it writes, the element wears `pl-holding`,
  *  under which its stylesheet holds every transition inside it, and one read styles every part at what
  *  was written before the hold lets go, so letting go starts none (#s431 stage 2: the outline's track
  *  glided 36px into place while the first prompts measured, and a prompt counted its lines at the
- *  narrower column). The reader's own toggles, which no decision writes, still glide. */
-export function mountPaneLayout(element, { signal, onChange } = {}) {
+ *  narrower column). The reader's own toggles still glide: `glide()` lets the decisions of the next
+ *  `GLIDE_MS` write without the hold, since opening the pane can make the host's list give way in
+ *  the same moment, and a decision taken then would cancel the pane's glide. */
+export function mountPaneLayout(element, { signal, onChange, inputs, onArrange } = {}) {
   const coarse = matchMedia("(pointer:coarse)"), fine = matchMedia("(pointer:fine)");
   const events = new EventTarget();
   const family = { phone: false, wide: false };
-  let said = null, wrote = null;
+  let said = null, wrote = null, arranged = null, glideUntil = 0;
   const decide = () => {
     if (signal?.aborted) return;
     const box = element.getBoundingClientRect();
     const view = { width: box.width, height: box.height, coarse: coarse.matches, fine: fine.matches };
+    const asked = inputs?.() || {};
+    const arrangement = arrangeView({ ...asked, width: box.width, height: box.height, coarse: coarse.matches });
     const on = classesFor(view);
+    for (const name of arrangeClasses(view, arrangement)) on.add(name);
     const right = Math.max(0, viewRoot.viewportWidth() - box.right);
     const tall = box.height >= innerHeight - 2;
-    const writing = JSON.stringify([[...on].sort(), box.width, box.height, box.left, right, tall]);
+    const writing = JSON.stringify([[...on].sort(), box.width, box.height, box.left, right, tall, arrangement]);
     if (writing === wrote) return;
     wrote = writing;
+    arranged = arrangement;
     const was = { ...family };
     family.phone = on.has("pl-phone");
     family.wide = isWidePhone(view);
-    element.classList.add("pl-holding");
-    for (const name of [...LAYOUT_CLASSES, "pl-phone"]) element.classList.toggle(name, on.has(name));
+    const hold = performance.now() >= glideUntil;
+    if (hold) element.classList.add("pl-holding");
+    for (const name of [...LAYOUT_CLASSES, ...ARRANGE_CLASSES, "pl-phone"]) element.classList.toggle(name, on.has(name));
     element.style.setProperty("--pl-b", `${bandWidth(view)}px`);
     element.style.setProperty("--pl-w", `${box.width}px`);
     element.style.setProperty("--pl-h", `${box.height}px`);
     element.style.setProperty("--pane-x", `${box.left}px`);
+    // The open column's width, the pane's own box, from the arrangement (its track is that and the
+    // view's 10px margin); none where the pane is shut or covers the session, so a `--preview` a host
+    // or a case sets reaches the pane there.
+    if (arrangement.pane === "column") element.style.setProperty("--preview-fit", `${arrangement.paneWidth}px`);
+    else element.style.removeProperty("--preview-fit");
     // Where the view sits in the window, for placing alone (#s461 rules out reading the window for a
     // layout): its gap to the window's right edge, and whether it is narrower than the window — beside
     // the app's list or its rail, beside a wide phone's column, in a host's pane. A phone reader in
@@ -103,8 +122,9 @@ export function mountPaneLayout(element, { signal, onChange } = {}) {
     // alone, never for a layout decision.
     element.style.setProperty("--pl-vh", tall ? "1vh" : `${box.height / 100}px`);
     element.style.setProperty("--pl-dvh", tall ? "1dvh" : `${box.height / 100}px`);
+    onArrange?.(arrangement);
     element.getBoundingClientRect();
-    element.classList.remove("pl-holding");
+    if (hold) element.classList.remove("pl-holding");
     const key = [...on].sort().join(" ");
     if (key === said) return;
     said = key;
@@ -125,7 +145,10 @@ export function mountPaneLayout(element, { signal, onChange } = {}) {
       removeEventListener: (type, listener, options) => { if (type === "change") events.removeEventListener(name, listener, options); },
     };
   };
-  return { decide, phone: () => family.phone, wide: () => family.wide, query };
+  /** The reader's own toggle is starting: the decisions of its transition's time write without the
+   *  hold, so the toggle glides whole. */
+  const glide = () => { glideUntil = performance.now() + GLIDE_MS; };
+  return { decide, glide, arrangement: () => arranged, phone: () => family.phone, wide: () => family.wide, query };
 }
 
 // #s431 stage 3 (design/pane-layout.md, "The owner's order"): what keeps its width and what gives way
@@ -206,6 +229,23 @@ export function arrangeView({ width, height, coarse, m = M, paneOpen = false, ou
     paneWidth: column ? m + toPane : null,
   };
 }
+
+/** The classes an arrangement sets on the view's element (#s431 stage 3), which its rules read in place
+ *  of the bands that decided the same things before: the pane's mode, a column where the session and
+ *  the pane each keep `m` beside each other (`pl-pane-column`) and over the view elsewhere
+ *  (`pl-pane-over`), whether or not the pane is open, as the bands it replaces read it; and the
+ *  outline as it is drawn (`pl-outline-open`, `-glyphs` in their column, `-bar` in the top bar, `-dock`
+ *  on the phone reader), which a fold the width forced changes and the reader's choice does not. */
+export const ARRANGE_CLASSES = Object.freeze(["pl-pane-column", "pl-pane-over", "pl-outline-open", "pl-outline-glyphs", "pl-outline-bar", "pl-outline-dock"]);
+
+/** The classes `arrangement` (as `arrangeView` gave it for `view`) sets. */
+export function arrangeClasses(view, arrangement, m = M) {
+  const column = !arrangement.phone && view.width >= viewNeeds({ m, pane: true });
+  return new Set([column ? "pl-pane-column" : "pl-pane-over", `pl-outline-${arrangement.outline}`]);
+}
+
+/** How long a reader's own toggle glides (the pane's `.22s`, and a frame either side). */
+export const GLIDE_MS = 260;
 
 /** The narrowest window that keeps the list's rail beside the view: the rail, the session at `m` and
  *  its card's margin, 554px (the owner's "rail + M", #s462; #s472 and #s474 said 544, leaving out the

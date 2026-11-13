@@ -17,6 +17,17 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    absolutely keeps its containing block. */
 #sessionView{display:grid;min-width:0;min-height:0;contain:inline-size;grid-template-rows:minmax(0,1fr);grid-template-columns:minmax(480px,1fr) 1px var(--preview,420px);transition:grid-template-columns .22s ease}
 #sessionView.preview-off{grid-template-columns:minmax(480px,1fr) 0 0}
+/* #s431 stage 3 (design/pane-layout.md, "The owner's order"): where the pane is a column beside the
+   session (`pl-pane-column`, which pane-layout.js sets where the session and the pane each keep M), its
+   width is the one the order gives it from the slack (`--preview-fit`, the pane's own box, written while
+   it is open), its track that and the view's 10px margin, and the session takes the rest. Where the
+   pane cannot be a column it covers the view (`pl-pane-over`, the rules the band at 1180px held). */
+#sessionView.pl-pane-column{grid-template-columns:minmax(0,1fr) 1px calc(var(--preview-fit,calc(var(--preview,420px) - 10px)) + 10px)}
+#sessionView.pl-pane-column.preview-off{grid-template-columns:minmax(0,1fr) 0 0}
+/* The outline's glyphs in the top bar (`pl-outline-bar`): their column goes, and the session takes its
+   width. */
+#sessionView.pl-outline-bar .workspace.navigator-off .sv-session-main{grid-template-columns:0 minmax(0,1fr)}
+#sessionView.pl-outline-bar .workspace.navigator-off .session-navigator{display:none}
 /* #s431 stage 2 (the review of its first cut; design/pane-layout.md, "Drawn inside the pane"): a phone
    reader narrower than the window (`pl-boxed`: beside a wide sidebar or the rail, beside a wide phone's
    column, in a host's pane) contains its layout, so its fixed layers (the dock, the sheets, Info, the

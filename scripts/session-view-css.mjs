@@ -654,6 +654,41 @@ export function sizeGate(prelude) {
   });
 }
 
+/** #s431 stage 3 (design/pane-layout.md, "The owner's order"). What two bands decided about the view's
+ *  parts, the owner's order decides now (`arrangeView` in pane-layout.js), so the rules for those parts
+ *  read the order's classes instead:
+ *
+ *  - **The pane's mode.** A rule under `(max-width:1180px)` for the right pane, its resizer, the
+ *    session card's edge or the view's own grid reads `pl-pane-over` in that band's place. The module
+ *    sets it wherever the band held (a view of 880px or less is too narrow for the pane as a column),
+ *    and also wherever the pane cannot be a column beside the session at `M` (881–970px).
+ *  - **The outline's layout.** A rule under a band of 1180 or 900px for the outline's track, its
+ *    overlay, the glyphs' column or the outline's toggle is the phone reader's alone: `pl-phone` joins
+ *    each of its alternatives, so the phone keeps every rule it had. On a desktop the outline is open at
+ *    its 290px track, or its glyphs are in their 68px column or the top bar, wherever the order puts
+ *    them, which the base rules draw.
+ *
+ *  Any other rule keeps its band. */
+const PANE_PARTS = /^(?:\.preview|\.resizer)$/;
+const OUTLINE_PARTS = /^(?:\.sv-session-main|\.session-navigator|\.outline-rail|\.navigator-toggle)$/;
+export const ARRANGED = Object.freeze({ pane: "pl-pane-over", outline: "pl-phone" });
+export function arrangedGate(sel, alternatives) {
+  const parts = compounds(sel);
+  const subject = parts[parts.length - 1].text;
+  const classes = (subject.match(/\.[\w-]+/g) || []);
+  const bare = withoutNot(subject).replace(/^:where\(#sessionView\)/, "");
+  const parent = parts.length > 1 ? withoutNot(parts[parts.length - 2].text) : "";
+  const pane = classes.some(name => PANE_PARTS.test(name)) || bare === ".workspace" || /^#sessionView(?:\.preview-off)?$/.test(subject);
+  const outline = classes.some(name => OUTLINE_PARTS.test(name)) || (bare === ".transcript" && parts[parts.length - 1].comb.trim() === ">" && /\.sv-session-main$/.test(parent));
+  if (pane && alternatives.some(set => set.includes("pl-max-w-1180"))) {
+    return { kind: "pane", alternatives: alternatives.map(set => set.map(name => (name === "pl-max-w-1180" ? ARRANGED.pane : name))) };
+  }
+  if (outline && alternatives.some(set => set.some(name => /^pl-max-w-(?:1180|900)$/.test(name)))) {
+    return { kind: "outline", alternatives: alternatives.map(set => (set.some(name => /^pl-max-w-(?:1180|900)$/.test(name)) ? [...set, ARRANGED.outline] : set)) };
+  }
+  return null;
+}
+
 /** A view selector, which starts at the view's element, gated by a size query's alternatives: the
  *  classes go on that element inside `:where()`, so the selector weighs what it did. */
 /** A selector led by `.app` with only the pane's states the view's element carries too (`preview-off`,
@@ -720,7 +755,7 @@ export function deriveStylesheets({ reference, production }) {
   // `listChild`: the app's selectors that go on through the list's element (below), as written.
   // `list`: the list's decisions, kept apart so the view's report reads as it did.
   const report = {
-    kinds: {}, keyframes: { view: [], list: [], app: [] }, reachIn: [], rootDeclarations: [], ties: [], listChild: [],
+    kinds: {}, keyframes: { view: [], list: [], app: [] }, reachIn: [], rootDeclarations: [], ties: [], listChild: [], arranged: [],
     list: { kinds: {}, rootDeclarations: [], ties: [], left: [] },
   };
   // The one rewrite the app's file takes (#s430 stage 3): the tree is a child of the list's element,
@@ -828,7 +863,9 @@ export function deriveStylesheets({ reference, production }) {
           if (decision.app && listDecision.keepApp) app.push(appSelector(decision.app));
           else if (decision.app) report.list.left.push(sel);
           for (const moved of decision.view) {
-            const written = gate ? gateSelector(moved, gate) : moved;
+            const arranged = gate ? arrangedGate(moved, gate) : null;
+            const written = gate ? gateSelector(moved, arranged ? arranged.alternatives : gate) : moved;
+            if (arranged) report.arranged.push({ kind: arranged.kind, sel: written });
             const before = specificity(sel);
             const now = specificity(written);
             if (compare(before, now)) throw new Error(`session-view.css: \`${written}\` weighs ${now} where \`${sel}\` weighed ${before}`);

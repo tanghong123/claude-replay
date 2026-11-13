@@ -342,6 +342,31 @@ let droppedAttention = "";
     }
     assert.deepEqual(layout.arrangeApp({ width: 1100 }), { list: 300, canOpen: true }, "the list's default width is 300 and the outline is wanted unless the view says not");
     assert.deepEqual(layout.arrangeView({ width: 800, height: 900 }), layout.arrangeView({ width: 800, height: 900, outlineWanted: true, share: 0.5, room: 0 }), "the view's defaults: the outline wanted, an equal share, no room");
+    // The rules the order decides now (the derivation's `arrangedGate`): the pane's mode reads
+    // `pl-pane-over` where the 1180px band stood, and the outline's track, overlay and narrower glyphs
+    // are the phone reader's alone. So the module sets `pl-pane-over` wherever that band held (and in
+    // the phone family, which every band up to 1180 holds), `pl-pane-column` exactly where the pane can
+    // be a column beside the session at M, never both, and each arrangement draws one outline class.
+    const arrangedKinds = derived.report.arranged.reduce((n, { kind }) => ({ ...n, [kind]: (n[kind] || 0) + 1 }), {});
+    assert.ok(arrangedKinds.pane >= 10 && arrangedKinds.outline >= 20, `the rules the order decides: ${JSON.stringify(arrangedKinds)}`);
+    for (const { kind, sel } of derived.report.arranged) {
+      assert.ok(kind === "pane" ? /pl-pane-over/.test(sel) && !/pl-max-w-1180/.test(sel) : /pl-phone/.test(sel), `${kind}: ${sel}`);
+    }
+    assert.ok(!/pl-max-w-1180\)? \.(?:preview|resizer)\b/.test(derived.view), "no rule for the pane reads the 1180px band");
+    const readByRules = new Set((derived.view.match(/\bpl-(?:pane|outline)-[\w-]+/g) || []));
+    for (const name of readByRules) assert.ok(layout.ARRANGE_CLASSES.includes(name), `the view's rules read ${name}, which the module sets`);
+    for (const width of [320, 459, 489, 490, 557, 558, 760, 761, 779, 780, 880, 881, 970, 971, 1100, 1600]) for (const height of [900, 430]) for (const coarse of [false, true]) for (const paneOpen of [false, true]) for (const outlineWanted of [false, true]) {
+      const view = { width, height, coarse, fine: !coarse };
+      const arrangement = layout.arrangeView({ width, height, coarse, paneOpen, outlineWanted });
+      const on = layout.arrangeClasses(view, arrangement);
+      const B = layout.bandWidth(view);
+      const where = JSON.stringify({ width, height, coarse, paneOpen, outlineWanted });
+      assert.equal(on.has("pl-pane-over") !== on.has("pl-pane-column"), true, `one pane mode at ${where}`);
+      if (B <= 1180 || arrangement.phone) assert.ok(on.has("pl-pane-over"), `the pane covers the view wherever the 1180px band held, at ${where}`);
+      assert.equal(on.has("pl-pane-column"), !arrangement.phone && width >= layout.viewNeeds({ pane: true }), `the pane is a column exactly where the session and the pane keep M, at ${where}`);
+      if (paneOpen) assert.equal(arrangement.pane === "column", on.has("pl-pane-column"), `the mode is the open pane's, at ${where}`);
+      assert.deepEqual([...on].filter(name => name.startsWith("pl-outline-")), [`pl-outline-${arrangement.outline}`], `one outline class at ${where}`);
+    }
   }
   // #s430 stage 3: the app's file takes one rewrite, the demo's two rules naming the tree as the
   // sidebar's child, which go on through the list's element at the same weight.
@@ -2037,7 +2062,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(resolveKey(ev("o"), "list").action, "navigator-toggle", "from the list too");
   assert.equal(resolveKey(ev("o"), "view", { tagName: "TEXTAREA" }), null, "never while typing");
   assert.match(viewSource, /"navigator-toggle": \(\) => toggleNavigator\(!uiState\.navigatorOpen\)/, "the key walks the two states it can reach");
-  assert.match(viewSource, /function toggleNavigator\(open\) \{ uiState\.navigatorOpen = open; persist\(\); renderNavigator\(\); viewport\.remeasure\(\); \}/, "one path, remembered, re-measured");
+  // #s431 stage 3: the reader's choice is what is remembered; the order then arranges the view again
+  // (gliding, as a reader's own toggle does), and the outline is drawn as arranged.
+  assert.match(viewSource, /function toggleNavigator\(open\) \{ uiState\.navigatorOpen = open; persist\(\); layout\.glide\(\); layout\.decide\(\); renderNavigator\(\); viewport\.remeasure\(\); \}/, "one path, remembered, arranged, re-measured");
   assert.doesNotMatch(shellSource, /setNavigatorHidden/, "#148: the third state has no setter left");
   // #88: the column is an accordion — the transform that moved a head alone (and left its body
   // in flow above it) is gone; each card sticks at its own slot with a rising z-index.
