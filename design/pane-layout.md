@@ -367,7 +367,7 @@ rely on it are listed with the stage, each with what it asserted before.
   covers the session (554–1034px at the defaults) the rail's expand is disabled too, as his sequence
   has it: the list opens once the window is wide enough for it, from 790px with the pane shut and
   1271px with it open at the defaults. On a touch screen the one exception is a pane over the phone
-  reader (825–992px windows, below): there the rail's expand stays enabled wherever expanding would
+  reader (790–992px windows, below): there the rail's expand stays enabled wherever expanding would
   open the list beside the pane, so a reader who folded the list for a wider pane can bring it back.
 - A collapse the reader makes is remembered (`am-…sidebar`, `am-demo-navigator`, as today), and a
   wider window never undoes it. A fold the width forced is not remembered: it comes back when the
@@ -425,11 +425,13 @@ screen up to 760px):
   on a touch screen covers the reader's area alone, beside the list or the rail as they were, as a
   wide phone held sideways covers the session beside its list (#s49). So the session keeps its width
   beneath, and opening or closing the pane remeasures nothing under it (#s25). Folding the list for
-  it, as his sequence does with a mouse, would widen the hidden session into the desktop's layout and
-  narrow it back into the phone reader when the pane closes. The list's own fold and open under that
-  pane do change the session beneath, as they do with the pane shut (above): a reader who folds the
-  list there gets the pane over the whole view, and the rail's expand brings the list back. From 993px, where the view
-  beside the list is the desktop's, his sequence applies: the rail, the pane covering the session.
+  it, as his sequence does with a mouse, would remeasure the hidden session twice, at each open and
+  close: at another width of the phone reader in 790–824px windows, and in 825–992px ones into the
+  desktop's layout and back. The list's own fold and open under that pane do change the session
+  beneath, as they do with the pane shut (above): a reader who folds the list there gets the pane
+  over the whole view, and the rail's expand brings the list back; only from 825px does the fold make
+  the view the desktop's. From 993px, where the view beside the list is the desktop's, his sequence
+  applies: the rail, the pane covering the session.
   So a touch window widened past 992px with the pane open folds the list: the phone layout gives way
   to his order there.
 - **The glyphs in the top bar.** On a phone they float in the dock. On a desktop they join the
