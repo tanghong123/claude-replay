@@ -8665,12 +8665,17 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
     let probe = "(function(){ var v = document.getElementById('sessionView'), r = v.getBoundingClientRect(); var box = function (e) { if (!e) return null; var b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 ? { left: Math.round(b.left), right: Math.round(b.right), top: Math.round(b.top), width: Math.round(b.width) } : null; }; var shown = function (e) { return !!e && e.getBoundingClientRect().width > 0; }; var bar = v.querySelector('.workspace>.topbar'); var expand = document.getElementById('navigatorRailExpand'); return { width: Math.round(r.width), classes: ['pl-pane-column', 'pl-pane-over', 'pl-outline-open', 'pl-outline-glyphs', 'pl-outline-bar', 'pl-outline-dock', 'pl-phone'].filter(function (c) { return v.classList.contains(c); }), workspace: box(v.querySelector('.workspace')), preview: v.classList.contains('preview-off') ? null : box(v.querySelector('.preview')), transcript: box(v.querySelector('.sv-session-main>.transcript')), inBar: [...bar.querySelectorAll('.phone-pane')].filter(shown).length, barInfo: shown(bar.querySelector('#phoneInfo')), barExpand: !!expand && expand.parentElement === bar && shown(expand), pressed: expand ? expand.getAttribute('aria-pressed') : null, disabled: expand ? expand.getAttribute('aria-disabled') : null }; })()";
     let outline_said = "window.__host.events.filter(function (e) { return e.name === 'onOutline'; }).map(function (e) { return e.args[0].wanted; })";
     let at = |width: f64, open: bool| -> serde_json::Value {
-        harness::resize(&tab, width, 900.0);
+        if width < 500.0 {
+            harness::mouse_window(&tab, width as u32, 900);
+        } else {
+            harness::clear_metrics(&tab);
+            harness::resize(&tab, width, 900.0);
+        }
         let toggle = format!("(function(){{ var v = document.getElementById('sessionView'); if (v.classList.contains('preview-off') === {open}) document.getElementById('previewBtn').click(); return true; }})()");
         harness::eval(&tab, &toggle);
         harness::until(
             &tab,
-            &format!("innerWidth === {width} && document.getElementById('sessionView').classList.contains('preview-off') === {} && document.getElementById('sessionView').getAnimations({{ subtree: true }}).filter(function (a) {{ return a instanceof CSSTransition; }}).length === 0", !open),
+            &format!("innerWidth === {width} && {VIEW_CAUGHT_UP} && document.getElementById('sessionView').classList.contains('preview-off') === {} && document.getElementById('sessionView').getAnimations({{ subtree: true }}).filter(function (a) {{ return a instanceof CSSTransition; }}).length === 0", !open),
             &format!("the view at {width}px, the pane {}", if open { "open" } else { "shut" }),
             Duration::from_secs(10),
             "({ w: innerWidth, cls: document.getElementById('sessionView').className })",
@@ -8685,77 +8690,169 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
         );
     };
     let has = |seen: &serde_json::Value, class: &str| {
-        seen["classes"].as_array().is_some_and(|c| c.iter().any(|x| x == class))
+        seen["classes"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|x| x == class))
     };
     let mounted = harness::probe(&tab, outline_said);
 
     // 1400px, the pane open: the outline open (1261px holds the session, the pane and it), the 139px
     // of slack split equally, 69 to the session and 70 to the pane.
     let wide = at(1400.0, true);
-    assert!(has(&wide, "pl-pane-column") && has(&wide, "pl-outline-open"), "{wide}");
+    assert!(
+        has(&wide, "pl-pane-column") && has(&wide, "pl-outline-open"),
+        "{wide}"
+    );
     near(&wide, "transcript", "width", 549.0);
     near(&wide, "preview", "width", 550.0);
-    assert!(wide["preview"]["right"].as_f64().unwrap_or(f64::NAN) <= 1400.0, "the pane ends inside the window: {wide}");
+    assert!(
+        wide["preview"]["right"].as_f64().unwrap_or(f64::NAN) <= 1400.0,
+        "the pane ends inside the window: {wide}"
+    );
     // 1100px: the outline gives way to its glyphs' column (1039px), 61px of slack.
     let glyphs = at(1100.0, true);
-    assert!(has(&glyphs, "pl-pane-column") && has(&glyphs, "pl-outline-glyphs"), "{glyphs}");
+    assert!(
+        has(&glyphs, "pl-pane-column") && has(&glyphs, "pl-outline-glyphs"),
+        "{glyphs}"
+    );
     near(&glyphs, "transcript", "width", 510.0);
     near(&glyphs, "preview", "width", 511.0);
     // 1000px: the glyphs leave their column for the top bar (971px), with the outline's control and Info.
     let bar = at(1000.0, true);
-    assert!(has(&bar, "pl-pane-column") && has(&bar, "pl-outline-bar"), "{bar}");
-    assert_eq!((bar["inBar"].clone(), bar["barInfo"].clone(), bar["barExpand"].clone()), (serde_json::json!(3), serde_json::json!(true), serde_json::json!(true)), "{bar}");
+    assert!(
+        has(&bar, "pl-pane-column") && has(&bar, "pl-outline-bar"),
+        "{bar}"
+    );
+    assert_eq!(
+        (
+            bar["inBar"].clone(),
+            bar["barInfo"].clone(),
+            bar["barExpand"].clone()
+        ),
+        (
+            serde_json::json!(3),
+            serde_json::json!(true),
+            serde_json::json!(true)
+        ),
+        "{bar}"
+    );
     near(&bar, "transcript", "width", 494.0);
     near(&bar, "preview", "width", 495.0);
     // 900px: too narrow for the pane beside the session; it covers the view, and the session beneath
     // keeps its own layout, the outline open (780px).
     let over = at(900.0, true);
-    assert!(has(&over, "pl-pane-over") && has(&over, "pl-outline-open"), "{over}");
-    assert!(over["transcript"]["width"].as_f64().unwrap_or(0.0) >= 480.0, "the session keeps M under the pane: {over}");
+    assert!(
+        has(&over, "pl-pane-over") && has(&over, "pl-outline-open"),
+        "{over}"
+    );
+    assert!(
+        over["transcript"]["width"].as_f64().unwrap_or(0.0) >= 480.0,
+        "the session keeps M under the pane: {over}"
+    );
     // 700px, the pane shut: the outline is wanted and the width holds it to its glyphs, so its control
     // is pressed, and a press folds it for good: the host hears that, and the control is then disabled,
     // since the outline cannot open here. A press on it then does nothing.
     let held = at(700.0, false);
     assert!(has(&held, "pl-outline-glyphs"), "{held}");
-    assert_eq!((held["pressed"].clone(), held["disabled"].clone()), (serde_json::json!("true"), serde_json::json!("false")), "{held}");
-    harness::eval(&tab, "document.getElementById('navigatorRailExpand').click(); 'ok'");
+    assert_eq!(
+        (held["pressed"].clone(), held["disabled"].clone()),
+        (serde_json::json!("true"), serde_json::json!("false")),
+        "{held}"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('navigatorRailExpand').click(); 'ok'",
+    );
     let folded = harness::probe(&tab, probe);
-    assert_eq!((folded["pressed"].clone(), folded["disabled"].clone()), (serde_json::json!("false"), serde_json::json!("true")), "{folded}");
-    harness::eval(&tab, "document.getElementById('navigatorRailExpand').click(); 'ok'");
+    assert_eq!(
+        (folded["pressed"].clone(), folded["disabled"].clone()),
+        (serde_json::json!("false"), serde_json::json!("true")),
+        "{folded}"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('navigatorRailExpand').click(); 'ok'",
+    );
     let refused = harness::probe(&tab, probe);
-    assert_eq!(refused["pressed"], "false", "a disabled control opens nothing: {refused}");
+    assert_eq!(
+        refused["pressed"], "false",
+        "a disabled control opens nothing: {refused}"
+    );
     // Wider, the reader's fold holds: a wider window never undoes it, and the control opens it.
     let kept = at(1400.0, false);
-    assert!(has(&kept, "pl-outline-glyphs"), "the reader's fold holds at 1400px: {kept}");
-    assert_eq!(kept["disabled"], "false", "and the control may open it there: {kept}");
-    harness::eval(&tab, "document.getElementById('navigatorRailExpand').click(); 'ok'");
+    assert!(
+        has(&kept, "pl-outline-glyphs"),
+        "the reader's fold holds at 1400px: {kept}"
+    );
+    assert_eq!(
+        kept["disabled"], "false",
+        "and the control may open it there: {kept}"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('navigatorRailExpand').click(); 'ok'",
+    );
     let reopened = harness::probe(&tab, probe);
     assert!(has(&reopened, "pl-outline-open"), "{reopened}");
     // 520px: no column for the glyphs; Turns opens its list as a panel under the bar at the
     // transcript's right edge, 290px wide; Esc closes it; Info opens its card there too.
     let narrow = at(520.0, false);
-    assert!(has(&narrow, "pl-outline-bar") && !has(&narrow, "pl-phone"), "{narrow}");
-    harness::eval(&tab, "document.getElementById('phonePane-turns').click(); 'ok'");
+    assert!(
+        has(&narrow, "pl-outline-bar") && !has(&narrow, "pl-phone"),
+        "{narrow}"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('phonePane-turns').click(); 'ok'",
+    );
     let panel = harness::probe(&tab, "(function(){ var m = document.getElementById('phonePaneMenu'), w = document.querySelector('#sessionView .workspace'), b = m.getBoundingClientRect(), wb = w.getBoundingClientRect(), bar = w.querySelector('.topbar').getBoundingClientRect(); return { shown: !m.hidden && b.width > 0, inCard: m.parentElement === w, width: Math.round(b.width), gap: Math.round(wb.right - b.right), below: b.top >= bar.bottom, rows: m.querySelectorAll('.outline-turn-row').length }; })()");
     assert_eq!(panel["shown"], true, "{panel}");
     assert_eq!(panel["inCard"], true, "{panel}");
-    assert!(panel["width"].as_f64().is_some_and(|w| (w - 290.0).abs() <= 1.0), "{panel}");
-    assert!(panel["gap"].as_f64().is_some_and(|g| (g - 8.0).abs() <= 1.0), "{panel}");
+    assert!(
+        panel["width"]
+            .as_f64()
+            .is_some_and(|w| (w - 290.0).abs() <= 1.0),
+        "{panel}"
+    );
+    assert!(
+        panel["gap"]
+            .as_f64()
+            .is_some_and(|g| (g - 8.0).abs() <= 1.0),
+        "{panel}"
+    );
     assert_eq!(panel["below"], true, "{panel}");
-    assert!(panel["rows"].as_u64().unwrap_or(0) >= 6, "the turns are listed: {panel}");
+    assert!(
+        panel["rows"].as_u64().unwrap_or(0) >= 6,
+        "the turns are listed: {panel}"
+    );
     harness::eval(&tab, "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); 'ok'");
     let closed = harness::probe(&tab, "document.getElementById('phonePaneMenu').hidden");
     assert_eq!(closed, true, "Esc closes the panel");
     harness::eval(&tab, "document.getElementById('phoneInfo').click(); 'ok'");
     let info = harness::probe(&tab, "(function(){ var c = document.getElementById('infoPopover'), b = c.getBoundingClientRect(); return { open: c.classList.contains('open'), inCard: c.parentElement === document.querySelector('#sessionView .workspace'), width: Math.round(b.width), visible: getComputedStyle(c).visibility }; })()");
-    assert_eq!(info, serde_json::json!({ "open": true, "inCard": true, "width": 290, "visible": "visible" }), "Info opens its card under the bar");
+    assert_eq!(
+        info,
+        serde_json::json!({ "open": true, "inCard": true, "width": 290, "visible": "visible" }),
+        "Info opens its card under the bar"
+    );
     // 480px: the phone reader.
     let phone = at(480.0, false);
-    assert!(has(&phone, "pl-phone") && has(&phone, "pl-outline-dock"), "{phone}");
+    assert!(
+        has(&phone, "pl-phone") && has(&phone, "pl-outline-dock"),
+        "{phone}"
+    );
     let said = harness::probe(&tab, outline_said);
     drop(monitor);
-    assert_eq!(mounted, serde_json::json!([true]), "the host hears the remembered choice once as the mount returns");
-    assert_eq!(said, serde_json::json!([true, false, true]), "then each press that changed it, and nothing for a fold the width forced");
+    assert_eq!(
+        mounted,
+        serde_json::json!([true]),
+        "the host hears the remembered choice once as the mount returns"
+    );
+    assert_eq!(
+        said,
+        serde_json::json!([true, false, true]),
+        "then each press that changed it, and nothing for a fold the width forced"
+    );
 }
 
 /// #s431 stage 3 (design/pane-layout.md, "The owner's order"): the app lays out its list from the
@@ -8775,7 +8872,12 @@ fn the_app_shell_lays_out_its_list_by_the_owners_order() {
     let probe = "(function(){ var app = document.getElementById('app'), v = document.getElementById('sessionView'), side = document.querySelector('.sidebar'), handle = document.getElementById('drawerHandle'), expand = document.getElementById('sidebarMiniExpand'); var shown = function (e) { if (!e) return false; var r = e.getBoundingClientRect(); return r.width > 0 && r.right > 0 && r.left < innerWidth && getComputedStyle(e).visibility !== 'hidden'; }; var outline = ['open', 'glyphs', 'bar', 'dock'].find(function (k) { return v.classList.contains('pl-outline-' + k); }) || ''; return { drawer: app.classList.contains('app-drawer'), rail: app.classList.contains('sidebar-off'), shut: app.classList.contains('mobile-detail'), list: shown(side) ? Math.round(side.getBoundingClientRect().width) : 0, view: Math.round(v.getBoundingClientRect().width), outline: outline, phone: v.classList.contains('pl-phone'), handle: shown(handle), expandDisabled: expand.getAttribute('aria-disabled') }; })()";
     let quiet = "document.getElementById('app').getAnimations().length === 0 && document.getElementById('sessionView').getAnimations({ subtree: true }).filter(function (a) { return a instanceof CSSTransition; }).length === 0";
     let at = |width: f64| -> serde_json::Value {
-        harness::resize(&tab, width, 900.0);
+        if width < 500.0 {
+            harness::mouse_window(&tab, width as u32, 900);
+        } else {
+            harness::clear_metrics(&tab);
+            harness::resize(&tab, width, 900.0);
+        }
         harness::until(
             &tab,
             &format!("innerWidth === {width} && {VIEW_CAUGHT_UP} && {quiet}"),
@@ -8790,46 +8892,248 @@ fn the_app_shell_lays_out_its_list_by_the_owners_order() {
             assert_eq!(&seen[key], value, "{what}: {key} in {seen}");
         }
     };
-    want(&at(1400.0), serde_json::json!({ "drawer": false, "rail": false, "list": 300, "view": 1100, "outline": "open" }), "1400px: the list and the outline");
-    want(&at(1000.0), serde_json::json!({ "rail": false, "list": 300, "view": 700, "outline": "glyphs" }), "1000px: the outline gives way to its glyphs, the list keeps 300");
-    want(&at(820.0), serde_json::json!({ "rail": false, "list": 262, "view": 558, "outline": "glyphs" }), "820px: the list narrows for the glyphs' column");
-    want(&at(700.0), serde_json::json!({ "rail": true, "view": 636, "outline": "glyphs", "expandDisabled": "true" }), "700px: the rail, its expand disabled");
-    harness::eval(&tab, "document.getElementById('sidebarMiniExpand').click(); 'ok'");
-    want(&harness::probe(&tab, probe), serde_json::json!({ "rail": true }), "a disabled expand opens nothing");
-    want(&at(600.0), serde_json::json!({ "drawer": false, "rail": true, "view": 536, "outline": "bar", "phone": false }), "600px: the rail and the glyphs in the top bar, a desktop's view");
-    want(&at(520.0), serde_json::json!({ "drawer": true, "shut": true, "handle": true, "view": 520, "phone": false }), "520px: the drawer, shut, under its handle");
-    harness::eval(&tab, "document.getElementById('drawerHandle').click(); 'ok'");
-    harness::until(&tab, &format!("!document.getElementById('app').classList.contains('mobile-detail') && {quiet}"), "the drawer to open", Duration::from_secs(5), probe);
-    want(&harness::probe(&tab, probe), serde_json::json!({ "shut": false, "list": 360 }), "the handle opens the drawer");
+    want(
+        &at(1400.0),
+        serde_json::json!({ "drawer": false, "rail": false, "list": 300, "view": 1100, "outline": "open" }),
+        "1400px: the list and the outline",
+    );
+    want(
+        &at(1000.0),
+        serde_json::json!({ "rail": false, "list": 300, "view": 700, "outline": "glyphs" }),
+        "1000px: the outline gives way to its glyphs, the list keeps 300",
+    );
+    // The glyphs' Info opens the session's card where the reader can read it.
+    harness::eval(
+        &tab,
+        "document.getElementById('outlineRailInfo').click(); 'ok'",
+    );
+    harness::until(&tab, "document.getElementById('infoPopover').classList.contains('open') && document.getElementById('infoPopover').getAnimations().length === 0", "the Info card to open", Duration::from_secs(5), "document.getElementById('infoPopover').className");
+    let card = harness::probe(&tab, "(function(){ var card = document.getElementById('infoPopover'), r = card.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(20, r.height / 2)); return { inside: r.width > 0 && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight, hit: !!hit && card.contains(hit) }; })()");
+    assert_eq!(
+        card,
+        serde_json::json!({ "inside": true, "hit": true }),
+        "the glyphs' Info opens its card on screen"
+    );
+    // A second press unpins it, and it closes as the pointer's leave does (after 140ms).
+    harness::eval(
+        &tab,
+        "document.getElementById('outlineRailInfo').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "!document.getElementById('infoPopover').classList.contains('open')",
+        "the Info card to shut",
+        Duration::from_secs(5),
+        "document.getElementById('infoPopover').className",
+    );
+    want(
+        &at(820.0),
+        serde_json::json!({ "rail": false, "list": 262, "view": 558, "outline": "glyphs" }),
+        "820px: the list narrows for the glyphs' column",
+    );
+    // The arrow keys move the list from its width as drawn: a press past what the window draws keeps
+    // the reader's 300, one inward takes the list from there, and the double-click names 300 again.
+    let key = |key: &str| {
+        harness::probe(&tab, &format!("(function(){{ document.getElementById('sidebarResizer').dispatchEvent(new KeyboardEvent('keydown', {{ key: '{key}', bubbles: true, cancelable: true }})); return {{ stored: localStorage.getItem('am-sidebar-width'), list: Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) }}; }})()"))
+    };
+    assert_eq!(
+        key("ArrowRight"),
+        serde_json::json!({ "stored": "300", "list": 262 }),
+        "a press outward past what the window draws keeps the reader's width"
+    );
+    assert_eq!(
+        key("ArrowLeft"),
+        serde_json::json!({ "stored": "254", "list": 254 }),
+        "a press inward moves the list from its width as drawn"
+    );
+    let reset = harness::probe(&tab, "(function(){ document.getElementById('sidebarResizer').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return { stored: localStorage.getItem('am-sidebar-width'), list: Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) }; })()");
+    assert_eq!(
+        reset,
+        serde_json::json!({ "stored": "300", "list": 262 }),
+        "the double-click names 300, drawn as the window allows"
+    );
+    want(
+        &at(700.0),
+        serde_json::json!({ "rail": true, "view": 636, "outline": "glyphs", "expandDisabled": "true" }),
+        "700px: the rail, its expand disabled",
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('sidebarMiniExpand').click(); 'ok'",
+    );
+    want(
+        &harness::probe(&tab, probe),
+        serde_json::json!({ "rail": true }),
+        "a disabled expand opens nothing",
+    );
+    // Nor does the list's key, which saves no collapse the reader never saw (a wider window shows the list).
+    harness::eval(&tab, "document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '\\\\', bubbles: true, cancelable: true })); 'ok'");
+    want(
+        &harness::probe(&tab, probe),
+        serde_json::json!({ "rail": true, "expandDisabled": "true" }),
+        "the key on a rail the width holds changes nothing",
+    );
+    want(
+        &at(600.0),
+        serde_json::json!({ "drawer": false, "rail": true, "view": 536, "outline": "bar", "phone": false }),
+        "600px: the rail and the glyphs in the top bar, a desktop's view",
+    );
+    // In the bar the outline's expand control stands after the title and before Info.
+    let order = harness::probe(&tab, "(function(){ var t = document.getElementById('sessionTitle').getBoundingClientRect(), e = document.getElementById('navigatorRailExpand').getBoundingClientRect(), i = document.getElementById('phoneInfo').getBoundingClientRect(); return { afterTitle: e.left >= t.right - 0.5, beforeInfo: e.right <= i.left + 0.5, shown: e.width > 0 }; })()");
+    assert_eq!(
+        order,
+        serde_json::json!({ "afterTitle": true, "beforeInfo": true, "shown": true }),
+        "the expand control's place in the top bar"
+    );
+    want(
+        &at(520.0),
+        serde_json::json!({ "drawer": true, "shut": true, "handle": true, "view": 520, "phone": false }),
+        "520px: the drawer, shut, under its handle",
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('drawerHandle').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        &format!("!document.getElementById('app').classList.contains('mobile-detail') && {quiet}"),
+        "the drawer to open",
+        Duration::from_secs(5),
+        probe,
+    );
+    want(
+        &harness::probe(&tab, probe),
+        serde_json::json!({ "shut": false, "list": 360 }),
+        "the handle opens the drawer",
+    );
     harness::eval(&tab, "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); 'ok'");
-    want(&harness::probe(&tab, probe), serde_json::json!({ "shut": true }), "Esc closes it");
-    want(&at(480.0), serde_json::json!({ "drawer": true, "phone": true, "outline": "dock" }), "480px: the phone reader");
-    want(&at(1400.0), serde_json::json!({ "drawer": false, "rail": false, "list": 300, "outline": "open" }), "the folds the width forced come back with the room");
+    want(
+        &harness::probe(&tab, probe),
+        serde_json::json!({ "shut": true }),
+        "Esc closes it",
+    );
+    want(
+        &at(480.0),
+        serde_json::json!({ "drawer": true, "phone": true, "outline": "dock" }),
+        "480px: the phone reader",
+    );
+    want(
+        &at(1400.0),
+        serde_json::json!({ "drawer": false, "rail": false, "list": 300, "outline": "open" }),
+        "the folds the width forced come back with the room",
+    );
+    // The list's key folds the list to its rail and opens it again where it fits.
+    harness::eval(&tab, "document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '\\\\', bubbles: true, cancelable: true })); 'ok'");
+    want(
+        &at(1400.0),
+        serde_json::json!({ "rail": true }),
+        "the key folds the list",
+    );
+    harness::eval(&tab, "document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '\\\\', bubbles: true, cancelable: true })); 'ok'");
+    want(
+        &at(1400.0),
+        serde_json::json!({ "rail": false, "list": 300 }),
+        "and opens it",
+    );
     // The reader's collapse is remembered, and a wider window never undoes it.
-    harness::eval(&tab, "document.getElementById('sidebarCollapse').click(); 'ok'");
-    want(&at(1600.0), serde_json::json!({ "rail": true, "expandDisabled": "false" }), "the reader's collapse holds at 1600px");
-    harness::eval(&tab, "document.getElementById('sidebarMiniExpand').click(); 'ok'");
-    want(&at(1400.0), serde_json::json!({ "rail": false, "list": 300 }), "and the expand opens it");
+    harness::eval(
+        &tab,
+        "document.getElementById('sidebarCollapse').click(); 'ok'",
+    );
+    want(
+        &at(1600.0),
+        serde_json::json!({ "rail": true, "expandDisabled": "false" }),
+        "the reader's collapse holds at 1600px",
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('sidebarMiniExpand').click(); 'ok'",
+    );
+    want(
+        &at(1400.0),
+        serde_json::json!({ "rail": false, "list": 300 }),
+        "and the expand opens it",
+    );
     // The pane at 1200px: the session and the pane at M each and the glyphs' column leave no room for
     // the list, so it folds to the rail, at once, while the pane glides open whole; shut, it comes back.
-    harness::eval(&tab, "window.__cancelled = 0; window.__ran = 0; var sv = document.getElementById('sessionView'); sv.addEventListener('transitioncancel', function () { window.__cancelled++; }, true); sv.addEventListener('transitionrun', function (e) { if (e.target === sv && e.propertyName === 'grid-template-columns') window.__ran++; }); 'ok'");
+    harness::eval(&tab, "window.__cancelled = 0; window.__ran = 0; window.__tlog = []; var sv = document.getElementById('sessionView'); var nameOf = function (e) { var t = e.target; return (t.id ? '#' + t.id : t.tagName.toLowerCase() + '.' + String(t.className).split(' ')[0]) + ' ' + e.propertyName + ' ' + Math.round(performance.now()); }; sv.addEventListener('transitioncancel', function (e) { window.__cancelled++; window.__tlog.push('cancel ' + nameOf(e)); }, true); sv.addEventListener('transitionrun', function (e) { window.__tlog.push('run ' + nameOf(e)); if (e.target === sv && e.propertyName === 'grid-template-columns') window.__ran++; }, true); 'ok'");
     at(1200.0);
     harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
-    harness::until(&tab, &format!("!document.getElementById('sessionView').classList.contains('preview-off') && {quiet}"), "the pane to open", Duration::from_secs(10), probe);
+    harness::until(
+        &tab,
+        &format!(
+            "!document.getElementById('sessionView').classList.contains('preview-off') && {quiet}"
+        ),
+        "the pane to open",
+        Duration::from_secs(10),
+        probe,
+    );
     let opened = harness::probe(&tab, probe);
-    let glide = harness::probe(&tab, "({ ran: window.__ran, cancelled: window.__cancelled })");
-    want(&opened, serde_json::json!({ "rail": true, "view": 1136, "outline": "glyphs" }), "1200px with the pane open: the list folds to its rail");
-    assert_eq!(glide, serde_json::json!({ "ran": 1, "cancelled": 0 }), "and the pane glided open, whole: {opened}");
+    let glide = harness::probe(
+        &tab,
+        "({ ran: window.__ran, cancelled: window.__cancelled })",
+    );
+    let tlog = harness::probe(&tab, "window.__tlog");
+    want(
+        &opened,
+        serde_json::json!({ "rail": true, "view": 1136, "outline": "glyphs" }),
+        "1200px with the pane open: the list folds to its rail",
+    );
+    assert_eq!(
+        glide,
+        serde_json::json!({ "ran": 1, "cancelled": 0 }),
+        "and the pane glided open, whole: {opened}; the transitions: {tlog}"
+    );
     harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
-    harness::until(&tab, &format!("document.getElementById('sessionView').classList.contains('preview-off') && {quiet}"), "the pane to shut", Duration::from_secs(10), probe);
-    want(&harness::probe(&tab, probe), serde_json::json!({ "rail": false, "list": 300 }), "the pane shut, the list comes back");
+    harness::until(
+        &tab,
+        &format!(
+            "document.getElementById('sessionView').classList.contains('preview-off') && {quiet}"
+        ),
+        "the pane to shut",
+        Duration::from_secs(10),
+        probe,
+    );
+    want(
+        &harness::probe(&tab, probe),
+        serde_json::json!({ "rail": false, "list": 300 }),
+        "the pane shut, the list comes back",
+    );
+    // A fresh reader at a 770px window: the view is laid out beside the list as the order puts it before
+    // it decides, so its outline's default is a desktop's (wanted), which a wider window then opens.
+    harness::eval(&tab, "localStorage.clear(); 'ok'");
+    harness::resize(&tab, 770.0, 900.0);
+    monitor.open(&tab, "?ui=app&session=cccccccc-0000-4000-8000-000000000160");
+    harness::until(&tab, &format!("innerWidth === 770 && !!document.querySelector('.virtual-window') && {VIEW_CAUGHT_UP} && {quiet}"), "a fresh 770px window to draw the session", Duration::from_secs(20), probe);
+    want(
+        &harness::probe(&tab, probe),
+        serde_json::json!({ "rail": true, "phone": false, "outline": "glyphs" }),
+        "a fresh 770px window",
+    );
+    want(
+        &at(1400.0),
+        serde_json::json!({ "rail": false, "list": 300, "outline": "open" }),
+        "and the outline opens with the room: the reader never folded it",
+    );
     // An iPad upright: a touch window of 834px keeps the list at 276px beside the phone reader.
     harness::phone(&tab, 834, 1194);
     monitor.open(&tab, "?ui=app&session=cccccccc-0000-4000-8000-000000000160");
-    harness::until(&tab, &format!("innerWidth === 834 && !!document.querySelector('.virtual-window') && {VIEW_CAUGHT_UP}"), "the iPad to draw the session", Duration::from_secs(20), probe);
+    harness::until(
+        &tab,
+        &format!(
+            "innerWidth === 834 && !!document.querySelector('.virtual-window') && {VIEW_CAUGHT_UP}"
+        ),
+        "the iPad to draw the session",
+        Duration::from_secs(20),
+        probe,
+    );
     let ipad = harness::probe(&tab, probe);
     drop(monitor);
-    want(&ipad, serde_json::json!({ "drawer": false, "rail": false, "list": 276, "view": 558, "phone": true, "outline": "dock" }), "an 834px iPad upright");
+    want(
+        &ipad,
+        serde_json::json!({ "drawer": false, "rail": false, "list": 276, "view": 558, "phone": true, "outline": "dock" }),
+        "an 834px iPad upright",
+    );
 }
 
 /// #s431 stage 1: the session list and its rail swap at once where the window is 1180px or narrower,

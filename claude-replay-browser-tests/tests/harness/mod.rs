@@ -3603,6 +3603,43 @@ pub fn phone(tab: &headless_chrome::Tab, width: u32, height: u32) {
     .expect("touch emulation");
 }
 
+/// A mouse window narrower than headless Chrome lets a window be (#s431 stage 3: its least is 500px,
+/// and the owner's order puts the phone reader under 490px of the view): the viewport emulated at
+/// `width` by `height`, with no touch and a desktop's scale. [`clear_metrics`] gives the window back
+/// to [`resize`].
+pub fn mouse_window(tab: &headless_chrome::Tab, width: u32, height: u32) {
+    use headless_chrome::protocol::cdp::Emulation;
+    tab.call_method(Emulation::SetTouchEmulationEnabled {
+        enabled: false,
+        max_touch_points: None,
+    })
+    .expect("touch emulation off");
+    tab.call_method(Emulation::SetDeviceMetricsOverride {
+        width,
+        height,
+        device_scale_factor: 1.0,
+        mobile: false,
+        scale: None,
+        screen_width: None,
+        screen_height: None,
+        position_x: None,
+        position_y: None,
+        dont_set_visible_size: None,
+        screen_orientation: None,
+        viewport: None,
+        display_feature: None,
+        device_posture: None,
+    })
+    .expect("mouse window metrics");
+}
+
+/// Clears an emulated viewport ([`mouse_window`], [`phone`]), so the window's own size counts again.
+pub fn clear_metrics(tab: &headless_chrome::Tab) {
+    use headless_chrome::protocol::cdp::Emulation;
+    tab.call_method(Emulation::ClearDeviceMetricsOverride(None))
+        .expect("clear metrics");
+}
+
 /// #s37: the phone's safe area — where its status bar, island, rounded corners and home indicator
 /// are — as the page's `env(safe-area-inset-*)` reads it (it asks for `viewport-fit=cover`). Chrome's
 /// own override, checked on Chrome 154 to reach `env()`. [`PORTRAIT_INSETS`] and

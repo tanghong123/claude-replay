@@ -18387,6 +18387,19 @@ fn scenario_a_bash_call_outside_the_sandbox_is_marked(
         let phone = poll("the marks still shown at a phone's width", &|v| {
             v["w"] == 390 && v["shown"] == 2
         });
+        // The view's rules read the classes its layout sets once a ResizeObserver reports the new
+        // box (#s431 stage 2): under load that comes after the marks show, so wait for it (1 of 343
+        // in a loaded suite read the pill before).
+        harness::until(
+            tab,
+            &format!(
+                "{} && document.getElementById('sessionView').classList.contains('pl-phone')",
+                harness::VIEW_CAUGHT_UP
+            ),
+            "the view to read its phone's box",
+            Duration::from_secs(10),
+            "document.getElementById('sessionView').className",
+        );
         let pill_hidden = eval(
             tab,
             "[...document.querySelectorAll('.renderer-state')].every(function(p){ return getComputedStyle(p).display === 'none'; })",
