@@ -80,7 +80,7 @@ try {
     if (frame === "reject") throw new Error("the host made no frame");
     return frame === "empty" ? "" : frame;
   };
-  for (const name of ["onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast"]) options[name] = (...args) => host.events.push({ name, args });
+  for (const name of ["onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast", "onOutline"]) options[name] = (...args) => host.events.push({ name, args });
   // Mounting is a function the case can call again after an unmount (stage 7, `mount=0` leaves it to
   // the case), with the same options in the same element.
   host.mount = () => {

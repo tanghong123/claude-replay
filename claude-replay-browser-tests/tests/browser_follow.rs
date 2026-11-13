@@ -8570,7 +8570,9 @@ fn the_app_shell_resizes_the_pane_with_the_pointer() {
     let x0 = harness::eval(&tab, "(function(){ var r = document.getElementById('resizer').getBoundingClientRect(); return r.left + r.width / 2; })()")
         .as_f64()
         .expect("the resizer's place");
-    let x1 = x0 - 200.0;
+    // #s431 stage 3: the drag sets the pane's share of the slack, and each side keeps M, so a drag
+    // stays under the pointer only within the slack (at 1440px, beside the list, 101px of it).
+    let x1 = x0 - 40.0;
     let mouse = |kind: DispatchMouseEventTypeOption, x: f64, buttons: u32| {
         tab.call_method(DispatchMouseEvent {
             Type: kind,
@@ -8614,15 +8616,144 @@ fn the_app_shell_resizes_the_pane_with_the_pointer() {
     );
     let after = harness::probe(
         &tab,
-        "({ resizing: document.getElementById('sessionView').classList.contains('resizing'), stored: Number(localStorage.getItem('am-demo-preview')) })",
+        "({ resizing: document.getElementById('sessionView').classList.contains('resizing'), share: Number(localStorage.getItem('am-demo-pane-share')), width: localStorage.getItem('am-demo-preview') })",
     );
     assert_eq!(after["resizing"], false, "the drag ended: {after}");
-    let stored = after["stored"].as_f64().unwrap_or(f64::NAN);
+    let share = after["share"].as_f64().unwrap_or(f64::NAN);
     assert!(
-        (stored - (1440.0 - x1)).abs() <= 1.0,
-        "the pane's new width is remembered: {after}"
+        share > 0.5 && share < 1.0,
+        "the pane's new share of the slack is remembered, more than half for a pane dragged wider: {after}"
+    );
+    assert_eq!(
+        after["width"],
+        serde_json::Value::Null,
+        "and no width is: the drag keeps a share (#s473): {after}"
     );
     drop(monitor);
+}
+
+/// #s431 stage 3 (design/pane-layout.md, "The owner's order"): mounted alone in a host whose box is
+/// the window, the session view lays out its parts by the owner's order from its own width: the
+/// session at M (480px), then the right pane beside it at M, then the outline's glyphs in their
+/// column, then the outline; what is left goes to the session and the pane, equally until the reader
+/// drags. Where the glyphs have no column they join the top bar, with the outline's control and Info,
+/// and each opens its list as a 290px panel over the transcript's right edge. The outline's control
+/// keeps the reader's choice apart from what the width forces, and the host hears only the choice
+/// (`onOutline`): once as the mount returns, and on each press that changes it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
+    let _serial = serial();
+    let base = base("host-owners-order");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000003a1".to_string();
+    stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3120, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window .turn.user')",
+        "the session in the host's view",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let probe = "(function(){ var v = document.getElementById('sessionView'), r = v.getBoundingClientRect(); var box = function (e) { if (!e) return null; var b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 ? { left: Math.round(b.left), right: Math.round(b.right), top: Math.round(b.top), width: Math.round(b.width) } : null; }; var shown = function (e) { return !!e && e.getBoundingClientRect().width > 0; }; var bar = v.querySelector('.workspace>.topbar'); var expand = document.getElementById('navigatorRailExpand'); return { width: Math.round(r.width), classes: ['pl-pane-column', 'pl-pane-over', 'pl-outline-open', 'pl-outline-glyphs', 'pl-outline-bar', 'pl-outline-dock', 'pl-phone'].filter(function (c) { return v.classList.contains(c); }), workspace: box(v.querySelector('.workspace')), preview: v.classList.contains('preview-off') ? null : box(v.querySelector('.preview')), transcript: box(v.querySelector('.sv-session-main>.transcript')), inBar: [...bar.querySelectorAll('.phone-pane')].filter(shown).length, barInfo: shown(bar.querySelector('#phoneInfo')), barExpand: !!expand && expand.parentElement === bar && shown(expand), pressed: expand ? expand.getAttribute('aria-pressed') : null, disabled: expand ? expand.getAttribute('aria-disabled') : null }; })()";
+    let outline_said = "window.__host.events.filter(function (e) { return e.name === 'onOutline'; }).map(function (e) { return e.args[0].wanted; })";
+    let at = |width: f64, open: bool| -> serde_json::Value {
+        harness::resize(&tab, width, 900.0);
+        let toggle = format!("(function(){{ var v = document.getElementById('sessionView'); if (v.classList.contains('preview-off') === {open}) document.getElementById('previewBtn').click(); return true; }})()");
+        harness::eval(&tab, &toggle);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && document.getElementById('sessionView').classList.contains('preview-off') === {} && document.getElementById('sessionView').getAnimations({{ subtree: true }}).filter(function (a) {{ return a instanceof CSSTransition; }}).length === 0", !open),
+            &format!("the view at {width}px, the pane {}", if open { "open" } else { "shut" }),
+            Duration::from_secs(10),
+            "({ w: innerWidth, cls: document.getElementById('sessionView').className })",
+        );
+        harness::probe(&tab, probe)
+    };
+    let near = |seen: &serde_json::Value, key: &str, field: &str, want: f64| {
+        let got = seen[key][field].as_f64().unwrap_or(f64::NAN);
+        assert!(
+            (got - want).abs() <= 2.0,
+            "{key}.{field} is {want}px (got {got}): {seen}"
+        );
+    };
+    let has = |seen: &serde_json::Value, class: &str| {
+        seen["classes"].as_array().is_some_and(|c| c.iter().any(|x| x == class))
+    };
+    let mounted = harness::probe(&tab, outline_said);
+
+    // 1400px, the pane open: the outline open (1261px holds the session, the pane and it), the 139px
+    // of slack split equally, 69 to the session and 70 to the pane.
+    let wide = at(1400.0, true);
+    assert!(has(&wide, "pl-pane-column") && has(&wide, "pl-outline-open"), "{wide}");
+    near(&wide, "transcript", "width", 549.0);
+    near(&wide, "preview", "width", 550.0);
+    assert!(wide["preview"]["right"].as_f64().unwrap_or(f64::NAN) <= 1400.0, "the pane ends inside the window: {wide}");
+    // 1100px: the outline gives way to its glyphs' column (1039px), 61px of slack.
+    let glyphs = at(1100.0, true);
+    assert!(has(&glyphs, "pl-pane-column") && has(&glyphs, "pl-outline-glyphs"), "{glyphs}");
+    near(&glyphs, "transcript", "width", 510.0);
+    near(&glyphs, "preview", "width", 511.0);
+    // 1000px: the glyphs leave their column for the top bar (971px), with the outline's control and Info.
+    let bar = at(1000.0, true);
+    assert!(has(&bar, "pl-pane-column") && has(&bar, "pl-outline-bar"), "{bar}");
+    assert_eq!((bar["inBar"].clone(), bar["barInfo"].clone(), bar["barExpand"].clone()), (serde_json::json!(3), serde_json::json!(true), serde_json::json!(true)), "{bar}");
+    near(&bar, "transcript", "width", 494.0);
+    near(&bar, "preview", "width", 495.0);
+    // 900px: too narrow for the pane beside the session; it covers the view, and the session beneath
+    // keeps its own layout, the outline open (780px).
+    let over = at(900.0, true);
+    assert!(has(&over, "pl-pane-over") && has(&over, "pl-outline-open"), "{over}");
+    assert!(over["transcript"]["width"].as_f64().unwrap_or(0.0) >= 480.0, "the session keeps M under the pane: {over}");
+    // 700px, the pane shut: the outline is wanted and the width holds it to its glyphs, so its control
+    // is pressed, and a press folds it for good: the host hears that, and the control is then disabled,
+    // since the outline cannot open here. A press on it then does nothing.
+    let held = at(700.0, false);
+    assert!(has(&held, "pl-outline-glyphs"), "{held}");
+    assert_eq!((held["pressed"].clone(), held["disabled"].clone()), (serde_json::json!("true"), serde_json::json!("false")), "{held}");
+    harness::eval(&tab, "document.getElementById('navigatorRailExpand').click(); 'ok'");
+    let folded = harness::probe(&tab, probe);
+    assert_eq!((folded["pressed"].clone(), folded["disabled"].clone()), (serde_json::json!("false"), serde_json::json!("true")), "{folded}");
+    harness::eval(&tab, "document.getElementById('navigatorRailExpand').click(); 'ok'");
+    let refused = harness::probe(&tab, probe);
+    assert_eq!(refused["pressed"], "false", "a disabled control opens nothing: {refused}");
+    // Wider, the reader's fold holds: a wider window never undoes it, and the control opens it.
+    let kept = at(1400.0, false);
+    assert!(has(&kept, "pl-outline-glyphs"), "the reader's fold holds at 1400px: {kept}");
+    assert_eq!(kept["disabled"], "false", "and the control may open it there: {kept}");
+    harness::eval(&tab, "document.getElementById('navigatorRailExpand').click(); 'ok'");
+    let reopened = harness::probe(&tab, probe);
+    assert!(has(&reopened, "pl-outline-open"), "{reopened}");
+    // 520px: no column for the glyphs; Turns opens its list as a panel under the bar at the
+    // transcript's right edge, 290px wide; Esc closes it; Info opens its card there too.
+    let narrow = at(520.0, false);
+    assert!(has(&narrow, "pl-outline-bar") && !has(&narrow, "pl-phone"), "{narrow}");
+    harness::eval(&tab, "document.getElementById('phonePane-turns').click(); 'ok'");
+    let panel = harness::probe(&tab, "(function(){ var m = document.getElementById('phonePaneMenu'), w = document.querySelector('#sessionView .workspace'), b = m.getBoundingClientRect(), wb = w.getBoundingClientRect(), bar = w.querySelector('.topbar').getBoundingClientRect(); return { shown: !m.hidden && b.width > 0, inCard: m.parentElement === w, width: Math.round(b.width), gap: Math.round(wb.right - b.right), below: b.top >= bar.bottom, rows: m.querySelectorAll('.outline-turn-row').length }; })()");
+    assert_eq!(panel["shown"], true, "{panel}");
+    assert_eq!(panel["inCard"], true, "{panel}");
+    assert!(panel["width"].as_f64().is_some_and(|w| (w - 290.0).abs() <= 1.0), "{panel}");
+    assert!(panel["gap"].as_f64().is_some_and(|g| (g - 8.0).abs() <= 1.0), "{panel}");
+    assert_eq!(panel["below"], true, "{panel}");
+    assert!(panel["rows"].as_u64().unwrap_or(0) >= 6, "the turns are listed: {panel}");
+    harness::eval(&tab, "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); 'ok'");
+    let closed = harness::probe(&tab, "document.getElementById('phonePaneMenu').hidden");
+    assert_eq!(closed, true, "Esc closes the panel");
+    harness::eval(&tab, "document.getElementById('phoneInfo').click(); 'ok'");
+    let info = harness::probe(&tab, "(function(){ var c = document.getElementById('infoPopover'), b = c.getBoundingClientRect(); return { open: c.classList.contains('open'), inCard: c.parentElement === document.querySelector('#sessionView .workspace'), width: Math.round(b.width), visible: getComputedStyle(c).visibility }; })()");
+    assert_eq!(info, serde_json::json!({ "open": true, "inCard": true, "width": 290, "visible": "visible" }), "Info opens its card under the bar");
+    // 480px: the phone reader.
+    let phone = at(480.0, false);
+    assert!(has(&phone, "pl-phone") && has(&phone, "pl-outline-dock"), "{phone}");
+    let said = harness::probe(&tab, outline_said);
+    drop(monitor);
+    assert_eq!(mounted, serde_json::json!([true]), "the host hears the remembered choice once as the mount returns");
+    assert_eq!(said, serde_json::json!([true, false, true]), "then each press that changed it, and nothing for a fold the width forced");
 }
 
 /// #s431 stage 1: the session list and its rail swap at once where the window is 1180px or narrower,
