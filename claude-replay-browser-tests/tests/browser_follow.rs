@@ -4939,6 +4939,81 @@ fn a_host_hides_the_session_view_and_the_session_list_with_their_hidden_attribut
     }
 }
 
+/// #s464 with #s431: a host that hides the view and shows it again gives a reader who had scrolled up
+/// their place back (the review of ddcac874). Hidden, every unit the view has drawn reports no height,
+/// which the transcript could take for a measure, and the reader's place could be read off a column
+/// with nothing in it: shown again, the reader would be at the top of the session.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_view_its_host_hides_keeps_the_reader_s_place() {
+    let _serial = serial();
+    let base = base("host-hidden-place");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000003a2".to_string();
+    stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3122, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1280.0, 800.0);
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window .turn.user')",
+        "the session in the host's view",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let surface = harness::Surface::AppShell;
+    // Up from the end, well inside the session: a reader who is not following it.
+    for _ in 0..6 {
+        harness::scroll_by(&tab, surface, -900);
+    }
+    let rest = || {
+        harness::eval(&tab, TWO_FRAMES);
+        std::thread::sleep(Duration::from_millis(700));
+    };
+    rest();
+    let place = "(function(){ var s = document.querySelector('.transcript'); return { top: Math.round(s.scrollTop), height: Math.round(s.scrollHeight), measures: window.__viewportHistory.states.filter(function (e) { return e.cause === 'measure'; }).length }; })()";
+    let turn = harness::turn_at_top(&tab, surface);
+    let before = harness::probe(&tab, place);
+    assert!(
+        turn > 1 && !harness::at_tail(&tab, surface),
+        "the reader is inside the session: turn {turn}, {before}"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('sessionView').hidden = true; 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('sessionView').getBoundingClientRect().width === 0",
+        "the view hidden by its host",
+        Duration::from_secs(5),
+        place,
+    );
+    rest();
+    let hidden = harness::probe(&tab, place);
+    harness::eval(
+        &tab,
+        "document.getElementById('sessionView').hidden = false; 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('sessionView').getBoundingClientRect().width > 0",
+        "the view shown again",
+        Duration::from_secs(5),
+        place,
+    );
+    rest();
+    let after = harness::probe(&tab, place);
+    let turn_after = harness::turn_at_top(&tab, surface);
+    drop(monitor);
+    assert_eq!(
+        turn_after, turn,
+        "shown again, the reader is at the turn they left: before {before}, hidden {hidden}, after {after}"
+    );
+}
+
 /// The session view's unmount (#s429 stage 7): mounted in the test host and taken away, it leaves
 /// the page's window and document with exactly the listeners they had before it (as the browser
 /// lists them), the host's element empty with its own attributes, nothing of its own in the page's
@@ -8858,7 +8933,8 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
     let base = base("host-owners-order");
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-0000000003a1".to_string();
-    stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
+    let transcript =
+        stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 3120, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
@@ -9066,8 +9142,8 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
         "Info opens its card under the bar"
     );
     // Hidden by its host (#s464) the view's box is 0×0, and the window may change meanwhile: the view
-    // keeps the layout it had and remeasures nothing, and shown again at the width it had, it is as it
-    // was, its measured heights kept.
+    // keeps the layout it had and remeasures nothing, and shown again at the width it had, it is laid
+    // out as it was.
     at(1400.0, false);
     let classes = "(function(){ return (document.getElementById('sessionView').className.match(/pl-[a-z0-9-]+/g) || []).sort().join(' '); })()";
     let remeasured = "window.__viewportHistory.states.filter(function (s) { return s.cause === 'remeasure' && s.t >= window.__t0; }).length";
@@ -9080,6 +9156,8 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
         Duration::from_secs(5),
         classes,
     );
+    // Two frames after each size: the browser says a resize only in a frame, and only for a size it
+    // has not said, so without them the two could reach the page as no resize at all.
     harness::resize(&tab, 1300.0, 900.0);
     harness::until(
         &tab,
@@ -9088,6 +9166,7 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
         Duration::from_secs(5),
         classes,
     );
+    harness::eval(&tab, TWO_FRAMES);
     harness::resize(&tab, 1400.0, 900.0);
     harness::until(
         &tab,
@@ -9096,6 +9175,7 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
         Duration::from_secs(5),
         classes,
     );
+    harness::eval(&tab, TWO_FRAMES);
     std::thread::sleep(Duration::from_millis(500));
     let hidden = harness::probe(&tab, classes);
     harness::eval(
@@ -9120,6 +9200,64 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
     assert_eq!(
         count, 0,
         "nor did hiding it, a resize meanwhile, or showing it remeasure the transcript"
+    );
+    // The outline column's box changes with no window resize, and its heads are stacked again (#s431
+    // stage 3; the review of e986cd8f). A width folds the outline to its glyphs (at 1140px the open
+    // pane leaves it no room); a record arriving then renders it with every card hidden, which stacks
+    // them at no height; and the pane shut, it opens again with nothing rendered.
+    let holds = |js: &str| -> bool {
+        let t0 = std::time::Instant::now();
+        while t0.elapsed() < Duration::from_secs(5) {
+            if harness::eval(&tab, js).as_bool() == Some(true) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        false
+    };
+    let turns = "(function(){ var c = document.querySelector('#sessionNavigator > [data-nav-card=\"turns\"]'); var b = c && c.querySelector(':scope > .outline-card-body'), l = b && b.querySelector(':scope > .navigator-list'); return { off: document.querySelector('#sessionView .workspace').classList.contains('navigator-off'), body: b ? Math.round(b.getBoundingClientRect().height) : -1, list: l ? l.offsetHeight : -1, appended: !!l && l.textContent.indexOf('appended while the outline is folded') >= 0 }; })()";
+    let folded = at(1140.0, true);
+    assert!(
+        has(&folded, "pl-outline-glyphs"),
+        "at 1140px the open pane folds the outline to its glyphs: {folded}"
+    );
+    harness::append(
+        &transcript,
+        &(harness::user_at(
+            "a question appended while the outline is folded",
+            &harness::now_minus(20),
+        ) + &harness::assistant_at("its answer", &harness::now_minus(19))),
+    );
+    harness::until(
+        &tab,
+        &format!("{turns}.appended && {turns}.off"),
+        "the appended turn in the Turns pane, the outline still folded",
+        Duration::from_secs(20),
+        turns,
+    );
+    harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
+    let reopened = holds(&format!(
+        "(function(){{ var t = {turns}; return !t.off && t.list > 0 && Math.abs(t.body - t.list) <= 1; }})()"
+    ));
+    let reopened_seen = harness::probe(&tab, turns);
+    // Then the host makes the view shorter, and taller again, the window as it was: whether the heads
+    // fit is decided against the column, so the breathing room goes, and comes back, with it.
+    let tight = "document.getElementById('sessionNavigator').classList.contains('heads-tight')";
+    let column = format!(
+        "({{ tight: {tight}, column: document.getElementById('sessionNavigator').clientHeight }})"
+    );
+    let roomy = holds(&format!("!{tight}"));
+    harness::eval(&tab, "var p = document.getElementById('hostPane'); p.style.bottom = 'auto'; p.style.height = '300px'; 'ok'");
+    let short = holds(tight);
+    let short_seen = harness::probe(&tab, &column);
+    harness::eval(&tab, "var p = document.getElementById('hostPane'); p.style.bottom = ''; p.style.height = ''; 'ok'");
+    let tall = holds(&format!("!{tight}"));
+    let tall_seen = harness::probe(&tab, &column);
+    assert!(
+        reopened && roomy && short && tall,
+        "the outline opened again shows its Turns pane at its list's height: {reopened_seen}; the view \
+         made 300px tall by its host takes the breathing room away: {short_seen}; and given back its \
+         height, gives it back: {tall_seen}"
     );
     // 480px: the phone reader.
     let phone = at(480.0, false);

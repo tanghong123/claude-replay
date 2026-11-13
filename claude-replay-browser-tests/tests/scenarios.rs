@@ -14270,7 +14270,7 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
     // Ordinary windows and one no reader would choose. 1366x768 is SHORTER than 1280x800, so the
     // sweep is by height as much as by width; 1100x520 is the corner where the breathing room has
     // to go for the shut chain to fit at all. (It was 950x520 until the owner's order, #s431 stage
-    // 3: with a mouse the outline is a column only from 1002px, and at 950 it is its glyphs.)
+    // 3: with a mouse the outline is a column only from a 1012px window, and at 950 it is its glyphs.)
     for (w, h, corner) in [
         (1680.0, 1050.0, false),
         (1440.0, 900.0, false),
@@ -14354,9 +14354,10 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
              corner case and stays one: {seen}"
         );
     }
-    // A resize that leaves the transcript's width alone renders nothing (#s431): the column's own
-    // box stacks the heads again, so the breathing room follows the height alone, both ways.
-    // The window's height is read off the column itself: the resize sets the window's outer size.
+    // A resize that leaves the transcript's width alone renders nothing (#s431): the window's resize
+    // and the column's own box stack the heads again, so the breathing room follows the height alone,
+    // both ways. The window's height is read off the column itself: the resize sets the window's
+    // outer size.
     let tight = "document.getElementById('sessionNavigator').classList.contains('heads-tight')";
     let column = "document.getElementById('sessionNavigator').clientHeight";
     let short = eval(&page.tab, column).as_f64().unwrap_or(0.0);

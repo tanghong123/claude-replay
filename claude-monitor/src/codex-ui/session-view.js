@@ -1573,6 +1573,12 @@ function toggleDrawer(key) {
   setDrawerOpen(key, closing ? 0 : 1);
 }
 window.addEventListener("resize", stackOutlineHeads, { signal });
+// The column's own box changes without a window resize too, and nothing else stacks the heads then
+// (#s431 stage 3): a width folds the outline to its glyphs, where every card is hidden and a render
+// stacks them at no height, and opens it again with nothing rendered; a host changes the view's height
+// alone, and whether the heads fit (`holdTheHeadsInTheColumn`) is decided against the column's. Its
+// border box, which the breathing room's padding does not move.
+new ResizeObserver(() => stackOutlineHeads()).observe(byId("sessionNavigator"), { box: "border-box" });
 /** What a Turns pane row whose records are still coming adds to its title (#s276). */
 const STILL_LOADING = " — still loading; the page goes there when it arrives";
 /** A turn the turn index lists (#s276), shaped as a Turns pane row reads a unit: its first record,
