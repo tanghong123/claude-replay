@@ -365,11 +365,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// 1.1.86: a SessionStart hook's output put in the model's context) is a hook note, as #371 draws
 /// `hook_success`. A v76 stream of such a session holds nothing there.
 ///
+/// v78: #s484 — an API failure whose record says a retry cannot fix it (Claude Code's
+/// `resendCannotCure`, or an `error` of `billing_error`) has its failure note open with "A retry
+/// cannot fix this · " ahead of the client's words. A v77 stream holds the client's words alone.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 77;
+pub const FOLD_VERSION: u16 = 78;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

@@ -67,9 +67,10 @@ pub(crate) const FAMILY_RECORD_KEYS: &[&str] = &[
     // bundled SDK builds the record from the code and the fallback text, and its own window looks
     // the code up in a table of its own wording, which the transcript does not keep; the record's
     // text is the fallback, which the page draws as the failure note. The code is not in that
-    // text, and this one's text names no billing, credit or quota cause: whether an error only the
-    // person can fix should read differently from one that passes by itself is the owner's
-    // question (#s376), as `apiError`'s REVISIT put it for Claude Code. The SDK can also write
+    // text, and this one's text names no billing, credit or quota cause. The owner chose on #s483
+    // that a failure a retry cannot fix says so ahead of the client's words (#s484): the record's
+    // `error` "billing_error" is one by Claude Code's own rule, so its note opens with "A retry
+    // cannot fix this · " and this code stays unread. The SDK can also write
     // `isContentFilteredMessage` here, not yet met, to be judged as its own row. REVISIT: the key
     // on a record NOT flagged `isApiErrorMessage`, or on one whose text is empty or "[No
     // content]", where the code would be the only cause left.
