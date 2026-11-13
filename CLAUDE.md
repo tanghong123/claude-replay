@@ -47,11 +47,24 @@ a control off is not drawn and takes no key; the app passes none); and `keyboard
 default (the view binds its keymap in the capture phase and answers, as the pane's image viewer
 does, only while the reader's last press or focus is inside it, as mdrev does) or `"page"`, the
 app's: the view binds none and the app's one keymap at the document routes keys to the handle's
-`keys`. What the view tells its host comes out as optional handlers with plain data, never a node
-(`onTitle`, `onTurn`, `onInfo`, `onFile`, `onLinkCopied`, `onToast`), through one emitter that
-reports a handler's throw rather than raising it and holds what is said during the mount until it
-returns: the app passes all six, and only its toast does anything yet (its phone bar takes the rest
-at embedding's step 6). A host's page must still carry the compose box's write-mode and confirm
+`keys`; and `room`, a function answering how much wider the host could make the view by narrowing
+what it lays beside it (the app: its list's width less 232; 0 without it, #s476). What the view
+tells its host comes out as optional handlers with plain data, never a node (`onTitle`, `onTurn`,
+`onInfo`, `onFile`, `onLinkCopied`, `onToast`, and `onOutline`, `{wanted}`, the reader's outline
+choice, said once as the mount returns and on each press that changes it, never for a fold the width
+forced, #s479), through one emitter that reports a handler's throw rather than raising it and holds
+what is said during the mount until it returns: the app passes all seven; its toast and `onOutline`
+(which lays out its list again) do something so far (its phone bar takes the rest at embedding's
+step 6). **The owner's order** decides how the session, the right pane, the outline and the list
+share a window (#s431 stage 3, `design/pane-layout.md`, #s462 and #s472–#s480): the session at `M`
+(480px), the pane beside it at `M`, the outline's glyphs in their column, the list (232px at least),
+the outline (290px), each shown where it fits beside the parts before it, the rest going to the
+session and the pane by the share the pane's drag sets (`am-demo-pane-share`, equal until dragged).
+`pane-layout.js` decides it: `arrangeView` for the view from its own box (its rules read the `pl-*`
+classes it sets), `arrangeApp` for the app's list from the window (`#app.app-drawer`, the rail, or
+the list at a width; the app's phone rules read `app-drawer` and the view's `pl-phone`). With a mouse
+the rail lasts down to 554px and the drawer is below it; a collapse the reader makes is remembered,
+and a fold the width forced comes back with the room. A host's page must still carry the compose box's write-mode and confirm
 elements the doc comment names (stage 7 passes them in). The reading tokens
 (`--code-size`, `--measure`) are the view element's; `grid` (the app's `#app`) is still the box a
 phone's sheets are measured against and the keyboard ride moves. Two rules hold every shell module (`ui.rs`
@@ -83,8 +96,9 @@ take the second and wrap within it. They never share a row, at any width. Below 
 so all five stay inside the sidebar at its 232px minimum (#210). Nothing is hidden at any width; a
 new control in that row is measured against the minimum, not the default, and the case
 (`the_app_shell_resizes_the_session_list`) hit-tests every control there rather than eyeballing it.
-**On a phone (≤760px, #310 then #313 — or a finger on a phone-sized short side, a phone held sideways,
-#s32) the app shell is a reader and a native-feeling app**, the owner's rules: upright the transcript keeps a 24px margin either side (#s55; the Reading menu's Wide
+**On a phone (the view's phone reader since #s431 stage 3: a view under 490px of its own width, or a
+touch screen's view of 760px or less or 500px tall or less; #310 then #313, #s32 a phone held
+sideways) the app shell is a reader and a native-feeling app**, the owner's rules: upright the transcript keeps a 24px margin either side (#s55; the Reading menu's Wide
 transcript gives it the whole width, a 13px gutter), controls may FLOAT, and controls of
 little use on a phone are hidden. The session list is a DRAWER over part of the view (a scrim over the
 rest closes it on a tap; `mobile-detail` = shut), opened and closed by a handle fixed at the top left —
@@ -249,8 +263,9 @@ is hidden, or nothing would reach them. The handle sits at the session's top lef
 the title (as iPad apps keep their sidebar button, and wearing its sidebar glyph there; ☰ is the
 drawer's), and hides and shows the column under its own key
 (`am-phone-column`; never the rail's, never `mobile-detail`); hidden, the session stays at its
-reading width, and the Reading menu's Wide transcript (offered upright too since #s55) widens it. Between the phone and 1180px an open preview covers the whole session area beside the sidebar
-(it was a 72vw overlay over a sliver nobody could read); `a_phone_held_sideways_gets_the_phone_layout_in_one_row`
+reading width, and the Reading menu's Wide transcript (offered upright too since #s55) widens it. Where the pane cannot be a column beside the session at `M` each (`pl-pane-over`, #s431 stage 3) an
+open preview covers the whole session area beside the sidebar (it was a 72vw overlay over a sliver
+nobody could read); `a_phone_held_sideways_gets_the_phone_layout_in_one_row`
 and `a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver` hold both. The dock
 never wraps (#352, `a_phone_dock_keeps_one_row_with_a_query_and_a_chip`): the CLOSED box with a query
 is its count, steps and ✕ — its chips (a scope chip is its letters alone, a tool chip wears a wrench;
