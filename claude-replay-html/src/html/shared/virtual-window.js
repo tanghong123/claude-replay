@@ -458,6 +458,8 @@ class VirtualWindow {
     this.lastContentTop = null;
     // Set while the scroller has had no box since the last transaction that had one (`laidOut`).
     this.wasHidden = false;
+    // What was mounted while hidden, owed the page's pass over fresh elements (`cameBack`).
+    this.mountedHidden = [];
     this.outerObserver = new ResizeObserver(() => this.displaced());
     // BORDER-box, not the default content-box: what moves the run is often the chrome's own
     // padding — a header gaining a line of chips, a pane's inset — and a padding change leaves
@@ -1084,6 +1086,9 @@ class VirtualWindow {
       child.style.height = `${want}px`;
       fits.push([child, want]);
     }
+    // Hidden, a placeholder reads as its margins alone (`laidOut`): it keeps the height the sums give
+    // it, and the first transaction with the box back fits every mounted one again (`cameBack`).
+    if (!this.laidOut()) return;
     const margins = fits.map(([child, want]) => itemHeight(child) - want);
     fits.forEach(([child, want], k) => { if (Math.abs(margins[k]) > 0.25) child.style.height = `${Math.max(0, want - margins[k])}px`; });
   }
@@ -1207,6 +1212,16 @@ class VirtualWindow {
     return !this.frame.laidOut || this.frame.laidOut();
   }
 
+  /** The first transaction with the box back (`laidOut`), before it mounts and places: what could
+   *  not be read while hidden is read now — the page's pass over what was mounted then
+   *  (`afterMount`), and every mounted placeholder fitted to its height in the sums. */
+  cameBack() {
+    const owed = this.mountedHidden.filter(element => element.isConnected);
+    this.mountedHidden = [];
+    if (owed.length) this.afterMount(owed);
+    this.fitPlaceholders();
+  }
+
   /** Where item `index` starts, in the scroller's own coordinate, from the MODEL: the content's
    *  top edge plus the sums before it. Exact for a mounted item only when the heights between
    *  are measured, so the restore prefers the item's own rect and this serves the case that has
@@ -1298,7 +1313,7 @@ class VirtualWindow {
     // content under its new key, so the anchor resolves rather than falling back.
     const rename = key => (renamed && key && renamed[key]) || key;
     if (index <= from) {
-      const after = this.anchorAfter(from, shift);
+      const after = this.anchorAfter(from, shift, p);
       return after ? { ...after, key: rename(after.key) } : p;
     }
     const translated = { ...p, index: index + shift, key: rename(p.key) };
@@ -1308,10 +1323,18 @@ class VirtualWindow {
 
   /** An anchor on the mounted item that followed `from`, at the index it will have once `shift`
    *  items stand where `from` did — or null when it is not mounted. */
-  anchorAfter(from, shift) {
+  anchorAfter(from, shift, p = null) {
     const next = [...this.mount.children].find(child => Number(child.dataset.unitIndex) === from + 1);
     if (!next) return null;
-    return { source: "anchor", key: next.dataset.unitKey, index: from + 1 + shift, top: next.getBoundingClientRect().top - this.frame.viewportTop(), block: null, blockTop: 0, at: this.frame.scrollTop(), fallback: null };
+    // Hidden, no top can be read (`laidOut`): the item is where the sums put it below `P`'s item. A
+    // top is the border box's and a slot starts at the margin (`itemHeight`), so the two items' top
+    // margins are the difference between them; a computed margin reads with no box.
+    const marginTop = element => (element ? parseFloat(getComputedStyle(element).marginTop) || 0 : 0);
+    const top = this.laidOut() || !p || p.top == null || p.index == null
+      ? next.getBoundingClientRect().top - this.frame.viewportTop()
+      : p.top + (this.prefix[from + 1] || 0) - (this.prefix[p.index] || 0) + marginTop(next)
+        - marginTop([...this.mount.children].find(child => Number(child.dataset.unitIndex) === p.index));
+    return { source: "anchor", key: next.dataset.unitKey, index: from + 1 + shift, top, block: null, blockTop: 0, at: this.frame.scrollTop(), fallback: null };
   }
 
   /** Mount exactly `[lo, hi)`, reusing what is already right. `dirtyFrom` is the first index
@@ -1396,7 +1419,10 @@ class VirtualWindow {
     this.updatePads();
     // A fresh placeholder is drawn at its height in the sums before anything measures (§6.2).
     this.fitPlaceholders(fresh);
-    this.afterMount(fresh);
+    // Hidden, the page's pass would read boxes with no size (a long prompt's lines counted as none,
+    // so none clamped): it runs for these once the box is back (`cameBack`).
+    if (this.laidOut()) this.afterMount(fresh);
+    else this.mountedHidden.push(...fresh);
     this.measureMounted();
     this.updatePads();
     for (const child of this.mount.children) this.observer.observe(child, { box: "border-box" });
@@ -1460,6 +1486,8 @@ class VirtualWindow {
     // the reader's in the offset the browser gave it (`laidOut`).
     const shown = this.laidOut(), returning = shown && this.wasHidden;
     if (!shown) this.wasHidden = true;
+    // A smooth write the hide stopped never arrives: it is over, and `P` is placed outright.
+    if (returning) this.wrote = null;
     if (shown && !returning) this.confirmFollow(startTop);
     // Shown again, the window is mounted for `P` at the viewport the box came back with, whatever the
     // transaction: one mounted while hidden (records arriving) was sized for no viewport at all.
@@ -1481,6 +1509,8 @@ class VirtualWindow {
       // A mutation that moved the index space (a prepend, #314) translates `P0` to it — the same
       // item, the same place on screen, under its new index. Not a move: I1 holds.
       if (options.translate) p0 = options.translate(p0);
+      // Hidden, nothing re-reads `P` after the mutation (`laidOut`): it takes the translation here.
+      if (!shown && p0 && p0.source !== "tail") this.position = p0;
       // What the mount rebuilds from: given, or a function of what the mutation returned (§4.11).
       const dirtyFrom = typeof options.dirtyFrom === "function" ? options.dirtyFrom(changed) : options.dirtyFrom;
       this.rebuildPrefix();
@@ -1493,9 +1523,12 @@ class VirtualWindow {
       if (options.mutate) this.updatePads();
       let mounted = null;
       let quiet = false;
+      if (returning) this.cameBack();
       if (options.range) {
         const range = typeof options.range === "function" ? options.range(p0) : options.range;
         mounted = this.mountRange(range.lo, range.hi, dirtyFrom, p0);
+        // Back from hidden with the window as it was: what was mounted while hidden is measured now.
+        if (returning && !mounted) this.measureMounted();
       } else if (options.measure) {
         // An observer that heard nothing new — the notification every freshly observed element
         // sends — changes nothing, and a tail that is placed anyway snaps back a following reader
@@ -1960,6 +1993,15 @@ class VirtualWindow {
         // A landing a further command refines in the same task (the search walk's, §4.11) does
         // not decide: the pin is what it was, and the refining command decides once.
         if (options.decide === false) { if (this.following !== wasFollowing) this.following = wasFollowing; this.scheduleRemember(); return; }
+        // Hidden, there is no gap to read (`laidOut`, every size 0): a jump to the end follows, any
+        // other is the reader choosing a place, and the pin stays dropped.
+        if (!this.laidOut()) {
+          const following = position.source === "tail";
+          if (following !== this.following) this.following = following;
+          if (following !== wasFollowing) this.followChanged();
+          this.scheduleRemember();
+          return;
+        }
         const top = this.inFlight() ? this.wrote.to : this.frame.scrollTop();
         const gap = this.frame.scrollHeight() - this.frame.clientHeight() - top;
         const following = wasFollowing ? gap <= this.slacks.hold : gap <= this.slacks.acquire;
