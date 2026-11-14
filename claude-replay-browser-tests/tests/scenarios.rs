@@ -1894,6 +1894,80 @@ fn app_shell_steps_back_a_turn_at_a_time_from_the_end_known_red_s487() {
     scenario_turn_back_from_the_end(&page.tab, Surface::AppShell, &fx);
 }
 
+/// #s487, the half the shell decides alone: the last two turns are so short that at the end turn
+/// N-1 is already in view, below the landing line, so the jump `[` makes to it moves nothing (the
+/// end of the session stops the view). The turn bar and the Turns pane name N-1 after the first
+/// press and N-2 after the second, each still so a second later. The end rule named the LAST turn
+/// there, so the bar kept naming N and the second `[` landed N-1 again: two presses and nothing
+/// seen to happen. App shell only: the classic page's `[` goes by position and lands N-2 first,
+/// the difference the owner decides on #s487.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_steps_back_from_the_end_where_the_turn_before_is_in_view() {
+    let _serial = serial();
+    let base = base("scenario-turnback-inview-app");
+    let stores = Stores::new(&base);
+    let mut session = long_session(28, Shape::default());
+    for i in 28..30 {
+        session += &harness::user(&format!("question {i}: a short one."), i);
+        session += &harness::assistant(&format!("answer {i}: short."), i);
+    }
+    let path = stores.claude_session(SID, &session);
+    let fx = Fixture {
+        base,
+        path,
+        turns: 30,
+    };
+    let page = open(Surface::AppShell, &fx, 3186);
+    let tab = &page.tab;
+    let surface = Surface::AppShell;
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "the jump to the end");
+    settle();
+    until_engine_quiet(tab);
+    let named = |tab: &headless_chrome::Tab| {
+        serde_json::json!({
+            "bar": harness::sticky_turn(tab, surface).map(|b| b.0),
+            "pane": harness::pane_focus_turn(tab, surface),
+            "rest": resting(tab, surface),
+        })
+    };
+    let at_end = named(tab);
+    let s = surface.scroller();
+    let premise = eval(tab, &format!("(function(){{ var e = document.querySelector('.virtual-window [data-turn=\"29\"]'); return e ? Math.round(e.getBoundingClientRect().top - {s}.getBoundingClientRect().top) : null; }})()")).as_i64().unwrap_or(-1);
+    let landing = at_end["rest"]["landing"].as_i64().unwrap_or(0);
+    assert!(
+        premise > landing + 2,
+        "the premise: at the end turn 29's header is in view below the landing line ({landing}px): {premise}px, {at_end}"
+    );
+    let mut readings = vec![at_end];
+    for want in [29i64, 28] {
+        key(tab, "[", false);
+        settle();
+        until_engine_quiet(tab);
+        let first = named(tab);
+        harness::pause("the reader rests", Duration::from_secs(1));
+        let later = named(tab);
+        readings.push(first.clone());
+        readings.push(later.clone());
+        assert_eq!(
+            (
+                first["bar"].as_i64(),
+                first["pane"].as_i64(),
+                later["bar"].as_i64(),
+                later["pane"].as_i64()
+            ),
+            (Some(want), Some(want), Some(want), Some(want)),
+            "`[` from turn {} makes turn {want} the current one, in the bar and the pane, and a second later still: {readings:?}",
+            want + 1
+        );
+        assert_eq!(
+            first["rest"], later["rest"],
+            "…where the view rests: {readings:?}"
+        );
+    }
+}
+
 // ── scenario: a resize while pinned keeps the tail ──────────────────────────────────────────
 
 /// Pinned at the tail, a narrower then a wider window: every measured height is a guess
