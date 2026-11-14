@@ -82,8 +82,9 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, 
   // `sized`: whether a decision has seen the view's box. A view mounted hidden decides once at 0×0,
   // which says nothing of its family, and `phone()` then answers for no box.
   let said = null, wrote = null, placed = null, arranged = null, glideUntil = 0, sized = false;
-  // The top and bottom gaps the last decision that saw a box read off it, which a decision during the
-  // keyboard ride keeps; until one has, a ride reads them off its box as any decision does.
+  // The top and bottom gaps the last decision that saw a box while no ride moved it read off it, which
+  // a decision during the keyboard ride keeps; until one has, a ride reads them off its box as any
+  // decision does.
   let gaps = { top: 0, bottom: 0 }, gapsKnown = false;
   // Everything a decision reads of the page, read at once: the view's box, the window's width and
   // height, and the screen's pointer.
@@ -106,8 +107,8 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, 
     // has a gap at its foot. A view as tall as the window whose top is the window's has none, within
     // the 2px `innerHeight` may lack. While the view's keyboard ride moves its host's box (`rides`: it
     // moves the app back over iOS's scroll as the reader types), the box is where it is for the
-    // keyboard, not for the host, so the gaps stay as the last decision read them: none in the app,
-    // the bar's in a host's pane under one.
+    // keyboard, not for the host, so the gaps stay as the last decision before the ride read them:
+    // none in the app, the bar's in a host's pane under one.
     const ridden = !!rides?.();
     const riding = ridden && gapsKnown;
     const level = !riding && tall && Math.abs(box.top) <= 0.5;
