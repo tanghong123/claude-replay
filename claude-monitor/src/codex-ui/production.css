@@ -667,6 +667,9 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    popover keeps its own cap as a backstop for a short window. `overscroll-behavior` stops the
    transcript scrolling once the list hits its end. */
 :is(#sessionView,#app) .navigator-options{max-height:min(74vh,640px);overflow-y:auto;overscroll-behavior:contain}
+/* #s431 stage 4: the list's own popovers scroll in a host too, as the app's do: its filter sheet is capped
+   at the list's foot and its section menu at the window's, and without this their last rows spilled out. */
+#sessionList .navigator-options{overflow-y:auto;overscroll-behavior:contain}
 #sessionView .tool-type-list{max-height:min(38vh,320px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-gutter:stable}
 /* #88: the outline column is an ACCORDION. Each card sticks at its own slot — the caption plus
    the heads above it, measured in app.js because only the page knows how tall a head is — with a

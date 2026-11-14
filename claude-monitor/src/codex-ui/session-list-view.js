@@ -174,6 +174,25 @@ const { onToast = () => {}, persist = () => {} } = options;
 // Left out, a floating layer goes in the list's own element, where the list's stylesheet reaches it
 // (its rules hang on `#sessionList`); the app passes its own, the page's body and `#app`.
 const layer = kind => options.layer?.(kind) || sessionList;
+// Where a fixed layer drawn in an element has its corner (#s431 stage 4, design/pane-layout.md, "Drawn
+// inside the pane"): the window's, unless something it is drawn in makes the box fixed layers are
+// placed in (a host's transformed or contained pane, the app while a phone's keyboard ride moves it).
+// A probe at that corner reads it, and a layer the list places from the window's coordinates (the
+// section menu, the rail's flyout) is written from there, so it stands by its control wherever a host
+// draws the list, and still floats out of a pane that clips. The probes go with the list.
+const cornerProbes = new Map();
+const fixedCorner = into => {
+  let probe = cornerProbes.get(into);
+  if (!probe) {
+    probe = document.createElement("div");
+    probe.setAttribute("aria-hidden", "true");
+    probe.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;pointer-events:none";
+    cornerProbes.set(into, probe);
+  }
+  if (probe.parentNode !== into) into.append(probe);
+  const r = probe.getBoundingClientRect();
+  return { left: r.left, top: r.top };
+};
 // The list's markup (stage 3), built from its own template, cut from the demo's shell: the tree, which
 // goes in its element, and Collapse every group and the agent marks' holder, which the host places
 // (`place`, at the end of the mount). The list keeps each, and finds nothing of them in the page.
@@ -336,9 +355,10 @@ function placeSectionMenu() {
   }
   const r = sectionMenuAnchor.getBoundingClientRect();
   const width = sectionMenu.offsetWidth, height = sectionMenu.offsetHeight;
-  sectionMenu.style.left = `${Math.round(Math.max(8, Math.min(r.right - width, innerWidth - width - 8)))}px`;
+  const corner = fixedCorner(sectionMenu.parentNode);
+  sectionMenu.style.left = `${Math.round(Math.max(8, Math.min(r.right - width, innerWidth - width - 8)) - corner.left)}px`;
   const below = r.bottom + 4;
-  sectionMenu.style.top = `${Math.round(below + height <= bottom ? below : Math.max(top, r.top - height - 4))}px`;
+  sectionMenu.style.top = `${Math.round((below + height <= bottom ? below : Math.max(top, r.top - height - 4)) - corner.top)}px`;
 }
 /** Upright on a phone the section menu is a sheet at the foot over a dim; held sideways, as on a
  *  desktop, a popover at the control's side (#s41: a band across a sideways screen hides what it
@@ -706,7 +726,10 @@ function toggleFilterSheet(open) {
 function fitFilterSheet() {
   filterSheet.style.maxHeight = "";
   if (filterSheet.hidden || railFlyoutFor === "filter") return;
-  const room = Math.floor(innerHeight - filterSheet.getBoundingClientRect().top - 8);
+  // In the list's own head (a host's) it ends at the list's foot, so a pane that clips the list never
+  // cuts its last rows off; placed by the app, at the window's.
+  const foot = sessionList.contains(filterSheet) ? Math.min(innerHeight, sessionList.getBoundingClientRect().bottom) : innerHeight;
+  const room = Math.floor(foot - filterSheet.getBoundingClientRect().top - 8);
   if (room > 0 && filterSheet.scrollHeight > room) filterSheet.style.maxHeight = `${Math.max(120, room)}px`;
 }
 addEventListener("resize", fitFilterSheet, { signal });
@@ -772,10 +795,10 @@ function railFlyoutBody() {
 }
 function placeRailFlyout() {
   if (!railFlyoutAnchor) return;
-  const r = railFlyoutAnchor.getBoundingClientRect();
-  railFlyout.style.left = `${Math.round(r.right + 8)}px`;
+  const r = railFlyoutAnchor.getBoundingClientRect(), corner = fixedCorner(railFlyout.parentNode);
+  railFlyout.style.left = `${Math.round(r.right + 8 - corner.left)}px`;
   const h = railFlyout.offsetHeight;
-  railFlyout.style.top = `${Math.round(Math.max(8, Math.min(r.top - 6, innerHeight - h - 8)))}px`;
+  railFlyout.style.top = `${Math.round(Math.max(8, Math.min(r.top - 6, innerHeight - h - 8)) - corner.top)}px`;
 }
 function refreshRailFlyout() {
   if (!railFlyout || railFlyout.hidden || railFlyoutFor === "filter") return;
@@ -1133,7 +1156,7 @@ return fenced({
     widthWatch.disconnect();
     for (const id of timers) globalThis.clearTimeout(id);
     timers.clear();
-    for (const node of [controls, filterSheet, filterMini, railMarks, railFlyout, sectionMenu, sectionScrim, insetProbe]) node?.remove();
+    for (const node of [controls, filterSheet, filterMini, railMarks, railFlyout, sectionMenu, sectionScrim, insetProbe, ...cornerProbes.values()]) node?.remove();
     element.replaceChildren();
     for (const { name } of [...element.attributes]) element.removeAttribute(name);
     for (const [name, value] of elementBefore) element.setAttribute(name, value);
