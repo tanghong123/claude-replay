@@ -3868,7 +3868,7 @@ function stepTurn(delta) {
   const turns = userUnits(); if (!turns.length) return;
   const next = Math.max(0, Math.min(turns.length - 1, currentUserUnitIndex() + delta));
   stepLanded = null;
-  if (!viewport.jumpToRecord(turns[next].from, "turn")) return;
+  if (!viewport.jumpToRecord(turns[next].from, "turn", "acquire")) return;
   const row = unitRow(turns[next].key);
   if (!row) return;
   stepLanded = { session: recordState.session, key: turns[next].key, top: row.getBoundingClientRect().top - viewport.scroller.getBoundingClientRect().top };

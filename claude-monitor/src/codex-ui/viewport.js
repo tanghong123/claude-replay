@@ -418,7 +418,7 @@ export class Viewport extends VirtualWindow {
     return parseFloat(getComputedStyle(this.scroller).scrollPaddingTop) || 18;
   }
 
-  jumpToRecord(recordIndex, reveal = "record") {
+  jumpToRecord(recordIndex, reveal = "record", pin = undefined) {
     const index = this.units.findIndex(unit => recordIndex >= unit.from && recordIndex <= unit.to);
     // A record the head of a tail-first open still owes is not a place to land (#314): the caller
     // tries again once it has arrived, as a link to it does. A TURN still on its way is (#s277,
@@ -436,7 +436,7 @@ export class Viewport extends VirtualWindow {
     // window is mounted around it, one write lands it, and the engine holds the row there through
     // whatever settles under it until the reader moves — the three-pass loop this replaced saw
     // only the heights that existed when it ran. Stamped, as every jump here always was.
-    this.jumpTo({ index, block: recordIndex, top: this.landing }, { dirtyFrom: index, intent: true });
+    this.jumpTo({ index, block: recordIndex, top: this.landing }, { dirtyFrom: index, intent: true, pin });
     this.window.querySelector(`[data-block-index="${recordIndex}"]`)?.classList.add("source-flash");
     return true;
   }

@@ -2096,7 +2096,7 @@ class VirtualWindow {
         }
         const top = this.inFlight() ? this.wrote.to : this.frame.scrollTop();
         const gap = this.frame.scrollHeight() - this.frame.clientHeight() - top;
-        const following = wasFollowing ? gap <= this.slacks.hold : gap <= this.slacks.acquire;
+        const following = wasFollowing && options.pin !== "acquire" ? gap <= this.slacks.hold : gap <= this.slacks.acquire;
         if (following !== this.following) this.following = following;
         if (following !== wasFollowing) this.followChanged();
         this.scheduleRemember();
