@@ -1,9 +1,8 @@
 # Each component lays itself out by its pane
 
 > **DRAFT 5** (#s431, 2026-11-13). Step 6 of `design/embedding.md` ("Layout decides itself", "The
-> order of the work"). Stage 1 is built. Stage 2 is built on its branch and lands with stage 3.
-> Stage 3's functions and their contract are built on the branch; the page's wiring for it, and
-> stage 4, are not. The owner's ruling (#s459): start it now, and fix in it the
+> order of the work"). Stage 1 shipped in 1.514.0, and stages 2 and 3 in 1.520.0; stage 4 is not
+> built (2026-11-14). The owner's ruling (#s459): start it now, and fix in it the
 > transcript column that the right pane squeezes to 126px just past 1180px. The owner ruled how a
 > component counts its room (#s461): by its own width, height and touch, with nothing from the host;
 > and he set the order of what gives way (#s462, #s472 to #s476), its touch screen's rules (#s478,
@@ -665,9 +664,9 @@ reads the view's family (above).
 ### The session list
 
 `design/embedding.md` asks for full rows where there is room and compact rows where there is not.
-On a desktop the list's rows are already one line of 32px: a state mark, the title cut with an
-ellipsis, a fork chip, and in the flat list the agent's mark and the project. On a phone they are
-44px touch rows. The list follows the same rule as the view, its own size and touch:
+On a desktop a tree's session row is already one line of 32px: a state mark, the title cut with an
+ellipsis and a fork chip; the flat list's row adds a second line, the agent's mark and the project.
+On a phone they are 44px touch rows. The list follows the same rule as the view, its own size and touch:
 
 - **Touch rows on a touch screen**, `(pointer:coarse)`. The list's own size cannot tell a phone's
   drawer from a desktop's sidebar (both are about 300px wide and the window's height), and a finger
