@@ -54,7 +54,8 @@ export function classesFor(view) {
 
 /** Decide now and again whenever the view's box, the screen's pointer, the window's size or what the
  *  view says of itself changes: the classes on `element`, `pl-phone` with them, and the lengths its
- *  rules read (`--pl-b`, `--pl-w`, `--pl-h`, `--pane-x`, `--pane-r`, `--pl-vh`, `--pl-dvh`). `onChange`
+ *  rules read (`--pl-b`, `--pl-w`, `--pl-h`, `--pane-x`, `--pane-r`, `--pane-y`, `--pane-b`, `--pl-vh`,
+ *  `--pl-dvh`); `rides()` says whether the view's keyboard ride moves its host's box now. `onChange`
  *  hears every decision that changed a class, the view's width or the open pane's, after it is
  *  written: whatever changed the view's box (a host's list, a window), the view hears it here. `query(family)` answers as a
  *  `MediaQueryList` does (`matches`, a `change` event), so a script that matched `PHONE_QUERY` asks the
@@ -74,13 +75,13 @@ export function classesFor(view) {
  *  narrower column). The reader's own toggles still glide: `glide()` lets the decisions of the next
  *  `GLIDE_MS` write without the hold, since opening the pane can make the host's list give way in
  *  the same moment, and a decision taken then would cancel the pane's glide. */
-export function mountPaneLayout(element, { signal, onChange, inputs, onArrange } = {}) {
+export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, rides } = {}) {
   const coarse = matchMedia("(pointer:coarse)"), fine = matchMedia("(pointer:fine)");
   const events = new EventTarget();
   const family = { phone: false, wide: false };
   // `sized`: whether a decision has seen the view's box. A view mounted hidden decides once at 0×0,
   // which says nothing of its family, and `phone()` then answers for no box.
-  let said = null, wrote = null, arranged = null, glideUntil = 0, sized = false;
+  let said = null, wrote = null, placed = null, arranged = null, glideUntil = 0, sized = false;
   // Everything a decision reads of the page, read at once: the view's box, the window's width and
   // height, and the screen's pointer.
   const measure = () => ({ box: element.getBoundingClientRect(), viewport: viewRoot.viewportWidth(), height: innerHeight, coarse: coarse.matches, fine: fine.matches });
@@ -97,15 +98,40 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange }
     for (const name of arrangeClasses(view, arrangement)) on.add(name);
     const right = Math.max(0, viewport - box.right);
     const tall = box.height >= height - 2;
-    // Its gaps to the window's top and bottom, only where it is shorter than the window (#s431 stage
-    // 4): a view as tall as the window has the window's top and bottom, and in the app it always has.
-    // Read from its box there, a phone's keyboard ride (which moves the app up over iOS's scroll) would
-    // move them while the reader types.
-    const top = tall ? 0 : Math.max(0, box.top), bottom = tall ? 0 : Math.max(0, height - box.bottom);
-    const writing = JSON.stringify([[...on].sort(), box.width, box.height, box.left, right, top, bottom, tall, arrangement]);
-    if (writing === wrote) return;
-    wrote = writing;
+    // Its gaps to the window's top and bottom (#s431 stage 4), read from its box, so a host's pane
+    // that starts below a bar of the host's is boxed whatever its height. A view as tall as the window
+    // that starts at its top has none, within the 2px `innerHeight` may lack; and nor does one while
+    // the view's keyboard ride moves its host's box (`rides`: it moves the app back over iOS's scroll
+    // as the reader types, and the box is where it is for the keyboard, not for the host).
+    const level = tall && (box.top <= 0.5 || !!rides?.());
+    const top = level ? 0 : Math.max(0, box.top), bottom = level ? 0 : Math.max(0, height - box.bottom);
+    const boxed = box.left > 0.5 || right > 0.5 || top > 0.5 || bottom > 0.5;
+    const writing = JSON.stringify([[...on].sort(), box.width, box.height, tall, boxed, arrangement]);
+    const place = JSON.stringify([box.left, right, top, bottom]);
+    if (writing === wrote && place === placed) return;
+    placed = place;
     watchMoves(box);
+    // Where the view sits in the window, for placing alone (#s461 rules out reading the window for a
+    // layout): its gaps to the window's left and right edges, top and bottom, and whether it is not
+    // the whole window — beside the app's list or its rail, beside a wide phone's column, in a host's
+    // pane. A view in such a box contains its layout, so its fixed layers are placed in its own box,
+    // not across the window, and the screen's insets count only where they fall in it (`pl-boxed`,
+    // design/pane-layout.md, "Drawn inside the pane"; the phone reader from stage 2, every family
+    // from stage 4). The right edge is measured to the layout viewport, which a classic scrollbar
+    // does not count in.
+    const writePlace = () => {
+      element.style.setProperty("--pane-x", `${box.left}px`);
+      element.style.setProperty("--pane-r", `${right}px`);
+      element.style.setProperty("--pane-y", `${top}px`);
+      element.style.setProperty("--pane-b", `${bottom}px`);
+      element.classList.toggle("pl-boxed", boxed);
+    };
+    // A move alone (#s467: the same box at another place, still boxed or not as it was) changes only
+    // the gaps, which place the view's layers and lay out nothing, so they are written without the
+    // hold, the arrangement or a read, and what glides in the view (the pane, the drawers) goes on: a
+    // host that scrolls the view with its page moves it every frame.
+    if (writing === wrote) { writePlace(); return; }
+    wrote = writing;
     arranged = arrangement;
     sized = !!(box.width || box.height);
     const was = { ...family };
@@ -117,24 +143,12 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange }
     element.style.setProperty("--pl-b", `${bandWidth(view)}px`);
     element.style.setProperty("--pl-w", `${box.width}px`);
     element.style.setProperty("--pl-h", `${box.height}px`);
-    element.style.setProperty("--pane-x", `${box.left}px`);
     // The open column's width, the pane's own box, from the arrangement (its track is that and the
     // view's 10px margin); none where the pane is shut or covers the session, so a `--preview` a host
     // or a case sets reaches the pane there.
     if (arrangement.pane === "column") element.style.setProperty("--preview-fit", `${arrangement.paneWidth}px`);
     else element.style.removeProperty("--preview-fit");
-    // Where the view sits in the window, for placing alone (#s461 rules out reading the window for a
-    // layout): its gaps to the window's right edge, top and bottom, and whether it is not the whole
-    // window — beside the app's list or its rail, beside a wide phone's column, in a host's pane. A
-    // view in such a box contains its layout, so its fixed layers are placed in its own box, not
-    // across the window, and the screen's insets count only where they fall in it (`pl-boxed`,
-    // design/pane-layout.md, "Drawn inside the pane"; the phone reader from stage 2, every family
-    // from stage 4). The right edge is measured to the layout viewport, which a classic scrollbar
-    // does not count in.
-    element.style.setProperty("--pane-r", `${right}px`);
-    element.style.setProperty("--pane-y", `${top}px`);
-    element.style.setProperty("--pane-b", `${bottom}px`);
-    element.classList.toggle("pl-boxed", box.left > 0.5 || right > 0.5 || top > 0.5 || bottom > 0.5);
+    writePlace();
     // A share of the height is the window's own unit while the view is as tall as the window (always
     // in the app, whose grid is 100dvh: iOS gives `innerHeight` that height too), so iPhone Safari's
     // `dvh`, which follows its bars, still does; else the view's. The window is read here for that
