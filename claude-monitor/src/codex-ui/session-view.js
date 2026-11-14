@@ -270,9 +270,12 @@ let layoutHeard = null;
 // says of itself (`arrangeInputs`, which answers the defaults until the view's state exists, just
 // below), and draws the outline as arranged (`drawOutline`) in the same decision.
 let arrangeInputs = () => ({}), outlineWanted = () => true;
+// Whether the keyboard ride below moves the host's box now (`grid`, back over iOS's scroll as the
+// reader types): the layout reads no gap to the window's top or bottom from that place.
+let keyboardRides = false;
 // Set by the phone shell below, which holds the glyphs and their panel: none until it has run.
 let placeOutlineGlyphs = () => {}, openOutlinePanel = () => false;
-const layout = mountPaneLayout(element, { signal, onChange: () => layoutHeard?.(), inputs: () => arrangeInputs(), onArrange: arrangement => drawOutline(arrangement) });
+const layout = mountPaneLayout(element, { signal, onChange: () => layoutHeard?.(), inputs: () => arrangeInputs(), onArrange: arrangement => drawOutline(arrangement), rides: () => keyboardRides });
 // How the view is laid out and read, made once the layout has decided (the outline's default is the
 // view's phone family's). A view mounted hidden (its host's `hidden`, #s464, or a hidden ancestor) was
 // decided at 0×0, which says nothing of its family: its outline's default waits for the first
@@ -4339,6 +4342,7 @@ var phoneDock;
       if (controls.nativeActive && PHONE.matches) {
         const frame = sharedKeyboardFrame(grid.getBoundingClientRect().height, viewport2);
         // Keep one containing block even at zero offset; Safari pans during keyboard animation.
+        keyboardRides = Math.abs(viewport2.scale - 1) < 0.01 && frame.shift > 0;
         writeStyle(grid, "transform", Math.abs(viewport2.scale - 1) < 0.01 ? `translateY(${frame.shift}px)` : "");
         sessionView.classList.toggle("keyboard-up", typing && frame.keyboardOpen);
         writeStyle(root, "--phone-kb", `${typing ? frame.inset : 0}px`);
@@ -4354,6 +4358,7 @@ var phoneDock;
       // Once the keyboard is down there is nothing to fight: the page goes back to the top. This reads
       // the viewport as it is, unguarded, so it acts only as it did before #s451.
       if (steady && !shortfall && shift) scrollTo(0, 0);
+      keyboardRides = shift > 0;
       writeStyle(grid, "transform", shift ? `translateY(${shift}px)` : "");
       sessionView.classList.toggle("keyboard-up", covered > 0);
       writeStyle(root, "--phone-kb", `${covered}px`);
