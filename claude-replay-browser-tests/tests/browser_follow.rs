@@ -5154,7 +5154,7 @@ fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
 }
 
 /// #s431 stage 4 (the second delta review of b4ad87a9): the gaps a decision during the keyboard ride
-/// keeps come only from a decision that saw a box and was not riding, and the ride's end decides
+/// keeps come only from a decision that saw a box while no ride moved it, and the ride's end decides
 /// again. A view its host mounts hidden decided once at 0×0, whose foot read the window's whole height
 /// as its gap: shown while the ride ran, it kept that gap, 430px at its foot; and the decision that
 /// shows it during the ride reads the moved box for that ride alone, so a second scroll in the same
