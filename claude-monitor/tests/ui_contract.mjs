@@ -3875,7 +3875,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // The pages call, exactly where the old code stamped.
   assert.match(shell, /this\.jumpTo\(\{ index, block: recordIndex, top: this\.landing \}, \{ dirtyFrom: index, intent: true, pin \}\);/, "the shell's jump lands the record row at the landing, stamped as before");
   assert.match(viewSrc, /viewport\.jumpToRecord\(turns\[next\]\.from, "turn", "acquire"\)/, "…and a turn step keeps following only where it lands at the end (#s502)");
-  assert.match(classic, /goToId\(records\[dest\]\.id, "acquire"\);/, "…on the classic page too");
+  assert.match(classic, /goToId\(id, "acquire"\);/, "…on the classic page too");
+  assert.match(classic, /var at = curTurn \? turns\.indexOf\(idIndex\[curTurn\.id\]\) : -1;/, "…whose turn step counts from the turn its bar names, as the shell's does (#s503)");
+  assert.match(classic, /var cur = landedTurn\(\);\n\s*if \(!cur && records\.length\) \{/, "…and whose bar keeps the turn a step landed while the view stays where the step left it");
   assert.match(shell, /this\.jumpTo\(\{ key: memory\.key, index, top: memory\.top \}, \{ dirtyFrom: changedUnit \}\);/, "…its memory restore is a landing with no stamp");
   assert.doesNotMatch(shell, /toBottom\(/, "…and the pill is the engine's follow, with no wrapper left on the shell");
   assert.match(viewSrc, /byId\("jumpToBottom"\)\.onclick = \(\) => \{ stepLanded = null; setTurnsFollow\(true\); viewport\.follow\(\); \};/, "…called from the pill itself (which locks the Turns pane to the session again, #s207, and ends a turn step's hold on the current turn, #s487)");

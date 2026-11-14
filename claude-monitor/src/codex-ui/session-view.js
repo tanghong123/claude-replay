@@ -3844,9 +3844,9 @@ for (const kind of ["wheel", "touchmove", "pointerdown", "keydown"]) document.ad
  *  N-1 was already in view the step moved nothing at all. The step's own landing is what the
  *  reader chose, so it stays the current turn until the view moves: read by the landed row's
  *  place in the scroller, which a converge to the tail or a scroll changes and the engine's hold
- *  of a commanded landing does not. Never the classic page's position rule (the last turn above
- *  the landing line): at a landing the bottom clamped, that line crosses an earlier turn, so
- *  counting from it skips one. */
+ *  of a commanded landing does not. Never the position rule the classic page had until #s503 (the
+ *  last turn above the landing line): at a landing the bottom clamped, that line crosses an
+ *  earlier turn, so counting from it skips one. The classic page keeps the same memory now. */
 function landedTurnIndex() {
   const at = stepLanded;
   if (!at) return -1;
