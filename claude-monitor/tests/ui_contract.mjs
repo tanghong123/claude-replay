@@ -3876,7 +3876,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(shell, /this\.jumpTo\(\{ index, block: recordIndex, top: this\.landing \}, \{ dirtyFrom: index, intent: true \}\);/, "the shell's jump lands the record row at the landing, stamped as before");
   assert.match(shell, /this\.jumpTo\(\{ key: memory\.key, index, top: memory\.top \}, \{ dirtyFrom: changedUnit \}\);/, "…its memory restore is a landing with no stamp");
   assert.doesNotMatch(shell, /toBottom\(/, "…and the pill is the engine's follow, with no wrapper left on the shell");
-  assert.match(viewSrc, /byId\("jumpToBottom"\)\.onclick = \(\) => \{ setTurnsFollow\(true\); viewport\.follow\(\); \};/, "…called from the pill itself (which locks the Turns pane to the session again, #s207)");
+  assert.match(viewSrc, /byId\("jumpToBottom"\)\.onclick = \(\) => \{ stepLanded = null; setTurnsFollow\(true\); viewport\.follow\(\); \};/, "…called from the pill itself (which locks the Turns pane to the session again, #s207, and ends a turn step's hold on the current turn, #s487)");
   assert.match(viewSrc, /viewport\.pageBy\(direction, \{ intent: true \}\);/, "paging is the engine's, stamped as before");
   assert.match(viewSrc, /viewport\.reveal\(heads\[next\], \{ top: 160, smooth: true, intent: true \}\);/, "a stepped head is revealed smoothly — the classic page's rule, stamped as before");
   assert.match(viewSrc, /viewport\.reveal\(nested, \{ top: 18 \}\);/, "a nested hash landing is a reveal");
@@ -4716,7 +4716,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // session's own units arrive.
   assert.match(viewSource, /afterTransaction: \(\) => \{ const p = viewport\.position; if \(p && p\.key\) queueTurn\(updateTurnBar\(p\.key\)\); wantWindow\(\); \}/, "after a transaction");
   assert.match(viewSource, /updateStickyHeaders\(\); updateOutlineFocus\(\); queueTurn\(updateTurnBar\(\)\);/, "after a scroll");
-  assert.equal((viewSource.match(/queueTurn\(/g) || []).length, 5, "and nowhere else but open and close, which say none (with the definition)");
+  assert.match(viewSource, /stepLanded = \{ session: recordState\.session, key: turns\[next\]\.key, top: [^\n]*\n(?:  \/\/[^\n]*\n)*  queueTurn\(updateTurnBar\(\)\);/, "after a turn step has landed, which a landing the bottom clamped never scrolls to say (#s487)");
+  assert.equal((viewSource.match(/queueTurn\(/g) || []).length, 6, "and nowhere else but open and close, which say none (with the definition)");
   assert.doesNotMatch(/^function updateTurnBar\(atKey\) \{[\s\S]*?\n\}/m.exec(viewSource)[0], /sayTurn|queueTurn/, "never from the bar itself, which afterRender paints before the placement");
   assert.match(viewSource, /recordState\.units = projection\.units;\n  unitsSession = recordState\.session \|\| "";/, "the units are the session's once its records apply");
   assert.match(viewSource, /const session = recordState\.session \|\| "", known = !!unit && unitsSession === session;/, "until then its turn is none");

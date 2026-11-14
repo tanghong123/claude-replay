@@ -372,6 +372,9 @@ const sayFile = item => say(options.onFile, { name: String(item.fileName || item
 let outlineCurrent = null;
 // Whether the Turns pane follows the session (#s207) — declared here for the same reason.
 let turnsFollow = true;
+// The turn a turn step last landed, while the view stays where it landed (#s487, `stepLanded`) —
+// declared here for the same reason: `currentUserUnitIndex` reads it during the first render.
+let stepLanded = null;
 
 const byId = viewRoot.byId;
 const transcript = byId("transcript");
@@ -3212,7 +3215,7 @@ function paintJump() {
   const label = n ? `${n} new message${n === 1 ? "" : "s"} — jump to the latest` : "Jump to the latest";
   button.title = label; button.setAttribute("aria-label", label);
 }
-byId("jumpToBottom").onclick = () => { setTurnsFollow(true); viewport.follow(); };
+byId("jumpToBottom").onclick = () => { stepLanded = null; setTurnsFollow(true); viewport.follow(); };
 function updateStickyHeaders() { const top = transcript.getBoundingClientRect().top; viewport.window.querySelectorAll("[data-process-surface]").forEach(surface => { const rect = surface.getBoundingClientRect(); surface.dataset.prodSticky = String(rect.top < top && rect.bottom > top + 40); }); }
 
 // The outline pane has TWO states: open, and collapsed to its icon rail ("off"). #55 shipped a
@@ -3671,6 +3674,10 @@ function unitRow(key) {
 // still being evaluated, and that `const` is declared further down — a temporal dead zone.)
 function currentUserUnitIndex(atKey) {
   const units = recordState.units;
+  // A turn the reader stepped to is the current one while the view stays where the step left it,
+  // the end rule below included (#s487).
+  const landed = landedTurnIndex();
+  if (landed >= 0) return landed;
   if (units.length && (viewport.following || viewport.gapToBottom() <= viewport.slacks.hold)) {
     let last = -1;
     for (const unit of units) if (unit.type === "user") last++;
@@ -3811,7 +3818,7 @@ function readerMoves(event) {
   // The session first, reading no layout: wheels and touchmoves over the transcript arrive at the
   // engine's own rate, and a glide is no place to make the browser lay out the outline (#372).
   if (transcript.contains(target) || (type === "keydown" && target === page.body())) {
-    if (type === "wheel" || type === "touchmove" || (type === "pointerdown" && target === transcript) || (type === "keydown" && SCROLL_KEYS.has(event.key) && !editable(target))) setTurnsFollow(true);
+    if (type === "wheel" || type === "touchmove" || (type === "pointerdown" && target === transcript) || (type === "keydown" && SCROLL_KEYS.has(event.key) && !editable(target))) { stepLanded = null; setTurnsFollow(true); }
     return;
   }
   // Only then the list, and only for input in or around it.
@@ -3828,11 +3835,44 @@ function readerMoves(event) {
 }
 for (const kind of ["wheel", "touchmove", "pointerdown", "keydown"]) document.addEventListener(kind, readerMoves, { capture: true, passive: true, signal });
 
+/** #s487: the index among the user turns of the turn the last turn step landed, or -1 once the
+ *  view has moved from where the step left it (or the reader touched it, or another session is
+ *  shown). From the end of a session whose last turns are short, `[` lands turn N-1 within the
+ *  hold slack, where the engine keeps the pin (#94, #103), and the end rule (#199) named the LAST
+ *  turn there: the next `[` counted from N again and landed N-1 again, and the bar named N. Where
+ *  N-1 was already in view the step moved nothing at all. The step's own landing is what the
+ *  reader chose, so it stays the current turn until the view moves: read by the landed row's
+ *  place in the scroller, which a converge to the tail or a scroll changes and the engine's hold
+ *  of a commanded landing does not. Never the classic page's position rule (the last turn above
+ *  the landing line): at a landing the bottom clamped, that line crosses an earlier turn, so
+ *  counting from it skips one. */
+function landedTurnIndex() {
+  const at = stepLanded;
+  if (!at) return -1;
+  const row = at.session === recordState.session ? unitRow(at.key) : null;
+  if (row && Math.abs(row.getBoundingClientRect().top - viewport.scroller.getBoundingClientRect().top - at.top) <= 1) {
+    let index = -1;
+    for (const unit of recordState.units) {
+      if (unit.type !== "user") continue;
+      index++;
+      if (unit.key === at.key) return index;
+    }
+  }
+  stepLanded = null;
+  return -1;
+}
 function stepTurn(delta) {
   setTurnsFollow(true);
   const turns = userUnits(); if (!turns.length) return;
   const next = Math.max(0, Math.min(turns.length - 1, currentUserUnitIndex() + delta));
-  viewport.jumpToRecord(turns[next].from, "turn");
+  stepLanded = null;
+  if (!viewport.jumpToRecord(turns[next].from, "turn")) return;
+  const row = unitRow(turns[next].key);
+  if (!row) return;
+  stepLanded = { session: recordState.session, key: turns[next].key, top: row.getBoundingClientRect().top - viewport.scroller.getBoundingClientRect().top };
+  // A landing the bottom clamped moves nothing, so no scroll event repaints the bar or the pane.
+  queueTurn(updateTurnBar());
+  updateOutlineFocus();
 }
 function stepHead(delta) {
   const heads = [...transcript.querySelectorAll("button.renderer-head")].filter(head => head.offsetParent !== null);
