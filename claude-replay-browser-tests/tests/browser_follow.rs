@@ -4517,6 +4517,8 @@ fn the_app_shell_contains_its_view_and_draws_everything_else_as_before() {
     let mut differ = Vec::new();
     let mut boxed = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
+    // Where the task card was drawn both ways, so its place by its row was compared.
+    let mut carded: Vec<String> = Vec::new();
     for width in [1440_u32, 1180, 1000, 900, 700] {
         harness::mouse_window(&tab, width, 900);
         harness::until(
@@ -4585,6 +4587,15 @@ fn the_app_shell_contains_its_view_and_draws_everything_else_as_before() {
                         && c["top"].as_i64().unwrap_or(0) <= y
                         && y <= c["bottom"].as_i64().unwrap_or(0)
                 };
+                if name == "the task card"
+                    && !drawn[0]["card"].is_null()
+                    && !drawn[1]["card"].is_null()
+                {
+                    carded.push(format!(
+                        "{width}px, pane {}",
+                        if open { "open" } else { "shut" }
+                    ));
+                }
                 if !drawn[0]["card"].is_null() {
                     let by_row = |v: &serde_json::Value| {
                         (
@@ -4717,13 +4728,11 @@ fn the_app_shell_contains_its_view_and_draws_everything_else_as_before() {
     // windows with the pane shut, where the outline is shown. Elsewhere the outline is folded to its
     // glyphs, and a card opened from there is a narrow view's, which the host's case
     // (`the_session_view_in_a_host_draws_its_layers_inside_its_pane`) opens in its pane.
-    for need in [
-        "1440px, pane shut, the task card",
-        "1180px, pane shut, the task card",
-    ] {
+    for need in ["1440px, pane shut", "1180px, pane shut"] {
         assert!(
-            !skipped.iter().any(|at| at == need),
-            "the task card is compared where the outline shows its rows; skipped at {need} ({skipped:?})"
+            carded.iter().any(|at| at == need),
+            "the task card is drawn contained and uncontained, and compared, where the outline shows its \
+             rows: not at {need} (compared at {carded:?}; no row to press at {skipped:?})"
         );
     }
     eprintln!("the task card had no row to press at: {skipped:?}");
@@ -5033,7 +5042,9 @@ fn the_session_view_in_a_host_on_a_phone_counts_the_insets_only_inside_its_box()
 /// whole screen's width and height under a 40px bar of the host's: it is boxed, its gap at the top
 /// 40px (red on 5eecc345, which read no top gap for a box as tall as the window). The holds are
 /// counted where the view adds `pl-holding`, and the resize to the whole screen, a decision of the
-/// whole layout, must add one, so the count is known to hear a hold.
+/// whole layout, must add one, so the count is known to hear a hold. Last the keyboard comes up in
+/// that pane: the view's ride moves the host's box back over iOS's scroll, and the view keeps the
+/// gaps it read at the bar, boxed 40px from the top.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
@@ -5093,6 +5104,27 @@ fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
     );
     // That step resized the view, a decision of the whole layout, which holds: the count hears a hold.
     let resized = harness::eval(&tab, "window.__holds");
+    // The keyboard up in that pane (the review of stage 4): iOS scrolls the page 100px and the view's
+    // ride moves the host's box (the `grid` it was given) back over it. The view, placed for the
+    // keyboard, keeps the gaps it read at the bar, still boxed 40px from the top; on the code before it
+    // a ride read no gaps, unboxing a pane under a bar for as long as the keyboard was up.
+    harness::eval(
+        &tab,
+        "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 200; } }); Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 100; } }); visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('hostPane').style.transform === 'translateY(100px)'",
+        "the view's ride to move the host's box back over the page's scroll",
+        Duration::from_secs(5),
+        "document.getElementById('hostPane').style.transform",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    harness::eval(&tab, TWO_FRAMES);
+    let riding = harness::eval(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return JSON.stringify({ boxed: v.classList.contains('pl-boxed'), paneY: v.style.getPropertyValue('--pane-y'), top: Math.round(v.getBoundingClientRect().top) }); })()",
+    );
     drop(monitor);
     assert_eq!(
         holds,
@@ -5102,6 +5134,11 @@ fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
     assert!(
         resized.as_i64().unwrap_or(0) >= 1,
         "a resize holds them, so the count above could hear one: {resized}"
+    );
+    assert_eq!(
+        riding,
+        serde_json::json!("{\"boxed\":true,\"paneY\":\"40px\",\"top\":140}"),
+        "while the keyboard ride moves the pane under the bar, the view keeps its gaps and its box"
     );
 }
 
@@ -22280,6 +22317,19 @@ fn a_phone_find_pill_rides_the_keyboard() {
         "the app moved back over the page's keyboard scroll",
         Duration::from_secs(5),
         "document.getElementById('app').style.transform",
+    );
+    // #s431 stage 4: the view, moved 300px down with the app, is placed for the keyboard, not by a
+    // host, so it reads no gap at its top and is not boxed (boxed, it would drop the island's and the
+    // status bar's insets while the reader types).
+    harness::eval(&tab, TWO_FRAMES);
+    harness::eval(&tab, TWO_FRAMES);
+    assert_eq!(
+        harness::eval(
+            &tab,
+            "(function(){ var v = document.getElementById('sessionView'); return JSON.stringify({ boxed: v.classList.contains('pl-boxed'), paneY: v.style.getPropertyValue('--pane-y'), top: Math.round(v.getBoundingClientRect().top) }); })()"
+        ),
+        serde_json::json!("{\"boxed\":false,\"paneY\":\"0px\",\"top\":300}"),
+        "the view the keyboard ride moves keeps the window's top"
     );
     assert_eq!(
         harness::eval(
