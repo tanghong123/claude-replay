@@ -206,8 +206,9 @@ expandBtn.id = "expandBtn";
 expandBtn.innerHTML = svg("expandStack");
 expandBtn.title = "Expand every group";
 expandBtn.setAttribute("aria-label", "Expand every group");
-// What `renderTree` last wrote into the list, so an unchanged refresh leaves the rows in place (#s72).
-let treeWritten = null;
+// What `renderTree` last wrote into the list, so an unchanged refresh leaves the rows in place (#s72),
+// and into the rail's marks (#s482).
+let treeWritten = null, railWritten = null;
 // Where the focus in the tree came from (stage 4): the input just before it, a press in the tree (the
 // mouse's, which focuses a row as it goes down, or a finger's, whose focus comes as it lifts) or a key
 // anywhere (Tab, a step). A modifier alone does not count: it starts a chord (Cmd-Tab's Meta reaches
@@ -625,11 +626,24 @@ function renderTree() {
   renderFilterControl(counts, shown, total);
   refreshRailFlyout();
 
-  // Redrawn on every index refresh; a focused mark would be replaced under the reader and the focus
-  // dropped to <body> (#300 caught it handing focus back after Escape), so it is carried across.
-  const focusedMark = page.active()?.closest?.("#sidebarMiniAgents [data-mini-agent]")?.dataset.miniAgent;
-  railMarks.innerHTML = agents.map(agent => { const first = agent.projects.flatMap(project => project.sessions).find(row => !row.hidden); return first ? `<button class="sidebar-mini-agent ${agent.projects.some(project => project.sessions.some(row => row.id === indexState.selected)) ? "selected" : ""}" data-mini-agent="${escapeText(agent.id)}" title="${escapeText(agent.name)}" aria-haspopup="true" aria-expanded="${railFlyoutFor === agent.id}">${agentLogo(agent.id)}</button>` : ""; }).join("");
-  if (focusedMark) railMarks.querySelector(`[data-mini-agent="${CSS.escape(focusedMark)}"]`)?.focus();
+  // The rail's marks are written only when they read differently too (#s482). Rewritten on every
+  // refresh, they were new buttons on the screen every 5 s, and WebKit spends a tap as a hover when
+  // clickable content appears just after it dispatches the tap's mouse move: on an iPad a tap on the
+  // rail's expand that met a refresh made no click, and the list opened only on a second tap. A
+  // rewrite still drops the focus to <body> (#300 caught it handing focus back after Escape), so a
+  // focused mark is carried across.
+  const railHtml = agents.map(agent => { const first = agent.projects.flatMap(project => project.sessions).find(row => !row.hidden); return first ? `<button class="sidebar-mini-agent ${agent.projects.some(project => project.sessions.some(row => row.id === indexState.selected)) ? "selected" : ""}" data-mini-agent="${escapeText(agent.id)}" title="${escapeText(agent.name)}" aria-haspopup="true">${agentLogo(agent.id)}</button>` : ""; }).join("");
+  if (railHtml !== railWritten) {
+    const focusedMark = page.active()?.closest?.("#sidebarMiniAgents [data-mini-agent]")?.dataset.miniAgent;
+    railMarks.innerHTML = railHtml; railWritten = railHtml;
+    if (focusedMark) railMarks.querySelector(`[data-mini-agent="${CSS.escape(focusedMark)}"]`)?.focus();
+  }
+  // Whether a mark's flyout is open stays out of what is compared: the flyout's open and close set
+  // it on the mark themselves, so in the HTML it made the next refresh after each rewrite the marks.
+  for (const mark of railMarks.querySelectorAll("[data-mini-agent]")) {
+    const open = String(railFlyoutFor === mark.dataset.miniAgent);
+    if (mark.getAttribute("aria-expanded") !== open) mark.setAttribute("aria-expanded", open);
+  }
 }
 
 // The session filter (#202, the owner's shape): a glyph in the head-actions row — between
@@ -1057,7 +1071,7 @@ if (options.place) {
 }
 
 tree.innerHTML = '<div class="no-results">Scanning sessions…</div>'; treeWritten = null;
-railMarks.innerHTML = "";
+railMarks.innerHTML = ""; railWritten = null;
 
 /** The list's half of choosing a session: it is the selection, read, remembered and drawn. */
 function take(id) {

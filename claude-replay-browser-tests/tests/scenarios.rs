@@ -15521,6 +15521,32 @@ fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
             ids.len() == 1 && ids[0].contains(codex),
             "at {width}px: Codex's flyout lists Codex's session only: {seen}"
         );
+        // #s482: an index refresh while it is open leaves the rail's marks in place, the open one
+        // saying so. The open sets that mark's aria-expanded itself, and while the marks' HTML
+        // carried it, the next refresh rewrote them: new buttons on the screen, which on an iPad
+        // spend a tap that meets them as a hover. (The resource timings are cleared first, so a
+        // full buffer cannot hide the refresh.)
+        let refreshes = "performance.getEntriesByType('resource').filter(function (e) { return /\\/api\\/sessions(\\?|$)/.test(e.name); }).length";
+        eval(
+            &tab,
+            &format!("(function () {{ performance.clearResourceTimings(); {}.__kept = true; return 'ok'; }})()", mark("Codex")),
+        );
+        harness::until(
+            &tab,
+            &format!("{refreshes} >= 1"),
+            "an index refresh with the flyout open",
+            Duration::from_secs(15),
+            refreshes,
+        );
+        settle();
+        assert_eq!(
+            eval(
+                &tab,
+                &format!("(function () {{ var m = {}; return JSON.stringify([!!(m && m.__kept), m && m.getAttribute('aria-expanded')]); }})()", mark("Codex")),
+            ),
+            "[true,\"true\"]",
+            "at {width}px: a refresh with the flyout open keeps the rail's marks, the open one expanded"
+        );
         fire(&mark("Codex"), "pointerleave");
         std::thread::sleep(Duration::from_millis(600));
         assert_eq!(

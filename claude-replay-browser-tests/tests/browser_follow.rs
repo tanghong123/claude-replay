@@ -14384,17 +14384,21 @@ const DRAWER_STATE: &str = "(function(){ var s = document.querySelector('#app > 
 /// its rows in place. It used to rewrite the whole list each time, and a press that straddled the
 /// write, down on a row and up on its replacement, made no click: a session chosen from the drawer
 /// just then was not chosen, which is how the drawer case above failed one run in four. Here a row is
-/// marked, two refreshes go by, and the marked row must still be the one in the list.
+/// marked, two refreshes go by, and the marked row must still be the one in the list. #s482: the
+/// collapsed rail's agent marks too. Rewritten on every refresh, they were new buttons on the screen
+/// every 5 s, and on an iPad a tap on the rail's expand that met one was spent by WebKit as a hover
+/// (no click), so the list opened only on a second tap.
 #[test]
 #[ignore]
 fn a_session_list_refresh_that_changes_nothing_keeps_its_rows() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2820, "list-keeps-rows", 390, 844);
     let row = format!(".tree-row.session[data-session=\"{PHONE_OTHER}\"]");
+    let mark = "#sidebarMiniAgents [data-mini-agent]";
     let refreshes = "performance.getEntriesByType('resource').filter(function (e) { return /\\/api\\/sessions(\\?|$)/.test(e.name); }).length";
     let before = harness::eval(
         &tab,
-        &format!("(function () {{ document.querySelector({row:?}).__kept = true; return {refreshes}; }})()"),
+        &format!("(function () {{ document.querySelector({row:?}).__kept = true; document.querySelector({mark:?}).__kept = true; return {refreshes}; }})()"),
     )
     .as_u64()
     .expect("the refreshes so far");
@@ -14412,6 +14416,14 @@ fn a_session_list_refresh_that_changes_nothing_keeps_its_rows() {
         ),
         true,
         "an unchanged refresh keeps the row the reader may be pressing"
+    );
+    assert_eq!(
+        harness::eval(
+            &tab,
+            &format!("(function () {{ var r = document.querySelector({mark:?}); return !!(r && r.__kept); }})()"),
+        ),
+        true,
+        "an unchanged refresh keeps the rail's marks, which a tap on the rail's expand may be meeting"
     );
 }
 
