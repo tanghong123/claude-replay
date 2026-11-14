@@ -729,14 +729,16 @@ function fitFilterSheet() {
   filterSheet.style.maxHeight = "";
   if (filterSheet.hidden || railFlyoutFor === "filter") return;
   // In the list's own head (a host's) it ends at the list's foot, or higher at the foot of a box of
-  // the host's that clips the list (a scrolling pane the list is taller than), so a pane that clips
-  // the list never cuts its last rows off; placed by the app, at the window's. The page's own root and
-  // body are left out: a body's overflow is the window's, which the window's height already says.
+  // the host's that clips the list (a scrolling pane the list is taller than, one contained or
+  // clipped by a path), so a pane that clips the list never cuts its last rows off; placed by the
+  // app, at the window's. The page's own root and body are left out: a body's overflow is the
+  // window's, which the window's height already says.
   let foot = innerHeight;
   if (sessionList.contains(filterSheet)) {
     foot = Math.min(foot, sessionList.getBoundingClientRect().bottom);
     for (let at = sessionList.parentElement; at && at.localName !== "body" && at.localName !== "html"; at = at.parentElement) {
-      if (getComputedStyle(at).overflowY !== "visible") foot = Math.min(foot, at.getBoundingClientRect().bottom);
+      const style = getComputedStyle(at);
+      if (style.overflowY !== "visible" || /paint|strict|content/.test(style.contain) || style.clipPath !== "none") foot = Math.min(foot, at.getBoundingClientRect().bottom);
     }
   }
   const room = Math.floor(foot - filterSheet.getBoundingClientRect().top - 8);
