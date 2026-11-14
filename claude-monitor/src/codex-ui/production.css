@@ -1954,6 +1954,12 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      open under the pane keeps its card). The review sheet covers it: the view rises to the sheet's
      level while it is open (above). */
   #app:has(>#sessionView.pl-boxed.preview-off :is(.reading-cluster>.reading-options.open,.header-search-cluster>.navigator-options.open,.header-search-cluster>.search-suggest:not([hidden]),.composer.production-show .compose-dialog:not([hidden])))>.drawer-handle{visibility:hidden}
+  /* #s431 stage 4: the task card's dim reaches the column and the handle by rising with the view
+     (z 59, above), and so does the view's top bar, which would cover the handle. So while it is open
+     the handle rises over the view and is drawn as the dim draws what lies under it (the glyph mixed
+     with the scrim's rgba(14,19,31,.42), its clear ground showing the dimmed bar), and takes no press:
+     a tap there reaches the dim, which closes the card, as when the dim lay over it (1.521.0). */
+  #app:has(>#sessionView.pl-boxed.pl-phone>.task-scrim:not([hidden]))>.drawer-handle{z-index:60;pointer-events:none;color:color-mix(in srgb,var(--ink) 58%,rgb(14 19 31))}
 }
 
 /* #s32 — between the phone and 1180px the preview is an overlay (reference.css), and at

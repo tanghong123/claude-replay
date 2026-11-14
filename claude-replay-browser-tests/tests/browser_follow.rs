@@ -4755,6 +4755,139 @@ fn the_app_shell_contains_its_view_and_draws_everything_else_as_before() {
     );
 }
 
+/// An `rgb(…)` or `color(srgb …)` computed colour as its 0–255 channels.
+fn css_rgb(value: &serde_json::Value) -> Option<[f64; 3]> {
+    let text = value.as_str()?;
+    let (scale, inner) = if let Some(rest) = text.strip_prefix("color(srgb ") {
+        (255.0, rest)
+    } else {
+        (1.0, text.strip_prefix("rgb(")?)
+    };
+    let parts: Vec<f64> = inner
+        .trim_end_matches(')')
+        .split(|c: char| c == ',' || c == ' ' || c == '/')
+        .filter(|p| !p.is_empty())
+        .take(3)
+        .map(|p| p.parse::<f64>().map(|v| v * scale))
+        .collect::<Result<_, _>>()
+        .ok()?;
+    (parts.len() == 3).then(|| [parts[0], parts[1], parts[2]])
+}
+
+/// #s431 stage 4, from the iOS Simulator walk of #s496 (the 17 Pro Max held sideways): beside a wide
+/// phone's column the task card's dim rises with the view to cover the column, and the view's top bar
+/// rose with it over the handle by the session's title, which the reader saw vanish. As on 1.521.0,
+/// where the dim lay over the page, the handle stays drawn while the card is open, dimmed as the dim
+/// dims what lies under it (its glyph the ink mixed with the scrim's colour at the scrim's 42%), and
+/// a tap on it reaches the dim, which closes the card and leaves the column shown; in the light theme
+/// and the dark. Red on 1bfcb57c: what is drawn at the handle's middle is the dim over the top bar.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_wide_phone_s_task_card_dims_the_handle_by_the_title_and_keeps_it_drawn() {
+    let _serial = serial();
+    let base = base("wide-phone-card-handle");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000004f3".to_string();
+    stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
+    stores.claude_tasks(
+        &sid,
+        &[
+            ("1", "one, done", "completed"),
+            ("2", "two, running", "in_progress"),
+        ],
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3276, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::phone(&tab, 932, 430);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    monitor.open(&tab, &format!("?session={sid}"));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.virtual-window .turn.user') && document.querySelectorAll('#navigatorWork .work-task-head').length > 0 && !document.getElementById('app').classList.contains('phone-column-off') && document.getElementById('sessionView').classList.contains('pl-boxed') && document.getElementById('sessionView').classList.contains('pl-phone') && {VIEW_CAUGHT_UP}"),
+        "the session beside the wide phone's column, its tasks listed",
+        Duration::from_secs(30),
+        VIEW_LAYOUT,
+    );
+    let handle = "(function(){ var h = document.getElementById('drawerHandle'), r = h.getBoundingClientRect(), cs = getComputedStyle(h); var x = r.left + r.width / 2, y = r.top + r.height / 2; var name = function (e) { return !e ? 'nothing' : e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + String(e.className && e.className.baseVal !== undefined ? e.className.baseVal : e.className).split(' ')[0]; }; var taken = document.elementFromPoint(x, y); h.style.pointerEvents = 'auto'; var drawn = document.elementFromPoint(x, y); h.style.pointerEvents = ''; return { at: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)], visibility: cs.visibility, display: cs.display, color: cs.color, taken: h.contains(taken) ? 'the handle' : name(taken), drawn: h.contains(drawn) ? 'the handle' : name(drawn), card: !document.getElementById('taskPopover').hidden }; })()";
+    let mut seen = Vec::new();
+    for theme in ["light", "dark"] {
+        harness::eval(
+            &tab,
+            &format!("document.documentElement.dataset.theme = '{theme}'; true"),
+        );
+        harness::eval(&tab, TWO_FRAMES);
+        let shut = harness::probe(&tab, handle);
+        harness::eval(
+            &tab,
+            "document.querySelector('#navigatorWork .work-task-head').click(); true",
+        );
+        harness::until(
+            &tab,
+            "!document.getElementById('taskPopover').hidden && !!document.getElementById('taskScrim') && getComputedStyle(document.getElementById('taskScrim')).display !== 'none'",
+            "the task card and its dim to open",
+            Duration::from_secs(5),
+            "document.getElementById('taskPopover').hidden",
+        );
+        harness::eval(&tab, TWO_FRAMES);
+        let open = harness::probe(&tab, handle);
+        let (x, y) = phone_point(&tab, "(function(){ var r = document.getElementById('drawerHandle').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+        phone_tap_at(&tab, x, y);
+        harness::until(
+            &tab,
+            "document.getElementById('taskPopover').hidden && getComputedStyle(document.getElementById('taskScrim')).display === 'none'",
+            "a tap on the handle to reach the dim and close the card",
+            Duration::from_secs(5),
+            "document.getElementById('taskPopover').hidden",
+        );
+        harness::eval(&tab, TWO_FRAMES);
+        let after = harness::probe(
+            &tab,
+            &format!("(function(){{ var h = {handle}; h.column = !document.getElementById('app').classList.contains('phone-column-off'); return h; }})()"),
+        );
+        seen.push((theme, shut, open, after));
+    }
+    drop(monitor);
+    for (theme, shut, open, after) in seen {
+        assert_eq!(
+            (
+                shut["taken"].as_str(),
+                shut["display"].as_str(),
+                shut["visibility"].as_str()
+            ),
+            (Some("the handle"), Some("grid"), Some("visible")),
+            "{theme}: with no card open the handle by the title is drawn and takes a press: {shut}"
+        );
+        assert_eq!(
+            (open["drawn"].as_str(), open["visibility"].as_str(), open["at"].clone()),
+            (Some("the handle"), Some("visible"), shut["at"].clone()),
+            "{theme}: with the card open the handle stays drawn where it was, over the view's top bar: {open}"
+        );
+        assert_eq!(
+            open["taken"], "#taskScrim",
+            "{theme}: …and a press there reaches the dim, as when the dim lay over it: {open}"
+        );
+        let (ink, dimmed) = (
+            css_rgb(&shut["color"]).expect("the handle's colour"),
+            css_rgb(&open["color"]).expect("the dimmed handle's colour"),
+        );
+        let expected = [
+            ink[0] * 0.58 + 14.0 * 0.42,
+            ink[1] * 0.58 + 19.0 * 0.42,
+            ink[2] * 0.58 + 31.0 * 0.42,
+        ];
+        assert!(
+            (0..3).all(|i| (dimmed[i] - expected[i]).abs() <= 2.0),
+            "{theme}: the handle is dimmed as the dim dims the bar under it: {dimmed:?}, expected {expected:?} from {ink:?} ({open})"
+        );
+        assert_eq!(
+            (after["taken"].as_str(), after["color"].clone(), after["column"].clone()),
+            (Some("the handle"), shut["color"].clone(), serde_json::json!(true)),
+            "{theme}: the tap closed the card and nothing else, and the handle is as it was: {after}"
+        );
+    }
+}
+
 /// Two animation frames, which a style change needs before what it started is heard (#321).
 const TWO_FRAMES: &str = "new Promise(function (done) { requestAnimationFrame(function () { requestAnimationFrame(function () { done(true); }); }); })";
 
