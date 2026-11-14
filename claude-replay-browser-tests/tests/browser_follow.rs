@@ -3088,9 +3088,13 @@ fn the_session_list_in_a_host_lays_out_its_rows_by_its_own_width_and_touch() {
 /// `[`, `]`, `j` and Space did nothing until the reader clicked in the transcript; before stage 4 the
 /// open session clicked again kept it too. Only the keyboard's focus on a row, a step's or Tab's, is
 /// kept as the list is rewritten, which the case presses through the app's own keymap, there and back.
+///
+/// Red until the owner decides #s487: the `[` from the end lands turn N-1 inside the hold slack,
+/// where the engine keeps the pin, and the tail's converge takes the reader back to the end within
+/// about 0.1s. The case passed by reading the view during that dip; it reads where it rests now.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
-fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {
+fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked_known_red_s487() {
     let _serial = serial();
     let base = base("appshell-click-keys");
     let stores = Stores::new(&base);
@@ -3151,18 +3155,23 @@ fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {
         &tab,
         "(document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true })); 'ok'",
     );
+    // Where the press leaves the reader once it RESTS, read twice a second apart (#s487): a
+    // reading taken while the view moves can catch a dip that the tail's converge then undoes,
+    // and a case that polled for "moved at some point" passed on exactly that dip.
     let moved_from = |rest: i64| {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            if harness::eval(&tab, &format!("{scrolled} < {rest} - 20")) == serde_json::json!(true)
-            {
-                return true;
-            }
-            if Instant::now() > deadline {
-                return false;
-            }
-            harness::pause("click keys", Duration::from_millis(200));
-        }
+        let (landed, _) = harness::until_still(
+            &tab,
+            scrolled,
+            |v| v.as_i64().is_some_and(|v| v < rest - 20),
+            Duration::from_secs(10),
+        );
+        harness::pause("click keys", Duration::from_secs(1));
+        let later = harness::eval(&tab, scrolled);
+        (
+            landed.as_i64().is_some_and(|v| v < rest - 20) && later == landed,
+            landed,
+            later,
+        )
     };
     let moved = moved_from(rest);
     // The open session's row clicked again: the app redraws nothing, and the click still hands the
@@ -3226,8 +3235,10 @@ fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {
         "the click chose the session and the redraw left no row of the list with the focus"
     );
     assert!(
-        moved,
-        "so `[` is the transcript's: it steps back a turn from the end ({rest}px)"
+        moved.0,
+        "so `[` is the transcript's: it steps back a turn from the end ({rest}px) and rests there: {}px, then {}px a second later",
+        moved.1,
+        moved.2
     );
     assert_eq!(
         again_focus,
@@ -3235,8 +3246,10 @@ fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {
         "the open session's row clicked again, which redraws nothing, keeps no focus either"
     );
     assert!(
-        moved_again,
-        "so `[` is still the transcript's ({again_rest}px)"
+        moved_again.0,
+        "so `[` is still the transcript's ({again_rest}px) and rests where it went: {}px, then {}px a second later",
+        moved_again.1,
+        moved_again.2
     );
     assert_eq!(
         (stepped, stepped_back),

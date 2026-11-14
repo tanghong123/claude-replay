@@ -1790,6 +1790,109 @@ fn app_shell_pages_and_steps_around_a_deep_jump() {
     scenario_deep_jump_then_page_and_step(&page.tab, Surface::AppShell, &fx);
 }
 
+// ── scenario: `[` from the end steps back one turn at a time (#s487) ────────────────────────
+
+/// Where the reader rests: the turn whose header is the first at the top of the view, how far
+/// the view is from the end, and what the turn bar names.
+fn resting(tab: &headless_chrome::Tab, surface: Surface) -> serde_json::Value {
+    let (s, root) = (surface.scroller(), surface.turns_root());
+    // A jump lands a turn's header at the landing line: 120px down the window on the classic page
+    // (`GOTO_Y`), the scroller's own `scroll-padding-top` in the app shell.
+    let (top, landing) = match surface {
+        Surface::Classic => ("0".to_string(), "120".to_string()),
+        Surface::AppShell => (
+            format!("{s}.getBoundingClientRect().top"),
+            format!("(parseFloat(getComputedStyle({s}).scrollPaddingTop) || 18)"),
+        ),
+    };
+    let geometry: serde_json::Value = serde_json::from_str(
+        eval(
+            tab,
+            &format!("(function(){{ var s = {s}, root = {root}, top = {top}; var cards = {{}}; root.querySelectorAll('[data-turn]').forEach(function (e) {{ cards[e.dataset.turn] = Math.round(e.getBoundingClientRect().top - top); }}); return JSON.stringify({{ gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), landing: Math.round({landing}), cards: cards }}); }})()"),
+        )
+        .as_str()
+        .unwrap_or("{}"),
+    )
+    .unwrap_or_default();
+    let at = turn_at_top(tab, surface);
+    serde_json::json!({
+        "top": at,
+        "card": geometry["cards"][at.to_string()],
+        "gap": geometry["gap"],
+        "landing": geometry["landing"],
+        "bar": harness::sticky_turn(tab, surface).map(|b| b.0),
+    })
+}
+
+/// A follower at the end of a session whose last two turns fit within about a screen presses
+/// `[` twice: the first lands turn N-1, the second N-2, and each is where the reader still
+/// rests a second later (#s487's criterion).
+///
+/// Red on both pages, for two reasons that are the owner's to decide (#s487), so both cases carry
+/// the marker. The app shell lands N-1 67px above the end, inside the hold slack, where the
+/// engine keeps the pin (#94, #103); the jump mounts new units, their measure grows the content
+/// and the tail converges, so 0.1s later the reader is at the end again. The classic page goes
+/// by position (the last turn whose header is above its landing line), and at the end N-1's
+/// header is on screen below that line, so its first `[` lands N-2.
+fn scenario_turn_back_from_the_end(tab: &headless_chrome::Tab, surface: Surface, fx: &Fixture) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "the jump to the end");
+    settle();
+    until_engine_quiet(tab);
+    let last = fx.turns as i64;
+    let at_end = resting(tab, surface);
+    let mut readings = vec![at_end.clone()];
+    for want in [last - 1, last - 2] {
+        key(tab, "[", false);
+        settle();
+        until_engine_quiet(tab);
+        let first = resting(tab, surface);
+        harness::pause("the reader rests", Duration::from_secs(1));
+        let later = resting(tab, surface);
+        readings.push(first.clone());
+        readings.push(later.clone());
+        assert_eq!(
+            (first["top"].as_i64(), later["top"].as_i64()),
+            (Some(want), Some(want)),
+            "`[` from turn {} rests on turn {want}, and is still there a second later: {readings:?}",
+            want + 1
+        );
+        assert_eq!(
+            first, later,
+            "…where the view RESTS: nothing moves it in the second after: {readings:?}"
+        );
+        // Its header at the landing, or below it where the end of the session stops the view: a
+        // header ABOVE the landing is a view the tail's converge took back to the end, which shows
+        // the turn before the last at the top whether or not `[` went there.
+        let (card, landing) = (
+            first["card"].as_i64().unwrap_or(i64::MIN),
+            first["landing"].as_i64().unwrap_or(0),
+        );
+        assert!(
+            card >= landing - 2 && (card <= landing + 2 || first["gap"].as_i64() == Some(0)),
+            "…with turn {want}'s header at the landing line ({landing}px), or below it only where the end stops the view: {readings:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_steps_back_a_turn_at_a_time_from_the_end_known_red_s487() {
+    let _serial = serial();
+    let fx = fixture("scenario-turnback-classic", 30);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_turn_back_from_the_end(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_steps_back_a_turn_at_a_time_from_the_end_known_red_s487() {
+    let _serial = serial();
+    let fx = fixture("scenario-turnback-app", 30);
+    let page = open(Surface::AppShell, &fx, 3184);
+    scenario_turn_back_from_the_end(&page.tab, Surface::AppShell, &fx);
+}
+
 // ── scenario: a resize while pinned keeps the tail ──────────────────────────────────────────
 
 /// Pinned at the tail, a narrower then a wider window: every measured height is a guess
