@@ -3835,9 +3835,9 @@ function readerMoves(event) {
 }
 for (const kind of ["wheel", "touchmove", "pointerdown", "keydown"]) document.addEventListener(kind, readerMoves, { capture: true, passive: true, signal });
 
-/** #s487: the index among the user turns of the turn the last turn step landed, or -1 once the
- *  view has moved from where the step left it (or the reader touched it, or another session is
- *  shown). From the end of a session whose last turns are short, `[` lands turn N-1 within the
+/** #s487: the index among the user turns of the turn the last turn step landed, or -1 while the
+ *  view is not where the step left it (the reader's input or another session ends it). From the
+ *  end of a session whose last turns are short, `[` lands turn N-1 within the
  *  hold slack, where the engine keeps the pin (#94, #103), and the end rule (#199) named the LAST
  *  turn there: the next `[` counted from N again and landed N-1 again, and the bar named N. Where
  *  N-1 was already in view the step moved nothing at all. The step's own landing is what the
@@ -3858,7 +3858,9 @@ function landedTurnIndex() {
       if (unit.key === at.key) return index;
     }
   }
-  stepLanded = null;
+  // Not cleared here: the bar is also painted mid-transaction, before the placement puts the row
+  // back where it landed (`afterRender`). What ends the hold is the reader's input, the jump to
+  // the latest, the next step or another session.
   return -1;
 }
 function stepTurn(delta) {
