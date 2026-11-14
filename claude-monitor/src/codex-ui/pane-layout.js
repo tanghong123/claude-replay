@@ -105,6 +105,7 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange }
     const writing = JSON.stringify([[...on].sort(), box.width, box.height, box.left, right, top, bottom, tall, arrangement]);
     if (writing === wrote) return;
     wrote = writing;
+    watchMoves(box);
     arranged = arrangement;
     sized = !!(box.width || box.height);
     const was = { ...family };
@@ -150,12 +151,53 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange }
     for (const name of Object.keys(family)) if (family[name] !== was[name]) events.dispatchEvent(new Event(name));
   };
   const decide = () => decideAt(measure());
+  // #s467: a host may MOVE the view's box without resizing it (a pane slid in by a transform, placed
+  // by script, scrolled with its page), which no ResizeObserver hears, and the gaps a decision writes
+  // (`--pane-x`, `--pane-r`, `--pane-y`, `--pane-b`) and `pl-boxed` would keep the old place. So the
+  // box is watched where it was measured, as floating-ui watches a reference move: an
+  // IntersectionObserver whose root is the window cut down to that box (its root margins are the box's
+  // gaps to the window's edges) hears the box leave that place, because what it sees of the box
+  // changes. Each call says where the box is now; one that has moved decides again and is watched at
+  // its new place, and one that has not (a host's clip changed what shows of it) is watched from what
+  // shows now. No timer: a box with no size is not watched (the ResizeObserver hears it come back).
+  let moves = null;
+  const watchMoves = (box, threshold = 1) => {
+    moves?.disconnect();
+    moves = null;
+    const root = viewRoot.styleRoot();
+    if (signal?.aborted || !root || !box.width || !box.height || typeof IntersectionObserver !== "function") return;
+    const gaps = [box.top, root.clientWidth - box.right, root.clientHeight - box.bottom, box.left];
+    const heard = entries => {
+      if (watcher !== moves) return;
+      const { boundingClientRect: now, intersectionRatio: ratio } = entries[entries.length - 1];
+      if (["left", "top", "width", "height"].some(side => Math.abs(now[side] - box[side]) > 0.5)) {
+        decide();
+        if (watcher === moves) watchMoves(element.getBoundingClientRect());
+        return;
+      }
+      // Still where it was: all of the box shows, or the part a host's clip leaves, which is then the
+      // threshold (none of it: any of it showing is a move).
+      const seen = Math.min(1, Math.max(1e-7, ratio));
+      if (Math.abs(seen - threshold) > 1e-6) watchMoves(box, seen);
+    };
+    const options = { rootMargin: gaps.map(gap => `${-Math.floor(gap)}px`).join(" "), threshold };
+    // The view's own page is the root, so the margins are its window's even inside a frame; a browser
+    // that takes no document for a root takes the window.
+    let watcher;
+    try {
+      watcher = new IntersectionObserver(heard, { ...options, root: viewRoot.root() });
+    } catch {
+      watcher = new IntersectionObserver(heard, options);
+    }
+    moves = watcher;
+    watcher.observe(element);
+  };
   decide();
   const observer = new ResizeObserver(decide);
   observer.observe(element);
   for (const query of [coarse, fine]) query.addEventListener("change", decide, { signal });
   addEventListener("resize", decide, { signal });
-  signal?.addEventListener("abort", () => observer.disconnect(), { once: true });
+  signal?.addEventListener("abort", () => { observer.disconnect(); moves?.disconnect(); moves = null; }, { once: true });
   const query = name => {
     if (!(name in family)) throw new Error(`pane-layout: no family named ${name}`);
     return {
