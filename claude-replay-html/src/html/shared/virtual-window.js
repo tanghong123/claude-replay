@@ -2096,7 +2096,10 @@ class VirtualWindow {
         }
         const top = this.inFlight() ? this.wrote.to : this.frame.scrollTop();
         const gap = this.frame.scrollHeight() - this.frame.clientHeight() - top;
-        const following = wasFollowing ? gap <= this.slacks.hold : gap <= this.slacks.acquire;
+        // A turn step (`pin: "acquire"`, #s487, the owner's #s502) keeps the pin only where a jump
+        // to the end would take it, at the true end: a step back from the end can land within the
+        // hold slack, and a pin kept there let the tail's converge take the reader back to the end.
+        const following = wasFollowing && options.pin !== "acquire" ? gap <= this.slacks.hold : gap <= this.slacks.acquire;
         if (following !== this.following) this.following = following;
         if (following !== wasFollowing) this.followChanged();
         this.scheduleRemember();
@@ -2118,7 +2121,8 @@ class VirtualWindow {
 
   /** Land item `target.index` (or the item carrying `target.key`) — its row `target.block` when
    *  given — `target.top` px below the viewport's top. `options`: `intent`, `dirtyFrom`,
-   *  `smooth`, and `decide: false` for a landing another command refines in the same task. */
+   *  `smooth`, `decide: false` for a landing another command refines in the same task, and
+   *  `pin: "acquire"` for a move that keeps the pin only at the true end (a turn step, #s487). */
   jumpTo(target, options = {}) {
     const index = target.index != null ? target.index : this.indexOfIdentity(target.key);
     if (index < 0 || index >= this.count) return false;

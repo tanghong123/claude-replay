@@ -3837,9 +3837,10 @@ for (const kind of ["wheel", "touchmove", "pointerdown", "keydown"]) document.ad
 
 /** #s487: the index among the user turns of the turn the last turn step landed, or -1 while the
  *  view is not where the step left it (the reader's input or another session ends it). From the
- *  end of a session whose last turns are short, `[` lands turn N-1 within the
- *  hold slack, where the engine keeps the pin (#94, #103), and the end rule (#199) named the LAST
- *  turn there: the next `[` counted from N again and landed N-1 again, and the bar named N. Where
+ *  end of a session whose last turns are short, `[` lands turn N-1 within the hold slack of the
+ *  end, where the end rule (#199) named the LAST turn: the next `[` counted from N again and
+ *  landed N-1 again, and the bar named N. (Before #s502 the engine also kept the pin there, so
+ *  the tail took the reader back to the end.) Where
  *  N-1 was already in view the step moved nothing at all. The step's own landing is what the
  *  reader chose, so it stays the current turn until the view moves: read by the landed row's
  *  place in the scroller, which a converge to the tail or a scroll changes and the engine's hold
@@ -3868,7 +3869,9 @@ function stepTurn(delta) {
   const turns = userUnits(); if (!turns.length) return;
   const next = Math.max(0, Math.min(turns.length - 1, currentUserUnitIndex() + delta));
   stepLanded = null;
-  if (!viewport.jumpToRecord(turns[next].from, "turn")) return;
+  // Following decided as a jump to the end decides it (#s502): kept only where the step lands at
+  // the end, never within the hold slack short of it, where the tail would take the reader back.
+  if (!viewport.jumpToRecord(turns[next].from, "turn", "acquire")) return;
   const row = unitRow(turns[next].key);
   if (!row) return;
   stepLanded = { session: recordState.session, key: turns[next].key, top: row.getBoundingClientRect().top - viewport.scroller.getBoundingClientRect().top };

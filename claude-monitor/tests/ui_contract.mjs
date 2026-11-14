@@ -599,7 +599,7 @@ assert.match(productionCss, /\.prompt-copy-shell\.collapsed/, "long prompts need
 assert.match(productionCss, /\.spot-link\{/, "message permalinks need a subtle production treatment");
 assert.match(viewSource, /url\.hash = id/, "message permalinks must copy a session URL with a stable record hash");
 assert.match(viewSource, /function landOnHash\(\)/, "record hashes must land through the virtual viewport");
-assert.match(viewportSource, /jumpToRecord\(recordIndex, reveal = "record"\)/, "deep links must materialize virtualized records before scrolling");
+assert.match(viewportSource, /jumpToRecord\(recordIndex, reveal = "record", pin = undefined\)/, "deep links must materialize virtualized records before scrolling");
 assert.match(viewportSource, /reveal = "record"/, "navigation must carry an explicit reveal depth");
 assert.match(viewportSource, /processExpanded\.add\(process\.key\)/, "turn navigation must reveal the following process list");
 assert.match(viewportSource, /folds\.set\(target\.id, false\)/, "task, agent and search navigation must open the target execution block");
@@ -3867,13 +3867,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(engine, /this\.wrote = null;\n\s*this\.releaseHold\(\);\n\s*\}/, "…and by any input");
   // Intent is the page's, never invented; the follow decision once, at the destination.
   assert.match(engine, /command\(cause, position, options = \{\}\) \{\n\s*if \(!this\.count \|\| !position\) return false;\n\s*if \(options\.intent\) this\.markIntent\(\);/, "a commanded move stamps intent only when the page says so (v1.254.0)");
-  assert.match(engine, /const following = wasFollowing \? gap <= this\.slacks\.hold : gap <= this\.slacks\.acquire;\n\s*if \(following !== this\.following\) this\.following = following;\n\s*if \(following !== wasFollowing\) this\.followChanged\(\);/, "…keeps the pin within the hold slack, acquires it at the true end, and announces a change once");
+  assert.match(engine, /const following = wasFollowing && options\.pin !== "acquire" \? gap <= this\.slacks\.hold : gap <= this\.slacks\.acquire;\n\s*if \(following !== this\.following\) this\.following = following;\n\s*if \(following !== wasFollowing\) this\.followChanged\(\);/, "…keeps the pin within the hold slack, acquires it at the true end, and announces a change once");
   assert.match(engine, /holdThrough\(mutate\) \{\n\s*return this\.transact\("hold", \{ mutate, measure: true \}\);/, "a fold hold is a transaction on the reader's own position — not on the head (a head above the viewport holds nothing, #176) and not a landing");
   assert.match(engine, /scrollTo\(y, options = \{\}\) \{\n\s*if \(!this\.count\) return false;\n\s*return this\.command\("move", this\.modelAt\(Math\.max\(0, y\)\), options\);/, "an offset move is a model position — never held");
   assert.match(engine, /if \(block != null\) \{ position\.block = String\(block\); position\.blockTop = top; \}/, "a landing given with a row goes in blockTop, which is what offsetOf reads for a row");
   assert.match(engine, /const shift = element\.getBoundingClientRect\(\)\.top - holder\.getBoundingClientRect\(\)\.top;/, "…and a revealed element's own offset inside its row is translated, since offsetOf places the row");
   // The pages call, exactly where the old code stamped.
-  assert.match(shell, /this\.jumpTo\(\{ index, block: recordIndex, top: this\.landing \}, \{ dirtyFrom: index, intent: true \}\);/, "the shell's jump lands the record row at the landing, stamped as before");
+  assert.match(shell, /this\.jumpTo\(\{ index, block: recordIndex, top: this\.landing \}, \{ dirtyFrom: index, intent: true, pin \}\);/, "the shell's jump lands the record row at the landing, stamped as before");
+  assert.match(viewSrc, /viewport\.jumpToRecord\(turns\[next\]\.from, "turn", "acquire"\)/, "…and a turn step keeps following only where it lands at the end (#s502)");
+  assert.match(classic, /goToId\(records\[dest\]\.id, "acquire"\);/, "…on the classic page too");
   assert.match(shell, /this\.jumpTo\(\{ key: memory\.key, index, top: memory\.top \}, \{ dirtyFrom: changedUnit \}\);/, "…its memory restore is a landing with no stamp");
   assert.doesNotMatch(shell, /toBottom\(/, "…and the pill is the engine's follow, with no wrapper left on the shell");
   assert.match(viewSrc, /byId\("jumpToBottom"\)\.onclick = \(\) => \{ stepLanded = null; setTurnsFollow\(true\); viewport\.follow\(\); \};/, "…called from the pill itself (which locks the Turns pane to the session again, #s207, and ends a turn step's hold on the current turn, #s487)");
@@ -3881,14 +3883,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSrc, /viewport\.reveal\(heads\[next\], \{ top: 160, smooth: true, intent: true \}\);/, "a stepped head is revealed smoothly — the classic page's rule, stamped as before");
   assert.match(viewSrc, /viewport\.reveal\(nested, \{ top: 18 \}\);/, "a nested hash landing is a reveal");
   assert.match(viewSrc, /viewport\.reveal\(mark, \{ top: Math\.min\(120, ceiling - view\.top \+ Math\.min\(space \/ 3, Math\.max\(0, space - box\.height\)\)\) \}\);/, "…and so is a search mark below the fold (#s248: a third into the space above the floor, #s263: below the turn bar)");
-  assert.match(classic, /vw\.jumpTo\(\{ index: ti, top: GOTO_Y \}, \{ dirtyFrom: ti, intent: true \}\);/, "goToId is one landing, stamped");
+  assert.match(classic, /vw\.jumpTo\(\{ index: ti, top: GOTO_Y \}, \{ dirtyFrom: ti, intent: true, pin: pin \}\);/, "goToId is one landing, stamped");
   assert.match(classic, /vw\.jumpTo\(\{ index: ti, top: dy \}, \{ intent: true \}\);/, "landOn is one landing, stamped as it always was");
   assert.match(classic, /vw\.jumpTo\(\{ index: idIndex\[anchorId\], top: anchorTop \}\);/, "a filter change re-lands the anchored record with no stamp");
   assert.match(classic, /vw\.scrollTo\(st\.y, \{ intent: true \}\);/, "a raw-offset restore is a move");
   assert.match(classic, /vw\.scrollBy\(-speed, \{ intent: true \}\);/, "the drag-select tick is a move, stamped per tick as before");
   assert.match(classic, /vw\.holdThrough\(apply\);/, "a fold toggle holds the reader through the engine, with no stamp");
   assert.match(classic, /if \(r\.top < 96 && r\.bottom > 96\) vw\.reveal\(h, \{ top: 104 \}\);/, "…and the sliver nudge is a reveal with no stamp (the audit reaches it by synthetic click)");
-  assert.match(classic, /if \(moved\) vw\.reveal\(target, \{ top: GOTO_Y, smooth: !instant \}\);/, "goTo is a reveal, smooth unless instant");
+  assert.match(classic, /if \(moved\) vw\.reveal\(target, \{ top: GOTO_Y, smooth: !instant, pin: pin \}\);/, "goTo is a reveal, smooth unless instant");
   assert.match(classic, /vw\.reveal\(h, \{ top: 160, smooth: true \}\);/, "stepHead is a smooth reveal");
   assert.equal((classic.match(/vw\.follow\(\);/g) || []).length, 3, "the badge, the restore's tail and a live open take the pin through the engine");
   console.log("#196 stage 4 cases passed");

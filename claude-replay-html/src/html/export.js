@@ -2795,7 +2795,8 @@
     return r.top >= top && r.bottom <= window.innerHeight - 8;
   }
   /// `keepIfVisible`: leave the viewport alone when the target is already on screen.
-  function goTo(target, instant, keepIfVisible) {
+  /// `pin`: "acquire" for a turn step, which keeps following only at the true end (#s487).
+  function goTo(target, instant, keepIfVisible, pin) {
     if (!target) return;
     for (var p = target; p; p = p.parentElement) {
       if (p.classList && p.classList.contains("fold")) setFold(p, true);
@@ -2805,14 +2806,14 @@
     // The engine's `reveal` (framework §4.10): the target at GOTO_Y, held there through what
     // settles under it until the reader moves. Smooth is the engine's own animation, which the
     // reader's wheel interrupts.
-    if (moved) vw.reveal(target, { top: GOTO_Y, smooth: !instant });
+    if (moved) vw.reveal(target, { top: GOTO_Y, smooth: !instant, pin: pin });
     target.classList.add("flash");
     setTimeout(function () { target.classList.remove("flash"); }, 1000);
     return moved;
   }
   // Navigate to a block id through the virtual layer (#50): open its record's fold
   // chain, materialize its region, then land on the element (nested ids included).
-  function goToId(id) {
+  function goToId(id, pin) {
     var ti = idIndex[id];
     if (ti == null) return;
     withChain(records[ti], id, function (n) { if (isFoldRec(n)) n.open = 1; });
@@ -2823,9 +2824,9 @@
     // that existed while they ran. Stamped: every goToId is the reader's own navigation
     // (sidebar, search, filter), and the pin is decided at the destination (#94, #103) — landing
     // NEAR the tail must not pin.
-    vw.jumpTo({ index: ti, top: GOTO_Y }, { dirtyFrom: ti, intent: true });
+    vw.jumpTo({ index: ti, top: GOTO_Y }, { dirtyFrom: ti, intent: true, pin: pin });
     var target = document.getElementById(id);
-    if (target) goTo(target, true);
+    if (target) goTo(target, true, false, pin);
     // A landing at (nearly) the same y fires no scroll event — refresh the scrollspy explicitly.
     updateView();
     spy();
@@ -3689,7 +3690,9 @@
         }
       }
     }
-    if (dest != null) goToId(records[dest].id);
+    // Following decided as a jump to the end decides it (#s502): kept only where the step lands at
+    // the end, never within the hold slack short of it.
+    if (dest != null) goToId(records[dest].id, "acquire");
   }
   document.addEventListener("keydown", function (e) {
     if (shared.isEditable(e.target)) return;
