@@ -82,8 +82,9 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, 
   // `sized`: whether a decision has seen the view's box. A view mounted hidden decides once at 0×0,
   // which says nothing of its family, and `phone()` then answers for no box.
   let said = null, wrote = null, placed = null, arranged = null, glideUntil = 0, sized = false;
-  // The top and bottom gaps the last decision wrote, which a decision during the keyboard ride keeps.
-  let gaps = { top: 0, bottom: 0 };
+  // The top and bottom gaps the last decision that saw a box read off it, which a decision during the
+  // keyboard ride keeps; until one has, a ride reads them off its box as any decision does.
+  let gaps = { top: 0, bottom: 0 }, gapsKnown = false;
   // Everything a decision reads of the page, read at once: the view's box, the window's width and
   // height, and the screen's pointer.
   const measure = () => ({ box: element.getBoundingClientRect(), viewport: viewRoot.viewportWidth(), height: innerHeight, coarse: coarse.matches, fine: fine.matches });
@@ -107,7 +108,7 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, 
     // moves the app back over iOS's scroll as the reader types), the box is where it is for the
     // keyboard, not for the host, so the gaps stay as the last decision read them: none in the app,
     // the bar's in a host's pane under one.
-    const riding = !!rides?.() && placed !== null;
+    const riding = !!rides?.() && gapsKnown;
     const level = !riding && tall && Math.abs(box.top) <= 0.5;
     const top = riding ? gaps.top : level ? 0 : Math.max(0, box.top);
     const bottom = riding ? gaps.bottom : level ? 0 : Math.max(0, height - box.bottom);
@@ -116,7 +117,9 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, 
     const place = JSON.stringify([box.left, right, top, bottom]);
     if (writing === wrote && place === placed) return;
     placed = place;
-    gaps = { top, bottom };
+    // Kept only from a decision that saw a box and was not riding: a view mounted hidden decided at
+    // 0×0, whose foot read the window's whole height as its gap.
+    if (!riding && (box.width || box.height)) { gaps = { top, bottom }; gapsKnown = true; }
     watchMoves(box);
     // Where the view sits in the window, for placing alone (#s461 rules out reading the window for a
     // layout): its gaps to the window's left and right edges, top and bottom, and whether it is not
