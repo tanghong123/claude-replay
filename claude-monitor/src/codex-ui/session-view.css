@@ -1345,6 +1345,7 @@
 :where(#sessionView) .preview-body.production-loading{display:grid;place-items:center;color:var(--faint)}
 :where(#sessionView) .production-revoke{margin-left:auto;border:0;background:transparent;color:var(--faint);font:10px var(--sans);cursor:pointer}
 :where(#sessionView) .production-revoke:hover{color:var(--red)}
+:where(#sessionView) .transcript{scrollbar-gutter:stable}
 #sessionView .composer>.composer-head>span,#sessionView .composer .risk,#sessionView .composer .compose-foot:before{display:none}
 #sessionView .composer.live #composeTarget{color:var(--amber)}
 #sessionView .composer .compose-attach{flex:none;width:30px;height:30px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--sub);display:grid;place-items:center;cursor:pointer}

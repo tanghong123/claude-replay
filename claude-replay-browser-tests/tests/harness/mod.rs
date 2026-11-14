@@ -3979,6 +3979,25 @@ pub fn track_idle(tab: &headless_chrome::Tab) {
     .expect("the idle tracker is installed");
 }
 
+/// Scrollbars that take room, as Linux's and Windows' do (and a Mac's set to always show them), on every
+/// page the tab loads from now on: macOS draws overlay scrollbars, which take none, so a case run there
+/// cannot see a width that changes when a scrollbar appears (#s431: the transcript's mount narrowed by
+/// its scrollbar after the engine's last remeasure, red only on CI's Linux runners). Installed before
+/// the page's own scripts run, so the page never lays out without it.
+pub fn classic_scrollbars(tab: &headless_chrome::Tab) {
+    use headless_chrome::protocol::cdp::Page;
+    tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+        source: CLASSIC_SCROLLBARS_JS.to_string(),
+        world_name: None,
+        include_command_line_api: None,
+        run_immediately: None,
+    })
+    .expect("classic scrollbars are installed");
+}
+
+// An adopted sheet, since the script runs before the document has an element to hold a `<style>`.
+const CLASSIC_SCROLLBARS_JS: &str = "(function(){ var s = new CSSStyleSheet(); s.replaceSync('*::-webkit-scrollbar{width:15px;height:15px} *::-webkit-scrollbar-thumb{background:#888}'); document.adoptedStyleSheets = document.adoptedStyleSheets.concat([s]); })()";
+
 const TRACK_IDLE_JS: &str = r##"(function(){
   if (window.__settle) return;
   var w = window, oST = w.setTimeout, oCT = w.clearTimeout, oSI = w.setInterval, oCI = w.clearInterval,

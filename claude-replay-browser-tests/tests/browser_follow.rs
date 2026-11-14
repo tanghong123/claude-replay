@@ -10708,14 +10708,21 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
 /// forced comes back with the room; the reader's collapse is remembered across a wider window. The
 /// pane opening at 1200px folds the list to its rail without cutting the pane's glide, and shutting it
 /// brings the list back. On an 834px touch window (an iPad upright) the list keeps 276px beside the
-/// phone reader (#s475, #s478).
+/// phone reader (#s475, #s478). Its scrollbars take room, as Linux's do, so each remeasure's ratio is
+/// read from the column the reader saw on every system (#s431: on Linux the transcript's scrollbar
+/// appeared after the engine's last remeasure and the next one scaled from the wider column).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_lays_out_its_list_by_the_owners_order() {
     const MARK: &str = "window.__mark = function () { window.__t0 = performance.now(); window.__w0 = document.querySelector('.virtual-window').getBoundingClientRect().width; return true; };";
     const REMEASURES: &str = "(function(){ var w = document.querySelector('.virtual-window').getBoundingClientRect().width; var rs = window.__viewportHistory.states.filter(function (s) { return s.cause === 'remeasure' && s.t >= window.__t0; }).map(function (s) { return s.ratio; }); return { count: rs.length, ratio: rs[0], expected: Math.round(window.__w0 / w * 1000) / 1000, from: Math.round(window.__w0), to: Math.round(w) }; })()";
     let _serial = serial();
-    let (monitor, _browser, tab) = shell_with_a_session("appshell-owners-order", 3121);
+    let (monitor, _browser, tab) =
+        shell_with_a_session_in("appshell-owners-order", 3121, harness::classic_scrollbars);
+    assert!(
+        harness::eval(&tab, "(function(){ var t = document.querySelector('#sessionView .transcript'); return t.offsetWidth - t.clientWidth >= 15; })()") == serde_json::json!(true),
+        "the transcript's scrollbar takes room"
+    );
     let probe = "(function(){ var app = document.getElementById('app'), v = document.getElementById('sessionView'), side = document.querySelector('.sidebar'), handle = document.getElementById('drawerHandle'), expand = document.getElementById('sidebarMiniExpand'); var shown = function (e) { if (!e) return false; var r = e.getBoundingClientRect(); return r.width > 0 && r.right > 0 && r.left < innerWidth && getComputedStyle(e).visibility !== 'hidden'; }; var outline = ['open', 'glyphs', 'bar', 'dock'].find(function (k) { return v.classList.contains('pl-outline-' + k); }) || ''; return { drawer: app.classList.contains('app-drawer'), rail: app.classList.contains('sidebar-off'), shut: app.classList.contains('mobile-detail'), list: shown(side) ? Math.round(side.getBoundingClientRect().width) : 0, view: Math.round(v.getBoundingClientRect().width), outline: outline, phone: v.classList.contains('pl-phone'), handle: shown(handle), expandDisabled: expand.getAttribute('aria-disabled') }; })()";
     let quiet = "document.getElementById('app').getAnimations().length === 0 && document.getElementById('sessionView').getAnimations({ subtree: true }).filter(function (a) { return a instanceof CSSTransition; }).length === 0";
     let at = |width: f64| -> serde_json::Value {
@@ -11657,6 +11664,19 @@ fn shell_with_a_session(
     headless_chrome::Browser,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
+    shell_with_a_session_in(name, port, |_| {})
+}
+
+/// `shell_with_a_session`, with `prepare` given the tab before the shell's first load.
+fn shell_with_a_session_in(
+    name: &str,
+    port: u16,
+    prepare: impl FnOnce(&headless_chrome::Tab),
+) -> (
+    Monitor,
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+) {
     let base = base(name);
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000160".to_string();
@@ -11669,6 +11689,7 @@ fn shell_with_a_session(
     stores.claude_session(&sid, &transcript);
     let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
     let (browser, tab) = harness::chrome_tab();
+    prepare(&tab);
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
     harness::until(
