@@ -2448,8 +2448,22 @@ const ARTIFACT_COMMENTS_THREADS_SHAPE: &[&str] = &["cursor", "thread_filter", "t
 /// the account may pin artifacts), not something the call did; the result TEXT the page draws
 /// states the listing itself. Revisit if a list result ever carries per-artifact pin state the
 /// text does not state. Since client 2.1.296 it also carries `total` (#s81, one record, measured
-/// 2026-10-11): an integer equal to the length of `artifacts`, a count the text's listing shows.
-const ARTIFACT_LIST_SHAPE: &[&str] = &["artifacts", "pins_enabled", "scope", "total"];
+/// 2026-10-11): the number of artifacts the account has in the scope, which equalled the length of
+/// `artifacts` there, since nothing was cut. #s486 (client 2.1.322, one record, measured
+/// 2026-11-14 on aries-black): a list cut by the call's limit, `{artifacts, truncated: true, total,
+/// pins_enabled}` with 5 listed of a `total` of 7, and no `scope` (the client omits it for the
+/// default list, mine, as read in the 2.1.325 client). `truncated` is flat-known (beside
+/// `totalLines`) but must be in this array, or the shape could never hold and `pins_enabled` and
+/// `total` would come back with it. It repeats as a flag what the text the page draws already
+/// says: the 2.1.322 client opens the listing with "Showing N of M" whenever `total` is present, as
+/// Glob's `truncated` repeats its "Showing 100 of 348". Named in the 2.1.325 client and NOT yet
+/// met, so not here: `total_at_least` (the text then says "Showing N of at least M"),
+/// `next_page_token` and `external_listed`, each to be judged as its own row when one first
+/// carries it. The keys of each item inside `artifacts` were not inspected. REVISIT: a list result
+/// with `truncated` true and no `total` (the client's schema makes each optional, and the text
+/// says "Showing N of M" only when `total` is present): check then whether the text still says the
+/// list was cut; if not, `truncated` is the one fact the card would miss.
+const ARTIFACT_LIST_SHAPE: &[&str] = &["artifacts", "pins_enabled", "scope", "total", "truncated"];
 
 /// Every key a ListAgents result was met with (#s81, client 2.1.296, 8 results measured 2026-10-11;
 /// 2.1.288 and 2.1.289 wrote `listing` alone): `{listing, sections, notes}`. `sections` is a
@@ -2710,10 +2724,11 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // Artifact's list result (#s62): `pins_enabled` is an account's feature flag, and a word
     // another tool could use for anything, so it is known only in the list's own shape.
     ("pins_enabled", ARTIFACT_LIST_SHAPE),
-    // #s81 (client 2.1.296): the list's `total` is the number of artifacts it lists. Adding it to
-    // the shape also silences `pins_enabled` again, which came back beside it: a name here is known
-    // only while every key of the result is in the shape, so a shaped result that gains a key
-    // brings its known keys back with the new one.
+    // #s81 (client 2.1.296): the list's `total` is the number of artifacts in its scope (#s486:
+    // more than it lists when the call's limit cut it). Adding it to the shape also silences
+    // `pins_enabled` again, which came back beside it: a name here is known only while every key
+    // of the result is in the shape, so a shaped result that gains a key brings its known keys
+    // back with the new one.
     ("total", ARTIFACT_LIST_SHAPE),
     // #s81 (client 2.1.296): ListAgents' `sections` repeats, as structure, the listing the card
     // draws as text; `notes` has only been met empty. Both are generic words, so each is known
@@ -8911,6 +8926,10 @@ mod tests {
             vec!["total"],
             "beside a key the list shape lacks, `total` is reported like any new key"
         );
+        // #s486: since client 2.1.322 a list cut by the call's limit says so (`truncated`), and
+        // the default list (mine) carries no `scope`: the shape still holds.
+        let cut = serde_json::json!({"artifacts": [], "truncated": true, "total": 0, "pins_enabled": true});
+        assert_eq!(unknown_tool_result_keys(&cut), Vec::<&str>::new(), "{cut}");
     }
 
     /// #277 — seven shapes the daily review judged bookkeeping are known now, and the two with
