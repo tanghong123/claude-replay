@@ -59,6 +59,13 @@ pub enum NoteKind {
     /// records (#236), and Codex's `task_complete` carrying an error. Named for the meaning
     /// rather than for the API, so an agent whose turns fail some other way fits here too.
     Failure,
+    /// A reply the CLIENT wrote in the agent's place (#s499): drawn as a note, since the agent
+    /// never said it, and still the turn's last word to the state signals, as the prose it used
+    /// to fold to was, so a session ending on one keeps the state it had.
+    ///
+    /// What qualifies today: Claude Code's placeholder, the `<synthetic>` reply "No response
+    /// requested." it splices in when a resumed conversation ends on a prompt no answer followed.
+    ClientReply,
 }
 
 /// One entry in the canonical message log. Ordered exactly as the transcript's lines

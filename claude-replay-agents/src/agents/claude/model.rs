@@ -114,6 +114,42 @@ fn cut_off_text(v: &Value, content: &[Value], phase: Option<AssistantPhase>) -> 
     })
 }
 
+/// The texts of a reply the CLIENT wrote in the agent's place (#s499), if this assistant record
+/// is one: Claude Code's placeholder, model `<synthetic>`, not flagged `isApiErrorMessage` (those
+/// are its failure notes, read first), every block text. Measured 2026-11-15 on hong-devserver: 69
+/// such records, every one a single "No response requested." with `stop_reason` "stop_sequence",
+/// clients 2.1.225 to 2.1.325; the client splices it in when a resumed conversation ends on a
+/// prompt no answer followed. 2.1.325 says so outright, `madeBy` "other", and a record whose
+/// `madeBy` says the model wrote it ("model") or a caller handed it in ("input"), or that carries
+/// `handedOff`, stays the agent's prose, as the client itself counts it. `madeBy` "other" alone
+/// does not qualify: an imported conversation carries it on replies the model really wrote.
+/// `handedOff` is read here as the client reads it, though not yet met, and is left out of the
+/// record-key census on purpose, so its first appearance is still reported (the census's REVISIT).
+fn client_reply(v: &Value, content: &[Value]) -> Option<Vec<String>> {
+    if v.pointer("/message/model").and_then(Value::as_str) != Some("<synthetic>")
+        || v.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true)
+        || v.get("handedOff").and_then(Value::as_bool) == Some(true)
+        || !matches!(
+            v.get("madeBy").and_then(Value::as_str),
+            None | Some("other")
+        )
+    {
+        return None;
+    }
+    let mut texts = Vec::new();
+    for blk in content {
+        if blk.get("type").and_then(Value::as_str) != Some("text") {
+            return None;
+        }
+        if let Some(t) = blk.get("text").and_then(Value::as_str) {
+            if !t.trim().is_empty() {
+                texts.push(t.to_string());
+            }
+        }
+    }
+    (!texts.is_empty()).then_some(texts)
+}
+
 /// A reply the safety classifier STOPPED (#s378), if this assistant record is one: `stop_reason`
 /// `refusal` on a record that is not the client's own error message (#286's synthetic one says so
 /// itself), with the message id the client's note will name and the category it recorded
@@ -1552,6 +1588,27 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // prose with no mark; (3) such a record with more than one text block, whose first
             // alone goes under the mark.
             "refusedMessageId",
+            // #s499 (client 2.1.325): a string on every assistant record, who wrote it. Measured
+            // 2026-11-15 on hong-devserver: about 33,000 records in 164 transcripts, main sessions
+            // and sub-agents; "model" on every real answer, "other" on 4 records in 3 sessions,
+            // each the client's placeholder (model `<synthetic>`, not `isApiErrorMessage`, zero
+            // usage, `stop_reason` "stop_sequence", one text "No response requested."), and no
+            // "model" on a `<synthetic>` record. The client's code names three values: "model" (the
+            // model wrote it), "other" (the client did: this placeholder, an imported conversation
+            // whose records carry model "claude-export-import", a record with no version or
+            // session), "input" (a record a caller handed in, beside `handedOff`). READ, with the
+            // model, by `client_reply`: the placeholder folds to a client note
+            // (`NoteKind::ClientReply`), still the turn's last word to the state signals, and
+            // older clients' placeholders, without the key, fold the same way by their model.
+            // REVISIT: (1) the first "input", an assistant record a caller handed in that the page
+            // would draw as the agent's words, a RENDER question for the owner, queued with the
+            // count and client version. `--unknown` reports keys, not values, so it does not see
+            // a new `madeBy` value; this one surfaces through (3), the `handedOff` the client
+            // writes beside it; (2) "other" on a record that is not this placeholder, such
+            // as an imported conversation, drawn as prose today, where the cost and the card may
+            // need to read differently; (3) the sibling `handedOff`, not yet met and left out of
+            // this census so it reports as its own row, to be judged then.
+            "madeBy",
         ],
     ),
     (
@@ -4073,6 +4130,17 @@ pub(crate) fn decode_line_known(
                 }
                 return;
             }
+            // #s499: a reply the client wrote in the agent's place is its note, not the agent's
+            // prose; still the turn's last word to the state signals (`NoteKind::ClientReply`).
+            if let Some(texts) = client_reply(&v, content) {
+                for text in texts {
+                    msgs.push(Message::SystemNote {
+                        text,
+                        kind: NoteKind::ClientReply,
+                    });
+                }
+                return;
+            }
             let phase = assistant_phase(&v, content);
             let cut = cut_off_text(&v, content, phase);
             for (i, blk) in content.iter().enumerate() {
@@ -5379,6 +5447,11 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                         }
                     }
                     out.extend(texts.map(Block::ToolResult));
+                    continue;
+                }
+                // #s499 mirror: the client's reply in the agent's place is its note.
+                if let Some(texts) = client_reply(&v, content) {
+                    out.extend(texts.into_iter().map(Block::ToolResult));
                     continue;
                 }
                 let phase = assistant_phase(&v, content);
@@ -10202,6 +10275,182 @@ mod tests {
                 .any(|b| matches!(b, Block::AssistantText(_) | Block::AssistantMessage { .. })),
             "the cut is not the assistant speaking: {blocks:?}"
         );
+    }
+
+    /// #s499: the reply Claude Code writes in the agent's place — its `<synthetic>` placeholder
+    /// "No response requested.", `madeBy` "other" from 2.1.325, without the key before — folds to
+    /// a client note (`NoteKind::ClientReply`, a `ToolResult` block), never the agent's prose, on
+    /// both parse paths; `madeBy` is known while the sweep asks. Around it nothing moves: a real
+    /// answer (`madeBy` "model") is prose, an API error is still its Failure note, a <synthetic>
+    /// record the client counts as the model's (`madeBy` "model", or `handedOff`) stays prose, an
+    /// imported conversation's reply (`madeBy` "other", a real model) stays prose, and a
+    /// thinking-only <synthetic> record keeps its thinking. Fixtures by hand.
+    #[test]
+    fn a_reply_the_client_wrote_is_its_note() {
+        const NOTE: &str = "No response requested.";
+        let placeholder = |version: &str, sid: &str, made_by: &str| {
+            format!(
+                r#"{{"type":"assistant","version":"{version}","sessionId":"{sid}","uuid":"a1",{made_by}"isApiErrorMessage":false,"timestamp":"2026-11-14T10:00:01.000Z","message":{{"id":"msg_p1","role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{{"input_tokens":0,"output_tokens":0}},"content":[{{"type":"text","text":"{NOTE}"}}]}}}}"#
+            )
+        };
+        let prompt = |version: &str, sid: &str, uuid: &str, text: &str| {
+            format!(
+                r#"{{"type":"user","version":"{version}","sessionId":"{sid}","uuid":"{uuid}","timestamp":"2026-11-14T10:00:00.000Z","message":{{"role":"user","content":"{text}"}}}}"#
+            )
+        };
+        let answer = |version: &str, sid: &str, made_by: &str, model: &str, text: &str| {
+            format!(
+                r#"{{"type":"assistant","version":"{version}","sessionId":"{sid}","uuid":"a2",{made_by}"timestamp":"2026-11-14T10:00:05.000Z","message":{{"id":"msg_p2","role":"assistant","model":"{model}","stop_reason":"end_turn","usage":{{"input_tokens":3,"output_tokens":5}},"content":[{{"type":"text","text":"{text}"}}]}}}}"#
+            )
+        };
+        let prose = |blocks: &[Block], want: &str| {
+            blocks.iter().any(|b| {
+                matches!(b, Block::AssistantText(t) | Block::AssistantMessage { text: t, .. } if t == want)
+            })
+        };
+        unknown_watch_keys(true);
+        for (shape, version, sid, made_by) in [
+            (
+                "2.1.325, madeBy other",
+                "2.1.325",
+                "s-s499a",
+                r#""madeBy":"other","#,
+            ),
+            ("2.1.310, no madeBy", "2.1.310", "s-s499b", ""),
+        ] {
+            let jsonl = [
+                prompt(version, sid, "u1", "count the tern nests"),
+                placeholder(version, sid, made_by),
+                prompt(version, sid, "u2", "go on"),
+                answer(
+                    version,
+                    sid,
+                    if made_by.is_empty() {
+                        ""
+                    } else {
+                        r#""madeBy":"model","#
+                    },
+                    "claude-opus-5-5",
+                    "Twelve nests.",
+                ),
+            ]
+            .join("\n");
+            let messages = tokenize(jsonl.lines());
+            let notes = messages
+                .iter()
+                .filter(|m| {
+                    matches!(m, Message::SystemNote { text, kind: NoteKind::ClientReply } if text == NOTE)
+                })
+                .count();
+            assert_eq!(notes, 1, "{shape}: one client note: {messages:?}");
+            let blocks = parse(&jsonl);
+            assert!(
+                blocks
+                    .iter()
+                    .any(|b| matches!(b, Block::ToolResult(t) if t == NOTE)),
+                "{shape}: drawn as a note: {blocks:#?}"
+            );
+            assert!(
+                !prose(&blocks, NOTE),
+                "{shape}: never the agent's prose: {blocks:#?}"
+            );
+            assert!(
+                prose(&blocks, "Twelve nests."),
+                "{shape}: the real answer is prose: {blocks:#?}"
+            );
+            assert_eq!(
+                blocks,
+                parse_main(jsonl.lines(), &mut Vec::new()),
+                "{shape}: both parse paths agree"
+            );
+            let seen: Vec<_> = unknown_shapes()
+                .into_iter()
+                .filter(|s| s.example.as_deref() == Some(sid))
+                .collect();
+            assert!(seen.is_empty(), "{shape}: nothing reported: {seen:?}");
+        }
+
+        // An API error stays its Failure note.
+        let error = r#"{"type":"assistant","version":"2.1.325","sessionId":"s-s499c","uuid":"a1","madeBy":"other","isApiErrorMessage":true,"error":"server_error","message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: Connection error."}]}}"#;
+        let jsonl = [prompt("2.1.325", "s-s499c", "u1", "go"), error.to_string()].join("\n");
+        let messages = tokenize(jsonl.lines());
+        assert!(
+            messages.iter().any(|m| matches!(
+                m,
+                Message::SystemNote {
+                    kind: NoteKind::Failure,
+                    ..
+                }
+            )),
+            "the API error is still a Failure note: {messages:?}"
+        );
+        assert!(
+            !messages.iter().any(|m| matches!(
+                m,
+                Message::SystemNote {
+                    kind: NoteKind::ClientReply,
+                    ..
+                }
+            )),
+            "and not a client reply: {messages:?}"
+        );
+
+        // What the client counts as the model's, or a real model's imported reply, stays prose.
+        for (shape, record) in [
+            (
+                "a <synthetic> record madeBy model",
+                placeholder("2.1.325", "s-s499d", r#""madeBy":"model","#),
+            ),
+            (
+                "a <synthetic> record madeBy input",
+                placeholder("2.1.325", "s-s499d", r#""madeBy":"input","#),
+            ),
+            (
+                "a <synthetic> record flagged handedOff",
+                placeholder(
+                    "2.1.325",
+                    "s-s499d",
+                    r#""madeBy":"other","handedOff":true,"#,
+                ),
+            ),
+            (
+                "an imported conversation's reply",
+                answer(
+                    "2.1.325",
+                    "s-s499d",
+                    r#""madeBy":"other","#,
+                    "claude-export-import",
+                    NOTE,
+                ),
+            ),
+        ] {
+            let jsonl = [prompt("2.1.325", "s-s499d", "u1", "go"), record].join("\n");
+            let blocks = parse(&jsonl);
+            assert!(prose(&blocks, NOTE), "{shape}: prose: {blocks:#?}");
+            assert_eq!(
+                blocks,
+                parse_main(jsonl.lines(), &mut Vec::new()),
+                "{shape}"
+            );
+        }
+
+        // A thinking-only <synthetic> record (7 measured, no text) keeps its thinking.
+        let thinking = r#"{"type":"assistant","version":"2.1.318","sessionId":"s-s499e","uuid":"a1","isApiErrorMessage":false,"message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"thinking","thinking":"The colony is on the east shore.","signature":"x"}]}}"#;
+        let jsonl = [
+            prompt("2.1.318", "s-s499e", "u1", "go"),
+            thinking.to_string(),
+        ]
+        .join("\n");
+        let blocks = parse(&jsonl);
+        assert!(
+            blocks.iter().any(|b| matches!(b, Block::Thinking { .. })),
+            "{blocks:#?}"
+        );
+        assert!(
+            !blocks.iter().any(|b| matches!(b, Block::ToolResult(_))),
+            "{blocks:#?}"
+        );
+        assert_eq!(blocks, parse_main(jsonl.lines(), &mut Vec::new()));
     }
 
     /// #s328: 2.1.314's typed kind on an API error record is known, not reported while the sweep
