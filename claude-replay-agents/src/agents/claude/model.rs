@@ -1240,6 +1240,9 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // value naming a message other than the
             // assistant record just before it (the note would then sit away from what was
             // stopped); (2) the key on a record that is not `isMeta`, or on another record type.
+            // (2) FIRED on 2026-11-13 (client 2.1.322): the key on the client's synthetic
+            // API-error ASSISTANT record, the same stop recorded another way, read since #s470
+            // (the assistant entry below).
             "refusedMessageId",
             // #s374 (clients 2.1.308 to 2.1.318): three parallel lists on a task notification the
             // client hands a SUB-AGENT (`isMeta`, `origin.kind: "task-notification"`, its text a
@@ -1532,6 +1535,23 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // count, never decided here; (2) asked and billed disagreeing on more than the 6
             // records of one session found so far (asked 1h, billed 5m, unexplained).
             "promptCacheRequested",
+            // #s470 (client 2.1.322): on the synthetic API-error record the client writes after the
+            // safety classifier stopped a reply (`isApiErrorMessage`, model "<synthetic>",
+            // `stop_reason` "refusal" with the reply's `stop_details`, `error` "invalid_request"),
+            // the `message.id` of that reply, as the user note's key above names it (#s368). Met
+            // on 4 records in one sub-agent transcript of one session, measured 2026-11-13 on
+            // hong-devserver, the only 4 there: each names the two records just before it (one
+            // reply, thinking then a call, category "reasoning_extraction"), once with the call's
+            // result between; four in a row, then the agent goes on. READ: a record naming a
+            // stopped reply this fold met is that reply's mark (`Block::SafetyStop`, the record's
+            // failure text folded under it, `Message::RefusedError`), as Hong's ruling on #s371
+            // says for the note; it still ends the request as a failure to the state signals. One
+            // naming any other message stays the failure note it was. REVISIT: (1) a value naming
+            // a message other than the reply just before it (or its call's result); (2) the key on
+            // an assistant record not flagged `isApiErrorMessage`, which the page would draw as
+            // prose with no mark; (3) such a record with more than one text block, whose first
+            // alone goes under the mark.
+            "refusedMessageId",
         ],
     ),
     (
@@ -4016,7 +4036,19 @@ pub(crate) fn decode_line_known(
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
             {
-                for text in api_error_texts(&v, content) {
+                let mut texts = api_error_texts(&v, content).into_iter();
+                // #s470: the record naming a reply the safety classifier stopped is that reply's
+                // mark when the fold met it (its first text the note under it), and still the
+                // failure that ended the request.
+                if let Some(id) = v.get("refusedMessageId").and_then(Value::as_str) {
+                    if let Some(text) = texts.next() {
+                        msgs.push(Message::RefusedError {
+                            id: id.to_string(),
+                            text,
+                        });
+                    }
+                }
+                for text in texts {
                     msgs.push(Message::SystemNote {
                         text,
                         // The turn DIED here (#249). Without this the state machine sees no
@@ -5318,11 +5350,20 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
                 {
-                    out.extend(
-                        api_error_texts(&v, content)
-                            .into_iter()
-                            .map(Block::ToolResult),
-                    );
+                    let mut texts = api_error_texts(&v, content).into_iter();
+                    // #s470 mirror: one naming a stopped reply this parse met is its mark.
+                    if let Some(id) = v.get("refusedMessageId").and_then(Value::as_str) {
+                        if let Some(text) = texts.next() {
+                            out.push(match refused.remove(id) {
+                                Some(category) => Block::SafetyStop {
+                                    category,
+                                    note: text,
+                                },
+                                None => Block::ToolResult(text),
+                            });
+                        }
+                    }
+                    out.extend(texts.map(Block::ToolResult));
                     continue;
                 }
                 let phase = assistant_phase(&v, content);
@@ -9736,6 +9777,161 @@ mod tests {
             "{:#?}",
             parse(&bare)
         );
+    }
+
+    /// #s470: Claude Code 2.1.322 records the same stop another way — no note, but its synthetic
+    /// API-error record (`isApiErrorMessage`, model "<synthetic>", `stop_reason` "refusal")
+    /// naming the stopped reply by `refusedMessageId`. It folds to ONE `SafetyStop` mark where
+    /// its failure note was, with the category the reply recorded and the record's text as the
+    /// note (Hong's ruling on #s371, for this form too), on both parse paths; the synthetic
+    /// record, which carries `stop_reason` "refusal" itself, is no stopped reply of its own. The
+    /// shapes measured: the reply is two records of one message id (thinking, then a call), and
+    /// the error record comes right after them or after the call's result. One naming a message
+    /// this transcript never showed stays the failure note it was, and the key is known on an
+    /// assistant record while the sweep asks. Fixtures by hand.
+    #[test]
+    fn an_api_error_naming_a_refused_reply_marks_it() {
+        const ERROR_TEXT: &str = "API Error: this fixture's reply was stopped.";
+        const STOP: &str = r#""stop_reason":"refusal","stop_details":{"type":"refusal","category":"reasoning_extraction","explanation":"Flagged in a fixture."}"#;
+        let line = |s: &str| s.replace("STOP", STOP).replace("ERROR_TEXT", ERROR_TEXT);
+        let prompt = line(
+            r#"{"type":"user","version":"2.1.322","sessionId":"s-s470","isSidechain":true,"agentId":"a470","uuid":"u1","timestamp":"2026-11-12T10:00:00.000Z","message":{"role":"user","content":"count the petrel nests"}}"#,
+        );
+        let thinking = line(
+            r#"{"type":"assistant","version":"2.1.322","sessionId":"s-s470","isSidechain":true,"agentId":"a470","uuid":"a1","timestamp":"2026-11-12T10:00:01.000Z","message":{"id":"msg_s470a","role":"assistant","model":"claude-opus-5-5",STOP,"content":[{"type":"thinking","thinking":"The nests are on the north cliff.","signature":"x"}]}}"#,
+        );
+        let call = line(
+            r#"{"type":"assistant","version":"2.1.322","sessionId":"s-s470","isSidechain":true,"agentId":"a470","uuid":"a2","timestamp":"2026-11-12T10:00:01.100Z","message":{"id":"msg_s470a","role":"assistant","model":"claude-opus-5-5",STOP,"content":[{"type":"tool_use","id":"toolu_s470a","name":"Bash","input":{"command":"ls nests"}}]}}"#,
+        );
+        let error = line(
+            r#"{"type":"assistant","version":"2.1.322","sessionId":"s-s470","isSidechain":true,"agentId":"a470","uuid":"a3","timestamp":"2026-11-12T10:00:02.000Z","isApiErrorMessage":true,"error":"invalid_request","refusedMessageId":"msg_s470a","message":{"id":"msg_s470e","role":"assistant","model":"<synthetic>",STOP,"usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"ERROR_TEXT"}]}}"#,
+        );
+        let result = line(
+            r#"{"type":"user","version":"2.1.322","sessionId":"s-s470","isSidechain":true,"agentId":"a470","uuid":"u2","timestamp":"2026-11-12T10:00:03.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_s470a","content":"the call did not run"}]}}"#,
+        );
+        let prose = line(
+            r#"{"type":"assistant","version":"2.1.322","sessionId":"s-s470","isSidechain":true,"agentId":"a470","uuid":"a4","timestamp":"2026-11-12T10:00:05.000Z","message":{"id":"msg_s470b","role":"assistant","model":"claude-opus-5-5","stop_reason":"end_turn","content":[{"type":"text","text":"Forty nests."}]}}"#,
+        );
+        let mark = Block::SafetyStop {
+            category: Some("reasoning_extraction".into()),
+            note: ERROR_TEXT.into(),
+        };
+        unknown_watch_keys(true);
+        for (shape, lines) in [
+            (
+                "the error right after the reply",
+                [&prompt, &thinking, &call, &error, &result, &prose],
+            ),
+            (
+                "the error after the call's result",
+                [&prompt, &thinking, &call, &result, &error, &prose],
+            ),
+        ] {
+            let jsonl = lines.map(String::as_str).join("\n");
+            let blocks = parse(&jsonl);
+            let marks: Vec<&Block> = blocks
+                .iter()
+                .filter(|b| matches!(b, Block::SafetyStop { .. }))
+                .collect();
+            assert_eq!(
+                marks,
+                [&mark],
+                "{shape}: one mark, the category and the record's text: {blocks:#?}"
+            );
+            assert!(
+                !blocks
+                    .iter()
+                    .any(|b| matches!(b, Block::ToolResult(t) if t == ERROR_TEXT)),
+                "{shape}: the error no longer draws as its own failure note: {blocks:#?}"
+            );
+            assert!(
+                matches!(
+                    blocks.last(),
+                    Some(Block::AssistantText(t) | Block::AssistantMessage { text: t, .. })
+                        if t == "Forty nests."
+                ),
+                "{shape}: the agent goes on as before: {blocks:#?}"
+            );
+            assert_eq!(
+                blocks,
+                parse_main(jsonl.lines(), &mut Vec::new()),
+                "{shape}: both parse paths agree"
+            );
+        }
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s470"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+
+        // Four stops in a row, as measured: each record marks its own reply, once.
+        let mut four = vec![prompt.clone()];
+        for n in ["b", "c", "d", "e"] {
+            let id = format!("msg_s470{n}0");
+            for l in [&thinking, &call, &error, &result] {
+                four.push(
+                    l.replace("msg_s470a", &id)
+                        .replace("toolu_s470a", &format!("toolu_s470{n}")),
+                );
+            }
+        }
+        four.push(prose.clone());
+        let jsonl = four.join("\n");
+        let blocks = parse(&jsonl);
+        assert_eq!(
+            blocks.iter().filter(|b| **b == mark).count(),
+            4,
+            "{blocks:#?}"
+        );
+        assert_eq!(blocks, parse_main(jsonl.lines(), &mut Vec::new()));
+
+        // The synthetic record carries `stop_reason` "refusal" itself and is no stopped reply of
+        // its own: a second record naming IT is the failure note it was.
+        let second = error
+            .replace(
+                r#""refusedMessageId":"msg_s470a""#,
+                r#""refusedMessageId":"msg_s470e""#,
+            )
+            .replace(r#""id":"msg_s470e""#, r#""id":"msg_s470f""#)
+            .replace(ERROR_TEXT, "API Error: a second record.");
+        let jsonl = [&prompt, &thinking, &call, &error, &second, &result, &prose]
+            .map(String::as_str)
+            .join("\n");
+        let blocks = parse(&jsonl);
+        assert_eq!(
+            blocks.iter().filter(|b| **b == mark).count(),
+            1,
+            "{blocks:#?}"
+        );
+        assert!(
+            blocks
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult(t) if t == "API Error: a second record.")),
+            "{blocks:#?}"
+        );
+        assert_eq!(blocks, parse_main(jsonl.lines(), &mut Vec::new()));
+
+        // One naming a message this transcript never showed is the failure note it was.
+        let stray = [&prompt, &thinking, &call, &error, &result, &prose]
+            .map(|l| {
+                l.replace(
+                    r#""refusedMessageId":"msg_s470a""#,
+                    r#""refusedMessageId":"msg_other""#,
+                )
+            })
+            .join("\n");
+        let blocks = parse(&stray);
+        assert!(
+            !blocks.iter().any(|b| matches!(b, Block::SafetyStop { .. })),
+            "{blocks:#?}"
+        );
+        assert!(
+            blocks
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult(t) if t == ERROR_TEXT)),
+            "{blocks:#?}"
+        );
+        assert_eq!(blocks, parse_main(stray.lines(), &mut Vec::new()));
     }
 
     /// #s374: four shapes only sub-agents write, which the format sweep first read with #s370 — a

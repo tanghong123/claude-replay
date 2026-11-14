@@ -98,6 +98,8 @@ struct Boundary {
     cwd: String,
     /// Whether the fold knew the Bash sandbox was on as of this line's start (#s381).
     sandbox_on: bool,
+    /// The stopped replies nothing had named as of this line's start (#s470).
+    refused: std::collections::BTreeMap<String, Option<String>>,
     /// Opaque adapter preprocessing state as of this line's start. A durable resume begins at
     /// `offset`, so it must restore everything the adapter learned from bytes below that point
     /// before classifying the first re-read line.
@@ -249,6 +251,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             span: mm.span,
             cwd: mm.cwd,
             sandbox_on: mm.sandbox_on,
+            refused: mm.refused,
             pre: resume.pre.clone(),
             metrics_state: resume.metrics_state.clone(),
         };
@@ -333,6 +336,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             cwd: e.cwd.clone(),
             span: e.span,
             sandbox_on: e.sandbox_on,
+            refused: e.refused.clone(),
         }
     }
 
@@ -392,6 +396,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
                 span,
                 cwd: self.cwd.clone(),
                 sandbox_on: self.replayer.sandbox_on(),
+                refused: self.replayer.refused().clone(),
                 pre,
                 metrics_state,
             }
@@ -531,6 +536,9 @@ impl<S: BlockStore> SessionAccumulator<S> {
         }
         if e.sandbox_on != self.emitted.sandbox_on {
             rec.sandbox_on = Some(e.sandbox_on);
+        }
+        if e.refused != self.emitted.refused {
+            rec.refused = Some(e.refused.clone());
         }
         rec.resume = Some(crate::engine::meta_stream::Resume {
             id: self.committed.len(),

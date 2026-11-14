@@ -507,10 +507,13 @@ fn pulse_within(adapter: &dyn TranscriptAdapter, path: &Path, window: u64) -> Op
                 pulse.final_text = Some(text.clone());
                 pulse.last_failure = false;
             }
+            // #s470: an API error naming a stopped reply is drawn as that reply's mark, and is
+            // still the failure that ended the request.
             Message::SystemNote {
                 kind: crate::engine::message::NoteKind::Failure,
                 ..
-            } => {
+            }
+            | Message::RefusedError { .. } => {
                 pulse.last_failure = true;
             }
             Message::ToolResult { is_error, .. } => {

@@ -369,11 +369,17 @@ pub const COMPACT_AFTER: usize = 256;
 /// `resendCannotCure`, or an `error` of `billing_error`) has its failure note open with "A retry
 /// cannot fix this · " ahead of the client's words. A v77 stream holds the client's words alone.
 ///
+/// v79: #s470 — the client's API-error record naming a reply the safety classifier stopped
+/// (`refusedMessageId`, Claude Code 2.1.322) is that reply's `SafetyStop` mark when the fold met
+/// the reply, as #s378's note is. A v78 stream holds it as a plain `ToolResult`. The stopped
+/// replies nothing has named yet ride the stream from here (`refused`), since a resume can begin
+/// inside a turn; a v78 stream carries none.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 78;
+pub const FOLD_VERSION: u16 = 79;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
@@ -465,6 +471,11 @@ pub struct MetaRecord {
     /// written when it changes. A stream from before it reads as off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_on: Option<bool>,
+    /// The replies the safety classifier stopped that nothing had named as of this resume point
+    /// (#s470: message id -> category), written whole when they change. A stream from before it
+    /// reads as none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<BTreeMap<String, Option<String>>>,
 
     // ── resumption: presence IS the resume-point indicator ──
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -563,6 +574,9 @@ pub struct MaterializedMeta {
     /// The transcript ran with the agent's Bash sandbox on (#s381).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sandbox_on: bool,
+    /// The stopped replies nothing has named yet (#s470).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub refused: BTreeMap<String, Option<String>>,
 }
 
 impl MaterializedMeta {
@@ -646,6 +660,9 @@ impl MaterializedMeta {
         }
         if let Some(on) = r.sandbox_on {
             self.sandbox_on = on;
+        }
+        if let Some(refused) = &r.refused {
+            self.refused = refused.clone();
         }
     }
 }

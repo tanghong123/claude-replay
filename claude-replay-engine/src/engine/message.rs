@@ -172,6 +172,13 @@ pub enum Message {
     /// otherwise to the result line any other note is (`text` is exactly what that note's
     /// `SystemNote` would have carried).
     RefusedNote { id: String, text: String },
+    /// The client's API-error record after a stopped reply, naming that reply (#s470, Claude Code
+    /// 2.1.322): the same event as [`Message::RefusedNote`] recorded another way, and folded the
+    /// same way, to the reply's `Block::SafetyStop` mark when the fold met the reply and otherwise
+    /// to the result line (`text` is exactly what the record's failure `SystemNote` would have
+    /// carried). Unlike the note it is still a FAILURE to the state signals, as the
+    /// [`NoteKind::Failure`] note it replaces was: the client ended the request with an error.
+    RefusedError { id: String, text: String },
     /// The transcript ran with the agent's Bash sandbox ON (#s381): Claude Code's
     /// `sandbox_instructions` attachment at the head of a session or a sub-agent. Draws nothing;
     /// the fold remembers it, through the meta stream, for the runs below.

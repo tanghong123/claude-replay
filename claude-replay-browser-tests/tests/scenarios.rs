@@ -18711,7 +18711,9 @@ fn app_shell_marks_a_bash_call_outside_the_sandbox() {
 /// note as a plain "Result" line worded for the model, and nothing said the reply had been
 /// stopped. Hong on #s371: "Mark it: a line on the stopped reply naming the classifier and its
 /// category, the note folded under it." Now the note's place holds one head naming the classifier
-/// with the category beside it, the note folded under it until the reader opens it.
+/// with the category beside it, the note folded under it until the reader opens it. Claude Code
+/// 2.1.322 also records the stop as its API-error record naming the reply, drawn until #s470 as an
+/// "API Error" failure note after the reply: that record is the same mark, its text the note.
 fn scenario_a_reply_the_safety_classifier_stopped_is_marked(
     tab: &headless_chrome::Tab,
     surface: Surface,
@@ -18724,20 +18726,28 @@ fn scenario_a_reply_the_safety_classifier_stopped_is_marked(
         "(function(){{ \
            var names = [...document.querySelectorAll('.tool-name, .renderer-title')] \
              .filter(function(n){{ return n.textContent.trim() === {line:?}; }}); \
-           var prompt = [...document.querySelectorAll('p, .uturn, .user')] \
-             .find(function(p){{ return p.textContent.indexOf('Chart the skua burrows') >= 0; }}); \
-           var answer = [...document.querySelectorAll('p')] \
-             .find(function(p){{ return p.textContent.indexOf('The burrow map is in skua-notes.md') >= 0; }}); \
+           var find = function(sel, text){{ return [...document.querySelectorAll(sel)] \
+             .find(function(p){{ return p.textContent.indexOf(text) >= 0; }}); }}; \
+           var stops = {{ \
+             'cyber': {{ prompt: 'Chart the skua burrows', answer: 'The burrow map is in skua-notes.md', \
+                         note: 'Do not produce that content again' }}, \
+             'reasoning_extraction': {{ prompt: 'Count the petrel nests', answer: 'Forty nests on the north cliff', \
+                         note: 'API Error: the petrel count reply' }} \
+           }}; \
            var marks = names.map(function(n){{ \
              var head = n.closest('.fold-h, .renderer-head') || n.parentElement; \
              var target = head.querySelector('.tool-target, .renderer-target'); \
+             var category = target ? target.textContent.trim() : null; \
+             var stop = stops[category] || {{}}; \
+             var prompt = stop.prompt ? find('p, .uturn, .user', stop.prompt) : null; \
+             var answer = stop.answer ? find('p', stop.answer) : null; \
              var box = n.closest('.fold, .renderer'); \
-             var note = box ? [...box.querySelectorAll('pre, .renderer-output *')] \
-               .find(function(e){{ return e.textContent.indexOf('Do not produce that content again') >= 0; }}) : null; \
+             var note = box && stop.note ? [...box.querySelectorAll('pre, .renderer-output *')] \
+               .find(function(e){{ return e.textContent.indexOf(stop.note) >= 0; }}) : null; \
              var r = head.getBoundingClientRect(); \
              var nr = note ? note.getBoundingClientRect() : null; \
              return {{ \
-               target: target ? target.textContent.trim() : null, \
+               target: category, \
                shown: r.width > 0 && r.height > 0, \
                noteShown: !!nr && nr.width > 0 && nr.height > 0, \
                afterPrompt: !!prompt && !!(prompt.compareDocumentPosition(head) & Node.DOCUMENT_POSITION_FOLLOWING), \
@@ -18745,7 +18755,8 @@ fn scenario_a_reply_the_safety_classifier_stopped_is_marked(
              }}; \
            }}); \
            var loose = [...document.querySelectorAll('.tool-target, .renderer-target')] \
-             .filter(function(t){{ return t.textContent.indexOf('Your response above was stopped') >= 0; }}).length; \
+             .filter(function(t){{ return t.textContent.indexOf('Your response above was stopped') >= 0 \
+               || t.textContent.indexOf('API Error: the petrel count reply') >= 0; }}).length; \
            return JSON.stringify({{ marks: marks, loose: loose }}); \
          }})()"
     );
@@ -18761,48 +18772,61 @@ fn scenario_a_reply_the_safety_classifier_stopped_is_marked(
         }
         panic!("{surface:?}: {what}: {last}");
     };
-    let last = poll("one mark, drawn", &|v| {
+    let last = poll("two marks, drawn", &|v| {
         v["marks"]
             .as_array()
-            .is_some_and(|m| m.len() == 1 && m[0]["shown"] == true)
+            .is_some_and(|m| m.len() == 2 && m.iter().all(|m| m["shown"] == true))
     });
-    let mark = &last["marks"][0];
+    let marks = last["marks"].as_array().unwrap();
     assert_eq!(
-        mark["target"], "cyber",
-        "{surface:?}: the category beside it: {mark}"
+        marks
+            .iter()
+            .map(|m| m["target"].clone())
+            .collect::<Vec<_>>(),
+        ["cyber", "reasoning_extraction"],
+        "{surface:?}: each with its category beside it, the note form then the API-error form \
+         (#s470): {last}"
     );
-    assert_eq!(
-        mark["afterPrompt"], true,
-        "{surface:?}: after the prompt whose reply was stopped: {mark}"
-    );
-    assert_eq!(
-        mark["beforeAnswer"], true,
-        "{surface:?}: before the reply the agent went on to give: {mark}"
-    );
-    assert_eq!(
-        mark["noteShown"], false,
-        "{surface:?}: the note is folded under the line: {mark}"
-    );
+    for mark in marks {
+        assert_eq!(
+            mark["afterPrompt"], true,
+            "{surface:?}: after the prompt whose reply was stopped: {mark}"
+        );
+        assert_eq!(
+            mark["beforeAnswer"], true,
+            "{surface:?}: before the reply the agent went on to give: {mark}"
+        );
+        assert_eq!(
+            mark["noteShown"], false,
+            "{surface:?}: the note is folded under the line: {mark}"
+        );
+    }
     assert_eq!(
         last["loose"], 0,
-        "{surface:?}: the note no longer draws as a result line of its own: {last}"
+        "{surface:?}: neither the note nor the API error draws as a result line of its own: {last}"
     );
-    // Opening the mark shows the note, as opening any fold does.
-    let open = format!(
-        "(function(){{ \
-           var n = [...document.querySelectorAll('.tool-name, .renderer-title')] \
-             .find(function(n){{ return n.textContent.trim() === {line:?}; }}); \
-           (n.closest('.fold-h, .renderer-head') || n).click(); return true; }})()"
-    );
-    eval(tab, &open);
-    poll("the note shows once the mark is opened", &|v| {
-        v["marks"][0]["noteShown"] == true
-    });
+    // Opening a mark shows its note, as opening any fold does: the note under the first, the
+    // client's API-error text under the second.
+    for (i, which) in [(0, "the note"), (1, "the API error's text")] {
+        let open = format!(
+            "(function(){{ \
+               var n = [...document.querySelectorAll('.tool-name, .renderer-title')] \
+                 .filter(function(n){{ return n.textContent.trim() === {line:?}; }})[{i}]; \
+               (n.closest('.fold-h, .renderer-head') || n).click(); return true; }})()"
+        );
+        eval(tab, &open);
+        poll(&format!("{which} shows once its mark is opened"), &|v| {
+            v["marks"][i]["noteShown"] == true
+        });
+    }
 }
 
 /// Twelve turns, then a prompt whose reply the safety classifier stopped, as Claude Code 2.1.318
 /// writes it (the stopped reply's thinking, the notice for the person, the note naming the reply),
-/// then the reply the agent went on to give — #s378.
+/// then the reply the agent went on to give — #s378. Then a second such prompt as Claude Code
+/// 2.1.322 records it (#s470): the stopped reply's thinking and call under one message id, the
+/// client's synthetic API-error record naming the reply, the call's result, and the agent's
+/// answer. Every text here is the fixture's own.
 fn safety_stop_fixture(name: &str) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
@@ -18826,11 +18850,40 @@ fn safety_stop_fixture(name: &str) -> Fixture {
         "message": {"role": "user", "content": "Your response above was stopped by a safety classifier — this is not a tool or API error. The rest of it was withheld, and tool calls in it that had not finished did not run. Do not produce that content again, even reworded."}
     }));
     transcript += &assistant_at("The burrow map is in skua-notes.md.", &now_minus(50));
+    transcript += &user_at("Count the petrel nests.", &now_minus(40));
+    let stopped = |content: serde_json::Value| {
+        serde_json::json!({
+            "type": "assistant", "cwd": "/r", "timestamp": now_minus(38), "version": "2.1.322",
+            "message": {"id": "msg_s470", "role": "assistant", "model": "claude-opus-5", "stop_reason": "refusal",
+                        "stop_details": {"type": "refusal", "category": "reasoning_extraction", "explanation": "Flagged in a fixture."},
+                        "usage": {"input_tokens": 12, "output_tokens": 8},
+                        "content": [content]}
+        })
+    };
+    transcript += &line(stopped(serde_json::json!(
+        {"type": "thinking", "thinking": "The nests are on the north cliff.", "signature": "x"}
+    )));
+    transcript += &line(stopped(serde_json::json!(
+        {"type": "tool_use", "id": "toolu_s470", "name": "Bash", "input": {"command": "ls nests"}}
+    )));
+    transcript += &line(serde_json::json!({
+        "type": "assistant", "cwd": "/r", "timestamp": now_minus(37), "version": "2.1.322",
+        "isApiErrorMessage": true, "error": "invalid_request", "refusedMessageId": "msg_s470",
+        "message": {"id": "msg_s470e", "role": "assistant", "model": "<synthetic>", "stop_reason": "refusal",
+                    "stop_details": {"type": "refusal", "category": "reasoning_extraction", "explanation": "Flagged in a fixture."},
+                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                    "content": [{"type": "text", "text": "API Error: the petrel count reply was stopped in this fixture."}]}
+    }));
+    transcript += &line(serde_json::json!({
+        "type": "user", "cwd": "/r", "timestamp": now_minus(36),
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_s470", "content": "the call did not run"}]}
+    }));
+    transcript += &assistant_at("Forty nests on the north cliff.", &now_minus(30));
     let path = stores.claude_session(SID, &transcript);
     Fixture {
         base,
         path,
-        turns: 13,
+        turns: 14,
     }
 }
 

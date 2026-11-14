@@ -1306,6 +1306,49 @@ fn tail_pulse_reads_the_claude_tail() {
     assert!(p.queued_prompt, "the enqueued prompt is visible");
 }
 
+/// #s470: Claude Code 2.1.322 can end a reply the safety classifier stopped with its synthetic
+/// API-error record, naming the reply (`refusedMessageId`). The page draws that record as the
+/// reply's mark now, and nothing else moves: a transcript that ENDS on it still reads as a turn
+/// that failed, as any API-error end does (the task's note: drawing only; whether such an end
+/// should read otherwise is the owner's question), and prose after it still clears that. The
+/// reply is two records of one message id (thinking, then a call), as measured.
+#[test]
+fn tail_pulse_reads_an_api_error_naming_a_stopped_reply_as_a_failure() {
+    use claude_replay_engine::state::{tail_pulse, TailLast};
+    const PROMPT: &str = r#"{"type":"user","version":"2.1.322","sessionId":"s-s470","uuid":"u1","timestamp":"2026-11-12T10:00:00Z","message":{"role":"user","content":"count the petrel nests"}}"#;
+    const THINKING: &str = r#"{"type":"assistant","version":"2.1.322","sessionId":"s-s470","uuid":"a1","timestamp":"2026-11-12T10:00:01Z","message":{"id":"msg_s470a","role":"assistant","model":"claude-opus-5-5","stop_reason":"refusal","stop_details":{"type":"refusal","category":"reasoning_extraction","explanation":"Flagged in a fixture."},"content":[{"type":"thinking","thinking":"The nests are on the north cliff.","signature":"x"}]}}"#;
+    const CALL: &str = r#"{"type":"assistant","version":"2.1.322","sessionId":"s-s470","uuid":"a2","timestamp":"2026-11-12T10:00:01Z","message":{"id":"msg_s470a","role":"assistant","model":"claude-opus-5-5","stop_reason":"refusal","stop_details":{"type":"refusal","category":"reasoning_extraction","explanation":"Flagged in a fixture."},"content":[{"type":"tool_use","id":"toolu_s470a","name":"Bash","input":{"command":"ls nests"}}]}}"#;
+    const ERROR: &str = r#"{"type":"assistant","version":"2.1.322","sessionId":"s-s470","uuid":"a3","timestamp":"2026-11-12T10:00:02Z","isApiErrorMessage":true,"error":"invalid_request","refusedMessageId":"msg_s470a","message":{"id":"msg_s470e","role":"assistant","model":"<synthetic>","stop_reason":"refusal","stop_details":{"type":"refusal","category":"reasoning_extraction","explanation":"Flagged in a fixture."},"usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: this fixture's reply was stopped."}]}}"#;
+    const RESULT: &str = r#"{"type":"user","version":"2.1.322","sessionId":"s-s470","uuid":"u2","timestamp":"2026-11-12T10:00:03Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_s470a","content":"the call did not run"}]}}"#;
+    const PROSE: &str = r#"{"type":"assistant","version":"2.1.322","sessionId":"s-s470","uuid":"a4","timestamp":"2026-11-12T10:00:05Z","message":{"id":"msg_s470b","role":"assistant","model":"claude-opus-5-5","stop_reason":"end_turn","content":[{"type":"text","text":"Forty nests."}]}}"#;
+    let file = |lines: &[&str]| tmp1(&(lines.join("\n") + "\n"));
+
+    for (shape, lines) in [
+        ("the error last", &[PROMPT, THINKING, CALL, ERROR][..]),
+        (
+            "the error, then the call's result",
+            &[PROMPT, THINKING, CALL, ERROR, RESULT][..],
+        ),
+        (
+            "the call's result, then the error",
+            &[PROMPT, THINKING, CALL, RESULT, ERROR][..],
+        ),
+    ] {
+        let p = tail_pulse(&ClaudeAdapter, &file(lines));
+        assert!(p.last_failure, "{shape}: the turn still reads as failed");
+        assert!(!p.last_tool_error, "{shape}: and not as a failed tool");
+        // The tail's last word reads as it did before #s470: no prose came after the prompt, and
+        // neither the failure note nor the message that replaced it moves it.
+        assert_eq!(p.last, TailLast::User, "{shape}");
+    }
+    let p = tail_pulse(
+        &ClaudeAdapter,
+        &file(&[PROMPT, THINKING, CALL, ERROR, RESULT, PROSE]),
+    );
+    assert!(!p.last_failure, "prose after it carried the turn on");
+    assert_eq!(p.last, TailLast::AssistantEnded);
+}
+
 /// #194: the Codex turn vocabulary — `task_complete` ends the turn, a `response_item`
 /// is inside one by definition.
 #[test]
