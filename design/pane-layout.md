@@ -616,8 +616,8 @@ however tall it is, and one its host scrolls up has a gap at its foot. A view as
 whose top is the window's has no gap there or at the foot. While its own keyboard ride moves the app
 (or a host's box) back over iOS's scroll, the box is placed for the keyboard, not by a host, so the
 gaps stay as the last decision before the ride read them: none in the app, the bar's in a host's pane
-under one. Only a decision that saw a box and was not riding keeps them (a view mounted hidden reads
-no box), and with none kept the ride reads the box as it is. The ride is asked again as the view
+under one. Only a decision that saw a box while no ride moved it keeps them (a view mounted hidden
+reads no box), and with none kept a ride reads the box as it is, for that ride alone. The ride is asked again as the view
 leaves the phone family, so it never outlives the keyboard, and its end decides again, since the
 gaps it kept may be stale and, where the page's scroll and the transform cancel, the box need not
 move for a watch to hear it.
