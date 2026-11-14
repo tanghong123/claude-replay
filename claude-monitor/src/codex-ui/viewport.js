@@ -139,13 +139,15 @@ export class Viewport extends VirtualWindow {
     this.touching = 0;
     this.stillWaiters = [];
     this.stillTimer = 0;
-    // A touch's events go to the element it began on, wherever that element is now. One the page
-    // redraws under the finger (the live turn, growing) is no longer inside the scroller, so its
-    // touchend never reaches it, and `touching` stayed 1: the tail waited for good and the view went
-    // blank (#s431, the iOS Simulator walk). So each touch's end is heard on its own element too.
-    // An element still inside hears it twice, which sets the same count. The same listener is
-    // never added to an element twice, so each keeps two at most, and they go with it: no signal,
-    // which would hold every element touched until the view is unmounted.
+    // `touching` counts every finger on the glass (`touches`), so every touch's end is heard: at the
+    // window, wherever it began (a thumb resting on the session list that lifts last, the review of
+    // 500ae62b), and on the element it began on too. A touch's events go to that element wherever it
+    // is by then, and one the page redraws under the finger (the live turn, growing) is out of the
+    // page, so its touchend reaches neither the scroller nor the window: `touching` stayed 1, the
+    // tail waited for good and the view went blank (#s431, the iOS Simulator walk). A touch heard
+    // twice sets the same count. The same listener is never added to an element twice, so each keeps
+    // two at most, and they go with it: no signal, which would hold every element touched until the
+    // view is unmounted.
     const touchEnded = event => { this.touching = event.touches.length; this.lastScrollAt = performance.now(); };
     scroller.addEventListener("touchstart", event => {
       touchEnded(event);
@@ -154,7 +156,7 @@ export class Viewport extends VirtualWindow {
         for (const type of ["touchend", "touchcancel"]) target.addEventListener(type, touchEnded, { passive: true });
       }
     }, { passive: true, capture: true });
-    for (const type of ["touchend", "touchcancel"]) scroller.addEventListener(type, touchEnded, { passive: true, capture: true });
+    for (const type of ["touchend", "touchcancel"]) addEventListener(type, touchEnded, { passive: true, capture: true, signal: this.life.signal });
     // #372: a TOUCH glide — from the finger moving until the view is still again. While it lasts
     // the engine absorbs its corrections into the top pad instead of writing the offset (a write
     // into an iOS glide does not stick); once still, the debt is settled with one write. A wheel or

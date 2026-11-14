@@ -5924,8 +5924,10 @@ fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
 /// on an element no longer in the transcript, whose touchend the view never heard: it still counted a
 /// finger down, the glide never ended, and the tail waited for good, the view going blank as the
 /// session grew. Here the element is taken out under a finger that has moved, the finger lifts, and
-/// the session grows: the follower is carried to the new end. On an iPad's width, where the session
-/// is laid out as on a desktop (no dock over the foot).
+/// the session grows: the follower is carried to the new end. Then a thumb resting on the session
+/// list while a finger drags the transcript, the thumb lifting last: its lift, out of the transcript,
+/// was never heard either (the review of 500ae62b). On an iPad's width,
+/// where the session is laid out as on a desktop (no dock over the foot).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn an_ipad_follower_s_touch_on_an_element_taken_out_under_the_finger_still_ends() {
@@ -6024,6 +6026,70 @@ fn an_ipad_follower_s_touch_on_an_element_taken_out_under_the_finger_still_ends(
     }));
     rest();
     let after = harness::probe(&tab, read);
+    // A finger on the transcript, then a thumb on the session list's empty space; both move together
+    // (a pan, never a pinch) and lift. The protocol lifts every finger on a touch end, and sends their
+    // touchends in the order they landed (measured: a move that leaves one out lifts nothing), so the
+    // thumb's, out of the transcript, is the last finger's.
+    let thumb = harness::probe(
+        &tab,
+        "(function(){ var l = document.getElementById('sessionList'), s = document.querySelector('.transcript'); if (!l) return null; window.addEventListener('touchend', function (t) { window.__lastEnd = (s.contains(t.target) ? 'in the transcript' : 'outside it') + ', ' + t.touches.length + ' down'; }, true); window.__touchLog = []; ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach(function (k) { window.addEventListener(k, function (t) { window.__touchLog.push(k.slice(5) + ':' + (s.contains(t.target) ? 'T' : 'O') + t.touches.length + '/' + t.changedTouches.length); }, true); }); var r = l.getBoundingClientRect(); for (var y = r.bottom - 20; y > r.top + 20; y -= 20) { var x = r.left + Math.min(40, r.width / 2); var hit = document.elementFromPoint(x, y); if (hit && l.contains(hit) && !s.contains(hit) && !hit.closest('button, a, input, [data-session], .tree-row')) return { x: x, y: y }; } return null; })()",
+    );
+    let (tx, ty) = (
+        thumb["x"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("empty space in the session list: {thumb}")),
+        thumb["y"].as_f64().unwrap(),
+    );
+    let at2 = |px: f64, py: f64, id: f64| TouchPoint {
+        x: px,
+        y: py,
+        radius_x: None,
+        radius_y: None,
+        rotation_angle: None,
+        force: None,
+        tangential_pressure: None,
+        tilt_x: None,
+        tilt_y: None,
+        twist: None,
+        id: Some(id),
+    };
+    send(Touch::TouchStart, vec![at2(x, y, 0.0)]);
+    std::thread::sleep(Duration::from_millis(16));
+    send(Touch::TouchStart, vec![at2(x, y, 0.0), at2(tx, ty, 1.0)]);
+    for step in 1..=4 {
+        std::thread::sleep(Duration::from_millis(16));
+        let d = 15.0 * f64::from(step);
+        send(
+            Touch::TouchMove,
+            vec![at2(x + d, y, 0.0), at2(tx + d, ty, 1.0)],
+        );
+    }
+    send(Touch::TouchEnd, Vec::new());
+    rest();
+    let thumb_lifted = harness::probe(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; return { gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), height: Math.round(s.scrollHeight), following: h.length ? h[h.length - 1].following : null, lastEnd: window.__lastEnd || null, log: (window.__touchLog || []).join(' ') }; })()",
+    );
+    append(&src, &user("asked after the thumb lifted", 51));
+    append(
+        &src,
+        &assistant(&"a second answer grows the session again. ".repeat(60), 51),
+    );
+    let grew2 = format!(
+        "(function(){{ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; return s.scrollHeight > {} + 400 && h.length && h[h.length - 1].following && Math.abs(s.scrollHeight - s.clientHeight - s.scrollTop) <= 2; }})()",
+        thumb_lifted["height"].as_i64().unwrap_or(0)
+    );
+    let carried2 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness::until(
+            &tab,
+            &grew2,
+            "the follower carried to the session's new end, after the thumb",
+            Duration::from_secs(10),
+            read,
+        )
+    }));
+    rest();
+    let after2 = harness::probe(&tab, read);
     let violations = harness::probe(
         &tab,
         "JSON.stringify((window.__viewportViolations || []).slice(0, 4))",
@@ -6047,6 +6113,15 @@ fn an_ipad_follower_s_touch_on_an_element_taken_out_under_the_finger_still_ends(
     assert!(
         carried.is_ok(),
         "the session grew and the follower was carried to its new end: lifted {lifted}, after {after}"
+    );
+    assert!(
+        thumb_lifted["lastEnd"] == serde_json::json!("outside it, 0 down")
+            && thumb_lifted["following"] == serde_json::json!(true),
+        "the thumb lifted last, outside the transcript, the follower still following: {thumb_lifted}"
+    );
+    assert!(
+        carried2.is_ok(),
+        "the session grew again and the follower was carried to its new end: lifted {thumb_lifted}, after {after2}"
     );
     assert_eq!(
         violations,
