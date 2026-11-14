@@ -38,10 +38,14 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    cut (scripts/session-view-css.mjs, `viewLengths`). At the whole screen (⤢, held sideways) the pane
    is the screen's, as it was before, so there the view lets go of its layout and the pane alone takes
    the screen's whole insets; the session under it keeps its own. A phone reader as wide
-   as the window is left as it was. The desktop's layers, which their scripts place from the window,
-   wait for stage 4. */
-@media(max-width:760px),(pointer:coarse) and (max-height:500px){#sessionView.pl-boxed{contain:inline-size layout;--pl-cut-left:var(--pane-x);--pl-cut-right:var(--pane-r)}}
-@media(pointer:coarse) and (max-height:500px){#sessionView.pl-boxed.preview-full:not(.preview-off){contain:inline-size}#sessionView.pl-boxed.preview-full:not(.preview-off)>:is(.preview,.review-sheet){--pl-cut-left:0px;--pl-cut-right:0px}}
+   as the window is left as it was.
+   #s431 stage 4: every view that is not the whole window contains its layout, the desktop's too, in
+   the app as in a host, and the cuts are set on all four sides (`pl-boxed` reads the top and bottom
+   where the view is shorter than the window, as in a host's pane under its bar), so the overlaid pane,
+   the task card and every other fixed layer land in the box, and the insets of the top and bottom
+   count only where they fall in it. A view as wide and as tall as the window is left as it was. */
+#sessionView.pl-boxed{contain:inline-size layout;--pl-cut-left:var(--pane-x);--pl-cut-right:var(--pane-r);--pl-cut-top:var(--pane-y);--pl-cut-bottom:var(--pane-b)}
+@media(pointer:coarse) and (max-height:500px){#sessionView.pl-boxed.preview-full:not(.preview-off){contain:inline-size}#sessionView.pl-boxed.preview-full:not(.preview-off)>:is(.preview,.review-sheet){--pl-cut-left:0px;--pl-cut-right:0px;--pl-cut-top:0px;--pl-cut-bottom:0px}}
 /* The review sheet (#s12) is the screen's too: the owner chose a full-screen sheet. The view keeps its
    layout, so the open pane under the sheet and the session keep their places and nothing remeasures
    (letting go of it, as ⤢ does, moved the pane to the window's edge and mdrev reflowed under the
@@ -58,6 +62,13 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 #app:not(.preview-off)>#sessionView.pl-boxed.pl-phone:has(>.review-sheet){z-index:95}
 #app:not(.preview-off)>#sessionView.pl-boxed.pl-phone>.review-sheet{left:calc(0px - var(--pane-x));right:calc(0px - var(--pane-r));--pl-cut-left:0px;--pl-cut-right:0px}
 #app:not(.preview-off)>#sessionView.pl-boxed.pl-phone.pl-coarse.pl-max-h-500.preview-full>.review-sheet{left:0;right:0}
+/* The task card's dim on a phone (#319) dims everything behind the card and takes the tap that closes
+   it. The card and its dim are the view's (#s431 stage 4), so a phone reader in a box dims its box;
+   the app takes the dim to the window's sides, as it does the review sheet, so beside a wide phone's
+   column or a 520px sidebar it dims them too, and the drawer's handle, as it did from the page's body.
+   The card stays in the view. */
+#app>#sessionView.pl-boxed.pl-phone:has(>.task-scrim:not([hidden])){z-index:59}
+#app>#sessionView.pl-boxed.pl-phone>.task-scrim{left:calc(0px - var(--pane-x));right:calc(0px - var(--pane-r))}
 /* The shut pane parks past the view's right edge: off the screen where the view ends at the window's,
    but over a host's page where its box ends sooner. Once its glide out ends it is hidden, so it
    neither shows nor takes a press there. A phone's pane never glides (the reference's `transition:none`),
@@ -1948,9 +1959,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    (the owner's screenshot, sidebar closed), or a single letter with the sidebar open. An open preview
    now covers the whole session area beside the sidebar. Not on a phone, whose preview is its own sheet:
    the query is "tall enough, or a fine pointer", the complement of a landscape phone. The view's own
-   rule (#s431 stage 2): 10px inside its left edge, whatever is beside it, the rail included. */
+   rule (#s431 stage 2): 10px inside its left edge, whatever is beside it, the rail included; where the
+   view contains its layout (stage 4) its edge is its box's, the cut taken off. */
 @media(min-width:761px) and (max-width:1180px) and (min-height:501px),(min-width:761px) and (max-width:1180px) and (pointer:fine){
-  .session-view:not(.preview-off)>.preview{left:calc(var(--pane-x) + 10px);width:auto}
+  .session-view:not(.preview-off)>.preview{left:calc(var(--pane-x) - var(--pl-cut-left,0px) + 10px);width:auto}
 }
 
 /* #313 — while a session loads: a veil over the session area (below the top bars, which already

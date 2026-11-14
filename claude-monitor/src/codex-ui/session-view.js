@@ -561,16 +561,15 @@ bindComponentEvents(transcript, recordState, {
 
 // Engagement (stage 6): whether the reader is working in the view. It is mdrev's own rule, which
 // `bindKeymap` already reads for a guest (#270): the last press or focus landed inside the view's
-// element, or inside what the view floats over the page from `viewRoot.layer()` (`floating`: the task
-// card and its scrim), and not inside a guest of the view's (mdrev's pane), whose keys stay its own.
+// element, whose floating layers are drawn inside it (the task card and its dim too, since #s431
+// stage 4), and not inside a guest of the view's (mdrev's pane), whose keys stay its own.
 // Both `pointerdown` and `mousedown` are heard, since a host that prevents the first stops the
 // browser's second. The view's keymap and the artifact pane's image viewer answer only while it holds
 // (`keyboard: "engaged"`); with the page's keyboard (`"page"`, the app's) the view is always engaged,
 // as before.
-const floating = new Set();
 let engaged = keyboardMode === "page";
 if (keyboardMode === "engaged") {
-  const inView = target => !!target && typeof target.closest === "function" && (element.contains(target) || [...floating].some(node => node.contains(target)));
+  const inView = target => !!target && typeof target.closest === "function" && element.contains(target);
   const engage = event => { engaged = inView(event.target) && !inGuest(event.target); };
   for (const type of ["pointerdown", "mousedown", "focusin"]) document.addEventListener(type, engage, { capture: true, signal });
 }
@@ -3505,9 +3504,9 @@ const taskScrim = document.createElement("div");
 taskScrim.className = "task-scrim";
 taskScrim.id = "taskScrim";
 taskScrim.hidden = true;
-viewRoot.layer().append(taskScrim, taskPopover);
-// They float over the page, outside the view's element, and a press in them is a press in the view.
-floating.add(taskScrim); floating.add(taskPopover);
+// #s431 stage 4: they are the view's, drawn in its element, where its stylesheet reaches them and,
+// while the view contains its layout (a host's pane, beside the app's list), its box holds them.
+element.append(taskScrim, taskPopover);
 let taskPopoverOpener = null;
 function closeTaskPopover(restoreFocus = true) {
   if (taskPopover.hidden) return;
@@ -3546,10 +3545,12 @@ function openTaskPopover(index, opener) {
   taskPopoverOpener = opener;
   taskPopover.hidden = false;
   taskScrim.hidden = false;
-  const r = opener.getBoundingClientRect(), w = Math.min(440, window.innerWidth - 24);
-  const left = Math.min(window.innerWidth - w - 12, r.right + 8);
+  // Placed in the box its layers are drawn in (#s431 stage 4): the view's own while it contains its
+  // layout, else the window.
+  const box = viewRoot.layerBox(), r = opener.getBoundingClientRect(), w = Math.min(440, box.width - 24);
+  const left = Math.min(box.width - w - 12, r.right + 8 - box.left);
   taskPopover.style.left = `${Math.max(12, left)}px`;
-  taskPopover.style.top = `${Math.max(12, Math.min(window.innerHeight - 24 - taskPopover.offsetHeight, r.top))}px`;
+  taskPopover.style.top = `${Math.max(12, Math.min(box.height - 24 - taskPopover.offsetHeight, r.top - box.top))}px`;
   taskPopover.querySelector(".task-popover-close").focus();
 }
 taskPopover.addEventListener("click", event => {
@@ -4476,7 +4477,7 @@ return fenced({
     for (const id of frames) cancelAnimationFrame(id);
     for (const observer of observers) observer.disconnect();
     timers.clear(); frames.clear(); observers.clear();
-    taskScrim.remove(); taskPopover.remove(); floating.clear();
+    taskScrim.remove(); taskPopover.remove();
     for (const [, , id] of PHONE_PANES) { const node = byId(id); if (node && !element.contains(node)) node.remove(); }
     for (const { node, style, values } of hostStyles) {
       for (const [name, value, priority] of values) {
