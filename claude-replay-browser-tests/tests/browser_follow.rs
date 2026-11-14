@@ -4765,7 +4765,7 @@ fn css_rgb(value: &serde_json::Value) -> Option<[f64; 3]> {
     };
     let parts: Vec<f64> = inner
         .trim_end_matches(')')
-        .split(|c: char| c == ',' || c == ' ' || c == '/')
+        .split([',', ' ', '/'])
         .filter(|p| !p.is_empty())
         .take(3)
         .map(|p| p.parse::<f64>().map(|v| v * scale))
