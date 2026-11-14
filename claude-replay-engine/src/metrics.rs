@@ -2707,6 +2707,91 @@ mod request_pricing_tests {
         );
     }
 
+    /// #s471, the GPT-5 family before 5.3 (the pricing page read raw 2026-11-14T06:17Z, each row
+    /// marked deprecated): Fast is 2x Standard for gpt-5.2, gpt-5.1 and gpt-5 and 1.8x for
+    /// gpt-5-mini ($0.45 / $0.045 / $3.60 against $0.25 / $0.025 / $2); the Fast tab does not
+    /// list gpt-5-nano. Flex and Batch are half Standard for all five. None has a long-context
+    /// row. gpt-5-2025-08-07 is gpt-5's snapshot (gpt-5's model page) and takes its rule. The
+    /// retired Codex ids, which no page prices a tier for, have no rule: every request on them
+    /// is an estimate at Standard rates, as before.
+    #[test]
+    fn the_gpt_5_family_prices_fast_flex_and_batch_at_the_page_rates() {
+        let table = PriceTable::default();
+        let tokens = TokenCounts {
+            input: 1_000_000,
+            cache_creation: 1_000_000,
+            cache_read: 1_000_000,
+            output: 1_000_000,
+            ..Default::default()
+        };
+        let class = |tier| RequestPricing {
+            tier,
+            long_context: Some(false),
+            tier_confirmed: true,
+        };
+        let gpt_5_1 = 1.25 + 1.25 + 0.125 + 10.0;
+        for (model, standard, fast) in [
+            ("gpt-5.2", 1.75 + 1.75 + 0.175 + 14.0, Some(2.0)),
+            ("gpt-5.1", gpt_5_1, Some(2.0)),
+            ("gpt-5", gpt_5_1, Some(2.0)),
+            ("gpt-5-2025-08-07", gpt_5_1, Some(2.0)),
+            ("gpt-5-mini", 0.25 + 0.25 + 0.025 + 2.0, Some(1.8)),
+            ("gpt-5-nano", 0.05 + 0.05 + 0.005 + 0.4, None),
+        ] {
+            let (cost, estimated) = class(ServiceTier::Standard).cost_with(&table, model, tokens);
+            assert!(
+                (cost.unwrap() - standard).abs() < 1e-9 && !estimated,
+                "{model} Standard: {cost:?}, estimate {estimated}"
+            );
+            // No long-context row: a long prompt pays no surcharge, and one whose length is
+            // unknown is not an estimate for want of it.
+            for long in [Some(true), None] {
+                let context = RequestPricing {
+                    long_context: long,
+                    ..class(ServiceTier::Standard)
+                };
+                let (cost, estimated) = context.cost_with(&table, model, tokens);
+                assert!(
+                    (cost.unwrap() - standard).abs() < 1e-9 && !estimated,
+                    "{model} Standard, long {long:?}: {cost:?}, estimate {estimated}"
+                );
+            }
+            let (cost, estimated) = class(ServiceTier::Fast).cost_with(&table, model, tokens);
+            let (want, want_estimated) = fast.map_or((standard, true), |f| (f * standard, false));
+            assert!(
+                (cost.unwrap() - want).abs() < 1e-9 && estimated == want_estimated,
+                "{model} Fast: {cost:?}, estimate {estimated}"
+            );
+            for tier in [ServiceTier::Flex, ServiceTier::Batch] {
+                let (cost, estimated) = class(tier).cost_with(&table, model, tokens);
+                assert!(
+                    (cost.unwrap() - standard / 2.0).abs() < 1e-9 && !estimated,
+                    "{model} {tier:?}: {cost:?}, estimate {estimated}"
+                );
+            }
+        }
+        for (model, standard) in [
+            ("gpt-5-codex", gpt_5_1),
+            ("gpt-5.1-codex", gpt_5_1),
+            ("gpt-5.1-codex-max", gpt_5_1),
+            ("gpt-5.2-codex", 1.75 + 1.75 + 0.175 + 14.0),
+            ("gpt-5.1-codex-mini", 0.25 + 0.25 + 0.025 + 2.0),
+        ] {
+            for tier in [
+                ServiceTier::Standard,
+                ServiceTier::Fast,
+                ServiceTier::Flex,
+                ServiceTier::Batch,
+            ] {
+                let (cost, estimated) = class(tier).cost_with(&table, model, tokens);
+                assert!(
+                    (cost.unwrap() - standard).abs() < 1e-9 && estimated,
+                    "{model} {tier:?}: no request rule, Standard rates as an estimate"
+                );
+            }
+        }
+    }
+
     /// Ultrafast (the pricing page's Ultrafast tab, read raw 2026-10-04 and again 2026-10-09):
     /// gpt-6-astra and, since 2026-10-08, gpt-6.1-sol, each 6x Standard on every token class,
     /// short and long. A model the tab does not list prices an

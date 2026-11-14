@@ -20,6 +20,10 @@ Fast is 2x for GPT-6 and GPT-5.6; GPT-5.5 short-context Fast is 2.5x.
 GPT-5.4 long-context Fast falls back to standard. GPT-5.5 has no published
 long-context Fast rate, so that combination uses a standard-rate estimate.
 GPT-5.4 mini/nano and GPT-5.3-Codex do not inherit the long-context surcharge.
+GPT-5.2, GPT-5.1 and GPT-5 Fast is 2x, and GPT-5 mini Fast is 1.8x. GPT-5 nano
+has no Fast rate. None of these five has a long-context surcharge. The retired
+gpt-5-codex, gpt-5.1-codex, gpt-5.1-codex-max, gpt-5.1-codex-mini and gpt-5.2-codex
+have no request rules, so every request on them is an estimate.
 Only explicitly listed aliases share rules; unknown snapshots never borrow prices.
 
 The returned incomplete-evidence flag also covers unsupported tiers and GPT
@@ -36,4 +40,5 @@ use a session's final runtime settings to reprice its earlier requests.
 
 Rates were verified against the [official pricing page](https://developers.openai.com/api/docs/pricing)
 and [Astra model page](https://developers.openai.com/api/docs/models/gpt-6-astra)
-on 2026-09-28. This is a token-price estimate, not a provider invoice.
+on 2026-09-28, and for GPT-5.2, 5.1, 5, 5 mini and 5 nano on 2026-11-14. This is a
+token-price estimate, not a provider invoice.
