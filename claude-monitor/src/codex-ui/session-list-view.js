@@ -179,7 +179,9 @@ const layer = kind => options.layer?.(kind) || sessionList;
 // placed in (a host's transformed or contained pane, the app while a phone's keyboard ride moves it).
 // A probe at that corner reads it, and a layer the list places from the window's coordinates (the
 // section menu, the rail's flyout) is written from there, so it stands by its control wherever a host
-// draws the list, and still floats out of a pane that clips. The probes go with the list.
+// draws the list. It floats out of a pane that only clips; a pane that clips and is also that box (a
+// drawer slid in by a transform) cuts it at its edge, as it cuts anything fixed inside it. The probes
+// go with the list.
 const cornerProbes = new Map();
 const fixedCorner = into => {
   let probe = cornerProbes.get(into);
@@ -726,9 +728,17 @@ function toggleFilterSheet(open) {
 function fitFilterSheet() {
   filterSheet.style.maxHeight = "";
   if (filterSheet.hidden || railFlyoutFor === "filter") return;
-  // In the list's own head (a host's) it ends at the list's foot, so a pane that clips the list never
-  // cuts its last rows off; placed by the app, at the window's.
-  const foot = sessionList.contains(filterSheet) ? Math.min(innerHeight, sessionList.getBoundingClientRect().bottom) : innerHeight;
+  // In the list's own head (a host's) it ends at the list's foot, or higher at the foot of a box of
+  // the host's that clips the list (a scrolling pane the list is taller than), so a pane that clips
+  // the list never cuts its last rows off; placed by the app, at the window's. The page's own root and
+  // body are left out: a body's overflow is the window's, which the window's height already says.
+  let foot = innerHeight;
+  if (sessionList.contains(filterSheet)) {
+    foot = Math.min(foot, sessionList.getBoundingClientRect().bottom);
+    for (let at = sessionList.parentElement; at && at.localName !== "body" && at.localName !== "html"; at = at.parentElement) {
+      if (getComputedStyle(at).overflowY !== "visible") foot = Math.min(foot, at.getBoundingClientRect().bottom);
+    }
+  }
   const room = Math.floor(foot - filterSheet.getBoundingClientRect().top - 8);
   if (room > 0 && filterSheet.scrollHeight > room) filterSheet.style.maxHeight = `${Math.max(120, room)}px`;
 }
