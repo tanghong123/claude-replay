@@ -5156,7 +5156,9 @@ fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
 /// #s431 stage 4 (the second delta review of b4ad87a9): the gaps a decision during the keyboard ride
 /// keeps come only from a decision that saw a box and was not riding, and the ride's end decides
 /// again. A view its host mounts hidden decided once at 0×0, whose foot read the window's whole height
-/// as its gap: shown while the ride ran, it kept that gap, 430px at its foot. And where the page's
+/// as its gap: shown while the ride ran, it kept that gap, 430px at its foot; and the decision that
+/// shows it during the ride reads the moved box for that ride alone, so a second scroll in the same
+/// ride is read again rather than kept (the review of d07aef0c). And where the page's
 /// scroll and the ride's transform cancel, as on iOS, the box does not move as the ride ends, so no
 /// watch of its place hears that the gaps it kept are stale: a host that hid its bar while the reader
 /// typed left the view placed 40px down after the ride.
@@ -5171,6 +5173,7 @@ fn the_session_view_in_a_host_reads_its_gaps_again_around_the_keyboard_ride() {
     harness::phone(&tab, 932, 430);
     harness::open_host_page(&tab, &monitor, "mount=0");
     let facts = "(function(){ var v = document.getElementById('sessionView'), p = document.getElementById('hostPane'); return { paneY: v ? v.style.getPropertyValue('--pane-y') : null, paneB: v ? v.style.getPropertyValue('--pane-b') : null, boxed: v ? v.classList.contains('pl-boxed') : null, top: v ? Math.round(v.getBoundingClientRect().top) : null, transform: p.style.transform, scroll: Math.round(scrollY) }; })()";
+    let seen = format!("JSON.stringify({facts})");
     // Mounted hidden; the keyboard up (shadowed, as the move case does) before the pane is shown.
     harness::eval(
         &tab,
@@ -5186,7 +5189,7 @@ fn the_session_view_in_a_host_reads_its_gaps_again_around_the_keyboard_ride() {
         "document.getElementById('hostPane').style.transform === 'translateY(100px)'",
         "the ride to move the hidden view's box back over the page's scroll",
         Duration::from_secs(5),
-        facts,
+        &seen,
     );
     harness::eval(
         &tab,
@@ -5197,9 +5200,23 @@ fn the_session_view_in_a_host_reads_its_gaps_again_around_the_keyboard_ride() {
         "(function(){ var v = document.getElementById('sessionView'); return v.getBoundingClientRect().height > 0 && v.style.getPropertyValue('--pl-h') === '390px'; })()",
         "the view shown, and decided at its box",
         Duration::from_secs(5),
-        facts,
+        &seen,
     );
     let shown = harness::probe(&tab, facts);
+    // iOS scrolls again as the field moves (60px now): the ride moves the box, and with no gaps kept the
+    // decision reads the moved box again. Had the shown decision kept the 140px it read, this one would
+    // keep it too (the review of 8ac8fd19..d07aef0c).
+    harness::eval(
+        &tab,
+        "(function(){ Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 60; } }); visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return document.getElementById('hostPane').style.transform === 'translateY(60px)' && v.style.getPropertyValue('--pane-y') === '100px'; })()",
+        "a decision in the same ride to read the box where the second scroll put it",
+        Duration::from_secs(5),
+        &seen,
+    );
     // The keyboard down: the ride ends, the box moves back, and the gaps are the bar's.
     harness::eval(
         &tab,
@@ -5210,7 +5227,7 @@ fn the_session_view_in_a_host_reads_its_gaps_again_around_the_keyboard_ride() {
         "(function(){ var v = document.getElementById('sessionView'); return document.getElementById('hostPane').style.transform === '' && v.style.getPropertyValue('--pane-y') === '40px' && v.style.getPropertyValue('--pane-b') === '0px'; })()",
         "the view under the host's bar once the ride ended",
         Duration::from_secs(5),
-        facts,
+        &seen,
     );
     // A page that really scrolls with a pane that scrolls with it: the keyboard up, and the page
     // scrolled 100px, which the ride's transform gives back, so the box stays where it was.
@@ -5223,22 +5240,21 @@ fn the_session_view_in_a_host_reads_its_gaps_again_around_the_keyboard_ride() {
         "(function(){ var v = document.getElementById('sessionView'); return Math.round(scrollY) === 100 && document.getElementById('hostPane').style.transform === 'translateY(100px)' && Math.round(v.getBoundingClientRect().top) === 40; })()",
         "the ride to give the page's 100px scroll back to the pane",
         Duration::from_secs(5),
-        facts,
+        &seen,
     );
-    // The host hides its bar while the reader types: the ride keeps the gaps it read under the bar.
+    // The host hides its bar while the reader types, and its pane grows 6px: a decision the view must
+    // take (its height shows it), which keeps the gaps it read under the bar.
     harness::eval(
         &tab,
-        "(function(){ document.getElementById('hostPane').style.top = '0px'; return true; })()",
+        "(function(){ var p = document.getElementById('hostPane'); p.style.top = '0px'; p.style.height = '396px'; return true; })()",
     );
     harness::until(
         &tab,
-        "Math.round(document.getElementById('sessionView').getBoundingClientRect().top) === 0",
-        "the pane at the window's top, the bar gone",
+        "(function(){ var v = document.getElementById('sessionView'); return Math.round(v.getBoundingClientRect().top) === 0 && v.style.getPropertyValue('--pl-h') === '396px'; })()",
+        "the pane at the window's top, the bar gone, and the view decided at its new height",
         Duration::from_secs(5),
-        facts,
+        &seen,
     );
-    harness::eval(&tab, TWO_FRAMES);
-    harness::eval(&tab, TWO_FRAMES);
     let kept = harness::probe(&tab, facts);
     // The page scrolls back as the ride ends: the transform goes with it, and the box does not move.
     harness::eval(&tab, "(function(){ scrollTo(0, 0); return true; })()");
@@ -5247,7 +5263,7 @@ fn the_session_view_in_a_host_reads_its_gaps_again_around_the_keyboard_ride() {
         "(function(){ return Math.round(scrollY) === 0 && document.getElementById('hostPane').style.transform === ''; })()",
         "the ride to end with the page's scroll",
         Duration::from_secs(5),
-        facts,
+        &seen,
     );
     harness::eval(&tab, TWO_FRAMES);
     harness::eval(&tab, TWO_FRAMES);
@@ -5271,7 +5287,7 @@ fn the_session_view_in_a_host_reads_its_gaps_again_around_the_keyboard_ride() {
         ),
         (
             serde_json::json!("0px"),
-            serde_json::json!("40px"),
+            serde_json::json!("34px"),
             serde_json::json!(0)
         ),
         "the ride's end reads the gaps again though the box did not move: {ended}"
