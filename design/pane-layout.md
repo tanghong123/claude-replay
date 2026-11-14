@@ -643,7 +643,9 @@ layers' rules, which read the cuts, are the same in both.
   reaches it, and placed from `layerBox()`. A press in it is still a press in the view. On a phone its
   dim covers the box; in the app, beside a wide phone's column or a 520px sidebar, the app's
   stylesheet takes it to the window, as it does the review sheet, so it dims the column too and takes
-  the tap that closes the card.
+  the tap that closes the card. The view rises to the dim's level for that, its top bar with it, so
+  the handle by the title rises over the view while the card is open, drawn as the dim would draw it
+  and taking no press: a tap there still reaches the dim (#s496's walk found it covered).
 - **A move without a resize is heard** (#s467): an IntersectionObserver whose root margin is the
   box's own place reports any change of it, floating-ui's move watch, with no polling timer.
   Contained, a move changes no layer the rules place; it changes the cuts of the insets, which matter

@@ -559,6 +559,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 #app.preview-full:not(.preview-off) .drawer-handle{display:none}
 #app:has(.reading-cluster>.reading-options.open,.header-search-cluster>.navigator-options.open,.header-search-cluster>.search-suggest:not([hidden]))>.drawer-handle{z-index:13}
 #app:has(>#sessionView.pl-boxed.preview-off :is(.reading-cluster>.reading-options.open,.header-search-cluster>.navigator-options.open,.header-search-cluster>.search-suggest:not([hidden]),.composer.production-show .compose-dialog:not([hidden])))>.drawer-handle{visibility:hidden}
+#app:has(>#sessionView.pl-boxed.pl-phone>.task-scrim:not([hidden]))>.drawer-handle{z-index:60;pointer-events:none;color:color-mix(in srgb,var(--ink) 58%,rgb(14 19 31))}
 }
 :root{--peer:#2b6f8e}
 :root[data-theme="dark"]{--peer:#7ab8d6}
