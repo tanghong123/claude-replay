@@ -3088,13 +3088,11 @@ fn the_session_list_in_a_host_lays_out_its_rows_by_its_own_width_and_touch() {
 /// `[`, `]`, `j` and Space did nothing until the reader clicked in the transcript; before stage 4 the
 /// open session clicked again kept it too. Only the keyboard's focus on a row, a step's or Tab's, is
 /// kept as the list is rewritten, which the case presses through the app's own keymap, there and back.
-///
-/// Red until the owner decides #s487: the `[` from the end lands turn N-1 inside the hold slack,
-/// where the engine keeps the pin, and the tail's converge takes the reader back to the end within
-/// about 0.1s. The case passed by reading the view during that dip; it reads where it rests now.
+/// Its `[` asks only that the key reached the transcript (the view moved at some poll); where the
+/// reader then rests is the next case's (#s487).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
-fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked_known_red_s487() {
+fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {
     let _serial = serial();
     let base = base("appshell-click-keys");
     let stores = Stores::new(&base);
@@ -3155,23 +3153,18 @@ fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked_known_red_
         &tab,
         "(document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true })); 'ok'",
     );
-    // Where the press leaves the reader once it RESTS, read twice a second apart (#s487): a
-    // reading taken while the view moves can catch a dip that the tail's converge then undoes,
-    // and a case that polled for "moved at some point" passed on exactly that dip.
     let moved_from = |rest: i64| {
-        let (landed, _) = harness::until_still(
-            &tab,
-            scrolled,
-            |v| v.as_i64().is_some_and(|v| v < rest - 20),
-            Duration::from_secs(10),
-        );
-        harness::pause("click keys", Duration::from_secs(1));
-        let later = harness::eval(&tab, scrolled);
-        (
-            landed.as_i64().is_some_and(|v| v < rest - 20) && later == landed,
-            landed,
-            later,
-        )
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if harness::eval(&tab, &format!("{scrolled} < {rest} - 20")) == serde_json::json!(true)
+            {
+                return true;
+            }
+            if Instant::now() > deadline {
+                return false;
+            }
+            harness::pause("click keys", Duration::from_millis(200));
+        }
     };
     let moved = moved_from(rest);
     // The open session's row clicked again: the app redraws nothing, and the click still hands the
@@ -3235,10 +3228,8 @@ fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked_known_red_
         "the click chose the session and the redraw left no row of the list with the focus"
     );
     assert!(
-        moved.0,
-        "so `[` is the transcript's: it steps back a turn from the end ({rest}px) and rests there: {}px, then {}px a second later",
-        moved.1,
-        moved.2
+        moved,
+        "so `[` is the transcript's: it steps back a turn from the end ({rest}px)"
     );
     assert_eq!(
         again_focus,
@@ -3246,10 +3237,8 @@ fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked_known_red_
         "the open session's row clicked again, which redraws nothing, keeps no focus either"
     );
     assert!(
-        moved_again.0,
-        "so `[` is still the transcript's ({again_rest}px) and rests where it went: {}px, then {}px a second later",
-        moved_again.1,
-        moved_again.2
+        moved_again,
+        "so `[` is still the transcript's ({again_rest}px)"
     );
     assert_eq!(
         (stepped, stepped_back),
@@ -3258,6 +3247,83 @@ fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked_known_red_
             serde_json::json!({ "taken": true, "focus": second })
         ),
         "the list's keys, through the app's keymap, open the next session and keep the focus on its row, there and back"
+    );
+}
+
+/// #s487: the same click, then `[` from the end, read where the reader RESTS: twice, a second
+/// apart. The case above checks only that the key reached the transcript (the view moved at some
+/// poll), which the dip before the tail's converge satisfies. Red until the owner decides #s487
+/// (#s502): `[` lands turn N-1 inside the hold slack, where the engine keeps the pin, and the
+/// tail's converge takes the reader back to the end within about 0.1s.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_rests_where_its_turn_key_goes_after_a_session_is_clicked_known_red_s487() {
+    let _serial = serial();
+    let base = base("appshell-click-keys-rest");
+    let stores = Stores::new(&base);
+    let first = "cccccccc-0000-4000-8000-0000000004d1";
+    let second = "cccccccc-0000-4000-8000-0000000004d2";
+    for sid in [first, second] {
+        stores.claude_session(
+            sid,
+            &harness::long_session(
+                30,
+                harness::Shape {
+                    tool_every: 3,
+                    think_every: 5,
+                    prose_repeat: 6,
+                },
+            ),
+        );
+    }
+    let monitor = Monitor::spawn(Kind::V1, 3187, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::track_idle(&tab);
+    harness::show_every_session(
+        &tab,
+        &format!("http://127.0.0.1:3187/?ui=app&session={first}"),
+    );
+    let row = format!("#tree .tree-row.session[data-session=\"{second}\"]");
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector({row:?}) && document.querySelectorAll('.virtual-window .turn.user').length >= 3"),
+        "the list drawn and the first session's turns mounted",
+        Duration::from_secs(30),
+        "JSON.stringify({ tree: (document.getElementById('tree') || {}).innerText, turns: document.querySelectorAll('.virtual-window .turn.user').length })",
+    );
+    harness::click_when_settled(&tab, &row, "the second session's row");
+    harness::until(
+        &tab,
+        &format!("location.search.indexOf('{second}') >= 0 && !!document.querySelector({row:?} + '.selected') && document.querySelectorAll('.virtual-window .turn.user').length >= 3"),
+        "the second session shown, its row selected",
+        Duration::from_secs(30),
+        "JSON.stringify({ search: location.search, turns: document.querySelectorAll('.virtual-window .turn.user').length })",
+    );
+    let scrolled = "Math.round(document.querySelector('.transcript').scrollTop)";
+    let (rest, _) = harness::until_still(
+        &tab,
+        scrolled,
+        |v| v.as_i64().unwrap_or(0) > 0,
+        Duration::from_secs(15),
+    );
+    let rest = rest.as_i64().unwrap_or(0);
+    harness::eval(
+        &tab,
+        "(document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true })); 'ok'",
+    );
+    let (landed, _) = harness::until_still(
+        &tab,
+        scrolled,
+        |v| v.as_i64().is_some_and(|v| v < rest - 20),
+        Duration::from_secs(10),
+    );
+    harness::pause("click keys", Duration::from_secs(1));
+    let later = harness::eval(&tab, scrolled);
+    drop(monitor);
+    assert!(
+        landed.as_i64().is_some_and(|v| v < rest - 20) && later == landed,
+        "`[` steps back a turn from the end ({rest}px) and rests there: {landed}px, then {later}px a second later"
     );
 }
 
