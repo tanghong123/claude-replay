@@ -609,6 +609,9 @@ mod tests {
             ".outline-turn-pending",
         ];
         const SHARED_HOOK: &str = ":is(#sessionView,#app)";
+        // What a rule of the app placing its view may read below `#app>`: the view, its own
+        // layout classes and the task card's dim (#s431 stage 4).
+        const PLACING: &[&str] = &["#sessionView", ".pl-boxed", ".pl-phone", ".task-scrim"];
         // `body`, `html` or `:root` as an element or pseudo-class (never a class like `.body`).
         let bare = |selector: &str, word: &str| {
             let ident = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '#');
@@ -664,13 +667,15 @@ mod tests {
                 } else if lead == "#app"
                     && rest[lead.len()..].starts_with('>')
                     && after.starts_with("#sessionView")
+                    && selector_names(after).iter().all(|n| PLACING.contains(n))
                 {
                     // #s431 stage 4: the app placing the view it hosts, its grid's own child. The
                     // task card's dim on a phone reader in a box reaches the window's sides in the
                     // app alone (over a wide phone's column, a sidebar beside the view and the
                     // drawer's handle), as it did from the page's body; it reads only the view's
-                    // own classes, and a host, which loads none of the app's rules, keeps the dim
-                    // in its pane.
+                    // own layout classes and the dim (PLACING), and a host, which loads none of the
+                    // app's rules, keeps the dim in its pane. Any other rule led by
+                    // `#app>#sessionView` would be a view rule a host never gets.
                     Some("the app placing its view")
                 } else {
                     None
@@ -709,7 +714,8 @@ mod tests {
                 // #s431 stage 2 moved the pane's sideways rules from the app's copy of its state
                 // to the view's own: 37 remain.
                 && count("an app state") >= 30
-                && count("the app placing its view") >= 2
+                // Exactly the dim's two: one more is a decision, made here.
+                && count("the app placing its view") == 2
                 && count("tokens on the app's grid") >= 3,
             "read {} selectors: {counts:?}",
             selectors.len()
