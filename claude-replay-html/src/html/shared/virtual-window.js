@@ -2242,20 +2242,26 @@ function elementFrame(scroller) {
     laidOut: () => scroller.clientWidth > 0 || scroller.clientHeight > 0,
     on: (type, fn, options) => scroller.addEventListener(type, fn, options),
     // A key is the reader's input where the browser sends it. With the focus inside the box it
-    // passes through the box. A click on the transcript's text leaves the focus on the page's body,
-    // and the browser still scrolls the box from there (WebKit and Chrome scroll what the click
-    // landed in), but that key never passes through the box: a follower's Page Up was read as the
-    // browser's move and undone (#s431, the iOS Simulator walk). So keys are heard at the window:
-    // any key from inside the box, and from the body only a key the browser scrolls with. Any other
-    // key there (the page's `+`) is still no move of the reader's.
+    // passes through the box, and is heard there as every other input is. A click on the
+    // transcript's text leaves the focus on the page's body, and the browser still scrolls the box
+    // with a key from there, since it scrolls the box the last press landed in (WebKit and Chrome),
+    // but that key never passes through the box: a follower's Page Up was read as the browser's move
+    // and undone (#s431, the iOS Simulator walk). So a key on the body is heard at the window too,
+    // as the reader's only when the browser scrolls with it, the last press on the page landed in
+    // the box, and no handler took it (`defaultPrevented`, read in the bubble phase, after the
+    // page's own). Any other key there (the page's `+`, `\` folding the list), one after a press
+    // elsewhere (the browser scrolls that box, or nothing), and one a host's keymap took are no move
+    // of the reader's in this box (the review of 500ae62b).
     onKey: (fn, options) => {
+      scroller.addEventListener("keydown", fn, options);
       const doc = scroller.ownerDocument, win = doc?.defaultView;
-      if (!win) return scroller.addEventListener("keydown", fn, options);
+      if (!win) return;
+      let pressedInside = false;
+      win.addEventListener("pointerdown", event => { pressedInside = !!event.target?.nodeType && scroller.contains(event.target); }, { passive: true, capture: true });
       win.addEventListener("keydown", event => {
         const target = event.target;
-        if (target?.nodeType && scroller.contains(target)) fn(event);
-        else if ((target === doc.body || target === doc.documentElement) && NATIVE_SCROLL_KEYS.has(event.key)) fn(event);
-      }, options);
+        if (pressedInside && !event.defaultPrevented && (target === doc.body || target === doc.documentElement) && NATIVE_SCROLL_KEYS.has(event.key)) fn(event);
+      }, { passive: true });
     },
     // A pointer that lands on the scroller ITSELF is on its scrollbar OR in a GUTTER: content
     // lands on a descendant, but a centred child leaves the scroller's own background exposed on

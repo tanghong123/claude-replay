@@ -5741,13 +5741,17 @@ fn late_move_leaves_the_end(port: u16, case: &str, past_the_window: bool) {
 /// #s431, from the iOS Simulator walk: a click on the transcript's text leaves the focus on the page's
 /// body, and the browser still scrolls the transcript with a Page Up from there, but the key never
 /// passes through the transcript, where the engine heard keys. The move read as the browser's, and
-/// the follower was put back at the end. The click is the mouse's own; the key is sent where the
-/// browser sends it, to the body, and the transcript moved as the browser moves it for that key (a
-/// key Chrome's DevTools protocol sends here repeats until the page stops it, #270). First the other
-/// half of the rule: any other key on the body is still no move of the reader's. The code size a step
-/// up runs a transaction in the key's own handler, and here it meets a move the browser made (the
-/// clamp of `a_follower_the_browser_moves_with_no_input_keeps_following`) before its event: the tail
-/// waits for that event, and the event puts the follower back at the end.
+/// the follower was put back at the end. A key on the body is the reader's only where the browser
+/// scrolls the transcript with it, so the other scenes hold the rule's other halves (the review of
+/// 500ae62b): a key the browser does not scroll with, a scroll key a handler took, and a scroll key
+/// after a press in the session list are no move of the reader's. In each the key comes before the
+/// code size's step, a transaction the keymap runs in its key's own handler, which meets a move the
+/// browser made (the clamp of `a_follower_the_browser_moves_with_no_input_keeps_following`) before
+/// its event. The tail waits for the event, and the event puts the follower back at the end; read as
+/// the reader's, the transaction let go of the end at once. The clicks are the mouse's own. A key is
+/// sent where the browser sends it, to the body, and for the Page Up the transcript is moved as the
+/// browser moves it (a key Chrome's DevTools protocol sends here repeats until the page stops it,
+/// #270).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
@@ -5779,55 +5783,67 @@ fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
     harness::jump_to_end(&tab, surface);
     rest();
     let read = "(function(){ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; var a = document.activeElement; return { gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), top: Math.round(s.scrollTop), following: h.length ? h[h.length - 1].following : null, focus: a === document.body ? 'body' : a ? a.tagName.toLowerCase() + (a.id ? '#' + a.id : '') : null }; })()";
-    // A key the page acts on, on the body, runs the transaction that meets the browser's move unheard:
-    // the transcript's scroll events held, the last three units gone and the layout read (the browser
-    // clamps the offset), the units back, then `+`.
-    let sized = harness::probe(
-        &tab,
-        "(function(){ var s = document.querySelector('.transcript'), h = window.__viewportHistory.states; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); var start = h.length; document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '+', bubbles: true, cancelable: true })); return { top: Math.round(top), clamped: Math.round(clamped), ran: h.length - start, following: h[h.length - 1].following, gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
-    );
+    // In one task: the transcript's scroll events held, the last three units gone and the layout read
+    // (the browser clamps the offset), the units back, then the keys on the body. Then the held events
+    // dispatched again as themselves.
     harness::eval(
         &tab,
-        "(function(){ var s = document.querySelector('.transcript'); window.removeEventListener('scroll', window.__hold, true); window.__heldEvents.forEach(function (e) { s.dispatchEvent(e); }); if (!window.__heldEvents.length) s.dispatchEvent(new Event('scroll')); return 'ok'; })()",
+        "(function(){ var s = document.querySelector('.transcript'); window.__clampWith = function (keys) { var h = window.__viewportHistory.states; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); var start = h.length; keys.forEach(function (k) { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); }); return { top: Math.round(top), clamped: Math.round(clamped), ran: h.length - start, following: h[h.length - 1].following }; }; window.__release = function () { window.removeEventListener('scroll', window.__hold, true); window.__heldEvents.forEach(function (e) { s.dispatchEvent(e); }); if (!window.__heldEvents.length) s.dispatchEvent(new Event('scroll')); return 'ok'; }; return 'ok'; })()",
     );
-    rest();
-    let healed = harness::probe(&tab, read);
+    let clamp_with = |keys: &str| {
+        let sized = harness::probe(&tab, &format!("window.__clampWith({keys})"));
+        harness::eval(&tab, "window.__release()");
+        rest();
+        (sized, harness::probe(&tab, read))
+    };
+    let click = |x: f64, y: f64, what: &str| {
+        for kind in [Mouse::MousePressed, Mouse::MouseReleased] {
+            tab.call_method(DispatchMouseEvent {
+                Type: kind,
+                x,
+                y,
+                modifiers: None,
+                timestamp: None,
+                button: Some(MouseButton::Left),
+                buttons: None,
+                click_count: Some(1),
+                force: None,
+                tangential_pressure: None,
+                tilt_x: None,
+                tilt_y: None,
+                twist: None,
+                delta_x: None,
+                delta_y: None,
+                pointer_Type: None,
+            })
+            .unwrap_or_else(|e| panic!("the reader's click on {what}: {e}"));
+        }
+        // Past the click's intent window: a key is the only input behind what follows.
+        std::thread::sleep(Duration::from_millis(700));
+    };
     // The text of the last prompt in sight, at a point where nothing else is drawn over it.
     let at = harness::probe(
         &tab,
         "(function(){ var s = document.querySelector('.transcript'), box = s.getBoundingClientRect(); var prompts = [...s.querySelectorAll('.virtual-window .turn.user')].reverse(); for (var u of prompts) { var walker = document.createTreeWalker(u, NodeFilter.SHOW_TEXT); for (var n = walker.nextNode(); n; n = walker.nextNode()) { if (n.textContent.trim().length < 8) continue; var range = document.createRange(); range.setStart(n, 2); range.setEnd(n, 6); var r = range.getBoundingClientRect(); var x = r.left + r.width / 2, y = r.top + r.height / 2; if (y < box.top + 60 || y > box.bottom - 60) continue; var hit = document.elementFromPoint(x, y); if (hit && hit.contains(n)) return { x: x, y: y }; } } return null; })()",
     );
-    let (x, y) = (
+    click(
         at["x"]
             .as_f64()
             .unwrap_or_else(|| panic!("a prompt's text in sight: {at}")),
         at["y"].as_f64().unwrap(),
+        "the prompt's text",
     );
-    for kind in [Mouse::MousePressed, Mouse::MouseReleased] {
-        tab.call_method(DispatchMouseEvent {
-            Type: kind,
-            x,
-            y,
-            modifiers: None,
-            timestamp: None,
-            button: Some(MouseButton::Left),
-            buttons: None,
-            click_count: Some(1),
-            force: None,
-            tangential_pressure: None,
-            tilt_x: None,
-            tilt_y: None,
-            twist: None,
-            delta_x: None,
-            delta_y: None,
-            pointer_Type: None,
-        })
-        .expect("the reader's click on the prompt's text");
-    }
-    // Past the click's intent window: the key is the only input behind the move.
-    std::thread::sleep(Duration::from_millis(700));
     let clicked = harness::probe(&tab, read);
-    // The key where the browser sends it with nothing focused, and the move it makes for it.
+    // A key the browser does not scroll with, which nothing on the page takes, then the size a step up.
+    let (sized, sized_healed) = clamp_with("['Shift', '+']");
+    // A scroll key a handler on the page took (a host's own keymap), then the size a step down.
+    harness::eval(&tab, "(function(){ window.__take = function (e) { if (e.key === 'ArrowUp') e.preventDefault(); }; document.addEventListener('keydown', window.__take); return 'ok'; })()");
+    let (taken, taken_healed) = clamp_with("['ArrowUp', '-']");
+    harness::eval(
+        &tab,
+        "(function(){ document.removeEventListener('keydown', window.__take); return 'ok'; })()",
+    );
+    // The Page Up, and the move the browser makes for it.
     harness::eval(
         &tab,
         "(function(){ var s = document.querySelector('.transcript'); document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', code: 'PageUp', bubbles: true, cancelable: true })); s.scrollTop = s.scrollTop - Math.round(s.clientHeight * 0.85); return 'ok'; })()",
@@ -5836,35 +5852,65 @@ fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
     let pressed = harness::probe(&tab, read);
     rest();
     let rested = harness::probe(&tab, read);
+    // Back at the end, a click on the session list's empty space, then a scroll key, which the browser
+    // sends to the list, and the size a step up.
+    harness::jump_to_end(&tab, surface);
+    rest();
+    let back = harness::probe(&tab, read);
+    let blank = harness::probe(
+        &tab,
+        "(function(){ var l = document.getElementById('sessionList'); if (!l) return null; var r = l.getBoundingClientRect(); for (var y = r.bottom - 20; y > r.top + 20; y -= 20) { var x = r.left + Math.min(40, r.width / 2); var hit = document.elementFromPoint(x, y); if (hit && l.contains(hit) && !hit.closest('button, a, input, [tabindex], [data-session], .tree-row')) return { x: x, y: y }; } return null; })()",
+    );
+    click(
+        blank["x"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("empty space in the session list: {blank}")),
+        blank["y"].as_f64().unwrap(),
+        "the session list's empty space",
+    );
+    let listed = harness::probe(&tab, read);
+    let (elsewhere, elsewhere_healed) = clamp_with("['ArrowDown', '+']");
     let violations = harness::probe(
         &tab,
         "JSON.stringify((window.__viewportViolations || []).slice(0, 4))",
     );
     drop(monitor);
+    let at_end = |v: &serde_json::Value| {
+        v["gap"].as_i64().unwrap_or(9999).abs() <= 2 && v["following"] == serde_json::json!(true)
+    };
+    let kept = |v: &serde_json::Value| {
+        v["clamped"].as_i64().unwrap_or(0) < v["top"].as_i64().unwrap_or(0) - 100
+            && v["ran"].as_i64().unwrap_or(0) > 0
+            && v["following"] == serde_json::json!(true)
+    };
     assert!(
-        sized["clamped"].as_i64().unwrap_or(0) < sized["top"].as_i64().unwrap_or(0) - 100
-            && sized["ran"].as_i64().unwrap_or(0) > 0
-            && sized["following"] == serde_json::json!(true),
-        "the browser clamped the offset, and the transaction `+` on the body ran left the follower following: {sized}"
-    );
-    assert!(
-        healed["gap"].as_i64().unwrap_or(9999).abs() <= 2
-            && healed["following"] == serde_json::json!(true),
-        "the clamp's event put the follower back at the end: sized {sized}, healed {healed}"
-    );
-    assert!(
-        clicked["gap"].as_i64().unwrap_or(9999).abs() <= 2
-            && clicked["following"] == serde_json::json!(true)
-            && clicked["focus"] == serde_json::json!("body"),
+        at_end(&clicked) && clicked["focus"] == serde_json::json!("body"),
         "the reader clicked the prompt's text and follows the session at its end, the focus on the body: {clicked}"
     );
     assert!(
-        pressed["following"] == serde_json::json!(false) && pressed["gap"].as_i64().unwrap_or(0) > 400,
-        "the Page Up is the reader's: they let go of the end where it took them: clicked {clicked}, pressed {pressed}"
+        kept(&sized) && at_end(&sized_healed),
+        "a key the browser does not scroll with is no move of the reader's: the clamp's event put the follower back at the end: {sized}, then {sized_healed}"
+    );
+    assert!(
+        kept(&taken) && at_end(&taken_healed),
+        "nor is a scroll key a handler took: {taken}, then {taken_healed}"
+    );
+    assert!(
+        pressed["following"] == serde_json::json!(false)
+            && pressed["gap"].as_i64().unwrap_or(0) > 400,
+        "the Page Up is the reader's: they let go of the end where it took them: {pressed}"
     );
     assert!(
         rested["following"] == serde_json::json!(false) && rested["top"] == pressed["top"],
         "and stay there: pressed {pressed}, rested {rested}"
+    );
+    assert!(
+        at_end(&back) && at_end(&listed) && listed["focus"] == serde_json::json!("body"),
+        "back at the end, the reader clicked the session list's empty space, the focus on the body: {back}, then {listed}"
+    );
+    assert!(
+        kept(&elsewhere) && at_end(&elsewhere_healed),
+        "a scroll key after a press in the list moves the list, not the transcript: {elsewhere}, then {elsewhere_healed}"
     );
     assert_eq!(
         violations,
