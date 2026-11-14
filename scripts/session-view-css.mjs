@@ -355,15 +355,14 @@ export const ROOT_CLASSES = Object.freeze([
 
 /** What the view draws that the page shows OUTSIDE `#sessionView`, so a rule for it is in both files
  *  and the app's copy styles it where it is:
- *  - what the view appends to `viewRoot.layer()`, which is the page's `body` until the view has a
- *    layer of its own (stage 6): the task card and its scrim (the copy field and a download's link
- *    carry no class);
+ *  - what the view appends to `viewRoot.layer()`, the page's `body`: only the copy field and a
+ *    download's link, which carry no class (the task card and its dim are drawn in the view's element
+ *    since #s431 stage 4);
  *  - the outline's Turns, Tasks and Agents lists, which a wide phone's column borrows into the app's
  *    `#columnPane` (`PHONE_PANES`), with their rows. Read off the page in each of those states, plus
  *    the rows the hermetic page cannot draw (stage 5a's shared list).
  *  A name that is one of these, or starts with one and a hyphen. */
 export const OUTSIDE = Object.freeze([
-  ".task-popover", ".task-scrim", ".sv-task-card", ".task-chip",
   "#navigatorTurns", "#navigatorWork", "#navigatorAgents", ".navigator-list",
   ".activity-empty", ".agent-state", ".agents-filter-row", ".outline-agent", ".outline-epoch", ".outline-label", ".outline-number", ".outline-peer",
   ".outline-quote-marker", ".outline-quoted", ".outline-reply-count", ".outline-turn-pending", ".outline-turn-row",
@@ -722,7 +721,7 @@ const APP_QUERIES = new Map([
 export const APP_KEPT_QUERIES = Object.freeze(["@media(max-width:1180px)", "@media(max-width:900px)", "@media(pointer:coarse)and(max-height:500px)and(min-width:900px)"]);
 const DRAWER_PART = /(?:\.sidebar|\.side-head|\.tree-row|\.tree|\.drawer-scrim|\.drawer-handle|\.sidebar-mini|\.sidebar-resizer|#sidebarCollapse|\.section-view-scrim|\.section-view-menu|\.session-filter-options)(?![\w-])/;
 const APP_GRID = /^(?:\.app|#app)(?:\.preview-off)?$/;
-const PHONE_VIEW_PART = /(?:\.phone-pane-body|\.phone-pane-jump|\.task-scrim|#taskPopover|\.navigator-options|\.toast|\.activity-empty)(?![\w-])|^(?:input|textarea|select)(?![\w-])|\s(?:button)$/;
+const PHONE_VIEW_PART = /(?:\.phone-pane-body|\.phone-pane-jump|\.navigator-options|\.toast|\.activity-empty)(?![\w-])|^(?:input|textarea|select)(?![\w-])|\s(?:button)$/;
 export const APP_ARRANGED = Object.freeze({ drawer: "#app.app-drawer", listed: "#app:not(.app-drawer)", phone: "#sessionView.pl-phone" });
 export function appGate(sel, mode, body = "") {
   if (mode === "dropped") return { kind: "dropped" };
@@ -1125,12 +1124,13 @@ function onceOnTheElement(lines, id, file) {
  *  control sized by it is as wide as it was in the app at the default sidebar; a left edge at the
  *  sidebar (`var(--sidebar)`) is the view's own left edge, `--pane-x`, measured from where its fixed
  *  layers are placed; and a share of the height is that share of the view's, `--pl-vh` and
- *  `--pl-dvh`, which are the window's own units while the view is as tall as the window. A phone
- *  reader narrower than the window places its fixed layers in its own box (production.css,
- *  `pl-boxed`), which sets `--pl-cut-left` and `--pl-cut-right` to how far its edges are from the
- *  window's: the left edge is then `--pane-x` less that cut, and the screen's insets (the island, a
- *  phone held sideways) only the part of each that falls in the box, `max(0px, inset - cut)`, so
- *  beside a wide phone's column the left inset is the column's. Elsewhere the cuts are unset, 0, and
+ *  `--pl-dvh`, which are the window's own units while the view is as tall as the window. A view
+ *  that is not the whole window (a phone reader from stage 2, every view from stage 4) places its
+ *  fixed layers in its own box (production.css, `pl-boxed`), which sets `--pl-cut-left` and `--pl-cut-right` (and, from stage 4, `--pl-cut-top`
+ *  and `--pl-cut-bottom`) to how far its edges are from the window's: the left edge is then `--pane-x`
+ *  less that cut, and the screen's insets (the island, a phone held sideways, the home indicator)
+ *  only the part of each that falls in the box, `max(0px, inset - cut)`, so beside a wide phone's
+ *  column the left inset is the column's. Elsewhere the cuts are unset, 0, and
  *  every length is the window's as before. pane-layout.js writes the lengths. Only a declaration's
  *  value changes, never a selector or a keyframe's name. */
 export function viewLengths(line) {
@@ -1143,7 +1143,7 @@ export function viewLengths(line) {
     .replace(/(^|[^\w.-])(\d*\.?\d+)vw\b/g, (all, before, n) => `${before}calc(${n} * var(--pl-b) / 100)`)
     .replace(/(^|[^\w.-])(\d*\.?\d+)dvh\b/g, (all, before, n) => `${before}calc(${n} * var(--pl-dvh))`)
     .replace(/(^|[^\w.-])(\d*\.?\d+)vh\b/g, (all, before, n) => `${before}calc(${n} * var(--pl-vh))`)
-    .replace(/env\(safe-area-inset-(left|right)(?:,\s*0px)?\)/g, (all, side) => `max(0px, env(safe-area-inset-${side},0px) - var(--pl-cut-${side},0px))`);
+    .replace(/env\(safe-area-inset-(left|right|top|bottom)(?:,\s*0px)?\)/g, (all, side) => `max(0px, env(safe-area-inset-${side},0px) - var(--pl-cut-${side},0px))`);
   if (/\d(?:vw|vh|dvh|svh|lvh|vmin|vmax)\b|var\(--sidebar\)/.test(body)) throw new Error(`session-view.css: a length in the window's units is left in \`${line.slice(0, 120)}\`; say in viewLengths what it is of the view`);
   return line.slice(0, at) + body;
 }

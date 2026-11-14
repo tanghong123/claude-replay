@@ -9,7 +9,7 @@
      host app would, on the monitor's origin. The case answers this page itself through the browser
      (harness::answer_in_browser); the monitor serves only its own modules and routes. Its options
      come from the address: `hide=` names the optional controls switched off (comma-separated, each
-     `show: {name: false}`), `keyboard=` the key mode (left out: the view's default), `frame=` the
+     `show: {name: false}`), `theme=dark` the dark theme (left out: light), `keyboard=` the key mode (left out: the view's default), `frame=` the
      native app's frame (below), `write=on` writes switched on (below), `mount=0` leaves the mount to
      the case (`__host.mount()`), and `session=` a session to open, read from the monitor's own session
      list. The page carries nothing of the view's or the app's beyond the element it mounts the view
@@ -54,7 +54,7 @@ try {
     if (!rows.has(session)) await new Promise(done => setTimeout(done, 250));
   }
   const options = {
-    theme: "light",
+    theme: params.get("theme") === "dark" ? "dark" : "light",
     backend,
     grid: document.getElementById("hostPane"),
     selectedId: () => session,

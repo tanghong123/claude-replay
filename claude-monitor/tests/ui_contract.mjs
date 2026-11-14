@@ -5051,8 +5051,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // shared module is untouched (the offline pages inline it, and the byte gate reads them).
   assert.match(viewSource, /if \(keyboardMode === "engaged"\) \{/, "the view binds its own keys only when engaged");
   assert.match(viewSource, /const engage = event => \{ engaged = inView\(event\.target\) && !inGuest\(event\.target\); \};/, "engagement is the last press or focus inside the view and outside its guest");
-  assert.match(viewSource, /element\.contains\(target\) \|\| \[\.\.\.floating\]\.some\(node => node\.contains\(target\)\)/, "inside the view counts what it floats over the page");
-  assert.match(viewSource, /floating\.add\(taskScrim\); floating\.add\(taskPopover\);/, "the task card and its scrim float");
+  assert.match(viewSource, /const inView = target => !!target && typeof target\.closest === "function" && element\.contains\(target\);/, "inside the view is inside its element");
+  // #s431 stage 4: the task card and its dim are drawn in the view's element, so they are inside it.
+  assert.match(viewSource, /\nelement\.append\(taskScrim, taskPopover\);\n/, "the task card and its dim are the view's");
+  assert.doesNotMatch(viewSource, /viewRoot\.layer\(\)\.append\(taskScrim/, "and float over the page no longer");
   assert.match(viewSource, /const binding = resolveKey\(event, "view", event\.target\);\n    const act = binding && keyActions\[binding\.action\];\n    if \(act && act\(\) !== false\) event\.preventDefault\(\);\n  \}, \{ capture: true, signal \}\);/, "a key the view has no action for, or one that answers false, is left to the page; the view listens in the capture phase");
   assert.match(viewSource, /engaged: \(\) => engaged, keysFirst: keyboardMode === "engaged", toast,/, "the pane's image viewer reads the engagement too, and hears its keys first in a host");
   // Mounted alone, the pane shutting itself as it is built changed the width, and the remeasure
@@ -5071,20 +5073,19 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /addEventListener\("resize", \(\) => \{ paneLayoutChanged\(\); updateStickyHeaders\(\); \}/, "the window's resize remeasures only a width that changed");
   assert.match(viewSource, /^renderHeader\(\); renderNavigator\(\); paintJump\(\);\n(?:\/\/[^\n]*\n)+paneLaidOutWidth = laidOutWidth\(\);\nviewMounted = true;$/m, "and does from the first render on, measured from the width the mount left");
   // The engaged binding, run: the engagement and the keymap as the view writes them, over a fake
-  // document, the view's element, a host's node, a guest and the task card the view floats.
-  const engagement = /^const floating = new Set\(\);\nlet engaged = keyboardMode === "page";\nif \(keyboardMode === "engaged"\) \{\n[\s\S]*?\n\}\n/m.exec(viewSource);
+  // document, the view's element, a host's node, a guest and the task card the view draws in it.
+  const engagement = /^let engaged = keyboardMode === "page";\nif \(keyboardMode === "engaged"\) \{\n[\s\S]*?\n\}\n/m.exec(viewSource);
   const keymap = /^if \(keyboardMode === "engaged"\) \{\n  document\.addEventListener\("keydown"[\s\S]*?\n\}\n/m.exec(viewSource);
   assert.ok(engagement && keymap, "the view's engagement and its engaged keymap are where the contract reads them");
   const node = (inside, guest = false) => ({ tagName: "DIV", closest: sel => (sel === "[data-guest-keys]" && guest ? {} : null), inside });
-  const viewNode = node(true), guestNode = node(true, true), hostNode = node(false), card = { tagName: "DIV", closest: () => null, card: true };
+  const viewNode = node(true), guestNode = node(true, true), hostNode = node(false), card = node(true);
   const mount = (keyboardMode, actions) => {
     const handlers = {}, capture = {};
     const signal = { lifetime: "the view's" }, bound = [];
     const doc = { addEventListener: (type, fn, phase) => { (handlers[type] ||= []).push(fn); capture[type] = phase?.capture === true; bound.push(phase?.signal === signal); } };
-    const run = new Function("document", "element", "inGuest", "resolveKey", "keyActions", "keyboardMode", "signal", `${engagement[0]}${keymap[0]}; return { floating, engaged: () => engaged };`);
+    const run = new Function("document", "element", "inGuest", "resolveKey", "keyActions", "keyboardMode", "signal", `${engagement[0]}${keymap[0]}; return { engaged: () => engaged };`);
     const view = run(doc, { contains: t => t.inside === true, isConnected: true }, inGuest, resolveKey, actions, keyboardMode, signal);
     assert.ok(bound.every(Boolean), "every one of them carries the view's signal, which its unmount aborts (stage 7)");
-    view.floating.add({ contains: t => t.card === true });
     const press = (key, target = { tagName: "BODY", closest: () => null }) => { let prevented = false; for (const fn of handlers.keydown || []) fn({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, target, preventDefault() { prevented = true; } }); return prevented; };
     const on = (type, target) => { for (const fn of handlers[type] || []) fn({ target }); };
     return { ...view, handlers, capture, press, on };
@@ -5102,7 +5103,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   view.on("mousedown", guestNode);
   assert.equal(view.press("]"), false, "inside a guest of the view's, the key is the guest's");
   view.on("mousedown", card);
-  assert.equal(view.press("]"), true, "the task card the view floats over the page is the view's");
+  assert.equal(view.press("]"), true, "the task card, drawn in the view's element, is the view's");
   view.on("mousedown", hostNode);
   assert.equal(view.press("]"), false, "a press in the host ends it");
   view.on("focusin", viewNode);

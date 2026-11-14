@@ -4133,6 +4133,118 @@ fn the_session_view_in_a_host_lays_itself_out_by_its_own_box() {
     }
 }
 
+/// The layers a desktop view in a host's pane opens, each as (name, how it is opened, the element
+/// that shows it opened, how it is closed): the overlaid right pane, the task card (from the outline's
+/// Tasks list, whose rows exist whether or not the outline is shown at that width), the session's
+/// menu, the Reading menu and the search's filter.
+const HOST_DESKTOP_LAYERS: [(&str, &str, &str, &str); 5] = [
+    ("the right pane", "document.getElementById('previewBtn').click()", "#closePreview", "document.getElementById('closePreview').click()"),
+    ("the task card", "document.querySelector('#navigatorWork .work-task-head').click()", "#taskPopover", "document.querySelector('#taskPopover .task-popover-close').click()"),
+    ("the session's menu", "document.getElementById('sessionTitle').click()", "#sessionCopyMenu", "document.getElementById('sessionTitle').click()"),
+    ("the Reading menu", "document.getElementById('readingBtn').click()", "#readingOptions", "document.getElementById('readingBtn').click()"),
+    ("the search's filter", "document.getElementById('filterTranscriptBtn').click()", "#navigatorOptions", "document.getElementById('filterTranscriptBtn').click()"),
+];
+
+/// Opens each of `steps` in turn and returns, for each that is amiss, what [`LAYERS_AMISS`] found:
+/// it did not open, a layer of the view's is drawn outside the view's box, or the layer does not take
+/// a press inside it.
+fn layers_amiss_by_steps(
+    tab: &headless_chrome::Tab,
+    steps: &[(&str, &str, &str, &str)],
+) -> Vec<(String, serde_json::Value)> {
+    let mut amiss = Vec::new();
+    for (name, open, target, close) in steps {
+        harness::eval(tab, &format!("(function(){{ {open}; return true; }})()"));
+        harness::eval(tab, "new Promise(function(done){ requestAnimationFrame(function(){ setTimeout(done, 400); }); })");
+        let found = harness::probe(tab, &format!("{LAYERS_AMISS}('{target}')"));
+        if found["opened"] != serde_json::json!(true)
+            || found["outside"] != serde_json::json!([])
+            || found["missed"] != serde_json::json!([])
+        {
+            amiss.push((name.to_string(), found));
+        }
+        harness::eval(tab, &format!("(function(){{ {close}; return true; }})()"));
+        harness::eval(tab, "new Promise(function(done){ requestAnimationFrame(function(){ setTimeout(done, 300); }); })");
+    }
+    amiss
+}
+
+/// #s431 stage 4 (design/pane-layout.md, "Drawn inside the pane"): in a host's pane off the window's
+/// left edge and below its 40px bar, every layer the view opens is drawn inside the pane, on all four
+/// sides, and takes a press there, in the light theme and the dark: at 380px the phone reader's (its
+/// dock's sheets, Info, the menus, the right pane, and the task card from its Tasks sheet), at 700,
+/// 1000 and 1100px the desktop's (the right pane over the session or beside it, the task card, the
+/// session's menu, the Reading menu, the search's filter). Red on 1.520.0: the overlaid pane lay
+/// against the window's top, right and bottom, over the host's bar and the page beside the pane, and
+/// the task card was drawn in the page's body, placed from the window.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_draws_its_layers_inside_its_pane() {
+    let _serial = serial();
+    let base = base("host-layers-inside");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000004f1".to_string();
+    stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
+    stores.claude_tasks(
+        &sid,
+        &[
+            ("1", "one, done", "completed"),
+            ("2", "two, running", "in_progress"),
+            ("3", "three, pending", "pending"),
+        ],
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3273, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    let phone_card: [(&str, &str, &str, &str); 1] = [(
+        "the task card",
+        "document.getElementById('phonePane-tasks').click(); document.querySelector('#navigatorWork .work-task-head').click()",
+        "#taskPopover",
+        "document.querySelector('#taskPopover .task-popover-close').click(); document.getElementById('phonePane-tasks').click()",
+    )];
+    let mut seen = Vec::new();
+    for theme in ["light", "dark"] {
+        for (left, width) in [(500, 380), (300, 700), (200, 1000), (200, 1100)] {
+            harness::open_host_page(&tab, &monitor, &format!("session={sid}&theme={theme}"));
+            harness::until(
+                &tab,
+                "!!document.querySelector('.virtual-window .turn.user') && document.querySelectorAll('#navigatorWork .work-task').length > 0",
+                "the session and its tasks in the host's view",
+                Duration::from_secs(20),
+                "document.body.innerText.slice(0, 200)",
+            );
+            let layout = place_host_pane(&tab, left, width);
+            let mut amiss = if layout["phone"] == serde_json::json!(true) {
+                let mut found = phone_layers_amiss(&tab, &["the reply box"]);
+                found.extend(layers_amiss_by_steps(&tab, &phone_card));
+                found
+            } else {
+                layers_amiss_by_steps(&tab, &HOST_DESKTOP_LAYERS)
+            };
+            let boxed = harness::probe(
+                &tab,
+                "(function(){ var v = document.getElementById('sessionView'); return { boxed: v.classList.contains('pl-boxed'), contain: getComputedStyle(v).contain, theme: v.dataset.theme }; })()",
+            );
+            if boxed["boxed"] != serde_json::json!(true)
+                || !boxed["contain"].as_str().unwrap_or("").contains("layout")
+                || boxed["theme"] != serde_json::json!(theme)
+            {
+                amiss.push(("the view's box".to_string(), boxed));
+            }
+            seen.push((theme, left, width, layout, amiss));
+        }
+    }
+    drop(monitor);
+    for (theme, left, width, layout, amiss) in seen {
+        assert!(
+            amiss.is_empty(),
+            "a {width}px pane at x={left} under the host's bar, {theme}: every layer inside the pane, \
+             taking a press there: {amiss:?} ({layout})"
+        );
+    }
+}
+
 /// Two animation frames, which a style change needs before what it started is heard (#321).
 const TWO_FRAMES: &str = "new Promise(function (done) { requestAnimationFrame(function () { requestAnimationFrame(function () { done(true); }); }); })";
 
@@ -4508,12 +4620,14 @@ fn the_app_shell_view_reads_what_the_window_read_where_nothing_changes() {
 
 /// #s431 stage 2 (the review of 86b7c06f): what is wrong with the view's layers while it is a phone
 /// reader that is not the whole window. `opened`: the layer `target` names is drawn (a step whose
-/// press opened nothing must not pass). `outside`: the fixed layers drawn outside the view's box (one
-/// wholly off the screen, as the shut pane beside a window's edge, aside). `missed`: which of the first
+/// press opened nothing must not pass). `outside`: the fixed layers drawn outside the view's box on
+/// any of its four sides (one wholly off the screen, as the shut pane beside a window's edge, aside),
+/// and the layer `target` names if it is outside it, wherever it is drawn (stage 4: the task card was
+/// drawn in the page's body, which no walk of the view's element finds). `missed`: which of the first
 /// list row in reach, the title (at rest) or the layer just opened, and the drawer's handle (at rest
 /// and over the right pane, which it stays above) do not take a press at their middle; and, where the
 /// handle shows and an open layer covers its place, whether the handle is drawn over the layer.
-const LAYERS_AMISS: &str = "(function(target){ var v = document.getElementById('sessionView'), vr = v.getBoundingClientRect(); var name = function(e){ return e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + Array.prototype.slice.call(e.classList).join('.'); }; var outside = []; [v].concat(Array.prototype.slice.call(v.querySelectorAll('*'))).forEach(function(e){ var cs = getComputedStyle(e); if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1 || r.left >= innerWidth || r.right <= 0) return; if (r.left < vr.left - 0.5 || r.right > vr.right + 0.5) outside.push(name(e) + ' ' + Math.round(r.left) + '-' + Math.round(r.right)); }); var missed = []; var at = function(e, x, y){ var h = document.elementFromPoint(x, y); return e.contains(h) ? null : (h ? name(h) : 'nothing'); }; var press = function(label, e){ if (!e) return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return; var under = at(e, r.left + Math.min(r.width / 2, 20), r.top + Math.min(r.height / 2, 20)); if (under) missed.push(label + ' under ' + under); }; var row = Array.prototype.slice.call(document.querySelectorAll('#app>.sidebar .tree-row')).find(function(r){ var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 60 && b.bottom <= innerHeight - 60 && b.right <= vr.left; }); press('a list row', row); var t = target ? document.querySelector(target) : null; var opened = !target || (!!t && t.getClientRects().length > 0 && t.getBoundingClientRect().width >= 1 && t.getBoundingClientRect().height >= 1 && getComputedStyle(t).visibility === 'visible'); var handle = document.getElementById('drawerHandle'); var hs = handle && getComputedStyle(handle); var handleShown = !!handle && hs.display !== 'none' && hs.visibility === 'visible'; if (handleShown && (!target || target === '#closePreview')) press('the handle', handle); if (handleShown && t && target !== '#closePreview') { var layer = t; while (layer && layer !== v && getComputedStyle(layer).position !== 'fixed') layer = layer.parentElement; if (!layer || layer === v) layer = t; var lr = layer.getBoundingClientRect(), hr = handle.getBoundingClientRect(); if (lr.left < hr.right && hr.left < lr.right && lr.top < hr.bottom && hr.top < lr.bottom) { var under = at(layer, (Math.max(lr.left, hr.left) + Math.min(lr.right, hr.right)) / 2, (Math.max(lr.top, hr.top) + Math.min(lr.bottom, hr.bottom)) / 2); if (under) missed.push(target + ' under ' + under + ' where the handle is'); } } if (target) press(target, t); else press('the title', document.getElementById('sessionTitle')); return { opened: opened, outside: outside, missed: missed, view: Math.round(vr.left) + '-' + Math.round(vr.right) }; })";
+const LAYERS_AMISS: &str = "(function(target){ var v = document.getElementById('sessionView'), vr = v.getBoundingClientRect(); var name = function(e){ return e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + Array.prototype.slice.call(e.classList).join('.'); }; var beyond = function(r){ return r.left < vr.left - 0.5 || r.right > vr.right + 0.5 || r.top < vr.top - 0.5 || r.bottom > vr.bottom + 0.5; }; var edges = function(r){ return Math.round(r.left) + '-' + Math.round(r.right) + ' ' + Math.round(r.top) + '-' + Math.round(r.bottom); }; var outside = []; [v].concat(Array.prototype.slice.call(v.querySelectorAll('*'))).forEach(function(e){ var cs = getComputedStyle(e); if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1 || r.left >= innerWidth || r.right <= 0 || r.top >= innerHeight || r.bottom <= 0) return; if (beyond(r)) outside.push(name(e) + ' ' + edges(r)); }); var missed = []; var at = function(e, x, y){ var h = document.elementFromPoint(x, y); return e.contains(h) ? null : (h ? name(h) : 'nothing'); }; var press = function(label, e){ if (!e) return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return; var under = at(e, r.left + Math.min(r.width / 2, 20), r.top + Math.min(r.height / 2, 20)); if (under) missed.push(label + ' under ' + under); }; var row = Array.prototype.slice.call(document.querySelectorAll('#app>.sidebar .tree-row')).find(function(r){ var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 60 && b.bottom <= innerHeight - 60 && b.right <= vr.left; }); press('a list row', row); var t = target ? document.querySelector(target) : null; var opened = !target || (!!t && t.getClientRects().length > 0 && t.getBoundingClientRect().width >= 1 && t.getBoundingClientRect().height >= 1 && getComputedStyle(t).visibility === 'visible'); if (t && opened && beyond(t.getBoundingClientRect())) outside.push(target + ' ' + edges(t.getBoundingClientRect())); var handle = document.getElementById('drawerHandle'); var hs = handle && getComputedStyle(handle); var handleShown = !!handle && hs.display !== 'none' && hs.visibility === 'visible'; if (handleShown && (!target || target === '#closePreview')) press('the handle', handle); if (handleShown && t && target !== '#closePreview') { var layer = t; while (layer && layer !== v && getComputedStyle(layer).position !== 'fixed') layer = layer.parentElement; if (!layer || layer === v) layer = t; var lr = layer.getBoundingClientRect(), hr = handle.getBoundingClientRect(); if (lr.left < hr.right && hr.left < lr.right && lr.top < hr.bottom && hr.top < lr.bottom) { var under = at(layer, (Math.max(lr.left, hr.left) + Math.min(lr.right, hr.right)) / 2, (Math.max(lr.top, hr.top) + Math.min(lr.bottom, hr.bottom)) / 2); if (under) missed.push(target + ' under ' + under + ' where the handle is'); } } if (target) press(target, t); else press('the title', document.getElementById('sessionTitle')); return { opened: opened, outside: outside, missed: missed, view: Math.round(vr.left) + '-' + Math.round(vr.right) }; })";
 
 /// Opens each of the phone reader's layers in turn (Info, Aa, the Turns sheet, the session's menu,
 /// the search's filter, the right pane, the reply box) and returns, for each that is amiss, what
