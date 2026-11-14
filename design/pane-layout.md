@@ -611,7 +611,10 @@ in the reference shell's markup and drawn by no script.
 | Native mode's menus and dialogs | the top layer | from `visualViewport` | none: native mode is the standalone app's |
 
 **The view contains its layout whenever it is not the screen**, in every family, and the app's view
-too. `pl-boxed` reads all four sides, so a host's pane that starts below the window's top is boxed.
+too. `pl-boxed` reads all four sides, so a host's pane that starts below the window's top is boxed,
+however tall it is. A view as tall as the window that starts at its top has no gap there or at the
+foot; nor does one while its own keyboard ride moves the app back over iOS's scroll, where the box is
+placed for the keyboard, not by a host.
 Containment puts every fixed layer in the box by construction, so no rule has to know where the view
 sits, and the app's suite runs the same contained path a host's pane does. What it changes in the
 app is measured before it lands (`Tests`): the view becomes one stacking context, and the app's
@@ -638,7 +641,9 @@ layers' rules, which read the cuts, are the same in both.
 - **A move without a resize is heard** (#s467): an IntersectionObserver whose root margin is the
   box's own place reports any change of it, floating-ui's move watch, with no polling timer.
   Contained, a move changes no layer the rules place; it changes the cuts of the insets, which matter
-  only on a screen with an island or a home indicator.
+  only on a screen with an island or a home indicator. So a move alone writes the gaps and nothing
+  else: no hold of the view's transitions, no arrangement, no forced read, and what glides in the view
+  goes on while a host scrolls it with its page.
 
 **The phone reader takes it in stage 2.** Stage 2 is what makes a phone reader that is not the
 screen: beside a 520px sidebar, beside the rail, beside a wide phone's column, in a host's pane. Its
@@ -727,8 +732,11 @@ On a phone they are 44px touch rows. The list follows the same rule as the view,
   transform, as a sliding drawer has, or containment) moved them by that box's corner, so the list
   reads the corner with a probe placed there and writes each place from it. The list itself is not
   contained: a section menu wider than a narrow list floats out beside it, as a popover leaves its
-  pane, where a contained list would cut it at a scrolling pane's edge. The filter sheet in the
-  list's own head ends at the list's foot, so a pane that clips the list never cuts its last rows off.
+  pane, where a contained list would cut it at a scrolling pane's edge. A pane that both clips and is
+  that box (a drawer slid in by a transform) still cuts it at its edge, as it cuts anything fixed in
+  it. The filter sheet in the list's own head ends at the list's foot, or at the foot of a box of the
+  host's that clips the list, whichever is higher, so such a pane never cuts its last rows off (down
+  to a sheet 120px tall).
   The app passes its own layers (`#app`, and the body for the rail's flyout, which flies out over the
   view): the same probe reads the corner there, the window's until a phone's keyboard ride moves
   `#app`.
