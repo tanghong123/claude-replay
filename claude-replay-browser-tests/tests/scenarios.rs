@@ -1792,8 +1792,9 @@ fn app_shell_pages_and_steps_around_a_deep_jump() {
 
 // ── scenario: `[` from the end steps back one turn at a time (#s487) ────────────────────────
 
-/// Where the reader rests: the turn whose header is the first at the top of the view, how far
-/// the view is from the end, and what the turn bar names.
+/// Where the reader rests: the turn whose header is the first at the top of the view (`card`, the
+/// top of that turn's FIRST element, which is the one `turn_at_top` reads), how far the view is
+/// from the end, and what the turn bar names.
 fn resting(tab: &headless_chrome::Tab, surface: Surface) -> serde_json::Value {
     let (s, root) = (surface.scroller(), surface.turns_root());
     // A jump lands a turn's header at the landing line: 120px down the window on the classic page
@@ -1808,7 +1809,7 @@ fn resting(tab: &headless_chrome::Tab, surface: Surface) -> serde_json::Value {
     let geometry: serde_json::Value = serde_json::from_str(
         eval(
             tab,
-            &format!("(function(){{ var s = {s}, root = {root}, top = {top}; var cards = {{}}; root.querySelectorAll('[data-turn]').forEach(function (e) {{ cards[e.dataset.turn] = Math.round(e.getBoundingClientRect().top - top); }}); return JSON.stringify({{ gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), landing: Math.round({landing}), cards: cards }}); }})()"),
+            &format!("(function(){{ var s = {s}, root = {root}, top = {top}; var cards = {{}}; root.querySelectorAll('[data-turn]').forEach(function (e) {{ if (!(e.dataset.turn in cards)) cards[e.dataset.turn] = Math.round(e.getBoundingClientRect().top - top); }}); return JSON.stringify({{ gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), landing: Math.round({landing}), cards: cards }}); }})()"),
         )
         .as_str()
         .unwrap_or("{}"),
