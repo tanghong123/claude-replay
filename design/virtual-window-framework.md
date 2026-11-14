@@ -207,7 +207,12 @@ because a gap alone would unfollow on every growth — growth adds content below
 offset. It runs BEFORE `following0` is read, since it is the deferred half of the scroll handler
 rather than a decision the transaction makes; with the call inside that window the check fired
 exactly as it should have, one I13 `{from: true, to: false}` on a `records` transaction in two runs
-of three of the runaway replay.
+of three of the runaway replay. Where no write says where the offset is and no event is coming that will, the
+engine takes the offset as it is for its belief (`knowOffset`): a transaction that leaves the model
+empty (a session's records replaced, the browser clamping to what is left), and a wait that lapsed. Kept
+at the old belief, the new session's records read the clamp as a move nobody heard and its tail waited
+for the event (#s431), and the converge after a lapse read the same move as unheard again and waited
+again, every two seconds, for as long as no event came.
 **By policy (timers/guards):** I1, I4, I7, I8, I11.
 **Only by tests:** I9, I12 (half).
 **Not held:** I2 — and this is the count to keep in view: 3 write sites in the engine, ~16 more in the two pages, every one of them a place where `scrollTop` moves without `P` knowing.

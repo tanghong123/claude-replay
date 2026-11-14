@@ -930,6 +930,15 @@ class VirtualWindow {
     this.followChanged();
   }
 
+  /** The offset as it is, taken as the engine's belief, with nothing left waiting on an event about
+   *  it: for where no write of the engine's says where the offset is and no event is coming that
+   *  will (a model emptied, a wait for a late event lapsed). */
+  knowOffset() {
+    this.wrote = null;
+    this.unheard = null;
+    this.topSeen = this.frame.scrollTop();
+  }
+
   /** Is a scroll event at `top` the engine's own? An instant write is one offset; a smooth one is
    *  the path from where it started to where it goes, walked monotonically — an event that leaves
    *  the path, or moves away from `to`, is the reader's (the browser cancels the animation on
@@ -1001,6 +1010,10 @@ class VirtualWindow {
       const wait = UNHEARD_MS - (performance.now() - this.unheard.at);
       if (wait > 0) { clearTimeout(this.restTimer); this.restTimer = setTimeout(() => this.rest(), wait + 1); return; }
       this.trace("unheard:lapsed", {});
+      // The event never came: the offset is what the engine knows now. Kept at the old belief, the
+      // converge below read the same move as unheard again and waited again, every two seconds, for
+      // as long as no event came (the review of 68a629b3).
+      this.knowOffset();
     }
     this.unheard = null;
     if (!this.pendingTail && !this.estimatesPending) return;
@@ -1609,6 +1622,13 @@ class VirtualWindow {
       }
       // A position the reader asked for (§4.10) is `P` from here on; `syncPosition` keeps it.
       if (p0 && p0.commanded) this.position = p0;
+      // An empty model holds nothing a reader could be on: the engine has just taken the content away
+      // (a session's records replaced), the browser has clamped the offset to what is left, and no
+      // write says so. That offset is the engine's belief from here, and a wait for an event about
+      // the old content is over, as is a smooth write toward it. Kept at the old session's, the next
+      // transaction read the clamp as a move nobody heard and held the new session's tail for an
+      // event that came a second later on a lazy tab (`confirmFollow`, #s431).
+      if (shown && !this.count) this.knowOffset();
       this.syncPosition(placed === "placed" && !drift && !smooth ? p0 : null);
       if (shown) this.check(cause, p0, placed, mounted, drift, following0);
       if (returning) this.wasHidden = false;

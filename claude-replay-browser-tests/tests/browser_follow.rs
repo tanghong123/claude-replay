@@ -5527,6 +5527,28 @@ fn a_follower_the_browser_moves_with_no_input_keeps_following() {
     );
     rest();
     let after = harness::probe(&tab, read);
+    // The same clamp again, and its event never comes (a tab that sends none): the tail waits its two
+    // seconds, then takes the offset as the engine's own and goes to the end, once. The lapse used to
+    // keep the stale belief, so the converge after it read the clamp as unheard again and waited
+    // again, every two seconds, for as long as no event came (the review of 68a629b3).
+    let moved_again = harness::probe(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__heldEvents = []; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = '14px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
+    );
+    harness::until(
+        &tab,
+        "window.__viewportHistory.states.some(function (e) { return e.t >= window.__t0; })",
+        "a transaction after the second clamp",
+        Duration::from_secs(10),
+        read,
+    );
+    // Past the two seconds the tail waits, well short of a second lapse.
+    std::thread::sleep(Duration::from_millis(3000));
+    let lapsed = harness::probe(&tab, read);
+    harness::eval(
+        &tab,
+        "(function(){ window.removeEventListener('scroll', window.__hold, true); return 'ok'; })()",
+    );
     let violations = harness::probe(
         &tab,
         "JSON.stringify((window.__viewportViolations || []).slice(0, 4))",
@@ -5541,6 +5563,18 @@ fn a_follower_the_browser_moves_with_no_input_keeps_following() {
         moved["clamped"].as_i64().unwrap_or(0) < moved["top"].as_i64().unwrap_or(0) - 100
             && moved["gap"].as_i64().unwrap_or(0) > 100,
         "the browser clamped the offset well above the end the content came back to: {moved}"
+    );
+    assert!(
+        moved_again["clamped"].as_i64().unwrap_or(0)
+            < moved_again["top"].as_i64().unwrap_or(0) - 100,
+        "the browser clamped the offset again: {moved_again}"
+    );
+    assert!(
+        lapsed["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && lapsed["following"] == serde_json::json!(true)
+            && lapsed["lapsed"] == serde_json::json!(1)
+            && lapsed["verdicts"].as_array().is_some_and(|v| !v.is_empty() && v.iter().all(|x| x == "wait")),
+        "with no event the wait lapses once and the follower is put back at the end: moved {moved_again}, lapsed {lapsed}"
     );
     assert!(
         measured["causes"].as_array().is_some_and(|c| !c.is_empty()),
@@ -6122,6 +6156,96 @@ fn an_ipad_follower_s_touch_on_an_element_taken_out_under_the_finger_still_ends(
     assert!(
         carried2.is_ok(),
         "the session grew again and the follower was carried to its new end: lifted {thumb_lifted}, after {after2}"
+    );
+    assert_eq!(
+        violations,
+        serde_json::json!("[]"),
+        "the engine broke none of its invariants"
+    );
+}
+
+/// #s431, from a suite run: another session chosen while the reader follows this one opens at its end
+/// at once, without waiting for a scroll event. Choosing it empties the transcript first, and the
+/// browser clamps the offset to 0 with no write of the engine's to say so; the engine's belief stayed
+/// at the old session's end, so the new session's records read the clamp as a move nobody heard, and
+/// its tail waited for that scroll event, which a lazy tab delivered a second later (the reader looked
+/// at the head of an empty window meanwhile). Here the transcript's scroll events are held from before
+/// the click until the new session is drawn, as a lazy tab holds them.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_follower_s_next_session_opens_at_its_end_before_any_scroll_event() {
+    let _serial = serial();
+    let base = base("next-session-at-end");
+    let stores = Stores::new(&base);
+    let first = "cccccccc-0000-4000-8000-0000000003a9";
+    let second = "cccccccc-0000-4000-8000-0000000003aa";
+    for sid in [first, second] {
+        stores.claude_session(sid, &harness::long_session(30, harness::Shape::default()));
+    }
+    let monitor = Monitor::spawn(Kind::V1, 3133, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1280.0, 800.0);
+    harness::show_every_session(
+        &tab,
+        &format!("http://127.0.0.1:3133/?ui=app&session={first}&trace=viewport"),
+    );
+    let row = format!("#tree .tree-row.session[data-session=\"{second}\"]");
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector({row:?}) && !!document.querySelector('.virtual-window .turn.user') && {VIEW_CAUGHT_UP}"),
+        "the list drawn and the first session at its end",
+        Duration::from_secs(30),
+        "JSON.stringify({ tree: (document.getElementById('tree') || {}).innerText, turns: document.querySelectorAll('.virtual-window .turn.user').length })",
+    );
+    let read = "(function(){ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; var t = (window.__viewportTrace || []).filter(function (e) { return e.t >= (window.__t0 || 0); }); return { gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), height: Math.round(s.scrollHeight), following: h.length ? h[h.length - 1].following : null, held: (window.__heldEvents || []).length, waits: t.filter(function (e) { return e.event === 'follow:unheard' || e.event === 'tail:deferred' || e.event === 'unheard:lapsed'; }).map(function (e) { return e.event + (e.verdict ? ':' + e.verdict : ''); }) }; })()";
+    let before = harness::probe(&tab, read);
+    // From here the transcript's scroll events are held, as a lazy tab holds them, and kept to be
+    // dispatched again as themselves once the new session is drawn.
+    harness::eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); return 'ok'; })()",
+    );
+    harness::click_when_settled(&tab, &row, "the second session's row");
+    harness::until(
+        &tab,
+        &format!("location.search.indexOf('{second}') >= 0 && !!document.querySelector({row:?} + '.selected') && !!document.querySelector('.virtual-window .turn.user') && window.__viewportHistory.states.some(function (s) {{ return s.t >= window.__t0 && s.count > 0 && s.cause === 'records'; }})"),
+        "the second session drawn",
+        Duration::from_secs(30),
+        read,
+    );
+    let drawn = harness::probe(&tab, read);
+    harness::eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); window.removeEventListener('scroll', window.__hold, true); window.__heldEvents.forEach(function (e) { s.dispatchEvent(e); }); return 'ok'; })()",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    std::thread::sleep(Duration::from_millis(900));
+    let after = harness::probe(&tab, read);
+    let violations = harness::probe(
+        &tab,
+        "JSON.stringify((window.__viewportViolations || []).slice(0, 4))",
+    );
+    drop(monitor);
+    assert!(
+        before["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && before["following"] == serde_json::json!(true),
+        "the reader follows the first session at its end: {before}"
+    );
+    // Whether the browser has sent the switch's scroll event yet varies (a lazy tab may not have); held
+    // or not sent, the engine has heard none.
+    assert!(
+        drawn["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && drawn["height"].as_i64().unwrap_or(0) > 2000
+            && drawn["following"] == serde_json::json!(true)
+            && drawn["waits"] == serde_json::json!([]),
+        "the second session is placed at its end as it is drawn, with no wait for the held event: {drawn}"
+    );
+    assert!(
+        after["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && after["following"] == serde_json::json!(true)
+            && after["waits"] == serde_json::json!([]),
+        "the held event, once it arrives, changes nothing: drawn {drawn}, after {after}"
     );
     assert_eq!(
         violations,
