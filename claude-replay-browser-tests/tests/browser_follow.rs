@@ -7495,7 +7495,7 @@ fn the_session_view_in_a_host_unmounts_and_mounts_again() {
             "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
         );
     };
-    let shape = "({ strips: document.querySelectorAll('#turnStickyBar').length, menus: document.querySelectorAll('#sessionCopyMenu').length, cards: document.querySelectorAll('body > .task-popover').length, scrims: document.querySelectorAll('body > .task-scrim').length, children: document.querySelector('.host-view').children.length, attributes: [].map.call(document.querySelector('.host-view').attributes, function (a) { return a.name + '=' + a.value; }), preview: document.documentElement.style.getPropertyValue('--preview'), errors: window.__host.errors })";
+    let shape = "({ strips: document.querySelectorAll('#turnStickyBar').length, menus: document.querySelectorAll('#sessionCopyMenu').length, cards: document.querySelectorAll('.task-popover').length, scrims: document.querySelectorAll('.task-scrim').length, children: document.querySelector('.host-view').children.length, attributes: [].map.call(document.querySelector('.host-view').attributes, function (a) { return a.name + '=' + a.value; }), preview: document.documentElement.style.getPropertyValue('--preview'), errors: window.__host.errors })";
     let wrapped = "document.querySelector('.host-view').classList.contains('wrap-code')";
     let press_w = format!("(function(){{ document.getElementById('transcript').dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }})); var was = {wrapped}; var taken = {PRESS}('w'); return {{ was: was, taken: taken, now: {wrapped} }}; }})()");
     harness::eval(&tab, "window.__host.mount()");
