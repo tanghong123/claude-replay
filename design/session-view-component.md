@@ -235,7 +235,10 @@ pane, so step 6 also makes the view's root what they are placed against.
        session search layer (⌘K), the confirm layer and the toast. A rule naming one is the app's.
      - `APP_STATES`: the app's states on `#app` (stage 5a's groups). A rule reading one is the
        app's; where what it styles is the view's, it reaches into the view from outside (34
-       selectors: the rail, the pane's state and a wide phone's column placing the view).
+       selectors: the rail, the pane's state and a wide phone's column placing the view). A rule
+       led by `#app>#sessionView` and reading only the view's own classes is the app placing the
+       view it hosts, with no state of its own: the task card's dim on a phone reader in a box
+       reaching the window's sides in the app alone (#s431 stage 4).
      - `SHARED`: what both draw (`.iconbtn`, `.label`, `.on`, the popover rows the session filter
        and the section menu borrow). A rule naming only these, or no name (`button`, `*`), is in
        both files.
@@ -246,9 +249,10 @@ pane, so step 6 also makes the view's root what they are placed against.
      - A name inside `:not()` decides nothing (`.turn:not(.dim)` is the view's).
      - `ROOT_CLASSES`: the classes the view's element carries.
      - `OUTSIDE`: what the view draws that the page shows outside `#sessionView`, so the app's copy
-       of its rule styles it where it is: the task card and its scrim, which `viewRoot.layer()`
-       appends to `body`, and the Turns, Tasks and Agents lists with their rows, which a wide
-       phone's column borrows into the app's `#columnPane`. Read off the page in those states.
+       of its rule styles it where it is: the Turns, Tasks and Agents lists with their rows, which a
+       wide phone's column borrows into the app's `#columnPane`. Read off the page in those states.
+       (The task card and its scrim were here while `viewRoot.layer()` appended them to `body`;
+       since #s431 stage 4 they are drawn in the view's element.)
      - Everything else is the view's alone.
    - **What cannot hang under the view stops the build**, none of it in the sources today: a
      selector going on from the view's element to its siblings (`.pane-open+.x`); one led by a
