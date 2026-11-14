@@ -1390,14 +1390,14 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // sentence per cause family ("The response stopped arriving", "may be incomplete" or
             // "no response was produced"), which the page already draws as a Failure note (#236),
             // so nothing a reader needs; the key is finer only where two causes share a sentence.
-            // Expected beside it and NOT yet met in any transcript, so not in this census, each to
-            // be judged as its own row when one first carries it: `streamWatchdogGaveUp` (the
-            // watchdog fired before any output) and `resendCannotCure` (an error a resend cannot
-            // fix, a billing error among them). REVISIT: (1) the key on an assistant record NOT
-            // flagged `isApiErrorMessage`, a cut the page would then draw as prose; (2) a value
-            // outside the eight; (3) many cuts in one session, where a count or a filter by cause,
-            // finer than the text, is a RENDER question for the owner, queued with the record
-            // count and client version, never decided here.
+            // Expected beside it and NOT yet met in any transcript, so not in this census, to be
+            // judged as its own row when one first carries it: `streamWatchdogGaveUp` (the
+            // watchdog fired before any output). `resendCannotCure`, expected here too, was met
+            // first on another kind of API error (#s477, below). REVISIT: (1) the key on an
+            // assistant record NOT flagged `isApiErrorMessage`, a cut the page would then draw as
+            // prose; (2) a value outside the eight; (3) many cuts in one session, where a count or
+            // a filter by cause, finer than the text, is a RENDER question for the owner, queued
+            // with the record count and client version, never decided here.
             "streamCutCause",
             // #s328 (client 2.1.314): a string on the same synthetic API-error record
             // (`isApiErrorMessage`, model "<synthetic>", zero usage, `error` beside it), the
@@ -1409,16 +1409,18 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // of the message text (the text stays the fallback and may change)", one of 34 values
             // in 2.1.314, an unknown value to be treated as absent. Unread: the record is already
             // read by its flag and folds to ONE Failure note whose text names the same cause, as
-            // `streamCutCause` above. REVISIT: (1) the first value naming something a PERSON must
-            // act on (usage_limit_reached, stored_login_refused, model_requires_usage_credits,
-            // long_context_credits_required, consent_unanswered, unattended_start_limit,
-            // unattended_start_unconfirmed, the gateway sign-in values): every API-error death
-            // reads alike today (`last_failure`, the Blocked bucket), so telling a transient cause
-            // (connection_failed, computer_slept, stream_idle_timeout) from one that needs the
-            // person is a RENDER question for the owner, queued with the record count and client
-            // version, never decided here; (2) the key on an assistant record NOT flagged
-            // `isApiErrorMessage`, which the page would draw as prose; (3) a record whose text no
-            // longer names the cause the key names, where the Failure note should read the key.
+            // `streamCutCause` above. A failure a retry cannot fix is marked by the client's own
+            // `resendCannotCure` (#s484, the owner's choice on #s483), not by this kind. REVISIT:
+            // (1) the first value naming something a PERSON must act on (usage_limit_reached,
+            // stored_login_refused, model_requires_usage_credits, long_context_credits_required,
+            // consent_unanswered, unattended_start_limit, unattended_start_unconfirmed, the gateway
+            // sign-in values) on a record that carries no `resendCannotCure` (a usage limit is
+            // waited out and carries none), so the mark misses it: whether such a failure should
+            // read differently too is a RENDER question for the owner, queued with the record
+            // count and client version, never decided here; (2) the key on an assistant record NOT
+            // flagged `isApiErrorMessage`, which the page would draw as prose; (3) a record whose
+            // text no longer names the cause the key names, where the Failure note should read the
+            // key.
             "apiError",
             // #s360 (client 2.1.318): the boolean `true` on the same synthetic API-error record
             // (`isApiErrorMessage`, model "<synthetic>", zero usage, `apiError` and `error` beside
@@ -1427,10 +1429,9 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // 2.1.318 client stamps it when the failed response held no `tool_use` block and reads
             // it where it classifies a failed turn: it serves the client's follow-up, not a reader.
             // Unread: the record is already read by its flag and folds to ONE Failure note, and the
-            // transcript shows the missing call by having no card there. Expected beside it and NOT
-            // yet met in any transcript searched, so not in this census, to be judged as its own
-            // row when one first carries it: `apiErrorCode`, written on such a record by the same
-            // code. REVISIT: (1) the key on an assistant record NOT flagged `isApiErrorMessage`,
+            // transcript shows the missing call by having no card there. `apiErrorCode`, expected
+            // beside it, was met first on a 403 record that carries this key too (#s477, below).
+            // REVISIT: (1) the key on an assistant record NOT flagged `isApiErrorMessage`,
             // which the page would draw as prose; (2) a value other than `true`; (3) many in one
             // session, where a count of failed turns is a RENDER question for the owner, queued
             // with the record count and client version, never decided here.
@@ -1451,6 +1452,40 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // a flagged record NOT followed by an interrupt marker; (3) a value other than `true`.
             "isAbortedMidStream",
             "apiErrorStatus",
+            // #s477 (client 2.1.322): a string on the synthetic API-error record
+            // (`isApiErrorMessage`, model "<synthetic>", zero usage, `error`, `apiErrorStatus` and
+            // `failedResponseHadNoToolCall` beside it), the error code the API's error body names,
+            // copied by the client whenever the body names one in the expected form. Met on 373
+            // records in 22 transcripts, measured 2026-11-13 (175 on aries-black, 198 on
+            // hong-devserver), all written on 2026-11-12 between about 19:54 UTC and midnight:
+            // every one "verification_required", equal to `error`, with `apiErrorStatus` 403 and
+            // no `apiError`. Its text is the client's sentence naming the account verification step
+            // and where to take it, which the page already draws as ONE Failure note (#236), so
+            // nothing a reader needs. REVISIT: (1) the key on an assistant record NOT flagged
+            // `isApiErrorMessage`, which the page would draw as prose; (2) a value differing from
+            // `error` on the same record, where the code says what `error` and the text do not.
+            // The mark the owner chose on #s483 for a failure a retry cannot fix (#s484) follows
+            // the client's flag, `resendCannotCure` below, and keeps no list of codes, so it does
+            // not read this key.
+            "apiErrorCode",
+            // #s477 (client 2.1.322): the boolean `true` on the same records as `apiErrorCode`
+            // above, all 373 of them. The client stamps it when sending the same request again
+            // cannot succeed, and reads it to stop retrying. In 2.1.322 that is a billing error, a
+            // 403 whose error body carries a message (this case), and a list of 19 checks: credit
+            // balance too low, organization disabled, a data-loss or organization policy block,
+            // output blocked by the content filter, and request problems such as a prompt too
+            // long, context overflow or a model, effort, fast mode or beta setting the API refuses
+            // (three of the 19 are stubbed false in that build). A usage limit, which the client
+            // waits out, does not carry it. Read (#s484, the owner's choice on #s483): the record
+            // still folds to ONE Failure note by its flag, which opens with "A retry cannot fix
+            // this · " ahead of the client's words (`retry_cannot_fix`), so a session stopped by
+            // something a person must change no longer reads like one a dropped connection
+            // stopped. Expected beside it and NOT yet met in any transcript, so not in this census,
+            // to be judged as its own row when one first carries it: `apiErrorIsTransient`,
+            // written by the same code. REVISIT: (1) the key on an assistant record NOT flagged
+            // `isApiErrorMessage`, which the page would draw as prose and the mark never reaches;
+            // (2) a value other than `true`, which reads as no mark.
+            "resendCannotCure",
             "supersedesUuids",
             "errorDetails",
             // #s60 (client 2.1.295): a string beside `message` naming the model the client asked
@@ -3876,6 +3911,44 @@ pub(crate) fn tokenize<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Vec<Mes
     msgs
 }
 
+/// #s484, the owner's choice on #s483 ("a failure a retry cannot fix says so ahead of the client
+/// words"): what a failure note says ahead of the client's own words when its record says that
+/// sending the request again cannot succeed, so a session stopped by something a person must change
+/// does not read like one a dropped connection stopped, which passes by itself.
+const RETRY_CANNOT_FIX: &str = "A retry cannot fix this \u{b7} ";
+
+/// Whether an `isApiErrorMessage` record says a retry cannot fix its failure. The signal is the
+/// client's own, never a list of codes kept here: Claude Code 2.1.322 and later stamp
+/// `resendCannotCure` (#s477 has what sets it), and a billing error is one by the client's own
+/// rule, which also covers Claude Code before the flag and the QoderWork family, whose records
+/// carry `error` "billing_error" and no flag (#s375).
+fn retry_cannot_fix(v: &Value) -> bool {
+    v.get("resendCannotCure").and_then(Value::as_bool) == Some(true)
+        || v.get("error").and_then(Value::as_str) == Some("billing_error")
+}
+
+/// The failure notes an `isApiErrorMessage` record folds to (#236): each non-empty text block,
+/// trimmed, the first opening with `RETRY_CANNOT_FIX` when the record says so (#s484). Both parse
+/// paths draw the record from this, so they stay bit-identical.
+fn api_error_texts(v: &Value, content: &[Value]) -> Vec<String> {
+    let mut mark = retry_cannot_fix(v);
+    let mut out = Vec::new();
+    for blk in content {
+        if let Some(t) = blk.get("text").and_then(Value::as_str) {
+            let t = t.trim();
+            if !t.is_empty() {
+                if mark {
+                    out.push(format!("{RETRY_CANNOT_FIX}{t}"));
+                    mark = false;
+                } else {
+                    out.push(t.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// **Layer 1 — Claude decode, per line** (the streaming unit). Decode ONE raw transcript
 /// line into 0+ canonical messages appended to `msgs`. `cwd` is threaded across lines
 /// (running-current — each line's non-empty `cwd` moves it forward, #173) so tool targets
@@ -3943,18 +4016,13 @@ pub(crate) fn decode_line_known(
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
             {
-                for blk in content {
-                    if let Some(t) = blk.get("text").and_then(Value::as_str) {
-                        let t = t.trim();
-                        if !t.is_empty() {
-                            msgs.push(Message::SystemNote {
-                                text: t.to_string(),
-                                // The turn DIED here (#249). Without this the state machine
-                                // sees no failed TOOL result and calls the turn `Done`.
-                                kind: NoteKind::Failure,
-                            });
-                        }
-                    }
+                for text in api_error_texts(&v, content) {
+                    msgs.push(Message::SystemNote {
+                        text,
+                        // The turn DIED here (#249). Without this the state machine sees no
+                        // failed TOOL result and calls the turn `Done`.
+                        kind: NoteKind::Failure,
+                    });
                 }
                 return;
             }
@@ -5250,14 +5318,11 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
                 {
-                    for blk in content {
-                        if let Some(t) = blk.get("text").and_then(Value::as_str) {
-                            let t = t.trim();
-                            if !t.is_empty() {
-                                out.push(Block::ToolResult(t.to_string()));
-                            }
-                        }
-                    }
+                    out.extend(
+                        api_error_texts(&v, content)
+                            .into_iter()
+                            .map(Block::ToolResult),
+                    );
                     continue;
                 }
                 let phase = assistant_phase(&v, content);
@@ -9987,6 +10052,110 @@ mod tests {
                 .iter()
                 .any(|b| matches!(b, Block::AssistantText(_) | Block::AssistantMessage { .. })),
             "the error is not the assistant speaking: {blocks:?}"
+        );
+    }
+
+    /// #s477: 2.1.322's error code and its flag for a failure a resend cannot fix, on an API error
+    /// record, are known, not reported while the sweep asks, and the record still folds to ONE
+    /// Failure note, never the assistant's prose. The record is invented (its text is made up and
+    /// carries no link). Removing either key from the assistant arm of the census turns this red.
+    #[test]
+    fn an_api_error_a_resend_cannot_cure_is_one_failure_note() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.322","sessionId":"s-s477","uuid":"u1","message":{"role":"user","content":"go on"}}
+{"type":"assistant","version":"2.1.322","sessionId":"s-s477","uuid":"a1","isApiErrorMessage":true,"error":"verification_required","apiErrorStatus":403,"apiErrorCode":"verification_required","failedResponseHadNoToolCall":true,"resendCannotCure":true,"message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: This account needs a verification step before it can send requests. Complete it in the account settings, then try again."}]}}
+"##;
+        let messages = tokenize(jsonl.lines());
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s477"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+        let failures = messages
+            .iter()
+            .filter(|m| {
+                matches!(m, Message::SystemNote { text, kind: NoteKind::Failure }
+                    if text.contains("verification step"))
+            })
+            .count();
+        assert_eq!(failures, 1, "one Failure note: {messages:?}");
+        let blocks = replay(&messages, &mut Vec::new(), &CLAUDE_SHAPING);
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, Block::AssistantText(_) | Block::AssistantMessage { .. })),
+            "the error is not the assistant speaking: {blocks:?}"
+        );
+    }
+
+    /// #s484, the owner's choice on #s483: an API failure whose record says a retry cannot fix it
+    /// (Claude Code's `resendCannotCure`, or a billing error, the QoderWork family's included) has
+    /// its failure note open with the mark ahead of the client's words, the first note alone where
+    /// the record holds two; one without the flag, or with it false, keeps the client's words
+    /// alone; and the direct parse draws the same text. The records are invented.
+    #[test]
+    fn a_failure_a_retry_cannot_fix_says_so() {
+        use crate::agents::qoderwork::discover::{
+            FAMILY_RECORD_KEYS, FAMILY_RECORD_TYPES, FAMILY_SYSTEM_SUBTYPES,
+        };
+        let jsonl = r##"
+{"type":"user","version":"2.1.322","sessionId":"s-s484","uuid":"u1","message":{"role":"user","content":"go on"}}
+{"type":"assistant","version":"2.1.322","sessionId":"s-s484","uuid":"a1","isApiErrorMessage":true,"error":"verification_required","apiErrorStatus":403,"apiErrorCode":"verification_required","resendCannotCure":true,"message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: This account needs a verification step before it can send requests."}]}}
+{"type":"user","version":"2.1.322","sessionId":"s-s484","uuid":"u2","message":{"role":"user","content":"again"}}
+{"type":"assistant","version":"2.1.322","sessionId":"s-s484","uuid":"a2","isApiErrorMessage":true,"error":"server_error","apiError":"connection_failed","message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: Connection dropped (ECONNRESET)."}]}}
+{"type":"user","version":"2.1.322","sessionId":"s-s484","uuid":"u3","message":{"role":"user","content":"once more"}}
+{"type":"assistant","version":"2.1.322","sessionId":"s-s484","uuid":"a3","isApiErrorMessage":true,"error":"server_error","resendCannotCure":false,"message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: The server had an error."}]}}
+{"type":"user","version":"2.1.310","sessionId":"s-s484","uuid":"u4","message":{"role":"user","content":"and now"}}
+{"type":"assistant","version":"2.1.310","sessionId":"s-s484","uuid":"a4","isApiErrorMessage":true,"error":"billing_error","message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: Credit balance is too low."},{"type":"text","text":"Add credits to go on."}]}}
+"##;
+        let failures = |messages: &[Message]| -> Vec<String> {
+            messages
+                .iter()
+                .filter_map(|m| match m {
+                    Message::SystemNote {
+                        text,
+                        kind: NoteKind::Failure,
+                    } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let messages = tokenize(jsonl.lines());
+        assert_eq!(
+            failures(&messages),
+            vec![
+                "A retry cannot fix this \u{b7} API Error: This account needs a verification step \
+                 before it can send requests."
+                    .to_string(),
+                "API Error: Connection dropped (ECONNRESET).".to_string(),
+                "API Error: The server had an error.".to_string(),
+                "A retry cannot fix this \u{b7} API Error: Credit balance is too low.".to_string(),
+                "Add credits to go on.".to_string(),
+            ],
+            "the mark on the flagged failure and on a billing error with no flag (a client from \
+             before it), on the first of its notes alone"
+        );
+        assert_eq!(
+            replay(&messages, &mut Vec::new(), &CLAUDE_SHAPING),
+            parse_main(jsonl.lines(), &mut Vec::new()),
+            "the direct parse draws the same"
+        );
+
+        let family = r#"{"type":"assistant","sessionId":"s-s484q","isSidechain":true,"isApiErrorMessage":true,"error":"billing_error","errorDetails":"{}","errorFallbackMessage":"The request failed.","displayErrorCode":"402","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"The request failed."}]}}"#;
+        let (mut cwd, mut out) = (String::new(), Vec::new());
+        decode_line_known(
+            family,
+            &mut cwd,
+            &mut out,
+            FAMILY_RECORD_TYPES,
+            FAMILY_RECORD_KEYS,
+            FAMILY_SYSTEM_SUBTYPES,
+        );
+        assert_eq!(
+            failures(&out),
+            vec!["A retry cannot fix this \u{b7} The request failed.".to_string()],
+            "the family's billing error, which carries no flag"
         );
     }
 
