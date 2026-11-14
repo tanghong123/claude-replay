@@ -387,7 +387,7 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
    `pl-max-w-231` from its own width, a host's narrow column, never the app's): the flat list keeps a
    session's agent and drops its project, and the tree's indents are 12px narrower. */
 #sessionList.pl-max-w-231 .tree-context .tree-project{display:none}
-#sessionList.pl-max-w-231:not(.sessions-flat):not(.sessions-arranged) .tree-row.session:not(.flat){padding-left:32px}
+#sessionList.pl-max-w-231:not(.sessions-flat):not(.sessions-arranged) .tree-row.session:not(.flat){padding-left:20px}
 #sessionList.pl-max-w-231:not(.sessions-flat):not(.sessions-arranged) .tree-row.session.is-member{padding-left:50px}
 #sessionList.pl-max-w-231:not(.sessions-flat):not(.sessions-arranged) .tree-row.session.is-side{padding-left:calc(36px + var(--side-depth,1) * 14px)}
 /* Flat, Collapse and Expand every group go: the list marks the two (`data-flat`), wherever they are

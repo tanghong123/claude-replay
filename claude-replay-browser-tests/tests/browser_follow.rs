@@ -2926,6 +2926,160 @@ fn the_session_list_in_a_host_unmounts_and_mounts_again() {
     assert_eq!(page_after_placed, before, "leaving the page as it was");
 }
 
+/// What the list host's first session row shows (#s431 stage 2): the list's width and whether it
+/// wears its compact rows (`pl-max-w-231`), the row's height, whether its agent and project are drawn,
+/// and its title's indent from the list's left edge.
+const LIST_ROW_LAYOUT: &str = "(function(){ var list = document.getElementById('sessionList'); var row = document.querySelector('#tree .tree-row.session'); var drawn = function(e){ if (!e) return null; var b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && getComputedStyle(e).display !== 'none'; }; var title = row && row.querySelector('.tree-title'); return { width: Math.round(list.getBoundingClientRect().width), compact: list.classList.contains('pl-max-w-231'), height: row ? Math.round(row.getBoundingClientRect().height) : null, agent: drawn(row && row.querySelector('.tree-agent')), project: drawn(row && row.querySelector('.tree-project')), indent: title ? Math.round(title.getBoundingClientRect().left - list.getBoundingClientRect().left) : null }; })()";
+
+/// Set the list host's pane to `width` and wait until the list has read its new width: compact rows
+/// below 232px, its desktop or touch rows from there.
+fn list_pane_width(tab: &headless_chrome::Tab, width: u32) -> serde_json::Value {
+    harness::eval(
+        tab,
+        &format!("(document.getElementById('hostPane').style.width = '{width}px', 'ok')"),
+    );
+    harness::until(
+        tab,
+        &format!(
+            "(function(){{ var l = document.getElementById('sessionList'); return Math.round(l.getBoundingClientRect().width) === {width} && l.classList.contains('pl-max-w-231') === {}; }})()",
+            width < 232
+        ),
+        "the list to read its pane's new width",
+        Duration::from_secs(10),
+        &format!("JSON.stringify({LIST_ROW_LAYOUT})"),
+    );
+    harness::probe(tab, LIST_ROW_LAYOUT)
+}
+
+/// The session list in a host lays out its rows by its own width and the screen's touch (#s431 stage
+/// 2, design/pane-layout.md, "The session list"), never by the window. In a host's 320px pane with a
+/// mouse a tree's session row is the desktop's one line, under 44px, and the flat list's names each
+/// session's agent and its project on a second line. Narrowed to 200px, below the app's least sidebar
+/// of 232px, the rows are compact: the flat list keeps the agent and drops the project, and the tree's
+/// indent is 12px narrower. Widened again they are as before. On an emulated phone, a touch screen, a
+/// tree's row is 44px at either width, and the narrow pane makes the rows compact there too. With the
+/// list's width never read (no `pl-max-w-231`) the narrow pane keeps the project and the indent, and
+/// the case fails there.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_list_in_a_host_lays_out_its_rows_by_its_own_width_and_touch() {
+    let _serial = serial();
+    let base = base("list-host-widths");
+    let stores = Stores::new(&base);
+    let ids = [
+        "cccccccc-0000-4000-8000-0000000004e1",
+        "cccccccc-0000-4000-8000-0000000004e2",
+    ];
+    list_host_world(&stores, &ids);
+    let monitor = Monitor::spawn(Kind::V1, 3272, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    // The list shows the idle sessions the builders write, as one flat list.
+    let open = |flat: bool| {
+        harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+        harness::eval(
+            &tab,
+            &format!(
+                "localStorage.setItem('am-prod-session-filter', '[\"recent\",\"blocked\",\"idle\"]'); localStorage.setItem('am-prod-session-flat', '{}'); localStorage.removeItem('am-prod-session-arrange'); 'ok'",
+                if flat { "1" } else { "0" }
+            ),
+        );
+        harness::open_list_host_page(&tab, &monitor);
+        until_list_drawn(&tab);
+    };
+    let field = |v: &serde_json::Value, k: &str| v[k].clone();
+
+    // With a mouse, the flat list.
+    open(true);
+    let wide = list_pane_width(&tab, 320);
+    let narrow = list_pane_width(&tab, 200);
+    let again = list_pane_width(&tab, 320);
+    assert_eq!(
+        (
+            field(&wide, "compact"),
+            field(&wide, "agent"),
+            field(&wide, "project")
+        ),
+        (
+            serde_json::json!(false),
+            serde_json::json!(true),
+            serde_json::json!(true)
+        ),
+        "a 320px list with a mouse names each session's agent and project: {wide}"
+    );
+    assert_eq!(
+        (
+            field(&narrow, "compact"),
+            field(&narrow, "agent"),
+            field(&narrow, "project")
+        ),
+        (
+            serde_json::json!(true),
+            serde_json::json!(true),
+            serde_json::json!(false)
+        ),
+        "a 200px list keeps the agent and drops the project: {narrow}"
+    );
+    assert_eq!(
+        (field(&again, "compact"), field(&again, "project")),
+        (serde_json::json!(false), serde_json::json!(true)),
+        "widened again, the project comes back: {again}"
+    );
+
+    // With a mouse, the tree.
+    open(false);
+    let tree_wide = list_pane_width(&tab, 320);
+    let tree_narrow = list_pane_width(&tab, 200);
+    assert!(
+        tree_wide["height"].as_i64().unwrap() < 44,
+        "with a mouse a tree's row is the desktop's one line: {tree_wide}"
+    );
+    assert_eq!(
+        tree_wide["indent"].as_i64().unwrap() - tree_narrow["indent"].as_i64().unwrap(),
+        12,
+        "a 200px tree indents a session 12px less: {tree_wide} then {tree_narrow}"
+    );
+
+    // On a touch screen, the tree, then the flat list.
+    harness::phone(&tab, 390, 844);
+    open(false);
+    let touch_tree_wide = list_pane_width(&tab, 320);
+    let touch_tree_narrow = list_pane_width(&tab, 200);
+    for (what, seen) in [("320px", &touch_tree_wide), ("200px", &touch_tree_narrow)] {
+        assert!(
+            seen["height"].as_i64().unwrap() >= 44,
+            "on a touch screen a {what} tree's row is 44px: {seen}"
+        );
+    }
+    assert_eq!(
+        touch_tree_wide["indent"].as_i64().unwrap()
+            - touch_tree_narrow["indent"].as_i64().unwrap(),
+        12,
+        "a 200px tree on a touch screen indents a session 12px less: {touch_tree_wide} then {touch_tree_narrow}"
+    );
+    open(true);
+    let touch_wide = list_pane_width(&tab, 320);
+    let touch_narrow = list_pane_width(&tab, 200);
+    assert_eq!(
+        (field(&touch_wide, "compact"), field(&touch_wide, "project")),
+        (serde_json::json!(false), serde_json::json!(true)),
+        "a 320px list on a touch screen names the project: {touch_wide}"
+    );
+    assert_eq!(
+        (
+            field(&touch_narrow, "compact"),
+            field(&touch_narrow, "agent"),
+            field(&touch_narrow, "project")
+        ),
+        (
+            serde_json::json!(true),
+            serde_json::json!(true),
+            serde_json::json!(false)
+        ),
+        "a 200px list on a touch screen is compact too: {touch_narrow}"
+    );
+}
+
 /// A session chosen with the mouse leaves the page's keys to the transcript (#s430 stage 4, from its
 /// review). A click focuses the session's row; choosing another session redraws the list with its
 /// selection, which drops that focus to the page, and the open session clicked again redraws nothing,

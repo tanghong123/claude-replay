@@ -181,7 +181,7 @@
 #sessionList.sessions-flat .tree-row.session.is-member{padding-left:30px}
 #sessionList.sessions-flat .tree-row.session.is-side{padding-left:calc(16px + var(--side-depth,1) * 14px)}
 #sessionList.pl-max-w-231 .tree-context .tree-project{display:none}
-#sessionList.pl-max-w-231:not(.sessions-flat):not(.sessions-arranged) .tree-row.session:not(.flat){padding-left:32px}
+#sessionList.pl-max-w-231:not(.sessions-flat):not(.sessions-arranged) .tree-row.session:not(.flat){padding-left:20px}
 #sessionList.pl-max-w-231:not(.sessions-flat):not(.sessions-arranged) .tree-row.session.is-member{padding-left:50px}
 #sessionList.pl-max-w-231:not(.sessions-flat):not(.sessions-arranged) .tree-row.session.is-side{padding-left:calc(36px + var(--side-depth,1) * 14px)}
 :where(#sessionList) :is(#collapseBtn,#expandBtn)[data-flat]{display:none}
