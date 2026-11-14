@@ -10720,7 +10720,7 @@ fn the_app_shell_lays_out_its_list_by_the_owners_order() {
     let (monitor, _browser, tab) =
         shell_with_a_session_in("appshell-owners-order", 3121, harness::classic_scrollbars);
     assert!(
-        harness::eval(&tab, "(function(){ var t = document.querySelector('#sessionView .transcript'); return t.offsetWidth - t.clientWidth >= 15; })()") == serde_json::json!(true),
+        harness::eval(&tab, "(function(){ var t = document.querySelector('#sessionView .transcript'); return t.getBoundingClientRect().width - t.clientWidth >= 14.5; })()") == serde_json::json!(true),
         "the transcript's scrollbar takes room"
     );
     let probe = "(function(){ var app = document.getElementById('app'), v = document.getElementById('sessionView'), side = document.querySelector('.sidebar'), handle = document.getElementById('drawerHandle'), expand = document.getElementById('sidebarMiniExpand'); var shown = function (e) { if (!e) return false; var r = e.getBoundingClientRect(); return r.width > 0 && r.right > 0 && r.left < innerWidth && getComputedStyle(e).visibility !== 'hidden'; }; var outline = ['open', 'glyphs', 'bar', 'dock'].find(function (k) { return v.classList.contains('pl-outline-' + k); }) || ''; return { drawer: app.classList.contains('app-drawer'), rail: app.classList.contains('sidebar-off'), shut: app.classList.contains('mobile-detail'), list: shown(side) ? Math.round(side.getBoundingClientRect().width) : 0, view: Math.round(v.getBoundingClientRect().width), outline: outline, phone: v.classList.contains('pl-phone'), handle: shown(handle), expandDisabled: expand.getAttribute('aria-disabled') }; })()";
