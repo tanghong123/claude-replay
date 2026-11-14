@@ -2951,6 +2951,122 @@ fn list_pane_width(tab: &headless_chrome::Tab, width: u32) -> serde_json::Value 
     harness::probe(tab, LIST_ROW_LAYOUT)
 }
 
+/// #s431 stage 4 (design/pane-layout.md, "Drawn inside the pane"): the list's own floating layers stand
+/// by their controls wherever a host draws the list. The host's pane here is moved off the window's
+/// corner (300px in, under its 40px bar) and wears a transform, which makes it the box its fixed
+/// descendants are placed in, as a sliding drawer's would. A section's menu opens under its control,
+/// its right edge at the control's, inside the window, and takes a press at its middle; the filter's
+/// sheet ends at the list's foot, above the pane's clip, so its last row takes a press. Red on
+/// f32883ef, which wrote the window's coordinates into the pane's box: the menu stood 300px right of
+/// its control and 40px low.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_list_in_a_host_places_its_layers_by_their_controls_in_a_transformed_pane() {
+    let _serial = serial();
+    let base = base("list-host-layers");
+    let stores = Stores::new(&base);
+    let ids = [
+        "cccccccc-0000-4000-8000-0000000004d1",
+        "cccccccc-0000-4000-8000-0000000004d2",
+    ];
+    list_host_world(&stores, &ids);
+    stores.app_session("local_d1", ids[0], "App first", 60, None);
+    stores.app_session("local_d2", ids[1], "App second", 120, None);
+    stores.app_settings(&[("cg-plan", "Planning", &["local_d2"])]);
+    let monitor = Monitor::spawn(Kind::V1, 3275, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1200.0, 900.0);
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-arrange', 'claude-app'); localStorage.setItem('am-prod-session-filter', '[\"recent\",\"blocked\",\"idle\"]'); 'ok'",
+    );
+    harness::open_list_host_page_with(&tab, &monitor, "");
+    until_list_drawn(&tab);
+    harness::until(
+        &tab,
+        "!!document.querySelector('#tree .arranged-head [data-section-view]')",
+        "the list arranged like the Claude app, its sections' menus offered",
+        Duration::from_secs(60),
+        "document.getElementById('tree').innerText",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ var p = document.getElementById('hostPane'); p.style.left = '300px'; p.style.height = '360px'; p.style.bottom = 'auto'; p.style.transform = 'translateX(0)'; return true; })()",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    // Where the control was as it was pressed: the press can scroll the tree to bring it into view
+    // after the menu is placed, as it does in the app.
+    harness::eval(
+        &tab,
+        "(function(){ var c = document.querySelector('#tree .arranged-head [data-section-view]').getBoundingClientRect(); window.__anchorAtPress = { right: Math.round(c.right), bottom: Math.round(c.bottom) }; c = null; document.querySelector('#tree .arranged-head [data-section-view]').click(); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "!!document.getElementById('sectionViewMenu') && !document.getElementById('sectionViewMenu').hidden",
+        "a section's menu to open",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host.errors)",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let menu = harness::probe(
+        &tab,
+        "(function(){ var m = document.getElementById('sectionViewMenu'), a = document.querySelector('#tree .arranged-head [data-section-view]'); var r = m.getBoundingClientRect(), c = a.getBoundingClientRect(); var x = r.left + r.width / 2, y = r.top + Math.min(r.height / 2, 40); var hit = document.elementFromPoint(x, y); return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom), anchorRight: Math.round(c.right), anchorBottom: Math.round(c.bottom), pressedAt: window.__anchorAtPress, margin: Math.round(parseFloat(getComputedStyle(m).marginTop) || 0), inWindow: r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight, pressed: !!hit && m.contains(hit) }; })()",
+    );
+    harness::eval(
+        &tab,
+        "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))",
+    );
+    harness::eval(&tab, "document.getElementById('filterBtn').click()");
+    harness::until(
+        &tab,
+        "(function(){ var s = document.getElementById('sessionFilter'); return !!s && !s.hidden; })()",
+        "the filter's sheet to open",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host.errors)",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let sheet = harness::probe(
+        &tab,
+        "(function(){ var s = document.getElementById('sessionFilter'), l = document.getElementById('sessionList'); var r = s.getBoundingClientRect(), lr = l.getBoundingClientRect(); var rows = Array.prototype.filter.call(s.querySelectorAll('.scope-option'), function(o){ return o.getClientRects().length > 0 && getComputedStyle(o).visibility !== 'hidden'; }); var last = rows[rows.length - 1]; s.scrollTop = s.scrollHeight; var lrr = last.getBoundingClientRect(); var hit = document.elementFromPoint(lrr.left + 20, lrr.top + lrr.height / 2); return { bottom: Math.round(r.bottom), listBottom: Math.round(lr.bottom), sheetScrolls: s.scrollHeight > s.clientHeight + 1, last: last.textContent.trim().slice(0, 40), lastBox: [Math.round(lrr.left), Math.round(lrr.top), Math.round(lrr.width), Math.round(lrr.height)], hit: hit ? (hit.id || hit.className || hit.tagName) : null, lastPressed: !!hit && last.contains(hit) }; })()",
+    );
+    drop(monitor);
+    assert_eq!(
+        menu["inWindow"], true,
+        "the section's menu is inside the window: {menu}"
+    );
+    assert!(
+        [&menu["pressedAt"], &menu].iter().any(|at| {
+            let (right, bottom) = if at.get("anchorRight").is_some() {
+                (at["anchorRight"].as_i64(), at["anchorBottom"].as_i64())
+            } else {
+                (at["right"].as_i64(), at["bottom"].as_i64())
+            };
+            (menu["right"].as_i64().unwrap_or(0) - right.unwrap_or(-99)).abs() <= 1
+                && (menu["top"].as_i64().unwrap_or(0)
+                    - bottom.unwrap_or(-99)
+                    - 4
+                    - menu["margin"].as_i64().unwrap_or(0))
+                .abs()
+                    <= 1
+        }),
+        "the section's menu opens 4px under its control (and its own margin), its right edge at the control's: {menu}"
+    );
+    assert_eq!(
+        menu["pressed"], true,
+        "the section's menu takes a press: {menu}"
+    );
+    assert!(
+        sheet["bottom"].as_i64().unwrap_or(9999) <= sheet["listBottom"].as_i64().unwrap_or(0),
+        "the filter's sheet ends at the list's foot: {sheet}"
+    );
+    assert_eq!(
+        sheet["lastPressed"], true,
+        "the filter's last row takes a press: {sheet}"
+    );
+}
+
 /// The session list in a host lays out its rows by its own width and the screen's touch (#s431 stage
 /// 2, design/pane-layout.md, "The session list"), never by the window. In a host's 320px pane with a
 /// mouse a tree's session row is the desktop's one line, under 44px, and the flat list's names each
@@ -4138,11 +4254,37 @@ fn the_session_view_in_a_host_lays_itself_out_by_its_own_box() {
 /// Tasks list, whose rows exist whether or not the outline is shown at that width), the session's
 /// menu, the Reading menu and the search's filter.
 const HOST_DESKTOP_LAYERS: [(&str, &str, &str, &str); 5] = [
-    ("the right pane", "document.getElementById('previewBtn').click()", "#closePreview", "document.getElementById('closePreview').click()"),
-    ("the task card", "document.querySelector('#navigatorWork .work-task-head').click()", "#taskPopover", "document.querySelector('#taskPopover .task-popover-close').click()"),
-    ("the session's menu", "document.getElementById('sessionTitle').click()", "#sessionCopyMenu", "document.getElementById('sessionTitle').click()"),
-    ("the Reading menu", "document.getElementById('readingBtn').click()", "#readingOptions", "document.getElementById('readingBtn').click()"),
-    ("the search's filter", "document.getElementById('filterTranscriptBtn').click()", "#navigatorOptions", "document.getElementById('filterTranscriptBtn').click()"),
+    (
+        "the right pane",
+        "document.getElementById('previewBtn').click()",
+        "#closePreview",
+        "document.getElementById('closePreview').click()",
+    ),
+    (
+        "the task card",
+        "document.querySelector('#navigatorWork .work-task-head').click()",
+        "#taskPopover",
+        "document.querySelector('#taskPopover .task-popover-close').click()",
+    ),
+    (
+        "the session's menu",
+        "document.getElementById('sessionTitle').click()",
+        "#sessionCopyMenu",
+        // A press elsewhere closes it, as for a reader: a click on the title always opens it.
+        "document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))",
+    ),
+    (
+        "the Reading menu",
+        "document.getElementById('readingBtn').click()",
+        "#readingOptions",
+        "document.getElementById('readingBtn').click()",
+    ),
+    (
+        "the search's filter",
+        "document.getElementById('filterTranscriptBtn').click()",
+        "#navigatorOptions",
+        "document.getElementById('filterTranscriptBtn').click()",
+    ),
 ];
 
 /// Opens each of `steps` in turn and returns, for each that is amiss, what [`LAYERS_AMISS`] found:
@@ -4243,6 +4385,317 @@ fn the_session_view_in_a_host_draws_its_layers_inside_its_pane() {
              taking a press there: {amiss:?} ({layout})"
         );
     }
+}
+
+/// What the app draws, read for [`the_app_shell_contains_its_view_and_draws_everything_else_as_before`]:
+/// every element under the page's body whose position is fixed, absolute or sticky and that is drawn,
+/// by name and rounded box, and the element `elementFromPoint` finds on a 40px grid over the window.
+const APP_DRAWN: &str = "(function(){ var name = function(e){ if (!e) return 'nothing'; return e.id ? '#' + e.id : e.tagName.toLowerCase() + (e.classList.length ? '.' + Array.prototype.slice.call(e.classList, 0, 3).join('.') : ''); }; var own = function(e){ return !!e.closest && !!e.closest('#taskPopover, #taskScrim'); }; var box = function(e){ if (!e) return null; var r = e.getBoundingClientRect(); return r.width < 1 || r.height < 1 ? null : { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom) }; }; var placed = []; document.body.querySelectorAll('*').forEach(function(e){ if (own(e)) return; var cs = getComputedStyle(e); if (!/^(fixed|absolute|sticky)$/.test(cs.position) || cs.display === 'none' || cs.visibility === 'hidden') return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return; placed.push(name(e) + ' ' + Math.round(r.left) + ',' + Math.round(r.top) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height)); }); var points = []; for (var y = 20; y < innerHeight; y += 40) for (var x = 20; x < innerWidth; x += 40) { var hit = document.elementFromPoint(x, y); points.push({ x: x, y: y, at: x + ',' + y + ' ' + (hit && own(hit) ? 'the task card' : name(hit)) }); } var card = document.getElementById('taskPopover'); return { placed: placed, points: points, card: card && !card.hidden ? box(card) : null, opener: box(document.querySelector('#navigatorWork .work-task-head')) }; })()";
+
+/// Takes the view's containment off (`on` false: its cuts 0, as an uncontained view's are) or gives
+/// it back, and waits two frames.
+fn app_view_contained(tab: &headless_chrome::Tab, on: bool) {
+    let js = if on {
+        "(function(){ var v = document.getElementById('sessionView'); ['contain', '--pl-cut-left', '--pl-cut-right', '--pl-cut-top', '--pl-cut-bottom'].forEach(function(p){ v.style.removeProperty(p); }); return true; })()"
+    } else {
+        "(function(){ var v = document.getElementById('sessionView'); v.style.setProperty('contain', 'inline-size'); ['left', 'right', 'top', 'bottom'].forEach(function(s){ v.style.setProperty('--pl-cut-' + s, '0px'); }); return true; })()"
+    };
+    harness::eval(tab, js);
+    harness::eval(tab, TWO_FRAMES);
+}
+
+/// #s431 stage 4 (design/pane-layout.md, "Drawn inside the pane"; the review's measure before the
+/// app's view is contained): beside the app's list the view contains its layout, as in a host's pane,
+/// and that changes nothing the app draws. At a 1440, 1180, 1000, 900 and 700px window, with the pane
+/// shut and open (a column, or over the session), at rest and with each of the view's layers open
+/// (the task card, the session's menu, the Reading menu, the search's filter), every placed element's
+/// box and what a press finds on a grid over the window are the same contained as with the
+/// containment taken off. A drag of the pane's edge over the list still drags: the drag catcher stops
+/// at the view's edge, and the resizer holds the pointer.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_contains_its_view_and_draws_everything_else_as_before() {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventTypeOption, MouseButton,
+    };
+    let _serial = serial();
+    let base = base("app-view-contained");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000004f2".to_string();
+    stores.claude_session(&sid, &harness::long_session(12, harness::Shape::default()));
+    stores.claude_tasks(
+        &sid,
+        &[
+            ("1", "one, done", "completed"),
+            ("2", "two, running", "in_progress"),
+            ("3", "three, pending", "pending"),
+        ],
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3274, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::mouse_window(&tab, 1440, 900);
+    monitor.open(&tab, &format!("?session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window .turn.user') && document.querySelectorAll('#navigatorWork .work-task').length > 0 && !!document.querySelector('#sessionList .tree-row.session')",
+        "the app shell to open the session and its tasks, the session listed",
+        Duration::from_secs(30),
+        "document.body.innerText.slice(0, 200)",
+    );
+    // Each step: its name, what opens it and closes it, and whether a reader can press its opener
+    // there (a task row in an outline folded to the bar has no box, and a click by script on it opens
+    // a card no reader could).
+    let pressable = "(function(){ var e = document.querySelector('#navigatorWork .work-task-head'); if (!e) return false; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return false; var h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!h && e.contains(h); })()";
+    let steps: [(&str, &str, &str, &str); 5] = [
+        ("at rest", "", "", ""),
+        (
+            "the task card",
+            "document.querySelector('#navigatorWork .work-task-head').click()",
+            "document.querySelector('#taskPopover .task-popover-close').click()",
+            pressable,
+        ),
+        (
+            "the session's menu",
+            "document.getElementById('sessionTitle').click()",
+            "document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))",
+            "",
+        ),
+        (
+            "the Reading menu",
+            "document.getElementById('readingBtn').click()",
+            "document.getElementById('readingBtn').click()",
+            "",
+        ),
+        (
+            "the search's filter",
+            "document.getElementById('filterTranscriptBtn').click()",
+            "document.getElementById('filterTranscriptBtn').click()",
+            "",
+        ),
+    ];
+    let mut differ = Vec::new();
+    let mut boxed = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for width in [1440_u32, 1180, 1000, 900, 700] {
+        harness::mouse_window(&tab, width, 900);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && {VIEW_CAUGHT_UP}"),
+            &format!("the view to decide at a {width}px window"),
+            Duration::from_secs(10),
+            VIEW_LAYOUT,
+        );
+        for open in [false, true] {
+            let shut = harness::eval(
+                &tab,
+                "document.getElementById('sessionView').classList.contains('preview-off')",
+            );
+            if shut == serde_json::json!(open) {
+                harness::eval(&tab, "document.getElementById('previewBtn').click()");
+            }
+            harness::until(
+                &tab,
+                &format!("(function(){{ var v = document.getElementById('sessionView'); return v.classList.contains('preview-off') === {} && v.getAnimations().length === 0; }})() && {VIEW_CAUGHT_UP}", !open),
+                &format!("the pane {} at a {width}px window", if open { "open" } else { "shut" }),
+                Duration::from_secs(10),
+                VIEW_LAYOUT,
+            );
+            // The Tasks drawer open, as a reader opens it to reach a task's row.
+            harness::eval(
+                &tab,
+                "(function(){ var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) { var t = document.querySelector('[data-nav-card-toggle=\"tasks\"]'); if (t) t.click(); } return true; })()",
+            );
+            harness::until_drawers_settle(&tab);
+            boxed.push((
+                width,
+                open,
+                harness::probe(&tab, "(function(){ var v = document.getElementById('sessionView'); return { boxed: v.classList.contains('pl-boxed'), contain: getComputedStyle(v).contain }; })()"),
+            ));
+            for (name, opener, close, shown) in steps {
+                if !shown.is_empty() && harness::eval(&tab, shown) != serde_json::json!(true) {
+                    skipped.push(format!(
+                        "{width}px, pane {}, {name}",
+                        if open { "open" } else { "shut" }
+                    ));
+                    continue;
+                }
+                let mut drawn = Vec::new();
+                for on in [true, false] {
+                    app_view_contained(&tab, on);
+                    if !opener.is_empty() {
+                        harness::eval(&tab, &format!("(function(){{ {opener}; return true; }})()"));
+                    }
+                    harness::eval(&tab, "new Promise(function(done){ requestAnimationFrame(function(){ setTimeout(done, 400); }); })");
+                    drawn.push(harness::probe(&tab, APP_DRAWN));
+                    if !close.is_empty() {
+                        harness::eval(&tab, &format!("(function(){{ {close}; return true; }})()"));
+                    }
+                    harness::eval(&tab, "new Promise(function(done){ requestAnimationFrame(function(){ setTimeout(done, 300); }); })");
+                }
+                app_view_contained(&tab, true);
+                // The task card is the view's own layer, placed from the view's box (its own case
+                // holds that): what it covers either way is left out, and it keeps its place by its
+                // row either way (the row may have scrolled between the two).
+                let covers = |v: &serde_json::Value, x: i64, y: i64| {
+                    let c = &v["card"];
+                    !c.is_null()
+                        && c["left"].as_i64().unwrap_or(0) <= x
+                        && x <= c["right"].as_i64().unwrap_or(0)
+                        && c["top"].as_i64().unwrap_or(0) <= y
+                        && y <= c["bottom"].as_i64().unwrap_or(0)
+                };
+                if !drawn[0]["card"].is_null() {
+                    let by_row = |v: &serde_json::Value| {
+                        (
+                            v["card"]["left"].as_i64().unwrap_or(0)
+                                - v["opener"]["right"].as_i64().unwrap_or(0),
+                            v["card"]["top"].as_i64().unwrap_or(0)
+                                - v["opener"]["top"].as_i64().unwrap_or(0),
+                        )
+                    };
+                    let (a, b) = (by_row(&drawn[0]), by_row(&drawn[1]));
+                    if (a.0 - b.0).abs() > 1 || (a.1 - b.1).abs() > 1 {
+                        differ.push(format!("{width}px, pane {}, {name}: the card beside its row contained {a:?}, uncontained {b:?}", if open { "open" } else { "shut" }));
+                    }
+                }
+                let set = |v: &serde_json::Value, k: &str| -> Vec<String> {
+                    v[k].as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| match x.as_str() {
+                                    Some(s) => Some(s.to_string()),
+                                    None => {
+                                        let (px, py) = (
+                                            x["x"].as_i64().unwrap_or(0),
+                                            x["y"].as_i64().unwrap_or(0),
+                                        );
+                                        (!covers(&drawn[0], px, py) && !covers(&drawn[1], px, py))
+                                            .then(|| x["at"].as_str().unwrap_or("").to_string())
+                                    }
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                {
+                    let mut only = Vec::new();
+                    for key in ["placed", "points"] {
+                        let (a, b) = (set(&drawn[0], key), set(&drawn[1], key));
+                        only.extend(
+                            a.iter()
+                                .filter(|x| !b.contains(x))
+                                .map(|x| format!("contained only: {x}")),
+                        );
+                        only.extend(
+                            b.iter()
+                                .filter(|x| !a.contains(x))
+                                .map(|x| format!("uncontained only: {x}")),
+                        );
+                    }
+                    if !only.is_empty() {
+                        differ.push(format!(
+                            "{width}px, pane {}, {name}: {}",
+                            if open { "open" } else { "shut" },
+                            only.join("; ")
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    // The drag: at 1440px with the pane a column, its edge dragged from the resizer to over the list.
+    harness::mouse_window(&tab, 1440, 900);
+    harness::until(
+        &tab,
+        &format!("innerWidth === 1440 && !document.getElementById('sessionView').classList.contains('preview-off') && document.getElementById('sessionView').classList.contains('pl-pane-column') && {VIEW_CAUGHT_UP}"),
+        "the pane a column at 1440px",
+        Duration::from_secs(10),
+        VIEW_LAYOUT,
+    );
+    harness::eval(&tab, "localStorage.removeItem('am-demo-pane-share')");
+    let x0 = harness::eval(&tab, "(function(){ var r = document.getElementById('resizer').getBoundingClientRect(); return r.left + r.width / 2; })()")
+        .as_f64()
+        .expect("the resizer's place");
+    let list_x = harness::eval(&tab, "(function(){ var r = document.querySelector('#app>.sidebar').getBoundingClientRect(); return r.left + r.width / 2; })()")
+        .as_f64()
+        .expect("the list's middle");
+    let mouse = |kind: DispatchMouseEventTypeOption, x: f64, buttons: u32| {
+        tab.call_method(DispatchMouseEvent {
+            Type: kind,
+            x,
+            y: 400.0,
+            modifiers: None,
+            timestamp: None,
+            button: Some(MouseButton::Left),
+            buttons: Some(buttons),
+            click_count: Some(1),
+            force: None,
+            tangential_pressure: None,
+            tilt_x: None,
+            tilt_y: None,
+            twist: None,
+            delta_x: None,
+            delta_y: None,
+            pointer_Type: None,
+        })
+        .unwrap();
+    };
+    let selected = harness::eval(&tab, "location.search");
+    mouse(DispatchMouseEventTypeOption::MouseMoved, x0, 0);
+    mouse(DispatchMouseEventTypeOption::MousePressed, x0, 1);
+    mouse(
+        DispatchMouseEventTypeOption::MouseMoved,
+        (x0 + list_x) / 2.0,
+        1,
+    );
+    mouse(DispatchMouseEventTypeOption::MouseMoved, list_x, 1);
+    let held = harness::probe(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return { resizing: v.classList.contains('resizing'), session: Math.round(document.querySelector('#sessionView>.workspace').getBoundingClientRect().width) }; })()",
+    );
+    mouse(DispatchMouseEventTypeOption::MouseReleased, list_x, 0);
+    harness::eval(&tab, TWO_FRAMES);
+    let after = harness::probe(
+        &tab,
+        "({ resizing: document.getElementById('sessionView').classList.contains('resizing'), share: Number(localStorage.getItem('am-demo-pane-share')), search: location.search })",
+    );
+    drop(monitor);
+    for (width, open, b) in boxed {
+        assert!(
+            b["boxed"] == true && b["contain"].as_str().unwrap_or("").contains("layout"),
+            "beside the list at a {width}px window, pane {}, the view contains its layout: {b}",
+            if open { "open" } else { "shut" }
+        );
+    }
+    assert!(
+        differ.is_empty(),
+        "contained, the app draws everything as it did uncontained:\n{}",
+        differ.join("\n")
+    );
+    // The card is opened wherever a reader could open it: at least once a width with the outline shown.
+    assert!(
+        skipped.len() < 10,
+        "the task card opened from a row a reader can press somewhere; skipped at {skipped:?}"
+    );
+    eprintln!("the task card had no row to press at: {skipped:?}");
+    assert_eq!(
+        held["resizing"], true,
+        "the drag is under way over the list: {held}"
+    );
+    assert!(
+        held["session"].as_f64().unwrap_or(0.0) >= 480.0,
+        "the session keeps M under a drag past it: {held}"
+    );
+    assert_eq!(after["resizing"], false, "the drag ended: {after}");
+    assert!(
+        (after["share"].as_f64().unwrap_or(0.0) - 1.0).abs() < 1e-6,
+        "the pane took the whole slack, dragged past the session's M: {after}"
+    );
+    assert_eq!(
+        after["search"], selected,
+        "no session was chosen by the release over the list: {after}"
+    );
 }
 
 /// Two animation frames, which a style change needs before what it started is heard (#321).
@@ -4425,7 +4878,7 @@ fn the_session_view_in_a_host_on_a_phone_reads_its_own_box_and_the_finger() {
 /// 10d88b7d, which reached the sheet to the window's sides in a host as in the app). At ⤢ the pane
 /// takes the whole screen in a host too, and so does a sheet opened there, with the screen's whole
 /// insets (red on cf156c65, which counted them from the pane's old place). Each placement is a fresh
-/// mount: a move with no resize is #s467's.
+/// mount: a move with no resize is the next case's (#s467).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_view_in_a_host_on_a_phone_counts_the_insets_only_inside_its_box() {
@@ -4522,12 +4975,15 @@ fn the_session_view_in_a_host_on_a_phone_counts_the_insets_only_inside_its_box()
 }
 
 /// #s467 (a gap #s431 stage 2's inset case found): a host that moves the view's box without resizing
-/// it, here a 450px pane on a phone held sideways moved from the screen's left edge to its middle, is
-/// not heard: the layout keeps the old place (`--pane-x`), so the dock still counts the island's inset
-/// at its left. Fixed, the dock is 12px from both sides at the new place.
+/// it is heard, by a watch on the box's place with no timer (design/pane-layout.md, "Drawn inside the
+/// pane"). A 450px pane on a phone held sideways, moved by its `left` from the screen's left edge to its
+/// middle: the dock is 12px from both sides at the new place, where it kept counting the island's inset
+/// at its left (red on 5b68bfcf, whose layout kept the old place, `--pane-x`). Moved back by a
+/// transform, which moves no layout box: the place is the screen's left edge again and the dock counts
+/// the inset there.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
-fn the_session_view_in_a_host_hears_its_box_move_without_a_resize_known_red_s467() {
+fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
     let _serial = serial();
     let base = base("host-move");
     let monitor = Monitor::spawn(Kind::V1, 3116, &base, None, true);
@@ -4545,6 +5001,17 @@ fn the_session_view_in_a_host_hears_its_box_move_without_a_resize_known_red_s467
         &tab,
         "(function(){ var v = document.getElementById('sessionView'), d = document.getElementById('phoneDock'); var vr = v.getBoundingClientRect(), r = d.getBoundingClientRect(); return Math.round(vr.left) === 241 && Math.round(r.left - vr.left) === 12 && Math.round(vr.right - r.right) === 12; })()",
         "the dock 12px from both sides once the pane moved to the screen's middle",
+        Duration::from_secs(5),
+        "(function(){ var v = document.getElementById('sessionView'), d = document.getElementById('phoneDock'); var vr = v.getBoundingClientRect(), r = d.getBoundingClientRect(); return JSON.stringify({ view: Math.round(vr.left), paneX: v.style.getPropertyValue('--pane-x'), left: Math.round(r.left - vr.left), right: Math.round(vr.right - r.right) }); })()",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('hostPane').style.transform = 'translateX(-241px)'; return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'), d = document.getElementById('phoneDock'); var vr = v.getBoundingClientRect(), r = d.getBoundingClientRect(); return Math.round(vr.left) === 0 && v.style.getPropertyValue('--pane-x') === '0px' && Math.round(r.left - vr.left) > 12 && Math.round(vr.right - r.right) === 12; })()",
+        "the dock counting the island's inset again once a transform moved the pane back to the screen's left edge",
         Duration::from_secs(5),
         "(function(){ var v = document.getElementById('sessionView'), d = document.getElementById('phoneDock'); var vr = v.getBoundingClientRect(), r = d.getBoundingClientRect(); return JSON.stringify({ view: Math.round(vr.left), paneX: v.style.getPropertyValue('--pane-x'), left: Math.round(r.left - vr.left), right: Math.round(vr.right - r.right) }); })()",
     );

@@ -4982,7 +4982,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(body, /^const widthWatch = new ResizeObserver\(fitWidth\);$/m, "which it keeps");
   const unmount = /^  unmount\(\) \{\n[\s\S]*?\n  \},\n/m.exec(body);
   assert.ok(unmount, "the handle has an unmount");
-  for (const step of ["if (unmounted) return;", "unmounted = true;", "sessionIndex.stop();", "life.abort();", "widthWatch.disconnect();", "globalThis.clearTimeout(id)", "for (const node of [controls, filterSheet, filterMini, railMarks, railFlyout, sectionMenu, sectionScrim, insetProbe]) node?.remove();", "element.replaceChildren();", "element.removeAttribute(name)", "for (const [name, value] of elementBefore) element.setAttribute(name, value);"]) {
+  for (const step of ["if (unmounted) return;", "unmounted = true;", "sessionIndex.stop();", "life.abort();", "widthWatch.disconnect();", "globalThis.clearTimeout(id)", "for (const node of [controls, filterSheet, filterMini, railMarks, railFlyout, sectionMenu, sectionScrim, insetProbe, ...cornerProbes.values()]) node?.remove();", "element.replaceChildren();", "element.removeAttribute(name)", "for (const [name, value] of elementBefore) element.setAttribute(name, value);"]) {
     assert.ok(unmount[0].includes(step), `the unmount does ${step}`);
   }
   assert.match(body, /^const elementBefore = \[\.\.\.element\.attributes\]\.map\(attribute => \[attribute\.name, attribute\.value\]\);\n(?:\/\/[^\n]*\n)*element\.id = "sessionList";$/m, "the element's attributes are read before the list writes any");
@@ -5069,6 +5069,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /const laidOutWidth = \(\) => viewport\.mount\.getBoundingClientRect\(\)\.width;/, "the width laid out is the engine's mount's");
   assert.match(readFileSync(new URL("../src/codex-ui/pane-layout.js", import.meta.url), "utf8"), /const key = JSON\.stringify\(\[\[\.\.\.on\]\.sort\(\), Math\.round\(box\.width\), arrangement\.paneWidth\]\);\n    if \(key === said\) return;/, "a decision that moves the view's width or the pane's is heard");
   assert.match(viewSource, /paneToggled: change => \(viewMounted \? layout\.toggled\(change\) : \(change\(\), layout\.decide\(\)\)\),/, "the pane shut as the view is built opens no glide's time, and the view is arranged for it");
+  // #s467: a move of the view's box with no resize is heard by a watch on its place, never a clock:
+  // the layout module starts no timer, and its watch goes with the view's signal.
+  {
+    const layoutSource = readFileSync(new URL("../src/codex-ui/pane-layout.js", import.meta.url), "utf8");
+    assert.doesNotMatch(layoutSource, /\b(?:setTimeout|setInterval|requestAnimationFrame)\(/, "the layout module starts no timer (#s467)");
+    assert.match(layoutSource, /new IntersectionObserver\(heard, \{ \.\.\.options, root: viewRoot\.root\(\) \}\)/, "a move is heard by an IntersectionObserver rooted at the view's page");
+    assert.match(layoutSource, /wrote = writing;\n    watchMoves\(box\);/, "every decision that writes watches the box where it measured it");
+    assert.match(layoutSource, /signal\?\.addEventListener\("abort", \(\) => \{ observer\.disconnect\(\); moves\?\.disconnect\(\); moves = null; \}, \{ once: true \}\);/, "and the watch stops with the view");
+  }
   // …and so does the window's resize (the outline's toggle is held above): the view remeasures for its width one way.
   assert.match(viewSource, /addEventListener\("resize", \(\) => \{ paneLayoutChanged\(\); updateStickyHeaders\(\); \}/, "the window's resize remeasures only a width that changed");
   assert.match(viewSource, /^renderHeader\(\); renderNavigator\(\); paintJump\(\);\n(?:\/\/[^\n]*\n)+paneLaidOutWidth = laidOutWidth\(\);\nviewMounted = true;$/m, "and does from the first render on, measured from the width the mount left");
