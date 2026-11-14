@@ -2957,9 +2957,9 @@ fn list_pane_width(tab: &headless_chrome::Tab, width: u32) -> serde_json::Value 
 /// session's agent and its project on a second line. Narrowed to 200px, below the app's least sidebar
 /// of 232px, the rows are compact: the flat list keeps the agent and drops the project, and the tree's
 /// indent is 12px narrower. Widened again they are as before. On an emulated phone, a touch screen, a
-/// tree's row is 44px at either width, and the narrow pane makes the rows compact there too. With the
-/// list's width never read (no `pl-max-w-231`) the narrow pane keeps the project and the indent, and
-/// the case fails there.
+/// tree's row is 44px at either width, and the narrow pane makes the rows compact there too. 1.520.0's
+/// compact rule set a tree session's padding to 32px, its default, so the 200px tree kept its indent
+/// and the case failed there, with a mouse and on a phone alike.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_list_in_a_host_lays_out_its_rows_by_its_own_width_and_touch() {

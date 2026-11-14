@@ -664,8 +664,9 @@ reads the view's family (above).
 ### The session list
 
 `design/embedding.md` asks for full rows where there is room and compact rows where there is not.
-On a desktop a tree's session row is already one line of 32px: a state mark, the title cut with an
-ellipsis and a fork chip; the flat list's row adds a second line, the agent's mark and the project.
+On a desktop a tree's session row is already one line of 32px: the title cut with an ellipsis, a
+fork chip, and at its end the state mark with the age; the flat list's row adds a second line, the
+agent's mark and the project.
 On a phone they are 44px touch rows. The list follows the same rule as the view, its own size and touch:
 
 - **Touch rows on a touch screen**, `(pointer:coarse)`. The list's own size cannot tell a phone's
