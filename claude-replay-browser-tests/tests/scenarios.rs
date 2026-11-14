@@ -17311,6 +17311,95 @@ fn scenario_diagnostics_after_a_tool_call_are_a_note() {
     }
 }
 
+/// A session whose second prompt was answered by the CLIENT (#s499): Claude Code 2.1.325's
+/// placeholder, model `<synthetic>`, `madeBy` "other", the one text "No response requested.",
+/// then a prompt the agent really answered.
+fn client_reply_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let answer = (0..60)
+        .map(|i| format!("Paragraph {i} of the answer."))
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    let mut t = String::new();
+    t += &user_at("first prompt", &now_minus(300));
+    t += &assistant_at(&answer, &now_minus(295));
+    t += &user_at("count the tern nests", &now_minus(280));
+    let placeholder = serde_json::json!({
+        "type": "assistant", "version": "2.1.325", "cwd": "/r", "madeBy": "other",
+        "isApiErrorMessage": false, "timestamp": now_minus(279),
+        "message": {"id": "msg_s499", "role": "assistant", "model": "<synthetic>",
+            "stop_reason": "stop_sequence", "usage": {"input_tokens": 0, "output_tokens": 0},
+            "content": [{"type": "text", "text": "No response requested."}]}
+    });
+    t += &format!("{placeholder}\n");
+    t += &user_at("go on", &now_minus(270));
+    t += &assistant_at("Twelve nests on the north shore.", &now_minus(265));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 3,
+    }
+}
+
+/// #s499 — a reply the client wrote in the agent's place is drawn as the client's note (a bare
+/// result, with the ⎿ gutter), never as the agent's answer, on both pages. Found by the daily
+/// unknown review (`madeBy`, Claude Code 2.1.325); the placeholder used to read as the agent saying
+/// "No response requested.". The answer after it is still the agent's.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn scenario_a_reply_the_client_wrote_is_drawn_as_its_note() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = client_reply_fixture(match surface {
+            Surface::Classic => "client-reply-classic",
+            Surface::AppShell => "client-reply-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3090 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        settle();
+        open_everything(&page.tab, surface);
+        settle();
+        // Each text node holding the words, by what draws it: the agent's prose (the classic
+        // page's `data-kind="assistant"`, the app shell's `data-record-kind="assistant"`), or a
+        // bare result (`data-kind="tool"` there, a tool renderer here).
+        let seen: serde_json::Value = eval(
+            &page.tab,
+            "(function(){ \
+               var root = document.querySelector('#transcriptInner') || document.querySelector('#stream'); \
+               function where(word) { var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), out = []; \
+                 for (var n = w.nextNode(); n; n = w.nextNode()) { if (n.nodeValue.indexOf(word) < 0) continue; var e = n.parentElement; \
+                   out.push(e.closest('[data-record-kind=\"assistant\"], #stream [data-kind=\"assistant\"]') ? 'prose' \
+                     : e.closest('.renderer-turn[data-record-kind=\"tool\"], #stream [data-kind=\"tool\"]') ? 'note' : 'other'); } \
+                 return out; } \
+               return JSON.stringify({ placeholder: where('No response requested.'), answer: where('Twelve nests on the north shore.') }); })()",
+        )
+        .as_str()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::Value::Null);
+        let placeholder: Vec<String> =
+            serde_json::from_value(seen["placeholder"].clone()).unwrap_or_default();
+        assert!(
+            !placeholder.is_empty(),
+            "{surface:?}: the client's words are on the page: {seen}"
+        );
+        assert!(
+            !placeholder.iter().any(|w| w == "prose"),
+            "{surface:?}: never drawn as the agent's answer: {seen}"
+        );
+        assert!(
+            placeholder.iter().all(|w| w == "note"),
+            "{surface:?}: drawn as the client's note: {seen}"
+        );
+        assert_eq!(
+            seen["answer"],
+            serde_json::json!(["prose"]),
+            "{surface:?}: the answer after it is still the agent's: {seen}"
+        );
+    }
+}
+
 /// A Qwenwork session (#s17: client 1.1.32 writes a Bash result's `exitCode`) whose last turn ran
 /// two Bash calls — one exit 0, one exit 1 — with prose between them so each keeps its own head.
 fn qwenwork_tool_heads_fixture(name: &str) -> Fixture {
