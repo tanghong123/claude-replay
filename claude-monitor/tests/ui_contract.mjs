@@ -5075,7 +5075,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     const layoutSource = readFileSync(new URL("../src/codex-ui/pane-layout.js", import.meta.url), "utf8");
     assert.doesNotMatch(layoutSource, /\b(?:setTimeout|setInterval|requestAnimationFrame)\(/, "the layout module starts no timer (#s467)");
     assert.match(layoutSource, /new IntersectionObserver\(heard, \{ \.\.\.options, root: viewRoot\.root\(\) \}\)/, "a move is heard by an IntersectionObserver rooted at the view's page");
-    assert.match(layoutSource, /if \(writing === wrote && place === placed\) return;\n    placed = place;\n(?:    \/\/[^\n]*\n)+    if \(!riding && \(box\.width \|\| box\.height\)\) \{ gaps = \{ top, bottom \}; gapsKnown = true; \}\n    watchMoves\(box\);/, "every decision that writes watches the box where it measured it");
+    assert.match(layoutSource, /if \(writing === wrote && place === placed\) return;\n    placed = place;\n(?:    \/\/[^\n]*\n)+    if \(!ridden && \(box\.width \|\| box\.height\)\) \{ gaps = \{ top, bottom \}; gapsKnown = true; \}\n    watchMoves\(box\);/, "every decision that writes watches the box where it measured it");
     // A move alone writes the gaps and returns, before the hold, the arrangement and the read.
     assert.match(layoutSource, /if \(writing === wrote\) \{ writePlace\(\); return; \}\n    wrote = writing;/, "a move alone writes only where the view is");
     assert.match(layoutSource, /signal\?\.addEventListener\("abort", \(\) => \{ observer\.disconnect\(\); moves\?\.disconnect\(\); moves = null; \}, \{ once: true \}\);/, "and the watch stops with the view");
