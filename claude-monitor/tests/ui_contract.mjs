@@ -5075,19 +5075,23 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     const layoutSource = readFileSync(new URL("../src/codex-ui/pane-layout.js", import.meta.url), "utf8");
     assert.doesNotMatch(layoutSource, /\b(?:setTimeout|setInterval|requestAnimationFrame)\(/, "the layout module starts no timer (#s467)");
     assert.match(layoutSource, /new IntersectionObserver\(heard, \{ \.\.\.options, root: viewRoot\.root\(\) \}\)/, "a move is heard by an IntersectionObserver rooted at the view's page");
-    assert.match(layoutSource, /wrote = writing;\n    watchMoves\(box\);/, "every decision that writes watches the box where it measured it");
+    assert.match(layoutSource, /if \(writing === wrote && place === placed\) return;\n    placed = place;\n    watchMoves\(box\);/, "every decision that writes watches the box where it measured it");
+    // A move alone writes the gaps and returns, before the hold, the arrangement and the read.
+    assert.match(layoutSource, /if \(writing === wrote\) \{ writePlace\(\); return; \}\n    wrote = writing;/, "a move alone writes only where the view is");
     assert.match(layoutSource, /signal\?\.addEventListener\("abort", \(\) => \{ observer\.disconnect\(\); moves\?\.disconnect\(\); moves = null; \}, \{ once: true \}\);/, "and the watch stops with the view");
   }
   // …and so does the window's resize (the outline's toggle is held above): the view remeasures for its width one way.
   assert.match(viewSource, /addEventListener\("resize", \(\) => \{ paneLayoutChanged\(\); updateStickyHeaders\(\); \}/, "the window's resize remeasures only a width that changed");
   assert.match(viewSource, /^renderHeader\(\); renderNavigator\(\); paintJump\(\);\n(?:\/\/[^\n]*\n)+paneLaidOutWidth = laidOutWidth\(\);\nviewMounted = true;$/m, "and does from the first render on, measured from the width the mount left");
   // The engaged binding, run: the engagement and the keymap as the view writes them, over a fake
-  // document, the view's element, a host's node, a guest and the task card the view draws in it.
+  // document, the view's element, a host's node and a guest. The task card is a node in the view's
+  // element like any other since stage 4 (`element.append(taskScrim, taskPopover)`, held above), so
+  // the view's node stands for it here.
   const engagement = /^let engaged = keyboardMode === "page";\nif \(keyboardMode === "engaged"\) \{\n[\s\S]*?\n\}\n/m.exec(viewSource);
   const keymap = /^if \(keyboardMode === "engaged"\) \{\n  document\.addEventListener\("keydown"[\s\S]*?\n\}\n/m.exec(viewSource);
   assert.ok(engagement && keymap, "the view's engagement and its engaged keymap are where the contract reads them");
   const node = (inside, guest = false) => ({ tagName: "DIV", closest: sel => (sel === "[data-guest-keys]" && guest ? {} : null), inside });
-  const viewNode = node(true), guestNode = node(true, true), hostNode = node(false), card = node(true);
+  const viewNode = node(true), guestNode = node(true, true), hostNode = node(false);
   const mount = (keyboardMode, actions) => {
     const handlers = {}, capture = {};
     const signal = { lifetime: "the view's" }, bound = [];
@@ -5111,8 +5115,6 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(fired, ["turn-next", "tasks-center"]);
   view.on("mousedown", guestNode);
   assert.equal(view.press("]"), false, "inside a guest of the view's, the key is the guest's");
-  view.on("mousedown", card);
-  assert.equal(view.press("]"), true, "the task card, drawn in the view's element, is the view's");
   view.on("mousedown", hostNode);
   assert.equal(view.press("]"), false, "a press in the host ends it");
   view.on("focusin", viewNode);
