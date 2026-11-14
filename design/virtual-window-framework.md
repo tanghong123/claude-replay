@@ -212,7 +212,13 @@ engine takes the offset as it is for its belief (`knowOffset`): a transaction th
 empty (a session's records replaced, the browser clamping to what is left), and a wait that lapsed. Kept
 at the old belief, the new session's records read the clamp as a move nobody heard and its tail waited
 for the event (#s431), and the converge after a lapse read the same move as unheard again and waited
-again, every two seconds, for as long as no event came.
+again, every two seconds, for as long as no event came. While the tail waits for that event, the
+follower is held by what is on screen, as any reader is (`holdTail` in `transact`; never under a held
+thumb or a smooth write in flight, and a measure that heard nothing new stays quiet), and the tail is
+placed when the wait ends. Left as the tail, a prepend of
+the session's earlier turns landed under an offset that stayed in pixels, and the event, once it came,
+left the reader on turn 7 of 60 (#s431). The event awaited is then classified even at the offset the
+hold wrote, since it is still the move's (`unheard.held`).
 **By policy (timers/guards):** I1, I4, I7, I8, I11.
 **Only by tests:** I9, I12 (half).
 **Not held:** I2 — and this is the count to keep in view: 3 write sites in the engine, ~16 more in the two pages, every one of them a place where `scrollTop` moves without `P` knowing.

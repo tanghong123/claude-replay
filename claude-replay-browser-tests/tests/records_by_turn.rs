@@ -12,8 +12,8 @@
 //! `?windowed=1`, which picks that path, and queues every read of the head (`queue_the_head`) so it
 //! decides when each piece arrives. Searching the earlier turns on the server while the head is out
 //! (#s278, stage 3) is here too, and so is what a reader keeps of a long session (#s285). Ports
-//! 2770–2779, 2782–2784 for what a reader keeps, 2785–2789 for stage 3 and 2790 (the sandbox holds
-//! 2780–2781).
+//! 2770–2779, 2782–2784 for what a reader keeps, 2785–2789 for stage 3, 2790 and 2791 (the sandbox
+//! holds 2780–2781).
 
 mod harness;
 
@@ -263,6 +263,91 @@ fn the_index_lays_the_session_out_and_no_fill_moves_the_reader() {
         Some("[]"),
         "no invariant broken"
     );
+}
+
+/// The case above, with the reader's scroll event late, as a lazy tab delivers it (#s431): the
+/// reader leaves the end by the wheel, the event is held past the intent window, and the index lands
+/// before it arrives. The engine, still following, waits for the event (#s481), and the turn the
+/// reader is on stays where it was through the landing: the earlier turns go above it rather than
+/// under the offset. When the event comes it says the move was the reader's, and they stay there,
+/// no longer following. Before the fix the landing left the offset in pixels, under the
+/// placeholders, and the event left the reader on turn 7 of 60.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_reader_whose_scroll_event_is_late_keeps_their_turn_when_the_index_lands() {
+    let _serial = serial();
+    let (_m, _b, tab, _) = open(
+        2791,
+        "by-turn-late-event",
+        &session(60),
+        false,
+        true,
+        "&trace=viewport",
+    );
+    harness::until(
+        &tab,
+        "document.querySelector('.turn.pending-head') && window.__heldIndex.length === 1",
+        "the short card while the index is held",
+        Duration::from_secs(10),
+        STATE,
+    );
+    let read = "(function(){ var h = window.__viewportHistory.states; var t = (window.__viewportTrace || []).filter(function (e) { return e.t >= (window.__t0 || 0); }); return { following: h.length ? h[h.length - 1].following : null, held: (window.__heldEvents || []).length, scrolls: t.filter(function (e) { return e.event === 'scroll' || e.event === 'scroll:own'; }).length, waits: t.filter(function (e) { return e.event === 'follow:unheard' || e.event === 'unheard:lapsed'; }).map(function (e) { return e.event + (e.verdict ? ':' + e.verdict : ''); }), violations: window.__viewportViolations || [] }; })()";
+    // From here the transcript's scroll events are held, to be dispatched again as themselves later.
+    harness::eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); return 'ok'; })()",
+    );
+    harness::scroll_by(&tab, Surface::AppShell, -260);
+    // Past the intent window: the move is no longer the reader's by its input alone.
+    std::thread::sleep(Duration::from_millis(500));
+    let (key, top) = anchor(&tab);
+    let unheard = harness::probe(&tab, read);
+    harness::eval(&tab, "window.__releaseIndex(); 1");
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
+    // Well inside the wait, which lapses 2 s after the landing and would put the reader back at the
+    // end, as if the move had not been theirs.
+    std::thread::sleep(Duration::from_millis(250));
+    let laid = harness::probe(&tab, read);
+    let laid_top = top_of(&tab, &key);
+    harness::eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); window.removeEventListener('scroll', window.__hold, true); window.__heldEvents.forEach(function (e) { s.dispatchEvent(e); }); return 'ok'; })()",
+    );
+    harness::eval(
+        &tab,
+        "new Promise(function (done) { requestAnimationFrame(function () { requestAnimationFrame(function () { done(true); }); }); })",
+    );
+    std::thread::sleep(Duration::from_millis(600));
+    let heard = harness::probe(&tab, read);
+    let heard_top = top_of(&tab, &key);
+    // Whether the browser has sent the scroll event yet varies (a lazy tab may not have); held or
+    // not sent, the engine has heard none.
+    assert!(
+        unheard["scrolls"] == serde_json::json!(0),
+        "the engine has not heard the reader leave the end: {unheard}"
+    );
+    assert!(
+        laid["waits"]
+            .as_array()
+            .is_some_and(|w| w.iter().any(|e| e == "follow:unheard:wait")),
+        "the landing met the move unheard and waited for its event: {laid}"
+    );
+    assert!(
+        laid_top.is_some_and(|t| (t - top).abs() <= 1.0),
+        "the reader's turn {key} stays where it was as the index lands: {top} → {laid_top:?}, {laid}"
+    );
+    assert!(
+        heard_top.is_some_and(|t| (t - top).abs() <= 1.0)
+            && heard["following"] == serde_json::json!(false),
+        "once the event comes the reader stays on their turn {key}, no longer following: {top} → {heard_top:?}, {heard}"
+    );
+    assert_eq!(heard["violations"], serde_json::json!([]), "{heard}");
 }
 
 /// A reader at the tail stays at the tail, still following, while the whole head is filled in above

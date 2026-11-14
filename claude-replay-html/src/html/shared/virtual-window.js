@@ -1554,6 +1554,17 @@ class VirtualWindow {
       // flight, where the offset is moving because of the engine (§4.10); zero as the view is shown
       // again, where the browser moved it.
       const drift = p0 && p0.at != null && !this.inFlight() && !returning ? startTop - p0.at : 0;
+      // A follower whose tail waits for the late event of a move (#s481) is held meanwhile by what
+      // is on screen, as any reader is; the tail is placed when the wait ends. Left as the tail, the
+      // transaction wrote nothing, and content changed above moved the view under them: a prepend
+      // of the session's earlier turns (#314) while a wheel's event was late left the reader on turn
+      // 7 of 60 once the event came (#s431). Never under a held thumb (I14) or a smooth write in
+      // flight (its destination is `P`, §4.10), and a measure that heard nothing new stays quiet
+      // (#127). A tail that waits for rest under the reader's hand is left as #165 left it.
+      const holdTail = !!p0 && p0.source === "tail" && shown && !returning && this.count > 0
+        && !!this.unheard && !options.commanded && !this.dragging && !this.inFlight();
+      // Read at the transaction's start, so the drift above (none, for the tail) stays right.
+      if (holdTail) p0 = this.captureDomAnchor() || this.modelAnchor();
       // A placement while a smooth write travels is issued smooth again, toward the recomputed
       // destination: growth above a target mid-flight re-targets the animation rather than
       // cancelling it with an instant write.
@@ -1591,7 +1602,14 @@ class VirtualWindow {
       }
       // Hidden, nothing is placed. Shown again, the tail is placed even where nothing was measured: the
       // browser may have moved the offset off it.
-      let placed = !shown ? "hidden" : quiet && p0 && p0.source === "tail" && !returning ? "quiet" : this.placeAfter(p0, options, drift, smooth);
+      let placed = !shown ? "hidden" : quiet && p0 && (p0.source === "tail" || holdTail) && !returning ? "quiet" : this.placeAfter(p0, options, drift, smooth);
+      if (holdTail && placed !== "quiet") {
+        this.defer("tail");
+        this.trace("tail:deferred", { held: true });
+        // The hold may have written the offset the late event will report: that event is still the
+        // move's, to classify, not the engine's own write (`onScroll`).
+        this.unheard.held = true;
+      }
       if (options.range && p0 && p0.source !== "tail" && placed === "placed" && !this.viewportMounted()) {
         // The window was chosen from the sums before the mutation; the placement moved the offset
         // by their shift, and the viewport now shows territory the window does not cover (#191).
@@ -1892,13 +1910,20 @@ class VirtualWindow {
   placeAfter(p0, options, drift, smooth = false) {
     if (!p0) return null;
     if (p0.source === "tail") {
-      if (!options.commanded && (this.readerOwnsPosition() || this.unheard)) { this.defer("tail"); this.trace("tail:deferred", {}); return "deferred"; }
+      if (this.tailWaits(options)) { this.defer("tail"); this.trace("tail:deferred", {}); return "deferred"; }
       this.pendingTail = false;
       return this.place(p0) ? "tail" : "none";
     }
     const placed = this.place(p0, drift, smooth);
     if (this.yielded) { this.yielded = false; return "yielded"; }
     return placed ? "placed" : "unmounted";
+  }
+
+  /** Whether the tail waits rather than being placed now: for rest while the reader's hand is on
+   *  the view (#165), and for the event of a move a transaction met unheard (#s481). A placement
+   *  the reader asked for never waits. */
+  tailWaits(options) {
+    return !options.commanded && (this.readerOwnsPosition() || !!this.unheard);
   }
 
   /** The window for where the reader is: the scroll batch's own update (#180 — the correction it
@@ -1986,11 +2011,14 @@ class VirtualWindow {
     this.topSeen = top;
     // The event a transaction's unheard move waited for (`confirmFollow`): whatever wrote since,
     // what it says is classified below, and what waited for it may run.
+    const waited = this.unheard;
     if (this.unheard) { this.unheard = null; if (this.pendingTail || this.estimatesPending) this.armRest(); }
     // The engine's own write (framework §4.1): `place` recorded what it wrote, and an event at that
     // offset is neither the reader's nor displacement — nothing to classify, nothing to re-read,
-    // no window to update (the transaction that placed already mounted around `P`).
-    if (this.ownScroll(top)) {
+    // no window to update (the transaction that placed already mounted around `P`). Except the
+    // event a held follower waited for (`transact`): the hold wrote the offset it reports, and the
+    // event is the move's all the same.
+    if (!(waited && waited.held) && this.ownScroll(top)) {
       this.trace("scroll:own", { top: Math.round(top) });
       this.afterScroll();
       return;
