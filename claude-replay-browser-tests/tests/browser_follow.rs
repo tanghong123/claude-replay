@@ -3057,6 +3057,12 @@ fn the_session_list_in_a_host_places_its_layers_by_their_controls_in_a_transform
         menu["pressed"], true,
         "the section's menu takes a press: {menu}"
     );
+    // The sheet holds more than the pane leaves it, so what is measured is its cap: a sheet that fit
+    // would end inside the pane on the code before it too.
+    assert_eq!(
+        sheet["sheetScrolls"], true,
+        "the filter's sheet is taller than the room the pane leaves it: {sheet}"
+    );
     assert!(
         sheet["bottom"].as_i64().unwrap_or(9999) <= sheet["listBottom"].as_i64().unwrap_or(0),
         "the filter's sheet ends at the list's foot: {sheet}"
@@ -4673,11 +4679,19 @@ fn the_app_shell_contains_its_view_and_draws_everything_else_as_before() {
         "contained, the app draws everything as it did uncontained:\n{}",
         differ.join("\n")
     );
-    // The card is opened wherever a reader could open it: at least once a width with the outline shown.
-    assert!(
-        skipped.len() < 10,
-        "the task card opened from a row a reader can press somewhere; skipped at {skipped:?}"
-    );
+    // The card is opened wherever a reader can press its row in the outline: the 1440 and 1180px
+    // windows with the pane shut, where the outline is shown. Elsewhere the outline is folded to its
+    // glyphs, and a card opened from there is a narrow view's, which the host's case
+    // (`the_session_view_in_a_host_draws_its_layers_inside_its_pane`) opens in its pane.
+    for need in [
+        "1440px, pane shut, the task card",
+        "1180px, pane shut, the task card",
+    ] {
+        assert!(
+            !skipped.iter().any(|at| at == need),
+            "the task card is compared where the outline shows its rows; skipped at {need} ({skipped:?})"
+        );
+    }
     eprintln!("the task card had no row to press at: {skipped:?}");
     assert_eq!(
         held["resizing"], true,
@@ -4980,7 +4994,10 @@ fn the_session_view_in_a_host_on_a_phone_counts_the_insets_only_inside_its_box()
 /// middle: the dock is 12px from both sides at the new place, where it kept counting the island's inset
 /// at its left (red on 5b68bfcf, whose layout kept the old place, `--pane-x`). Moved back by a
 /// transform, which moves no layout box: the place is the screen's left edge again and the dock counts
-/// the inset there.
+/// the inset there. Neither move holds the view's transitions (the review of stage 4: a move decided
+/// the whole layout again, which cut what glided, every frame of a host's scroll). Then the pane is the
+/// whole screen's width and height under a 40px bar of the host's: it is boxed, its gap at the top
+/// 40px (red on 8ee1bd72, which read no top gap for a box as tall as the window).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
@@ -4993,6 +5010,13 @@ fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
     harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
     harness::open_host_page(&tab, &monitor, "");
     place_host_pane(&tab, 0, 450);
+    harness::eval(&tab, TWO_FRAMES);
+    // Every hold of the view's transitions from here on: a move alone writes only where the view is
+    // (the review of stage 4), so none.
+    harness::eval(
+        &tab,
+        "(function(){ window.__holds = 0; var v = document.getElementById('sessionView'); new MutationObserver(function(records){ records.forEach(function(r){ if ((' ' + (r.oldValue || '') + ' ').indexOf(' pl-holding ') >= 0) window.__holds++; }); }).observe(v, { attributes: true, attributeFilter: ['class'], attributeOldValue: true }); return true; })()",
+    );
     harness::eval(
         &tab,
         "(function(){ var p = document.getElementById('hostPane'); p.style.left = '241px'; return true; })()",
@@ -5015,7 +5039,28 @@ fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
         Duration::from_secs(5),
         "(function(){ var v = document.getElementById('sessionView'), d = document.getElementById('phoneDock'); var vr = v.getBoundingClientRect(), r = d.getBoundingClientRect(); return JSON.stringify({ view: Math.round(vr.left), paneX: v.style.getPropertyValue('--pane-x'), left: Math.round(r.left - vr.left), right: Math.round(vr.right - r.right) }); })()",
     );
+    let holds = harness::eval(&tab, "window.__holds");
+    // A pane as wide and as tall as the screen under a 40px bar of the host's (the review of stage 4):
+    // its box starts below the window's top, so it is boxed, whatever its height. On the code before it
+    // a box as tall as the window read no gap at its top or foot, and the view, the whole width, was
+    // not boxed: its layers were placed against the window, over the host's bar.
+    harness::eval(
+        &tab,
+        "(function(){ var p = document.getElementById('hostPane'); p.style.transform = ''; p.style.left = '0px'; p.style.width = '932px'; p.style.top = '40px'; p.style.bottom = 'auto'; p.style.height = '100vh'; return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'), r = v.getBoundingClientRect(); return Math.round(r.top) === 40 && Math.round(r.width) === 932 && v.classList.contains('pl-boxed') && v.style.getPropertyValue('--pane-y') === '40px'; })()",
+        "a screen-tall pane under the host's bar to be boxed, its gap at the top 40px",
+        Duration::from_secs(5),
+        "(function(){ var v = document.getElementById('sessionView'), r = v.getBoundingClientRect(); return JSON.stringify({ top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height), boxed: v.classList.contains('pl-boxed'), paneY: v.style.getPropertyValue('--pane-y'), paneB: v.style.getPropertyValue('--pane-b') }); })()",
+    );
     drop(monitor);
+    assert_eq!(
+        holds,
+        serde_json::json!(0),
+        "a move alone holds none of the view's transitions"
+    );
 }
 
 /// #s431 stage 2: wherever design/pane-layout.md's table says "the same", the app's view reads exactly
@@ -5092,9 +5137,11 @@ fn the_app_shell_view_reads_what_the_window_read_where_nothing_changes() {
 /// and the layer `target` names if it is outside it, wherever it is drawn (stage 4: the task card was
 /// drawn in the page's body, which no walk of the view's element finds). `missed`: which of the first
 /// list row in reach, the title (at rest) or the layer just opened, and the drawer's handle (at rest
-/// and over the right pane, which it stays above) do not take a press at their middle; and, where the
-/// handle shows and an open layer covers its place, whether the handle is drawn over the layer.
-const LAYERS_AMISS: &str = "(function(target){ var v = document.getElementById('sessionView'), vr = v.getBoundingClientRect(); var name = function(e){ return e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + Array.prototype.slice.call(e.classList).join('.'); }; var beyond = function(r){ return r.left < vr.left - 0.5 || r.right > vr.right + 0.5 || r.top < vr.top - 0.5 || r.bottom > vr.bottom + 0.5; }; var edges = function(r){ return Math.round(r.left) + '-' + Math.round(r.right) + ' ' + Math.round(r.top) + '-' + Math.round(r.bottom); }; var outside = []; [v].concat(Array.prototype.slice.call(v.querySelectorAll('*'))).forEach(function(e){ var cs = getComputedStyle(e); if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1 || r.left >= innerWidth || r.right <= 0 || r.top >= innerHeight || r.bottom <= 0) return; if (beyond(r)) outside.push(name(e) + ' ' + edges(r)); }); var missed = []; var at = function(e, x, y){ var h = document.elementFromPoint(x, y); return e.contains(h) ? null : (h ? name(h) : 'nothing'); }; var press = function(label, e){ if (!e) return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return; var under = at(e, r.left + Math.min(r.width / 2, 20), r.top + Math.min(r.height / 2, 20)); if (under) missed.push(label + ' under ' + under); }; var row = Array.prototype.slice.call(document.querySelectorAll('#app>.sidebar .tree-row')).find(function(r){ var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 60 && b.bottom <= innerHeight - 60 && b.right <= vr.left; }); press('a list row', row); var t = target ? document.querySelector(target) : null; var opened = !target || (!!t && t.getClientRects().length > 0 && t.getBoundingClientRect().width >= 1 && t.getBoundingClientRect().height >= 1 && getComputedStyle(t).visibility === 'visible'); if (t && opened && beyond(t.getBoundingClientRect())) outside.push(target + ' ' + edges(t.getBoundingClientRect())); var handle = document.getElementById('drawerHandle'); var hs = handle && getComputedStyle(handle); var handleShown = !!handle && hs.display !== 'none' && hs.visibility === 'visible'; if (handleShown && (!target || target === '#closePreview')) press('the handle', handle); if (handleShown && t && target !== '#closePreview') { var layer = t; while (layer && layer !== v && getComputedStyle(layer).position !== 'fixed') layer = layer.parentElement; if (!layer || layer === v) layer = t; var lr = layer.getBoundingClientRect(), hr = handle.getBoundingClientRect(); if (lr.left < hr.right && hr.left < lr.right && lr.top < hr.bottom && hr.top < lr.bottom) { var under = at(layer, (Math.max(lr.left, hr.left) + Math.min(lr.right, hr.right)) / 2, (Math.max(lr.top, hr.top) + Math.min(lr.bottom, hr.bottom)) / 2); if (under) missed.push(target + ' under ' + under + ' where the handle is'); } } if (target) press(target, t); else press('the title', document.getElementById('sessionTitle')); return { opened: opened, outside: outside, missed: missed, view: Math.round(vr.left) + '-' + Math.round(vr.right) }; })";
+/// and over the right pane, which it stays above) do not take a press near their top left corner, or
+/// in the layer they are drawn in at their middle and inside their other three corners (the review of
+/// stage 4: one point let a layer pass with its lower half covered); and, where the handle shows and
+/// an open layer covers its place, whether the handle is drawn over the layer.
+const LAYERS_AMISS: &str = "(function(target){ var v = document.getElementById('sessionView'), vr = v.getBoundingClientRect(); var name = function(e){ return e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + Array.prototype.slice.call(e.classList).join('.'); }; var beyond = function(r){ return r.left < vr.left - 0.5 || r.right > vr.right + 0.5 || r.top < vr.top - 0.5 || r.bottom > vr.bottom + 0.5; }; var edges = function(r){ return Math.round(r.left) + '-' + Math.round(r.right) + ' ' + Math.round(r.top) + '-' + Math.round(r.bottom); }; var outside = []; [v].concat(Array.prototype.slice.call(v.querySelectorAll('*'))).forEach(function(e){ var cs = getComputedStyle(e); if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1 || r.left >= innerWidth || r.right <= 0 || r.top >= innerHeight || r.bottom <= 0) return; if (beyond(r)) outside.push(name(e) + ' ' + edges(r)); }); var missed = []; var at = function(e, x, y){ var h = document.elementFromPoint(x, y); return e.contains(h) ? null : (h ? name(h) : 'nothing'); }; var press = function(label, e){ if (!e) return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return; var layer = e; while (layer && layer !== v && getComputedStyle(layer).position !== 'fixed') layer = layer.parentElement; if (!layer || layer === v || !v.contains(e)) layer = e; var ix = Math.min(r.width / 2, 12), iy = Math.min(r.height / 2, 12); var points = [[r.left + Math.min(r.width / 2, 20), r.top + Math.min(r.height / 2, 20), e, ''], [r.left + r.width / 2, r.top + r.height / 2, layer, ' at its middle'], [r.right - ix, r.top + iy, layer, ' at its top right'], [r.left + ix, r.bottom - iy, layer, ' at its bottom left'], [r.right - ix, r.bottom - iy, layer, ' at its bottom right']]; for (var i = 0; i < points.length; i++) { var p = points[i]; if (p[0] < 0 || p[1] < 0 || p[0] >= innerWidth || p[1] >= innerHeight) continue; var under = at(p[2], p[0], p[1]); if (under) { missed.push(label + ' under ' + under + p[3]); return; } } }; var row = Array.prototype.slice.call(document.querySelectorAll('#app>.sidebar .tree-row')).find(function(r){ var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 60 && b.bottom <= innerHeight - 60 && b.right <= vr.left; }); press('a list row', row); var t = target ? document.querySelector(target) : null; var opened = !target || (!!t && t.getClientRects().length > 0 && t.getBoundingClientRect().width >= 1 && t.getBoundingClientRect().height >= 1 && getComputedStyle(t).visibility === 'visible'); if (t && opened && beyond(t.getBoundingClientRect())) outside.push(target + ' ' + edges(t.getBoundingClientRect())); var handle = document.getElementById('drawerHandle'); var hs = handle && getComputedStyle(handle); var handleShown = !!handle && hs.display !== 'none' && hs.visibility === 'visible'; if (handleShown && (!target || target === '#closePreview')) press('the handle', handle); if (handleShown && t && target !== '#closePreview') { var layer = t; while (layer && layer !== v && getComputedStyle(layer).position !== 'fixed') layer = layer.parentElement; if (!layer || layer === v) layer = t; var lr = layer.getBoundingClientRect(), hr = handle.getBoundingClientRect(); if (lr.left < hr.right && hr.left < lr.right && lr.top < hr.bottom && hr.top < lr.bottom) { var under = at(layer, (Math.max(lr.left, hr.left) + Math.min(lr.right, hr.right)) / 2, (Math.max(lr.top, hr.top) + Math.min(lr.bottom, hr.bottom)) / 2); if (under) missed.push(target + ' under ' + under + ' where the handle is'); } } if (target) press(target, t); else press('the title', document.getElementById('sessionTitle')); return { opened: opened, outside: outside, missed: missed, view: Math.round(vr.left) + '-' + Math.round(vr.right) }; })";
 
 /// Opens each of the phone reader's layers in turn (Info, Aa, the Turns sheet, the session's menu,
 /// the search's filter, the right pane, the reply box) and returns, for each that is amiss, what
