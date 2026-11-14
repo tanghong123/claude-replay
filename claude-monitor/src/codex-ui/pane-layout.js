@@ -82,6 +82,8 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, 
   // `sized`: whether a decision has seen the view's box. A view mounted hidden decides once at 0×0,
   // which says nothing of its family, and `phone()` then answers for no box.
   let said = null, wrote = null, placed = null, arranged = null, glideUntil = 0, sized = false;
+  // The top and bottom gaps the last decision wrote, which a decision during the keyboard ride keeps.
+  let gaps = { top: 0, bottom: 0 };
   // Everything a decision reads of the page, read at once: the view's box, the window's width and
   // height, and the screen's pointer.
   const measure = () => ({ box: element.getBoundingClientRect(), viewport: viewRoot.viewportWidth(), height: innerHeight, coarse: coarse.matches, fine: fine.matches });
@@ -99,17 +101,22 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, 
     const right = Math.max(0, viewport - box.right);
     const tall = box.height >= height - 2;
     // Its gaps to the window's top and bottom (#s431 stage 4), read from its box, so a host's pane
-    // that starts below a bar of the host's is boxed whatever its height. A view as tall as the window
-    // that starts at its top has none, within the 2px `innerHeight` may lack; and nor does one while
-    // the view's keyboard ride moves its host's box (`rides`: it moves the app back over iOS's scroll
-    // as the reader types, and the box is where it is for the keyboard, not for the host).
-    const level = tall && (box.top <= 0.5 || !!rides?.());
-    const top = level ? 0 : Math.max(0, box.top), bottom = level ? 0 : Math.max(0, height - box.bottom);
+    // that starts below a bar of the host's is boxed whatever its height, and one its host scrolls up
+    // has a gap at its foot. A view as tall as the window whose top is the window's has none, within
+    // the 2px `innerHeight` may lack. While the view's keyboard ride moves its host's box (`rides`: it
+    // moves the app back over iOS's scroll as the reader types), the box is where it is for the
+    // keyboard, not for the host, so the gaps stay as the last decision read them: none in the app,
+    // the bar's in a host's pane under one.
+    const riding = !!rides?.() && placed !== null;
+    const level = !riding && tall && Math.abs(box.top) <= 0.5;
+    const top = riding ? gaps.top : level ? 0 : Math.max(0, box.top);
+    const bottom = riding ? gaps.bottom : level ? 0 : Math.max(0, height - box.bottom);
     const boxed = box.left > 0.5 || right > 0.5 || top > 0.5 || bottom > 0.5;
     const writing = JSON.stringify([[...on].sort(), box.width, box.height, tall, boxed, arrangement]);
     const place = JSON.stringify([box.left, right, top, bottom]);
     if (writing === wrote && place === placed) return;
     placed = place;
+    gaps = { top, bottom };
     watchMoves(box);
     // Where the view sits in the window, for placing alone (#s461 rules out reading the window for a
     // layout): its gaps to the window's left and right edges, top and bottom, and whether it is not

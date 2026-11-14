@@ -4335,6 +4335,9 @@ var phoneDock;
     return at.localName === "textarea" || at.localName === "select" || at.localName === "iframe" || !!at.isContentEditable;
   };
   const viewport2 = window.visualViewport;
+  // Asked again as the view leaves the phone family (a host widening its pane while the keyboard is
+  // up hears no viewport event), so the grid's transform and `keyboardRides` do not outlive the ride.
+  let rideAgain = () => {};
   if (viewport2) {
     const root = viewRoot.styleRoot();
     const ride = () => {
@@ -4364,6 +4367,7 @@ var phoneDock;
       writeStyle(root, "--phone-kb", `${covered}px`);
       place();
     };
+    rideAgain = ride;
     viewport2.addEventListener("resize", ride, { signal });
     viewport2.addEventListener("scroll", ride, { signal });
     // The page itself scrolls only under iOS's keyboard; off a phone this listener has nothing to do.
@@ -4376,7 +4380,7 @@ var phoneDock;
   }
   // Across the breakpoint the Tasks list changes what it shows (#319: every state on a phone); the
   // desktop's rail comes off or goes back on in the app (#s33, `applySidebar`).
-  PHONE.addEventListener("change", () => { placeToolbar(); place(); if (!PHONE.matches) closePane(); renderNavigator(); paintCompose(); }, { signal });
+  PHONE.addEventListener("change", () => { placeToolbar(); place(); rideAgain(); if (!PHONE.matches) closePane(); renderNavigator(); paintCompose(); }, { signal });
   // Into the wide layout the drop-down has no button (the column shows its panes); out of it, the
   // app sends the column's borrowed list home and the handle speaks of the drawer again.
   WIDE.addEventListener("change", () => { if (WIDE.matches) closePane(); place(); }, { signal });
