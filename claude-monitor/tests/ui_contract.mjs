@@ -5075,7 +5075,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     const layoutSource = readFileSync(new URL("../src/codex-ui/pane-layout.js", import.meta.url), "utf8");
     assert.doesNotMatch(layoutSource, /\b(?:setTimeout|setInterval|requestAnimationFrame)\(/, "the layout module starts no timer (#s467)");
     assert.match(layoutSource, /new IntersectionObserver\(heard, \{ \.\.\.options, root: viewRoot\.root\(\) \}\)/, "a move is heard by an IntersectionObserver rooted at the view's page");
-    assert.match(layoutSource, /if \(writing === wrote && place === placed\) return;\n    placed = place;\n(?:    \/\/[^\n]*\n)+    if \(!ridden && \(box\.width \|\| box\.height\)\) \{ gaps = \{ top, bottom \}; gapsKnown = true; \}\n    watchMoves\(box\);/, "every decision that writes watches the box where it measured it");
+    assert.match(layoutSource, /if \(writing === wrote && place === placed\) return;\n    placed = place;\n(?:    \/\/[^\n]*\n)+    if \(!ridden && \(box\.width \|\| box\.height\)\) \{ gaps = \{ top, bottom \}; gapsKnown = true; \}\n    watchMoves\(box, \{ width: viewport, height: viewportHeight \}\);/, "every decision that writes watches the box where it measured it");
+    // A decision reads nothing of the page before it writes, the watch included: the window's size is
+    // the measure's (#s431 stage 4: a read of the root's size there started the pane's glide in the
+    // arrangement the decision was leaving, and the decision cancelled it).
+    const decision = /const decideAt = \(\{[\s\S]*?\n    if \(writing === wrote\) \{ writePlace\(\); return; \}/.exec(layoutSource);
+    const watch = /const watchMoves = \(box, frame, threshold = 1\) => \{[\s\S]*?\n    const heard = /.exec(layoutSource);
+    assert.ok(decision && watch, "the decision and the watch are where the contract reads them");
+    for (const part of [decision[0], watch[0]]) assert.doesNotMatch(part, /getBoundingClientRect|client(?:Width|Height)|offset(?:Width|Height|Top|Left)|getComputedStyle|viewportWidth\(/, "a decision reads nothing of the page before it writes");
     // A move alone writes the gaps and returns, before the hold, the arrangement and the read.
     assert.match(layoutSource, /if \(writing === wrote\) \{ writePlace\(\); return; \}\n    wrote = writing;/, "a move alone writes only where the view is");
     assert.match(layoutSource, /signal\?\.addEventListener\("abort", \(\) => \{ observer\.disconnect\(\); moves\?\.disconnect\(\); moves = null; \}, \{ once: true \}\);/, "and the watch stops with the view");
