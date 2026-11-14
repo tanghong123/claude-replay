@@ -4342,6 +4342,10 @@ var phoneDock;
     const root = viewRoot.styleRoot();
     const ride = () => {
       const typing = typesInto();
+      // The ride ending decides again (#s431 stage 4): the gaps the layout kept while it rode may be
+      // stale (a host's bar hidden while the reader typed), and on iOS, where the page's scroll and the
+      // grid's transform cancel, the box may not move, so no watch of its place hears it.
+      const rode = keyboardRides;
       if (controls.nativeActive && PHONE.matches) {
         const frame = sharedKeyboardFrame(grid.getBoundingClientRect().height, viewport2);
         // Keep one containing block even at zero offset; Safari pans during keyboard animation.
@@ -4349,6 +4353,7 @@ var phoneDock;
         writeStyle(grid, "transform", Math.abs(viewport2.scale - 1) < 0.01 ? `translateY(${frame.shift}px)` : "");
         sessionView.classList.toggle("keyboard-up", typing && frame.keyboardOpen);
         writeStyle(root, "--phone-kb", `${typing ? frame.inset : 0}px`);
+        if (rode && !keyboardRides) layout.decide();
         place();
         // The shared listener can run first; fit again after applying the current viewport frame.
         controls.fitComposer();
@@ -4365,6 +4370,7 @@ var phoneDock;
       writeStyle(grid, "transform", shift ? `translateY(${shift}px)` : "");
       sessionView.classList.toggle("keyboard-up", covered > 0);
       writeStyle(root, "--phone-kb", `${covered}px`);
+      if (rode && !keyboardRides) layout.decide();
       place();
     };
     rideAgain = ride;
