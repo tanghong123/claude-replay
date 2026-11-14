@@ -5119,8 +5119,19 @@ fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
         Duration::from_secs(5),
         "document.getElementById('hostPane').style.transform",
     );
-    harness::eval(&tab, TWO_FRAMES);
-    harness::eval(&tab, TWO_FRAMES);
+    // A decision the ride must take, and one that shows: the pane 6px shorter while the keyboard is up
+    // (the delta review of b4ad87a9: with nothing to decide, the state before the ride passed as kept).
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('hostPane').style.height = 'calc(100vh - 6px)'; return true; })()",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('sessionView').style.getPropertyValue('--pl-h') === '424px'",
+        "the view to decide again at its new height while the keyboard ride moves it",
+        Duration::from_secs(5),
+        "document.getElementById('sessionView').style.getPropertyValue('--pl-h')",
+    );
     let riding = harness::eval(
         &tab,
         "(function(){ var v = document.getElementById('sessionView'); return JSON.stringify({ boxed: v.classList.contains('pl-boxed'), paneY: v.style.getPropertyValue('--pane-y'), top: Math.round(v.getBoundingClientRect().top) }); })()",
@@ -5139,6 +5150,131 @@ fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
         riding,
         serde_json::json!("{\"boxed\":true,\"paneY\":\"40px\",\"top\":140}"),
         "while the keyboard ride moves the pane under the bar, the view keeps its gaps and its box"
+    );
+}
+
+/// #s431 stage 4 (the second delta review of b4ad87a9): the gaps a decision during the keyboard ride
+/// keeps come only from a decision that saw a box and was not riding, and the ride's end decides
+/// again. A view its host mounts hidden decided once at 0×0, whose foot read the window's whole height
+/// as its gap: shown while the ride ran, it kept that gap, 430px at its foot. And where the page's
+/// scroll and the ride's transform cancel, as on iOS, the box does not move as the ride ends, so no
+/// watch of its place hears that the gaps it kept are stale: a host that hid its bar while the reader
+/// typed left the view placed 40px down after the ride.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_reads_its_gaps_again_around_the_keyboard_ride() {
+    let _serial = serial();
+    let base = base("host-ride-gaps");
+    let monitor = Monitor::spawn(Kind::V1, 3118, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::phone(&tab, 932, 430);
+    harness::open_host_page(&tab, &monitor, "mount=0");
+    let facts = "(function(){ var v = document.getElementById('sessionView'), p = document.getElementById('hostPane'); return { paneY: v ? v.style.getPropertyValue('--pane-y') : null, paneB: v ? v.style.getPropertyValue('--pane-b') : null, boxed: v ? v.classList.contains('pl-boxed') : null, top: v ? Math.round(v.getBoundingClientRect().top) : null, transform: p.style.transform, scroll: Math.round(scrollY) }; })()";
+    // Mounted hidden; the keyboard up (shadowed, as the move case does) before the pane is shown.
+    harness::eval(
+        &tab,
+        "document.getElementById('hostPane').hidden = true; window.__host.mount(); 'ok'",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    harness::eval(
+        &tab,
+        "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 200; } }); Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 100; } }); visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('hostPane').style.transform === 'translateY(100px)'",
+        "the ride to move the hidden view's box back over the page's scroll",
+        Duration::from_secs(5),
+        facts,
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('hostPane').hidden = false; 'ok'",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return v.getBoundingClientRect().height > 0 && v.style.getPropertyValue('--pl-h') === '390px'; })()",
+        "the view shown, and decided at its box",
+        Duration::from_secs(5),
+        facts,
+    );
+    let shown = harness::probe(&tab, facts);
+    // The keyboard down: the ride ends, the box moves back, and the gaps are the bar's.
+    harness::eval(
+        &tab,
+        "(function(){ delete visualViewport.height; delete visualViewport.pageTop; visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return document.getElementById('hostPane').style.transform === '' && v.style.getPropertyValue('--pane-y') === '40px' && v.style.getPropertyValue('--pane-b') === '0px'; })()",
+        "the view under the host's bar once the ride ended",
+        Duration::from_secs(5),
+        facts,
+    );
+    // A page that really scrolls with a pane that scrolls with it: the keyboard up, and the page
+    // scrolled 100px, which the ride's transform gives back, so the box stays where it was.
+    harness::eval(
+        &tab,
+        "(function(){ document.body.style.height = '2000px'; var p = document.getElementById('hostPane'); p.style.position = 'absolute'; p.style.top = '40px'; p.style.bottom = 'auto'; p.style.height = '390px'; Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 200; } }); scrollTo(0, 100); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return Math.round(scrollY) === 100 && document.getElementById('hostPane').style.transform === 'translateY(100px)' && Math.round(v.getBoundingClientRect().top) === 40; })()",
+        "the ride to give the page's 100px scroll back to the pane",
+        Duration::from_secs(5),
+        facts,
+    );
+    // The host hides its bar while the reader types: the ride keeps the gaps it read under the bar.
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('hostPane').style.top = '0px'; return true; })()",
+    );
+    harness::until(
+        &tab,
+        "Math.round(document.getElementById('sessionView').getBoundingClientRect().top) === 0",
+        "the pane at the window's top, the bar gone",
+        Duration::from_secs(5),
+        facts,
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    harness::eval(&tab, TWO_FRAMES);
+    let kept = harness::probe(&tab, facts);
+    // The page scrolls back as the ride ends: the transform goes with it, and the box does not move.
+    harness::eval(&tab, "(function(){ scrollTo(0, 0); return true; })()");
+    harness::until(
+        &tab,
+        "(function(){ return Math.round(scrollY) === 0 && document.getElementById('hostPane').style.transform === ''; })()",
+        "the ride to end with the page's scroll",
+        Duration::from_secs(5),
+        facts,
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    harness::eval(&tab, TWO_FRAMES);
+    let ended = harness::probe(&tab, facts);
+    drop(monitor);
+    assert_eq!(
+        (shown["paneB"].clone(), shown["paneY"].clone()),
+        (serde_json::json!("0px"), serde_json::json!("140px")),
+        "a view shown during the ride with no gaps kept reads its box as it is, not the hidden box's foot: {shown}"
+    );
+    assert_eq!(
+        (kept["paneY"].clone(), kept["top"].clone()),
+        (serde_json::json!("40px"), serde_json::json!(0)),
+        "during the ride the view keeps the gaps it read under the bar: {kept}"
+    );
+    assert_eq!(
+        (
+            ended["paneY"].clone(),
+            ended["paneB"].clone(),
+            ended["top"].clone()
+        ),
+        (
+            serde_json::json!("0px"),
+            serde_json::json!("40px"),
+            serde_json::json!(0)
+        ),
+        "the ride's end reads the gaps again though the box did not move: {ended}"
     );
 }
 
@@ -22321,13 +22457,34 @@ fn a_phone_find_pill_rides_the_keyboard() {
     // #s431 stage 4: the view, moved 300px down with the app, is placed for the keyboard, not by a
     // host, so it reads no gap at its top and is not boxed (boxed, it would drop the island's and the
     // status bar's insets while the reader types).
-    harness::eval(&tab, TWO_FRAMES);
-    harness::eval(&tab, TWO_FRAMES);
-    assert_eq!(
-        harness::eval(
-            &tab,
-            "(function(){ var v = document.getElementById('sessionView'); return JSON.stringify({ boxed: v.classList.contains('pl-boxed'), paneY: v.style.getPropertyValue('--pane-y'), top: Math.round(v.getBoundingClientRect().top) }); })()"
+    // A decision the ride must take, and one that shows: the app 4px shorter while the keyboard is up.
+    let tall = harness::eval(
+        &tab,
+        "document.getElementById('sessionView').style.getPropertyValue('--pl-h')",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('app').style.height = 'calc(100dvh - 4px)'; return true; })()",
+    );
+    harness::until(
+        &tab,
+        &format!(
+            "document.getElementById('sessionView').style.getPropertyValue('--pl-h') !== {tall}"
         ),
+        "the view to decide again at its new height while the keyboard ride moves it",
+        Duration::from_secs(5),
+        "document.getElementById('sessionView').style.getPropertyValue('--pl-h')",
+    );
+    let riding = harness::eval(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return JSON.stringify({ boxed: v.classList.contains('pl-boxed'), paneY: v.style.getPropertyValue('--pane-y'), top: Math.round(v.getBoundingClientRect().top) }); })()",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('app').style.height = ''; return true; })()",
+    );
+    assert_eq!(
+        riding,
         serde_json::json!("{\"boxed\":false,\"paneY\":\"0px\",\"top\":300}"),
         "the view the keyboard ride moves keeps the window's top"
     );
