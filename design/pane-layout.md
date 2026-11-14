@@ -612,9 +612,11 @@ in the reference shell's markup and drawn by no script.
 
 **The view contains its layout whenever it is not the screen**, in every family, and the app's view
 too. `pl-boxed` reads all four sides, so a host's pane that starts below the window's top is boxed,
-however tall it is. A view as tall as the window that starts at its top has no gap there or at the
-foot; nor does one while its own keyboard ride moves the app back over iOS's scroll, where the box is
-placed for the keyboard, not by a host.
+however tall it is, and one its host scrolls up has a gap at its foot. A view as tall as the window
+whose top is the window's has no gap there or at the foot. While its own keyboard ride moves the app
+(or a host's box) back over iOS's scroll, the box is placed for the keyboard, not by a host, so the
+gaps stay as the decision before the ride read them: none in the app, the bar's in a host's pane under
+one. The ride is asked again as the view leaves the phone family, so it never outlives the keyboard.
 Containment puts every fixed layer in the box by construction, so no rule has to know where the view
 sits, and the app's suite runs the same contained path a host's pane does. What it changes in the
 app is measured before it lands (`Tests`): the view becomes one stacking context, and the app's
@@ -836,7 +838,11 @@ At the default text size, the pane at the reader's width:
   the same contained and not. A drag of the pane's edge over the list still drags, and choosing
   nothing there.
 - **A move.** A host's pane on a phone held sideways, moved by its `left` from the screen's edge to
-  its middle and back by a transform: the dock counts the island's inset where the pane is now.
+  its middle and back by a transform: the dock counts the island's inset where the pane is now, and
+  neither move holds the view's transitions (a resize after them does, so the count can hear one).
+  Then the pane is the screen's width and height under the host's 40px bar: it is boxed 40px from the
+  top, and stays so while the keyboard ride moves it. In the app, the view the ride moves 300px down
+  stays unboxed (`a_phone_find_pill_rides_the_keyboard`).
 - **Mutations.** Point the layout module back at the window, drop a condition from the rewrite's
   table, give the family the window's height, or let the order read what it drew: a width
   case goes red, or the derivation fails.
