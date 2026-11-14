@@ -87,9 +87,12 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, 
   // decision does.
   let gaps = { top: 0, bottom: 0 }, gapsKnown = false;
   // Everything a decision reads of the page, read at once: the view's box, the window's width and
-  // height, and the screen's pointer.
-  const measure = () => ({ box: element.getBoundingClientRect(), viewport: viewRoot.viewportWidth(), height: innerHeight, coarse: coarse.matches, fine: fine.matches });
-  const decideAt = ({ box, viewport, height, coarse: isCoarse, fine: isFine }) => {
+  // height (the layout viewport's too, which a classic scrollbar does not count in), and the screen's
+  // pointer. A decision reads nothing more before it writes: a read there would lay the view out in
+  // its old arrangement with a state the reader's toggle has just changed, and start that state's
+  // transitions, which the decision then cancels (`toggled`).
+  const measure = () => ({ box: element.getBoundingClientRect(), viewport: viewRoot.viewportWidth(), viewportHeight: viewRoot.styleRoot()?.clientHeight ?? innerHeight, height: innerHeight, coarse: coarse.matches, fine: fine.matches });
+  const decideAt = ({ box, viewport, viewportHeight, height, coarse: isCoarse, fine: isFine }) => {
     if (signal?.aborted) return;
     // A box with no size is not laid out: the host hid the view (its `hidden` attribute, #s464, or what
     // holds it). Nothing about it is the view's to decide, so the last decision stands until the box
@@ -123,7 +126,7 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, 
     // at 0×0, whose foot read the window's whole height as its gap, and a ride that shows a view with
     // no gaps kept reads them off the moved box, as it is, for that ride alone.
     if (!ridden && (box.width || box.height)) { gaps = { top, bottom }; gapsKnown = true; }
-    watchMoves(box);
+    watchMoves(box, { width: viewport, height: viewportHeight });
     // Where the view sits in the window, for placing alone (#s461 rules out reading the window for a
     // layout): its gaps to the window's left and right edges, top and bottom, and whether it is not
     // the whole window — beside the app's list or its rail, beside a wide phone's column, in a host's
@@ -188,24 +191,25 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, 
   // its new place, and one that has not (a host's clip changed what shows of it) is watched from what
   // shows now. No timer: a box with no size is not watched (the ResizeObserver hears it come back).
   let moves = null;
-  const watchMoves = (box, threshold = 1) => {
+  // The window's size is the one the box was measured with (`frame`, the layout viewport's), so a
+  // decision that watches reads nothing of the page.
+  const watchMoves = (box, frame, threshold = 1) => {
     moves?.disconnect();
     moves = null;
-    const root = viewRoot.styleRoot();
-    if (signal?.aborted || !root || !box.width || !box.height || typeof IntersectionObserver !== "function") return;
-    const gaps = [box.top, root.clientWidth - box.right, root.clientHeight - box.bottom, box.left];
+    if (signal?.aborted || !viewRoot.styleRoot() || !box.width || !box.height || typeof IntersectionObserver !== "function") return;
+    const gaps = [box.top, frame.width - box.right, frame.height - box.bottom, box.left];
     const heard = entries => {
       if (watcher !== moves) return;
       const { boundingClientRect: now, intersectionRatio: ratio } = entries[entries.length - 1];
       if (["left", "top", "width", "height"].some(side => Math.abs(now[side] - box[side]) > 0.5)) {
         decide();
-        if (watcher === moves) watchMoves(element.getBoundingClientRect());
+        if (watcher === moves) { const read = measure(); watchMoves(read.box, { width: read.viewport, height: read.viewportHeight }); }
         return;
       }
       // Still where it was: all of the box shows, or the part a host's clip leaves, which is then the
       // threshold (none of it: any of it showing is a move).
       const seen = Math.min(1, Math.max(1e-7, ratio));
-      if (Math.abs(seen - threshold) > 1e-6) watchMoves(box, seen);
+      if (Math.abs(seen - threshold) > 1e-6) watchMoves(box, frame, seen);
     };
     const options = { rootMargin: gaps.map(gap => `${-Math.floor(gap)}px`).join(" "), threshold };
     // The view's own page is the root, so the margins are its window's even inside a frame; a browser

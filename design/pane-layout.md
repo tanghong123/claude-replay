@@ -649,7 +649,10 @@ layers' rules, which read the cuts, are the same in both.
   Contained, a move changes no layer the rules place; it changes the cuts of the insets, which matter
   only on a screen with an island or a home indicator. So a move alone writes the gaps and nothing
   else: no hold of the view's transitions, no arrangement, no forced read, and what glides in the view
-  goes on while a host scrolls it with its page.
+  goes on while a host scrolls it with its page. The watch takes the window's size from the read the
+  decision was given, never a read of its own: a decision reads nothing of the page before it writes,
+  or the pane's toggle is laid out in the arrangement the decision is leaving and its glide starts
+  there, to be cancelled (the app's list-order case caught it, the pane opening at 1200px).
 
 **The phone reader takes it in stage 2.** Stage 2 is what makes a phone reader that is not the
 screen: beside a 520px sidebar, beside the rail, beside a wide phone's column, in a host's pane. Its
