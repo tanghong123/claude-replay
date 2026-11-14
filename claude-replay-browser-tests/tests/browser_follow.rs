@@ -2956,9 +2956,11 @@ fn list_pane_width(tab: &headless_chrome::Tab, width: u32) -> serde_json::Value 
 /// corner (300px in, under its 40px bar) and wears a transform, which makes it the box its fixed
 /// descendants are placed in, as a sliding drawer's would. A section's menu opens under its control,
 /// its right edge at the control's, inside the window, and takes a press at its middle; the filter's
-/// sheet ends at the list's foot, above the pane's clip, so its last row takes a press. Red on
-/// f32883ef, which wrote the window's coordinates into the pane's box: the menu stood 300px right of
-/// its control and 40px low.
+/// sheet holds more than the pane leaves it and ends at the list's foot, above the pane's clip, so its
+/// last row takes a press. Red on f32883ef, which wrote the window's coordinates into the pane's box:
+/// the menu stood 300px right of its control and 40px low. Then the list is made 800px tall in the
+/// 360px pane that scrolls it: the sheet ends at the pane's foot, which clips it, and its last row
+/// still takes a press (red on 5eecc345, which ended it at the list's foot, past the pane's).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_list_in_a_host_places_its_layers_by_their_controls_in_a_transformed_pane() {
@@ -3031,6 +3033,27 @@ fn the_session_list_in_a_host_places_its_layers_by_their_controls_in_a_transform
         &tab,
         "(function(){ var s = document.getElementById('sessionFilter'), l = document.getElementById('sessionList'); var r = s.getBoundingClientRect(), lr = l.getBoundingClientRect(); var rows = Array.prototype.filter.call(s.querySelectorAll('.scope-option'), function(o){ return o.getClientRects().length > 0 && getComputedStyle(o).visibility !== 'hidden'; }); var last = rows[rows.length - 1]; s.scrollTop = s.scrollHeight; var lrr = last.getBoundingClientRect(); var hit = document.elementFromPoint(lrr.left + 20, lrr.top + lrr.height / 2); return { bottom: Math.round(r.bottom), listBottom: Math.round(lr.bottom), sheetScrolls: s.scrollHeight > s.clientHeight + 1, last: last.textContent.trim().slice(0, 40), lastBox: [Math.round(lrr.left), Math.round(lrr.top), Math.round(lrr.width), Math.round(lrr.height)], hit: hit ? (hit.id || hit.className || hit.tagName) : null, lastPressed: !!hit && last.contains(hit) }; })()",
     );
+    // A list taller than the pane that scrolls it (the review of stage 4): the sheet ends at the pane's
+    // foot, the box that clips it, not at the list's, 440px below it.
+    harness::eval(&tab, "document.getElementById('filterBtn').click()");
+    harness::eval(
+        &tab,
+        "(function(){ var l = document.getElementById('sessionList'); l.style.flex = 'none'; l.style.height = '800px'; document.getElementById('hostPane').scrollTop = 0; return true; })()",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    harness::eval(&tab, "document.getElementById('filterBtn').click()");
+    harness::until(
+        &tab,
+        "(function(){ var s = document.getElementById('sessionFilter'); return !!s && !s.hidden; })()",
+        "the filter's sheet to open in a list taller than its pane",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host.errors)",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let clipped = harness::probe(
+        &tab,
+        "(function(){ var s = document.getElementById('sessionFilter'), l = document.getElementById('sessionList'), p = document.getElementById('hostPane'); var r = s.getBoundingClientRect(); var rows = Array.prototype.filter.call(s.querySelectorAll('.scope-option'), function(o){ return o.getClientRects().length > 0 && getComputedStyle(o).visibility !== 'hidden'; }); var last = rows[rows.length - 1]; s.scrollTop = s.scrollHeight; var lrr = last.getBoundingClientRect(); var hit = document.elementFromPoint(lrr.left + 20, lrr.top + lrr.height / 2); return { bottom: Math.round(r.bottom), paneBottom: Math.round(p.getBoundingClientRect().bottom), listBottom: Math.round(l.getBoundingClientRect().bottom), lastPressed: !!hit && last.contains(hit), hit: hit ? (hit.id || hit.className || hit.tagName) : null }; })()",
+    );
     drop(monitor);
     assert_eq!(
         menu["inWindow"], true,
@@ -3070,6 +3093,17 @@ fn the_session_list_in_a_host_places_its_layers_by_their_controls_in_a_transform
     assert_eq!(
         sheet["lastPressed"], true,
         "the filter's last row takes a press: {sheet}"
+    );
+    assert!(
+        clipped["listBottom"].as_i64().unwrap_or(0)
+            > clipped["paneBottom"].as_i64().unwrap_or(0) + 200
+            && clipped["bottom"].as_i64().unwrap_or(9999)
+                <= clipped["paneBottom"].as_i64().unwrap_or(0),
+        "in a list taller than its pane the filter's sheet ends at the pane's foot: {clipped}"
+    );
+    assert_eq!(
+        clipped["lastPressed"], true,
+        "and its last row takes a press there: {clipped}"
     );
 }
 
@@ -4997,7 +5031,9 @@ fn the_session_view_in_a_host_on_a_phone_counts_the_insets_only_inside_its_box()
 /// the inset there. Neither move holds the view's transitions (the review of stage 4: a move decided
 /// the whole layout again, which cut what glided, every frame of a host's scroll). Then the pane is the
 /// whole screen's width and height under a 40px bar of the host's: it is boxed, its gap at the top
-/// 40px (red on 8ee1bd72, which read no top gap for a box as tall as the window).
+/// 40px (red on 5eecc345, which read no top gap for a box as tall as the window). The holds are
+/// counted where the view adds `pl-holding`, and the resize to the whole screen, a decision of the
+/// whole layout, must add one, so the count is known to hear a hold.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
@@ -5015,7 +5051,7 @@ fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
     // (the review of stage 4), so none.
     harness::eval(
         &tab,
-        "(function(){ window.__holds = 0; var v = document.getElementById('sessionView'); new MutationObserver(function(records){ records.forEach(function(r){ if ((' ' + (r.oldValue || '') + ' ').indexOf(' pl-holding ') >= 0) window.__holds++; }); }).observe(v, { attributes: true, attributeFilter: ['class'], attributeOldValue: true }); return true; })()",
+        "(function(){ window.__holds = 0; var add = DOMTokenList.prototype.add; DOMTokenList.prototype.add = function(){ if (Array.prototype.indexOf.call(arguments, 'pl-holding') >= 0) window.__holds++; return add.apply(this, arguments); }; return true; })()",
     );
     harness::eval(
         &tab,
@@ -5050,16 +5086,22 @@ fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
     );
     harness::until(
         &tab,
-        "(function(){ var v = document.getElementById('sessionView'), r = v.getBoundingClientRect(); return Math.round(r.top) === 40 && Math.round(r.width) === 932 && v.classList.contains('pl-boxed') && v.style.getPropertyValue('--pane-y') === '40px'; })()",
+        "(function(){ var v = document.getElementById('sessionView'), r = v.getBoundingClientRect(); return Math.round(r.top) === 40 && Math.round(r.width) === 932 && v.style.getPropertyValue('--pl-w') === '932px' && v.style.getPropertyValue('--pl-h') === '430px' && v.classList.contains('pl-boxed') && v.style.getPropertyValue('--pane-y') === '40px'; })()",
         "a screen-tall pane under the host's bar to be boxed, its gap at the top 40px",
         Duration::from_secs(5),
-        "(function(){ var v = document.getElementById('sessionView'), r = v.getBoundingClientRect(); return JSON.stringify({ top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height), boxed: v.classList.contains('pl-boxed'), paneY: v.style.getPropertyValue('--pane-y'), paneB: v.style.getPropertyValue('--pane-b') }); })()",
+        "(function(){ var v = document.getElementById('sessionView'), r = v.getBoundingClientRect(); return JSON.stringify({ top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height), plW: v.style.getPropertyValue('--pl-w'), plH: v.style.getPropertyValue('--pl-h'), boxed: v.classList.contains('pl-boxed'), paneY: v.style.getPropertyValue('--pane-y'), paneB: v.style.getPropertyValue('--pane-b') }); })()",
     );
+    // That step resized the view, a decision of the whole layout, which holds: the count hears a hold.
+    let resized = harness::eval(&tab, "window.__holds");
     drop(monitor);
     assert_eq!(
         holds,
         serde_json::json!(0),
         "a move alone holds none of the view's transitions"
+    );
+    assert!(
+        resized.as_i64().unwrap_or(0) >= 1,
+        "a resize holds them, so the count above could hear one: {resized}"
     );
 }
 
