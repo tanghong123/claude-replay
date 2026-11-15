@@ -20,8 +20,9 @@
 //! sits inside a scroller — the transcript, the session tree, the pane's body, the outline's lists —
 //! is left out, and so is a layer parked by its own state, named in `PROBE`: the shut right pane, the
 //! shut drawer, the outline folded off a phone; each one set aside is listed in the cell's JSON), how
-//! far the page, the view and the transcript overflow sideways, and the width of the transcript's
-//! text column, beside a screenshot.
+//! far the page and the transcript overflow sideways, how far what the view draws reaches past its
+//! edges (a parked layer is not drawn), and the width of the transcript's text column, beside a
+//! screenshot.
 //!
 //! Run it from the workspace root, after building the monitor in release:
 //!
@@ -483,8 +484,29 @@ Array.prototype.forEach.call(root.querySelectorAll(SEL), function (e) {
     else why = 'covered by ' + named(hit); }
   if (why) missed.push({ control: name(e), why: why, at: Math.round(cx) + ',' + Math.round(cy) });
 });
-var beyond = [];
-if (v) { var walk = function (e) { Array.prototype.forEach.call(e.children, function (c) { if (c.matches(SKIP)) return; var r = c.getBoundingClientRect(); if (c.getClientRects().length && r.width >= 1 && r.height >= 1 && (r.right > vr.right + 1 || r.left < vr.left - 1)) { if (shown(c)) beyond.push(name(c) + ' ' + Math.round(r.left) + '\u2013' + Math.round(r.right)); return; } walk(c); }); }; walk(v); }
+// What is DRAWN past the view's left or right edge: a box that reaches past it, shown, cut to what the
+// ancestors between it and the view let through (an ancestor that clips sideways, by overflow or
+// paint containment; a fixed box escapes every ancestor up to the one that holds fixed boxes), and
+// outside a layer parked by its own state. The view's own clip is left out on purpose: what it cuts
+// is still a part laid out past its edge. Its `scrollWidth` is kept as `viewScroll`, for reference
+// only, since it counts the shut pane parked past the edge, which nobody sees.
+var holdsFixed = function (cs) { return cs.transform !== 'none' || cs.filter !== 'none' || cs.perspective !== 'none' || /paint|layout|strict|content/.test(cs.contain) || /transform|filter|perspective/.test(cs.willChange); };
+var drawn = function (e) { var r = e.getBoundingClientRect(), l = r.left, rt = r.right, free = getComputedStyle(e).position === 'fixed';
+  for (var n = e.parentElement; n && n !== v && rt > l; n = n.parentElement) { var cs = getComputedStyle(n);
+    if (free) { if (!holdsFixed(cs)) continue; free = false; }
+    if (cs.overflowX !== 'visible' || /paint|strict|content/.test(cs.contain)) { var nr = n.getBoundingClientRect(); l = Math.max(l, nr.left + n.clientLeft); rt = Math.min(rt, nr.left + n.clientLeft + n.clientWidth); }
+    if (cs.position === 'fixed') free = true; }
+  return { l: l, r: rt }; };
+var beyond = [], past = 0;
+if (v) { var walk = function (e) { Array.prototype.forEach.call(e.children, function (c) {
+  if (c.matches(SKIP) || parked(c)) return;
+  var r = c.getBoundingClientRect();
+  if (c.getClientRects().length && r.width >= 1 && r.height >= 1 && (r.right > vr.right + 1 || r.left < vr.left - 1)) {
+    if (!shown(c)) return;
+    var d = drawn(c), over = Math.max(d.r - vr.right, vr.left - d.l);
+    if (d.r > d.l && over > 1) { past = Math.max(past, Math.round(over)); beyond.push(name(c) + ' ' + Math.round(d.l) + '\u2013' + Math.round(d.r)); return; }
+  }
+  walk(c); }); }; walk(v); }
 return {
   size: W + 'x' + H, dpr: devicePixelRatio, coarse: matchMedia('(pointer:coarse)').matches,
   app: app ? Array.prototype.slice.call(app.classList) : null,
@@ -492,7 +514,7 @@ return {
   b: v ? v.style.getPropertyValue('--pl-b') : null,
   parts: { list: box(q('#app>.sidebar')), session: box(q('#sessionView>.workspace')), transcript: box(q('#sessionView .transcript')), pane: box(q('#preview')), outline: box(q('#sessionView .session-navigator')) },
   text: text, transcript: tr ? Math.round(tr.clientWidth) : null,
-  overflow: { page: docW - W, view: v ? v.scrollWidth - v.clientWidth : null, transcript: tr ? tr.scrollWidth - tr.clientWidth : null },
+  overflow: { page: docW - W, view: v ? past : null, transcript: tr ? tr.scrollWidth - tr.clientWidth : null }, viewScroll: v ? v.scrollWidth - v.clientWidth : null,
   checked: checked, missed: missed, paneOver: paneOver, underPane: underPane, skipped: skipped, notChecked: notChecked, beyond: beyond.slice(0, 6), viewOverflowX: v ? getComputedStyle(v).overflowX : null
 }; } catch (error) { return { error: String(error && error.stack || error) }; } })"#;
 
@@ -789,10 +811,11 @@ fn report(dir: &Path, records: &[Value], took: Duration) {
          control it covers is one of those checked but set aside, not counted as unreachable; where \
          the pane is beside the session, a control under it is unreachable like any other. \
          A control in a layer parked by its own state (the shut right pane, the shut drawer, the outline \
-         folded off a phone) is not checked; each cell's JSON lists them under `skipped`. *Overflow* is how far the page, the view and \
-         the transcript scroll sideways, and what is drawn in the view past its left or right edge \
-         (the shut right pane, parked past the view's edge and not drawn, adds to the view's \
-         number without being named). The screenshots are in `shots/`, and `contact.html` shows \
+         folded off a phone) is not checked; each cell's JSON lists them under `skipped`. *Overflow* is how far the page and the \
+         transcript scroll sideways and how far what the view DRAWS reaches past its left or right \
+         edge (a shown box, cut by the ancestors that clip it; a parked layer such as the shut \
+         right pane is not drawn and does not count; the cell's JSON keeps the view's raw \
+         `scrollWidth` excess as `viewScroll`), with the parts that reach past it named. The screenshots are in `shots/`, and `contact.html` shows \
          them side by side.\n",
         records.len(),
         took.as_secs()
