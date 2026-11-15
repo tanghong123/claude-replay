@@ -264,3 +264,15 @@ fn no_case_writes_a_monitor_port_into_an_address() {
         found.join("\n")
     );
 }
+
+/// #s495: where there is no `lsof` (a Linux runner may lack it), a held port's holder is read off
+/// `ss -Hltnp`, in the same `command (pid N)` form the spawn's panic names.
+#[test]
+fn a_held_ports_holder_reads_the_same_from_ss() {
+    let line = "LISTEN 0      128        *:2728      *:*    users:((\"ssh\",pid=8913,fd=4),(\"sshd\",pid=77,fd=5))";
+    assert_eq!(
+        harness::ss_holders(line),
+        vec!["ssh (pid 8913)".to_string(), "sshd (pid 77)".to_string()]
+    );
+    assert!(harness::ss_holders("LISTEN 0 128 *:2728 *:*").is_empty());
+}

@@ -1660,19 +1660,8 @@ pub fn port_holder(port: u16) -> String {
         .stderr(std::process::Stdio::null())
         .output();
     if let Ok(out) = ss {
-        // `users:(("ssh",pid=8913,fd=4))`, one per process holding the socket.
         let text = String::from_utf8_lossy(&out.stdout).to_string();
-        let mut held: Vec<String> = text
-            .split("((\"")
-            .skip(1)
-            .chain(text.split("),(\"").skip(1))
-            .filter_map(|p| {
-                let (name, rest) = p.split_once("\",pid=")?;
-                let pid: String = rest.chars().take_while(char::is_ascii_digit).collect();
-                Some(format!("{name} (pid {pid})"))
-            })
-            .collect();
-        held.dedup();
+        let held = ss_holders(&text);
         if !held.is_empty() {
             return held.join(", ");
         }
@@ -1681,6 +1670,22 @@ pub fn port_holder(port: u16) -> String {
         }
     }
     "a listener neither lsof nor ss names (another user's process?)".to_string()
+}
+
+/// The holders `ss -p` names: `users:(("ssh",pid=8913,fd=4),("ssh",pid=8914,fd=4))`, each as
+/// `ssh (pid 8913)`, the form `lsof`'s are given in.
+pub fn ss_holders(text: &str) -> Vec<String> {
+    let mut held: Vec<String> = text
+        .split("(\"")
+        .skip(1)
+        .filter_map(|p| {
+            let (name, rest) = p.split_once("\",pid=")?;
+            let pid: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            (!pid.is_empty()).then(|| format!("{name} (pid {pid})"))
+        })
+        .collect();
+    held.dedup();
+    held
 }
 
 /// Why a monitor did not come up on its port.
