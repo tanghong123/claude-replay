@@ -5065,7 +5065,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(previewSrc, /\.\.\.\(this\.actions\.detach === false \? \[\] : \[this\.newTab\]\)/, "the ↗ is kept out of the pane's head with detach off");
   assert.match(viewSource, /detach: shows\("detach"\)/, "the view tells the pane");
   // The app's keymap leaves a key it has no action for to the page, as the view's own does.
-  assert.match(appSource, /action => \(keyActions\[action\] \? keyActions\[action\]\(\) : false\)\);/, "the app takes no key it has no action for");
+  assert.match(appSource, /\(action, event\) => \(keyActions\[action\] \? keyActions\[action\]\(event\) : false\)\);/, "the app takes no key it has no action for (#s509: the action sees the event, so ⌘F with no session selected is left to the browser)");
   // Engaged: the shared keymap resolves, the view decides by engagement (mdrev's rule), and the
   // shared module is untouched (the offline pages inline it, and the byte gate reads them).
   assert.match(viewSource, /if \(keyboardMode === "engaged"\) \{/, "the view binds its own keys only when engaged");
