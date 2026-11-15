@@ -15265,6 +15265,125 @@ fn app_shell_escape_leaves_the_search_box() {
     scenario_escape_leaves_the_search_box(&page.tab, Surface::AppShell);
 }
 
+/// #s509 — Hong's ruling on #s508: "⌘F opens the session's own search (a second ⌘F goes to the
+/// browser)". The browser's find sees only the mounted records, and the engine heals its move back
+/// to the end (#s490); the page's own search reads every record. The platform's command key (⌘ on
+/// Apple platforms, Ctrl elsewhere, so CI's Linux runner presses Ctrl) and F, nothing else held:
+/// from the page it puts the reader in the box with the query selected and the browser's find
+/// prevented; in the box the same press is the browser's; the other modifier is not the key; `/`
+/// still opens the box. In the app shell it also opens the box from the compose box, where a
+/// reader who has just sent a prompt still has the focus, while `/` there is typing. Each press is
+/// dispatched on its target, whose event says whether the page cancelled it: an untrusted press
+/// cannot become the stuck key a CDP press the page leaves alone does (#270).
+fn scenario_command_f_opens_the_session_search(tab: &headless_chrome::Tab, surface: Surface) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let box_id = match surface {
+        Surface::Classic => "q",
+        Surface::AppShell => "transcriptSearchInput",
+    };
+    let the_box = format!("document.getElementById({box_id:?})");
+    // `modifier`: "command" (the platform's), "other" (the one that is not), or "" (none).
+    let press = |target: &str, key: &str, modifier: &str| -> serde_json::Value {
+        let seen = eval(
+            tab,
+            &format!("(function(){{ var t = {target}, b = {the_box}; var command = /Mac|iPhone|iPad|iPod/.test(navigator.platform) ? 'metaKey' : 'ctrlKey'; var held = {modifier:?} === 'command' ? command : {modifier:?} === 'other' ? (command === 'metaKey' ? 'ctrlKey' : 'metaKey') : null; var init = {{key: {key:?}, bubbles: true, cancelable: true}}; if (held) init[held] = true; var e = new KeyboardEvent('keydown', init); t.dispatchEvent(e); return JSON.stringify({{prevented: e.defaultPrevented, focused: document.activeElement === b, selected: b.value.length > 0 && b.selectionStart === 0 && b.selectionEnd === b.value.length}}); }})()"),
+        );
+        settle();
+        serde_json::from_str(seen.as_str().unwrap()).unwrap()
+    };
+    let leave_the_box = || {
+        eval(
+            tab,
+            &format!("(function(){{ {the_box}.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Escape', bubbles: true, cancelable: true}})); return 'left'; }})()"),
+        );
+        settle();
+        assert_eq!(
+            eval(tab, &format!("document.activeElement === {the_box}")),
+            false,
+            "{surface:?}: Escape takes the reader out of the box"
+        );
+    };
+    // A query in the box, then out of it: the next press must select it whole.
+    eval(
+        tab,
+        &format!("(function(){{ var b = {the_box}; b.focus(); b.value = 'needle'; b.dispatchEvent(new Event('input', {{bubbles: true}})); return 'typed'; }})()"),
+    );
+    settle();
+    leave_the_box();
+
+    let first = press("document.body", "f", "command");
+    assert_eq!(
+        first,
+        serde_json::json!({"prevented": true, "focused": true, "selected": true}),
+        "{surface:?}: ⌘F (Ctrl+F off a Mac) puts the reader in the session's box with its query \
+         selected, and the browser's find does not open"
+    );
+    let second = press(&the_box, "f", "command");
+    assert_eq!(
+        (second["prevented"].as_bool(), second["focused"].as_bool()),
+        (Some(false), Some(true)),
+        "{surface:?}: in the box a second ⌘F is the browser's: {second}"
+    );
+    leave_the_box();
+    let other = press("document.body", "f", "other");
+    assert_eq!(
+        (other["prevented"].as_bool(), other["focused"].as_bool()),
+        (Some(false), Some(false)),
+        "{surface:?}: the other modifier with F is not the key: {other}"
+    );
+    let slash = press("document.body", "/", "");
+    assert_eq!(
+        (slash["prevented"].as_bool(), slash["focused"].as_bool()),
+        (Some(true), Some(true)),
+        "{surface:?}: / still opens the box: {slash}"
+    );
+    let hint = eval(tab, &format!("{the_box}.placeholder"));
+    assert!(
+        hint.as_str()
+            .is_some_and(|h| h.contains("/ or ⌘F") || h.contains("/ or Ctrl+F")),
+        "{surface:?}: the box names both keys: {hint}"
+    );
+    if surface == Surface::AppShell {
+        leave_the_box();
+        let compose = "document.getElementById('composeInput')";
+        let typing = press(compose, "/", "");
+        assert_eq!(
+            (typing["prevented"].as_bool(), typing["focused"].as_bool()),
+            (Some(false), Some(false)),
+            "{surface:?}: / in the compose box is typing: {typing}"
+        );
+        let from_compose = press(compose, "f", "command");
+        assert_eq!(
+            (
+                from_compose["prevented"].as_bool(),
+                from_compose["focused"].as_bool()
+            ),
+            (Some(true), Some(true)),
+            "{surface:?}: ⌘F from the compose box opens the session's search: {from_compose}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_command_f_opens_the_session_search() {
+    let _serial = serial();
+    let fx = needle_fixture("command-f-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_command_f_opens_the_session_search(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_command_f_opens_the_session_search() {
+    let _serial = serial();
+    let fx = needle_fixture("command-f-app");
+    let page = open(Surface::AppShell, &fx, 3134);
+    scenario_command_f_opens_the_session_search(&page.tab, Surface::AppShell);
+}
+
 /// #299 — the owner: "the icons for various agents are hardly recognizable, please use the
 /// official ones" (a screenshot of the collapsed rail: an asterisk, a knot, a robot). Claude
 /// sessions wear the official Claude mark — since #s209 the one Anthropic published to the Agent

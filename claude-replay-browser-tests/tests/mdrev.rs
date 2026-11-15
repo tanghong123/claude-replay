@@ -322,6 +322,55 @@ fn mdrev_owns_a_key_pressed_while_the_reader_is_engaged_with_it() {
     );
 }
 
+/// #s509: ⌘F (Ctrl+F off a Mac), the session search's key since Hong's ruling on #s508, is mdrev's
+/// while the reader is engaged with it, as every other key is: the shell neither opens its search
+/// nor cancels the press for the browser. Outside the guest the same press is the shell's. The
+/// press is dispatched on the focused element, whose event says whether anything cancelled it;
+/// what mdrev itself does with it is mdrev's and is only reported.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn command_f_is_mdrevs_while_the_reader_is_engaged_with_it() {
+    let _serial = serial();
+    let (base, stores, repo) = fixture("mdrev-command-f");
+    let m = Monitor::spawn(Kind::V1, 3135, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    open_shell(&m, &tab);
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1')",
+        "mdrev to render the guide",
+        Duration::from_secs(30),
+        PANE,
+    );
+    const PRESS: &str = "(function(){ var command = /Mac|iPhone|iPad|iPod/.test(navigator.platform) ? 'metaKey' : 'ctrlKey'; var init = {key: 'f', bubbles: true, cancelable: true}; init[command] = true; var e = new KeyboardEvent('keydown', init); (document.activeElement || document.body).dispatchEvent(e); return JSON.stringify({prevented: e.defaultPrevented, search: document.activeElement === document.getElementById('transcriptSearchInput')}); })()";
+    let press = || -> serde_json::Value {
+        let seen = eval(&tab, PRESS);
+        std::thread::sleep(Duration::from_millis(300));
+        serde_json::from_str(seen.as_str().unwrap()).unwrap()
+    };
+    // Engaged the way a reader is: a real click on mdrev's prose, which leaves the focus on <body>.
+    tab.find_element("#previewBody .mdrev-host h1")
+        .unwrap()
+        .click()
+        .unwrap();
+    let engaged = press();
+    eprintln!("s509: engaged with mdrev, ⌘F: {engaged}");
+    assert_eq!(
+        engaged["search"].as_bool(),
+        Some(false),
+        "engaged with mdrev, ⌘F does not open the session's search: {engaged}"
+    );
+    // The control: outside the guest the same press is the shell's.
+    tab.find_element(".transcript").unwrap().click().unwrap();
+    let outside = press();
+    assert_eq!(
+        outside,
+        serde_json::json!({"prevented": true, "search": true}),
+        "outside mdrev ⌘F opens the session's search and the browser's find does not open"
+    );
+}
+
 /// No node (#274): the pinned guest needs none, and neither does history — the contract makes the
 /// host's store the source of revisions, and the monitor reads them from git — but notes are
 /// mdrev's own format, written only through its CLI. So the local file keeps its toolbar and its

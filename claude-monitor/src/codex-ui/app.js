@@ -647,7 +647,14 @@ if (!viewHandle.controls.nativeActive) page.byId("sidebarMiniWrite").onclick = (
 // its handle, the list's and the sidebar's here.
 const keyActions = {
   ...viewHandle.keys,
-  "search": () => { if (indexState.selected) viewHandle.keys.search(); else openGlobalSearch(); },
+  // With no session open there is no session search: `/` opens ⌘K's jump-to, and ⌘F or Ctrl+F
+  // (#s509) is left to the browser's find. The view's answer (`false` while a phone's reply box holds
+  // the dock) is the press's.
+  "search": event => {
+    if (indexState.selected) return viewHandle.keys.search();
+    if (event?.metaKey || event?.ctrlKey) return false;
+    openGlobalSearch();
+  },
   ...listHandle.keys,
   // The key toggles what is shown (#s431 stage 3): the list folds to its rail, the rail opens where the
   // list fits beside the view, and the drawer opens and shuts; a rail the width holds stays as it is.
@@ -655,7 +662,7 @@ const keyActions = {
 };
 // A key with no action here (a control a host switched off) is left to the page, as the view's own
 // binding leaves it; every action the keymap names has one in the app, so nothing changes for it.
-bindKeymap(document, target => (target?.closest?.(".tree-row") ? "list" : "view"), action => (keyActions[action] ? keyActions[action]() : false));
+bindKeymap(document, target => (target?.closest?.(".tree-row") ? "list" : "view"), (action, event) => (keyActions[action] ? keyActions[action](event) : false));
 addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openGlobalSearch(); } else if (event.key === "Escape") page.byId("searchLayer").classList.remove("production-open"); });
 
 arrangeList();
