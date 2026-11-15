@@ -38,8 +38,8 @@
 //! the videos.
 //!
 //! `--only` keeps the cells whose id holds the text (`app-`, `host-`, `touch`, `w1180`…); `--run`
-//! names the output directory (a timestamp by default; a name used before is cleared of that run's
-//! cells, shots, frames and outputs first, and nothing else). Everything goes to
+//! names the output directory (a timestamp by default; a name used before has that run's `cells/`,
+//! `shots/` and `frames/` removed first, and nothing else). Everything goes to
 //! `target/study-widths/<run>/`, out of git: `report.md` (a table per surface), `contact.html` (the
 //! screenshots in a grid), `app-sweep.mp4` and `host-sweep.mp4` (each cell a captioned frame, in the
 //! order of the table; the frames are composed by the same Chrome, since ffmpeg's caption filter is
@@ -974,7 +974,16 @@ fn report(dir: &Path, records: &[Value], took: Duration, videos: &Videos) {
         let _ = writeln!(md, "- [{name}]({name})");
     }
     if videos.made.is_empty() {
-        let _ = writeln!(md, "- none made");
+        let _ = writeln!(md, "- none made by this run");
+    }
+    for surface in ["app", "host"] {
+        let file = format!("{surface}-sweep.mp4");
+        if dir.join(&file).is_file() && !videos.made.iter().any(|v| v.ends_with(&file)) {
+            let _ = writeln!(
+                md,
+                "- `{file}` is STALE: an earlier run under this name made it, and this run did not"
+            );
+        }
     }
     for note in &videos.notes {
         let _ = writeln!(md, "- {}", md_escape(note));
@@ -1241,9 +1250,10 @@ fn main() {
     let name = arg("--run").unwrap_or_else(|| harness::rfc3339(now).replace([':', '-'], ""));
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let study = workspace.join("target/study-widths");
-    // A run starts in an empty directory: a name used before keeps none of that run's cells, shots,
-    // frames or outputs. Only those, each by its absolute path, are removed, and only under a name
-    // that is one plain directory under `target/study-widths/` (never `latest`, the link).
+    // A run starts from empty subdirectories: a name used before keeps none of that run's cells,
+    // shots or frames. Only those three, each by its absolute path, are removed, and only under a
+    // name that is one plain directory under `target/study-widths/` (never `latest`, the link). The
+    // run's files are rewritten, except a video this run does not make, which the report names.
     if name.is_empty()
         || name == "."
         || name == ".."
@@ -1270,21 +1280,8 @@ fn main() {
                     .unwrap_or_else(|e| panic!("clearing {}: {e}", d.display()));
             }
         }
-        for file in [
-            "report.md",
-            "contact.html",
-            "frame.html",
-            "app-sweep.mp4",
-            "host-sweep.mp4",
-        ] {
-            let f = dir.join(file);
-            if f.exists() {
-                std::fs::remove_file(&f)
-                    .unwrap_or_else(|e| panic!("clearing {}: {e}", f.display()));
-            }
-        }
         eprintln!(
-            "study-widths: {} was used before; its cells, shots, frames and outputs are cleared",
+            "study-widths: {} was used before; its cells, shots and frames are cleared (a video this run does not make is left from the earlier run)",
             dir.display()
         );
     }
