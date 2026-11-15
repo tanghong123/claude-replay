@@ -157,6 +157,28 @@ fn a_withdrawn_reply_streams_as_before_the_mark_on_every_path() {
                 "end_turn",
                 json!([{"type":"text","text":"Forty nests."}]),
             ),
+            // A second prompt, so a resume after it reads the mark from the cache's committed blocks.
+            user("u-2", 40, json!("and the eggs?")),
+            asst(
+                "e-2",
+                41,
+                "msg-f",
+                "end_turn",
+                json!([{"type":"text","text":"Twelve eggs."}]),
+            ),
+        ]
+    };
+    // The retried call alone: the stream ends on a run the block stream still holds.
+    let retry_run = || {
+        vec![
+            asst(
+                "r-1",
+                31,
+                "msg-r",
+                "tool_use",
+                bash("toolu_r", "wc -l nests.md"),
+            ),
+            user("t-r", 32, result("toolu_r", "40 nests.md")),
         ]
     };
     let bash_run = || {
@@ -284,14 +306,34 @@ fn a_withdrawn_reply_streams_as_before_the_mark_on_every_path() {
             vec!["w-1"],
         ),
     ];
+    // Every shape goes on to the retry and a second prompt; the one after a Bash run also ends on
+    // the mark itself, and on the retried run.
+    type Case = (String, Vec<Value>, Vec<&'static str>, Vec<Value>);
+    let mut cases: Vec<Case> = shapes
+        .iter()
+        .map(|(s, w, ids)| (s.to_string(), w.clone(), ids.clone(), retry()))
+        .collect();
+    let (s, w, ids) = &shapes[2];
+    cases.push((
+        format!("{s}, ending on the mark"),
+        w.clone(),
+        ids.clone(),
+        Vec::new(),
+    ));
+    cases.push((
+        format!("{s}, ending on the retried run"),
+        w.clone(),
+        ids.clone(),
+        retry_run(),
+    ));
     let dir = scratch("withdrawn");
-    for (n, (shape, withdrawn, ids)) in shapes.into_iter().enumerate() {
+    for (n, (shape, withdrawn, ids, tail)) in cases.into_iter().enumerate() {
         let lines = |marked: bool| -> Vec<String> {
             [
                 vec![prompt()],
                 withdrawn.clone(),
                 vec![note(&ids, marked)],
-                retry(),
+                tail.clone(),
             ]
             .concat()
             .iter()

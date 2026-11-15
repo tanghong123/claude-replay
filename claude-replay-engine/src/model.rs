@@ -1061,7 +1061,9 @@ pub fn is_edit_tool(name: &str) -> bool {
 /// Whether [`coalesce_spans`] takes `b` into an open run, or holds it for one: thinking, an
 /// activity call or a change, and an attachment. Any other block ends the run. One definition, so
 /// a reader of shaped blocks (#s500, `block_json::write_blocks`) finds the run `coalesce_spans`
-/// made.
+/// made. Hidden, as the seam's other plumbing is: core's block stream reads it, and no adapter
+/// needs it.
+#[doc(hidden)]
 pub fn joins_span(b: &Block) -> bool {
     match b {
         Block::Thinking { .. } | Block::Attachment(_) => true,
@@ -1092,7 +1094,10 @@ pub fn joins_span(b: &Block) -> bool {
 /// Merging its own output again with more of the same kind gives what one pass over the whole
 /// would have (`a_second_pass_merges_as_one_pass_would`): a merged run takes more thinking and
 /// calls as its raw parts did, and what it held still follows it. The block stream relies on it to
-/// state a withdrawn reply where it stood (#s500, `block_json::write_blocks`).
+/// state a withdrawn reply where it stood (#s500, `block_json::write_blocks`). It holds wherever
+/// thinking carries text, as every adapter's does: a run of thinking with no text and no call
+/// draws nothing and its time goes with it, where one pass would give that time to the thinking
+/// after it.
 pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
     fn flush(
         texts: &mut Vec<String>,
