@@ -6059,6 +6059,8 @@ fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
     harness::eval(&tab, page_up);
     rest();
     let body_pressed = harness::probe(&tab, read);
+    rest();
+    let body_rested = harness::probe(&tab, read);
     // Back at the end, a click on the session list's empty space, then a scroll key, which the browser
     // sends to the list, and the size a step up.
     harness::jump_to_end(&tab, surface);
@@ -6123,6 +6125,11 @@ fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
         body_pressed["following"] == serde_json::json!(false)
             && body_pressed["gap"].as_i64().unwrap_or(0) > 400,
         "and a Page Up on the body after a press in the transcript is the reader's: {body_pressed}"
+    );
+    assert!(
+        body_rested["following"] == serde_json::json!(false)
+            && body_rested["top"] == body_pressed["top"],
+        "and stay there: pressed {body_pressed}, rested {body_rested}"
     );
     assert!(
         at_end(&back) && at_end(&listed) && listed["focus"] == serde_json::json!("body"),
