@@ -193,13 +193,10 @@ fn refused_note(v: &Value, injected: Injected, m: Message) -> Message {
 
 /// The client's note to the model after it withdrew a reply whose tool call it could not use
 /// (#s500): an `isMeta` record carrying `retractedMessageUuids`, the ids of the withdrawn records,
-/// its string content already classified as the note it is (`m`). It becomes a
+/// its string content `s` already classified as the note it is (`m`). It becomes a
 /// [`Message::RetryNote`] naming them, its text unchanged; anything else is `m` as it was.
-fn retry_note(v: &Value, injected: Injected, m: Message) -> Message {
-    let ids = (injected == Injected::Meta)
-        .then(|| retracted_ids(v))
-        .flatten();
-    match (ids, m) {
+fn retry_note(v: &Value, injected: Injected, s: &str, m: Message) -> Message {
+    match (retry_ids(v, injected, s), m) {
         (
             Some(ids),
             Message::SystemNote {
@@ -209,6 +206,25 @@ fn retry_note(v: &Value, injected: Injected, m: Message) -> Message {
         ) => Message::RetryNote { ids, text },
         (_, m) => m,
     }
+}
+
+/// The records a note withdraws, when it is a retry note (#s500): an `isMeta` record with
+/// `retractedMessageUuids` whose string content `s` is a plain note, and which names no stopped
+/// reply (with `refusedMessageId` it is that reply's note, #s378). Both parse paths ask this one
+/// rule, so they fold the same notes.
+fn retry_ids(v: &Value, injected: Injected, s: &str) -> Option<Vec<String>> {
+    if injected != Injected::Meta || v.get("refusedMessageId").and_then(Value::as_str).is_some() {
+        return None;
+    }
+    let ids = retracted_ids(v)?;
+    matches!(
+        classify_user_string(s, injected),
+        Some(Message::SystemNote {
+            kind: NoteKind::Plain,
+            ..
+        })
+    )
+    .then_some(ids)
 }
 
 /// The records a retry note withdraws (#s500): its `retractedMessageUuids`, when that is a
@@ -4529,7 +4545,7 @@ pub(crate) fn decode_line_known(
             note_reply_drift(&v);
             if let Some(s) = content.as_str() {
                 if let Some(m) = classify_user_string(s, injected) {
-                    msgs.push(retry_note(&v, injected, refused_note(&v, injected, m)));
+                    msgs.push(retry_note(&v, injected, s, refused_note(&v, injected, m)));
                 }
             } else if let Some(arr) = content.as_array() {
                 let fallback = (injected == Injected::No)
@@ -5859,10 +5875,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                         }
                         // #s500 mirror: the note withdrawing exactly the reply before it is its
                         // mark, the reply folded under it.
-                        let ids = (injection == Injected::Meta)
-                            .then(|| retracted_ids(&v))
-                            .flatten();
-                        if let Some(ids) = ids {
+                        if let Some(ids) = retry_ids(&v, injection, s) {
                             if out.len() == before + 1
                                 && matches!(out.last(), Some(Block::ToolResult(_)))
                             {
@@ -9941,6 +9954,34 @@ mod tests {
             "{blocks:#?}"
         );
         assert_eq!(blocks, parse_main(stray.lines(), &mut Vec::new()));
+        // One rule on both paths (`retry_ids`): a note that also names a stopped reply is that
+        // reply's note, and one whose text is a skill's body is no retry note; neither folds the
+        // reply, on either path.
+        for (odd, jsonl) in [
+            (
+                "naming a stopped reply too",
+                measured.replace(
+                    r#""retractedMessageUuids":["a1"]"#,
+                    r#""retractedMessageUuids":["a1"],"refusedMessageId":"msg_unknown""#,
+                ),
+            ),
+            (
+                "a skill's body",
+                measured.replace(NOTE, "Base directory for this skill: /w/skills/count"),
+            ),
+        ] {
+            assert_ne!(jsonl, measured, "{odd}: the fixture changed");
+            let blocks = parse(&jsonl);
+            assert!(
+                !blocks.iter().any(|b| matches!(b, Block::Withdrawn { .. })),
+                "{odd}: {blocks:#?}"
+            );
+            assert_eq!(
+                blocks,
+                parse_main(jsonl.lines(), &mut Vec::new()),
+                "{odd}: both parse paths agree"
+            );
+        }
         // The withdrawn reply was billed, so its usage stays counted: the cost reads as it does
         // without the key, and the reply's tokens are in it.
         let metrics = |jsonl: &str| {
