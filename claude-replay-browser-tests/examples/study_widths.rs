@@ -33,6 +33,10 @@
 //! cargo run -p claude-replay-browser-tests --example study_widths -- [--only <text>] [--run <name>]
 //! ```
 //!
+//! The videos need `ffmpeg` with libx264 (`brew install ffmpeg`; `CR_FFMPEG=<path>` names another).
+//! The run looks for it before the first cell and, without one, says so and makes everything but
+//! the videos.
+//!
 //! `--only` keeps the cells whose id holds the text (`app-`, `host-`, `touch`, `w1180`…); `--run`
 //! names the output directory (a timestamp by default). Everything goes to
 //! `target/study-widths/<run>/`, out of git: `report.md` (a table per surface), `contact.html` (the
@@ -1056,7 +1060,7 @@ struct Videos {
 /// Chrome; then ffmpeg makes one MP4 per surface, a second a frame. Frames are numbered by what was
 /// written, so a cell whose frame failed leaves no gap (ffmpeg's `%03d` input stops at the first
 /// missing number and still exits 0); each such cell is noted.
-fn videos(tab: &headless_chrome::Tab, dir: &Path, records: &[Value]) -> Videos {
+fn videos(tab: &headless_chrome::Tab, dir: &Path, records: &[Value], ffmpeg: &str) -> Videos {
     let mut out = Videos::default();
     let page = dir.join("frame.html");
     std::fs::write(
@@ -1064,13 +1068,6 @@ fn videos(tab: &headless_chrome::Tab, dir: &Path, records: &[Value]) -> Videos {
         "<!doctype html><meta charset=\"utf-8\"><style>html,body{margin:0;background:#2a2c30}.cap{height:56px;box-sizing:border-box;padding:0 20px;display:flex;align-items:center;background:#111;color:#fff;font:600 24px/1 -apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif;white-space:nowrap}img{display:block}</style><div class=\"cap\" id=\"cap\"></div><img id=\"img\" alt=\"\"><script>var p=new URLSearchParams(location.search);document.getElementById('cap').textContent=p.get('cap');var i=document.getElementById('img');i.width=+p.get('w');i.height=+p.get('h');i.onload=i.onerror=function(){document.title='ready';};i.src=p.get('img');</script>",
     )
     .unwrap();
-    let ffmpeg = std::env::var("CR_FFMPEG").unwrap_or_else(|_| {
-        if Path::new("/opt/homebrew/bin/ffmpeg").exists() {
-            "/opt/homebrew/bin/ffmpeg".into()
-        } else {
-            "ffmpeg".into()
-        }
-    });
     for surface in ["app", "host"] {
         let mut rows: Vec<&Value> = Vec::new();
         for r in records.iter().filter(|r| r["surface"] == surface) {
@@ -1162,7 +1159,7 @@ fn videos(tab: &headless_chrome::Tab, dir: &Path, records: &[Value]) -> Videos {
             continue;
         }
         let video = dir.join(format!("{surface}-sweep.mp4"));
-        let status = std::process::Command::new(&ffmpeg)
+        let status = std::process::Command::new(ffmpeg)
             .args(["-y", "-loglevel", "error", "-framerate", "1", "-i"])
             .arg(frames.join(format!("{surface}-%03d.png")))
             .args([
@@ -1189,6 +1186,30 @@ fn videos(tab: &headless_chrome::Tab, dir: &Path, records: &[Value]) -> Videos {
         eprintln!("study-widths: video: {note}");
     }
     out
+}
+
+/// The ffmpeg the videos need: `CR_FFMPEG`, else Homebrew's, else the one on `PATH`, asked for its
+/// version before any cell runs, so a run without one says so at its start rather than after the
+/// sweep. `Err` says why there is none.
+fn find_ffmpeg() -> Result<String, String> {
+    let ffmpeg = std::env::var("CR_FFMPEG").unwrap_or_else(|_| {
+        if Path::new("/opt/homebrew/bin/ffmpeg").exists() {
+            "/opt/homebrew/bin/ffmpeg".into()
+        } else {
+            "ffmpeg".into()
+        }
+    });
+    match std::process::Command::new(&ffmpeg)
+        .arg("-version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        Ok(s) if s.success() => Ok(ffmpeg),
+        Ok(s) => Err(format!("`{ffmpeg} -version` exited {s}")),
+        Err(e) => Err(format!("no ffmpeg at `{ffmpeg}` ({e})")),
+    }
 }
 
 /// Percent-encodes everything but the unreserved characters and `/`, so a path (the frame page's,
@@ -1229,6 +1250,12 @@ fn main() {
         .filter(|c| only.as_ref().is_none_or(|o| c.id.contains(o.as_str())))
         .collect();
     eprintln!("study-widths: {} cells into {}", cells.len(), dir.display());
+    let ffmpeg = find_ffmpeg();
+    if let Err(why) = &ffmpeg {
+        eprintln!(
+            "study-widths: {why}: the videos will be skipped (install ffmpeg, or name one with CR_FFMPEG=<path>)"
+        );
+    }
     let t0 = Instant::now();
     let records;
     let made;
@@ -1305,7 +1332,13 @@ fn main() {
             }
             done.push(record);
         }
-        made = videos(&tab, &dir, &done);
+        made = match &ffmpeg {
+            Ok(ffmpeg) => videos(&tab, &dir, &done, ffmpeg),
+            Err(why) => Videos {
+                made: Vec::new(),
+                notes: vec![format!("skipped: {why}")],
+            },
+        };
         records = done;
         drop(monitor);
     }
