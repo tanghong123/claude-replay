@@ -312,6 +312,29 @@ function itemHeight(element) {
 /** `P` when the reader follows: the end, whatever the end is (framework §1.7). */
 const TAIL = Object.freeze({ source: "tail" });
 
+/** An element's children as a unit is first drawn (#s504): without the `<mark>`s a page adds once it
+ *  is drawn (the app shell marks the search's hits in `afterRender`), so a place counted in the old
+ *  markup names the same element in the new one. */
+function unmarked(parent) {
+  return Array.prototype.filter.call(parent.children, child => child.tagName !== "MARK");
+}
+
+/** What the record around an element says after the element itself (#s504), its first 160
+ *  characters: a queued prompt's words, an act record's first calls, a prompt's text. It tells the
+ *  record at a place from another one a rewrite put there: a queued prompt picked up moves every
+ *  marker behind it up a slot (#165), so the same place holds the next one. */
+function recordText(element, unit) {
+  const record = element.closest("[data-block-index]");
+  if (!record || !unit.contains(record)) return "";
+  return (record.textContent || "").replace(element.textContent || "", "").replace(/\s+/g, " ").trim().slice(0, 160);
+}
+
+/** Whether two record texts can be one record's (#s504): equal, or one goes on from the other, as a
+ *  record grows when a call or a result is appended to it. */
+function sameRecord(a, b) {
+  return a.startsWith(b) || b.startsWith(a);
+}
+
 class VirtualWindow {
   constructor(options) {
     const { frame, mount, overscan, slacks, userIntentMs, rememberMs, clampIndex, skipAt, renderAll, floors, defaultKind, historyMs, page, version } = options;
@@ -1390,32 +1413,37 @@ class VirtualWindow {
   }
 
   /** The focus, when it is inside a mounted unit: that unit's key, the child positions from the
-   *  unit down to the focused element, and what kind of element it is (#s504). */
+   *  unit down to the focused element (counting no `<mark>`), what kind of element it is, and what
+   *  its record says after it (#s504). */
   focusInside() {
     const active = this.mount.ownerDocument?.activeElement;
     if (!active || active === this.mount || !this.mount.contains(active)) return null;
     const path = [];
     let node = active;
     while (node.parentElement && node.parentElement !== this.mount) {
-      path.unshift(Array.prototype.indexOf.call(node.parentElement.children, node));
+      if (node.tagName === "MARK") return null;
+      path.unshift(unmarked(node.parentElement).indexOf(node));
       node = node.parentElement;
     }
     if (!node.dataset.unitKey) return null;
-    return { element: active, key: node.dataset.unitKey, path, tag: active.tagName, role: active.classList[0] || "" };
+    return { element: active, key: node.dataset.unitKey, path, tag: active.tagName, role: active.classList[0] || "", record: recordText(active, node) };
   }
 
   /** Gives the focus back to a unit drawn again (#s504): to the element at the same place in its
-   *  new markup, when it is the same kind of element (its tag and its first class) and nothing else
-   *  has taken the focus meanwhile. A unit that left the window, or changed its shape, gets none. */
+   *  new markup, when it is the same kind of element (its tag and its first class) in what can be the
+   *  same record (`sameRecord`), and nothing else has taken the focus meanwhile. A unit that left the
+   *  window, changed its shape or holds another record there gets none, as before. */
   refocus(focused) {
     if (!focused || focused.element.isConnected) return;
     const doc = this.mount.ownerDocument, now = doc.activeElement;
     if (now && now !== doc.body && now !== doc.documentElement) return;
-    let node = [...this.mount.children].find(child => child.dataset.unitKey === focused.key);
-    for (const at of focused.path) node = node?.children[at];
+    const unit = [...this.mount.children].find(child => child.dataset.unitKey === focused.key);
+    let node = unit;
+    for (const at of focused.path) node = node ? unmarked(node)[at] : null;
     if (!node || node.tagName !== focused.tag || (node.classList[0] || "") !== focused.role) return;
+    if (!sameRecord(recordText(node, unit), focused.record)) return;
     node.focus({ preventScroll: true });
-    this.trace("refocused", { key: focused.key, depth: focused.path.length });
+    if (doc.activeElement === node) this.trace("refocused", { key: focused.key, depth: focused.path.length });
   }
 
   /** Mount exactly `[lo, hi)`, reusing what is already right. `dirtyFrom` is the first index
