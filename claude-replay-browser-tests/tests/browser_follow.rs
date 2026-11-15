@@ -24695,7 +24695,7 @@ fn a_click_in_a_growing_transcript_leaves_its_keys_a_scroller_no_redraw_takes() 
 /// phone or a tablet a tap there must not take the focus from a field (and put the keyboard down) for
 /// a key nobody presses. Three taps, each from nothing focused and from the search field: Chrome's own
 /// finger tap; a finger's tap whose compatibility mouse press comes late and as a plain mouse press,
-/// as Linux's harness supplies it (#366), which is that tap's and not a mouse's (1.5 s late, as a
+/// as Linux's harness supplies it (#366), which is that tap's and not a mouse's (1 s late, as a
 /// loaded runner may send it: the harness waits up to half a second); and a pen's press.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
