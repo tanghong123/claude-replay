@@ -336,6 +336,7 @@ name = "claude-replay-browser-tests"
 version = "1.523.0"
 dependencies = [
  "clap",
+ "claude-monitor",
  "claude-replay-core",
  "claude-replay-html",
  "claude-replay-present",
