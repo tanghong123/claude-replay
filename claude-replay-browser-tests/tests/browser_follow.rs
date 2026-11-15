@@ -32310,8 +32310,10 @@ fn app_shell_a_session_opened_mid_wheel_lands_at_its_end_at_once() {
     let at = harness::eval(&tab, &format!("(function(){{ var t = document.querySelector('.transcript').getBoundingClientRect(), r = {row}.getBoundingClientRect(); return JSON.stringify([t.left + t.width / 2, t.top + t.height / 2, r.left + r.width / 2, r.top + r.height / 2]); }})()"));
     let at: Vec<f64> = serde_json::from_str(at.as_str().unwrap()).unwrap();
     // Every frame: [ms, units mounted, scrollTop, gap to the end, the old session's marker drawn,
-    // the new one's], for 2.5 s; the click's time from a capture listener.
-    harness::eval(&tab, "(function(){ var w = window.__s489 = { f: [], click: null }; var t0 = performance.now(); addEventListener('click', function () { if (w.click == null) { w.clickAt = Math.round(performance.now()); w.click = w.clickAt - Math.round(t0); } }, true); var loop = function () { var s = document.querySelector('.transcript'), v = document.querySelector('.virtual-window'), text = v.textContent; w.f.push([Math.round(performance.now() - t0), v.querySelectorAll('[data-unit-index]').length, Math.round(s.scrollTop), Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), text.includes('Tern tail marker'), text.includes('Skua tail marker')]); if (performance.now() - t0 < 2500) requestAnimationFrame(loop); }; requestAnimationFrame(loop); return 1; })()");
+    // the new one's], until 2.5 s after the click (a loaded machine can send the click late into a
+    // window counted from the start, past the switch: #s489's third run); the click's time from a
+    // capture listener.
+    harness::eval(&tab, "(function(){ var w = window.__s489 = { f: [], click: null }; var t0 = performance.now(); addEventListener('click', function () { if (w.click == null) { w.clickAt = Math.round(performance.now()); w.click = w.clickAt - Math.round(t0); } }, true); var loop = function () { var s = document.querySelector('.transcript'), v = document.querySelector('.virtual-window'), text = v.textContent; w.f.push([Math.round(performance.now() - t0), v.querySelectorAll('[data-unit-index]').length, Math.round(s.scrollTop), Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), text.includes('Tern tail marker'), text.includes('Skua tail marker')]); var now = performance.now() - t0; if (w.click == null ? now < 20000 : now - w.click < 2500) requestAnimationFrame(loop); else w.done = true; }; requestAnimationFrame(loop); return 1; })()");
     for i in 0..8 {
         // The pointer is over the transcript for the first four, then clicks the other session
         // and stays over the list, where the rest of the gesture lands, as a mouse's would.
@@ -32326,7 +32328,13 @@ fn app_shell_a_session_opened_mid_wheel_lands_at_its_end_at_once() {
         wheel_at(&tab, x, y, -120.0);
         std::thread::sleep(Duration::from_millis(30));
     }
-    harness::pause("the recorder to finish", Duration::from_millis(2700));
+    harness::until(
+        &tab,
+        "window.__s489.done === true",
+        "the recorder to finish, 2.5 s after the click",
+        Duration::from_secs(25),
+        "JSON.stringify({click: window.__s489.click, frames: window.__s489.f.length})",
+    );
     let rec = harness::eval(&tab, "JSON.stringify(window.__s489)");
     let rec: serde_json::Value = serde_json::from_str(rec.as_str().unwrap()).unwrap();
     let click = rec["click"].as_i64().expect("the click reached the page");
@@ -32352,7 +32360,13 @@ fn app_shell_a_session_opened_mid_wheel_lands_at_its_end_at_once() {
     let switched = frames
         .iter()
         .position(|f| f[4] != serde_json::json!(true))
-        .expect("the old session leaves the view");
+        .unwrap_or_else(|| {
+            panic!(
+                "the old session leaves the view: click at {click}ms, {} frames after it, the last {:?}",
+                frames.len(),
+                frames.last()
+            )
+        });
     let after = &frames[switched..];
     let landed = |f: &Vec<serde_json::Value>| {
         f[1].as_i64().unwrap() > 0 && f[5] == serde_json::json!(true) && f[3].as_i64().unwrap() <= 2
