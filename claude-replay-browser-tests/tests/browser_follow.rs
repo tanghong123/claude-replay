@@ -23517,7 +23517,9 @@ fn a_phone_tap_on_the_transcript_does_not_focus_it() {
             );
             match tap {
                 0 => harness::finger_tap(&tab, at.0, at.1),
-                1 => harness::finger_tap_late_click(&tab, at.0, at.1, Duration::from_millis(1500)),
+                // Twice the harness's own half second, and well inside the page's 2 s window, so a
+                // loaded runner's round trips cannot carry the press past it.
+                1 => harness::finger_tap_late_click(&tab, at.0, at.1, Duration::from_millis(1000)),
                 _ => pen(),
             }
             harness::pause("the tap's click", Duration::from_millis(800));
