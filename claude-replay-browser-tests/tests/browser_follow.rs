@@ -609,7 +609,7 @@ fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at(
         if wide {
             eval(
                 &tab,
-                "document.getElementById('btn-wide').click(); true",
+                "(function(){ document.getElementById('btn-wide').click(); return true; })()",
                 false,
             );
             std::thread::sleep(Duration::from_millis(1200));
