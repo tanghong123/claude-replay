@@ -1612,6 +1612,11 @@ pub struct Monitor {
     pub port: u16,
     pub key: u16,
     pub state: PathBuf,
+    /// What the spawn gave the process beyond the harness's own setup — its extra environment,
+    /// built for `port`, and its extra arguments — so [`Monitor::respawn`] starts the same monitor
+    /// again (a remote case's trusted name, an mdrev case's state dir).
+    env: Vec<(String, String)>,
+    args: Vec<String>,
     child: Reap,
 }
 
@@ -1632,42 +1637,100 @@ pub fn kernel_port() -> u16 {
         .expect("the kernel has a free loopback port")
 }
 
-/// What listens on `port`, in a line: each listener's command and pid as `lsof` names them
-/// (`ss` where there is no `lsof`), or why neither could say.
-pub fn port_holder(port: u16) -> String {
-    let lsof = std::process::Command::new("lsof")
-        .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN"])
+/// How long a probe of who holds a port may take. `lsof` has sat in the kernel for minutes on
+/// another process's sockets (#s266, the scan's probes), and a case waiting on it would be the
+/// timed-out wait the holder's name is there to replace.
+const HOLDER_PROBE: Duration = Duration::from_secs(5);
+
+/// Why a bounded probe gave no output.
+enum Probe {
+    /// It could not be started (not installed).
+    Absent,
+    /// It ran past its bound and was killed.
+    TimedOut,
+}
+
+/// `cmd`'s stdout, if it finishes within `limit`; past it the child is killed. Its stdout is read
+/// on a thread of its own, so a full pipe never stalls it, and that thread is left behind, never
+/// joined, when the child does not finish.
+fn output_within(mut cmd: std::process::Command, limit: Duration) -> Result<String, Probe> {
+    let mut child = cmd
         .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .output();
-    if let Ok(out) = lsof {
-        let mut held: Vec<String> = String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .skip(1)
-            .filter_map(|l| {
-                let mut words = l.split_whitespace();
-                Some(format!("{} (pid {})", words.next()?, words.next()?))
-            })
-            .collect();
-        held.dedup();
-        if !held.is_empty() {
-            return held.join(", ");
+        .spawn()
+        .map_err(|_| Probe::Absent)?;
+    let mut stdout = child.stdout.take().expect("a piped stdout");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stdout, &mut text);
+        let _ = tx.send(text);
+    });
+    let started = Instant::now();
+    loop {
+        if let Ok(Some(_)) = child.try_wait() {
+            let left = limit.saturating_sub(started.elapsed()).max(Duration::from_millis(200));
+            return rx
+                .recv_timeout(left)
+                .map(|text| String::from_utf8_lossy(&text).into_owned())
+                .map_err(|_| Probe::TimedOut);
         }
+        if started.elapsed() >= limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Probe::TimedOut);
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
-    let ss = std::process::Command::new("ss")
-        .args(["-Hltnp", &format!("sport = :{port}")])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output();
-    if let Ok(out) = ss {
-        let text = String::from_utf8_lossy(&out.stdout).to_string();
-        let held = ss_holders(&text);
-        if !held.is_empty() {
-            return held.join(", ");
+}
+
+/// What listens on `port`, in a line: each listener's command and pid as `lsof` names them
+/// (`ss` where there is no `lsof`), or why neither could say. Each probe has [`HOLDER_PROBE`].
+pub fn port_holder(port: u16) -> String {
+    let mut slow = Vec::new();
+    let mut lsof = std::process::Command::new("lsof");
+    // `+c 0`: the whole command name, which lsof otherwise cuts to nine characters.
+    lsof.args(["+c", "0", "-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN"]);
+    match output_within(lsof, HOLDER_PROBE) {
+        Ok(out) => {
+            let mut held: Vec<String> = out
+                .lines()
+                .skip(1)
+                .filter_map(|l| {
+                    let mut words = l.split_whitespace();
+                    Some(format!("{} (pid {})", words.next()?, words.next()?))
+                })
+                .collect();
+            held.dedup();
+            if !held.is_empty() {
+                return held.join(", ");
+            }
         }
-        if !text.trim().is_empty() {
-            return text.trim().to_string();
+        Err(Probe::TimedOut) => slow.push("lsof"),
+        Err(Probe::Absent) => {}
+    }
+    let mut ss = std::process::Command::new("ss");
+    ss.args(["-Hltnp", &format!("sport = :{port}")]);
+    match output_within(ss, HOLDER_PROBE) {
+        Ok(text) => {
+            let held = ss_holders(&text);
+            if !held.is_empty() {
+                return held.join(", ");
+            }
+            if !text.trim().is_empty() {
+                return text.trim().to_string();
+            }
         }
+        Err(Probe::TimedOut) => slow.push("ss"),
+        Err(Probe::Absent) => {}
+    }
+    if !slow.is_empty() {
+        return format!(
+            "a listener whose holder could not be read ({} ran past {} s)",
+            slow.join(" and "),
+            HOLDER_PROBE.as_secs()
+        );
     }
     "a listener neither lsof nor ss names (another user's process?)".to_string()
 }
@@ -1743,23 +1806,38 @@ impl Monitor {
     }
 
     /// The same monitor again, on the port `previous` served (the page open on that origin keeps
-    /// asking it there) and over the same scratch. `previous` is dropped — its process reaped —
-    /// first.
+    /// asking it there), over the same scratch, with the environment and arguments its spawn was
+    /// given. `previous` is dropped — its process reaped — first. A restart under an open page
+    /// goes through here: a second [`Monitor::spawn`] on the case's number moves again when that
+    /// one is held, to a port the page has never heard of (#s495). `base`, `stores` and `paired`
+    /// are the first spawn's.
     pub fn respawn(
         previous: Monitor,
         base: &Path,
         stores: Option<&Stores>,
         paired: bool,
     ) -> Monitor {
-        let (kind, port, key) = (previous.kind, previous.port, previous.key);
-        drop(previous);
+        let Monitor {
+            kind,
+            port,
+            key,
+            env,
+            args,
+            child,
+            ..
+        } = previous;
+        drop(child);
         std::thread::sleep(Duration::from_millis(800));
-        Self::spawn_exact(kind, key, port, base, stores, paired)
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        Self::spawn_at(kind, key, port, base, stores, paired, &|_| env.clone(), &args)
+            .unwrap_or_else(|why| panic!("{why}"))
     }
 
     /// A monitor on exactly `port`, its scratch named for `key`: for a page already open on that
     /// origin. A port something else holds is a panic naming the port and its holder, said as
-    /// soon as the monitor exits on its bind — never a page left waiting.
+    /// soon as the monitor exits on its bind — never a page left waiting. It starts a bare monitor,
+    /// with no extra environment or arguments; a restart of one a case spawned is
+    /// [`Monitor::respawn`], which keeps them.
     pub fn spawn_exact(
         kind: Kind,
         key: u16,
@@ -1888,6 +1966,8 @@ impl Monitor {
                 port,
                 key,
                 state,
+                env,
+                args: args.iter().map(|a| a.to_string()).collect(),
                 child,
             }),
             Err(Unbound::Exited { stderr, held }) if held => Err(format!(
@@ -1910,6 +1990,11 @@ impl Monitor {
                 stderr.trim()
             )),
         }
+    }
+
+    /// The monitor process's pid.
+    pub fn pid(&self) -> u32 {
+        self.child.0.id()
     }
 
     pub fn url(&self, path_and_query: &str) -> String {
@@ -2626,8 +2711,12 @@ pub fn reap_own_browsers() {
 /// `the_app_shell_centers_the_tasks_pane_on_the_running_tasks` exactly that way.)
 ///
 /// Scoped by BINARY PATH and PORT: only a monitor built into this workspace's `target/release`,
-/// and only one holding the port this case is about to bind. The developer's own monitor is the
-/// tap's binary on 2727/2828 — a different path and a port no case uses — so it is never in range.
+/// and only one started with exactly `--port <port>`, the port this case is about to bind (a
+/// whole argument: `--port 3276` must not reach a monitor moved to `--port 32761`). The
+/// developer's own monitor is the tap's binary — a different path — so it is never in range,
+/// whatever port it serves on; should it hold a case's port, the spawn moves off it (#s495). A
+/// monitor a killed run left on a port it was MOVED to is not reaped here: it holds a port the
+/// kernel handed out, which no case asks for.
 fn reap_stranded_monitor(port: u16) {
     let Ok(out) = std::process::Command::new("ps")
         .args(["-Awwo", "pid=,command="])
@@ -2645,7 +2734,7 @@ fn reap_stranded_monitor(port: u16) {
         let Some((pid, command)) = line.trim().split_once(' ') else {
             continue;
         };
-        if !command.contains(&marker) || !command.contains(&format!("--port {port}")) {
+        if !command.contains(&marker) || !names_port(command, port) {
             continue;
         }
         let _ = std::process::Command::new("kill")
@@ -2658,6 +2747,13 @@ fn reap_stranded_monitor(port: u16) {
         eprintln!("harness: reaped a monitor stranded on port {port} by an earlier run");
         std::thread::sleep(Duration::from_millis(200)); // let the port come free
     }
+}
+
+/// Whether a command line, as `ps` joins it, passes `--port` and then exactly `port`.
+pub fn names_port(command: &str, port: u16) -> bool {
+    let port = port.to_string();
+    let words: Vec<&str> = command.split_whitespace().collect();
+    words.windows(2).any(|w| w[0] == "--port" && w[1] == port)
 }
 
 /// Whether a pid is a live process. `kill -0` fails for a pid that is gone; anything else (a

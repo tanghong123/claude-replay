@@ -15061,6 +15061,68 @@ fn a_monitor_held_off_its_exact_port_names_the_holder_at_once() {
     drop(held);
 }
 
+/// #s495: a restart under an open page (`Monitor::respawn`) brings the same monitor back where the
+/// page is — the port the first one was MOVED to when the case's was held — and with what its
+/// spawn was given: a remote case's monitor still trusts `phone.test` on that port, and extra
+/// arguments come back too. It once kept only the port, so a remote case's restart would have
+/// refused its own phone.
+#[test]
+#[ignore = "needs a built agent-monitor"]
+fn a_respawned_monitor_keeps_its_port_its_environment_and_its_arguments() {
+    let _serial = serial();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let base = harness::base("held-port-respawn");
+    let stores = harness::Stores::new(&base);
+    let environment = |m: &harness::Monitor| {
+        let out = std::process::Command::new("ps")
+            .args(["eww", "-o", "command=", "-p", &m.pid().to_string()])
+            .output()
+            .expect("ps runs");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let first = harness::Monitor::spawn_remote(harness::Kind::V1, port, &base, Some(&stores));
+    let moved = first.port;
+    assert_ne!(moved, port, "the held port moved the first monitor");
+    let trusted = format!("AGENT_MONITOR_TRUSTED_HOSTS={}:{moved}", harness::REMOTE_HOST);
+    assert!(
+        environment(&first).contains(&trusted),
+        "the first monitor trusts the name on its port: {}",
+        environment(&first)
+    );
+    let again = harness::Monitor::respawn(first, &base, Some(&stores), true);
+    assert_eq!(again.port, moved, "the restart serves where the page is");
+    assert_eq!(again.key, port, "over the same scratch");
+    let said = environment(&again);
+    assert!(said.contains(&trusted), "the restart keeps its environment: {said}");
+    let reply = loopback_get(again.port, "/manifest.webmanifest", Duration::from_secs(10));
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    drop(again);
+
+    let base = harness::base("held-port-respawn-args");
+    let stores = harness::Stores::new(&base);
+    let first = harness::Monitor::spawn_with_args(
+        harness::Kind::V1,
+        port,
+        &base,
+        Some(&stores),
+        true,
+        &[("CR_RESPAWN_MARK", "kept")],
+        &["--agents", "claude,codex"],
+    );
+    let again = harness::Monitor::respawn(first, &base, Some(&stores), true);
+    let said = environment(&again);
+    assert!(
+        said.contains("CR_RESPAWN_MARK=kept"),
+        "the restart keeps the spawn's extra environment: {said}"
+    );
+    assert!(
+        said.contains("--agents claude,codex"),
+        "the restart keeps the spawn's extra arguments: {said}"
+    );
+    drop(held);
+}
+
 /// #309 — the owner saw `agent-monitor --pair` print `session 72b570af…: no such transcript` right
 /// after it started, for a valid transcript: a tab left open on it polled before any page had
 /// fetched the session list, and the service can only serve ids a scan has SHOWN it. A `/pull` for
