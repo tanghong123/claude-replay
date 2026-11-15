@@ -15,7 +15,9 @@ pub mod cost;
 mod desktop_sessions;
 pub mod dialog;
 pub mod index;
-/// What each release publishes for a host that mounts the session view and list (#s432).
+// What each release publishes for a host that mounts the session view and list (#s432); its own
+// docs are kit.rs's, whose links resolve there (an outer doc here would merge with them and move
+// their links to the crate root, where `files` is not in scope).
 pub mod kit;
 pub mod layout;
 pub mod pair_phone;
