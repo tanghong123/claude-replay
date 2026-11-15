@@ -1389,6 +1389,35 @@ class VirtualWindow {
     return { source: "anchor", key: next.dataset.unitKey, index: from + 1 + shift, top, block: null, blockTop: 0, at: this.frame.scrollTop(), fallback: null };
   }
 
+  /** The focus, when it is inside a mounted unit: that unit's key, the child positions from the
+   *  unit down to the focused element, and what kind of element it is (#s504). */
+  focusInside() {
+    const active = this.mount.ownerDocument?.activeElement;
+    if (!active || active === this.mount || !this.mount.contains(active)) return null;
+    const path = [];
+    let node = active;
+    while (node.parentElement && node.parentElement !== this.mount) {
+      path.unshift(Array.prototype.indexOf.call(node.parentElement.children, node));
+      node = node.parentElement;
+    }
+    if (!node.dataset.unitKey) return null;
+    return { element: active, key: node.dataset.unitKey, path, tag: active.tagName, role: active.classList[0] || "" };
+  }
+
+  /** Gives the focus back to a unit drawn again (#s504): to the element at the same place in its
+   *  new markup, when it is the same kind of element (its tag and its first class) and nothing else
+   *  has taken the focus meanwhile. A unit that left the window, or changed its shape, gets none. */
+  refocus(focused) {
+    if (!focused || focused.element.isConnected) return;
+    const doc = this.mount.ownerDocument, now = doc.activeElement;
+    if (now && now !== doc.body && now !== doc.documentElement) return;
+    let node = [...this.mount.children].find(child => child.dataset.unitKey === focused.key);
+    for (const at of focused.path) node = node?.children[at];
+    if (!node || node.tagName !== focused.tag || (node.classList[0] || "") !== focused.role) return;
+    node.focus({ preventScroll: true });
+    this.trace("refocused", { key: focused.key, depth: focused.path.length });
+  }
+
   /** Mount exactly `[lo, hi)`, reusing what is already right. `dirtyFrom` is the first index
    *  whose content changed (0 rebuilds everything mounted), or a bounded run `{from, to}` whose
    *  content changed and nothing after it. The mutation step of a mount transaction: it never
@@ -1405,6 +1434,11 @@ class VirtualWindow {
     const dirty = ranged ? dirtyFrom : { from: dirtyFrom, to: Infinity };
     if ((dirty.from === Infinity || (ranged && (dirty.from >= hi || dirty.to <= lo))) && lo === this.lo && hi === this.hi) return null;
 
+    // A unit drawn again takes its old markup with it, and the browser hands the focus of anything
+    // inside it to the body: a fold head the reader stepped to with j/k lost it when the session grew,
+    // and the next j/k started over from the last head (#s504). Where the focus is goes in as a path
+    // in its unit, and comes back once the pads are written (`refocus`).
+    const focused = this.focusInside();
     this.observer.disconnect();
     for (const child of [...this.mount.children]) {
       const index = Number(child.dataset.unitIndex);
@@ -1477,6 +1511,7 @@ class VirtualWindow {
     else this.mountedHidden = [...this.mountedHidden.filter(element => element.isConnected), ...fresh];
     this.measureMounted();
     this.updatePads();
+    this.refocus(focused);
     for (const child of this.mount.children) this.observer.observe(child, { box: "border-box" });
     this.afterRender();
     this.trace("reconciled", { dirtyFrom: dirtyFrom === Infinity ? null : dirtyFrom, anchor: p0 && p0.key ? p0.key : null, fresh: fresh.length, estimate: this.count ? Math.round(this.estimateAt(0)) : null });
