@@ -919,7 +919,10 @@ workflow), the two components for a host to mount from a pinned release. Its `bu
 `claude-monitor/kit/index.js` and every module that imports, walked from it and taken from `ui::asset()`
 byte for byte (`src/kit.rs`), so a new import joins the kit by itself; a new mount option or optional
 control goes in `kit/index.d.ts` too (`the_declarations_follow_each_components_options` refuses one
-missing), and the guide (`kit/embedding-guide.md`) says it for a host.
+missing), and the guide (`kit/embedding-guide.md`) says it for a host. The kit offers only what the
+owner ruled a host may change and what mounting needs: an option it withholds (`VIEW_WITHHELD`,
+`LIST_WITHHELD` in `kit.rs`: the frame, the app's own chrome, `keyboard`'s `"page"` mode) is offered
+only once the owner rules on it.
 
 `claude-monitor/tests/ui_contract.mjs` holds the frontend contract that only JS can answer.
 It runs from `cargo test` (via `tests/ui_contract.rs`, which SKIPS when node is missing) and as

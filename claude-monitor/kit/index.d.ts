@@ -4,63 +4,46 @@
 // MOUNT_OPTIONS and OPTIONAL_CONTROLS. docs/embedding-guide.md walks a host through them.
 //
 // They declare what a host is offered: what the owner ruled a host may change (light or dark, the
-// optional controls, the events, keys only while the reader works in a part, and the room the view
-// may ask for) and what mounting a part needs. The options agent-monitor's own page and the native
-// app use beside those (the view's frame, back-to-the-list and pane-layout controls; the list's
-// native-mode projects and its placing of its parts in a host's bar) are the components' own and
-// not offered here.
+// optional controls, the events, and the room the view may ask for), what mounting a part needs, and
+// nothing more. Each part binds its own keys and answers them only while the reader's last press or
+// focus is inside it, as ruled; a key it has no action for stays the host's. The options
+// agent-monitor's own page and the native app use beside those (the view's frame, back-to-the-list
+// and pane-layout controls; the list's native-mode projects and its placing of its parts in a host's
+// bar; the app's own keymap, which takes every key and calls the parts' key actions) are the
+// components' own and not offered here, and nor is what the backend handle holds for the parts
+// beyond its base and pairing.
 
 export type Theme = "light" | "dark";
-
-/** "engaged" (the default): the component binds its own keys and answers them only while the
- *  reader works inside it. "page": it binds none, and the host calls the handle's `keys`. */
-export type KeyboardMode = "engaged" | "page";
 
 // ------------------------------------------------------------------------------- the backend
 
 export interface BackendHandleOptions {
-  /** "" for the page's own origin (the default), a same-origin prefix ("/agents/monitor"), or an
-   *  absolute origin, with or without a path. A trailing slash is dropped. */
+  /** Where the server's routes answer: "" for the page's origin, a same-origin prefix
+   *  ("/agents/monitor"), or the page's origin with a path. A trailing slash is dropped. */
   base?: string;
-  /** How a fetch carries credentials: "same-origin" (the default) sends the page origin's cookie. */
-  credentials?: RequestCredentials;
-  /** Whether the reader is at the server's machine: it decides between "show in the file manager"
-   *  and a download. By default, for the page's own origin, whether the page loaded from a loopback
-   *  host; for an absolute base, whether that base is one. */
-  local?: boolean;
-  /** The base that serves the server's pinned mdrev (`/mdrev/<version>/`, `/markdown`,
-   *  `/api/mdrev/`); the handle's own base unless the host serves mdrev elsewhere. */
-  mdrev?: string;
-  /** The mdrev release that server pins ("" for none), or a function that reads it. */
-  mdrevVersion?: string | (() => string);
-  /** The server was found serving another mdrev release than the page was given. */
-  onMdrevMoved?: (version: string) => void;
-  /** Whether the server gates its readers behind pairing: it decides whether writes are offered and
-   *  whether an agent's HTML page may run in the artifact pane. */
+  /** Whether the server gates its readers behind pairing (false by default): it decides whether
+   *  writes are offered and whether an agent's HTML page may run in the artifact pane. */
   paired?: boolean;
-  /** The server's own version, when it says. */
-  version?: string | null;
+  /** The mdrev release the server pins ("" for none, the default, and Markdown shows as plain
+   *  text), or a function that reads it. */
+  mdrevVersion?: string | (() => string);
+  /** The base that serves that mdrev (`/mdrev/<version>/`, `/markdown`, `/api/mdrev/`): the
+   *  handle's own base unless the host serves mdrev elsewhere. */
+  mdrev?: string;
 }
 
+/** A handle on one server. What else it holds is the parts' own. */
 export interface BackendHandle {
   readonly base: string;
-  readonly local: boolean;
   readonly paired: boolean;
-  readonly version: string | null;
-  mdrevVersion(): string;
-  mdrevMoved(version: string): void;
-  /** The URL of a server path (it must start with "/"). */
-  url(path: string): string;
-  fetch(path: string, init?: RequestInit): Promise<Response>;
-  mdrevUrl(path: string): string;
-  mdrevFetch(path: string, init?: RequestInit): Promise<Response>;
 }
 
 /** A handle on one server that answers the backend contract (docs/backend-contract.md). */
 export function backendHandle(options?: BackendHandleOptions): BackendHandle;
 
 /** Point both components at a server; call it before mounting them. The view's `backend` option
- *  does the same. Until either is called, they read the page's own origin. */
+ *  does the same. Until either is called they read the server at the directory of the page's
+ *  address, as unpaired unless the page's body says `data-paired="true"`: pass a handle. */
 export function useBackend(handle: BackendHandle): void;
 
 /** A row of `GET /api/sessions` (docs/backend-contract.md, "The session list"). */
@@ -94,10 +77,10 @@ export interface SessionViewOptions {
   /** The box around the view: a phone's sheets are measured against it, and it is moved back over
    *  iOS's page scroll while the keyboard is up. */
   grid: HTMLElement;
+  /** The server the view reads; see `useBackend` for what it reads without one. */
   backend?: BackendHandle;
   /** The optional controls, each shown unless it is `false`. */
   show?: SessionViewControls;
-  keyboard?: KeyboardMode;
   /** Left out, the view offers no writes. */
   write?: WriteOptions;
   /** The session the host has selected ("" or null for none). */
@@ -137,8 +120,6 @@ export interface SessionViewHandle {
   writeChanged(): void;
   resized(): void;
   setTheme(theme: Theme): void;
-  /** The view's key actions, by name, for a host in "page" mode. */
-  readonly keys: Readonly<Record<string, (event?: KeyboardEvent) => unknown>>;
   closePane(): void;
   /** Remember the reader's choices of the view now. */
   persist(): void;
@@ -163,7 +144,6 @@ export interface SessionListControls {
 export interface SessionListOptions {
   theme?: Theme;
   show?: SessionListControls;
-  keyboard?: KeyboardMode;
   /** Remember the list's choices, at each moment the list changes one: pass the kit's `persist`. */
   persist?(): void;
   /** The reader chose a session; the host opens it and calls the handle's `select(id)`. */
@@ -188,8 +168,6 @@ export interface SessionListHandle {
   selected(): string;
   /** A selection the host made: the list takes it, marks it read and draws it, and says nothing. */
   select(id: string): void;
-  /** The list's key actions, `"list-next"` and `"list-prev"`, each `false` when it moves nothing. */
-  readonly keys: Readonly<Record<string, () => boolean>>;
   setTheme(theme: Theme): void;
   /** Take the list away; every other member then does nothing. */
   unmount(): void;

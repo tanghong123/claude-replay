@@ -9,7 +9,8 @@
 //!   the view's and the list's stylesheets; and `index.d.ts`, what the two take and answer;
 //! - `docs/`: the guide (`kit/embedding-guide.md`, this release's facts written in) and the
 //!   backend contract (`docs/backend-contract.md`);
-//! - `conform.mjs`: the conformance check a host runs against its own server (#s434).
+//! - `conform.mjs`: the conformance check a host runs against its own server (#s434);
+//! - `LICENSE`: the repository's, which the modules are copies under.
 //!
 //! `cargo run -p claude-monitor --example kit -- <dir>` writes it, and `scripts/kit.sh` packs it as
 //! the release's `agent-monitor-kit-<version>.tar.gz` and its `.sha256`, which the Release workflow
@@ -27,6 +28,7 @@ const TYPES: &str = include_str!("../kit/index.d.ts");
 const GUIDE: &str = include_str!("../kit/embedding-guide.md");
 const CONFORM: &str = include_str!("../kit/conform.mjs");
 const CONTRACT: &str = include_str!("../../docs/backend-contract.md");
+const LICENSE: &str = include_str!("../../LICENSE");
 
 /// The stylesheets the kit carries beside the modules: the view's and the list's.
 const STYLESHEETS: [&str; 2] = ["session-view.css", "session-list.css"];
@@ -158,6 +160,7 @@ pub fn files() -> Result<Vec<(String, Vec<u8>)>, String> {
         CONTRACT.as_bytes().to_vec(),
     );
     out.insert("conform.mjs".to_string(), CONFORM.as_bytes().to_vec());
+    out.insert("LICENSE".to_string(), LICENSE.as_bytes().to_vec());
     Ok(out.into_iter().collect())
 }
 
@@ -335,8 +338,12 @@ mod tests {
     /// view's frame is the native app's (#s436: "For native app is fine, this one is controlled by
     /// me"); its back-to-the-list, parent and pane-layout controls are the app's own chrome; the
     /// list's projects are native mode's, and its placing of its parts in a host's bar and layers
-    /// is the app's. Offering one is a contract change for the owner to rule on first.
-    const VIEW_WITHHELD: [&str; 6] = [
+    /// is the app's. `keyboard` is the app's too: its one choice besides the default, `"page"`,
+    /// hands every key to the host's own keymap, where #s436 offered keys answered only while the
+    /// reader works in the part, which is the default. Offering one is a contract change for the
+    /// owner to rule on first.
+    const VIEW_WITHHELD: [&str; 7] = [
+        "keyboard",
         "frame",
         "parentShown",
         "openList",
@@ -344,7 +351,8 @@ mod tests {
         "paneLayout",
         "paneCount",
     ];
-    const LIST_WITHHELD: [&str; 5] = [
+    const LIST_WITHHELD: [&str; 6] = [
+        "keyboard",
         "projectTree",
         "projectActions",
         "newSession",
@@ -427,6 +435,63 @@ mod tests {
                 .all(|(_, required)| !required),
             "every option of the list is optional"
         );
+    }
+
+    /// A check of the walk that does not share its parser: every string in a bundled module that
+    /// reads as a relative path, in any quotes and wherever it stands (an import of a form the walk
+    /// does not read, a `new URL("./x.js", …)`), names a file of the bundle; none is a template
+    /// literal, whose path the kit cannot know; and no module asks `import.meta`, whose answer is
+    /// the host's path, not ours.
+    #[test]
+    fn every_relative_path_a_bundled_module_names_is_in_the_bundle() {
+        let kit = kit();
+        let mut named = 0;
+        for name in modules().unwrap() {
+            let source = text(&kit, &format!("bundle/{name}"));
+            assert!(
+                !source.contains("import.meta"),
+                "{name} reads import.meta, which names the host's path"
+            );
+            for quote in ['"', '\'', '`'] {
+                for lead in ["./", "../"] {
+                    let open = format!("{quote}{lead}");
+                    for (at, _) in source.match_indices(&open) {
+                        let rest = &source[at + 1..];
+                        let spec = &rest[..rest.find(quote).unwrap_or(rest.len())];
+                        assert!(
+                            quote != '`',
+                            "{name} builds a relative path in a template literal: {spec}"
+                        );
+                        let path = resolve(dir_of(&name), spec).unwrap();
+                        assert!(
+                            kit.contains_key(&format!("bundle/{path}")),
+                            "{name} names {spec}, which is not in the kit's bundle"
+                        );
+                        named += 1;
+                    }
+                }
+            }
+        }
+        assert!(named > 40, "the modules name {named} relative paths");
+    }
+
+    /// The backend handle's declared options are options `backendHandle` takes, by name.
+    #[test]
+    fn the_handles_declared_options_are_its_own() {
+        let backend = include_str!("codex-ui/backend.js");
+        let start = backend.find("export function backendHandle({").unwrap();
+        let params = &backend[start..];
+        let params = &params[params.find('{').unwrap() + 1..params.find('}').unwrap()];
+        let taken: BTreeSet<&str> = params
+            .split(',')
+            .map(|param| param.split('=').next().unwrap().trim())
+            .collect();
+        let declared = members(TYPES, "BackendHandleOptions");
+        assert!(!declared.is_empty());
+        for (name, required) in &declared {
+            assert!(taken.contains(name.as_str()), "backendHandle takes {name}");
+            assert!(!required, "{name} is optional");
+        }
     }
 
     #[test]

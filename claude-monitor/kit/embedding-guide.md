@@ -24,6 +24,7 @@ agent-monitor-kit-{{version}}/
     embedding-guide.md       this guide
     backend-contract.md      the routes the parts read, contract version {{contract}}
   conform.mjs              the conformance check: run it against your server
+  LICENSE                  the licence the modules are copies under
 ```
 
 Check the download against the digest the release publishes beside it,
@@ -92,8 +93,11 @@ own containers (`.your-bar .active`), and keep blanket rules (`* { … }`, `div 
 `button { … }`) out of your page.
 
 The parts remember the reader's choices (reading size, outline, folds, the filter) in your
-origin's `localStorage`, and the reader's place in each session in its `sessionStorage`, all under
-keys that start with `am-`.
+origin's `localStorage`, and the reader's place in each session in its `sessionStorage`, under keys
+that start with `am-`. Two more are ours: `mdrev-held:` keys in `sessionStorage` carry a document
+the artifact pane opens in a tab of its own, and a `localStorage` key named `viewportTrace`, if you
+set it, turns on a debugging trace. mdrev's reader in the artifact pane keeps its own reading
+choices under names of its own.
 
 ## 5. Mounting the session view
 
@@ -133,12 +137,11 @@ The options, each in `index.d.ts`:
   (the view asks you to select one), and `renderList`, `refreshIndex`, `pauseIndex`,
   `resumeIndex` (your list and its index, for the compose box's controls).
 - **`theme`**: `"light"` (the default) or `"dark"`; `setTheme` changes it later.
-- **`backend`**: the handle above. Without it, the page's own origin.
+- **`backend`**: the handle above. Pass one: without it the parts read the server at the
+  directory of your page's address, as an unpaired one unless your page's body says
+  `data-paired="true"`.
 - **`show`**: the optional controls, each shown unless `false`: `reading` (the Reading menu and
   its keys), `history` (the viewport history's Save), `detach` (the artifact pane's ↗).
-- **`keyboard`**: `"engaged"` (the default) binds the view's keys and answers them only while the
-  reader's last press or focus is inside it; a key it has no action for stays yours. `"page"`
-  binds none, and you call the handle's `keys[action]()` from your own keymap.
 - **`write`**: `{ on(), confirm(ask) }`, for writing to a session. Left out, the view offers no
   writes. `on()` says whether the reader switched writing on (call `writeChanged()` when it
   changes); `confirm({ title, text, passcode })` asks before the server types into a live pane,
@@ -151,12 +154,15 @@ The options, each in `index.d.ts`:
 
 Any other option name is refused, so a misspelt one fails at once.
 
+The view binds its own keys and answers them only while the reader's last press or focus is inside
+it, so your page keeps its keys everywhere else; a key the view has no action for stays yours.
+
 The handle: `select(id)` and `open(id)` to show a session, `session()`, `close(title, detail)`,
-`indexChanged()` when your rows change, `writeChanged()`, `resized()`, `setTheme(theme)`, `keys`,
+`indexChanged()` when your rows change, `writeChanged()`, `resized()`, `setTheme(theme)`,
 `closePane()`, `persist()`, and `unmount()`, which stops everything the view started and leaves
 your element empty. After `unmount()` every other member does nothing. The list's handle is in
 `index.d.ts` too: `start()`, `stop()`, `refresh()`, `redraw()`, `rows()`, `row(id)`,
-`workers(id)`, `selected()`, `select(id)`, `keys`, `setTheme(theme)` and `unmount()`.
+`workers(id)`, `selected()`, `select(id)`, `setTheme(theme)` and `unmount()`.
 
 ## 6. Mounting the session list
 
@@ -173,9 +179,9 @@ list.start();
 The list reads `GET /api/sessions` every 5 seconds between `start()` and `stop()`. It reads
 through the backend the view was given, or the one `useBackend(handle)` names: call it before you
 mount the list on its own. Its options, each optional, are in `index.d.ts`: `theme`, `show`
-(`filter`, `hiding`, `arrangements`, each shown unless `false`), `keyboard`, `persist`, `onOpen`,
-`onIndex` and `onToast`. Pass the kit's `persist` so the list remembers the reader's folds, filter
-and read marks.
+(`filter`, `hiding`, `arrangements`, each shown unless `false`), `persist`, `onOpen`, `onIndex`
+and `onToast`. Its keys, like the view's, answer only while the reader works in it. Pass the
+kit's `persist` so the list remembers the reader's folds, filter and read marks.
 
 The list hands you the reader's choice (`onOpen`) and moves its selection only when you call
 `select(id)`, so you can keep the reader where they are.
