@@ -523,7 +523,7 @@ Array.prototype.forEach.call(root.querySelectorAll(SEL), function (e) {
 // outside a layer parked by its own state. The view's own clip is left out on purpose: what it cuts
 // is still a part laid out past its edge. Its `scrollWidth` is kept as `viewScroll`, for reference
 // only, since it counts the shut pane parked past the edge, which nobody sees.
-var holdsFixed = function (cs) { return cs.transform !== 'none' || cs.filter !== 'none' || cs.perspective !== 'none' || /paint|layout|strict|content/.test(cs.contain) || /transform|filter|perspective/.test(cs.willChange); };
+var holdsFixed = function (cs) { return cs.transform !== 'none' || cs.filter !== 'none' || (cs.backdropFilter || cs.webkitBackdropFilter || 'none') !== 'none' || cs.perspective !== 'none' || /paint|layout|strict|content/.test(cs.contain) || /transform|filter|perspective/.test(cs.willChange); };
 var drawn = function (e) { var r = e.getBoundingClientRect(), l = r.left, rt = r.right, free = getComputedStyle(e).position === 'fixed';
   for (var n = e.parentElement; n && n !== v && rt > l; n = n.parentElement) { var cs = getComputedStyle(n);
     if (free) { if (!holdsFixed(cs)) continue; free = false; }
@@ -531,15 +531,17 @@ var drawn = function (e) { var r = e.getBoundingClientRect(), l = r.left, rt = r
     if (cs.position === 'fixed') free = true; }
   return { l: l, r: rt }; };
 var beyond = [], past = 0;
-if (v) { var walk = function (e) { Array.prototype.forEach.call(e.children, function (c) {
+// The outermost box past the edge is named; the walk goes on inside it for the number alone, since
+// a part of it may reach further still.
+if (v) { var walk = function (e, naming) { Array.prototype.forEach.call(e.children, function (c) {
   if (c.matches(SKIP) || parked(c)) return;
   var r = c.getBoundingClientRect();
   if (c.getClientRects().length && r.width >= 1 && r.height >= 1 && (r.right > vr.right + 1 || r.left < vr.left - 1)) {
     if (!shown(c)) return;
     var d = drawn(c), over = Math.max(d.r - vr.right, vr.left - d.l);
-    if (d.r > d.l && over > 1) { past = Math.max(past, Math.round(over)); beyond.push(name(c) + ' ' + Math.round(d.l) + '\u2013' + Math.round(d.r)); return; }
+    if (d.r > d.l && over > 1) { past = Math.max(past, Math.round(over)); if (naming) beyond.push(name(c) + ' ' + Math.round(d.l) + '\u2013' + Math.round(d.r)); walk(c, false); return; }
   }
-  walk(c); }); }; walk(v); }
+  walk(c, naming); }); }; walk(v, true); }
 return {
   size: W + 'x' + H, dpr: devicePixelRatio, coarse: matchMedia('(pointer:coarse)').matches,
   app: app ? Array.prototype.slice.call(app.classList) : null,
