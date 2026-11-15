@@ -685,8 +685,8 @@ fn a_tab_of_held_text_survives_a_monitor_restart() {
         OWN,
     );
 
-    drop(m); // the monitor goes, and the text it held with it
-    let m = Monitor::spawn(Kind::V1, 2828, &base, Some(&stores), false);
+    // The monitor goes, and the text it held with it; the new one serves where the tab is (#s495).
+    let m = Monitor::respawn(m, &base, Some(&stores), false);
     own.reload(false, None).unwrap();
     own.wait_until_navigated().unwrap();
     until(
@@ -699,8 +699,7 @@ fn a_tab_of_held_text_survives_a_monitor_restart() {
     assert_eq!(own_h1(&own), "Field notes");
 
     eval(&own, "sessionStorage.clear(); 'ok'");
-    drop(m);
-    let _m = Monitor::spawn(Kind::V1, 2828, &base, Some(&stores), false);
+    let _m = Monitor::respawn(m, &base, Some(&stores), false);
     own.reload(false, None).unwrap();
     own.wait_until_navigated().unwrap();
     until(
