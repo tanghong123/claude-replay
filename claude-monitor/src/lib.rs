@@ -15,6 +15,8 @@ pub mod cost;
 mod desktop_sessions;
 pub mod dialog;
 pub mod index;
+/// What each release publishes for a host that mounts the session view and list (#s432).
+pub mod kit;
 pub mod layout;
 pub mod pair_phone;
 pub mod root_claim;
