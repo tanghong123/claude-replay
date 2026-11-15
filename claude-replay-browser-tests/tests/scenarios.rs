@@ -15451,6 +15451,11 @@ fn scenario_a_focused_fold_head_keeps_its_focus_through_growth(
     let after = read();
     eprintln!("s504 {surface:?}: before {before}; after the growth {after}");
     assert_eq!(
+        after["oldConnected"],
+        serde_json::json!(false),
+        "{surface:?}: premise, the growth drew the head's unit again: {after}"
+    );
+    assert_eq!(
         after["id"], before["id"],
         "{surface:?}: after the growth the same head has the focus: before {before}, after {after}"
     );
@@ -15501,6 +15506,127 @@ fn app_shell_a_focused_fold_head_keeps_its_focus_through_growth() {
     let fx = growth_focus_fixture("growth-focus-app");
     let page = open(Surface::AppShell, &fx, 3136);
     scenario_a_focused_fold_head_keeps_its_focus_through_growth(&page.tab, Surface::AppShell, &fx);
+}
+
+/// #s504's review, the restore's two wrong elements, in the app shell. A place in a unit is counted
+/// in its old markup and followed in the new one, so (1) the search's `<mark>`s, which the old
+/// markup has and the new one gets only after it is drawn, must not count, and (2) a queued prompt
+/// picked up moves the next one into its place (#165), which must not be given the focus. Either
+/// way the focus may stay on the body, as before #s504; it must never go to another element.
+fn growth_focus_review_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("tally the tern colony", &now_minus(90));
+    t += &harness::bash_call_at("wc -l nests.txt", "t-504-bash", &now_minus(85));
+    t += &tool_result_lines("t-504-bash", 3, &now_minus(84));
+    t += &assistant_at(
+        "see [the north spit](https://example.com/north) and [the south spit](https://example.com/south) first",
+        &now_minus(80),
+    );
+    t += &read_tool_at("t-504-read", "/tmp/burrows.txt", &now_minus(75));
+    t += &tool_result_lines("t-504-read", 4, &now_minus(74));
+    t += &queued_at("queued one: count the skua burrows", &now_minus(70));
+    t += &queued_at("queued two: then the petrel nests", &now_minus(65));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// What has the focus in the app shell: a link by its address, an element by its tag and its
+/// record's text, or the body.
+fn review_focus(tab: &headless_chrome::Tab) -> String {
+    let focus = "(function(){ var a = document.activeElement; if (!a || a === document.body) return 'body'; if (a.tagName === 'A') return 'link ' + a.getAttribute('href'); var r = a.closest('[data-block-index]'); return a.tagName + ' ' + (r ? r.textContent.replace(/\\s+/g, ' ').trim().slice(0, 80) : ''); })()";
+    eval(tab, focus).as_str().unwrap_or("").to_string()
+}
+
+/// The session grows by a prompt and its reply, and the page has drawn them.
+fn review_grow(tab: &headless_chrome::Tab, fx: &Fixture, prompt: &str, reply: &str, age: u64) {
+    let height = eval(tab, "document.getElementById('transcript').scrollHeight")
+        .as_i64()
+        .unwrap_or(0);
+    harness::append(&fx.path, &user_at(prompt, &now_minus(age)));
+    harness::append(&fx.path, &assistant_at(reply, &now_minus(age - 2)));
+    until(
+        tab,
+        &format!("document.body.textContent.includes({reply:?}) || document.getElementById('transcript').scrollHeight > {height} + 40"),
+        "the prompt and the reply to arrive",
+        Duration::from_secs(20),
+        "document.getElementById('transcript').scrollHeight",
+    );
+    settle();
+    settle();
+}
+
+/// (1) A search marks "see" before the first link of the progress line; the reader focuses that
+/// link; the session grows. The restored focus is that link or the body, never the second link.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_focus_restored_after_growth_counts_no_search_mark() {
+    let _serial = serial();
+    let fx = growth_focus_review_fixture("growth-focus-marks-app");
+    let page = open(Surface::AppShell, &fx, 3137);
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
+    settle();
+    let hits = harness::search(tab, Surface::AppShell, "see");
+    assert!(
+        hits >= 1,
+        "premise, the search finds the progress line: {hits} hits"
+    );
+    settle();
+    let north = "#transcript a[href=\"https://example.com/north\"]";
+    eval(tab, &format!("(function(){{ var l = document.querySelector({north:?}); if (l) l.focus(); return 'ok'; }})()"));
+    let before = review_focus(tab);
+    let marked = eval(tab, &format!("(function(){{ var l = document.querySelector({north:?}); return !!l && !!l.parentElement.querySelector(':scope > mark'); }})()"));
+    assert!(
+        before == "link https://example.com/north" && marked == serde_json::json!(true),
+        "premise, the first link has the focus with a search mark before it: {before}, marked {marked}"
+    );
+    review_grow(tab, &fx, "now the burrows", "Twelve burrows.", 40);
+    let after = review_focus(tab);
+    eprintln!("s504 review (1): before {before}; after the growth {after}");
+    assert!(
+        after == before || after == "body",
+        "the search's marks moved the restored focus to another element: before {before}, after {after}"
+    );
+}
+
+/// (2) The reader focuses the first queued prompt's head; the agent picks that prompt up, and the
+/// next queued prompt moves into its place (#165). The focus must not go to that one.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_focus_restored_after_a_pickup_is_not_the_next_queued_prompt() {
+    let _serial = serial();
+    let fx = growth_focus_review_fixture("growth-focus-pickup-app");
+    let page = open(Surface::AppShell, &fx, 3138);
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
+    settle();
+    let heads = eval(tab, "(function(){ var hs = [...document.querySelectorAll('#transcript button.renderer-head')].filter(function (h) { var r = h.closest('[data-block-index]'); return r && r.textContent.includes('queued one'); }); if (hs[0]) hs[0].focus(); return hs.length; })()");
+    let queued = review_focus(tab);
+    assert!(
+        queued.starts_with("BUTTON") && queued.contains("queued one"),
+        "premise, the first queued prompt's head has the focus: {queued} ({heads} heads)"
+    );
+    review_grow(
+        tab,
+        &fx,
+        "queued one: count the skua burrows",
+        "Eleven burrows.",
+        20,
+    );
+    let picked = review_focus(tab);
+    eprintln!("s504 review (2): before {queued}; after the pickup {picked}");
+    assert!(
+        !picked.contains("queued two"),
+        "a pickup gave the focus to the next queued prompt's head: before {queued}, after {picked}"
+    );
 }
 
 /// #299 — the owner: "the icons for various agents are hardly recognizable, please use the
