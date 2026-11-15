@@ -2240,6 +2240,7 @@
   function landOn(id, dy) {
     var ti = idIndex[id];
     if (ti == null) return false;
+    stepLanded = null; // as in goTo (#s487)
     vw.jumpTo({ index: ti, top: dy }, { intent: true });
     updateView();
     return true;
@@ -2798,6 +2799,8 @@
   /// `pin`: "acquire" for a turn step, which keeps following only at the true end (#s487).
   function goTo(target, instant, keepIfVisible, pin) {
     if (!target) return;
+    // Any move but a turn step's own ends the step's hold on the current turn (#s487, at stepTurn).
+    if (pin !== "acquire") stepLanded = null;
     for (var p = target; p; p = p.parentElement) {
       if (p.classList && p.classList.contains("fold")) setFold(p, true);
     }
@@ -2816,6 +2819,7 @@
   function goToId(id, pin) {
     var ti = idIndex[id];
     if (ti == null) return;
+    if (pin !== "acquire") stepLanded = null; // as in goTo (#s487)
     withChain(records[ti], id, function (n) { if (isFoldRec(n)) n.open = 1; });
     // One transaction (framework §4.10): the record at GOTO_Y with its opened chain re-rendered
     // (`dirtyFrom`), the window around it, the landing held through the measure that replaces
@@ -3674,19 +3678,32 @@
   // went to N-2. The turn a step landed stays the bar's while the view is where the step left it:
   // within the end rule's slack the bar named the LAST turn, and a step that moved nothing (N-1
   // already in view at the end) would have counted from N again. `stepLanded` is that turn's id
-  // and its header's top as it landed; the reader's input, the jump to the latest and the next
-  // step end it, and so does any move of the view, read by the header's place.
+  // and its header's top as it landed; the reader's input on the transcript, the jump to the
+  // latest, the next step and every other commanded move (`goTo`, `goToId`, `landOn`: the sidebar,
+  // the bar, search, the filter, a deep link) end it, and so does any move of the view, read by the
+  // header's place. A commanded move that moves nothing (a click on turn N in the sidebar while the
+  // end of the session holds the view) leaves the header where it was, so only ending it there
+  // keeps the bar from naming the turn the step landed.
   var stepLanded = null;
   function landedTurn() {
     var at = stepLanded;
     if (!at) return null;
     var e = document.getElementById(at.id);
     if (!e || e.dataset.idx == null || Math.abs(e.getBoundingClientRect().top - at.top) > 1) return null;
-    return records[idIndex[at.id]] || null;
+    var rec = records[idIndex[at.id]];
+    return rec && rec.turn != null ? rec : null;
   }
+  // Input on the transcript only, as the app shell's (`readerMoves`): here the WINDOW is the
+  // transcript's scroller, so input anywhere it scrolls counts (the stream, its margins, the bar
+  // over it), but a wheel over the sidebar or the task panel scrolls that panel and leaves the
+  // reader where the step put them.
   var SCROLL_KEYS = { ArrowUp: 1, ArrowDown: 1, PageUp: 1, PageDown: 1, Home: 1, End: 1, " ": 1 };
+  function onTranscript(t) {
+    return !(t instanceof Element && t.closest("#sidebar, #taskpanel"));
+  }
   ["wheel", "touchmove", "keydown"].forEach(function (ev) {
     window.addEventListener(ev, function (e) {
+      if (!onTranscript(e.target)) return;
       if (ev !== "keydown" || (SCROLL_KEYS[e.key] && !shared.isEditable(e.target))) stepLanded = null;
     }, { capture: true, passive: true });
   });
