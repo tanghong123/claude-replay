@@ -23432,11 +23432,19 @@ fn a_click_in_a_growing_transcript_leaves_its_keys_a_scroller_no_redraw_takes() 
     );
 }
 
-/// #s488's other half: a finger's tap on the transcript's text does not focus it. On a phone a tap
-/// there must not take the focus from a field (and put the keyboard down) for a key nobody presses.
+/// #s488's other half: a finger's or a pen's tap on the transcript's text does not focus it. On a
+/// phone or a tablet a tap there must not take the focus from a field (and put the keyboard down) for
+/// a key nobody presses. Three taps, each from nothing focused and from the search field: Chrome's own
+/// finger tap; a finger's tap whose compatibility mouse press comes late and as a plain mouse press,
+/// as Linux's harness supplies it (#366) and as a slow phone may, which is that tap's and not a
+/// mouse's; and a pen's press.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_tap_on_the_transcript_does_not_focus_it() {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventPointer_TypeOption as Pointer,
+        DispatchMouseEventTypeOption as Mouse, MouseButton,
+    };
     let _serial = serial();
     let (_m, _b, tab, _path) = phone_world_at(3293, "phone-tap-no-focus", 390, 844, "");
     let at = phone_point(
@@ -23444,20 +23452,67 @@ fn a_phone_tap_on_the_transcript_does_not_focus_it() {
         "(function(){ var s = document.getElementById('transcript'), v = s.getBoundingClientRect(); var ps = [].slice.call(s.querySelectorAll('.virtual-window .turn.assistant p')); for (var i = ps.length - 1; i >= 0; i--) { var r = ps[i].getBoundingClientRect(); if (r.height < 4 || r.top < v.top + 80 || r.bottom > v.bottom - 160) continue; var x = r.left + Math.min(30, r.width / 2), y = r.top + r.height / 2, hit = document.elementFromPoint(x, y); if (hit && ps[i].contains(hit)) return [x, y]; } return []; })()",
     );
     let focus = "(function(){ var a = document.activeElement; return a === document.getElementById('transcript') ? 'the transcript' : a ? a.localName + (a.id ? '#' + a.id : '') : 'none'; })()";
-    harness::finger_tap(&tab, at.0, at.1);
-    harness::pause("the tap's click", Duration::from_millis(800));
-    let tapped = harness::eval(&tab, focus);
-    // The search field focused by script, as iOS leaves a tapped button's focus where it was, then a
-    // tap on the text.
-    harness::eval(
-        &tab,
-        "(function(){ document.getElementById('transcriptSearchInput').focus(); return 'ok'; })()",
-    );
-    harness::finger_tap(&tab, at.0, at.1);
-    harness::pause("the tap's click", Duration::from_millis(800));
-    let from_field = harness::eval(&tab, focus);
+    let pen = || {
+        for kind in [Mouse::MousePressed, Mouse::MouseReleased] {
+            tab.call_method(DispatchMouseEvent {
+                Type: kind,
+                x: at.0,
+                y: at.1,
+                modifiers: None,
+                timestamp: None,
+                button: Some(MouseButton::Left),
+                buttons: None,
+                click_count: Some(1),
+                force: Some(0.5),
+                tangential_pressure: None,
+                tilt_x: None,
+                tilt_y: None,
+                twist: None,
+                delta_x: None,
+                delta_y: None,
+                pointer_Type: Some(Pointer::Pen),
+            })
+            .expect("a pen's press");
+        }
+    };
+    let mut seen = Vec::new();
+    for (what, tap) in [
+        ("a finger's tap", 0),
+        ("a finger's tap with a late mouse press", 1),
+        ("a pen's tap", 2),
+    ] {
+        for from_field in [false, true] {
+            harness::eval(
+                &tab,
+                if from_field {
+                    "(function(){ document.getElementById('transcriptSearchInput').focus(); return 'ok'; })()"
+                } else {
+                    "(function(){ if (document.activeElement) document.activeElement.blur(); return 'ok'; })()"
+                },
+            );
+            match tap {
+                0 => harness::finger_tap(&tab, at.0, at.1),
+                1 => harness::finger_tap_late_click(&tab, at.0, at.1, Duration::from_millis(500)),
+                _ => pen(),
+            }
+            harness::pause("the tap's click", Duration::from_millis(800));
+            let on = harness::eval(&tab, focus);
+            seen.push(format!(
+                "{what}{}: {on}",
+                if from_field {
+                    " from the search field"
+                } else {
+                    ""
+                }
+            ));
+        }
+        // Past the window in which a mouse press still counts as the tap's.
+        harness::pause("the tap's window", Duration::from_millis(1200));
+    }
+    eprintln!("#s488 taps: {seen:?}");
     assert!(
-        tapped != serde_json::json!("the transcript") && from_field != serde_json::json!("the transcript"),
-        "a tap leaves the transcript unfocused: after a tap {tapped}, after a tap from the search field {from_field}"
+        seen.iter()
+            .all(|line| !line.ends_with("\"the transcript\"")),
+        "a tap leaves the transcript unfocused: {seen:?}"
     );
 }

@@ -384,12 +384,21 @@ const transcript = byId("transcript");
 // redraw; a press on a control the browser focuses still focuses the control. Only a MOUSE's press
 // does: a finger's or a pen's tap does not focus it (the attribute goes for the tap), since on a phone
 // or a tablet a tap on the text must not put the keyboard down nor take the focus from a field. No
-// ring is drawn for it (`production.css`).
+// ring is drawn for it (`production.css`). A browser sends no pointer events for a tap's
+// compatibility mouse events, but a mouse press that comes after a touch, at its point and within
+// `TAP_MOUSE_MS` of it, is that tap's all the same: Linux's Chrome stops a synthesized tap at
+// `touchend` and its harness supplies the press itself (#366), and a page may be sent one late.
+const TAP_MOUSE_MS = 1000, TAP_MOUSE_PX = 24;
+let lastTouch = null;
+const touched = event => { if (event.pointerType !== "mouse") lastTouch = { at: event.timeStamp, x: event.clientX, y: event.clientY }; };
+const tapsMouse = event => !!lastTouch && event.timeStamp - lastTouch.at < TAP_MOUSE_MS && Math.hypot(event.clientX - lastTouch.x, event.clientY - lastTouch.y) < TAP_MOUSE_PX;
 transcript.tabIndex = -1;
 transcript.addEventListener("pointerdown", event => {
-  if (event.pointerType === "mouse") transcript.tabIndex = -1;
+  if (event.pointerType === "mouse" && !tapsMouse(event)) transcript.tabIndex = -1;
   else transcript.removeAttribute("tabindex");
+  touched(event);
 }, { capture: true, passive: true, signal });
+transcript.addEventListener("pointerup", touched, { capture: true, passive: true, signal });
 const projection = new Projection();
 let landedHash = "";
 // #s277: a link waiting for its turn to arrive, and when it began to wait (`landOnHash`).
