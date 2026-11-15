@@ -18,7 +18,7 @@
 //! box of each part (the session list, the session, the right pane, the outline), the chrome's
 //! controls that a pointer cannot reach at their centre (hit-tested with `elementFromPoint`; what
 //! sits inside a scroller — the transcript, the session tree, the pane's body, the outline's lists —
-//! is left out, as is a layer parked off the window), how far the page, the view and the transcript
+//! is left out, as is a layer parked off the window or, in a host, off the view), how far the page, the view and the transcript
 //! overflow sideways, and the width of the transcript's text column, beside a screenshot.
 //!
 //! Run it from the workspace root, after building the monitor in release:
@@ -428,7 +428,7 @@ Array.prototype.forEach.call(root.querySelectorAll(SEL), function (e) {
   if (getComputedStyle(e).pointerEvents === 'none') return;
   var r = e.getBoundingClientRect(); if (r.width < 2 || r.height < 2) return;
   var layer = e; while (layer && layer !== root) { var lc = getComputedStyle(layer); if (lc.position === 'fixed' || lc.transform !== 'none') break; layer = layer.parentElement; }
-  if (layer && layer !== root) { var lr = layer.getBoundingClientRect(); if (lr.right <= 0 || lr.left >= W || lr.bottom <= 0 || lr.top >= H) return; }
+  if (layer && layer !== root) { var lr = layer.getBoundingClientRect(); if (lr.right <= 0 || lr.left >= W || lr.bottom <= 0 || lr.top >= H || (!app && (lr.left >= vr.right - 0.5 || lr.right <= vr.left + 0.5))) return; }
   checked++;
   var cx = r.left + r.width / 2, cy = r.top + r.height / 2, why = null;
   if (cx < 0 || cx >= W || cy < 0 || cy >= H) why = 'centre off the window';
@@ -1019,11 +1019,31 @@ fn main() {
         let (stores, path) = world(&base);
         let monitor = harness::Monitor::spawn(harness::Kind::V1, PORT, &base, Some(&stores), true);
         let (_browser, tab) = harness::chrome_tab();
+        // One language for every run: the machine's own locale reached mdrev's relative times
+        // ("6 分钟前") and would make two runs on two Macs differ for no reason in the page.
+        {
+            use headless_chrome::protocol::cdp::Emulation;
+            tab.call_method(Emulation::SetLocaleOverride {
+                locale: Some("en-US".into()),
+            })
+            .expect("the locale override");
+        }
         harness::track_idle(&tab);
         harness::mouse_window(&tab, 1280, DESKTOP_H);
         monitor.pair(&tab);
-        let page = include_str!("../tests/fixtures/host/session-view-host.html")
-            .replace("<!--host-policy-->", "");
+        // The host page as the cases serve it, given the pinned mdrev version, so its right pane
+        // shows a Markdown file in mdrev as the app's does (the fixture names none: its cases
+        // read no document there).
+        let fixture = include_str!("../tests/fixtures/host/session-view-host.html");
+        let handle = "backendHandle({ paired: true })";
+        assert!(fixture.contains(handle), "the host fixture makes its backend handle another way");
+        let page = fixture.replace("<!--host-policy-->", "").replace(
+            handle,
+            &format!(
+                "backendHandle({{ paired: true, mdrevVersion: {:?} }})",
+                harness::mdrev_pin()
+            ),
+        );
         harness::answer_in_browser(
             &tab,
             vec![harness::Answer {
