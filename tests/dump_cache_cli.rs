@@ -307,27 +307,49 @@ fn a_withdrawn_reply_streams_as_before_the_mark_on_every_path() {
         ),
     ];
     // Every shape goes on to the retry and a second prompt; the one after a Bash run also ends on
-    // the mark itself, and on the retried run.
-    type Case = (String, Vec<Value>, Vec<&'static str>, Vec<Value>);
+    // the mark itself, and on the retried run. Each case but the one ending on the mark names the
+    // text its stream must end with, read from the transcript and not from a stream: the two streams
+    // compared below go through one writer, so a run that writer dropped at the end would drop from
+    // both alike.
+    type Case = (
+        String,
+        Vec<Value>,
+        Vec<&'static str>,
+        Vec<Value>,
+        Option<&'static str>,
+    );
     let mut cases: Vec<Case> = shapes
         .iter()
-        .map(|(s, w, ids)| (s.to_string(), w.clone(), ids.clone(), retry()))
+        .map(|(s, w, ids)| {
+            (
+                s.to_string(),
+                w.clone(),
+                ids.clone(),
+                retry(),
+                Some("Twelve eggs."),
+            )
+        })
         .collect();
-    let (s, w, ids) = &shapes[2];
+    let (s, w, ids) = shapes
+        .iter()
+        .find(|(s, _, _)| *s == "thinking after a Bash run")
+        .expect("the shape after a Bash run");
     cases.push((
         format!("{s}, ending on the mark"),
         w.clone(),
         ids.clone(),
         Vec::new(),
+        None,
     ));
     cases.push((
         format!("{s}, ending on the retried run"),
         w.clone(),
         ids.clone(),
         retry_run(),
+        Some("wc -l nests.md"),
     ));
     let dir = scratch("withdrawn");
-    for (n, (shape, withdrawn, ids, tail)) in cases.into_iter().enumerate() {
+    for (n, (shape, withdrawn, ids, tail, last)) in cases.into_iter().enumerate() {
         let lines = |marked: bool| -> Vec<String> {
             [
                 vec![prompt()],
@@ -369,6 +391,12 @@ fn a_withdrawn_reply_streams_as_before_the_mark_on_every_path() {
         let (want, err, ok) = run(&dir, &["--dump", "-", "--json", p]);
         assert!(ok, "{shape}: {err}");
         let want = String::from_utf8(want).unwrap();
+        if let Some(last) = last {
+            assert!(
+                want.lines().last().is_some_and(|l| l.contains(last)),
+                "{shape}: premise, the stream ends on what the transcript ends on ({last:?}):\n{want}"
+            );
+        }
         let (got, err, ok) = run(&dir, &["--dump", "-", "--json", m]);
         assert!(ok, "{shape}: {err}");
         assert_eq!(

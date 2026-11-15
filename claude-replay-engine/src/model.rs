@@ -1095,9 +1095,9 @@ pub fn joins_span(b: &Block) -> bool {
 /// would have (`a_second_pass_merges_as_one_pass_would`): a merged run takes more thinking and
 /// calls as its raw parts did, and what it held still follows it. The block stream relies on it to
 /// state a withdrawn reply where it stood (#s500, `block_json::write_blocks`). It holds wherever
-/// thinking carries text, as every adapter's does: a run of thinking with no text and no call
-/// draws nothing and its time goes with it, where one pass would give that time to the thinking
-/// after it.
+/// a thinking carries text or a call, as every adapter's does (Codex's textless thinking always
+/// holds calls): a run of thinking with neither draws nothing and its time goes with it, where one
+/// pass would give that time to the thinking after it.
 pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
     fn flush(
         texts: &mut Vec<String>,
