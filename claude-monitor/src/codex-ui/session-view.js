@@ -97,7 +97,8 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    which the app binds with its list's keys and contexts).
  *    In either mode a mouse's click in the transcript focuses the transcript (#s488), which draws no
  *    focus ring: WebKit sends a key from a pressed node a redraw has replaced to the page and scrolls
- *    nothing. A click inside a box that scrolls on its own, a touch and a pen focus nothing, as before.
+ *    nothing. A click inside a box that scrolls on its own (a wide code block or table, a capped raw
+ *    record) or on the transcript's scrollbar, a touch and a pen leave the focus where it was.
  *  - `write`: what writing to a session needs from the host, which owns write mode; left out, the
  *    view offers no writes (no compose button, no ✎ in a phone's dock, no notice that a session
  *    cannot be written to). An object of two functions:
@@ -399,7 +400,9 @@ const tapsMouse = event => !!lastTouch && event.timeStamp - lastTouch.at < TAP_M
 // A press inside a box of the transcript's that scrolls on its own (a wide code block or table, a
 // capped raw record) leaves the box unfocusable too, as before: with nothing focused the browser
 // starts a key from the pressed node, so the arrows and Page Up/Down scroll that box, where the
-// transcript taking the focus would have sent them past it.
+// transcript taking the focus would have sent them past it. What is left of the bug is there: in
+// Safari, after a click in a wide block of the open turn, a prompt arriving redraws that block and
+// Page Up scrolls nothing again, the original bug limited to wide blocks.
 const scrollsInside = target => {
   for (let node = target?.nodeType === 1 ? target : target?.parentElement; node && node !== transcript; node = node.parentElement) {
     const style = getComputedStyle(node);

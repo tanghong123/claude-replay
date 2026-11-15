@@ -137,8 +137,9 @@ their look to each host. What a host can do:
 A mouse's click in the session view's transcript focuses the transcript, which draws no focus
 ring, so the scroll keys keep scrolling it while the session grows (#s488: Safari scrolled
 nothing once a redraw replaced the paragraph the reader had clicked). A host that reads
-`document.activeElement` after such a click finds the transcript, not its page's body. A touch,
-a pen, and a click inside a wide code block or table focus nothing.
+`document.activeElement` after such a click finds the transcript instead of what it held before.
+A touch, a pen, a press on the transcript's scrollbar, and a click inside a wide code block, a wide
+table or a capped raw record leave the focus where it was.
 
 Where the session view shows an agent's HTML page in a frame, it writes the frame from the page's
 text, and such a frame takes the security policy of the page around it. The native app's policy
