@@ -1579,7 +1579,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(hintFor("search"), /^\/ or (⌘F|Ctrl\+F)$/, "the hint names both keys");
   assert.equal(hintFor("search", { command: false }), "/", "without the command binding's, the hint is / alone");
   assert.equal(hintFor("turn-next", { command: false }), "]", "an action with no command binding keeps its hint");
-  assert.match(viewSource, /const searchHint = \(\) => \{ byId\("transcriptSearchInput"\)\.placeholder = `Search this session  \( \$\{hintFor\("search", \{ command: !phoneSearch\.matches \}\)\} \)`; \};\nsearchHint\(\);\nphoneSearch\.addEventListener\("change", searchHint, \{ signal \}\);/, "a phone's search box names / alone, again as the view crosses the breakpoint");
+  assert.match(viewSource, /const searchHint = \(\) => \{ const input = byId\("transcriptSearchInput"\); input\.dataset\.hint = input\.placeholder = `Search this session  \( \$\{hintFor\("search", \{ command: !phoneSearch\.matches \}\)\} \)`; fitSearchField\(\); \};\nsearchHint\(\);\nphoneSearch\.addEventListener\("change", searchHint, \{ signal \}\);/, "a phone's search box names / alone, again as the view crosses the breakpoint");
+  // #s516: a phone's open box, empty, fills its room and shows its hint from the start, without the
+  // key where the whole hint does not fit; refitted as the focus moves (the magnifier gives way).
+  assert.match(viewSource, /const SEARCH_PLACEHOLDER = "Search this session";/, "the hint without its key");
+  assert.match(viewSource, /input\.placeholder = Math\.ceil\(fieldMeasure\.getBoundingClientRect\(\)\.width\) \+ 8 <= room \? hint : SEARCH_PLACEHOLDER;\n    input\.style\.width = `\$\{room\}px`;\n    searchField\.scrollLeft = chips \? searchField\.scrollWidth : 0;/, "an empty field fills its room, from its start");
+  assert.match(viewSource, /for \(const type of \["focusin", "focusout"\]\) searchBox\.addEventListener\(type, \(\) => requestAnimationFrame\(fitSearchField\), \{ signal \}\);/, "the field is fitted again as the focus moves");
   assert.match(viewSource, /byId\("composer"\)\.dataset\.commandKeys = "";/, "the view marks its compose box");
   // ENGAGEMENT: a click on a guest's prose leaves the focus on <body>, so the keydown's target is
   // <body> — and the key is still the guest's until the reader clicks elsewhere. bindKeymap tracks

@@ -2456,18 +2456,34 @@ searchSuggest = document.createElement("div");
 searchSuggest.className = "search-suggest"; searchSuggest.id = "searchSuggest"; searchSuggest.hidden = true;
 searchSuggest.setAttribute("role", "listbox");
 viewRoot.$(".header-search-cluster").appendChild(searchSuggest);
-/** Size the field to its text while the phone's box is open, and keep the end in view (#353). */
+/** The placeholder of a phone's open box where the whole hint does not fit (#s516). */
+const SEARCH_PLACEHOLDER = "Search this session";
+/** Size the field to its text while the phone's box is open, and keep the end in view (#353). An
+ *  EMPTY field fills the room and shows its placeholder from the start, the hint's key left out
+ *  where the whole hint does not fit (#s516): sized to the hint, the field was 181px in a 178px
+ *  strip on the iPhone 17 Pro upright (158px with the keyboard down), and with the caret at the end
+ *  the strip scrolled the hint's first letters away. */
 function fitSearchField() {
   if (!searchField || !fieldMeasure) return;
   const input = byId("transcriptSearchInput");
-  if (!viewRoot.$(".header-searchbox")?.classList.contains("phone-open")) { input.style.width = ""; return; }
+  const hint = input.dataset.hint || input.placeholder;
+  if (!viewRoot.$(".header-searchbox")?.classList.contains("phone-open")) { input.style.width = ""; input.placeholder = hint; return; }
   const cs = getComputedStyle(input);
   fieldMeasure.style.font = cs.font; fieldMeasure.style.letterSpacing = cs.letterSpacing;
-  // With chips the placeholder is not shown (#355), so an empty field takes no room of its own.
-  fieldMeasure.textContent = input.value || (searchChips.classList.contains("has-chips") ? "" : input.placeholder);
-  const text = Math.ceil(fieldMeasure.getBoundingClientRect().width) + 8;
   const chips = searchChips.classList.contains("has-chips") ? searchChips.getBoundingClientRect().width + 4 : 0;
-  input.style.width = `${Math.max(48, Math.floor(searchField.clientWidth - chips), text)}px`;
+  const room = Math.max(48, Math.floor(searchField.clientWidth - chips));
+  if (!input.value) {
+    // With chips the placeholder is not shown (#355), so the field's room is all it takes, and the
+    // strip keeps its end in view as it does while typing.
+    fieldMeasure.textContent = hint;
+    input.placeholder = Math.ceil(fieldMeasure.getBoundingClientRect().width) + 8 <= room ? hint : SEARCH_PLACEHOLDER;
+    input.style.width = `${room}px`;
+    searchField.scrollLeft = chips ? searchField.scrollWidth : 0;
+    return;
+  }
+  fieldMeasure.textContent = input.value;
+  const text = Math.ceil(fieldMeasure.getBoundingClientRect().width) + 8;
+  input.style.width = `${Math.max(room, text)}px`;
   if (input.selectionStart === input.value.length) searchField.scrollLeft = searchField.scrollWidth;
 }
 addEventListener("resize", () => fitSearchField(), { signal });
@@ -2477,6 +2493,9 @@ addEventListener("resize", () => fitSearchField(), { signal });
 // browser does not focus a tapped button and the steps would vanish under the finger. The query,
 // its count and its marks outlive the box closing, as they outlive a blur on a wider window.
 const phoneSearch = layout.query("phone"), searchBox = viewRoot.$(".header-searchbox");
+// The magnifier gives way while the box holds the focus (the keyboard up on a phone), which changes
+// the room an empty field fills (#s516): fitted again once the focus has moved and the box is laid out.
+for (const type of ["focusin", "focusout"]) searchBox.addEventListener(type, () => requestAnimationFrame(fitSearchField), { signal });
 function setPhoneSearch(open) {
   if (!open && byId("navigatorOptions").classList.contains("open")) setPopover(null);
   searchBox.classList.toggle("phone-open", open && phoneSearch.matches);
@@ -3902,7 +3921,8 @@ byId("composer").dataset.commandKeys = "";
 // Discoverability in the shell's idiom: the key in the control's own title / hint. A phone's box
 // names `/` alone (#s509): its field is a strip as wide as its text, scrolled to its end, so an
 // empty one showing "( / or ⌘F )" lost its start on a 390px phone, and ⌘F is a hardware keyboard's.
-const searchHint = () => { byId("transcriptSearchInput").placeholder = `Search this session  ( ${hintFor("search", { command: !phoneSearch.matches })} )`; };
+// The hint the box shows; a phone's open box may show it without its key (`fitSearchField`, #s516).
+const searchHint = () => { const input = byId("transcriptSearchInput"); input.dataset.hint = input.placeholder = `Search this session  ( ${hintFor("search", { command: !phoneSearch.matches })} )`; fitSearchField(); };
 searchHint();
 phoneSearch.addEventListener("change", searchHint, { signal });
 byId("findPrev").title = `Previous match (${hintFor("hit-prev")})`; byId("findNext").title = `Next match (${hintFor("hit-next")})`;
