@@ -394,7 +394,7 @@ fn a_withdrawn_reply_streams_as_before_the_mark_on_every_path() {
         if let Some(last) = last {
             assert!(
                 want.lines().last().is_some_and(|l| l.contains(last)),
-                "{shape}: premise, the stream ends on what the transcript ends on ({last:?}):\n{want}"
+                "{shape}: the stream ends on what the transcript ends on ({last:?}):\n{want}"
             );
         }
         let (got, err, ok) = run(&dir, &["--dump", "-", "--json", m]);
