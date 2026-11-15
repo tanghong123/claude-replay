@@ -413,8 +413,11 @@ const scrollsInside = target => {
 transcript.tabIndex = -1;
 transcript.addEventListener("pointerdown", event => {
   // A press on the transcript's own scrollbar leaves the focus where it was (a draft, the search
-  // field): the browser moves the focus on a scrollbar press only to a box it may focus.
-  if (event.pointerType === "mouse" && !tapsMouse(event) && !scrollsInside(event.target) && !viewport.frame.isScrollbarTarget(event)) transcript.tabIndex = -1;
+  // field): the browser moves the focus on a scrollbar press only to a box it may focus. With the
+  // transcript itself focused the box stays focusable, since one that stops being so is blurred.
+  const mouse = event.pointerType === "mouse" && !tapsMouse(event);
+  if (mouse && viewport.frame.isScrollbarTarget(event)) { if (viewRoot.active() !== transcript) transcript.removeAttribute("tabindex"); }
+  else if (mouse && !scrollsInside(event.target)) transcript.tabIndex = -1;
   else transcript.removeAttribute("tabindex");
   touched(event);
 }, { capture: true, passive: true, signal });

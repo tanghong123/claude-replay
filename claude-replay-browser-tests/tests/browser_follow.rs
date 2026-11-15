@@ -23730,7 +23730,20 @@ fn a_press_on_the_transcript_s_scrollbar_leaves_the_focus_in_its_field() {
         let after = harness::eval(&tab, focus);
         seen.push(format!("{what}: a click on text focused {clicked}; typing in it {before}, after the scrollbar press {after}"));
     }
+    // And with the transcript itself focused, a press on its scrollbar keeps the focus there: a box
+    // that stops being focusable is blurred.
+    let clicked = click_text();
+    press_bar();
+    let after = harness::eval(&tab, focus);
+    seen.push(format!(
+        "the transcript: a click on text focused {clicked}; after the scrollbar press {after}"
+    ));
     eprintln!("#s488 scrollbar: {seen:?}");
+    assert!(
+        seen.last().is_some_and(|line| line
+            .ends_with("focused \"the transcript\"; after the scrollbar press \"the transcript\"")),
+        "a press on the scrollbar of a focused transcript keeps its focus: {seen:?}"
+    );
     for (line, id) in seen
         .iter()
         .zip(["textarea#composeInput", "input#transcriptSearchInput"])
