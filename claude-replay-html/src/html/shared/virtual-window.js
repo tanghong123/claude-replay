@@ -319,16 +319,23 @@ function unmarked(parent) {
   return Array.prototype.filter.call(parent.children, child => child.tagName !== "MARK");
 }
 
-/** What the record around an element says after the element itself (#s504), its first 160
- *  characters: a queued prompt's words, an act record's first calls, a prompt's text. The record is
- *  the row the element sits in, or the unit where it sits in none (the classic page's units are
- *  records; the app shell's group heads sit outside its rows), as `anchorOn` holds an element. It
- *  tells the record at a place from another one a rewrite put there: a queued prompt picked up moves
- *  every marker behind it up a slot (#165), so the same place holds the next one. */
-function recordText(element, unit) {
+/** The record an element sits in (#s504): the row it sits in, or the unit where it sits in none (the
+ *  classic page's units are records; the app shell's group heads sit outside its rows), as
+ *  `anchorOn` holds an element. */
+function recordOf(element, unit) {
   const row = element.closest("[data-block-index]");
-  const record = row && unit.contains(row) ? row : unit;
-  return (record.textContent || "").replace(element.textContent || "", "").replace(/\s+/g, " ").trim().slice(0, 160);
+  return row && unit.contains(row) ? row : unit;
+}
+
+/** What tells one record from another a rewrite put in its place (#s504): all its text, whitespace
+ *  collapsed, and every link it holds by its address. A queued prompt picked up moves every marker
+ *  behind it up a slot (#165), so the same place in a unit can hold another record, and two queued
+ *  prompts may differ anywhere, or only in a link's address. Read only when a focus is to be given
+ *  back, and from both markups painted (`refocus` runs after the page's `afterRender`, which fills
+ *  a code box's bar, say). */
+function recordIdentity(record) {
+  const links = [...record.querySelectorAll("[href]")].map(link => link.getAttribute("href"));
+  return `${(record.textContent || "").replace(/\s+/g, " ").trim()}\n${links.join("\n")}`;
 }
 
 class VirtualWindow {
@@ -1409,8 +1416,8 @@ class VirtualWindow {
   }
 
   /** The focus, when it is inside a mounted unit: that unit's key, the child positions from the
-   *  unit down to the focused element (counting no `<mark>`), what kind of element it is, and what
-   *  its record says after it (#s504). */
+   *  unit down to the focused element (counting no `<mark>`), what kind of element it is, and the
+   *  record it sits in (#s504), whose text is read only if the focus is to be given back. */
   focusInside() {
     const active = this.mount.ownerDocument?.activeElement;
     if (!active || active === this.mount || !this.mount.contains(active)) return null;
@@ -1422,15 +1429,16 @@ class VirtualWindow {
       node = node.parentElement;
     }
     if (!node.dataset.unitKey) return null;
-    return { element: active, key: node.dataset.unitKey, path, tag: active.tagName, role: active.classList[0] || "", record: recordText(active, node) };
+    return { element: active, key: node.dataset.unitKey, path, tag: active.tagName, role: active.classList[0] || "", record: recordOf(active, node) };
   }
 
   /** Gives the focus back to a unit drawn again (#s504): to the element at the same place in its
    *  new markup, when it is the same kind of element (its tag and its first class) in a record that
-   *  says the same after it (`recordText`), and nothing else has taken the focus meanwhile. A unit
-   *  that left the window, changed its shape or holds another record there gets none, as before; so
-   *  does a record whose text changed, a running call's output grown say: a focus left on the body
-   *  is the old behaviour, and a focus given to another element would be wrong. */
+   *  reads as the old one did (`recordIdentity`), and nothing else has taken the focus meanwhile. A
+   *  unit that left the window, changed its shape or holds another record there gets none, as
+   *  before; so does a record whose text changed, a running call's output grown say: a focus left on
+   *  the body is the old behaviour, and a focus given to another element would be wrong. Any redraw
+   *  of a unit holding the focus gives it back, a fold's own re-render too. */
   refocus(focused) {
     if (!focused || focused.element.isConnected) return;
     const doc = this.mount.ownerDocument, now = doc.activeElement;
@@ -1439,7 +1447,7 @@ class VirtualWindow {
     let node = unit;
     for (const at of focused.path) node = node ? unmarked(node)[at] : null;
     if (!node || node.tagName !== focused.tag || (node.classList[0] || "") !== focused.role) return;
-    if (recordText(node, unit) !== focused.record) return;
+    if (recordIdentity(recordOf(node, unit)) !== recordIdentity(focused.record)) return;
     node.focus({ preventScroll: true });
     if (doc.activeElement === node) this.trace("refocused", { key: focused.key, depth: focused.path.length });
   }
@@ -1537,9 +1545,11 @@ class VirtualWindow {
     else this.mountedHidden = [...this.mountedHidden.filter(element => element.isConnected), ...fresh];
     this.measureMounted();
     this.updatePads();
-    this.refocus(focused);
     for (const child of this.mount.children) this.observer.observe(child, { box: "border-box" });
     this.afterRender();
+    // After the page's own pass, so the new markup is painted as the old one was (a code box's bar,
+    // the search's marks) when the two records are compared.
+    this.refocus(focused);
     this.trace("reconciled", { dirtyFrom: dirtyFrom === Infinity ? null : dirtyFrom, anchor: p0 && p0.key ? p0.key : null, fresh: fresh.length, estimate: this.count ? Math.round(this.estimateAt(0)) : null });
     return { lo, hi, fresh: fresh.length };
   }

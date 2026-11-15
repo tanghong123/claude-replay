@@ -15562,7 +15562,7 @@ fn review_grow(tab: &headless_chrome::Tab, fx: &Fixture, prompt: &str, reply: &s
 }
 
 /// (1) A search marks "see" before the first link of the progress line; the reader focuses that
-/// link; the session grows. The restored focus is that link or the body, never the second link.
+/// link; the session grows. The restored focus is that link, never the second one.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_focus_restored_after_growth_counts_no_search_mark() {
@@ -15587,12 +15587,21 @@ fn app_shell_a_focus_restored_after_growth_counts_no_search_mark() {
         before == "link https://example.com/north" && marked == serde_json::json!(true),
         "premise, the first link has the focus with a search mark before it: {before}, marked {marked}"
     );
+    eval(tab, "window.__s504r = document.activeElement; 'kept'");
     review_grow(tab, &fx, "now the burrows", "Twelve burrows.", 40);
     let after = review_focus(tab);
-    eprintln!("s504 review (1): before {before}; after the growth {after}");
-    assert!(
-        after == before || after == "body",
-        "the search's marks moved the restored focus to another element: before {before}, after {after}"
+    let gone = eval(tab, "!window.__s504r.isConnected");
+    eprintln!(
+        "s504 review (1): before {before}; after the growth {after}, the old link gone {gone}"
+    );
+    assert_eq!(
+        gone,
+        serde_json::json!(true),
+        "premise, the growth drew the progress line's unit again"
+    );
+    assert_eq!(
+        after, before,
+        "after the growth the same link has the focus, the search's marks counted for nothing"
     );
 }
 
@@ -15614,6 +15623,7 @@ fn app_shell_a_focus_restored_after_a_pickup_is_not_the_next_queued_prompt() {
         queued.starts_with("BUTTON") && queued.contains("queued one"),
         "premise, the first queued prompt's head has the focus: {queued} ({heads} heads)"
     );
+    eval(tab, "window.__s504r = document.activeElement; 'kept'");
     review_grow(
         tab,
         &fx,
@@ -15622,7 +15632,13 @@ fn app_shell_a_focus_restored_after_a_pickup_is_not_the_next_queued_prompt() {
         20,
     );
     let picked = review_focus(tab);
-    eprintln!("s504 review (2): before {queued}; after the pickup {picked}");
+    let markers = eval(tab, "JSON.stringify({ gone: !window.__s504r.isConnected, one: [...document.querySelectorAll('#transcript .renderer-queue')].some(function (q) { return q.textContent.includes('queued one'); }), two: [...document.querySelectorAll('#transcript .renderer-queue')].some(function (q) { return q.textContent.includes('queued two'); }) })");
+    eprintln!("s504 review (2): before {queued}; after the pickup {picked}; {markers}");
+    assert_eq!(
+        markers.as_str().unwrap_or(""),
+        r#"{"gone":true,"one":false,"two":true}"#,
+        "premise, the pickup took the first queued prompt and drew its unit again, the second still queued"
+    );
     assert!(
         !picked.contains("queued two"),
         "a pickup gave the focus to the next queued prompt's head: before {queued}, after {picked}"
