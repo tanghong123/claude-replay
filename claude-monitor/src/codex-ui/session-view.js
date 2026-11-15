@@ -95,6 +95,9 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    "page" is the app's mode: the view binds none, and the host owns the page's keyboard and calls
  *    `keys[action]`. A host that uses it gets the action names, not the key table (shared/keymap.js,
  *    which the app binds with its list's keys and contexts).
+ *    In either mode a mouse's click in the transcript focuses the transcript (#s488), which draws no
+ *    focus ring: WebKit sends a key from a pressed node a redraw has replaced to the page and scrolls
+ *    nothing. A click inside a box that scrolls on its own, a touch and a pen focus nothing, as before.
  *  - `write`: what writing to a session needs from the host, which owns write mode; left out, the
  *    view offers no writes (no compose button, no ✎ in a phone's dock, no notice that a session
  *    cannot be written to). An object of two functions:
