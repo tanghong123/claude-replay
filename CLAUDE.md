@@ -1068,9 +1068,13 @@ delivered is offered (`ToolUse::delivered` → `head.files`), not only the first
   (a local Chrome; CI runs the same split into five `browser` legs on separate runners, #s448, whose one result is the check `browser (real Chrome)`). `tests/harness/mod.rs` is the kit
   every case uses: `Stores` (a hermetic world of agent stores under the case's scratch root —
   nothing a case measures comes from this machine's sessions), record builders and
-  `long_session`, `Monitor::spawn` (`agent-monitor` on a fixed port, reaped on drop; a missing binary
+  `long_session`, `Monitor::spawn` (`agent-monitor` on the case's fixed port, reaped on drop; a missing binary
   PANICS naming the build — never a silent skip, which is how a blank shell once passed as
-  13/16), `chrome_tab()` — a browser with timer throttling off AND its first tab, the one way a
+  13/16; a port another listener holds moves the monitor to one the kernel has free, with a
+  stderr line naming the holder, and the spawn waits for the monitor's own "serving" line, so a
+  case reads its address from the handle — `url`, `remote_url`, `port` — and never writes the
+  number into one, which `no_case_writes_a_monitor_port_into_an_address` checks; scratch stays
+  named for the number asked, #s495), `chrome_tab()` — a browser with timer throttling off AND its first tab, the one way a
   case opens one (#343: `first_tab` launches again, up to four times with a stderr line each,
   when a fresh browser gives no tab — ~220 of ~230 failures across fifteen suite runs were that
   one error, "The event waited for never came", in runs of up to 22 cases; such a browser is
