@@ -913,6 +913,14 @@ import-closure test and the html crate's convention test cover the rest. `claude
 node (the contract test imports `components.js`, which imports `./shared/…`) and editors resolve the
 relative paths; the served bytes still come from the html crate through `ui::asset()`.
 
+**The kit** (#s432, `design/embedding.md` "Delivery"): each release publishes
+`agent-monitor-kit-<version>.tar.gz` and its `.sha256` (`scripts/kit.sh`, run by the Release
+workflow), the two components for a host to mount from a pinned release. Its `bundle/` is
+`claude-monitor/kit/index.js` and every module that imports, walked from it and taken from `ui::asset()`
+byte for byte (`src/kit.rs`), so a new import joins the kit by itself; a new mount option or optional
+control goes in `kit/index.d.ts` too (`the_declarations_follow_each_components_options` refuses one
+missing), and the guide (`kit/embedding-guide.md`) says it for a host.
+
 `claude-monitor/tests/ui_contract.mjs` holds the frontend contract that only JS can answer.
 It runs from `cargo test` (via `tests/ui_contract.rs`, which SKIPS when node is missing) and as
 its own mandatory CI step.
