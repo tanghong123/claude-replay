@@ -3252,12 +3252,12 @@ fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {
 
 /// #s487: the same click, then `[` from the end, read where the reader RESTS: twice, a second
 /// apart. The case above checks only that the key reached the transcript (the view moved at some
-/// poll), which the dip before the tail's converge satisfies. Red until the owner decides #s487
-/// (#s502): `[` lands turn N-1 inside the hold slack, where the engine keeps the pin, and the
-/// tail's converge takes the reader back to the end within about 0.1s.
+/// poll), which the dip before the tail's converge satisfies. It was red while a turn step kept
+/// the pin within the hold slack (the owner's #s502): `[` landed turn N-1 inside it, and the
+/// tail's converge took the reader back to the end within about 0.1s.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
-fn the_app_shell_rests_where_its_turn_key_goes_after_a_session_is_clicked_known_red_s487() {
+fn the_app_shell_rests_where_its_turn_key_goes_after_a_session_is_clicked() {
     let _serial = serial();
     let base = base("appshell-click-keys-rest");
     let stores = Stores::new(&base);

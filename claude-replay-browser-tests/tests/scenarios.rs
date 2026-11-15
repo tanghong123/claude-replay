@@ -1825,16 +1825,28 @@ fn resting(tab: &headless_chrome::Tab, surface: Surface) -> serde_json::Value {
     })
 }
 
+/// Where turn `turn`'s header sits, in px below the top of the view (the scroller's top in the app
+/// shell, the window's on the classic page); `None` while it is not mounted.
+fn turn_header_top(tab: &headless_chrome::Tab, surface: Surface, turn: i64) -> Option<i64> {
+    let (s, root) = (surface.scroller(), surface.turns_root());
+    let top = match surface {
+        Surface::Classic => "0".to_string(),
+        Surface::AppShell => format!("{s}.getBoundingClientRect().top"),
+    };
+    eval(tab, &format!("(function(){{ var e = {root}.querySelector('[data-turn=\"{turn}\"]'); return e ? Math.round(e.getBoundingClientRect().top - {top}) : null; }})()")).as_i64()
+}
+
 /// A follower at the end of a session whose last two turns fit within about a screen presses
 /// `[` twice: the first lands turn N-1, the second N-2, and each is where the reader still
 /// rests a second later (#s487's criterion).
 ///
-/// Red on both pages, for two reasons that are the owner's to decide (#s487), so both cases carry
-/// the marker. The app shell lands N-1 67px above the end, inside the hold slack, where the
-/// engine keeps the pin (#94, #103); the jump mounts new units, their measure grows the content
-/// and the tail converges, so 0.1s later the reader is at the end again. The classic page goes
-/// by position (the last turn whose header is above its landing line), and at the end N-1's
-/// header is on screen below that line, so its first `[` lands N-2.
+/// It was red on both pages, for two reasons the owner decided (#s487). The app shell landed N-1
+/// 67px above the end, inside the hold slack, where the engine kept the pin (#94, #103); the jump
+/// mounted new units, their measure grew the content and the tail converged, so 0.1s later the
+/// reader was at the end again (a turn step now keeps the pin only at the end, #s502). The
+/// classic page went by position (the last turn whose header is above its landing line), and at
+/// the end N-1's header was on screen below that line, so its first `[` landed N-2 (it now counts
+/// from the turn its bar names, #s503).
 fn scenario_turn_back_from_the_end(tab: &headless_chrome::Tab, surface: Surface, fx: &Fixture) {
     jump_to_end(tab, surface);
     await_tail(tab, surface, "the jump to the end");
@@ -1878,7 +1890,7 @@ fn scenario_turn_back_from_the_end(tab: &headless_chrome::Tab, surface: Surface,
 
 #[test]
 #[ignore = "needs a local Chrome"]
-fn classic_page_steps_back_a_turn_at_a_time_from_the_end_known_red_s487() {
+fn classic_page_steps_back_a_turn_at_a_time_from_the_end() {
     let _serial = serial();
     let fx = fixture("scenario-turnback-classic", 30);
     let page = open(Surface::Classic, &fx, 0);
@@ -1887,40 +1899,22 @@ fn classic_page_steps_back_a_turn_at_a_time_from_the_end_known_red_s487() {
 
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
-fn app_shell_steps_back_a_turn_at_a_time_from_the_end_known_red_s487() {
+fn app_shell_steps_back_a_turn_at_a_time_from_the_end() {
     let _serial = serial();
     let fx = fixture("scenario-turnback-app", 30);
     let page = open(Surface::AppShell, &fx, 3184);
     scenario_turn_back_from_the_end(&page.tab, Surface::AppShell, &fx);
 }
 
-/// #s487, the half the shell decides alone: the last two turns are so short that at the end turn
-/// N-1 is already in view, below the landing line, so the jump `[` makes to it moves nothing (the
-/// end of the session stops the view). The turn bar and the Turns pane name N-1 after the first
-/// press and N-2 after the second, each still so a second later. The end rule named the LAST turn
-/// there, so the bar kept naming N and the second `[` landed N-1 again: two presses and nothing
-/// seen to happen. App shell only: the classic page's `[` goes by position and lands N-2 first,
-/// the difference the owner decides on #s487.
-#[test]
-#[ignore = "needs a local Chrome and a built agent-monitor"]
-fn app_shell_steps_back_from_the_end_where_the_turn_before_is_in_view() {
-    let _serial = serial();
-    let base = base("scenario-turnback-inview-app");
-    let stores = Stores::new(&base);
-    let mut session = long_session(28, Shape::default());
-    for i in 28..30 {
-        session += &harness::user(&format!("question {i}: a short one."), i);
-        session += &harness::assistant(&format!("answer {i}: short."), i);
-    }
-    let path = stores.claude_session(SID, &session);
-    let fx = Fixture {
-        base,
-        path,
-        turns: 30,
-    };
-    let page = open(Surface::AppShell, &fx, 3186);
-    let tab = &page.tab;
-    let surface = Surface::AppShell;
+/// #s487: the last two turns are so short that at the end turn N-1 is already in view, below the
+/// landing line, so the jump `[` makes to it moves nothing (the end of the session stops the
+/// view). The turn bar and the page's turn list name N-1 after the first press and N-2 after the
+/// second, each still so a second later. The end rule named the LAST turn there, so the bar kept
+/// naming N and the second `[` landed N-1 again: two presses and nothing seen to happen.
+fn scenario_turn_back_where_the_turn_before_is_in_view(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
     jump_to_end(tab, surface);
     await_tail(tab, surface, "the jump to the end");
     settle();
@@ -1933,8 +1927,7 @@ fn app_shell_steps_back_from_the_end_where_the_turn_before_is_in_view() {
         })
     };
     let at_end = named(tab);
-    let s = surface.scroller();
-    let premise = eval(tab, &format!("(function(){{ var e = document.querySelector('.virtual-window [data-turn=\"29\"]'); return e ? Math.round(e.getBoundingClientRect().top - {s}.getBoundingClientRect().top) : null; }})()")).as_i64().unwrap_or(-1);
+    let premise = turn_header_top(tab, surface, 29).unwrap_or(-1);
     let landing = at_end["rest"]["landing"].as_i64().unwrap_or(0);
     assert!(
         premise > landing + 2,
@@ -1958,7 +1951,7 @@ fn app_shell_steps_back_from_the_end_where_the_turn_before_is_in_view() {
                 later["pane"].as_i64()
             ),
             (Some(want), Some(want), Some(want), Some(want)),
-            "`[` from turn {} makes turn {want} the current one, in the bar and the pane, and a second later still: {readings:?}",
+            "`[` from turn {} makes turn {want} the current one, in the bar and the turn list, and a second later still: {readings:?}",
             want + 1
         );
         assert_eq!(
@@ -1966,6 +1959,135 @@ fn app_shell_steps_back_from_the_end_where_the_turn_before_is_in_view() {
             "…where the view rests: {readings:?}"
         );
     }
+}
+
+/// Twenty-eight long turns, then two short ones.
+fn fixture_short_last_turns(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut session = long_session(28, Shape::default());
+    for i in 28..30 {
+        session += &harness::user(&format!("question {i}: a short one."), i);
+        session += &harness::assistant(&format!("answer {i}: short."), i);
+    }
+    let path = stores.claude_session(SID, &session);
+    Fixture {
+        base,
+        path,
+        turns: 30,
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_steps_back_from_the_end_where_the_turn_before_is_in_view() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnback-inview-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_turn_back_where_the_turn_before_is_in_view(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_steps_back_from_the_end_where_the_turn_before_is_in_view() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnback-inview-app");
+    let page = open(Surface::AppShell, &fx, 3186);
+    scenario_turn_back_where_the_turn_before_is_in_view(&page.tab, Surface::AppShell);
+}
+
+// ── scenario: `[` and `]` from inside a turn go by the turn the bar names (#s487) ───────────
+
+/// The reader is inside turn K: its header has scrolled above the landing line and the bar names
+/// K. `[` goes to the turn before the one the bar names (K-1) and `]` to the one after (K+1), each
+/// with its header at the landing line and still there a second later: the turn bar is what a
+/// step counts from, on both pages (the owner's #s503). The classic page went by position, the
+/// last turn whose header is above its landing line, so its `[` from inside K went back to K's own
+/// header.
+fn scenario_turn_steps_inside_a_turn(tab: &headless_chrome::Tab, surface: Surface) {
+    let k = 10i64;
+    scroll_by(tab, surface, -1_000_000);
+    settle();
+    for _ in 0..30 {
+        if turn_at_top(tab, surface) == k {
+            break;
+        }
+        key(tab, "]", false);
+        settle();
+    }
+    until_engine_quiet(tab);
+    let mut readings = vec![resting(tab, surface)];
+    // Into turn K from its header at the landing: the header above the landing, the bar naming K.
+    let inside = |tab: &headless_chrome::Tab, readings: &mut Vec<serde_json::Value>| {
+        scroll_by(tab, surface, 180);
+        settle();
+        until_engine_quiet(tab);
+        let r = resting(tab, surface);
+        let header = turn_header_top(tab, surface, k);
+        readings.push(serde_json::json!({ "inside": r.clone(), "header": header }));
+        let landing = r["landing"].as_i64().unwrap_or(0);
+        assert!(
+            r["bar"].as_i64() == Some(k) && header.is_some_and(|h| h < landing - 30),
+            "the premise: the reader is inside turn {k}, its header above the landing and the bar naming it: {readings:?}"
+        );
+    };
+    for (press, want) in [("[", k - 1), ("]", k + 1)] {
+        inside(tab, &mut readings);
+        key(tab, press, false);
+        settle();
+        until_engine_quiet(tab);
+        let first = resting(tab, surface);
+        harness::pause("the reader rests", Duration::from_secs(1));
+        let later = resting(tab, surface);
+        readings.push(first.clone());
+        readings.push(later.clone());
+        assert_eq!(
+            (first["top"].as_i64(), first["bar"].as_i64()),
+            (Some(want), Some(want)),
+            "`{press}` from inside turn {k} goes to turn {want}: {readings:?}"
+        );
+        assert_eq!(first, later, "…and rests there: {readings:?}");
+        let (card, landing) = (
+            first["card"].as_i64().unwrap_or(i64::MIN),
+            first["landing"].as_i64().unwrap_or(0),
+        );
+        assert!(
+            (card - landing).abs() <= 2,
+            "…with turn {want}'s header at the landing line ({landing}px): {readings:?}"
+        );
+        if press == "[" {
+            // Back to turn K's header for the next press.
+            key(tab, "]", false);
+            settle();
+            until_engine_quiet(tab);
+            let back = resting(tab, surface);
+            readings.push(back.clone());
+            assert_eq!(
+                back["top"].as_i64(),
+                Some(k),
+                "`]` from turn {} goes back to turn {k}: {readings:?}",
+                k - 1
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_steps_turns_from_inside_a_turn() {
+    let _serial = serial();
+    let fx = fixture("scenario-turn-inside-classic", 40);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_turn_steps_inside_a_turn(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_steps_turns_from_inside_a_turn() {
+    let _serial = serial();
+    let fx = fixture("scenario-turn-inside-app", 40);
+    let page = open(Surface::AppShell, &fx, 3188);
+    scenario_turn_steps_inside_a_turn(&page.tab, Surface::AppShell);
 }
 
 // ── scenario: a resize while pinned keeps the tail ──────────────────────────────────────────
