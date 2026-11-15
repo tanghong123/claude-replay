@@ -1919,13 +1919,7 @@ fn scenario_turn_back_where_the_turn_before_is_in_view(
     await_tail(tab, surface, "the jump to the end");
     settle();
     until_engine_quiet(tab);
-    let named = |tab: &headless_chrome::Tab| {
-        serde_json::json!({
-            "bar": harness::sticky_turn(tab, surface).map(|b| b.0),
-            "pane": harness::pane_focus_turn(tab, surface),
-            "rest": resting(tab, surface),
-        })
-    };
+    let named = |tab: &headless_chrome::Tab| named_turn(tab, surface);
     let at_end = named(tab);
     let premise = turn_header_top(tab, surface, 29).unwrap_or(-1);
     let landing = at_end["rest"]["landing"].as_i64().unwrap_or(0);
@@ -1959,6 +1953,199 @@ fn scenario_turn_back_where_the_turn_before_is_in_view(
             "…where the view rests: {readings:?}"
         );
     }
+}
+
+/// The turn the page names as the current one, in its bar and its turn list, and where the reader
+/// rests.
+fn named_turn(tab: &headless_chrome::Tab, surface: Surface) -> serde_json::Value {
+    serde_json::json!({
+        "bar": harness::sticky_turn(tab, surface).map(|b| b.0),
+        "pane": harness::pane_focus_turn(tab, surface),
+        "rest": resting(tab, surface),
+    })
+}
+
+/// A press of `key`, then what the page names: as the press leaves it, and a second later.
+fn press_and_name(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    k: &str,
+    readings: &mut Vec<serde_json::Value>,
+) -> (serde_json::Value, serde_json::Value) {
+    key(tab, k, false);
+    settle();
+    until_engine_quiet(tab);
+    let first = named_turn(tab, surface);
+    harness::pause("the reader rests", Duration::from_secs(1));
+    let later = named_turn(tab, surface);
+    readings.push(first.clone());
+    readings.push(later.clone());
+    (first, later)
+}
+
+/// Its bar and its turn list name `want`, as the press left them and a second later.
+fn names_both(first: &serde_json::Value, later: &serde_json::Value) -> [Option<i64>; 4] {
+    [
+        first["bar"].as_i64(),
+        first["pane"].as_i64(),
+        later["bar"].as_i64(),
+        later["pane"].as_i64(),
+    ]
+}
+
+/// At the end of the session, where turn 29 is in view (`fixture_short_last_turns`), `[` makes it
+/// the current turn without moving anything (the case above).
+fn step_back_from_the_end(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    readings: &mut Vec<serde_json::Value>,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "the jump to the end");
+    settle();
+    until_engine_quiet(tab);
+    readings.push(named_turn(tab, surface));
+    let (first, later) = press_and_name(tab, surface, "[", readings);
+    assert_eq!(
+        names_both(&first, &later),
+        [Some(29); 4],
+        "the premise: `[` from the end makes turn 29 the current one: {readings:?}"
+    );
+}
+
+// ── scenario: a commanded move ends a turn step's hold on the current turn (#s487) ──────────
+
+/// #s487 (review): at the end, where turn N-1 is already in view, `[` makes N-1 the current turn
+/// and moves nothing. The reader then clicks turn N in the page's turn list (the classic sidebar,
+/// the app shell's Turns pane): nothing moves, since the end of the session stops the view, but
+/// the reader chose N, so the bar and the list name N and the next `[` goes to N-1. The turn a
+/// step landed used to outlive every commanded move but the next step and the jump to the latest:
+/// the bar kept naming N-1 and that `[` went to N-2.
+fn scenario_a_turn_click_ends_a_turn_steps_hold(tab: &headless_chrome::Tab, surface: Surface) {
+    let mut readings = Vec::new();
+    step_back_from_the_end(tab, surface, &mut readings);
+    assert!(
+        harness::jump_to_turn(tab, surface, 30),
+        "turn 30's entry in the turn list: {readings:?}"
+    );
+    settle();
+    until_engine_quiet(tab);
+    let clicked = named_turn(tab, surface);
+    readings.push(clicked.clone());
+    assert!(
+        clicked["rest"]["gap"].as_i64().is_some_and(|g| g <= 2),
+        "the premise: the end of the session holds the view, so the click moves nothing: {readings:?}"
+    );
+    assert_eq!(
+        (clicked["bar"].as_i64(), clicked["pane"].as_i64()),
+        (Some(30), Some(30)),
+        "a click on turn 30 makes it the current turn, in the bar and the turn list: {readings:?}"
+    );
+    let (first, later) = press_and_name(tab, surface, "[", &mut readings);
+    assert_eq!(
+        names_both(&first, &later),
+        [Some(29); 4],
+        "…so the next `[` goes to turn 29, not 28, and stays: {readings:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_ends_a_turn_steps_hold_on_a_click_in_its_sidebar() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnhold-click-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_turn_click_ends_a_turn_steps_hold(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_ends_a_turn_steps_hold_on_a_click_in_its_turns_pane() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnhold-click-app");
+    let page = open(Surface::AppShell, &fx, 3189);
+    scenario_a_turn_click_ends_a_turn_steps_hold(&page.tab, Surface::AppShell);
+}
+
+// ── scenario: a wheel beside the transcript keeps a turn step's hold (#s487) ────────────────
+
+/// #s487 (review): a wheel over a panel beside the transcript (the classic page's sidebar, the app
+/// shell's session list) scrolls that panel and leaves the reader where the step put them, so the
+/// turn the step landed stays the current one: from the end, `[`, a real wheel DOWN over the panel
+/// (at the end, so nothing it could chain to moves the view), and `[` again go to N-1 and then
+/// N-2. The classic page ended the hold on a wheel anywhere in the window, so its second `[`
+/// counted from N again and landed N-1 a second time; the app shell already heard only the
+/// transcript's input.
+fn scenario_a_wheel_beside_the_transcript_keeps_a_turn_steps_hold(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    use headless_chrome::protocol::cdp::Input::{DispatchMouseEvent, DispatchMouseEventTypeOption};
+    let mut readings = Vec::new();
+    step_back_from_the_end(tab, surface, &mut readings);
+    let panel = match surface {
+        Surface::Classic => "document.getElementById('sidebar')",
+        Surface::AppShell => "document.querySelector('#app>.sidebar .tree')",
+    };
+    let at: Vec<f64> = serde_json::from_str(
+        eval(tab, &format!("(function(){{ var p = {panel}; if (!p) return '[]'; var b = p.getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); }})()"))
+            .as_str()
+            .unwrap_or("[]"),
+    )
+    .unwrap_or_default();
+    assert_eq!(at.len(), 2, "the premise: the panel is drawn: {readings:?}");
+    tab.call_method(DispatchMouseEvent {
+        Type: DispatchMouseEventTypeOption::MouseWheel,
+        x: at[0],
+        y: at[1],
+        modifiers: None,
+        timestamp: None,
+        button: None,
+        buttons: None,
+        click_count: None,
+        force: None,
+        tangential_pressure: None,
+        tilt_x: None,
+        tilt_y: None,
+        twist: None,
+        delta_x: Some(0.0),
+        delta_y: Some(240.0),
+        pointer_Type: None,
+    })
+    .expect("a wheel over the panel");
+    settle();
+    until_engine_quiet(tab);
+    let wheeled = named_turn(tab, surface);
+    readings.push(wheeled.clone());
+    assert_eq!(
+        (wheeled["bar"].as_i64(), wheeled["pane"].as_i64()),
+        (Some(29), Some(29)),
+        "a wheel over the panel leaves turn 29 the current one: {readings:?}"
+    );
+    let (first, later) = press_and_name(tab, surface, "[", &mut readings);
+    assert_eq!(
+        names_both(&first, &later),
+        [Some(28); 4],
+        "…so the next `[` goes to turn 28, and stays: {readings:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_keeps_a_turn_steps_hold_through_a_wheel_over_its_sidebar() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnhold-wheel-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_wheel_beside_the_transcript_keeps_a_turn_steps_hold(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_keeps_a_turn_steps_hold_through_a_wheel_over_its_session_list() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnhold-wheel-app");
+    let page = open(Surface::AppShell, &fx, 3190);
+    scenario_a_wheel_beside_the_transcript_keeps_a_turn_steps_hold(&page.tab, Surface::AppShell);
 }
 
 /// Twenty-eight long turns, then two short ones.
