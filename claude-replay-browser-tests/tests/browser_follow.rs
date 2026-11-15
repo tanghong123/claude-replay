@@ -23563,7 +23563,7 @@ fn a_click_in_a_wide_block_of_the_transcript_leaves_its_arrows_to_the_block() {
         .join("_");
     let cells = |w: &str| {
         (0..14)
-            .map(|i| format!(" {w} cell number {i} "))
+            .map(|i| format!(" {w}_cell_number_{i}_unbroken "))
             .collect::<Vec<_>>()
             .join("|")
     };
