@@ -2054,6 +2054,7 @@
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-jump .task-state{flex:none}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-jump-count{font:500 11.5px/1 var(--mono);color:var(--faint)}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .task-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:59;background:rgba(14,19,31,.42)}
+:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .task-scrim.catching:not([hidden]){background:transparent}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .sv-session-main,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .workspace.navigator-off .sv-session-main{grid-template-columns:0 minmax(0,1fr)}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .session-navigator{display:none!important}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .outline-footer{position:fixed;left:0;top:0;z-index:30;width:0;height:0;min-height:0;padding:0;margin:0;overflow:visible}
