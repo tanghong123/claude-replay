@@ -87,8 +87,9 @@ function resolveKey(event, context, target = null) {
 }
 
 /** The hint to show beside a control for an action, e.g. "n" — or "" when it has none. An action
- *  with two keys names both ("/ or ⌘F"). */
-const hintFor = action => KEYMAP.filter(binding => binding.action === action && binding.hint).map(binding => binding.hint).join(" or ");
+ *  with two keys names both ("/ or ⌘F"); `{ command: false }` leaves out a command binding's, for
+ *  a control with little room on a screen that seldom has a hardware keyboard (a phone's search). */
+const hintFor = (action, { command = true } = {}) => KEYMAP.filter(binding => binding.action === action && binding.hint && (command || !binding.command)).map(binding => binding.hint).join(" or ");
 
 function bindKeymap(root, contextOf, dispatch) {
   // ENGAGEMENT, as the guest itself defines it: the last click or focus landed inside it (mdrev's

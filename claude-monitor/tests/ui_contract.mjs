@@ -1577,6 +1577,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   for (const k of ["/", "j", "n"]) assert.equal(resolveKey(ev(k), "view", composeField), null, `${k} in the compose box is typing`);
   assert.equal(resolveKey(cmd("f"), "view", inside), null, "inside a guest it is the guest's");
   assert.match(hintFor("search"), /^\/ or (⌘F|Ctrl\+F)$/, "the hint names both keys");
+  assert.equal(hintFor("search", { command: false }), "/", "without the command binding's, the hint is / alone");
+  assert.equal(hintFor("turn-next", { command: false }), "]", "an action with no command binding keeps its hint");
+  assert.match(viewSource, /const searchHint = \(\) => \{ byId\("transcriptSearchInput"\)\.placeholder = `Search this session  \( \$\{hintFor\("search", \{ command: !phoneSearch\.matches \}\)\} \)`; \};\nsearchHint\(\);\nphoneSearch\.addEventListener\("change", searchHint, \{ signal \}\);/, "a phone's search box names / alone, again as the view crosses the breakpoint");
   assert.match(viewSource, /byId\("composer"\)\.dataset\.commandKeys = "";/, "the view marks its compose box");
   // ENGAGEMENT: a click on a guest's prose leaves the focus on <body>, so the keydown's target is
   // <body> — and the key is still the guest's until the reader clicks elsewhere. bindKeymap tracks
@@ -5066,8 +5069,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /detach: shows\("detach"\)/, "the view tells the pane");
   // The app's keymap leaves a key it has no action for to the page, as the view's own does.
   assert.match(appSource, /\(action, event\) => \(keyActions\[action\] \? keyActions\[action\]\(event\) : false\)\);/, "the app takes no key it has no action for (#s509: the action sees the event, so ⌘F with no session selected is left to the browser)");
-  // Engaged: the shared keymap resolves, the view decides by engagement (mdrev's rule), and the
-  // shared module is untouched (the offline pages inline it, and the byte gate reads them).
+  // Engaged: the shared keymap resolves and the view decides by engagement (mdrev's rule). The
+  // keymap is one table for both pages: the offline pages inline it, so a change to it moves the
+  // byte gate's pages too (#s509 changed it).
   assert.match(viewSource, /if \(keyboardMode === "engaged"\) \{/, "the view binds its own keys only when engaged");
   assert.match(viewSource, /const engage = event => \{ engaged = inView\(event\.target\) && !inGuest\(event\.target\); \};/, "engagement is the last press or focus inside the view and outside its guest");
   assert.match(viewSource, /const inView = target => !!target && typeof target\.closest === "function" && element\.contains\(target\);/, "inside the view is inside its element");

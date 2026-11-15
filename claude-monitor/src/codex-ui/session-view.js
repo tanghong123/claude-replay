@@ -3899,8 +3899,12 @@ if (keyboardMode === "engaged") {
 // still has the focus there. Every other field keeps it, the search field above all, so a second
 // press there is the browser's find.
 byId("composer").dataset.commandKeys = "";
-// Discoverability in the shell's idiom: the key in the control's own title / hint.
-byId("transcriptSearchInput").placeholder = `Search this session  ( ${hintFor("search")} )`;
+// Discoverability in the shell's idiom: the key in the control's own title / hint. A phone's box
+// names `/` alone (#s509): its field is a strip as wide as its text, scrolled to its end, so an
+// empty one showing "( / or ⌘F )" lost its start on a 390px phone, and ⌘F is a hardware keyboard's.
+const searchHint = () => { byId("transcriptSearchInput").placeholder = `Search this session  ( ${hintFor("search", { command: !phoneSearch.matches })} )`; };
+searchHint();
+phoneSearch.addEventListener("change", searchHint, { signal });
 byId("findPrev").title = `Previous match (${hintFor("hit-prev")})`; byId("findNext").title = `Next match (${hintFor("hit-next")})`;
 byId("turnPrev").title = `Previous turn (${hintFor("turn-prev")})`; byId("turnNext").title = `Next turn (${hintFor("turn-next")})`;
 // The header's own turn steppers were in the design but never bound; they step the same way the keys do.
