@@ -31952,9 +31952,11 @@ fn app_shell_a_session_opened_mid_wheel_lands_at_its_end_at_once() {
         .filter(|f| f[0].as_i64().unwrap() >= click)
         .collect();
     // The cause, as the trace names it: the old session's gesture held the new session's tail
-    // (`tail:deferred`, the wheel inside the intent window). In headless Chrome the hold ends within
-    // a frame or two, so the frames alone pass on the old code; WebKit kept it for 15 frames.
-    let deferred = harness::eval(&tab, "(function(){ var at = window.__s489.clickAt, tr = window.__viewportTrace || []; return tr.filter(function (e) { return e.event === 'tail:deferred' && e.t >= at; }).length; })()").as_i64().expect("a count");
+    // (`tail:deferred` from `placeAfter`, the wheel inside the intent window). In headless Chrome the
+    // hold ends within a frame or two, so the frames alone pass on the old code; WebKit kept it for 15
+    // frames. A deferral the engine's own hold makes (`held`, a scroll event not yet heard when the
+    // empty view is drawn) is not the reader's hand and changes nothing on the page: not counted.
+    let deferred = harness::eval(&tab, "(function(){ var at = window.__s489.clickAt, tr = window.__viewportTrace || []; return tr.filter(function (e) { return e.event === 'tail:deferred' && !e.held && e.t >= at; }).length; })()").as_i64().expect("a count");
     let row = |f: &Vec<serde_json::Value>| {
         format!(
             "{}ms units {} top {} gap {} old {} new {}",
