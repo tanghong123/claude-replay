@@ -1622,9 +1622,9 @@ pub fn port_is_free(port: u16) -> bool {
     std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
-/// A port the kernel has free on the loopback. Its ephemeral range (49152 and up on macOS, 32768
-/// and up on Linux) is clear of every case's fixed port, so a monitor moved there never meets
-/// another case's.
+/// A port the kernel has free on the loopback. Its ephemeral range (32768 and up on this Mac and
+/// on Linux, 49152 and up by macOS's default) is clear of every case's fixed port, so a monitor
+/// moved there never meets another case's.
 pub fn kernel_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
