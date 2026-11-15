@@ -381,13 +381,14 @@ const transcript = byId("transcript");
 // so that node was often gone by the next key and Page Up, an arrow or Space scrolled nothing in
 // Safari. Focusable (`tabindex=-1`: never in the Tab order), the box takes the focus natively from a
 // press on its text, as the nearest focusable thing the press lands in, and keeps it through any
-// redraw; a press on a control the browser focuses still focuses the control. A touch's tap does not
-// focus it (the attribute goes for the tap): on a phone a tap on the text must not put the keyboard
-// down nor take the focus from a field. No ring is drawn for it (`production.css`).
+// redraw; a press on a control the browser focuses still focuses the control. Only a MOUSE's press
+// does: a finger's or a pen's tap does not focus it (the attribute goes for the tap), since on a phone
+// or a tablet a tap on the text must not put the keyboard down nor take the focus from a field. No
+// ring is drawn for it (`production.css`).
 transcript.tabIndex = -1;
 transcript.addEventListener("pointerdown", event => {
-  if (event.pointerType === "touch") transcript.removeAttribute("tabindex");
-  else transcript.tabIndex = -1;
+  if (event.pointerType === "mouse") transcript.tabIndex = -1;
+  else transcript.removeAttribute("tabindex");
 }, { capture: true, passive: true, signal });
 const projection = new Projection();
 let landedHash = "";
