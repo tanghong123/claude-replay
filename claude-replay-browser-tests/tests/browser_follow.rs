@@ -19205,17 +19205,20 @@ fn a_phone_search_box_shows_whole_chips_and_clears_in_one_tap() {
 /// The same case with its port held by another listener (#s495): on aries-black an ssh tunnel
 /// keeps port 2728 on the loopback, and the case timed out "waiting for the phone to open on a session"
 /// while its monitor, refused the port, had already exited. The listener here never answers, as
-/// a tunnel with nothing behind it would not; the tunnel itself, where it is up, serves as well.
+/// a tunnel with nothing behind it would not. It holds a port of the case's own, never 2728
+/// itself: the tunnel exits when its forward fails, so a case holding 2728 while the tunnel
+/// restarts would take the tunnel down.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_search_box_shows_whole_chips_with_its_port_held() {
     let _serial = serial();
-    let _held = std::net::TcpListener::bind(("127.0.0.1", 2728)).ok();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").expect("a port for the case to hold");
+    let port = held.local_addr().expect("the held port").port();
     assert!(
-        !harness::port_is_free(2728),
-        "something holds port 2728 on the loopback for the case"
+        !harness::port_is_free(port),
+        "the case's listener holds port {port} on the loopback"
     );
-    search_box_shows_whole_chips(2728);
+    search_box_shows_whole_chips(port);
 }
 
 fn search_box_shows_whole_chips(port: u16) {
