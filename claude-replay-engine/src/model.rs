@@ -1058,6 +1058,18 @@ pub fn is_edit_tool(name: &str) -> bool {
     matches!(name, "Edit" | "MultiEdit" | "Write" | "NotebookEdit")
 }
 
+/// Whether [`coalesce_spans`] takes `b` into an open run, or holds it for one: thinking, an
+/// activity call or a change, and an attachment. Any other block ends the run. One definition, so
+/// a reader of shaped blocks (#s500, `block_json::write_blocks`) finds the run `coalesce_spans`
+/// made.
+pub fn joins_span(b: &Block) -> bool {
+    match b {
+        Block::Thinking { .. } | Block::Attachment(_) => true,
+        Block::ToolUse { name, .. } => is_activity_tool(name) || is_edit_tool(name),
+        _ => false,
+    }
+}
+
 /// Coalesce each **span** of consecutive thinking + activity tool calls (and, since #s23, the
 /// calls that change files) into one `Thinking` block — Claude Code's between-outputs rule (#57;
 /// the full empirical derivation is `design/cc-activity-coalescing.md`). Any other block ends
@@ -1076,6 +1088,11 @@ pub fn is_edit_tool(name: &str) -> bool {
 /// Thinking texts join blank-line separated; durations sum; even a LONE activity
 /// tool folds (CC never leaves one expanded). A run of nothing but edits — no thinking, no other
 /// call — is not a process and is not folded: each edit stays a card of its own (#s23).
+///
+/// Merging its own output again with more of the same kind gives what one pass over the whole
+/// would have (`a_second_pass_merges_as_one_pass_would`): a merged run takes more thinking and
+/// calls as its raw parts did, and what it held still follows it. The block stream relies on it to
+/// state a withdrawn reply where it stood (#s500, `block_json::write_blocks`).
 pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
     fn flush(
         texts: &mut Vec<String>,
@@ -1100,6 +1117,11 @@ pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
         }
         // Whatever the run produced follows it, in the order it happened.
         out.append(held);
+        // A run that drew nothing (thinking with no text and no call) gives its time to nothing.
+        // It used to carry over into the next run, across whatever ended this one. No adapter's
+        // raw blocks make such a run (Claude's thinking always has text or a placeholder), so no
+        // output moved; a second pass relies on it (#s500, `a_second_pass_merges_as_one_pass_would`).
+        *dur = None;
     }
     let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
     let (mut texts, mut dur, mut tools) = (Vec::new(), None::<u64>, Vec::new());
@@ -1124,9 +1146,7 @@ pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
             // #s23: a change joins the run it happened in — an Edit or Write, and a shell command
             // whose result carries an edit diff (`bashEditDiff`, #263), which #s20 had lifted out.
             // The run's line names it and carries its +N −N.
-            Block::ToolUse { ref name, .. } if is_activity_tool(name) || is_edit_tool(name) => {
-                tools.push(b)
-            }
+            Block::ToolUse { .. } if joins_span(&b) => tools.push(b),
             // #256: inside an open run it waits for the run; with no run open there is nothing
             // to wait for, and it emits exactly where it is. That second case is a pasted image
             // in a prompt, and it was always right.
@@ -1146,6 +1166,99 @@ pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
 mod tests {
     use super::*;
     // its parse entries + decode helpers now live in `claude_model`.
+
+    /// #s500: shaping a stream, then shaping its output again with the rest of the raw stream, is
+    /// one pass over the whole, at every split. The block stream relies on it to state a
+    /// withdrawn reply (raw blocks) after the run the shaping made before it. And `joins_span`
+    /// names exactly what the pass takes into a run.
+    #[test]
+    fn a_second_pass_merges_as_one_pass_would() {
+        let call = |name: &str| Block::ToolUse {
+            name: name.into(),
+            target: name.to_lowercase(),
+            diffs: Vec::new(),
+            output: None,
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+            sent: None,
+            sent_to: None,
+            saved_output: None,
+        };
+        let think = |text: &str, secs: Option<u64>| Block::Thinking {
+            text: text.into(),
+            duration_secs: secs,
+            tools: Vec::new(),
+        };
+        let img = || {
+            Block::Attachment(Attachment {
+                lines: None,
+                kind: AttachmentKind::Image,
+                name: "shot.png".into(),
+                path: None,
+                content: AttachmentContent::None,
+            })
+        };
+        let streams = vec![
+            vec![
+                Block::UserText("go".into()),
+                think("list", Some(1)),
+                call("Bash"),
+                think("count", Some(2)),
+                Block::ToolResult("note".into()),
+            ],
+            vec![
+                Block::UserText("go".into()),
+                think("a", None),
+                img(),
+                call("Read"),
+                think("", Some(3)),
+                think("b", Some(1)),
+                Block::AssistantText("so".into()),
+                think("c", None),
+            ],
+            vec![
+                img(),
+                call("Edit"),
+                img(),
+                call("Write"),
+                think("then", Some(4)),
+                call("WebFetch"),
+                call("Edit"),
+                Block::ToolResult("x".into()),
+                call("Edit"),
+            ],
+            vec![
+                think("", Some(2)),
+                Block::UserText("go".into()),
+                call("Grep"),
+                call("mcp__s__t"),
+                think("", None),
+                Block::AssistantText("end".into()),
+            ],
+        ];
+        for stream in &streams {
+            let whole = coalesce_spans(stream.clone());
+            for at in 0..=stream.len() {
+                let mut again = coalesce_spans(stream[..at].to_vec());
+                again.extend(stream[at..].iter().cloned());
+                assert_eq!(coalesce_spans(again), whole, "split at {at} of {stream:?}");
+            }
+        }
+        for b in streams.iter().flatten() {
+            let alone = coalesce_spans(vec![Block::UserText("u".into()), b.clone()]);
+            let joined = coalesce_spans(vec![think("t", None), b.clone()]);
+            assert_eq!(
+                joins_span(b),
+                joined.len() == 1 || matches!(b, Block::Attachment(_)),
+                "{b:?}: {alone:?} / {joined:?}"
+            );
+        }
+    }
 
     /// #90: an MCP call inside a thinking+activity run must JOIN the span, not
     /// split it (CC folds the whole run into one line).
