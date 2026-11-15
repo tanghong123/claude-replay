@@ -403,11 +403,14 @@ const tapsMouse = event => !!lastTouch && event.timeStamp - lastTouch.at < TAP_M
 // starts a key from the pressed node, so the arrows and Page Up/Down scroll that box, where the
 // transcript taking the focus would have sent them past it. What is left of the bug is there: in
 // Safari, after a click in a wide block of the open turn, a prompt arriving redraws that block and
-// Page Up scrolls nothing again, the original bug limited to wide blocks.
+// Page Up scrolls nothing again, the original bug limited to wide blocks. Only a CAPPED box (one with
+// a max-height, as a raw record is) counts for scrolling down: a box that scrolls sideways computes
+// `overflow-y: auto` too, and a glyph or a child's margin can stand a pixel or two past an ordinary
+// code block's height, which would hand every such block the bug back.
 const scrollsInside = target => {
   for (let node = target?.nodeType === 1 ? target : target?.parentElement; node && node !== transcript; node = node.parentElement) {
     const style = getComputedStyle(node);
-    if ((/(auto|scroll)/.test(style.overflowX) && node.scrollWidth > node.clientWidth + 1) || (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 1)) return true;
+    if ((/(auto|scroll)/.test(style.overflowX) && node.scrollWidth > node.clientWidth + 1) || (style.maxHeight !== "none" && /(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 1)) return true;
   }
   return false;
 };
