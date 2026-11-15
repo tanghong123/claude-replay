@@ -699,6 +699,24 @@ pub fn audit_jsonl() -> String {
         json!({"type":"user","timestamp":stamp(),"isMeta":true,"turnCompanion":true,"refusedMessageId":"msg-stopped",
         "message":{"role":"user","content":"Your response above was stopped by a safety classifier — this is not a tool or API error."}}),
     );
+    // tool / think, md — a reply the client withdrew for a broken tool call (#s500): its thinking
+    // and its text, then the client's note naming both records, which folds to the mark (the
+    // line, the reply under it, then the note).
+    push(
+        json!({"type":"assistant","uuid":"rec-withdrawn-think","timestamp":stamp(),
+        "message":{"id":"msg-withdrawn","role":"assistant","stop_reason":"tool_use",
+                   "content":[{"type":"thinking","thinking":"The call needs the burrow count first.","signature":"x"}]}}),
+    );
+    push(
+        json!({"type":"assistant","uuid":"rec-withdrawn-text","timestamp":stamp(),
+        "message":{"id":"msg-withdrawn","role":"assistant","stop_reason":"tool_use",
+                   "content":[{"type":"text","text":"Counting the burrows now."}]}}),
+    );
+    push(
+        json!({"type":"user","timestamp":stamp(),"isMeta":true,"turnCompanion":true,
+        "retractedMessageUuids":["rec-withdrawn-think","rec-withdrawn-text"],
+        "message":{"role":"user","content":"The previous response failed to produce a valid tool call. Please retry the tool call now."}}),
+    );
     // bash — a command that ran outside the sandbox (#s381): the sandbox's head says the session
     // ran with it on, then a call whose result reads `sandboxed: false` wears the mark.
     push(json!({"type":"attachment","timestamp":stamp(),
