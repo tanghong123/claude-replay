@@ -23609,3 +23609,106 @@ fn a_click_in_a_wide_block_of_the_transcript_leaves_its_arrows_to_the_block() {
         "an arrow after a click in a wide block scrolls that block: {seen:?}"
     );
 }
+
+/// #s488, from its delta review: a press on the transcript's own scrollbar leaves the focus where it
+/// was. A browser moves the focus on a scrollbar press only to a box it may focus, and once a mouse's
+/// click had made the transcript one, a reader who typed a draft, dragged the scrollbar to look back
+/// and typed on sent the keys to the transcript (Space scrolled). From the compose box and from the
+/// search field, a mouse press and release on the scrollbar's band leaves `document.activeElement`
+/// where it was.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_press_on_the_transcript_s_scrollbar_leaves_the_focus_in_its_field() {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventPointer_TypeOption as Pointer,
+        DispatchMouseEventTypeOption as Mouse, MouseButton,
+    };
+    let _serial = serial();
+    let base = harness::base("scrollbar-keeps-focus");
+    let stores = harness::Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000048ca";
+    stores.claude_session(sid, &harness::long_session(30, harness::Shape::default()));
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3295, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1366.0, 1024.0);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#transcript .virtual-window .turn.assistant p').length >= 2 && document.getElementById('transcript').scrollTop > 0",
+        "the session drawn at its tail",
+        Duration::from_secs(30),
+        "document.querySelectorAll('#transcript .virtual-window p').length",
+    );
+    // A paragraph to click first, so a mouse's click has made the transcript focusable.
+    let text = "(function(){ var s = document.getElementById('transcript'), v = s.getBoundingClientRect(); var ps = [].slice.call(s.querySelectorAll('.virtual-window .turn.assistant p')); for (var i = ps.length - 1; i >= 0; i--) { var r = ps[i].getBoundingClientRect(); if (r.height < 4 || r.top < v.top + 60 || r.bottom > v.bottom - 200) continue; var x = r.left + Math.min(40, r.width / 2), y = r.top + r.height / 2, hit = document.elementFromPoint(x, y); if (hit && ps[i].contains(hit)) return [x, y]; } return []; })()";
+    // A point on the transcript's scrollbar band, which lands on the transcript itself.
+    let bar = "(function(){ var s = document.getElementById('transcript'), r = s.getBoundingClientRect(); var x = r.right - 4, y = r.top + r.height / 3; return document.elementFromPoint(x, y) === s && s.scrollHeight > s.clientHeight ? [x, y] : []; })()";
+    let focus = "(function(){ var a = document.activeElement; return a === document.getElementById('transcript') ? 'the transcript' : a ? a.localName + (a.id ? '#' + a.id : '') : 'none'; })()";
+    let press_bar = || {
+        let at = phone_point(&tab, bar);
+        for kind in [Mouse::MousePressed, Mouse::MouseReleased] {
+            tab.call_method(DispatchMouseEvent {
+                Type: kind,
+                x: at.0,
+                y: at.1,
+                modifiers: None,
+                timestamp: None,
+                button: Some(MouseButton::Left),
+                buttons: None,
+                click_count: Some(1),
+                force: None,
+                tangential_pressure: None,
+                tilt_x: None,
+                tilt_y: None,
+                twist: None,
+                delta_x: None,
+                delta_y: None,
+                pointer_Type: Some(Pointer::Mouse),
+            })
+            .expect("a press on the scrollbar");
+        }
+        harness::pause("the press", Duration::from_millis(300));
+    };
+    let click_text = || {
+        let at = phone_point(&tab, text);
+        tab.click_point(headless_chrome::browser::tab::point::Point { x: at.0, y: at.1 })
+            .expect("a click on a paragraph");
+        harness::pause("the click", Duration::from_millis(300));
+        harness::eval(&tab, focus)
+    };
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "document.getElementById('composeFab').click(); 'ok'");
+    let mut seen = Vec::new();
+    for (field, what) in [
+        ("#composeInput", "the compose box"),
+        ("#transcriptSearchInput", "the search field"),
+    ] {
+        let clicked = click_text();
+        harness::click_when_settled(&tab, field, what);
+        tab.type_str("draft").unwrap();
+        let before = harness::eval(&tab, focus);
+        press_bar();
+        let after = harness::eval(&tab, focus);
+        seen.push(format!("{what}: a click on text focused {clicked}; typing in it {before}, after the scrollbar press {after}"));
+    }
+    eprintln!("#s488 scrollbar: {seen:?}");
+    for (line, id) in seen
+        .iter()
+        .zip(["textarea#composeInput", "input#transcriptSearchInput"])
+    {
+        assert!(
+            line.contains(&format!(
+                "typing in it \"{id}\", after the scrollbar press \"{id}\""
+            )),
+            "a press on the transcript's scrollbar leaves the focus in the field: {seen:?}"
+        );
+    }
+}
