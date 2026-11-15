@@ -1631,6 +1631,29 @@ impl Emitter<'_> {
                 }
                 body.push(pre_part(note));
             }
+            // #s500: a reply the client withdrew for a broken tool call, under the note it wrote
+            // in its place. Drawn like the mark above: one line as the name, and folded under it
+            // the withdrawn reply's thinking and text, in order, as body parts both pages already
+            // draw (a nested record would be a card of its own inside the mark), then the
+            // client's note to the model.
+            Block::Withdrawn { note, reply } => {
+                o.insert("id".into(), json!(self.block_id()));
+                head.insert("name".into(), json!(crate::model::WITHDRAWN_LINE));
+                for b in reply {
+                    match b {
+                        Block::Thinking { text, .. } if !text.trim().is_empty() => {
+                            body.push(json!({ "p": "think", "h": md_html(text) }));
+                        }
+                        Block::AssistantText(t)
+                        | Block::AssistantCutOff(t)
+                        | Block::AssistantMessage { text: t, .. } => {
+                            body.push(json!({ "p": "md", "h": md_html(t) }));
+                        }
+                        _ => {}
+                    }
+                }
+                body.push(pre_part(note));
+            }
             Block::ToolUse {
                 name,
                 target,

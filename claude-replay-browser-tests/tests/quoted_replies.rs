@@ -193,6 +193,7 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
             + &user("claude", ordinary, false)),
     );
     let monitor = Monitor::spawn(Kind::V1, 3195, &base, Some(&stores), true);
+    let port = monitor.port;
     for (agent, id, original) in [
         ("codex", codex_id, codex.as_str()),
         ("claude", claude_id, claude.as_str()),
@@ -204,7 +205,7 @@ fn quoted_replies_show_pairs_raw_source_and_navigable_previews_in_both_themes() 
         } else {
             id.to_string()
         };
-        let url = format!("http://127.0.0.1:3195/?ui=app&session={monitor_id}");
+        let url = format!("http://127.0.0.1:{port}/?ui=app&session={monitor_id}");
         tab.navigate_to(&url).unwrap();
         tab.wait_until_navigated().unwrap();
         harness::until(

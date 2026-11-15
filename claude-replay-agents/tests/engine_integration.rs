@@ -1349,6 +1349,69 @@ fn tail_pulse_reads_an_api_error_naming_a_stopped_reply_as_a_failure() {
     assert_eq!(p.last, TailLast::AssistantEnded);
 }
 
+/// #s499: the reply Claude Code writes in the agent's place (its `<synthetic>` placeholder) is
+/// drawn as a client note now, and the state signals read it exactly as they read it when it
+/// folded to the agent's prose: the turn's last word, ended (`stop_sequence`), its text the final
+/// text, and no failure, even after an API error. These are the values the code before #s499
+/// gives, so a session that ends on one keeps its state and bucket. Fixtures by hand.
+#[test]
+fn tail_pulse_reads_a_reply_the_client_wrote_as_the_turn_s_last_word() {
+    use claude_replay_engine::state::{tail_pulse, TailLast};
+    const NOTE: &str = "No response requested.";
+    let prompt = |v: &str, text: &str| {
+        format!(
+            r#"{{"type":"user","version":"{v}","sessionId":"s-s499","uuid":"u1","timestamp":"2026-11-14T10:00:00Z","message":{{"role":"user","content":"{text}"}}}}"#
+        )
+    };
+    let placeholder = |v: &str, made_by: &str| {
+        format!(
+            r#"{{"type":"assistant","version":"{v}","sessionId":"s-s499","uuid":"a1",{made_by}"isApiErrorMessage":false,"timestamp":"2026-11-14T10:00:01Z","message":{{"id":"msg_p1","role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{{"input_tokens":0,"output_tokens":0}},"content":[{{"type":"text","text":"{NOTE}"}}]}}}}"#
+        )
+    };
+    let error = r#"{"type":"assistant","version":"2.1.325","sessionId":"s-s499","uuid":"a0","madeBy":"other","isApiErrorMessage":true,"error":"server_error","timestamp":"2026-11-14T10:00:00Z","message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: Connection error."}]}}"#;
+    let file = |lines: &[String]| tmp1(&(lines.join("\n") + "\n"));
+    for (shape, lines) in [
+        (
+            "2.1.325, madeBy other",
+            vec![
+                prompt("2.1.325", "count the tern nests"),
+                placeholder("2.1.325", r#""madeBy":"other","#),
+            ],
+        ),
+        (
+            "2.1.310, no madeBy",
+            vec![
+                prompt("2.1.310", "count the tern nests"),
+                placeholder("2.1.310", ""),
+            ],
+        ),
+        (
+            "after an API error",
+            vec![
+                prompt("2.1.325", "count the tern nests"),
+                error.to_string(),
+                placeholder("2.1.325", r#""madeBy":"other","#),
+            ],
+        ),
+    ] {
+        let p = tail_pulse(&ClaudeAdapter, &file(&lines));
+        assert_eq!(p.last, TailLast::AssistantEnded, "{shape}");
+        assert_eq!(p.final_text.as_deref(), Some(NOTE), "{shape}");
+        assert!(!p.last_failure, "{shape}: no failure");
+        assert!(!p.last_tool_error, "{shape}");
+        assert!(!p.queued_prompt, "{shape}");
+    }
+    let p = tail_pulse(
+        &ClaudeAdapter,
+        &file(&[
+            prompt("2.1.325", "count the tern nests"),
+            placeholder("2.1.325", r#""madeBy":"other","#),
+            prompt("2.1.325", "go on"),
+        ]),
+    );
+    assert_eq!(p.last, TailLast::User, "a prompt after it is the last word");
+}
+
 /// #194: the Codex turn vocabulary — `task_complete` ends the turn, a `response_item`
 /// is inside one by definition.
 #[test]

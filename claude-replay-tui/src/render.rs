@@ -955,6 +955,18 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                 out.push(Line::from(Span::styled(format!("    {line}"), base)));
             }
         }
+        // #s500: the mark on a reply the client withdrew for a broken tool call, then the
+        // withdrawn reply as it was drawn before, then the client's note to the model.
+        Block::Withdrawn { note, reply } => {
+            out.push(withdrawn_header());
+            for c in reply {
+                out.extend(render_one(c, width, hl));
+            }
+            let base = theme::result().bg(theme::shell_expanded_bg());
+            for line in note.lines() {
+                out.push(Line::from(Span::styled(format!("    {line}"), base)));
+            }
+        }
         Block::Command { name, args, output } => {
             // `❯ /compact` header + dim `⎿ <stdout>` lines, like Claude Code — the
             // whole block shares the user-tier background so it reads as one region.
@@ -1326,6 +1338,7 @@ fn render_header(b: &Block) -> Line<'static> {
             theme::result(),
         ),
         Block::SafetyStop { category, .. } => safety_stop_header(category.as_deref()),
+        Block::Withdrawn { .. } => withdrawn_header(),
         Block::Command { name, args, .. } => command_header(name, args),
         Block::Compaction { .. } => compaction_rule(b),
     }
@@ -1340,6 +1353,17 @@ fn safety_stop_header(category: Option<&str>) -> Line<'static> {
     ))
 }
 
+/// The one dim line that marks a reply the client withdrew for a broken tool call (#s500).
+fn withdrawn_header() -> Line<'static> {
+    Line::from(Span::styled(
+        format!("  ⎿ \u{a0}{}", crate::model::WITHDRAWN_LINE),
+        theme::dim(),
+    ))
+}
+
+/// A width no drawn line reaches, for a count that has none (`body_len`'s withdrawn reply).
+const UNWRAPPED: usize = 10_000;
+
 /// How many lines `render_one` emits *after* the header — computed cheaply (no
 /// `Line` allocation) so a collapsed block's `⋯ N folded` count is exact without
 /// building the body. Must agree with `render_one`'s output length.
@@ -1351,6 +1375,17 @@ fn body_len(b: &Block) -> usize {
         | Block::QueueEvent { text: t } => t.lines().count().saturating_sub(1),
         // #s378: the line is the header; the whole note is the body.
         Block::SafetyStop { note, .. } => note.lines().count(),
+        // #s500: the withdrawn reply as `render_one` draws it (markdown's own lines, a cut-off
+        // reply's line), then the note. This count has no width, so the reply is drawn on a line
+        // wide enough not to wrap: a narrow terminal may draw its prose in more. It is drawn only
+        // for this count, and a withdrawn reply is rare and short.
+        Block::Withdrawn { note, reply } => {
+            let reply: usize = reply
+                .iter()
+                .map(|c| render_one(c, UNWRAPPED, Hl::Styled).len())
+                .sum();
+            reply + note.lines().count()
+        }
         Block::UserInbox { text, inbox } => inbox_lines(text, inbox).len() - 1,
         Block::Attachment(_) => 0, // one-line marker; not foldable
         Block::SubAgent(sa) => {
@@ -2775,6 +2810,27 @@ mod tests {
         );
         assert_eq!(texts(&[render_header(&b)]), [line]);
         assert_eq!(body_len(&b), lines.len() - 1, "the body is the note");
+    }
+
+    /// #s500: the folded count of a withdrawn reply is what expanding it draws: markdown's own
+    /// lines (a list, a paragraph break), a cut-off reply's line, the thinking, and the note.
+    #[test]
+    fn a_withdrawn_reply_s_folded_count_is_what_it_draws() {
+        let b = Block::Withdrawn {
+            note: "The previous response failed to produce a valid tool call.\nPlease retry."
+                .into(),
+            reply: vec![
+                Block::Thinking {
+                    text: "First the file.\nThen the count.".into(),
+                    duration_secs: None,
+                    tools: Vec::new(),
+                },
+                Block::AssistantText("Counting:\n\n- one\n- two".into()),
+                Block::AssistantCutOff("And then".into()),
+            ],
+        };
+        let lines = render_one(&b, 200, Hl::Styled);
+        assert_eq!(body_len(&b), lines.len() - 1, "{:?}", texts(&lines));
     }
 
     /// A Command block renders `❯ /compact` + a dim `⎿`-prefixed stdout line.

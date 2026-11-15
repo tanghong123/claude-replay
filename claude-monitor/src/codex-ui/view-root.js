@@ -45,6 +45,19 @@ export const viewRoot = Object.freeze({
   animations: () => doc()?.getAnimations?.() ?? [],
   /** The layout viewport's width: the window's, less a classic scrollbar (`innerWidth` counts one). */
   viewportWidth: () => rootElement()?.clientWidth ?? (typeof innerWidth === "number" ? innerWidth : 0),
+  /** The box the view's fixed layers are drawn in, in the window's coordinates (#s431 stage 4,
+   *  design/pane-layout.md, "Drawn inside the pane"): the view's own while it contains its layout
+   *  (`pl-boxed`: in a host's pane, beside the app's list), else the layout viewport. A layer a
+   *  script places is placed and clamped in it, never against `innerWidth`. */
+  layerBox: () => {
+    const view = viewElement();
+    if (view && /\b(layout|content|strict)\b/.test(getComputedStyle(view).contain || "")) {
+      const r = view.getBoundingClientRect();
+      return { left: r.left + view.clientLeft, top: r.top + view.clientTop, width: view.clientWidth, height: view.clientHeight };
+    }
+    const root = rootElement();
+    return { left: 0, top: 0, width: root?.clientWidth ?? 0, height: root?.clientHeight ?? 0 };
+  },
   /** "dark" or "light": the theme the view draws in, carried by the view's own element, whose
    *  stylesheet reads it there (stage 5b); a page with no view (mdrev's tab) carries it on its root. */
   theme: () => ((viewElement() || rootElement())?.dataset.theme === "dark" ? "dark" : "light"),

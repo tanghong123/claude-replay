@@ -396,8 +396,8 @@ fn without_node_a_local_markdown_file_keeps_its_history_and_takes_no_notes() {
 fn mdrev_contract_passes_mdrev_cli_conform() {
     let _serial = serial();
     let (base, stores, repo) = fixture("mdrev-conform");
-    let port = 2825;
-    let m = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2825, &base, Some(&stores), true);
+    let port = m.port;
     let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     open_guide(&tab, &repo);
@@ -685,8 +685,8 @@ fn a_tab_of_held_text_survives_a_monitor_restart() {
         OWN,
     );
 
-    drop(m); // the monitor goes, and the text it held with it
-    let m = Monitor::spawn(Kind::V1, 2828, &base, Some(&stores), false);
+    // The monitor goes, and the text it held with it; the new one serves where the tab is (#s495).
+    let m = Monitor::respawn(m, &base, Some(&stores), false);
     own.reload(false, None).unwrap();
     own.wait_until_navigated().unwrap();
     until(
@@ -699,8 +699,7 @@ fn a_tab_of_held_text_survives_a_monitor_restart() {
     assert_eq!(own_h1(&own), "Field notes");
 
     eval(&own, "sessionStorage.clear(); 'ok'");
-    drop(m);
-    let _m = Monitor::spawn(Kind::V1, 2828, &base, Some(&stores), false);
+    let _m = Monitor::respawn(m, &base, Some(&stores), false);
     own.reload(false, None).unwrap();
     own.wait_until_navigated().unwrap();
     until(
@@ -864,15 +863,15 @@ fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
     let _serial = serial();
     let (base, stores, repo, state) = shared_review_world("mdrev-shared");
 
-    let port = 2945;
     let m = Monitor::spawn_with(
         Kind::V1,
-        port,
+        2945,
         &base,
         Some(&stores),
         true,
         &[("MDREV_STATE_DIR", &state.display().to_string())],
     );
+    let port = m.port;
     let (browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     open_guide(&tab, &repo);
@@ -2070,10 +2069,9 @@ fn the_detached_tab_reads_subscribes_and_notifies_through_draft_8() {
                 && id.is_none_or(|id| shown.contains(&format!("\"{id}\"")))
         })
     };
-    let port = 2756;
     let m = Monitor::spawn_with(
         Kind::V1,
-        port,
+        2756,
         &base,
         Some(&stores),
         true,

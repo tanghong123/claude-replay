@@ -221,6 +221,17 @@ mdrev. The kit takes them over if a second host needs them.
 
 The first kit ships without the detached page; a later kit adds it (steps 7 and 8 below).
 
+**Built** (#s432, in mdrev's shape, the owner's choice on #s514). Each release's Release workflow
+runs `scripts/kit.sh` and publishes `agent-monitor-kit-<version>.tar.gz` and its
+`agent-monitor-kit-<version>.sha256`. Inside, `bundle/` holds `index.js` (the one entry:
+`mountSessionView`, `mountSessionList`, `backendHandle`, `useBackend` and `persist`), every module it
+imports byte for byte as that release's monitor serves it at `/monitor-ui/`, the two stylesheets and
+`index.d.ts`; `docs/` holds the guide and the contract; `conform.mjs` is the check. The kit's sources
+are `claude-monitor/kit/` and `claude-monitor/src/kit.rs`, whose tests hold the bundle to the served
+bytes and the declarations to each component's options; the browser case
+`a_page_mounts_both_components_from_the_kit_alone_and_reads_a_session` mounts both from it on a
+page of its own.
+
 ## The first hosts
 
 - **The collaboration app** gives the session view a rectangular pane that the view's own code
