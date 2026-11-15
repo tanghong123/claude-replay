@@ -97,6 +97,39 @@ jobs:
           dry-run: ${{ !startsWith(github.ref, 'refs/tags/') }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  # The kit (#s432, design/embedding.md "Delivery"): the session view and the session list as a host
+  # mounts them, packed by scripts/kit.sh with its digest beside it, as each binary's is. A manual
+  # branch run packs it and uploads nothing.
+  kit:
+    name: The embedding kit
+    needs: github-release
+    if: always() && (needs.github-release.result == 'success' || needs.github-release.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Pack the kit
+        id: pack
+        run: |
+          set -euo pipefail
+          archive=$(scripts/kit.sh "$RUNNER_TEMP/kit")
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          # The digest checks out, and the archive holds exactly what the kit lays out, byte for
+          # byte: unpacked beside a fresh copy the example writes, the two trees are the same.
+          (cd "$(dirname "$archive")" && sha256sum -c "$(basename "${archive%.tar.gz}").sha256")
+          mkdir "$RUNNER_TEMP/unpacked" "$RUNNER_TEMP/fresh"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/unpacked"
+          cargo run -q --locked -p claude-monitor --example kit -- "$RUNNER_TEMP/fresh"
+          diff -r "$RUNNER_TEMP/unpacked" "$RUNNER_TEMP/fresh"
+          tar -tzf "$archive" | sed -n 1,20p
+          echo "$(tar -tzf "$archive" | wc -l) entries"
+      - name: Upload it to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          archive='${{ steps.pack.outputs.archive }}'
+          gh release upload "$GITHUB_REF_NAME" "$archive" "${archive%.tar.gz}.sha256" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   homebrew:
     name: Bump Homebrew formula
     needs: [github-release, build-binaries]
