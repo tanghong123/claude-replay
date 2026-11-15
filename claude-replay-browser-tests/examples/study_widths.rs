@@ -710,7 +710,9 @@ fn report(dir: &Path, records: &[Value], took: Duration) {
          not on the screen, `·` not in the page. *Text* is the transcript's text column. \
          *Unreachable* lists the chrome's controls whose centre a pointer cannot reach \
          (`elementFromPoint`), out of those checked; a control the open right pane lies over is counted apart. *Overflow* is how far the page, the view and \
-         the transcript scroll sideways. The screenshots are in `shots/`, and `contact.html` shows \
+         the transcript scroll sideways, and what is drawn in the view past its left or right edge \
+         (the shut right pane, parked past the view's edge and not drawn, adds to the view's \
+         number without being named). The screenshots are in `shots/`, and `contact.html` shows \
          them side by side.\n",
         records.len(),
         took.as_secs()
