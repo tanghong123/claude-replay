@@ -15652,34 +15652,43 @@ fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
         // choosing a session from a pinned flyout meets.
         let refreshes = "performance.getEntriesByType('resource').filter(function (e) { return /\\/api\\/sessions(\\?|$)/.test(e.name); }).length";
         let codex_row = "document.querySelector('#railFlyout [data-session]')";
-        eval(
-            &tab,
-            &format!("(function () {{ performance.clearResourceTimings(); {codex_row}.__kept = true; return 'ok'; }})()"),
-        );
-        harness::until(
-            &tab,
-            &format!("{refreshes} >= 1"),
-            "an index refresh with the flyout open",
-            Duration::from_secs(15),
-            refreshes,
-        );
-        settle();
-        assert_eq!(
-            eval(
+        // A row carries its age ("just now", "1m") and its state, which move with the clock, so a
+        // refresh may find the body really changed and rightly write it again. The body is kept as
+        // it read at the stamp: a rewrite of a body that reads the same fails, one of a body that
+        // changed stamps again and waits for the next refresh.
+        let stamp_rows = format!("(function () {{ performance.clearResourceTimings(); var f = document.getElementById('railFlyout'); f.__body = f.innerHTML; {codex_row}.__kept = true; return 'ok'; }})()");
+        let rows_kept = format!("(function () {{ var f = document.getElementById('railFlyout'), r = {codex_row}; return JSON.stringify({{ kept: !!(r && r.__kept), same: f.innerHTML === f.__body }}); }})()");
+        eval(&tab, &stamp_rows);
+        for attempt in 0.. {
+            harness::until(
                 &tab,
-                &format!("(function () {{ var m = {}; return JSON.stringify([!!(m && m.__kept), m && m.getAttribute('aria-expanded')]); }})()", mark("Codex")),
-            ),
-            "[true,\"true\"]",
-            "at {width}px: a refresh with the flyout open keeps the rail's marks, the open one expanded"
-        );
-        assert_eq!(
-            eval(
-                &tab,
-                &format!("(function () {{ var r = {codex_row}; return !!(r && r.__kept); }})()"),
-            ),
-            true,
-            "at {width}px: a refresh that changes nothing keeps the pinned flyout's rows"
-        );
+                &format!("{refreshes} >= 1"),
+                "an index refresh with the flyout open",
+                Duration::from_secs(15),
+                refreshes,
+            );
+            settle();
+            if attempt == 0 {
+                assert_eq!(
+                    eval(
+                        &tab,
+                        &format!("(function () {{ var m = {}; return JSON.stringify([!!(m && m.__kept), m && m.getAttribute('aria-expanded')]); }})()", mark("Codex")),
+                    ),
+                    "[true,\"true\"]",
+                    "at {width}px: a refresh with the flyout open keeps the rail's marks, the open one expanded"
+                );
+            }
+            let rows: serde_json::Value =
+                serde_json::from_str(eval(&tab, &rows_kept).as_str().unwrap_or("{}")).unwrap();
+            if rows["kept"] == true {
+                break;
+            }
+            assert!(
+                rows["same"] == false && attempt < 3,
+                "at {width}px: a refresh that changes nothing keeps the pinned flyout's rows (try {attempt}): {rows}"
+            );
+            eval(&tab, &stamp_rows);
+        }
         // #s493: when the marks are drawn again while the flyout is open (the selection moving to
         // Codex gives its mark the selected class), the next placing (a resize here) keeps the
         // flyout beside the mark on the screen. It measured the mark the flyout opened from, gone
