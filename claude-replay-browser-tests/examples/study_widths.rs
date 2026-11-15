@@ -1190,6 +1190,11 @@ fn main() {
                 locale: Some("en-US".into()),
             })
             .expect("the locale override");
+            // And one clock face: the machine's own timezone reaches every time the page draws.
+            tab.call_method(Emulation::SetTimezoneOverride {
+                timezone_id: "UTC".into(),
+            })
+            .expect("the timezone override");
         }
         harness::track_idle(&tab);
         harness::mouse_window(&tab, 1280, DESKTOP_H);
