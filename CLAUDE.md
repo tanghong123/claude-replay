@@ -1074,7 +1074,10 @@ delivered is offered (`ToolUse::delivered` → `head.files`), not only the first
   stderr line naming the holder, and the spawn waits for the monitor's own "serving" line, so a
   case reads its address from the handle — `url`, `remote_url`, `port` — and never writes the
   number into one, which `no_case_writes_a_monitor_port_into_an_address` checks; scratch stays
-  named for the number asked, #s495), `chrome_tab()` — a browser with timer throttling off AND its first tab, the one way a
+  named for the number asked, #s495; a restart under an open page is `Monitor::respawn`, which
+  brings the same monitor, its environment and arguments, back on the port the page is on, or
+  fails at once naming that port's holder: a second `Monitor::spawn` on the case's number would
+  move again, away from the tab), `chrome_tab()` — a browser with timer throttling off AND its first tab, the one way a
   case opens one (#343: `first_tab` launches again, up to four times with a stderr line each,
   when a fresh browser gives no tab — ~220 of ~230 failures across fifteen suite runs were that
   one error, "The event waited for never came", in runs of up to 22 cases; such a browser is
