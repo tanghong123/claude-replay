@@ -626,7 +626,7 @@ fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at(
         // Remeasures from here to the mark: the scrollbar's own, when it moves the column.
         eval(
             &tab,
-            "(function(){ window.__tg = performance.now(); return true; })()",
+            "(function(){ window.__tg = performance.now(); window.__wg = document.querySelector('.vwin').getBoundingClientRect().width; return true; })()",
             false,
         );
         if grows {
@@ -655,6 +655,17 @@ fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at(
             "{name}: the page's scrollbar takes room: {room}"
         );
         if wide {
+            // The scene's premise: the scrollbar narrowed the column while it watched, so no
+            // remeasure below means the width was taken, not that nothing moved.
+            let moved = eval(
+                &tab,
+                "window.__wg - document.querySelector('.vwin').getBoundingClientRect().width",
+                false,
+            );
+            assert!(
+                moved.as_f64().unwrap_or(0.0) >= 14.5,
+                "{name}: premise, the scrollbar narrowed the column while the scene watched: {moved}"
+            );
             let early = eval(&tab, "JSON.stringify(window.__viewportHistory.states.filter(function (s) { return s.cause === 'remeasure' && s.t >= window.__tg; }).map(function (s) { return s.ratio; }))", false);
             if early.as_str() != Some("[]") {
                 wrong.push(format!(
