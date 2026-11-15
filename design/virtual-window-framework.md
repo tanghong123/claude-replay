@@ -643,12 +643,20 @@ line, so its first `[` skipped a turn. Near the end, the bar's own rule (#89, #1
 the LAST turn is current) would make a step that the end clamps count from the last turn again, so
 each page keeps a memory of the turn its last step landed (`stepLanded`: the classic page's
 `landedTurn()`, the app shell's `landedTurnIndex()`) and names it while that turn's header is still
-where the step put it. The reader's input on the transcript ends it (a wheel or touch there, a
-scroll key, a pointer down on the scroller), and so do the jump to the latest, the next step,
-another session and every other commanded move (a click in the turn list or on the bar, a search
-or filter landing, a deep link, a restore), since one that moves nothing (turn N clicked while the
-end holds the view) leaves the header where it was. Input on a panel that scrolls itself (the
-classic sidebar and task panel, the app shell's lists) does not end it.
+where the step put it. The reader's input on the transcript ends it: a wheel or touch there or a
+scroll key, on both pages; the app shell also listens for a pointer down on its scroller, while on
+the classic page, whose scroller is the window, a scrollbar drag ends it through the position test
+(the header no longer where the step put it). So do the jump to the latest, the next step, another
+session and every commanded move to anything but a turn (a task, an agent, an artifact, a search or
+filter landing, a deep link, a restore), since one that moves nothing leaves the header where it
+was and would keep naming a turn the reader moved away from; a head step, which moves among the
+rows inside the turns, ends it only where it moves the view. A commanded move to a
+turn's own record (a click on a turn in the turn list or on the bar) SETS the memory to that turn
+instead: the reader chose it, and where the end holds the view the click moves nothing, so the end
+rule would otherwise name the last turn and the next `[` would land where the reader already is.
+Input on a panel that scrolls itself (the classic sidebar, task panel and top bar menus, the app
+shell's lists) does not end it.
+
 `follow()` is the one that SETS the pin: `P := tail`, the commanded converge, `followChanged`,
 remember. The classic page's `toBottom(commanded)` and the shell's `toBottom()` become it.
 
