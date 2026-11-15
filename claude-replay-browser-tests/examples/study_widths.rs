@@ -38,7 +38,8 @@
 //! the videos.
 //!
 //! `--only` keeps the cells whose id holds the text (`app-`, `host-`, `touch`, `w1180`…); `--run`
-//! names the output directory (a timestamp by default). Everything goes to
+//! names the output directory (a timestamp by default; a name used before is cleared of that run's
+//! cells, shots, frames and outputs first, and nothing else). Everything goes to
 //! `target/study-widths/<run>/`, out of git: `report.md` (a table per surface), `contact.html` (the
 //! screenshots in a grid), `app-sweep.mp4` and `host-sweep.mp4` (each cell a captioned frame, in the
 //! order of the table; the frames are composed by the same Chrome, since ffmpeg's caption filter is
@@ -1240,7 +1241,53 @@ fn main() {
     let name = arg("--run").unwrap_or_else(|| harness::rfc3339(now).replace([':', '-'], ""));
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let study = workspace.join("target/study-widths");
+    // A run starts in an empty directory: a name used before keeps none of that run's cells, shots,
+    // frames or outputs. Only those, each by its absolute path, are removed, and only under a name
+    // that is one plain directory under `target/study-widths/` (never `latest`, the link).
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name == "latest"
+        || name.contains(['/', '\\'])
+    {
+        eprintln!("study-widths: --run takes a plain name, not {name:?}");
+        std::process::exit(2);
+    }
     let dir = study.join(&name);
+    assert!(dir.is_absolute(), "the run's directory is not absolute");
+    if let Ok(meta) = std::fs::symlink_metadata(&dir) {
+        if !meta.is_dir() {
+            eprintln!(
+                "study-widths: {} is not a directory (a link?); not reusing it",
+                dir.display()
+            );
+            std::process::exit(2);
+        }
+        for sub in ["cells", "shots", "frames"] {
+            let d = dir.join(sub);
+            if d.exists() {
+                std::fs::remove_dir_all(&d)
+                    .unwrap_or_else(|e| panic!("clearing {}: {e}", d.display()));
+            }
+        }
+        for file in [
+            "report.md",
+            "contact.html",
+            "frame.html",
+            "app-sweep.mp4",
+            "host-sweep.mp4",
+        ] {
+            let f = dir.join(file);
+            if f.exists() {
+                std::fs::remove_file(&f)
+                    .unwrap_or_else(|e| panic!("clearing {}: {e}", f.display()));
+            }
+        }
+        eprintln!(
+            "study-widths: {} was used before; its cells, shots, frames and outputs are cleared",
+            dir.display()
+        );
+    }
     for sub in ["cells", "shots", "frames"] {
         std::fs::create_dir_all(dir.join(sub)).unwrap();
     }
