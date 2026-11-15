@@ -1650,9 +1650,10 @@ enum Probe {
     TimedOut,
 }
 
-/// `cmd`'s stdout, if it finishes within `limit`; past it the child is killed. Its stdout is read
-/// on a thread of its own, so a full pipe never stalls it, and that thread is left behind, never
-/// joined, when the child does not finish.
+/// `cmd`'s stdout, if it finishes within `limit`; past it the child is killed and reaped on a
+/// thread of its own, so a child the kill cannot reach yet never holds the caller. Its stdout is
+/// read on a thread of its own, so a full pipe never stalls it, and that thread is left behind,
+/// never joined, when the child does not finish.
 fn output_within(mut cmd: std::process::Command, limit: Duration) -> Result<String, Probe> {
     let mut child = cmd
         .stdin(std::process::Stdio::null())
@@ -1679,8 +1680,13 @@ fn output_within(mut cmd: std::process::Command, limit: Duration) -> Result<Stri
                 .map_err(|_| Probe::TimedOut);
         }
         if started.elapsed() >= limit {
+            // A child stuck in the kernel cannot die until the kernel lets go, so `wait` could
+            // block as long as the probe would have. A thread of its own reaps it whenever it
+            // ends, and the caller goes on now.
             let _ = child.kill();
-            let _ = child.wait();
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
             return Err(Probe::TimedOut);
         }
         std::thread::sleep(Duration::from_millis(20));
