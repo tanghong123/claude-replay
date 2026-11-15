@@ -23275,16 +23275,21 @@ fn a_click_in_a_growing_transcript_leaves_its_keys_a_scroller_no_redraw_takes() 
         Duration::from_secs(30),
         "JSON.stringify({ ps: document.querySelectorAll('#transcript .virtual-window p').length, top: (document.getElementById('transcript') || {}).scrollTop })",
     );
-    // The last paragraph of an assistant's reply that the mouse can reach, its centre's point; the
-    // paragraph is kept on the page as `__clicked`.
-    let paragraph = "(function(){ var s = document.getElementById('transcript'), v = s.getBoundingClientRect(); var ps = [].slice.call(s.querySelectorAll('.virtual-window .turn.assistant p')); for (var i = ps.length - 1; i >= 0; i--) { var r = ps[i].getBoundingClientRect(); if (r.height < 4 || r.top < v.top + 60 || r.bottom > v.bottom - 160) continue; var x = r.left + Math.min(40, r.width / 2), y = r.top + r.height / 2, hit = document.elementFromPoint(x, y); if (hit && ps[i].contains(hit)) { window.__clicked = ps[i]; return JSON.stringify([x, y]); } } return '[]'; })()";
-    let click_paragraph = |what: &str| {
-        let at = harness::eval(&tab, paragraph);
+    // The last paragraph of an assistant's reply that the mouse can reach, `foot` px clear of the
+    // transcript's foot (the compose box covers it while open), its centre's point; the paragraph is
+    // kept on the page as `__clicked`. At the tail it is the last reply, which the next turn's commit
+    // draws again.
+    let paragraph = |foot: u32| {
+        format!("(function(){{ var s = document.getElementById('transcript'), v = s.getBoundingClientRect(); var ps = [].slice.call(s.querySelectorAll('.virtual-window .turn.assistant p')); for (var i = ps.length - 1; i >= 0; i--) {{ var r = ps[i].getBoundingClientRect(); if (r.height < 4 || r.top < v.top + 60 || r.bottom > v.bottom - {foot}) continue; var x = r.left + Math.min(40, r.width / 2), y = r.top + r.height / 2, hit = document.elementFromPoint(x, y); if (hit && ps[i].contains(hit)) {{ window.__clicked = ps[i]; return JSON.stringify([x, y]); }} }} return '[]'; }})()")
+    };
+    let click_paragraph_clear_of = |what: &str, foot: u32| {
+        let at = harness::eval(&tab, &paragraph(foot));
         let at: Vec<f64> = serde_json::from_str(at.as_str().unwrap_or("[]")).unwrap_or_default();
         assert_eq!(at.len(), 2, "a paragraph to click {what}");
         tab.click_point(headless_chrome::browser::tab::point::Point { x: at[0], y: at[1] })
             .expect("a click on a paragraph");
     };
+    let click_paragraph = |what: &str| click_paragraph_clear_of(what, 160);
     let focus = "(function(){ var a = document.activeElement, s = document.getElementById('transcript'), cs = getComputedStyle(a); return JSON.stringify({ on: a === s ? 'the transcript' : (a.id || a.tagName.toLowerCase()), connected: a.isConnected, ring: !!document.querySelector(':focus-visible'), outline: cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0, clicked: !!(window.__clicked && window.__clicked.isConnected) }); })()";
     let read = |what: &str| -> serde_json::Value {
         let text = harness::eval(&tab, focus);
@@ -23348,6 +23353,11 @@ fn a_click_in_a_growing_transcript_leaves_its_keys_a_scroller_no_redraw_takes() 
         on == "transcriptSearchInput" && query.contains("late"),
         "the search field keeps its keys: the focus on {on:?}, the query {query:?}"
     );
+    // The box closed again, so it covers none of the replies the rounds click.
+    harness::eval(
+        &tab,
+        "document.getElementById('closeComposer').click(); 'ok'",
+    );
     // A turn every two seconds, as the report's session grew.
     let script = (0..6)
         .flat_map(|i| {
@@ -23371,7 +23381,7 @@ fn a_click_in_a_growing_transcript_leaves_its_keys_a_scroller_no_redraw_takes() 
     // printed before anything is asserted, so a red run says what each round saw.
     let mut rounds = Vec::new();
     for round in 0..4 {
-        click_paragraph(&format!("in round {round}"));
+        click_paragraph_clear_of(&format!("in round {round}"), 8);
         let pressed = read(&format!("round {round}, after the click"));
         // Up to one turn's time for the clicked paragraph to be redrawn.
         let deadline = Instant::now() + Duration::from_millis(2500);
@@ -23411,5 +23421,43 @@ fn a_click_in_a_growing_transcript_leaves_its_keys_a_scroller_no_redraw_takes() 
         "Page Up to move the transcript",
         Duration::from_secs(5),
         top,
+    );
+    // After a key Chrome counts the mouse's focus as the keyboard's (`:focus-visible` matches,
+    // measured): still no outline is drawn, which `production.css` sees to.
+    let after = read("after Page Up");
+    assert_eq!(
+        (after["on"].as_str(), after["outline"].as_bool()),
+        (Some("the transcript"), Some(false)),
+        "after Page Up the focus stays on the transcript and no outline is drawn ({after})"
+    );
+}
+
+/// #s488's other half: a finger's tap on the transcript's text does not focus it. On a phone a tap
+/// there must not take the focus from a field (and put the keyboard down) for a key nobody presses.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_tap_on_the_transcript_does_not_focus_it() {
+    let _serial = serial();
+    let (_m, _b, tab, _path) = phone_world_at(3293, "phone-tap-no-focus", 390, 844, "");
+    let at = phone_point(
+        &tab,
+        "(function(){ var s = document.getElementById('transcript'), v = s.getBoundingClientRect(); var ps = [].slice.call(s.querySelectorAll('.virtual-window .turn.assistant p')); for (var i = ps.length - 1; i >= 0; i--) { var r = ps[i].getBoundingClientRect(); if (r.height < 4 || r.top < v.top + 80 || r.bottom > v.bottom - 160) continue; var x = r.left + Math.min(30, r.width / 2), y = r.top + r.height / 2, hit = document.elementFromPoint(x, y); if (hit && ps[i].contains(hit)) return [x, y]; } return []; })()",
+    );
+    let focus = "(function(){ var a = document.activeElement; return a === document.getElementById('transcript') ? 'the transcript' : a ? a.localName + (a.id ? '#' + a.id : '') : 'none'; })()";
+    harness::finger_tap(&tab, at.0, at.1);
+    harness::pause("the tap's click", Duration::from_millis(800));
+    let tapped = harness::eval(&tab, focus);
+    // The search field focused by script, as iOS leaves a tapped button's focus where it was, then a
+    // tap on the text.
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('transcriptSearchInput').focus(); return 'ok'; })()",
+    );
+    harness::finger_tap(&tab, at.0, at.1);
+    harness::pause("the tap's click", Duration::from_millis(800));
+    let from_field = harness::eval(&tab, focus);
+    assert!(
+        tapped != serde_json::json!("the transcript") && from_field != serde_json::json!("the transcript"),
+        "a tap leaves the transcript unfocused: after a tap {tapped}, after a tap from the search field {from_field}"
     );
 }
