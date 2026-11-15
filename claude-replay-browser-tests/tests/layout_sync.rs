@@ -130,9 +130,10 @@ fn arranged_like_the_claude_app_shows_its_sessions_in_its_groups() {
     let base = base("layout-claude");
     let stores = Stores::new(&base);
     world(&stores);
-    let _monitor = Monitor::spawn(Kind::V1, 3211, &base, Some(&stores), false);
+    let monitor = Monitor::spawn(Kind::V1, 3211, &base, Some(&stores), false);
+    let port = monitor.port;
     let (_browser, tab) = chrome_tab();
-    let url = "http://127.0.0.1:3211/?ui=app";
+    let url = &format!("http://127.0.0.1:{port}/?ui=app");
     tab.navigate_to(url).unwrap();
     tab.wait_until_navigated().unwrap();
     until(
@@ -220,9 +221,10 @@ fn an_unreadable_app_is_disabled_and_a_failing_one_falls_back() {
     let base = base("layout-fallback");
     let stores = Stores::new(&base);
     transcript(&stores, A, "alpha session", 60);
-    let _monitor = Monitor::spawn(Kind::V1, 3212, &base, Some(&stores), false);
+    let monitor = Monitor::spawn(Kind::V1, 3212, &base, Some(&stores), false);
+    let port = monitor.port;
     let (_browser, tab) = chrome_tab();
-    let url = "http://127.0.0.1:3212/?ui=app";
+    let url = &format!("http://127.0.0.1:{port}/?ui=app");
     tab.navigate_to(url).unwrap();
     tab.wait_until_navigated().unwrap();
     click(&tab, "#filterBtn");
@@ -442,9 +444,10 @@ fn arranged_like_the_codex_app_shows_the_threads_it_lists() {
         serde_json::to_vec(&state).unwrap(),
     )
     .unwrap();
-    let _monitor = Monitor::spawn(Kind::V1, 3215, &base, Some(&stores), false);
+    let monitor = Monitor::spawn(Kind::V1, 3215, &base, Some(&stores), false);
+    let port = monitor.port;
     let (_browser, tab) = chrome_tab();
-    let url = "http://127.0.0.1:3215/?ui=app";
+    let url = &format!("http://127.0.0.1:{port}/?ui=app");
     tab.navigate_to(url).unwrap();
     tab.wait_until_navigated().unwrap();
     until(
@@ -585,9 +588,11 @@ fn arranged_like_herdr_shows_its_workspaces_and_tabs() {
         .to_string(),
     )
     .unwrap();
-    let _monitor = Monitor::spawn(Kind::V1, 3213, &base, Some(&stores), false);
+    let monitor = Monitor::spawn(Kind::V1, 3213, &base, Some(&stores), false);
+    let port = monitor.port;
     let (_browser, tab) = chrome_tab();
-    tab.navigate_to("http://127.0.0.1:3213/?ui=app").unwrap();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     until(
         &tab,
@@ -626,10 +631,11 @@ fn a_phone_sorts_an_arranged_section_from_a_sheet() {
     let base = base("layout-phone");
     let stores = Stores::new(&base);
     world(&stores);
-    let _monitor = Monitor::spawn(Kind::V1, 3214, &base, Some(&stores), false);
+    let monitor = Monitor::spawn(Kind::V1, 3214, &base, Some(&stores), false);
+    let port = monitor.port;
     let (_browser, tab) = chrome_tab();
     harness::phone(&tab, 390, 844);
-    let url = "http://127.0.0.1:3214/?ui=app";
+    let url = &format!("http://127.0.0.1:{port}/?ui=app");
     tab.navigate_to(url).unwrap();
     tab.wait_until_navigated().unwrap();
     eval(
@@ -855,10 +861,11 @@ fn a_desktop_section_menu_keeps_its_stylesheet_cap() {
     let base = base("layout-desktop-menu");
     let stores = Stores::new(&base);
     world(&stores);
-    let _monitor = Monitor::spawn(Kind::V1, 3216, &base, Some(&stores), false);
+    let monitor = Monitor::spawn(Kind::V1, 3216, &base, Some(&stores), false);
+    let port = monitor.port;
     let (_browser, tab) = chrome_tab();
     harness::resize(&tab, 1280.0, 1100.0);
-    let url = "http://127.0.0.1:3216/?ui=app";
+    let url = &format!("http://127.0.0.1:{port}/?ui=app");
     tab.navigate_to(url).unwrap();
     tab.wait_until_navigated().unwrap();
     eval(

@@ -1602,12 +1602,98 @@ pub fn real_node() -> Option<std::ffi::OsString> {
     .clone()
 }
 
+/// A monitor under test. `port` is the port it SERVES on, which is the case's own fixed port
+/// unless something else held that one (#s495), and `key` the port the case asked for, which names
+/// its scratch: `state-<key>`, `cache-<key>` and `monitor-<key>.stderr` under the case's root. So a
+/// case reads its address from the handle ([`Monitor::url`], [`Monitor::remote_url`], `port`) and
+/// may name its scratch by the number it wrote.
 pub struct Monitor {
     pub kind: Kind,
     pub port: u16,
+    pub key: u16,
     pub state: PathBuf,
     child: Reap,
 }
+
+/// Whether a monitor could bind `port` on the loopback now: the same bind the monitor makes
+/// (`TcpListener::bind` on 127.0.0.1, with the address reuse std sets), so a port this says is
+/// free is one the monitor can take unless something takes it first.
+pub fn port_is_free(port: u16) -> bool {
+    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+/// A port the kernel has free on the loopback. Its ephemeral range (49152 and up on macOS, 32768
+/// and up on Linux) is clear of every case's fixed port, so a monitor moved there never meets
+/// another case's.
+pub fn kernel_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .expect("the kernel has a free loopback port")
+}
+
+/// What listens on `port`, in a line: each listener's command and pid as `lsof` names them
+/// (`ss` where there is no `lsof`), or why neither could say.
+pub fn port_holder(port: u16) -> String {
+    let lsof = std::process::Command::new("lsof")
+        .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    if let Ok(out) = lsof {
+        let mut held: Vec<String> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .skip(1)
+            .filter_map(|l| {
+                let mut words = l.split_whitespace();
+                Some(format!("{} (pid {})", words.next()?, words.next()?))
+            })
+            .collect();
+        held.dedup();
+        if !held.is_empty() {
+            return held.join(", ");
+        }
+    }
+    let ss = std::process::Command::new("ss")
+        .args(["-Hltnp", &format!("sport = :{port}")])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    if let Ok(out) = ss {
+        // `users:(("ssh",pid=8913,fd=4))`, one per process holding the socket.
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        let mut held: Vec<String> = text
+            .split("((\"")
+            .skip(1)
+            .chain(text.split("),(\"").skip(1))
+            .filter_map(|p| {
+                let (name, rest) = p.split_once("\",pid=")?;
+                let pid: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                Some(format!("{name} (pid {pid})"))
+            })
+            .collect();
+        held.dedup();
+        if !held.is_empty() {
+            return held.join(", ");
+        }
+        if !text.trim().is_empty() {
+            return text.trim().to_string();
+        }
+    }
+    "a listener neither lsof nor ss names (another user's process?)".to_string()
+}
+
+/// Why a monitor did not come up on its port.
+enum Unbound {
+    /// It exited: its stderr says why, and `held` whether the port was taken.
+    Exited { stderr: String, held: bool },
+    /// It ran for `READY` and never said it was serving there.
+    Silent { stderr: String },
+}
+
+/// How long a monitor has to say it serves (its first exec after a build is assessed by macOS
+/// before it runs, which took more than 1.5 s on 2026-09-26).
+const READY: Duration = Duration::from_secs(15);
 
 impl Monitor {
     pub fn spawn(
@@ -1644,6 +1730,99 @@ impl Monitor {
         env: &[(&str, &str)],
         args: &[&str],
     ) -> Monitor {
+        let env: Vec<(String, String)> = env
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        Self::spawn_inner(kind, port, base, stores, paired, &|_| env.clone(), args)
+    }
+
+    /// The same monitor again, on the port `previous` served (the page open on that origin keeps
+    /// asking it there) and over the same scratch. `previous` is dropped — its process reaped —
+    /// first.
+    pub fn respawn(
+        previous: Monitor,
+        base: &Path,
+        stores: Option<&Stores>,
+        paired: bool,
+    ) -> Monitor {
+        let (kind, port, key) = (previous.kind, previous.port, previous.key);
+        drop(previous);
+        std::thread::sleep(Duration::from_millis(800));
+        Self::spawn_exact(kind, key, port, base, stores, paired)
+    }
+
+    /// A monitor on exactly `port`, its scratch named for `key`: for a page already open on that
+    /// origin. A port something else holds is a panic naming the port and its holder, said as
+    /// soon as the monitor exits on its bind — never a page left waiting.
+    pub fn spawn_exact(
+        kind: Kind,
+        key: u16,
+        port: u16,
+        base: &Path,
+        stores: Option<&Stores>,
+        paired: bool,
+    ) -> Monitor {
+        Self::spawn_at(kind, key, port, base, stores, paired, &|_| Vec::new(), &[])
+            .unwrap_or_else(|why| panic!("{why}"))
+    }
+
+    /// Spawn a monitor whose scratch is named for `key` and which serves on `key` itself when it
+    /// can (#s495). A case's port used to be the whole story: the harness waited until SOMETHING
+    /// answered on it, so a local service holding the port (aries-black's ssh tunnel on 2728)
+    /// answered for a monitor that had already died on its bind, and the case failed as a page
+    /// that never came. Now the spawn asks first and moves a held port to one the kernel has free,
+    /// saying so on stderr, and waits for the monitor's OWN word that it serves on the port it was
+    /// given (its `serving http://127.0.0.1:<port>/` line), so whatever else listens there cannot
+    /// pass for it. `env` is built for the port the monitor gets, since a name it trusts
+    /// (`phone.test:<port>`) carries the port.
+    fn spawn_inner(
+        kind: Kind,
+        key: u16,
+        base: &Path,
+        stores: Option<&Stores>,
+        paired: bool,
+        env: &dyn Fn(u16) -> Vec<(String, String)>,
+        args: &[&str],
+    ) -> Monitor {
+        reap_stranded_monitor(key);
+        let mut port = key;
+        if !port_is_free(port) {
+            port = kernel_port();
+            eprintln!(
+                "harness: port {key} is held by {}; this case's monitor serves on {port} instead",
+                port_holder(key)
+            );
+        }
+        let mut tries = 0;
+        loop {
+            match Self::spawn_at(kind, key, port, base, stores, paired, env, args) {
+                Ok(monitor) => return monitor,
+                // Taken between the check and the monitor's bind: another free port, a few times.
+                Err(why) if tries < 3 && why.contains("is held by") => {
+                    tries += 1;
+                    let next = kernel_port();
+                    eprintln!("harness: {why}; trying {next}");
+                    port = next;
+                }
+                Err(why) => panic!("{why}"),
+            }
+        }
+    }
+
+    /// Start the monitor on exactly `port` and wait for it to say it serves there. `Err` says why
+    /// it did not, naming the port and what holds it when something does.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_at(
+        kind: Kind,
+        key: u16,
+        port: u16,
+        base: &Path,
+        stores: Option<&Stores>,
+        paired: bool,
+        env: &dyn Fn(u16) -> Vec<(String, String)>,
+        args: &[&str],
+    ) -> Result<Monitor, String> {
         let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -1655,20 +1834,21 @@ impl Monitor {
             bin.display(),
             kind.package()
         );
-        reap_stranded_monitor(port);
-        let state = base.join(format!("state-{port}"));
+        let state = base.join(format!("state-{key}"));
         std::fs::create_dir_all(&state).unwrap();
         let mut cmd = std::process::Command::new(&bin);
         // The monitor's stderr goes to a file in the case's root, which a failed case keeps
         // (#s142): its refusal lines and the owner waits of native mode (#s410) are the evidence
-        // a failure on a loaded machine needs, and were thrown away.
-        let stderr = std::fs::File::create(base.join(format!("monitor-{port}.stderr")))
+        // a failure on a loaded machine needs, and were thrown away. It is also where the monitor
+        // says it serves, which is what the spawn waits for.
+        let stderr_path = base.join(format!("monitor-{key}.stderr"));
+        let stderr = std::fs::File::create(&stderr_path)
             .map(std::process::Stdio::from)
-            .unwrap_or_else(|_| std::process::Stdio::null());
+            .unwrap_or_else(|e| panic!("{} for the monitor's stderr: {e}", stderr_path.display()));
         cmd.args(["--port", &port.to_string()])
             .stdout(std::process::Stdio::null())
             .stderr(stderr);
-        configure_monitor_environment(&mut cmd, base, port, stores);
+        configure_monitor_environment(&mut cmd, base, key, stores);
         if paired {
             // The token alone admits (#366): on Linux the gate otherwise admits a same-user
             // loopback peer — every browser a case launches — so a case's UNPAIRED browser would
@@ -1678,43 +1858,52 @@ impl Monitor {
         if kind == Kind::V1 {
             cmd.arg("--no-open");
         }
-        for (k, v) in env {
+        let env = env(port);
+        for (k, v) in &env {
             cmd.env(k, v);
         }
         for (primary, legacy) in [
             ("AGENT_MONITOR_STATE", "CLAUDE_MONITOR_STATE"),
             ("AGENT_MONITOR_CACHE", "CLAUDE_MONITOR_CACHE"),
         ] {
-            if !env.iter().any(|(key, _)| *key == primary) {
-                if let Some((_, value)) = env.iter().rev().find(|(key, _)| *key == legacy) {
+            if !env.iter().any(|(key, _)| key == primary) {
+                if let Some((_, value)) = env.iter().rev().find(|(key, _)| key == legacy) {
                     cmd.env(primary, value);
                 }
             }
         }
         cmd.args(args);
-        let child = Reap(
+        let mut child = Reap(
             cmd.spawn()
                 .unwrap_or_else(|e| panic!("{} starts: {e}", kind.binary())),
         );
-        // Wait for the port to LISTEN, not for a fixed time. A fixed 1.5 s was the whole wait, and
-        // the first launch of a freshly rebuilt binary can take longer than that on macOS (its
-        // first exec is assessed before it runs): whichever case ran first after a release build
-        // navigated to a closed port and failed with `ERR_CONNECTION_REFUSED` — twice in three
-        // runs of one case, on 2026-09-26, with nothing wrong with the page.
-        let listening = Instant::now();
-        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(
-                listening.elapsed() < Duration::from_secs(15),
-                "{} never listened on port {port} within 15 s — does the binary start?",
-                kind.binary()
-            );
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        Monitor {
-            kind,
-            port,
-            state,
-            child,
+        match await_serving(&mut child, port, &stderr_path) {
+            Ok(()) => Ok(Monitor {
+                kind,
+                port,
+                key,
+                state,
+                child,
+            }),
+            Err(Unbound::Exited { stderr, held }) if held => Err(format!(
+                "port {port} is held by {}: {} exited on its bind ({})",
+                port_holder(port),
+                kind.binary(),
+                stderr.trim()
+            )),
+            Err(Unbound::Exited { stderr, .. }) => Err(format!(
+                "{} exited before serving on port {port}: {}",
+                kind.binary(),
+                stderr.trim()
+            )),
+            Err(Unbound::Silent { stderr }) => Err(format!(
+                "{} never said it serves on port {port} within {} s (listening there: {}) — does \
+                 the binary start? Its stderr: {}",
+                kind.binary(),
+                READY.as_secs(),
+                port_holder(port),
+                stderr.trim()
+            )),
         }
     }
 
@@ -1772,6 +1961,31 @@ impl Monitor {
     }
 }
 
+/// Wait until the monitor `child` says it serves on `port` — the line it writes once its listener
+/// is bound, `agent-monitor serving http://127.0.0.1:<port>/` — or exits, or runs out of [`READY`].
+/// Its own line, because a connect cannot tell the monitor from whatever else listens on the port
+/// (#s495): it used to be the whole wait, and a held port answered it at once for a monitor that
+/// had died on its bind. A monitor that exits says why on stderr; a bind refused is `held`.
+fn await_serving(child: &mut Reap, port: u16, stderr: &Path) -> Result<(), Unbound> {
+    let serving = format!("serving http://127.0.0.1:{port}/");
+    let started = Instant::now();
+    loop {
+        let said = std::fs::read_to_string(stderr).unwrap_or_default();
+        if said.contains(&serving) {
+            return Ok(());
+        }
+        if let Ok(Some(_)) = child.0.try_wait() {
+            let said = std::fs::read_to_string(stderr).unwrap_or_default();
+            let held = said.contains("bind 127.0.0.1:") || said.contains("in use");
+            return Err(Unbound::Exited { stderr: said, held });
+        }
+        if started.elapsed() >= READY {
+            return Err(Unbound::Silent { stderr: said });
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// The name a REMOTE client reaches a monitor by in a case — the tailnet name's stand-in. A
 /// monitor a remote case opens must trust it (`AGENT_MONITOR_TRUSTED_HOSTS`, see
 /// [`Monitor::spawn_remote`]); Chrome maps it to the loopback ([`remote_phone`]).
@@ -1780,15 +1994,20 @@ pub const REMOTE_HOST: &str = "phone.test";
 impl Monitor {
     /// [`Monitor::spawn`] that also trusts [`REMOTE_HOST`] on its port, so a remote client — a
     /// phone over the tailnet — can be paired and served (#331).
+    /// The name is trusted on the port the monitor GETS, which is not `port` when that one is
+    /// held (#s495).
     pub fn spawn_remote(kind: Kind, port: u16, base: &Path, stores: Option<&Stores>) -> Monitor {
-        let trusted = format!("{REMOTE_HOST}:{port}");
-        Monitor::spawn_with(
+        Self::spawn_inner(
             kind,
             port,
             base,
             stores,
             true,
-            &[("AGENT_MONITOR_TRUSTED_HOSTS", &trusted)],
+            &|bound| {
+                let trusted = format!("{REMOTE_HOST}:{bound}");
+                vec![("AGENT_MONITOR_TRUSTED_HOSTS".to_string(), trusted)]
+            },
+            &[],
         )
     }
 

@@ -414,19 +414,14 @@ fn open_on_monitor(surface: Surface, fx: &Fixture, port: u16) -> Opened {
 
 /// Kill the page's monitor and start a new one on the same port over the same state and
 /// stores — a server restart under a watching page.
-fn restart_monitor(page: &mut Opened, surface: Surface, fx: &Fixture, port: u16) {
+fn restart_monitor(page: &mut Opened, fx: &Fixture) {
     let stores = Stores {
         root: fx.base.join("stores"),
     };
-    page.monitor = None; // reaped
-    std::thread::sleep(Duration::from_millis(800));
-    page.monitor = Some(Monitor::spawn(
-        monitor_kind(surface),
-        port,
-        &fx.base,
-        Some(&stores),
-        true,
-    ));
+    // The page keeps asking the origin it is on: the new monitor serves where the old one did
+    // (#s495), which is not the case's port when that one was held.
+    let previous = page.monitor.take().expect("a page on a monitor");
+    page.monitor = Some(Monitor::respawn(previous, &fx.base, Some(&stores), true));
 }
 
 // The pages THIS case opened (#351): a settle waits on every one of them, so a case that drives
@@ -1835,7 +1830,7 @@ fn app_shell_keeps_the_tail_through_a_resize() {
 
 /// The server dies and comes back on the same port. A page pinned at the tail is at the tail
 /// again with every record back; a page scrolled up keeps the turn it was reading.
-fn scenario_restart_resumes(page: &mut Opened, surface: Surface, fx: &Fixture, port: u16) {
+fn scenario_restart_resumes(page: &mut Opened, surface: Surface, fx: &Fixture) {
     let tab = page.tab.clone();
     jump_to_end(&tab, surface);
     await_tail(&tab, surface, "a fresh open to land at the tail");
@@ -1845,7 +1840,7 @@ fn scenario_restart_resumes(page: &mut Opened, surface: Surface, fx: &Fixture, p
         "the whole fixture is there before the restart ({last} of {})",
         fx.turns
     );
-    restart_monitor(page, surface, fx, port);
+    restart_monitor(page, fx);
     let t0 = std::time::Instant::now();
     let mut back = false;
     while t0.elapsed() < Duration::from_secs(25) {
@@ -1862,7 +1857,7 @@ fn scenario_restart_resumes(page: &mut Opened, surface: Surface, fx: &Fixture, p
     settle();
     let held = turn_at_top(&tab, surface);
     assert!(held >= 0 && held < last, "the reader scrolled up ({held})");
-    restart_monitor(page, surface, fx, port);
+    restart_monitor(page, fx);
     std::thread::sleep(Duration::from_millis(6000));
     let after = turn_at_top(&tab, surface);
     assert!(
@@ -1877,7 +1872,7 @@ fn app_shell_resumes_after_a_server_restart() {
     let _serial = serial();
     let fx = fixture("scenario-restart-app", 40);
     let mut page = open_on_monitor(Surface::AppShell, &fx, 2860);
-    scenario_restart_resumes(&mut page, Surface::AppShell, &fx, 2860);
+    scenario_restart_resumes(&mut page, Surface::AppShell, &fx);
 }
 
 // ── scenario: an unpinned reader holds to the PIXEL through growth (#51's reproduced part) ──
