@@ -23561,9 +23561,11 @@ fn a_click_in_a_wide_block_of_the_transcript_leaves_its_arrows_to_the_block() {
         .map(|i| format!("word{i}"))
         .collect::<Vec<_>>()
         .join("_");
+    // A prose cell wraps anywhere (`overflow-wrap: anywhere`), so what makes a table wider than its
+    // column is its count of columns: forty of them, each at least its padding wide.
     let cells = |w: &str| {
-        (0..14)
-            .map(|i| format!(" {w}_cell_number_{i}_unbroken "))
+        (0..40)
+            .map(|i| format!(" {w}{i:02}x "))
             .collect::<Vec<_>>()
             .join("|")
     };
@@ -23576,7 +23578,7 @@ fn a_click_in_a_wide_block_of_the_transcript_leaves_its_arrows_to_the_block() {
         &format!(
             "Here is a wide line of code:\\n\\n```text\\nlet {words} = 1;\\n```\\n\\nAnd a wide table:\\n\\n|{}|\\n|{}|\\n|{}|\\n\\nThat is all.",
             cells("head"),
-            (0..14).map(|_| "---").collect::<Vec<_>>().join("|"),
+            (0..40).map(|_| "---").collect::<Vec<_>>().join("|"),
             cells("value")
         ),
         &harness::now_minus(60),
