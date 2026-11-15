@@ -23595,7 +23595,10 @@ fn a_click_in_a_wide_block_of_the_transcript_leaves_its_arrows_to_the_block() {
     let focus_js = "(function(){ var a = document.activeElement; return a === document.getElementById('transcript') ? 'the transcript' : a ? a.localName + (a.id ? '#' + a.id : '') : 'none'; })()";
     let mut seen = Vec::new();
     for (kind, text_first) in [("code", false), ("table", false), ("code", true)] {
-        let (_browser, tab) = harness::chrome_tab();
+        // An arrow's scroll without the browser's animation: a headless tab draws its frames lazily
+        // (#204), and an animated scroll that waits on frames moved the block in one round of two or
+        // three, with the key, its target and the pressed node the same in both.
+        let (_browser, tab) = harness::chrome_with_tab(&["--disable-smooth-scrolling"]);
         harness::resize(&tab, 1366.0, 1024.0);
         m.pair(&tab);
         m.open(&tab, &format!("?ui=app&session={sid}"));
@@ -23619,10 +23622,15 @@ fn a_click_in_a_wide_block_of_the_transcript_leaves_its_arrows_to_the_block() {
             );
         }
         let at = phone_point(&tab, &point(kind));
+        // The node the mouse pressed, which the browser starts a key from with nothing focused.
+        harness::eval(&tab, "(function(){ window.addEventListener('pointerdown', function (e) { window.__pressed = e.target; window.__pressedText = e.target && e.target.nodeType === 1 ? e.target.localName + '.' + e.target.className : String(e.target); }, { capture: true }); return 'ok'; })()");
         tab.click_point(headless_chrome::browser::tab::point::Point { x: at.0, y: at.1 })
             .expect("a click in the wide block");
         harness::pause("the click", Duration::from_millis(300));
         let focus = harness::eval(&tab, focus_js);
+        // What the key met, for a red run to say why: its target, whether a handler took it, and
+        // what else it may have scrolled.
+        harness::eval(&tab, "(function(){ var s = document.getElementById('transcript'), l = document.getElementById('sessionList'); window.__boxes = { t: [s.scrollLeft, s.scrollTop], l: l ? [l.scrollLeft, l.scrollTop] : null }; window.__keyMet = []; window.addEventListener('keydown', function (e) { var t = e.target; window.__keyMet.push({ target: t === s ? 'the transcript' : t && t.localName + (t.id ? '#' + t.id : ''), prevented: e.defaultPrevented }); }); return 'ok'; })()");
         tab.press_key("ArrowRight").unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut moved = false;
@@ -23633,6 +23641,8 @@ fn a_click_in_a_wide_block_of_the_transcript_leaves_its_arrows_to_the_block() {
             }
             harness::pause("the arrow", Duration::from_millis(100));
         }
+        let met = harness::eval(&tab, "(function(){ var s = document.getElementById('transcript'), l = document.getElementById('sessionList'); return JSON.stringify({ pressed: window.__pressedText, pressedThere: !!(window.__pressed && window.__pressed.isConnected), key: (window.__keyMet || []).slice(0, 2), block: !!(window.__block && window.__block.isConnected), transcript: [s.scrollLeft, s.scrollTop], list: l ? [l.scrollLeft, l.scrollTop] : null, before: window.__boxes, focus: document.activeElement === s ? 'the transcript' : document.activeElement && document.activeElement.localName }); })()");
+        eprintln!("#s488 wide {kind}{first}: {met}");
         seen.push(format!(
             "{kind}{first}: focus {focus}, ArrowRight moved the block {moved}"
         ));
