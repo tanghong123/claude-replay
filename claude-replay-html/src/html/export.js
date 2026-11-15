@@ -3802,6 +3802,19 @@
   // closing beside this page, and leaving the heights alone is what made a jump to the end land
   // 693px short of it afterwards.
   window.addEventListener("resize", function () { vw.remeasure(); }, { passive: true });
+  // #s492: the column's width also changes with no `resize`. Where a scrollbar takes room (Linux,
+  // Windows, a Mac set to always show them), the page's own scrollbar appears once the records
+  // outgrow the window and narrows the column by its width. Unheard, the engine kept the wider
+  // width it read as the mount was attached, and the next resize scaled every remembered height by
+  // a ratio from that column (1.193 where the column's own widths give 1.168, measured). So a change
+  // of the mount's own width is a remeasure too; one a resize has already remeasured finds the
+  // width it left and does nothing (the resize steps run before the observers in a frame).
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(function () {
+      var w = vwin.getBoundingClientRect().width;
+      if (w && vw.lastWidth && Math.abs(w - vw.lastWidth) >= 1) vw.remeasure();
+    }).observe(vwin);
+  }
   spy();
 
   // On load, deep-link wins; otherwise jump to the end so the newest messages
