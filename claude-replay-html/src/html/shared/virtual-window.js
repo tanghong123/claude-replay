@@ -2055,7 +2055,8 @@ class VirtualWindow {
    * correction: `P` set to the destination, the window around it, the one write, and then what the
    * scroll event the own-write guard swallows would have done — the memory, and the follow decision
    * the classic page stated (#94, #103): keep the pin within the hold slack when it was held,
-   * acquire it only at the true end. Intent is the PAGE's to stamp (`intent: true` exactly where
+   * acquire it only at the true end — except a move passed `pin: "acquire"` (a turn step, #s487, the
+   * owner's #s502), which acquires or keeps it only at the true end. Intent is the PAGE's to stamp (`intent: true` exactly where
    * the old code stamped) and is never invented here: the rendering audit reaches the fold hold
    * and the sliver nudge by synthetic click, and v1.254.0 is what an invented stamp did there. The
    * two re-land loops and the classic page's 2s `holdLanding` timer are the hold `syncPosition`
