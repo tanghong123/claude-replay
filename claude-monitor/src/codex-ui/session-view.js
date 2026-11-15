@@ -392,9 +392,20 @@ const TAP_MOUSE_MS = 1000, TAP_MOUSE_PX = 24;
 let lastTouch = null;
 const touched = event => { if (event.pointerType !== "mouse") lastTouch = { at: event.timeStamp, x: event.clientX, y: event.clientY }; };
 const tapsMouse = event => !!lastTouch && event.timeStamp - lastTouch.at < TAP_MOUSE_MS && Math.hypot(event.clientX - lastTouch.x, event.clientY - lastTouch.y) < TAP_MOUSE_PX;
+// A press inside a box of the transcript's that scrolls on its own (a wide code block or table, a
+// capped raw record) leaves the box unfocusable too, as before: with nothing focused the browser
+// starts a key from the pressed node, so the arrows and Page Up/Down scroll that box, where the
+// transcript taking the focus would have sent them past it.
+const scrollsInside = target => {
+  for (let node = target?.nodeType === 1 ? target : target?.parentElement; node && node !== transcript; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if ((/(auto|scroll)/.test(style.overflowX) && node.scrollWidth > node.clientWidth + 1) || (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 1)) return true;
+  }
+  return false;
+};
 transcript.tabIndex = -1;
 transcript.addEventListener("pointerdown", event => {
-  if (event.pointerType === "mouse" && !tapsMouse(event)) transcript.tabIndex = -1;
+  if (event.pointerType === "mouse" && !tapsMouse(event) && !scrollsInside(event.target)) transcript.tabIndex = -1;
   else transcript.removeAttribute("tabindex");
   touched(event);
 }, { capture: true, passive: true, signal });

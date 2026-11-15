@@ -23516,3 +23516,89 @@ fn a_phone_tap_on_the_transcript_does_not_focus_it() {
         "a tap leaves the transcript unfocused: {seen:?}"
     );
 }
+
+/// #s488, from its review: a mouse's click inside a box of the transcript's that scrolls on its own
+/// leaves the keys to that box. A wide code block and a wide table scroll sideways inside the
+/// transcript; with nothing focused the browser starts an arrow key from the pressed node, so
+/// ArrowRight scrolled the block. When a click anywhere in the transcript focused the transcript,
+/// the key started from the transcript and scrolled nothing. Each block is clicked in a tab of its
+/// own, since a key Chrome's DevTools protocol sends and the page does not prevent is never released
+/// (#270): the block's own offset must move.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_click_in_a_wide_block_of_the_transcript_leaves_its_arrows_to_the_block() {
+    let _serial = serial();
+    let base = harness::base("click-wide-block");
+    let stores = harness::Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000048c9";
+    let words = (0..60)
+        .map(|i| format!("word{i}"))
+        .collect::<Vec<_>>()
+        .join("_");
+    let cells = |w: &str| {
+        (0..14)
+            .map(|i| format!(" {w} cell number {i} "))
+            .collect::<Vec<_>>()
+            .join("|")
+    };
+    let mut t = harness::long_session(6, harness::Shape::default());
+    t += &harness::user_at(
+        "question 6: show me the wide things",
+        &harness::now_minus(90),
+    );
+    t += &harness::assistant_at(
+        &format!(
+            "Here is a wide line of code:\\n\\n```text\\nlet {words} = 1;\\n```\\n\\nAnd a wide table:\\n\\n|{}|\\n|{}|\\n|{}|\\n\\nThat is all.",
+            cells("head"),
+            (0..14).map(|_| "---").collect::<Vec<_>>().join("|"),
+            cells("value")
+        ),
+        &harness::now_minus(60),
+    );
+    stores.claude_session(sid, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3294, &base, Some(&stores), true);
+    // The point of some text inside the last wide block of `kind` in sight, the block kept as
+    // `__block`: a code block (a `pre` or `[data-code]`) or a table's scroller.
+    let point = |kind: &str| {
+        format!("(function(){{ var s = document.getElementById('transcript'), v = s.getBoundingClientRect(); var all = [].slice.call(s.querySelectorAll('.virtual-window *')).filter(function (e) {{ var st = getComputedStyle(e); return /(auto|scroll)/.test(st.overflowX) && e.scrollWidth > e.clientWidth + 1 && ({kind:?} === 'table' ? e.classList.contains('markdown-table-scroll') : (e.matches('pre, [data-code]') && !e.closest('.markdown-table-scroll'))); }}); for (var i = all.length - 1; i >= 0; i--) {{ var b = all[i], walker = document.createTreeWalker(b, NodeFilter.SHOW_TEXT); for (var n = walker.nextNode(); n; n = walker.nextNode()) {{ if (n.textContent.trim().length < 6) continue; var range = document.createRange(); range.setStart(n, 1); range.setEnd(n, 4); var r = range.getBoundingClientRect(); var x = r.left + r.width / 2, y = r.top + r.height / 2; if (y < v.top + 60 || y > v.bottom - 60 || x < v.left || x > v.right) continue; var hit = document.elementFromPoint(x, y); if (hit && b.contains(hit)) {{ window.__block = b; return [x, y]; }} }} }} return []; }})()")
+    };
+    let mut seen = Vec::new();
+    for kind in ["code", "table"] {
+        let (_browser, tab) = harness::chrome_tab();
+        harness::resize(&tab, 1366.0, 1024.0);
+        m.pair(&tab);
+        m.open(&tab, &format!("?ui=app&session={sid}"));
+        harness::until(
+            &tab,
+            "!!document.querySelector('#transcript .markdown-table-scroll') && document.getElementById('transcript').scrollTop > 0",
+            "the session drawn at its tail with its wide table",
+            Duration::from_secs(30),
+            "document.querySelectorAll('#transcript .virtual-window .turn').length",
+        );
+        harness::pause("the tail to settle", Duration::from_millis(800));
+        let at = phone_point(&tab, &point(kind));
+        tab.click_point(headless_chrome::browser::tab::point::Point { x: at.0, y: at.1 })
+            .expect("a click in the wide block");
+        harness::pause("the click", Duration::from_millis(300));
+        let focus = harness::eval(&tab, "(function(){ var a = document.activeElement; return a === document.getElementById('transcript') ? 'the transcript' : a ? a.localName + (a.id ? '#' + a.id : '') : 'none'; })()");
+        tab.press_key("ArrowRight").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut moved = false;
+        while Instant::now() < deadline {
+            if harness::eval(&tab, "window.__block.scrollLeft > 0") == serde_json::json!(true) {
+                moved = true;
+                break;
+            }
+            harness::pause("the arrow", Duration::from_millis(100));
+        }
+        seen.push(format!(
+            "{kind}: focus {focus}, ArrowRight moved the block {moved}"
+        ));
+    }
+    eprintln!("#s488 wide blocks: {seen:?}");
+    assert!(
+        seen.iter()
+            .all(|line| line.ends_with("moved the block true")),
+        "an arrow after a click in a wide block scrolls that block: {seen:?}"
+    );
+}
