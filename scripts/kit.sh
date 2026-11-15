@@ -16,10 +16,10 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 
-if tar --version 2>/dev/null | grep -q 'GNU tar'; then TAR=(tar)
-elif command -v gtar >/dev/null 2>&1; then TAR=(gtar)
-else TAR=()
-fi
+case "$(tar --version 2>/dev/null || true)" in
+  *"GNU tar"*) TAR=(tar) ;;
+  *) if command -v gtar >/dev/null 2>&1; then TAR=(gtar); else TAR=(); fi ;;
+esac
 if command -v sha256sum >/dev/null 2>&1; then SHA="sha256sum"; else SHA="shasum -a 256"; fi
 
 stage=$(mktemp -d "${TMPDIR:-/tmp}/agent-monitor-kit.XXXXXX")
