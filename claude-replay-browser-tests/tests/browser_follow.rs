@@ -524,9 +524,13 @@ fn jump_to_bottom_lands_after_a_viewport_resize() {
 /// fires for it. The engine's last width was read as the mount was attached and empty, so the next
 /// resize could scale every remembered height by a ratio from the wider column, as #s431 found in
 /// the app shell's transcript. Both ways a page comes to overflow are walked: a long session at its
-/// first load, and a short one growing past the window. The window is narrower than the layout's
-/// 1160px cap, where the column follows the window. The ratios of every remeasure since the mark are
-/// multiplied, since each starts from the width the one before ended at.
+/// first load, and a short one growing past the window, at windows narrower than `main`'s 820px cap
+/// binds (about 1075px), where the column follows the window. And a third: in wide mode on a 1920px
+/// window the column is over 1500px, where a 15px scrollbar is under the engine's 1% threshold; there
+/// the width is taken without a remeasure (one would read the ratio as no width change and clear
+/// every remembered height), and the next resize still scales by the column's own widths. The ratios
+/// of every remeasure since the mark are multiplied, since each starts from the width the one before
+/// ended at.
 #[test]
 #[ignore] // needs a local Chrome/Chromium; see the module docs
 fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at() {
@@ -563,16 +567,37 @@ fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at(
         no_cache: true,
         ..Default::default()
     };
+    let wide_short = base.join("wide-short.jsonl");
+    std::fs::write(&wide_short, turn(0)).unwrap();
     let mut wrong = Vec::new();
-    for (name, src, grows) in [
-        ("a long session at its first load", &long, false),
-        ("a short session grown past the window", &short, true),
+    for (name, src, grows, wide, (from, to)) in [
+        (
+            "a long session at its first load",
+            &long,
+            false,
+            false,
+            (1000.0, 900.0),
+        ),
+        (
+            "a short session grown past the window",
+            &short,
+            true,
+            false,
+            (1000.0, 900.0),
+        ),
+        (
+            "a short session grown past a wide column",
+            &wide_short,
+            true,
+            true,
+            (1920.0, 1800.0),
+        ),
     ] {
         let server = start_server(&args, std::slice::from_ref(src)).expect("server starts");
         let url = server.url_for_root(0).expect("hosted");
         let (browser, tab) = harness::chrome_tab();
         harness::classic_scrollbars(&tab);
-        harness::resize(&tab, 1000.0, 800.0);
+        harness::resize(&tab, from, 800.0);
         tab.navigate_to(&url).unwrap();
         tab.wait_until_navigated().unwrap();
         wait_for(
@@ -581,13 +606,37 @@ fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at(
             Duration::from_secs(20),
             |s| s["blocks"].as_i64().unwrap_or(-1) >= 2,
         );
+        if wide {
+            eval(
+                &tab,
+                "document.getElementById('btn-wide').click(); true",
+                false,
+            );
+            std::thread::sleep(Duration::from_millis(1200));
+            let col = eval(
+                &tab,
+                "document.querySelector('.vwin').getBoundingClientRect().width",
+                false,
+            );
+            assert!(
+                col.as_f64().unwrap_or(0.0) > 1500.0,
+                "{name}: premise, wide mode gives a column over 1500px: {col}"
+            );
+        }
+        // Remeasures from here to the mark: the scrollbar's own, when it moves the column.
+        eval(
+            &tab,
+            "(function(){ window.__tg = performance.now(); return true; })()",
+            false,
+        );
         if grows {
             let over = eval(&tab, OVER, false);
             assert!(
                 over.as_f64().unwrap_or(99.0) < 1.0,
                 "{name}: premise, the session fits the window: {over}"
             );
-            for i in 1..16 {
+            // A wide column wraps less, so it takes more turns to overflow the window.
+            for i in 1..if wide { 40 } else { 16 } {
                 append(src, &turn(i));
             }
         }
@@ -605,14 +654,22 @@ fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at(
             room.as_f64().unwrap_or(0.0) >= 14.5,
             "{name}: the page's scrollbar takes room: {room}"
         );
+        if wide {
+            let early = eval(&tab, "JSON.stringify(window.__viewportHistory.states.filter(function (s) { return s.cause === 'remeasure' && s.t >= window.__tg; }).map(function (s) { return s.ratio; }))", false);
+            if early.as_str() != Some("[]") {
+                wrong.push(format!(
+                    "{name}: the scrollbar beside a wide column remeasured (ratios {early}), which clears every remembered height"
+                ));
+            }
+        }
         eval(&tab, MARK, false);
-        harness::resize(&tab, 900.0, 800.0);
+        harness::resize(&tab, to, 800.0);
         wait_probe(
             &tab,
             &format!("{name}: a remeasure at the new width"),
             Duration::from_secs(10),
             REMEASURES,
-            |v| v["count"].as_i64().unwrap_or(0) >= 1 && v["innerWidth"] == 900,
+            |v| v["count"].as_i64().unwrap_or(0) >= 1 && v["innerWidth"] == to as i64,
         );
         // Any later resize event of the same move is in the product too.
         std::thread::sleep(Duration::from_millis(800));
