@@ -342,6 +342,14 @@ export class Viewport extends VirtualWindow {
     this.pending = memory && !memory.following ? memory : null;
     this.state.following = !this.pending;
     this.state.newRecords = 0;
+    // #s489: the reader's hand on the session they left is no hand on this one. A wheel on the old
+    // transcript just before the click that opened this session kept the intent window open, so
+    // this session's tail waited for rest (`placeAfter`) and the page sat at offset 0 with nothing
+    // mounted until the window ran out (WebKit: 15 frames, about 230 ms). So is a move of the old
+    // view whose event never came. Input from here on is the reader's on this session, as before.
+    this.lastUserInput = -1e9;
+    this.lastInputStamp = -1e9;
+    this.unheard = null;
     // The reader's choices come back with the first batch (#114): a fold they opened, a turn
     // they read raw, a cap they expanded, an image they showed. Applied in `setUnits`, after the
     // record store's reset has cleared the state for the new session — not here, before it.
