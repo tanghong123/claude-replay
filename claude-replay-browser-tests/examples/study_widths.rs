@@ -1036,7 +1036,10 @@ fn main() {
         // read no document there).
         let fixture = include_str!("../tests/fixtures/host/session-view-host.html");
         let handle = "backendHandle({ paired: true })";
-        assert!(fixture.contains(handle), "the host fixture makes its backend handle another way");
+        assert!(
+            fixture.contains(handle),
+            "the host fixture makes its backend handle another way"
+        );
         let page = fixture.replace("<!--host-policy-->", "").replace(
             handle,
             &format!(
