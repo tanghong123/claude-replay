@@ -847,7 +847,7 @@ fn md_escape(s: &str) -> String {
     s.replace('|', "/")
 }
 
-fn report(dir: &Path, records: &[Value], took: Duration) {
+fn report(dir: &Path, records: &[Value], took: Duration, videos: &Videos) {
     let mut md = String::new();
     let _ = writeln!(
         md,
@@ -961,6 +961,19 @@ fn report(dir: &Path, records: &[Value], took: Duration) {
             );
         }
     }
+    let _ = writeln!(md, "\n## Videos\n");
+    for v in &videos.made {
+        let name = Path::new(v)
+            .file_name()
+            .map_or(v.clone(), |n| n.to_string_lossy().into_owned());
+        let _ = writeln!(md, "- [{name}]({name})");
+    }
+    if videos.made.is_empty() {
+        let _ = writeln!(md, "- none made");
+    }
+    for note in &videos.notes {
+        let _ = writeln!(md, "- {}", md_escape(note));
+    }
     std::fs::write(dir.join("report.md"), md).unwrap();
 
     let mut html = String::from(
@@ -1032,9 +1045,19 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// What `videos` made, and what it could not: a cell with no frame, a video ffmpeg did not make.
+#[derive(Default)]
+struct Videos {
+    made: Vec<String>,
+    notes: Vec<String>,
+}
+
 /// Each cell as a frame on one canvas, its caption above the screenshot at 1:1, composed in the same
-/// Chrome; then ffmpeg makes one MP4 per surface, a second a frame.
-fn videos(tab: &headless_chrome::Tab, dir: &Path, records: &[Value]) -> Vec<String> {
+/// Chrome; then ffmpeg makes one MP4 per surface, a second a frame. Frames are numbered by what was
+/// written, so a cell whose frame failed leaves no gap (ffmpeg's `%03d` input stops at the first
+/// missing number and still exits 0); each such cell is noted.
+fn videos(tab: &headless_chrome::Tab, dir: &Path, records: &[Value]) -> Videos {
+    let mut out = Videos::default();
     let page = dir.join("frame.html");
     std::fs::write(
         &page,
@@ -1048,14 +1071,18 @@ fn videos(tab: &headless_chrome::Tab, dir: &Path, records: &[Value]) -> Vec<Stri
             "ffmpeg".into()
         }
     });
-    let mut made = Vec::new();
     for surface in ["app", "host"] {
-        let rows: Vec<&Value> = records
-            .iter()
-            .filter(|r| {
-                r["surface"] == surface && dir.join(r["shot"].as_str().unwrap_or("")).is_file()
-            })
-            .collect();
+        let mut rows: Vec<&Value> = Vec::new();
+        for r in records.iter().filter(|r| r["surface"] == surface) {
+            if dir.join(r["shot"].as_str().unwrap_or("")).is_file() {
+                rows.push(r);
+            } else {
+                out.notes.push(format!(
+                    "{surface}: cell {} has no screenshot, so no frame",
+                    r["n"]
+                ));
+            }
+        }
         if rows.is_empty() {
             continue;
         }
@@ -1075,7 +1102,8 @@ fn videos(tab: &headless_chrome::Tab, dir: &Path, records: &[Value]) -> Vec<Stri
         );
         let frames = dir.join("frames");
         emulate(tab, cw as u32, ch as u32, Input::Mouse);
-        for (k, r) in rows.iter().enumerate() {
+        let mut written = 0usize;
+        for r in &rows {
             let url = format!(
                 "file://{}?img={}&w={}&h={}&cap={}",
                 encode(&page.display().to_string()),
@@ -1091,12 +1119,21 @@ fn videos(tab: &headless_chrome::Tab, dir: &Path, records: &[Value]) -> Vec<Stri
                     r["caption"].as_str().unwrap_or("")
                 )),
             );
-            if tab.navigate_to(&url).is_err() {
+            if let Err(e) = tab.navigate_to(&url) {
+                out.notes.push(format!(
+                    "{surface}: cell {} skipped, its frame page did not load: {e}",
+                    r["n"]
+                ));
                 continue;
             }
             let _ = tab.wait_until_navigated();
-            wait_for(tab, "document.title === 'ready'", Duration::from_secs(10));
-            if let Ok(bytes) = tab.capture_screenshot(
+            if !wait_for(tab, "document.title === 'ready'", Duration::from_secs(10)) {
+                out.notes.push(format!(
+                    "{surface}: cell {}'s frame never said it was ready; captured as it stood",
+                    r["n"]
+                ));
+            }
+            match tab.capture_screenshot(
                 headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
                 None,
                 Some(headless_chrome::protocol::cdp::Page::Viewport {
@@ -1108,10 +1145,23 @@ fn videos(tab: &headless_chrome::Tab, dir: &Path, records: &[Value]) -> Vec<Stri
                 }),
                 true,
             ) {
-                std::fs::write(frames.join(format!("{surface}-{k:03}.png")), bytes).unwrap();
+                Ok(bytes) => {
+                    std::fs::write(frames.join(format!("{surface}-{written:03}.png")), bytes)
+                        .unwrap();
+                    written += 1;
+                }
+                Err(e) => out.notes.push(format!(
+                    "{surface}: cell {} skipped, its frame was not captured: {e}",
+                    r["n"]
+                )),
             }
         }
-        let out = dir.join(format!("{surface}-sweep.mp4"));
+        if written == 0 {
+            out.notes
+                .push(format!("{surface}: no frame was written, so no video"));
+            continue;
+        }
+        let video = dir.join(format!("{surface}-sweep.mp4"));
         let status = std::process::Command::new(&ffmpeg)
             .args(["-y", "-loglevel", "error", "-framerate", "1", "-i"])
             .arg(frames.join(format!("{surface}-%03d.png")))
@@ -1125,15 +1175,20 @@ fn videos(tab: &headless_chrome::Tab, dir: &Path, records: &[Value]) -> Vec<Stri
                 "-movflags",
                 "+faststart",
             ])
-            .arg(&out)
+            .arg(&video)
             .stdin(std::process::Stdio::null())
             .status();
         match status {
-            Ok(s) if s.success() => made.push(out.display().to_string()),
-            other => eprintln!("study-widths: ffmpeg for {surface} failed: {other:?}"),
+            Ok(s) if s.success() => out.made.push(video.display().to_string()),
+            other => out
+                .notes
+                .push(format!("{surface}: ffmpeg made no video: {other:?}")),
         }
     }
-    made
+    for note in &out.notes {
+        eprintln!("study-widths: video: {note}");
+    }
+    out
 }
 
 /// Percent-encodes everything but the unreserved characters and `/`, so a path (the frame page's,
@@ -1254,13 +1309,13 @@ fn main() {
         records = done;
         drop(monitor);
     }
-    report(&dir, &records, t0.elapsed());
+    report(&dir, &records, t0.elapsed(), &made);
     let latest = study.join("latest");
     let _ = std::fs::remove_file(&latest);
     let _ = std::os::unix::fs::symlink(&name, &latest);
     println!("report:  {}", dir.join("report.md").display());
     println!("contact: {}", dir.join("contact.html").display());
-    for m in made {
+    for m in &made.made {
         println!("video:   {m}");
     }
     println!("{} cells in {} s", records.len(), t0.elapsed().as_secs());
