@@ -23546,7 +23546,8 @@ fn a_phone_tap_on_the_transcript_does_not_focus_it() {
 /// ArrowRight scrolled the block. When a click anywhere in the transcript focused the transcript,
 /// the key started from the transcript and scrolled nothing. Each block is clicked in a tab of its
 /// own, since a key Chrome's DevTools protocol sends and the page does not prevent is never released
-/// (#270): the block's own offset must move.
+/// (#270): the block's own offset must move. The code block is clicked a second time after a click on
+/// the reply's text, which focused the transcript: the block's click takes the focus from it.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_click_in_a_wide_block_of_the_transcript_leaves_its_arrows_to_the_block() {
@@ -23585,8 +23586,11 @@ fn a_click_in_a_wide_block_of_the_transcript_leaves_its_arrows_to_the_block() {
     let point = |kind: &str| {
         format!("(function(){{ var s = document.getElementById('transcript'), v = s.getBoundingClientRect(); var all = [].slice.call(s.querySelectorAll('.virtual-window *')).filter(function (e) {{ var st = getComputedStyle(e); return /(auto|scroll)/.test(st.overflowX) && e.scrollWidth > e.clientWidth + 1 && ({kind:?} === 'table' ? e.classList.contains('markdown-table-scroll') : (e.matches('pre, [data-code]') && !e.closest('.markdown-table-scroll'))); }}); for (var i = all.length - 1; i >= 0; i--) {{ var b = all[i], walker = document.createTreeWalker(b, NodeFilter.SHOW_TEXT); for (var n = walker.nextNode(); n; n = walker.nextNode()) {{ if (n.textContent.trim().length < 6) continue; var range = document.createRange(); range.setStart(n, 1); range.setEnd(n, 4); var r = range.getBoundingClientRect(); var x = r.left + r.width / 2, y = r.top + r.height / 2; if (y < v.top + 60 || y > v.bottom - 60 || x < v.left || x > v.right) continue; var hit = document.elementFromPoint(x, y); if (hit && b.contains(hit)) {{ window.__block = b; return [x, y]; }} }} }} return []; }})()")
     };
+    // A paragraph of the reply's own text, outside any block, and its centre's point.
+    let text_point = "(function(){ var s = document.getElementById('transcript'), v = s.getBoundingClientRect(); var ps = [].slice.call(s.querySelectorAll('.virtual-window .turn.assistant p')).filter(function (p) { return !p.closest('pre, [data-code], .markdown-table-scroll'); }); for (var i = ps.length - 1; i >= 0; i--) { var r = ps[i].getBoundingClientRect(); if (r.height < 4 || r.top < v.top + 60 || r.bottom > v.bottom - 60) continue; var x = r.left + Math.min(30, r.width / 2), y = r.top + r.height / 2, hit = document.elementFromPoint(x, y); if (hit && ps[i].contains(hit)) return [x, y]; } return []; })()";
+    let focus_js = "(function(){ var a = document.activeElement; return a === document.getElementById('transcript') ? 'the transcript' : a ? a.localName + (a.id ? '#' + a.id : '') : 'none'; })()";
     let mut seen = Vec::new();
-    for kind in ["code", "table"] {
+    for (kind, text_first) in [("code", false), ("table", false), ("code", true)] {
         let (_browser, tab) = harness::chrome_tab();
         harness::resize(&tab, 1366.0, 1024.0);
         m.pair(&tab);
@@ -23599,11 +23603,22 @@ fn a_click_in_a_wide_block_of_the_transcript_leaves_its_arrows_to_the_block() {
             "document.querySelectorAll('#transcript .virtual-window .turn').length",
         );
         harness::pause("the tail to settle", Duration::from_millis(800));
+        let mut first = String::new();
+        if text_first {
+            let at = phone_point(&tab, text_point);
+            tab.click_point(headless_chrome::browser::tab::point::Point { x: at.0, y: at.1 })
+                .expect("a click on the reply's text");
+            harness::pause("the click", Duration::from_millis(300));
+            first = format!(
+                " after a click on text that focused {}",
+                harness::eval(&tab, focus_js)
+            );
+        }
         let at = phone_point(&tab, &point(kind));
         tab.click_point(headless_chrome::browser::tab::point::Point { x: at.0, y: at.1 })
             .expect("a click in the wide block");
         harness::pause("the click", Duration::from_millis(300));
-        let focus = harness::eval(&tab, "(function(){ var a = document.activeElement; return a === document.getElementById('transcript') ? 'the transcript' : a ? a.localName + (a.id ? '#' + a.id : '') : 'none'; })()");
+        let focus = harness::eval(&tab, focus_js);
         tab.press_key("ArrowRight").unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut moved = false;
@@ -23615,14 +23630,14 @@ fn a_click_in_a_wide_block_of_the_transcript_leaves_its_arrows_to_the_block() {
             harness::pause("the arrow", Duration::from_millis(100));
         }
         seen.push(format!(
-            "{kind}: focus {focus}, ArrowRight moved the block {moved}"
+            "{kind}{first}: focus {focus}, ArrowRight moved the block {moved}"
         ));
     }
     eprintln!("#s488 wide blocks: {seen:?}");
     assert!(
-        seen.iter()
-            .all(|line| line.ends_with("moved the block true")),
-        "an arrow after a click in a wide block scrolls that block: {seen:?}"
+        seen.iter().all(|line| line.ends_with("moved the block true")
+            && !line.contains("focus \"the transcript\"")),
+        "an arrow after a click in a wide block scrolls that block, the transcript unfocused, after a click on text too: {seen:?}"
     );
 }
 
