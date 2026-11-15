@@ -320,19 +320,15 @@ function unmarked(parent) {
 }
 
 /** What the record around an element says after the element itself (#s504), its first 160
- *  characters: a queued prompt's words, an act record's first calls, a prompt's text. It tells the
- *  record at a place from another one a rewrite put there: a queued prompt picked up moves every
- *  marker behind it up a slot (#165), so the same place holds the next one. */
+ *  characters: a queued prompt's words, an act record's first calls, a prompt's text. The record is
+ *  the row the element sits in, or the unit where it sits in none (the classic page's units are
+ *  records; the app shell's group heads sit outside its rows), as `anchorOn` holds an element. It
+ *  tells the record at a place from another one a rewrite put there: a queued prompt picked up moves
+ *  every marker behind it up a slot (#165), so the same place holds the next one. */
 function recordText(element, unit) {
-  const record = element.closest("[data-block-index]");
-  if (!record || !unit.contains(record)) return "";
+  const row = element.closest("[data-block-index]");
+  const record = row && unit.contains(row) ? row : unit;
   return (record.textContent || "").replace(element.textContent || "", "").replace(/\s+/g, " ").trim().slice(0, 160);
-}
-
-/** Whether two record texts can be one record's (#s504): equal, or one goes on from the other, as a
- *  record grows when a call or a result is appended to it. */
-function sameRecord(a, b) {
-  return a.startsWith(b) || b.startsWith(a);
 }
 
 class VirtualWindow {
@@ -1430,9 +1426,11 @@ class VirtualWindow {
   }
 
   /** Gives the focus back to a unit drawn again (#s504): to the element at the same place in its
-   *  new markup, when it is the same kind of element (its tag and its first class) in what can be the
-   *  same record (`sameRecord`), and nothing else has taken the focus meanwhile. A unit that left the
-   *  window, changed its shape or holds another record there gets none, as before. */
+   *  new markup, when it is the same kind of element (its tag and its first class) in a record that
+   *  says the same after it (`recordText`), and nothing else has taken the focus meanwhile. A unit
+   *  that left the window, changed its shape or holds another record there gets none, as before; so
+   *  does a record whose text changed, a running call's output grown say: a focus left on the body
+   *  is the old behaviour, and a focus given to another element would be wrong. */
   refocus(focused) {
     if (!focused || focused.element.isConnected) return;
     const doc = this.mount.ownerDocument, now = doc.activeElement;
@@ -1441,7 +1439,7 @@ class VirtualWindow {
     let node = unit;
     for (const at of focused.path) node = node ? unmarked(node)[at] : null;
     if (!node || node.tagName !== focused.tag || (node.classList[0] || "") !== focused.role) return;
-    if (!sameRecord(recordText(node, unit), focused.record)) return;
+    if (recordText(node, unit) !== focused.record) return;
     node.focus({ preventScroll: true });
     if (doc.activeElement === node) this.trace("refocused", { key: focused.key, depth: focused.path.length });
   }
