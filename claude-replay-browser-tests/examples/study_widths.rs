@@ -506,7 +506,7 @@ Array.prototype.forEach.call(root.querySelectorAll(SEL), function (e) {
   else if (!app && (cx < vr.left || cx > vr.right || cy < vr.top || cy > vr.bottom)) why = 'centre outside the view';
   else { var hit = document.elementFromPoint(cx, cy);
     if (!hit) why = 'nothing at its centre';
-    else if (hit === e || e.contains(hit)) { if (r.left < -0.5 || r.right > W + 0.5 || (!app && (r.left < vr.left - 0.5 || r.right > vr.right + 0.5))) why = 'cut at the edge'; }
+    else if (hit === e || e.contains(hit)) { var cut = []; if (r.left < -0.5 || (!app && r.left < vr.left - 0.5)) cut.push('left'); if (r.right > W + 0.5 || (!app && r.right > vr.right + 0.5)) cut.push('right'); if (r.top < -0.5 || (!app && r.top < vr.top - 0.5)) cut.push('top'); if (r.bottom > H + 0.5 || (!app && r.bottom > vr.bottom + 0.5)) cut.push('bottom'); if (cut.length) why = 'cut at the ' + cut.join(' and ') + ' edge'; }
     else if (hit.contains(e)) why = 'clipped inside ' + named(hit);
     else if (paneOver && pv.contains(hit) && !pv.contains(e)) { underPane.push(name(e)); return; }
     else why = 'covered by ' + named(hit); }
