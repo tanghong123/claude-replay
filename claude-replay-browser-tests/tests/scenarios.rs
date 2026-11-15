@@ -15384,6 +15384,125 @@ fn app_shell_command_f_opens_the_session_search() {
     scenario_command_f_opens_the_session_search(&page.tab, Surface::AppShell);
 }
 
+/// #s504 — a fold head the reader focused with `k` keeps the focus when the session grows. A prompt
+/// arriving commits the open turn, and the app shell redraws every unit from that turn's first one
+/// with identical markup; a head focused there is a node of the old markup. Where the focus is after
+/// the growth is read and printed; then the same head must have it, and `k` must go on from it to the
+/// head before it, not start over from the last one.
+fn scenario_a_focused_fold_head_keeps_its_focus_through_growth(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // A head by its record and its text, the record found the page's own way: the classic page's
+    // mounted item (`data-idx`), the app shell's record row (`data-block-index`).
+    let (heads, record) = match surface {
+        Surface::Classic => (".fold-h", "data-idx"),
+        Surface::AppShell => ("button.renderer-head", "data-block-index"),
+    };
+    let js = format!(
+        "window.__s504id = function (h) {{ var r = h && h.closest && h.closest('[{record}]'); return h ? {{ record: r ? r.getAttribute('{record}') : null, text: (h.textContent || '').trim().slice(0, 60) }} : null; }}; \
+         window.__s504heads = function () {{ return [...document.querySelectorAll({heads:?})].filter(function (h) {{ return h.offsetParent !== null; }}); }}; 'ok'"
+    );
+    eval(tab, &js);
+    // The focused element: which head (by record and text), its place among the visible heads, the
+    // head before it, and whether it is the very node focused before the growth.
+    let focus = "(function(){ var a = document.activeElement, hs = window.__s504heads(), at = hs.indexOf(a); \
+        return JSON.stringify({ tag: a ? a.tagName : null, head: at, of: hs.length, id: at >= 0 ? window.__s504id(a) : null, prev: at > 0 ? window.__s504id(hs[at - 1]) : null, \
+        same: !!window.__s504 && a === window.__s504, oldConnected: !!window.__s504 && window.__s504.isConnected }); })()";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(eval(tab, focus).as_str().expect("a reading")).expect("JSON")
+    };
+    // `k` as the reader presses it: on whatever has the focus, bubbling to the page's keymap.
+    let press_k = || {
+        eval(tab, "(document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'k', bubbles: true, cancelable: true })); 'ok'");
+        settle();
+    };
+    press_k();
+    let before = read();
+    assert!(
+        before["head"].as_i64().unwrap_or(-1) >= 1 && !before["prev"].is_null(),
+        "{surface:?}: k focuses the last head, with one before it: {before}"
+    );
+    eval(tab, "window.__s504 = document.activeElement; 'kept'");
+    let grown = format!("{}.scrollHeight", surface.scroller());
+    let height = eval(tab, &grown).as_i64().unwrap_or(0);
+    harness::append(
+        &fx.path,
+        &user_at("now count the skua burrows", &now_minus(20)),
+    );
+    harness::append(&fx.path, &assistant_at("Twelve burrows.", &now_minus(10)));
+    // The growth has landed once the reply is drawn or the column has grown by it (a reader the
+    // reveal took off the tail may not have it mounted).
+    until(
+        tab,
+        &format!(
+            "document.body.textContent.includes('Twelve burrows.') || {grown} > {height} + 40"
+        ),
+        "the prompt and the reply to arrive",
+        Duration::from_secs(20),
+        &grown,
+    );
+    settle();
+    settle();
+    let after = read();
+    eprintln!("s504 {surface:?}: before {before}; after the growth {after}");
+    assert_eq!(
+        after["id"], before["id"],
+        "{surface:?}: after the growth the same head has the focus: before {before}, after {after}"
+    );
+    press_k();
+    let next = read();
+    eprintln!("s504 {surface:?}: k after the growth {next}");
+    assert_eq!(
+        next["id"], before["prev"],
+        "{surface:?}: k goes on from it to the head before it: before {before}, after k {next}"
+    );
+}
+
+/// The fixture for #s504: a short session whose last turn is still running, its steps a Bash call,
+/// a line of progress and a Read. The app shell draws those steps as one process unit at the end,
+/// and a prompt arriving extends that unit, so it is drawn again (`Projection.rebuild`), with both
+/// heads in it: the Read's the last head, the Bash call's the one before.
+fn growth_focus_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("tally the tern colony", &now_minus(90));
+    t += &harness::bash_call_at("wc -l nests.txt", "t-504-bash", &now_minus(85));
+    t += &tool_result_lines("t-504-bash", 3, &now_minus(84));
+    t += &assistant_at("Now the burrows.", &now_minus(80));
+    t += &read_tool_at("t-504-read", "/tmp/burrows.txt", &now_minus(75));
+    t += &tool_result_lines("t-504-read", 4, &now_minus(74));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_focused_fold_head_keeps_its_focus_through_growth() {
+    let _serial = serial();
+    let fx = growth_focus_fixture("growth-focus-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_focused_fold_head_keeps_its_focus_through_growth(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_focused_fold_head_keeps_its_focus_through_growth() {
+    let _serial = serial();
+    let fx = growth_focus_fixture("growth-focus-app");
+    let page = open(Surface::AppShell, &fx, 3136);
+    scenario_a_focused_fold_head_keeps_its_focus_through_growth(&page.tab, Surface::AppShell, &fx);
+}
+
 /// #299 — the owner: "the icons for various agents are hardly recognizable, please use the
 /// official ones" (a screenshot of the collapsed rail: an asterisk, a knot, a robot). Claude
 /// sessions wear the official Claude mark — since #s209 the one Anthropic published to the Agent
