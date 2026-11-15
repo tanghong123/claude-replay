@@ -5937,9 +5937,11 @@ fn late_move_leaves_the_end(port: u16, case: &str, past_the_window: bool) {
 /// browser made (the clamp of `a_follower_the_browser_moves_with_no_input_keeps_following`) before
 /// its event. The tail waits for the event, and the event puts the follower back at the end; read as
 /// the reader's, the transaction let go of the end at once. The clicks are the mouse's own. A key is
-/// sent where the browser sends it, to the body, and for the Page Up the transcript is moved as the
-/// browser moves it (a key Chrome's DevTools protocol sends here repeats until the page stops it,
-/// #270).
+/// sent where the browser sends it, to what has the focus, and for the Page Up the transcript is moved
+/// as the browser moves it (a key Chrome's DevTools protocol sends here repeats until the page stops
+/// it, #270). Since #s488 a mouse's click on the text focuses the transcript itself, so the scenes run
+/// there first, where the same rules hold for a key on the box as on the body; then with the focus put
+/// back on the body, where a touch's tap leaves it, and again after a press in the list.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
@@ -5976,7 +5978,7 @@ fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
     // dispatched again as themselves.
     harness::eval(
         &tab,
-        "(function(){ var s = document.querySelector('.transcript'); window.__clampWith = function (keys) { var h = window.__viewportHistory.states; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); var start = h.length; keys.forEach(function (k) { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); }); return { top: Math.round(top), clamped: Math.round(clamped), ran: h.length - start, following: h[h.length - 1].following }; }; window.__release = function () { window.removeEventListener('scroll', window.__hold, true); window.__heldEvents.forEach(function (e) { s.dispatchEvent(e); }); if (!window.__heldEvents.length) s.dispatchEvent(new Event('scroll')); return 'ok'; }; return 'ok'; })()",
+        "(function(){ var s = document.querySelector('.transcript'); window.__clampWith = function (keys) { var h = window.__viewportHistory.states; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); var start = h.length; var to = document.activeElement || document.body; keys.forEach(function (k) { to.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); }); return { top: Math.round(top), clamped: Math.round(clamped), ran: h.length - start, following: h[h.length - 1].following }; }; window.__release = function () { window.removeEventListener('scroll', window.__hold, true); window.__heldEvents.forEach(function (e) { s.dispatchEvent(e); }); if (!window.__heldEvents.length) s.dispatchEvent(new Event('scroll')); return 'ok'; }; return 'ok'; })()",
     );
     let clamp_with = |keys: &str| {
         let sized = harness::probe(&tab, &format!("window.__clampWith({keys})"));
@@ -6032,14 +6034,31 @@ fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
         "(function(){ document.removeEventListener('keydown', window.__take); return 'ok'; })()",
     );
     // The Page Up, and the move the browser makes for it.
-    harness::eval(
-        &tab,
-        "(function(){ var s = document.querySelector('.transcript'); document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', code: 'PageUp', bubbles: true, cancelable: true })); s.scrollTop = s.scrollTop - Math.round(s.clientHeight * 0.85); return 'ok'; })()",
-    );
+    let page_up = "(function(){ var s = document.querySelector('.transcript'); (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', code: 'PageUp', bubbles: true, cancelable: true })); s.scrollTop = s.scrollTop - Math.round(s.clientHeight * 0.85); return 'ok'; })()";
+    harness::eval(&tab, page_up);
     rest();
     let pressed = harness::probe(&tab, read);
     rest();
     let rested = harness::probe(&tab, read);
+    // Back at the end, the focus put back on the body (where a touch's tap on the text leaves it), the
+    // same three scenes there.
+    harness::jump_to_end(&tab, surface);
+    rest();
+    harness::eval(
+        &tab,
+        "(function(){ if (document.activeElement) document.activeElement.blur(); return 'ok'; })()",
+    );
+    let on_body = harness::probe(&tab, read);
+    let (body_sized, body_sized_healed) = clamp_with("['Shift', '+']");
+    harness::eval(&tab, "(function(){ window.__take = function (e) { if (e.key === 'ArrowUp') e.preventDefault(); }; document.addEventListener('keydown', window.__take); return 'ok'; })()");
+    let (body_taken, body_taken_healed) = clamp_with("['ArrowUp', '-']");
+    harness::eval(
+        &tab,
+        "(function(){ document.removeEventListener('keydown', window.__take); return 'ok'; })()",
+    );
+    harness::eval(&tab, page_up);
+    rest();
+    let body_pressed = harness::probe(&tab, read);
     // Back at the end, a click on the session list's empty space, then a scroll key, which the browser
     // sends to the list, and the size a step up.
     harness::jump_to_end(&tab, surface);
@@ -6072,8 +6091,8 @@ fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
             && v["following"] == serde_json::json!(true)
     };
     assert!(
-        at_end(&clicked) && clicked["focus"] == serde_json::json!("body"),
-        "the reader clicked the prompt's text and follows the session at its end, the focus on the body: {clicked}"
+        at_end(&clicked) && clicked["focus"] == serde_json::json!("section#transcript"),
+        "the reader clicked the prompt's text and follows the session at its end, the focus on the transcript (#s488): {clicked}"
     );
     assert!(
         kept(&sized) && at_end(&sized_healed),
@@ -6091,6 +6110,19 @@ fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
     assert!(
         rested["following"] == serde_json::json!(false) && rested["top"] == pressed["top"],
         "and stay there: pressed {pressed}, rested {rested}"
+    );
+    assert!(
+        at_end(&on_body) && on_body["focus"] == serde_json::json!("body"),
+        "back at the end, the focus on the body: {on_body}"
+    );
+    assert!(
+        kept(&body_sized) && at_end(&body_sized_healed) && kept(&body_taken) && at_end(&body_taken_healed),
+        "on the body too, a key the browser does not scroll with and a scroll key a handler took are no move of the reader's: {body_sized}, then {body_sized_healed}; {body_taken}, then {body_taken_healed}"
+    );
+    assert!(
+        body_pressed["following"] == serde_json::json!(false)
+            && body_pressed["gap"].as_i64().unwrap_or(0) > 400,
+        "and a Page Up on the body after a press in the transcript is the reader's: {body_pressed}"
     );
     assert!(
         at_end(&back) && at_end(&listed) && listed["focus"] == serde_json::json!("body"),
@@ -23210,4 +23242,174 @@ fn a_phone_search_held_sideways_lands_a_match_below_its_process_head() {
             seen,
         );
     }
+}
+
+/// #s488: a click on a paragraph of a growing session gives the page's keys a scroller no redraw
+/// can take away. With nothing focused, WebKit scrolls by a key the scroller that holds the node
+/// the mouse last PRESSED; the growth redraws the units its rewritten records stand in (a turn
+/// committing rewrites the whole open turn, from its first record), so that node is often gone by
+/// the next key, and Page Up, an arrow or Space then scrolled nothing in Safari about half the
+/// time. Chrome falls back to the page's own scroller and scrolls either way, so this case cannot
+/// see the missed key; it reads what the key depends on instead: after a real click on a
+/// paragraph, and after the growth that followed, the focus is the transcript scroller, connected,
+/// with no focus ring. A key typed into the compose box or the search field still lands there, and
+/// a real Page Up after a click moves the transcript.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_click_in_a_growing_transcript_leaves_its_keys_a_scroller_no_redraw_takes() {
+    let _serial = serial();
+    let base = harness::base("click-keys-growth");
+    let stores = harness::Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000048c8";
+    let path = stores.claude_session(sid, &harness::long_session(30, harness::Shape::default()));
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3292, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1366.0, 1024.0);
+    m.pair(&tab);
+    harness::track_idle(&tab);
+    m.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#transcript .virtual-window .turn.assistant p').length >= 2 && document.getElementById('transcript').scrollTop > 0",
+        "the session drawn at its tail",
+        Duration::from_secs(30),
+        "JSON.stringify({ ps: document.querySelectorAll('#transcript .virtual-window p').length, top: (document.getElementById('transcript') || {}).scrollTop })",
+    );
+    // The last paragraph of an assistant's reply that the mouse can reach, its centre's point; the
+    // paragraph is kept on the page as `__clicked`.
+    let paragraph = "(function(){ var s = document.getElementById('transcript'), v = s.getBoundingClientRect(); var ps = [].slice.call(s.querySelectorAll('.virtual-window .turn.assistant p')); for (var i = ps.length - 1; i >= 0; i--) { var r = ps[i].getBoundingClientRect(); if (r.height < 4 || r.top < v.top + 60 || r.bottom > v.bottom - 160) continue; var x = r.left + Math.min(40, r.width / 2), y = r.top + r.height / 2, hit = document.elementFromPoint(x, y); if (hit && ps[i].contains(hit)) { window.__clicked = ps[i]; return JSON.stringify([x, y]); } } return '[]'; })()";
+    let click_paragraph = |what: &str| {
+        let at = harness::eval(&tab, paragraph);
+        let at: Vec<f64> = serde_json::from_str(at.as_str().unwrap_or("[]")).unwrap_or_default();
+        assert_eq!(at.len(), 2, "a paragraph to click {what}");
+        tab.click_point(headless_chrome::browser::tab::point::Point { x: at[0], y: at[1] })
+            .expect("a click on a paragraph");
+    };
+    let focus = "(function(){ var a = document.activeElement, s = document.getElementById('transcript'), cs = getComputedStyle(a); return JSON.stringify({ on: a === s ? 'the transcript' : (a.id || a.tagName.toLowerCase()), connected: a.isConnected, ring: !!document.querySelector(':focus-visible'), outline: cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0, clicked: !!(window.__clicked && window.__clicked.isConnected) }); })()";
+    let read = |what: &str| -> serde_json::Value {
+        let text = harness::eval(&tab, focus);
+        let v: serde_json::Value = serde_json::from_str(text.as_str().unwrap_or("{}")).unwrap();
+        eprintln!("#s488 {what}: {v}");
+        v
+    };
+    let keys_go_to_the_transcript = |v: &serde_json::Value, what: &str| {
+        assert_eq!(
+            (v["on"].as_str(), v["connected"].as_bool()),
+            (Some("the transcript"), Some(true)),
+            "{what}: the keys' target is the transcript scroller, connected ({v})"
+        );
+        assert_eq!(
+            (v["ring"].as_bool(), v["outline"].as_bool()),
+            (Some(false), Some(false)),
+            "{what}: a mouse click draws no focus ring ({v})"
+        );
+    };
+    // A key typed into a field is the field's, as before (`contains`: a key Chrome's DevTools
+    // protocol sends may repeat, #270). First, while the session is still one the box may write to: a
+    // session growing now is busy, and the box is offered only for one it may resume.
+    let field = |id: &str| -> (String, String) {
+        let v = harness::eval(&tab, &format!("JSON.stringify([document.activeElement.id, document.getElementById({id:?}).value])"));
+        let v: Vec<String> = serde_json::from_str(v.as_str().unwrap_or("[]")).unwrap_or_default();
+        (
+            v.first().cloned().unwrap_or_default(),
+            v.get(1).cloned().unwrap_or_default(),
+        )
+    };
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "document.getElementById('composeFab').click(); 'ok'");
+    harness::click_when_settled(&tab, "#composeInput", "the compose box");
+    tab.type_str("typed into the box").unwrap();
+    let (on, draft) = field("composeInput");
+    assert!(
+        on == "composeInput" && draft.contains("typed into the box"),
+        "the compose box keeps its keys: the focus on {on:?}, the draft {draft:?}"
+    );
+    click_paragraph("with the compose box open");
+    keys_go_to_the_transcript(
+        &read("a click from the compose box"),
+        "a click from the compose box",
+    );
+    let (_, kept) = field("composeInput");
+    assert_eq!(
+        kept, draft,
+        "the draft stays as the reader clicks back into the transcript"
+    );
+    harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
+    tab.type_str("late").unwrap();
+    let (on, query) = field("transcriptSearchInput");
+    assert!(
+        on == "transcriptSearchInput" && query.contains("late"),
+        "the search field keeps its keys: the focus on {on:?}, the query {query:?}"
+    );
+    // A turn every two seconds, as the report's session grew.
+    let script = (0..6)
+        .flat_map(|i| {
+            [
+                harness::user_at(
+                    &format!("question {}: a late question", 900 + i),
+                    &harness::now_minus(60),
+                ),
+                harness::assistant_at(
+                    &format!(
+                        "answer {}: a late answer, a paragraph a reader could click",
+                        900 + i
+                    ),
+                    &harness::now_minus(55),
+                ),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let growth = harness::LiveGrowth::start(path.clone(), script, Duration::from_millis(1000));
+    // Four clicks, each followed by the growth that redraws what was clicked: every read is kept and
+    // printed before anything is asserted, so a red run says what each round saw.
+    let mut rounds = Vec::new();
+    for round in 0..4 {
+        click_paragraph(&format!("in round {round}"));
+        let pressed = read(&format!("round {round}, after the click"));
+        // Up to one turn's time for the clicked paragraph to be redrawn.
+        let deadline = Instant::now() + Duration::from_millis(2500);
+        while Instant::now() < deadline
+            && harness::eval(&tab, "!!(window.__clicked && window.__clicked.isConnected)")
+                == serde_json::json!(true)
+        {
+            harness::pause("the growth", Duration::from_millis(100));
+        }
+        let after = read(&format!("round {round}, after the growth"));
+        rounds.push((round, pressed, after));
+    }
+    growth.finish(Duration::from_secs(20));
+    let replaced = rounds
+        .iter()
+        .filter(|(_, _, after)| after["clicked"] == serde_json::json!(false))
+        .count();
+    eprintln!("#s488 the growth replaced the clicked paragraph in {replaced} of 4 rounds");
+    assert!(
+        replaced >= 1,
+        "the growth redrew a clicked paragraph at least once, which is what took WebKit's scroller: {rounds:?}"
+    );
+    for (round, pressed, after) in &rounds {
+        keys_go_to_the_transcript(pressed, &format!("round {round}, after the click"));
+        keys_go_to_the_transcript(after, &format!("round {round}, after the growth"));
+    }
+    // A real Page Up after a click moves the transcript (last: Chrome's CDP key a page does not
+    // prevent is never released, so nothing is typed after it).
+    click_paragraph("before Page Up");
+    keys_go_to_the_transcript(&read("before Page Up"), "before Page Up");
+    let top = "Math.round(document.getElementById('transcript').scrollTop)";
+    let before = harness::eval(&tab, top).as_i64().unwrap_or(0);
+    tab.press_key("PageUp").unwrap();
+    harness::until(
+        &tab,
+        &format!("{top} < {before} - 100"),
+        "Page Up to move the transcript",
+        Duration::from_secs(5),
+        top,
+    );
 }

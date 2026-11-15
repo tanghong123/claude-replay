@@ -375,6 +375,20 @@ let turnsFollow = true;
 
 const byId = viewRoot.byId;
 const transcript = byId("transcript");
+// #s488: a mouse's press in the transcript gives the page's keys the transcript itself. With nothing
+// focused WebKit scrolls by a key the box holding the node the mouse last pressed, and the growth
+// redraws the units its rewritten records stand in (a turn committing rewrites the whole open turn),
+// so that node was often gone by the next key and Page Up, an arrow or Space scrolled nothing in
+// Safari. Focusable (`tabindex=-1`: never in the Tab order), the box takes the focus natively from a
+// press on its text, as the nearest focusable thing the press lands in, and keeps it through any
+// redraw; a press on a control the browser focuses still focuses the control. A touch's tap does not
+// focus it (the attribute goes for the tap): on a phone a tap on the text must not put the keyboard
+// down nor take the focus from a field. No ring is drawn for it (`production.css`).
+transcript.tabIndex = -1;
+transcript.addEventListener("pointerdown", event => {
+  if (event.pointerType === "touch") transcript.removeAttribute("tabindex");
+  else transcript.tabIndex = -1;
+}, { capture: true, passive: true, signal });
 const projection = new Projection();
 let landedHash = "";
 // #s277: a link waiting for its turn to arrive, and when it began to wait (`landOnHash`).

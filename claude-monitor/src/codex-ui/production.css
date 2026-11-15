@@ -643,6 +643,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    than behind it. It keeps its space when off (as the classic page's does), so the transcript
    does not jump as it appears. */
 .transcript{scroll-padding-top:52px}
+/* #s488: a mouse's press in the transcript focuses the box itself (`tabindex=-1`, session-view.js), so
+   the page's keys scroll it whatever the growth redraws. It is never in the Tab order, and a ring
+   round the whole session after a click (or after a key, where Chrome turns a mouse's focus visible)
+   would say nothing a reader needs. */
+.transcript:focus{outline:0}
 .turn-stickybar{position:sticky;top:0;z-index:26;display:flex;align-items:center;gap:8px;width:calc(100% - 32px);margin:0 16px;padding:7px 12px;border:0;border-radius:0 0 10px 10px;background:color-mix(in srgb,var(--bg) 92%,transparent);-webkit-backdrop-filter:saturate(140%) blur(10px);backdrop-filter:saturate(140%) blur(10px);box-shadow:0 1px 0 var(--line);color:var(--sub);font:12.5px/1.35 var(--sans);text-align:left;cursor:pointer;opacity:0;pointer-events:none;transition:opacity .15s}
 .turn-stickybar.on{opacity:1;pointer-events:auto}
 .turn-stickybar:hover,.turn-stickybar:focus-visible{color:var(--ink);outline:0}
