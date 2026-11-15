@@ -24237,3 +24237,158 @@ fn a_phone_search_held_sideways_lands_a_match_below_its_process_head() {
         );
     }
 }
+
+const SWITCH_FROM: &str = "48900000-0000-4000-8000-00000000000a";
+const SWITCH_TO: &str = "48900000-0000-4000-8000-00000000000b";
+
+/// A real left click (CDP mouse events) at a point: the pointer moves there, presses and lifts.
+fn click_at(tab: &headless_chrome::Tab, x: f64, y: f64) {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventTypeOption as Kind, MouseButton,
+    };
+    for kind in [Kind::MouseMoved, Kind::MousePressed, Kind::MouseReleased] {
+        let button = !matches!(kind, Kind::MouseMoved);
+        tab.call_method(DispatchMouseEvent {
+            Type: kind,
+            x,
+            y,
+            modifiers: None,
+            timestamp: None,
+            button: button.then_some(MouseButton::Left),
+            buttons: None,
+            click_count: button.then_some(1),
+            force: None,
+            tangential_pressure: None,
+            tilt_x: None,
+            tilt_y: None,
+            twist: None,
+            delta_x: None,
+            delta_y: None,
+            pointer_Type: None,
+        })
+        .expect("a click");
+    }
+}
+
+/// #s489: a reader wheeling the open session who clicks another in the list during the gesture.
+/// The wheel was on the OLD session's transcript, so it is no hand on the new one's: the new
+/// session opens at its end at once, as it does from rest, rather than sitting at offset 0 with
+/// nothing mounted until the old gesture's intent window runs out (measured in WebKit: 15 frames,
+/// about 230 ms). Every frame from the click is read in requestAnimationFrame.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_session_opened_mid_wheel_lands_at_its_end_at_once() {
+    let _serial = serial();
+    let base = harness::base("switch-mid-wheel");
+    let stores = Stores::new(&base);
+    let mut from = harness::long_session(40, harness::Shape::default());
+    from += &harness::user_at("count the tern nests", &harness::now_minus(40));
+    from += &harness::assistant_at("Tern tail marker.", &harness::now_minus(30));
+    stores.claude_session(SWITCH_FROM, &from);
+    let mut to = harness::long_session(40, harness::Shape::default());
+    to += &harness::user_at("count the skua burrows", &harness::now_minus(35));
+    to += &harness::assistant_at("Skua tail marker.", &harness::now_minus(25));
+    stores.claude_session(SWITCH_TO, &to);
+    let m = Monitor::spawn(Kind::V1, 3119, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    m.pair(&tab);
+    harness::resize(&tab, 1366.0, 1024.0);
+    m.open(
+        &tab,
+        &format!("?ui=app&session={SWITCH_FROM}&trace=viewport"),
+    );
+    let row = format!("document.querySelector('.tree-row.session[data-session=\"{SWITCH_TO}\"]')");
+    harness::until(
+        &tab,
+        &format!("!!{row} && document.querySelector('.virtual-window').textContent.includes('Tern tail marker') && (function(){{ var s = document.querySelector('.transcript'); return s.scrollHeight - s.clientHeight - s.scrollTop <= 2; }})()"),
+        "the first session at its end, and the second in the list",
+        Duration::from_secs(20),
+        "document.querySelectorAll('.tree-row.session').length",
+    );
+    harness::pause("the open to settle", Duration::from_millis(800));
+    let at = harness::eval(&tab, &format!("(function(){{ var t = document.querySelector('.transcript').getBoundingClientRect(), r = {row}.getBoundingClientRect(); return JSON.stringify([t.left + t.width / 2, t.top + t.height / 2, r.left + r.width / 2, r.top + r.height / 2]); }})()"));
+    let at: Vec<f64> = serde_json::from_str(at.as_str().unwrap()).unwrap();
+    // Every frame: [ms, units mounted, scrollTop, gap to the end, the old session's marker drawn,
+    // the new one's], until 2.5 s after the click (a loaded machine can send the click late into a
+    // window counted from the start, past the switch: #s489's third run); the click's time from a
+    // capture listener.
+    harness::eval(&tab, "(function(){ var w = window.__s489 = { f: [], click: null }; var t0 = performance.now(); addEventListener('click', function () { if (w.click == null) { w.clickAt = Math.round(performance.now()); w.click = w.clickAt - Math.round(t0); } }, true); var loop = function () { var s = document.querySelector('.transcript'), v = document.querySelector('.virtual-window'), text = v.textContent; w.f.push([Math.round(performance.now() - t0), v.querySelectorAll('[data-unit-index]').length, Math.round(s.scrollTop), Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), text.includes('Tern tail marker'), text.includes('Skua tail marker')]); var now = performance.now() - t0; if (w.click == null ? now < 20000 : now - w.click < 2500) requestAnimationFrame(loop); else w.done = true; }; requestAnimationFrame(loop); return 1; })()");
+    for i in 0..8 {
+        // The pointer is over the transcript for the first four, then clicks the other session
+        // and stays over the list, where the rest of the gesture lands, as a mouse's would.
+        let (x, y) = if i < 4 {
+            (at[0], at[1])
+        } else {
+            (at[2], at[3])
+        };
+        if i == 4 {
+            click_at(&tab, x, y);
+        }
+        wheel_at(&tab, x, y, -120.0);
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    harness::until(
+        &tab,
+        "window.__s489.done === true",
+        "the recorder to finish, 2.5 s after the click",
+        Duration::from_secs(25),
+        "JSON.stringify({click: window.__s489.click, frames: window.__s489.f.length})",
+    );
+    let rec = harness::eval(&tab, "JSON.stringify(window.__s489)");
+    let rec: serde_json::Value = serde_json::from_str(rec.as_str().unwrap()).unwrap();
+    let click = rec["click"].as_i64().expect("the click reached the page");
+    let frames: Vec<Vec<serde_json::Value>> = rec["f"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f.as_array().unwrap().clone())
+        .filter(|f| f[0].as_i64().unwrap() >= click)
+        .collect();
+    // The cause, as the trace names it: the old session's gesture held the new session's tail
+    // (`tail:deferred` from `placeAfter`, the wheel inside the intent window). In headless Chrome the
+    // hold ends within a frame or two, so the frames alone pass on the old code; WebKit kept it for 15
+    // frames. A deferral the engine's own hold makes (`held`, a scroll event not yet heard when the
+    // empty view is drawn) is not the reader's hand and changes nothing on the page: not counted.
+    let deferred = harness::eval(&tab, "(function(){ var at = window.__s489.clickAt, tr = window.__viewportTrace || []; return tr.filter(function (e) { return e.event === 'tail:deferred' && !e.held && e.t >= at; }).length; })()").as_i64().expect("a count");
+    let row = |f: &Vec<serde_json::Value>| {
+        format!(
+            "{}ms units {} top {} gap {} old {} new {}",
+            f[0], f[1], f[2], f[3], f[4], f[5]
+        )
+    };
+    let switched = frames
+        .iter()
+        .position(|f| f[4] != serde_json::json!(true))
+        .unwrap_or_else(|| {
+            panic!(
+                "the old session leaves the view: click at {click}ms, {} frames after it, the last {:?}",
+                frames.len(),
+                frames.last()
+            )
+        });
+    let after = &frames[switched..];
+    let landed = |f: &Vec<serde_json::Value>| {
+        f[1].as_i64().unwrap() > 0 && f[5] == serde_json::json!(true) && f[3].as_i64().unwrap() <= 2
+    };
+    let short = after.iter().take_while(|f| !landed(f)).count();
+    let blank_top = after
+        .iter()
+        .filter(|f| f[1].as_i64().unwrap() == 0 && f[2].as_i64().unwrap() == 0)
+        .count();
+    let trail: Vec<String> = after.iter().take(short + 3).map(row).collect();
+    eprintln!("s489: click at {click}ms; frames from the switch {}; not yet at the end {short}; blank at offset 0 {blank_top}; tail:deferred {deferred}\n{}", after.len(), trail.join("\n"));
+    assert_eq!(
+        deferred, 0,
+        "the old session's wheel never holds the new session's tail (tail:deferred {deferred} times after the click)"
+    );
+    assert!(
+        short <= 2,
+        "the new session lands at its end within 2 frames of the switch, not {short}:\n{}",
+        trail.join("\n")
+    );
+    assert!(
+        after.iter().skip(short).all(landed),
+        "and stays there:\n{}",
+        after.iter().map(row).collect::<Vec<_>>().join("\n")
+    );
+}
