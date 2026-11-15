@@ -10,8 +10,18 @@
 // only while a session-tree row does, "any" always. A binding never fires while the focus is in
 // a text field — typing is typing — nor inside a guest the page mounted (`inGuest`, #270), nor
 // with a platform modifier held (⌘K stays the shell's own).
+//
+// A `command` binding is the one exception (#s509, Hong's ruling on #s508: "⌘F opens the session's
+// own search (a second ⌘F goes to the browser)"). It is pressed WITH the platform's command key
+// (`COMMAND_KEY`: ⌘ on macOS and iPadOS, Ctrl elsewhere, the key the browser's own find answers
+// to) and nothing else held, and it fires from a text field only inside an element the page marks
+// `data-command-keys` (the compose box, where a reader who has just sent a prompt still has the
+// focus). The search field itself carries no mark, so the second press there is the browser's.
+const APPLE = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform || "");
+const COMMAND_KEY = APPLE ? "metaKey" : "ctrlKey";
 const KEYMAP = Object.freeze([
   { key: "/", when: "any", action: "search", hint: "/" },
+  { key: "f", command: true, when: "any", action: "search", hint: APPLE ? "⌘F" : "Ctrl+F" },
   { key: "]", when: "view", action: "turn-next", hint: "]" },
   { key: "[", when: "view", action: "turn-prev", hint: "[" },
   { key: "j", when: "view", action: "head-next", hint: "j" },
@@ -50,16 +60,25 @@ const guestOf = target => (target && typeof target.closest === "function" && tar
 /** A key pressed on something inside a guest is the guest's — `when: "any"` bindings included,
  *  which no context value can switch off. */
 const inGuest = target => !!guestOf(target);
+/** A text field a `command` binding may fire from: one inside an element marked
+ *  `data-command-keys` (#s509). */
+const commandField = target => !!(target && typeof target.closest === "function" && target.closest("[data-command-keys]"));
 
 /** The binding an event resolves to, or null. `context` is "list" while a tree row has focus,
  *  else "view"; a button or link with focus takes Space/Enter itself, so Space is left alone there. */
 function resolveKey(event, context, target = null) {
-  if (event.metaKey || event.ctrlKey || event.altKey) return null;
-  if (isEditable(target)) return null;
+  // The command key alone: ⌘⇧F, ⌘⌥F and, on a Mac, Ctrl+F (a text field's forward-a-character)
+  // stay the browser's and the field's. Caps Lock makes the letter a capital.
+  const other = COMMAND_KEY === "metaKey" ? "ctrlKey" : "metaKey";
+  const command = !!event[COMMAND_KEY] && !event[other] && !event.altKey && !event.shiftKey;
+  if (!command && (event.metaKey || event.ctrlKey || event.altKey)) return null;
+  if (isEditable(target) && !(command && commandField(target))) return null;
   if (inGuest(target)) return null;
   if (event.key === " " && target && /^(BUTTON|A|SUMMARY)$/.test(target.tagName || "")) return null;
+  const key = command ? String(event.key || "").toLowerCase() : event.key;
   for (const binding of KEYMAP) {
-    if (binding.key !== event.key) continue;
+    if (!!binding.command !== command) continue;
+    if (binding.key !== key) continue;
     if (!!binding.shift !== !!event.shiftKey && binding.key === " ") continue;
     if (binding.when !== "any" && binding.when !== context) continue;
     return binding;
@@ -67,8 +86,9 @@ function resolveKey(event, context, target = null) {
   return null;
 }
 
-/** The hint to show beside a control for an action, e.g. "n" — or "" when it has none. */
-const hintFor = action => KEYMAP.find(binding => binding.action === action && binding.hint)?.hint || "";
+/** The hint to show beside a control for an action, e.g. "n" — or "" when it has none. An action
+ *  with two keys names both ("/ or ⌘F"). */
+const hintFor = action => KEYMAP.filter(binding => binding.action === action && binding.hint).map(binding => binding.hint).join(" or ");
 
 function bindKeymap(root, contextOf, dispatch) {
   // ENGAGEMENT, as the guest itself defines it: the last click or focus landed inside it (mdrev's
@@ -89,4 +109,4 @@ function bindKeymap(root, contextOf, dispatch) {
   });
 }
 
-export { KEYMAP, isEditable, inGuest, resolveKey, hintFor, bindKeymap };
+export { KEYMAP, COMMAND_KEY, isEditable, inGuest, resolveKey, hintFor, bindKeymap };

@@ -3859,7 +3859,15 @@ function pageTranscript(direction) {
 // (`keyboard: "page"`) the app binds the page's keys and adds the list's (app.js); engaged, the view
 // binds them itself (below).
 const keyActions = {
-  "search": () => { setPhoneSearch(true); byId("transcriptSearchInput").focus(); },
+  // `/`, and ⌘F or Ctrl+F (#s509), from the compose box too: the field focused with its query
+  // selected, as a browser's find opens. On a phone the reply box holds the dock where the search
+  // would open, so the press is left to the page there (`false`).
+  "search": () => {
+    if (sessionView.classList.contains("composing")) return false;
+    setPhoneSearch(true);
+    const field = byId("transcriptSearchInput");
+    field.focus(); field.select();
+  },
   "turn-next": () => stepTurn(1), "turn-prev": () => stepTurn(-1),
   "head-next": () => stepHead(1), "head-prev": () => stepHead(-1),
   "hit-next": () => stepFromBox(1), "hit-prev": () => stepFromBox(-1),
@@ -3887,6 +3895,10 @@ if (keyboardMode === "engaged") {
     if (act && act() !== false) event.preventDefault();
   }, { capture: true, signal });
 }
+// ⌘F opens the session's search from the compose box (#s509): a reader who has just sent a prompt
+// still has the focus there. Every other field keeps it, the search field above all, so a second
+// press there is the browser's find.
+byId("composer").dataset.commandKeys = "";
 // Discoverability in the shell's idiom: the key in the control's own title / hint.
 byId("transcriptSearchInput").placeholder = `Search this session  ( ${hintFor("search")} )`;
 byId("findPrev").title = `Previous match (${hintFor("hit-prev")})`; byId("findNext").title = `Next match (${hintFor("hit-next")})`;
